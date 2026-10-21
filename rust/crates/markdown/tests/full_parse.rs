@@ -13,6 +13,9 @@ mod reference_updates;
 #[path = "whitespace.rs"]
 mod whitespace;
 
+#[path = "block_checkpoints.rs"]
+mod block_checkpoints;
+
 fn full_parse(source: &str) -> Vec<Line> {
     // CommonMark normalizes CRLF and CR to LF before block parsing.
     let source = if source.contains('\r') {

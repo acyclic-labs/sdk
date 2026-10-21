@@ -29,6 +29,30 @@ fn provisional_archive_row_is_invalidated() {
     partition(&text, &cuts);
 }
 
+#[test]
+fn provisional_list_continuation_is_invalidated() {
+    let text = "retained archive\n\n*\n  €\n\na";
+    // The main-gate shrinker's exact cuts (including the retained prefix).
+    partition(
+        text,
+        &[
+            false, false, true, true, true, false, false, false, true, false, true, true, true,
+            true, false, true, true, false, true, true, false, false, true, true, true, false,
+            true,
+        ],
+    );
+    // Include cuts through the marker, indentation and the multibyte scalar.
+    for first in 1..text.len() {
+        for second in first..text.len() {
+            let mut cuts = vec![false; text.len()];
+            cuts[first - 1] = true;
+            cuts[second - 1] = true;
+            partition(text, &cuts);
+        }
+    }
+    partition(text, &vec![true; text.len()]);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]

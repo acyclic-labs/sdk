@@ -87,7 +87,13 @@ pub(super) fn container(source: &str, position: usize, tag: &Tag<'_>) -> Contain
             };
         }
     };
-    let marker = line.get(before..length).unwrap_or_default();
+    let mut marker = line.get(before..length).unwrap_or_default().to_owned();
+    // An empty item may end immediately after its marker. Its synthetic
+    // content still needs the implicit one-column padding: `*x` / `1.x`
+    // would reopen a paragraph rather than the checkpoint's list item.
+    if matches!(tag, Tag::Item) && !marker.ends_with([' ', '\t']) {
+        marker.push(' ');
+    }
     let opening = format!(
         "{parent}{marker}{}\n",
         if matches!(tag, Tag::Item) { "x" } else { "" }
