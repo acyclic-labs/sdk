@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_harness::tool::ToolDefinition;
+use acyclic_harness_core::tool::ToolDefinition;
 use proptest::prelude::*;
 
 #[tokio::test]

@@ -1,5 +1,5 @@
 use crate::invalid;
-use acyclic_harness::{
+use acyclic_harness_core::{
     Error, Result,
     conversation::{ContentResidencyVerifier, FileRef, Limits, verified_content_bytes},
     model::{FileProjectionPolicy, ModelContent, ModelRequest},
@@ -66,7 +66,7 @@ fn validate(file: &FileRef, policy: &FileProjectionPolicy, maximum: u64) -> Resu
 
 fn projected_bytes(file: &FileRef, policy: &FileProjectionPolicy) -> Result<u64> {
     if let FileProjectionPolicy::ProjectInstructions(source) = policy {
-        acyclic_harness::model::InstructionSource::with_identity(file, source).framed_bytes()
+        acyclic_harness_core::model::InstructionSource::with_identity(file, source).framed_bytes()
     } else {
         Ok(file.descriptor().byte_length())
     }
@@ -97,7 +97,7 @@ pub(crate) fn extra_bytes(content: &ModelContent, maximum: u64) -> Result<usize>
 pub(crate) async fn resolve(
     files: &Files,
     request: &ModelRequest,
-    io: Option<&acyclic_harness::conversation::ContentIo>,
+    io: Option<&acyclic_harness_core::conversation::ContentIo>,
 ) -> Result<FileText> {
     // Reject the entire unsupported request before invoking any owner reader.
     let mut remaining = files.maximum_bytes;
@@ -131,8 +131,9 @@ pub(crate) async fn resolve(
                 verified_content_bytes(reader.as_ref(), file, file.descriptor().byte_length(), io)
                     .await?;
             if let FileProjectionPolicy::ProjectInstructions(source) = policy {
-                let value = acyclic_harness::model::InstructionSource::with_identity(file, source)
-                    .render(&bytes, io)?;
+                let value =
+                    acyclic_harness_core::model::InstructionSource::with_identity(file, source)
+                        .render(&bytes, io)?;
                 drop(hold);
                 text.push(value);
                 continue;

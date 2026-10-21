@@ -1,4 +1,4 @@
-use acyclic_harness::{
+use acyclic_harness_core::{
     Result,
     model::{ModelContentPart, ModelRequest},
 };
@@ -248,15 +248,15 @@ impl<'a> Names<'a> {
                 seen.insert(wire.to_string()),
                 "distinct canonical names collided"
             );
-            let mut event = acyclic_harness::model::ModelEvent::ToolCall(
-                acyclic_harness::model::ToolCall::new(
+            let mut event = acyclic_harness_core::model::ModelEvent::ToolCall(
+                acyclic_harness_core::model::ToolCall::new(
                     "call".into(),
                     wire.into_owned(),
                     serde_json::json!({}),
                 ),
             );
             table.restore(&mut event).unwrap();
-            let acyclic_harness::model::ModelEvent::ToolCall(call) = event else {
+            let acyclic_harness_core::model::ModelEvent::ToolCall(call) = event else {
                 unreachable!()
             };
             assert_eq!(call.name, name);
@@ -474,8 +474,11 @@ impl<'a> Names<'a> {
     }
 
     #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
-    pub(crate) fn restore(&self, event: &mut acyclic_harness::model::ModelEvent) -> Result<()> {
-        if let acyclic_harness::model::ModelEvent::ToolCall(call) = event {
+    pub(crate) fn restore(
+        &self,
+        event: &mut acyclic_harness_core::model::ModelEvent,
+    ) -> Result<()> {
+        if let acyclic_harness_core::model::ModelEvent::ToolCall(call) = event {
             if let Some(name) = self.canonical(&call.name)? {
                 call.name = name.into();
             }
@@ -485,8 +488,8 @@ impl<'a> Names<'a> {
 
     pub(crate) fn funded(
         request: &'a ModelRequest,
-        work: acyclic_harness::NativeWork<'_>,
-    ) -> Result<(Self, acyclic_harness::NativeCustody)> {
+        work: acyclic_harness_core::NativeWork<'_>,
+    ) -> Result<(Self, acyclic_harness_core::NativeCustody)> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
             let count = names(request).count() as u64;

@@ -1,5 +1,5 @@
 use crate::{Adapter, input::validate_input};
-use acyclic_harness::model::{
+use acyclic_harness_core::model::{
     ModelContent, ModelContentPart, ModelMessage, ModelRole, ReasoningBlock, ReasoningKind,
     ReasoningOutcome, ToolCall, ToolResultContent,
 };
@@ -115,11 +115,11 @@ proptest! {
             let (prepared,_)=crate::tests::request(&provider).unwrap();
             let mut request=prepared.request().clone();
             request.messages=messages.clone();
-            request.tools.push(acyclic_harness::tool::ToolDefinition {
+            request.tools.push(acyclic_harness_core::tool::ToolDefinition {
                 name:"echo".into(),revision:"1".into(),description:"fixture".into(),input_schema:json!({"type":"object","properties":{"text":{"type":"string"}}}),output_schema:json!({}),projection_schema:json!({}),
             });
             let body=crate::projection::body(&provider,&request).unwrap();
-            let replay: acyclic_harness::model::ModelRequest = serde_json::from_slice(&serde_json::to_vec(&request).unwrap()).unwrap();
+            let replay: acyclic_harness_core::model::ModelRequest = serde_json::from_slice(&serde_json::to_vec(&request).unwrap()).unwrap();
             prop_assert_eq!(&body, &crate::projection::body(&provider, &replay).unwrap());
             prop_assert_eq!(validate_input(adapter,&body),Vec::<&str>::new(),"adapter {:?}, wire {}",adapter,body);
         }

@@ -12,11 +12,12 @@ description = "Streaming model providers for the acyclic harness"
 crate-type = ["rlib", "cdylib"]
 
 [features]
-browser = ["acyclic-harness/browser", "dep:tsify", "dep:serde-wasm-bindgen"]
+# The browser content reader lives in the facade's wasm bindings.
+browser = ["acyclic-harness-core/browser", "dep:acyclic-harness", "acyclic-harness/browser", "dep:tsify", "dep:serde-wasm-bindgen"]
 fuzzing = []
 
 [dependencies]
-acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = false }
+acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false }
 acyclic-stream = { path = "../stream", version = "=0.2.0", default-features = false }
 async-stream = "0.3.6"
 bytes.workspace = true
@@ -29,7 +30,7 @@ url = "2.5.7"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 serde_path_to_error = "0.1.20"
-acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = false, features = ["filesystem"] }
+acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false, features = ["filesystem"] }
 acyclic-fs = { path = "../filesystem", version = "=0.2.0", default-features = false }
 blake3.workspace = true
 base64 = "=0.22.1"
@@ -41,6 +42,7 @@ time = { workspace = true, features = ["formatting", "parsing"] }
 tokio = { version = "1.48.0", default-features = false, features = ["rt", "sync", "time"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = false, optional = true }
 serde-wasm-bindgen = { workspace = true, optional = true }
 tsify = { workspace = true, optional = true }
 js-sys.workspace = true

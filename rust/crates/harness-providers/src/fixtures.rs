@@ -20,10 +20,10 @@ pub(crate) fn now() -> std::time::Duration {
 pub(crate) fn native_delay(
     wait: std::time::Duration,
     work: &acyclic_fs::NativeMaterializationWork,
-) -> acyclic_harness::Result<acyclic_harness::NativeFutureBundle<'static, ()>> {
+) -> acyclic_harness_core::Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
     let frozen =
         wait >= std::time::Duration::from_millis(crate::TimeoutSpec::DEFAULT.idle_ms.into());
-    acyclic_harness::NativeFutureBundle::new(work, move || async move {
+    acyclic_harness_core::NativeFutureBundle::new(work, move || async move {
         if frozen {
             futures::future::pending::<()>().await;
         }

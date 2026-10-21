@@ -1,7 +1,7 @@
 //! Original invocation admission for bounded credential operations.
 use crate::native;
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
-use acyclic_harness::Result;
+use acyclic_harness_core::Result;
 use serde_json::Value;
 
 pub(super) struct CredentialIo<'a> {

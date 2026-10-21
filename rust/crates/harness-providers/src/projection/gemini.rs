@@ -1,5 +1,5 @@
 use super::wire::Item;
-use acyclic_harness::model::ModelRole;
+use acyclic_harness_core::model::ModelRole;
 use serde::Deserialize;
 use serde_json::{Value, value::RawValue};
 use std::{borrow::Cow, collections::VecDeque};
@@ -77,15 +77,15 @@ impl<'a> Replay<'a> {
 }
 
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
-pub(crate) fn assert_visible_replay(events: &[acyclic_harness::model::ModelEvent]) {
-    use acyclic_harness::model::ModelEvent;
+pub(crate) fn assert_visible_replay(events: &[acyclic_harness_core::model::ModelEvent]) {
+    use acyclic_harness_core::model::ModelEvent;
     let mut replay = Replay::default();
     let mut native_text = String::new();
     for event in events {
         if let ModelEvent::ReasoningBlock { block } = event {
             if let Some(item) = replay.native(
                 &block.continuity,
-                block.outcome == acyclic_harness::model::ReasoningOutcome::SuppressedDisplay,
+                block.outcome == acyclic_harness_core::model::ReasoningOutcome::SuppressedDisplay,
             ) {
                 let bytes = serde_json::to_vec(&item).unwrap();
                 assert_eq!(bytes, block.continuity, "native part bytes changed");

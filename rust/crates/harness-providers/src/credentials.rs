@@ -1,4 +1,4 @@
-use acyclic_harness::Result;
+use acyclic_harness_core::Result;
 use std::collections::BTreeMap;
 
 /// API keys loaded from explicitly supplied configuration or native credential sources.
@@ -24,7 +24,7 @@ pub(crate) struct KeychainDecode {
 }
 
 impl KeychainDecode {
-    pub(crate) fn error(&self) -> acyclic_harness::Error {
+    pub(crate) fn error(&self) -> acyclic_harness_core::Error {
         super::invalid(format!(
             "provider {}: cannot decode keychain credential",
             self.provider

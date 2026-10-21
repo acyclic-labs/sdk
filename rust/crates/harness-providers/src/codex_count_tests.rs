@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_harness::model::{
+use acyclic_harness_core::model::{
     Model, ModelContent, ModelMessage, ModelRequest, ModelRole, PreparedModelRequest,
 };
 use proptest::prelude::*;

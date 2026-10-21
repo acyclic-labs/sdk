@@ -3,7 +3,7 @@ use crate::{
     Adapter, Result, invalid,
     stream::{State, finish, parse},
 };
-use acyclic_harness::{conversation::Limits, model::*};
+use acyclic_harness_core::{conversation::Limits, model::*};
 use proptest::prelude::*;
 use serde_json::json;
 
@@ -63,14 +63,16 @@ fn scenario(
 fn projection(provider: &crate::ResolvedModel, events: Vec<ModelEvent>) -> Result<Vec<u8>> {
     let (request, _) = request(provider)?;
     let mut request = request.request().clone();
-    request.tools.push(acyclic_harness::tool::ToolDefinition {
-        name: "echo".into(),
-        revision: "1".into(),
-        description: "echo".into(),
-        input_schema: json!({"type":"object"}),
-        output_schema: json!({}),
-        projection_schema: json!({}),
-    });
+    request
+        .tools
+        .push(acyclic_harness_core::tool::ToolDefinition {
+            name: "echo".into(),
+            revision: "1".into(),
+            description: "echo".into(),
+            input_schema: json!({"type":"object"}),
+            output_schema: json!({}),
+            projection_schema: json!({}),
+        });
     let mut results = Vec::new();
     for event in events {
         let part = match event {

@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_harness::model::{
+use acyclic_harness_core::model::{
     ModelContentPart, ReasoningBlock, ReasoningKind, ReasoningOutcome, ToolCall, ToolResultContent,
 };
 use proptest::prelude::*;

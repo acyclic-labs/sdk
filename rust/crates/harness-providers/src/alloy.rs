@@ -1,5 +1,5 @@
 use crate::{AlloySpec, AlloyTurn, ModelFeatures, Registry, ResolvedModel, invalid};
-use acyclic_harness::{Result, context::ModelContextCapacity};
+use acyclic_harness_core::{Result, context::ModelContextCapacity};
 use std::sync::Arc;
 
 /// A validated immutable policy and providers. Configuration files remain authoritative.

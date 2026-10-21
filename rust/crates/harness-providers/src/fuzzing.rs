@@ -1,6 +1,6 @@
 //! The cargo-fuzz entry point uses the same streaming path as model dispatch.
 use crate::{Adapter, stream};
-use acyclic_harness::{
+use acyclic_harness_core::{
     OperationId,
     model::{ModelDispatch, ModelEvent},
 };
@@ -84,14 +84,16 @@ pub fn assert_stream_invariants(input: &[u8]) {
         return;
     }
     if kind == b'F' {
-        if let Ok(file) = serde_json::from_slice::<acyclic_harness::conversation::FileRef>(input) {
+        if let Ok(file) =
+            serde_json::from_slice::<acyclic_harness_core::conversation::FileRef>(input)
+        {
             let marker = crate::files::FileText::default()
                 .project(
                     &file,
-                    &acyclic_harness::model::FileProjectionPolicy::Reference,
+                    &acyclic_harness_core::model::FileProjectionPolicy::Reference,
                 )
                 .unwrap();
-            let restored: acyclic_harness::conversation::FileRef = serde_json::from_str(
+            let restored: acyclic_harness_core::conversation::FileRef = serde_json::from_str(
                 marker
                     .strip_prefix("[file: ")
                     .unwrap()
@@ -165,9 +167,11 @@ pub fn assert_stream_invariants(input: &[u8]) {
         return;
     }
     if kind == b'R' {
-        if let Ok(block) = serde_json::from_slice::<acyclic_harness::model::ReasoningBlock>(input) {
+        if let Ok(block) =
+            serde_json::from_slice::<acyclic_harness_core::model::ReasoningBlock>(input)
+        {
             let encoded = serde_json::to_vec(&block).unwrap();
-            let replay: acyclic_harness::model::ReasoningBlock =
+            let replay: acyclic_harness_core::model::ReasoningBlock =
                 serde_json::from_slice(&encoded).unwrap();
             assert_eq!(block, replay);
             for adapter in [crate::Adapter::Responses, crate::Adapter::Anthropic] {
@@ -176,14 +180,19 @@ pub fn assert_stream_invariants(input: &[u8]) {
                 {
                     // Independent bounded literal decoder: native admission must
                     // reject invalid strings, including inside skipped fields.
-                    let bounds = acyclic_harness::JsonBounds {
+                    let bounds = acyclic_harness_core::JsonBounds {
                         maximum_bytes: block.continuity.len() as u64,
                         maximum_items: block.continuity.len() as u64,
                         maximum_depth: 128,
                     };
                     assert!(
-                        acyclic_harness::json_value_bounded(raw, bounds, None, &mut |_| Ok(()),)
-                            .is_ok()
+                        acyclic_harness_core::json_value_bounded(
+                            raw,
+                            bounds,
+                            None,
+                            &mut |_| Ok(()),
+                        )
+                        .is_ok()
                     );
                     assert_eq!(serde_json::to_vec(raw).unwrap(), block.continuity);
                 }
@@ -210,7 +219,9 @@ pub fn assert_stream_invariants(input: &[u8]) {
         return;
     }
     if kind == b'N' {
-        if let Ok(request) = serde_json::from_slice::<acyclic_harness::model::ModelRequest>(input) {
+        if let Ok(request) =
+            serde_json::from_slice::<acyclic_harness_core::model::ModelRequest>(input)
+        {
             crate::tool_names::Names::assert_round_trip(&request);
             crate::call_ids::CallIds::assert_round_trip(&request);
             let encoded = serde_json::to_vec(&request).unwrap();
@@ -431,7 +442,7 @@ mod properties {
 
 /// Typed model/tool JSON must preserve literal maps, including reserved serde keys.
 pub(crate) fn assert_model_json_round_trip(value: &serde_json::Value) {
-    use acyclic_harness::model::{
+    use acyclic_harness_core::model::{
         Model, ModelContentPart, ModelEvent, ToolCall, ToolResultContent,
     };
     fn round_trip<
@@ -459,16 +470,16 @@ pub(crate) fn assert_model_json_round_trip(value: &serde_json::Value) {
         revision: "1".into(),
         options: value.clone(),
     });
-    round_trip(acyclic_harness::tool::ToolInvocation {
-        operation_id: acyclic_harness::OperationId::from_bytes([1; 16]),
+    round_trip(acyclic_harness_core::tool::ToolInvocation {
+        operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]),
         call_id: "call".into(),
         name: "echo".into(),
         arguments: value.clone(),
     });
-    round_trip(acyclic_harness::tool::ToolResult {
+    round_trip(acyclic_harness_core::tool::ToolResult {
         value: value.clone(),
     });
-    round_trip(acyclic_harness::tool::ToolDefinition {
+    round_trip(acyclic_harness_core::tool::ToolDefinition {
         name: "echo".into(),
         revision: "1".into(),
         description: "Echo".into(),

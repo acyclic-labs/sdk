@@ -8,7 +8,7 @@ mod sequence;
 pub(crate) mod text;
 pub(crate) mod wire;
 use crate::{Adapter, ResolvedModel, files::FileText, invalid, registry::validate_url};
-use acyclic_harness::{
+use acyclic_harness_core::{
     Result,
     context::ModelTokenCount,
     model::{
@@ -132,7 +132,7 @@ pub(crate) fn body_named<'a>(
     provider: &ResolvedModel,
     request: &'a ModelRequest,
     names: &'a crate::tool_names::Names<'_>,
-    target: &acyclic_harness::model::ReasoningOrigin,
+    target: &acyclic_harness_core::model::ReasoningOrigin,
     files: &mut FileText,
 ) -> Result<Body<'a>> {
     let adapter = provider.config.adapter;
@@ -285,7 +285,7 @@ fn project_message<'a>(
     message: &'a ModelMessage,
     names: &'a crate::tool_names::Names<'_>,
     call_ids: &crate::call_ids::CallIds,
-    target: &acyclic_harness::model::ReasoningOrigin,
+    target: &acyclic_harness_core::model::ReasoningOrigin,
     gemini: &mut gemini::Replay<'a>,
     files: &mut FileText,
 ) -> Result<Vec<Message<'a>>> {
@@ -318,7 +318,7 @@ fn project_message<'a>(
                     &mut ordered,
                 );
             }
-            ModelContentPart::ToolCall(acyclic_harness::model::ToolCall {
+            ModelContentPart::ToolCall(acyclic_harness_core::model::ToolCall {
                 call_id,
                 name,
                 arguments,
@@ -366,7 +366,7 @@ fn project_message<'a>(
                         if let Some(part) = gemini.native(
                             continuity,
                             block.outcome
-                                == acyclic_harness::model::ReasoningOutcome::SuppressedDisplay,
+                                == acyclic_harness_core::model::ReasoningOutcome::SuppressedDisplay,
                         ) {
                             ordered.push(part);
                         }
@@ -537,7 +537,7 @@ fn text_content(content: &ModelContent, files: &mut FileText) -> Result<String> 
         .map(|parts| parts.join("\n"))
 }
 
-fn foreign_text(origin: &acyclic_harness::model::ReasoningOrigin, text: &str) -> String {
+fn foreign_text(origin: &acyclic_harness_core::model::ReasoningOrigin, text: &str) -> String {
     format!(
         "<prior-reasoning provider={:?} model={:?}>\n{text}\n</prior-reasoning>",
         origin.provider, origin.model

@@ -16,7 +16,7 @@
 //! backoffs alike; on the native ledger it admits the timer before it exists.
 //! `scripts/qualify-provider-stream.sh` rejects any other timer construction in the crate.
 use crate::{HttpRequest, HttpResponse, HttpTransport, TimeoutSpec};
-use acyclic_harness::{Error, ModelTransportFailure, Result};
+use acyclic_harness_core::{Error, ModelTransportFailure, Result};
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
 use bytes::Bytes;
 use futures::{FutureExt as _, Stream, StreamExt as _};
@@ -98,7 +98,7 @@ impl HttpTransport for Bounded {
         &self,
         duration: Duration,
         work: &Work,
-    ) -> Result<acyclic_harness::NativeFutureBundle<'static, ()>> {
+    ) -> Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
         self.inner.delay_with_native_work(duration, work)
     }
 
@@ -112,9 +112,9 @@ impl HttpTransport for Bounded {
         &'a self,
         request: HttpRequest,
         work: &'a Work,
-    ) -> Result<acyclic_harness::NativeFutureBundle<'a, HttpResponse>> {
+    ) -> Result<acyclic_harness_core::NativeFutureBundle<'a, HttpResponse>> {
         let send = self.inner.send_with_native_work(request, work)?;
-        acyclic_harness::NativeFutureBundle::new(work, || async move {
+        acyclic_harness_core::NativeFutureBundle::new(work, || async move {
             let (mut response, deadlines) = self.exchange(send, Some(work)).await?;
             // The guard is funded on the original ledger before it exists, and its custody
             // funds the body's wake-up timers.
@@ -157,7 +157,7 @@ fn timeout(native: bool, expired: Expired, timeouts: TimeoutSpec) -> Error {
 pub(crate) enum Wake {
     Portable(BoxProviderFuture<'static, ()>),
     #[cfg(not(target_arch = "wasm32"))]
-    Native(acyclic_harness::NativeFutureBundle<'static, ()>),
+    Native(acyclic_harness_core::NativeFutureBundle<'static, ()>),
 }
 
 impl Future for Wake {

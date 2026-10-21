@@ -1,7 +1,7 @@
 use crate::{
     Adapter, Authentication, ModelFeatures, ProviderSpec, TokenCountField, TokenCounterSpec,
 };
-use acyclic_harness::context::ModelContextCapacity;
+use acyclic_harness_core::context::ModelContextCapacity;
 use std::collections::BTreeMap;
 
 pub(crate) const DEFAULT_MODEL: &str = "openai/gpt-5";

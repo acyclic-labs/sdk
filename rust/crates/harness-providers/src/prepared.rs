@@ -1,5 +1,5 @@
 use crate::{HttpRequest, ResolvedModel, counting, dispatch, invalid, projection};
-use acyclic_harness::{Result, context::ModelTokenCount, model::PreparedModelRequest};
+use acyclic_harness_core::{Result, context::ModelTokenCount, model::PreparedModelRequest};
 use bytes::Bytes;
 
 /// Request-local immutable HTTP inputs. Canonical admission, file verification

@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_harness::model::{ModelContentPart, ToolResultContent};
+use acyclic_harness_core::model::{ModelContentPart, ToolResultContent};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const FIRST: &str = concat!(
@@ -79,7 +79,7 @@ impl HttpTransport for Responses {
         &self,
         wait: std::time::Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<acyclic_harness::NativeFutureBundle<'static, ()>> {
+    ) -> acyclic_harness_core::Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
         crate::fixtures::native_delay(wait, work)
     }
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
@@ -93,8 +93,8 @@ impl HttpTransport for Responses {
         &'a self,
         request: HttpRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_harness::NativeFutureBundle<'a, HttpResponse>> {
-        acyclic_harness::NativeFutureBundle::new(work, || async move {
+    ) -> Result<acyclic_harness_core::NativeFutureBundle<'a, HttpResponse>> {
+        acyclic_harness_core::NativeFutureBundle::new(work, || async move {
             let response = self.exchange(request)?;
             HttpResponse::with_native_body(response.status, response.body, work)
         })
@@ -143,7 +143,7 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
                 role: ModelRole::User,
                 content: ModelContent::Text("Run echo".into()),
             }],
-            tools: vec![acyclic_harness::tool::ToolDefinition {
+            tools: vec![acyclic_harness_core::tool::ToolDefinition {
                 name: "echo".into(),
                 revision: "1".into(),
                 description: "Echo".into(),
@@ -153,7 +153,7 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
             }],
             max_output_tokens: Some(64),
         };
-        let operation_id = acyclic_harness::OperationId::new();
+        let operation_id = acyclic_harness_core::OperationId::new();
         let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
         let baseline = work.live_allocation_bytes();
         for step in 0..2 {

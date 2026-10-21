@@ -4,7 +4,7 @@ use crate::{
     Adapter,
     protocol::sequence::{self, ResponseItem},
 };
-use acyclic_harness::Result;
+use acyclic_harness_core::Result;
 use serde_json::json;
 
 pub(super) fn push<'a>(

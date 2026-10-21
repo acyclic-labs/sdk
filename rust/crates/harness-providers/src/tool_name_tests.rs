@@ -1,6 +1,6 @@
 use super::*;
 use crate::tool_names::Names;
-use acyclic_harness::{
+use acyclic_harness_core::{
     model::{ModelContentPart, ToolCall, ToolResultContent},
     tool::ToolDefinition,
 };
@@ -366,7 +366,7 @@ impl HttpTransport for AliasFixture {
         &self,
         wait: std::time::Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<acyclic_harness::NativeFutureBundle<'static, ()>> {
+    ) -> acyclic_harness_core::Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
         crate::fixtures::native_delay(wait, work)
     }
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
@@ -385,7 +385,7 @@ impl HttpTransport for AliasFixture {
         &'a self,
         request: HttpRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_harness::NativeFutureBundle<'a, HttpResponse>> {
+    ) -> Result<acyclic_harness_core::NativeFutureBundle<'a, HttpResponse>> {
         self.0.send_with_native_work(request, work)
     }
 }

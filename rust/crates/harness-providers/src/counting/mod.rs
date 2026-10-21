@@ -1,7 +1,7 @@
 //! Verified provider admission, independent of usage-calibrated planning weights.
 pub(crate) mod wire;
 use crate::{HttpRequest, HttpTransport as _, ResolvedModel, dispatch, projection};
-use acyclic_harness::{Error, NativeCustody, NativeWork, Result, context::ModelTokenCount};
+use acyclic_harness_core::{Error, NativeCustody, NativeWork, Result, context::ModelTokenCount};
 use futures::StreamExt as _;
 
 struct Body {
@@ -18,7 +18,7 @@ fn boundary(work: NativeWork<'_>, reason: &'static str) -> Error {
     #[cfg(not(target_arch = "wasm32"))]
     if work.is_some() {
         return Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Invalid,
+            code: acyclic_harness_core::wire::ErrorCode::Invalid,
             reason,
         };
     }
@@ -28,7 +28,7 @@ fn boundary(work: NativeWork<'_>, reason: &'static str) -> Error {
 
 pub(crate) async fn count(
     provider: &ResolvedModel,
-    request: &acyclic_harness::model::PreparedModelRequest,
+    request: &acyclic_harness_core::model::PreparedModelRequest,
     work: NativeWork<'_>,
 ) -> Result<(ModelTokenCount, NativeCustody)> {
     if request.request().model != provider.model {
@@ -69,7 +69,7 @@ pub(crate) async fn count(
         #[cfg(not(target_arch = "wasm32"))]
         if work.is_some() {
             return Error::NativeBoundary {
-                code: acyclic_harness::wire::ErrorCode::Unsupported,
+                code: acyclic_harness_core::wire::ErrorCode::Unsupported,
                 reason,
             };
         }
@@ -108,7 +108,7 @@ pub(crate) async fn count(
         .transpose()?;
     #[cfg(not(target_arch = "wasm32"))]
     let content_io = work
-        .map(acyclic_harness::filesystem::PreparationIo::from_native_work)
+        .map(acyclic_harness_core::filesystem::PreparationIo::from_native_work)
         .transpose()?;
     #[cfg(target_arch = "wasm32")]
     let content_io = None;

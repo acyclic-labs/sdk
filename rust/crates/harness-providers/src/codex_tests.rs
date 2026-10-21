@@ -207,7 +207,10 @@ async fn revoked_refresh_and_account_changes_preserve_existing_credentials() -> 
             .bearer(&transport, None, None)
             .await
             .expect_err("rejected refresh");
-        assert!(matches!(error, acyclic_harness::Error::Unauthorized(_)));
+        assert!(matches!(
+            error,
+            acyclic_harness_core::Error::Unauthorized(_)
+        ));
         assert!(error.to_string().contains(&status.to_string()));
         let requests = transport
             .sent

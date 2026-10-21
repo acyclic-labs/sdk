@@ -40,7 +40,7 @@ fn unsigned_gemini_fragments_coalesce_without_crossing_signature_boundaries() ->
     assert_eq!(state.thinking.len(), 3);
     state.terminal = true;
     let dispatch = ModelDispatch {
-        operation_id: acyclic_harness::OperationId::from_bytes([1; 16]),
+        operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]),
         step: 0,
         request_digest: [0; 32],
     };
@@ -151,7 +151,7 @@ mod accounting {
 
     fn scanned_bytes(state: &State) -> (u64, usize) {
         let mut visits = 0;
-        use acyclic_harness::model::json_value_logical_owned_bytes as owned;
+        use acyclic_harness_core::model::json_value_logical_owned_bytes as owned;
         let calls: u64 = state
             .calls
             .values()

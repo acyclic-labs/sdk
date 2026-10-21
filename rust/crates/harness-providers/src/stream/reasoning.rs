@@ -1,5 +1,7 @@
 use super::{Adapter, Result, State, Value, budget, invalid};
-use acyclic_harness::model::{ReasoningBlock, ReasoningKind, ReasoningOrigin, ReasoningOutcome};
+use acyclic_harness_core::model::{
+    ReasoningBlock, ReasoningKind, ReasoningOrigin, ReasoningOutcome,
+};
 use std::mem::size_of;
 
 pub(super) struct Thinking {

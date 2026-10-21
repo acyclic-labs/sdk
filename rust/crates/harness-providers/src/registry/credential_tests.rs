@@ -233,7 +233,7 @@ fn decode_failure_names_its_provider_and_is_observed_only_at_snapshot_time() {
             }
             _ => registry.resolve("openai/gpt-5").err().unwrap(),
         };
-        assert!(matches!(error, acyclic_harness::Error::Invalid(_)));
+        assert!(matches!(error, acyclic_harness_core::Error::Invalid(_)));
         assert_eq!(
             error.to_string(),
             "invalid request: provider openai: cannot decode keychain credential"

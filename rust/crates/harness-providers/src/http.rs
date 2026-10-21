@@ -1,4 +1,4 @@
-use acyclic_harness::Result;
+use acyclic_harness_core::Result;
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream, ProviderPlatform};
 use bytes::Bytes;
 #[cfg(not(target_arch = "wasm32"))]
@@ -73,10 +73,10 @@ pub trait HttpTransport: ProviderPlatform {
         &self,
         _: std::time::Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_harness::NativeFutureBundle<'static, ()>> {
+    ) -> Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
         work.remaining()?;
-        Err(acyclic_harness::Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Unsupported,
+        Err(acyclic_harness_core::Error::NativeBoundary {
+            code: acyclic_harness_core::wire::ErrorCode::Unsupported,
             reason: "HTTP transport has no native timer",
         })
     }
@@ -92,10 +92,10 @@ pub trait HttpTransport: ProviderPlatform {
         &'a self,
         _: HttpRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_harness::NativeFutureBundle<'a, HttpResponse>> {
+    ) -> Result<acyclic_harness_core::NativeFutureBundle<'a, HttpResponse>> {
         work.remaining()?;
-        Err(acyclic_harness::Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Unsupported,
+        Err(acyclic_harness_core::Error::NativeBoundary {
+            code: acyclic_harness_core::wire::ErrorCode::Unsupported,
             reason: "HTTP transport has no native producer",
         })
     }
@@ -184,8 +184,8 @@ impl ReqwestTransport {
 /// Classifies a send or body error by its source chain, keeping only the root cause's text: the
 /// outer layers name the URL, which can carry credentials.
 #[cfg(not(target_arch = "wasm32"))]
-fn reqwest_failure(native: bool, error: &reqwest::Error) -> acyclic_harness::Error {
-    use acyclic_harness::ModelTransportFailure;
+fn reqwest_failure(native: bool, error: &reqwest::Error) -> acyclic_harness_core::Error {
+    use acyclic_harness_core::ModelTransportFailure;
     let mut root: &(dyn std::error::Error + 'static) = error;
     let mut tls = false;
     loop {
@@ -238,8 +238,8 @@ impl HttpTransport for ReqwestTransport {
         &self,
         duration: std::time::Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_harness::NativeFutureBundle<'static, ()>> {
-        acyclic_harness::NativeFutureBundle::new(work, move || async move {
+    ) -> Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
+        acyclic_harness_core::NativeFutureBundle::new(work, move || async move {
             tokio::time::sleep(duration).await;
             Ok(())
         })
@@ -256,7 +256,7 @@ impl HttpTransport for ReqwestTransport {
         &'a self,
         request: HttpRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_harness::NativeFutureBundle<'a, HttpResponse>> {
-        acyclic_harness::NativeFutureBundle::new(work, || self.exchange(request, Some(work)))
+    ) -> Result<acyclic_harness_core::NativeFutureBundle<'a, HttpResponse>> {
+        acyclic_harness_core::NativeFutureBundle::new(work, || self.exchange(request, Some(work)))
     }
 }

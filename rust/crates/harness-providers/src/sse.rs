@@ -1,5 +1,5 @@
 use crate::invalid;
-use acyclic_harness::Result;
+use acyclic_harness_core::Result;
 use acyclic_stream::BoxProviderStream;
 use bytes::Bytes;
 use futures::{Stream, StreamExt as _};
@@ -21,25 +21,25 @@ pub(crate) struct Decoder {
 }
 
 impl Decoder {
-    fn failure(&self, reason: &'static str) -> acyclic_harness::Error {
+    fn failure(&self, reason: &'static str) -> acyclic_harness_core::Error {
         #[cfg(not(target_arch = "wasm32"))]
         if self.custody.is_some() {
-            return acyclic_harness::Error::NativeBoundary {
-                code: acyclic_harness::wire::ErrorCode::Invalid,
+            return acyclic_harness_core::Error::NativeBoundary {
+                code: acyclic_harness_core::wire::ErrorCode::Invalid,
                 reason,
             };
         }
         invalid(reason)
     }
     /// The body ended inside an event: the connection was cut off, not the stream malformed.
-    fn truncated(&self) -> acyclic_harness::Error {
+    fn truncated(&self) -> acyclic_harness_core::Error {
         #[cfg(not(target_arch = "wasm32"))]
         let native = self.custody.is_some();
         #[cfg(target_arch = "wasm32")]
         let native = false;
         crate::transport_failure(
             native,
-            acyclic_harness::ModelTransportFailure::Interrupted,
+            acyclic_harness_core::ModelTransportFailure::Interrupted,
             "truncated SSE event",
         )
     }

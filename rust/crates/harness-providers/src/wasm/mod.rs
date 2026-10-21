@@ -9,7 +9,7 @@ use crate::{
     AlloySpec, AlloyTurn, BrowserTransport, Credentials, ModelFeatures, ProviderSpec, Registry,
     ResolvedAlloy, ResolvedModel,
 };
-use acyclic_harness::{
+use acyclic_harness_core::{
     conversation::Limits,
     model::{Model, ModelDispatch, ModelProvider, PreparedModelRequest},
 };
@@ -124,7 +124,7 @@ impl WasmProviderRegistry {
     ) -> Result<WasmModelProvider, JsValue> {
         let options = match options {
             None => serde_json::json!({}),
-            Some(options) => acyclic_harness::deserialize_json_value(
+            Some(options) => acyclic_harness_core::deserialize_json_value(
                 serde_wasm_bindgen::Deserializer::from(options),
             )
             .map_err(error)?,
@@ -183,7 +183,7 @@ impl WasmModelAlloy {
         ordinal: u64,
         role: &str,
     ) -> Result<WasmModelProvider, JsValue> {
-        let operation_id = acyclic_harness::OperationId::parse(operation_id).map_err(error)?;
+        let operation_id = acyclic_harness_core::OperationId::parse(operation_id).map_err(error)?;
         Ok(WasmModelProvider {
             provider: self
                 .alloy
@@ -208,7 +208,7 @@ pub struct WasmModelProvider {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Dispatch {
-    operation_id: acyclic_harness::OperationId,
+    operation_id: acyclic_harness_core::OperationId,
     step: u32,
 }
 

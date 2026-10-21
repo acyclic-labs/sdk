@@ -1,6 +1,6 @@
 use super::*;
 use crate::{AlloySelection, ModelSpec};
-use acyclic_harness::context::ModelContextCapacity;
+use acyclic_harness_core::context::ModelContextCapacity;
 use proptest::{
     prelude::*,
     test_runner::{Config, RngSeed, TestRunner},
@@ -78,7 +78,7 @@ fn parity(
     let browser = browser
         .resolve_alloy(to_js(&spec).unwrap(), to_js(&required).unwrap())
         .unwrap();
-    let operation_id = acyclic_harness::OperationId::from_bytes(operation);
+    let operation_id = acyclic_harness_core::OperationId::from_bytes(operation);
     let role = if role { "worker" } else { "other" };
     let turn = AlloyTurn {
         operation_id,

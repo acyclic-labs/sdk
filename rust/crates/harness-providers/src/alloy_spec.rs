@@ -1,5 +1,5 @@
 use crate::invalid;
-use acyclic_harness::{OperationId, Result};
+use acyclic_harness_core::{OperationId, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 

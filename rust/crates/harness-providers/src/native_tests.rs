@@ -1,6 +1,6 @@
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-use acyclic_harness::NativeFutureBundle;
+use acyclic_harness_core::NativeFutureBundle;
 use std::sync::atomic::{AtomicUsize, Ordering};
 #[path = "native_stock_probe.rs"]
 mod probe;
@@ -39,7 +39,7 @@ impl HttpTransport for Fixture {
         &self,
         _: std::time::Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<acyclic_harness::NativeFutureBundle<'static, ()>> {
+    ) -> acyclic_harness_core::Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
         crate::fixtures::native_delay(std::time::Duration::MAX, work)
     }
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
@@ -233,7 +233,7 @@ async fn native_protocol_errors_keep_diagnostic_custody_and_reject_before_http_w
             .expect("error event")
             .expect_err("invalid protocol");
         assert!(
-            matches!(&error, Error::ModelDiagnostic { code: acyclic_harness::wire::ErrorCode::Invalid, custody, .. }
+            matches!(&error, Error::ModelDiagnostic { code: acyclic_harness_core::wire::ErrorCode::Invalid, custody, .. }
             if custody.work().shares_allocation_context(&work))
         );
         drop(error);

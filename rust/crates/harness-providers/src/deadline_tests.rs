@@ -2,7 +2,7 @@
 //! total deadline, a silent body (before or after output) at the idle deadline, and a body that
 //! keeps both completes untouched. The unguarded body is the negative control: it stays pending.
 use super::*;
-use acyclic_harness::ModelTransportFailure;
+use acyclic_harness_core::ModelTransportFailure;
 use futures::TryStreamExt as _;
 use proptest::prelude::*;
 
@@ -52,8 +52,8 @@ impl HttpTransport for Script {
         &self,
         wait: Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_harness::NativeFutureBundle<'static, ()>> {
-        acyclic_harness::NativeFutureBundle::new(work, move || async move {
+    ) -> Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
+        acyclic_harness_core::NativeFutureBundle::new(work, move || async move {
             tokio::time::sleep(wait).await;
             Ok(())
         })
@@ -62,8 +62,8 @@ impl HttpTransport for Script {
         &'a self,
         request: HttpRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_harness::NativeFutureBundle<'a, HttpResponse>> {
-        acyclic_harness::NativeFutureBundle::new(work, || async move {
+    ) -> Result<acyclic_harness_core::NativeFutureBundle<'a, HttpResponse>> {
+        acyclic_harness_core::NativeFutureBundle::new(work, || async move {
             let response = self.send(request).await?;
             HttpResponse::with_native_body(response.status, response.body, work)
         })

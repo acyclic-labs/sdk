@@ -1,6 +1,6 @@
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkCounters};
-use acyclic_harness::{Error, ModelTransportFailure, NativeFutureBundle, wire::ErrorCode};
+use acyclic_harness_core::{Error, ModelTransportFailure, NativeFutureBundle, wire::ErrorCode};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn work() -> NativeMaterializationWork {

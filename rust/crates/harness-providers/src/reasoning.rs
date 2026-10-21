@@ -1,4 +1,4 @@
-use acyclic_harness::model::{ReasoningBlock, ReasoningOrigin, ReasoningOutcome};
+use acyclic_harness_core::model::{ReasoningBlock, ReasoningOrigin, ReasoningOutcome};
 
 /// Request-local decision; the canonical block and its bytes remain unchanged.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

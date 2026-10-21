@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_harness::model::{ModelContentPart, ToolCall, ToolResultContent};
+use acyclic_harness_core::model::{ModelContentPart, ToolCall, ToolResultContent};
 use proptest::prelude::*;
 
 proptest! {
@@ -10,7 +10,7 @@ proptest! {
         let (provider, _) = provider(Adapter::Chat, 200);
         let (initial, _) = request(&provider).unwrap();
         let mut input = initial.request().clone();
-        input.tools.push(acyclic_harness::tool::ToolDefinition {
+        input.tools.push(acyclic_harness_core::tool::ToolDefinition {
             name: "echo".into(), revision: "1".into(), description: "Echo".into(),
             input_schema: json!({"type":"object"}), output_schema: json!({}), projection_schema: json!({}),
         });

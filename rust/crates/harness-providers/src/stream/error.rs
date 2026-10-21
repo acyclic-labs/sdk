@@ -1,5 +1,5 @@
 use super::{Adapter, Value, invalid};
-use acyclic_harness::Error;
+use acyclic_harness_core::Error;
 
 // Only recognized protocol discriminants affect classification. Remote messages,
 // headers and unknown codes never enter the returned diagnostic.

@@ -65,7 +65,10 @@ fn a_missing_counter_never_falls_back_to_an_estimate_or_dispatch() -> Result<()>
     Arc::make_mut(&mut provider.config).token_counter = None;
     let (request, _) = request(&provider)?;
     let error = futures::executor::block_on(provider.count_tokens(&request)).unwrap_err();
-    assert_eq!(error.code(), acyclic_harness::wire::ErrorCode::Unsupported);
+    assert_eq!(
+        error.code(),
+        acyclic_harness_core::wire::ErrorCode::Unsupported
+    );
     assert!(script.sent.lock().unwrap().is_empty());
     Ok(())
 }
@@ -100,12 +103,12 @@ impl HttpTransport for CountResponse {
 #[tokio::test]
 async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<()> {
     for (status, code) in [
-        (401, acyclic_harness::wire::ErrorCode::Unauthorized),
-        (403, acyclic_harness::wire::ErrorCode::Unauthorized),
-        (408, acyclic_harness::wire::ErrorCode::Unavailable),
-        (429, acyclic_harness::wire::ErrorCode::Unavailable),
-        (503, acyclic_harness::wire::ErrorCode::Unavailable),
-        (400, acyclic_harness::wire::ErrorCode::Invalid),
+        (401, acyclic_harness_core::wire::ErrorCode::Unauthorized),
+        (403, acyclic_harness_core::wire::ErrorCode::Unauthorized),
+        (408, acyclic_harness_core::wire::ErrorCode::Unavailable),
+        (429, acyclic_harness_core::wire::ErrorCode::Unavailable),
+        (503, acyclic_harness_core::wire::ErrorCode::Unavailable),
+        (400, acyclic_harness_core::wire::ErrorCode::Invalid),
     ] {
         let (mut provider, _) = provider(Adapter::Responses, 200);
         provider.transport = crate::deadline::Bounded::new(
@@ -123,7 +126,7 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
         // Only a refusal carries its bounded body excerpt, as on dispatch.
         assert_eq!(
             error.to_string().contains("fixture-secret"),
-            code == acyclic_harness::wire::ErrorCode::Unavailable
+            code == acyclic_harness_core::wire::ErrorCode::Unavailable
         );
     }
     for body in [
@@ -192,8 +195,8 @@ proptest::proptest! {
                     let body: acyclic_stream::BoxProviderStream<'static, Result<Bytes>> = if attempt < self.failures {
                         let failure = if self.definitive { invalid("malformed count") } else {
                             crate::transport_failure(false, if self.timeout {
-                                acyclic_harness::ModelTransportFailure::Timeout
-                            } else { acyclic_harness::ModelTransportFailure::Interrupted }, "count body failed")
+                                acyclic_harness_core::ModelTransportFailure::Timeout
+                            } else { acyclic_harness_core::ModelTransportFailure::Interrupted }, "count body failed")
                         };
                         Box::pin(futures::stream::iter(self.partial.then(|| Ok(Bytes::from_static(b"{\"input_tokens\":"))))
                             .chain(futures::stream::once(async { Err(failure) })))

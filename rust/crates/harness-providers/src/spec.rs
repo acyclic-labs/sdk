@@ -81,7 +81,7 @@ impl TimeoutSpec {
         *self == Self::DEFAULT
     }
     /// Rejects a zero deadline, which would fail every pending exchange.
-    pub(crate) fn validate(self) -> acyclic_harness::Result<()> {
+    pub(crate) fn validate(self) -> acyclic_harness_core::Result<()> {
         if self.idle_ms == 0 || self.total_ms == 0 {
             return Err(crate::invalid("provider timeouts must be positive"));
         }

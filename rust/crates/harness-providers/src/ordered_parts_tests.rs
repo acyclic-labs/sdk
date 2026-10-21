@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_harness::model::{ModelContentPart, ToolCall};
+use acyclic_harness_core::model::{ModelContentPart, ToolCall};
 use proptest::prelude::*;
 
 fn labels(adapter: Adapter, body: &Value) -> Vec<String> {

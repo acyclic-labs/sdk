@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_harness::model::ReasoningKind;
+use acyclic_harness_core::model::ReasoningKind;
 use proptest::prelude::*;
 
 const FAMILIES: [&str; 4] = ["anthropic", "responses", "gemini", "chat"];

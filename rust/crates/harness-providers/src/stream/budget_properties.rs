@@ -71,7 +71,7 @@ fn native_growth_charges_only_prefix_relocations() -> Result<()> {
         acyclic_fs::performance::work_budget(100_000, 1_000_000),
         &cancel,
     )
-    .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
+    .map_err(|(cause, work)| acyclic_harness_core::Error::NativeConstruction { cause, work })?;
     let mut budget = Budget::native(4096, &work);
     let mut text = String::new();
     let mut copied = 0;

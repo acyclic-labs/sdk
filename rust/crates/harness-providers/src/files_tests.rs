@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_harness::{
+use acyclic_harness_core::{
     conversation::{
         BoundedContentFuture, ContentIo, ContentResidencyVerifier, FileDescriptor, FileRef,
     },
@@ -37,7 +37,7 @@ proptest! {
                 messages.push(ModelMessage {
                     role: ModelRole::Assistant,
                     content: ModelContent::Part(ModelContentPart::ToolCall(
-                        acyclic_harness::model::ToolCall::new("call".into(), "echo".into(), json!({})),
+                        acyclic_harness_core::model::ToolCall::new("call".into(), "echo".into(), json!({})),
                     )),
                 });
             }
@@ -46,7 +46,7 @@ proptest! {
                 content: ModelContent::Part(part),
             });
             let tools = if tool_result {
-                vec![acyclic_harness::tool::ToolDefinition {
+                vec![acyclic_harness_core::tool::ToolDefinition {
                     name: "echo".into(), revision: "1".into(), description: "Echo".into(),
                     input_schema: json!({"type":"object"}),
                     output_schema: json!({}), projection_schema: json!({}),
@@ -285,14 +285,16 @@ async fn invalid_file_policies_lengths_utf8_and_digests_fail_before_http() -> Re
         ),
         (
             file(b"ok", "image/png")?,
-            FileProjectionPolicy::Native(Box::new(acyclic_harness::model::NativeMediaPolicy {
-                intent: acyclic_harness::model::NativeMediaIntent::Image {
-                    detail: acyclic_harness::model::ImageDetail::Auto,
+            FileProjectionPolicy::Native(Box::new(
+                acyclic_harness_core::model::NativeMediaPolicy {
+                    intent: acyclic_harness_core::model::NativeMediaIntent::Image {
+                        detail: acyclic_harness_core::model::ImageDetail::Auto,
+                    },
+                    maximum_bytes: 4,
+                    maximum_work: 4,
+                    configuration: None,
                 },
-                maximum_bytes: 4,
-                maximum_work: 4,
-                configuration: None,
-            })),
+            )),
         ),
     ] {
         let prepared = with_parts(
@@ -341,7 +343,7 @@ async fn invalid_file_policies_lengths_utf8_and_digests_fail_before_http() -> Re
             }],
         )?;
         let dispatch = ModelDispatch {
-            operation_id: acyclic_harness::OperationId::new(),
+            operation_id: acyclic_harness_core::OperationId::new(),
             step: 0,
             request_digest: prepared.request_digest(),
         };

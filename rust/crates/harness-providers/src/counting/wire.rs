@@ -1,5 +1,5 @@
 use crate::{Adapter, invalid};
-use acyclic_harness::Result;
+use acyclic_harness_core::Result;
 use serde::{Deserialize, Serialize};
 
 /// Declarative counting endpoint on the provider's own origin.
@@ -184,7 +184,7 @@ pub(crate) fn response(bytes: &[u8], spec: &TokenCounterSpec) -> Result<u64> {
     .map_err(|_| invalid("invalid token count response"))?;
     reported
         .checked_add(u64::from(spec.framing_tokens))
-        .filter(|count| *count <= acyclic_harness::conversation::MAX_EXACT_JS_INTEGER)
+        .filter(|count| *count <= acyclic_harness_core::conversation::MAX_EXACT_JS_INTEGER)
         .ok_or_else(|| invalid("token count exceeds portable arithmetic"))
 }
 

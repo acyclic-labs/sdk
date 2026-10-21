@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_harness::{
+use acyclic_harness_core::{
     OperationId,
     model::{ModelContentPart, ToolResultContent},
 };
@@ -305,7 +305,7 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
         let request = ModelRequest {
             model: provider.model().clone(),
             messages: history.clone(),
-            tools: vec![acyclic_harness::tool::ToolDefinition {
+            tools: vec![acyclic_harness_core::tool::ToolDefinition {
                 name: "echo".into(),
                 revision: "1".into(),
                 description: "echo".into(),

@@ -1,5 +1,5 @@
 use crate::{HttpRequest, HttpTransport, invalid};
-use acyclic_harness::Result;
+use acyclic_harness_core::Result;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures::StreamExt as _;
 use serde_json::{Value, json};
@@ -32,7 +32,7 @@ pub struct CodexLogin {
 enum RefreshFailure {
     /// Preserve static native causes as the same error, without rendering or allocating them.
     Boundary {
-        code: acyclic_harness::wire::ErrorCode,
+        code: acyclic_harness_core::wire::ErrorCode,
         reason: &'static str,
     },
     Diagnostic(RefreshDiagnostic),
@@ -50,18 +50,18 @@ enum RefreshDiagnosticKind {
     Invalid,
     Unauthorized,
     Storage,
-    Transport(acyclic_harness::ModelTransportFailure),
+    Transport(acyclic_harness_core::ModelTransportFailure),
 }
 
 impl RefreshFailure {
-    fn from_error(error: &acyclic_harness::Error) -> Option<Self> {
-        use acyclic_harness::Error;
+    fn from_error(error: &acyclic_harness_core::Error) -> Option<Self> {
+        use acyclic_harness_core::Error;
         if !matches!(
             error.code(),
-            acyclic_harness::wire::ErrorCode::Unauthorized
-                | acyclic_harness::wire::ErrorCode::Storage
-                | acyclic_harness::wire::ErrorCode::Unavailable
-                | acyclic_harness::wire::ErrorCode::Invalid
+            acyclic_harness_core::wire::ErrorCode::Unauthorized
+                | acyclic_harness_core::wire::ErrorCode::Storage
+                | acyclic_harness_core::wire::ErrorCode::Unavailable
+                | acyclic_harness_core::wire::ErrorCode::Invalid
         ) {
             return None;
         }
@@ -72,7 +72,7 @@ impl RefreshFailure {
             });
         }
         use RefreshDiagnosticKind as Kind;
-        use acyclic_harness::wire::ErrorCode as Code;
+        use acyclic_harness_core::wire::ErrorCode as Code;
         let (message, kind) = match error {
             Error::ModelUnavailable { failure, excerpt } => {
                 (excerpt.as_str(), Kind::Transport(*failure))
@@ -127,8 +127,8 @@ impl RefreshFailure {
         }
         result
     }
-    fn error(self, io: &mut CredentialIo<'_>) -> Result<acyclic_harness::Error> {
-        use acyclic_harness::Error;
+    fn error(self, io: &mut CredentialIo<'_>) -> Result<acyclic_harness_core::Error> {
+        use acyclic_harness_core::Error;
         let diagnostic = match self {
             Self::Boundary { code, reason } => return Ok(Error::NativeBoundary { code, reason }),
             Self::Diagnostic(diagnostic) => diagnostic,
@@ -265,7 +265,7 @@ impl CodexLogin {
                 }
                 return RefreshFailure::share(
                     Err(if matches!(response.status, 400 | 401 | 403) {
-                        acyclic_harness::Error::Unauthorized(format!(
+                        acyclic_harness_core::Error::Unauthorized(format!(
                             "Codex refresh HTTP status {}; sign in with the Codex CLI again",
                             response.status
                         ))
@@ -306,7 +306,7 @@ impl CodexLogin {
             .as_str()
             .map(|account| blake3::hash(account.as_bytes()));
         if self.account.get_or_init(|| current) != &current {
-            return Err(acyclic_harness::Error::Unauthorized(
+            return Err(acyclic_harness_core::Error::Unauthorized(
                 "Codex login account changed; resolve the model again".into(),
             ));
         }
@@ -529,7 +529,7 @@ fn persist_with(
         stage(&mut file, &auth, io)?;
         observed = bytes;
         if read(path, io)? != observed {
-            return Err(acyclic_harness::Error::Storage(
+            return Err(acyclic_harness_core::Error::Storage(
                 "Codex credentials changed during publication; retry".into(),
             ));
         }

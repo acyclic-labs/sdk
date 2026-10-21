@@ -1,5 +1,5 @@
 use crate::{Authentication, Credentials, HttpTransport, ProviderSpec, ResolvedModel, invalid};
-use acyclic_harness::{Result, model::Model};
+use acyclic_harness_core::{Result, model::Model};
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
 mod catalog_update;
@@ -47,7 +47,7 @@ impl Registry {
     /// Binds the owner's bounded content reader used by every adapter.
     pub fn with_content(
         mut self,
-        reader: Arc<dyn acyclic_harness::conversation::ContentResidencyVerifier>,
+        reader: Arc<dyn acyclic_harness_core::conversation::ContentResidencyVerifier>,
         maximum_bytes: u64,
     ) -> Self {
         self.files = crate::files::Files {
@@ -147,7 +147,7 @@ impl Registry {
         #[cfg(not(target_arch = "wasm32"))]
         let local_count = codex_login.is_some();
         if config.token_counter.is_none() && !local_count {
-            return Err(acyclic_harness::Error::Unsupported(
+            return Err(acyclic_harness_core::Error::Unsupported(
                 "configure a verified input token counter for this endpoint".into(),
             ));
         }

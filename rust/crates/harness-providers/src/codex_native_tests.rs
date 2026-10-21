@@ -1,6 +1,6 @@
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkCounters};
-use acyclic_harness::NativeFutureBundle;
+use acyclic_harness_core::NativeFutureBundle;
 use futures::StreamExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -21,7 +21,7 @@ impl HttpTransport for NativeServer {
         &self,
         wait: std::time::Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<acyclic_harness::NativeFutureBundle<'static, ()>> {
+    ) -> acyclic_harness_core::Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
         crate::fixtures::native_delay(wait, work)
     }
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
@@ -92,7 +92,10 @@ async fn native_login_funds_credentials_proactive_refresh_and_unauthorized_recov
         while let Some(event) = stream.next().await {
             let (event, custody) = event?;
             assert!(custody.work().shares_allocation_context(&work));
-            completed |= matches!(event, acyclic_harness::model::ModelEvent::Completed { .. });
+            completed |= matches!(
+                event,
+                acyclic_harness_core::model::ModelEvent::Completed { .. }
+            );
             drop((event, custody));
         }
         assert!(completed);

@@ -29,17 +29,17 @@ pub(crate) use judge::{
 };
 
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
-pub(crate) fn literal(bytes: &[u8]) -> acyclic_harness::Result<Value> {
+pub(crate) fn literal(bytes: &[u8]) -> acyclic_harness_core::Result<Value> {
     literal_at_depth(bytes, 128)
 }
 
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
-fn literal_at_depth(bytes: &[u8], maximum_depth: u32) -> acyclic_harness::Result<Value> {
+fn literal_at_depth(bytes: &[u8], maximum_depth: u32) -> acyclic_harness_core::Result<Value> {
     let raw: &serde_json::value::RawValue =
         serde_json::from_slice(bytes).map_err(|_| crate::invalid("invalid JSON fixture"))?;
-    acyclic_harness::json_value_bounded(
+    acyclic_harness_core::json_value_bounded(
         raw,
-        acyclic_harness::JsonBounds {
+        acyclic_harness_core::JsonBounds {
             maximum_bytes: bytes.len() as u64,
             maximum_items: bytes.len() as u64,
             maximum_depth,

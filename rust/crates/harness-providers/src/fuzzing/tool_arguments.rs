@@ -1,6 +1,6 @@
 //! Tool-call arguments through the real stream against the recording rule.
 use crate::{Adapter, stream};
-use acyclic_harness::{
+use acyclic_harness_core::{
     OperationId,
     model::{ModelDispatch, ModelEvent},
 };
@@ -53,12 +53,11 @@ fn retained_bytes(text: &str, dispatch: ModelDispatch) -> usize {
 }
 
 fn retained_violation(
-    events: &acyclic_harness::Result<Vec<ModelEvent>>,
+    events: &acyclic_harness_core::Result<Vec<ModelEvent>>,
     retained: usize,
     maximum: usize,
 ) -> Option<&'static str> {
-    let rejected =
-        matches!(events, Err(acyclic_harness::Error::Invalid(reason)) if reason == RETAINED_LIMIT);
+    let rejected = matches!(events, Err(acyclic_harness_core::Error::Invalid(reason)) if reason == RETAINED_LIMIT);
     match (retained > maximum, rejected) {
         (true, false) => Some("missing retained-state rejection"),
         (false, true) => Some("unexpected retained-state rejection"),
@@ -94,7 +93,7 @@ pub(super) fn check(input: &[u8], maximum: usize) {
         stream::events(Adapter::Chat, body, maximum, dispatch).try_collect(),
     );
     // Framing precedes parsing and finalization's retained-state admission.
-    let limited = |reason: &str| matches!(&events, Err(acyclic_harness::Error::Invalid(actual)) if actual == reason);
+    let limited = |reason: &str| matches!(&events, Err(acyclic_harness_core::Error::Invalid(actual)) if actual == reason);
     if event.len() > maximum {
         assert!(
             limited("SSE event exceeds configured byte limit"),
@@ -156,7 +155,7 @@ fn depth(value: &serde_json::Value) -> usize {
 }
 
 /// Independent reference for the recording rule, deliberately not
-/// `acyclic_harness::conversation`: no private serde marker key, and every
+/// `acyclic_harness_core::conversation`: no private serde marker key, and every
 /// number round-trips through a JavaScript Number exactly.
 pub(crate) fn portable(value: &serde_json::Value) -> bool {
     const SAFE: u64 = (1 << 53) - 1;
@@ -190,7 +189,7 @@ mod tests {
         text: &str,
         maximum: usize,
         dispatch: ModelDispatch,
-    ) -> acyclic_harness::Result<Vec<ModelEvent>> {
+    ) -> acyclic_harness_core::Result<Vec<ModelEvent>> {
         let mut state = stream::State::new(maximum);
         // These must both succeed: each boundary exercises finalization's
         // additional identity/binding charge, not earlier parse admission.
@@ -314,7 +313,7 @@ mod tests {
             json!({"n":[{"$serde_json::private::Number":"1"}]}),
         ] {
             assert!(!portable(&value), "{value}");
-            assert!(acyclic_harness::conversation::validate_portable_json(&value).is_err());
+            assert!(acyclic_harness_core::conversation::validate_portable_json(&value).is_err());
         }
         for value in [
             json!({"value":9_007_199_254_740_992_u64}),

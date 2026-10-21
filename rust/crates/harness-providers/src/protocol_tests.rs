@@ -1,11 +1,11 @@
 use super::*;
-use acyclic_harness::{
+use acyclic_harness_core::{
     Error,
     model::{ModelContentPart, ToolResultContent},
 };
 use std::collections::VecDeque;
 
-fn total(count: &acyclic_harness::context::ModelTokenCount) -> u32 {
+fn total(count: &acyclic_harness_core::context::ModelTokenCount) -> u32 {
     count.fixed_tokens + count.message_tokens.iter().sum::<u32>()
 }
 
@@ -63,7 +63,7 @@ async fn token_estimates_start_at_two_bytes_and_only_tighten_per_resolved_model(
 
 #[test]
 fn dense_first_request_after_resume_requires_compaction_before_dispatch() -> Result<()> {
-    use acyclic_harness::context::ThresholdCompaction;
+    use acyclic_harness_core::context::ThresholdCompaction;
     for (adapter, _) in fixtures() {
         // A resumed process resolves a fresh model: no previous usage calibration.
         let (provider, script) = provider(adapter, 200);
@@ -139,7 +139,7 @@ async fn http_status_classes_are_distinct_and_refusals_carry_only_a_bounded_exce
                     // Redelivered within the default budget, then a typed refusal.
                     assert_eq!(sent, 1 + usize::from(crate::RetrySpec::DEFAULT.attempts));
                     let Error::ModelUnavailable {
-                        failure: acyclic_harness::ModelTransportFailure::Status(found),
+                        failure: acyclic_harness_core::ModelTransportFailure::Status(found),
                         excerpt,
                     } = &error
                     else {
@@ -183,7 +183,7 @@ async fn interrupted_bodies_are_transient_and_protocol_violations_are_invalid() 
                 matches!(
                     error,
                     Error::ModelUnavailable {
-                        failure: acyclic_harness::ModelTransportFailure::Interrupted,
+                        failure: acyclic_harness_core::ModelTransportFailure::Interrupted,
                         ..
                     }
                 ),
@@ -364,7 +364,7 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
             .into_iter()
             .find(|event| matches!(event, ModelEvent::ToolCall(_)))
             .ok_or_else(|| invalid("missing tool call"))?;
-        let ModelEvent::ToolCall(acyclic_harness::model::ToolCall {
+        let ModelEvent::ToolCall(acyclic_harness_core::model::ToolCall {
             call_id,
             name,
             arguments,
@@ -377,7 +377,7 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
             assert_eq!(call_id, dispatch.tool_call_id(0));
         }
         let mut next = initial.request().clone();
-        next.tools.push(acyclic_harness::tool::ToolDefinition {
+        next.tools.push(acyclic_harness_core::tool::ToolDefinition {
             name: name.clone(),
             revision: "1".into(),
             description: "echo".into(),
@@ -390,8 +390,12 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
             ModelMessage {
                 role: ModelRole::Assistant,
                 content: ModelContent::Part(ModelContentPart::ToolCall(
-                    acyclic_harness::model::ToolCall::new(call_id.clone(), name.clone(), arguments)
-                        .with_metadata(metadata),
+                    acyclic_harness_core::model::ToolCall::new(
+                        call_id.clone(),
+                        name.clone(),
+                        arguments,
+                    )
+                    .with_metadata(metadata),
                 )),
             },
             ModelMessage {

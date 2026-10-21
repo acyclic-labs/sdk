@@ -1,6 +1,6 @@
 use super::*;
 use crate::{Adapter, fixtures::fixtures};
-use acyclic_harness::model::{ModelContent, ModelMessage, ModelRequest, ModelRole};
+use acyclic_harness_core::model::{ModelContent, ModelMessage, ModelRequest, ModelRole};
 use js_sys::Promise;
 use serde_json::{Value, json};
 use wasm_bindgen_futures::JsFuture;
@@ -269,7 +269,7 @@ async fn accounting_and_dispatch_reject_tampered_requests_without_effects() -> R
 
 #[wasm_bindgen_test]
 async fn browser_reader_is_verified_for_counting_and_generation() -> Result<(), JsValue> {
-    use acyclic_harness::{
+    use acyclic_harness_core::{
         conversation::{FileDescriptor, FileRef},
         model::{FileProjectionPolicy, ModelContentPart},
     };
@@ -367,7 +367,7 @@ async fn counting_aborts_pending_headers_and_releases_the_fetch() -> Result<(), 
 #[wasm_bindgen_test]
 async fn model_arguments_keep_the_exact_portable_boundary_and_reject_larger_values()
 -> Result<(), JsValue> {
-    let maximum = acyclic_harness::conversation::MAX_EXACT_JS_INTEGER;
+    let maximum = acyclic_harness_core::conversation::MAX_EXACT_JS_INTEGER;
     for value in [maximum, maximum + 1, maximum + 2] {
         let data = format!(
             "data: {}\n\ndata: [DONE]\n\n",
@@ -435,9 +435,10 @@ fn model_json_keeps_prototype_and_private_marker_keys_literal() -> Result<(), Js
         js_sys::Object::keys(&js_sys::Object::from(encoded.clone()))
             .includes(&JsValue::from_str("__proto__"), 0)
     );
-    let decoded =
-        acyclic_harness::deserialize_json_value(serde_wasm_bindgen::Deserializer::from(encoded))
-            .map_err(error)?;
+    let decoded = acyclic_harness_core::deserialize_json_value(
+        serde_wasm_bindgen::Deserializer::from(encoded),
+    )
+    .map_err(error)?;
     assert_eq!(decoded, data);
     // Negative control: the default object setter consumes __proto__ as a prototype.
     let legacy = to_js(&data)?;

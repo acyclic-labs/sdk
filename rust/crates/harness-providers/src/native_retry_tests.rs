@@ -1,7 +1,7 @@
 //! Every native retry, for generation and counting, funds its timer on the issued ledger.
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-use acyclic_harness::NativeFutureBundle;
+use acyclic_harness_core::NativeFutureBundle;
 use proptest::prelude::*;
 use std::{
     sync::atomic::{AtomicUsize, Ordering},
@@ -40,7 +40,7 @@ impl HttpTransport for RetryTransport {
         self.native.fetch_add(1, Ordering::SeqCst);
         if self.reject_timer {
             return Err(Error::NativeBoundary {
-                code: acyclic_harness::wire::ErrorCode::Unsupported,
+                code: acyclic_harness_core::wire::ErrorCode::Unsupported,
                 reason: "timer admission refused",
             });
         }
@@ -64,7 +64,7 @@ impl HttpTransport for RetryTransport {
             if attempt < self.failures {
                 return Err(crate::transport_failure(
                     true,
-                    acyclic_harness::ModelTransportFailure::Connect,
+                    acyclic_harness_core::ModelTransportFailure::Connect,
                     "unreachable",
                 ));
             }

@@ -1,5 +1,5 @@
 use crate::*;
-use acyclic_harness::model::ModelProvider as _;
+use acyclic_harness_core::model::ModelProvider as _;
 use acyclic_stream::BoxProviderFuture;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use bytes::Bytes;
@@ -44,7 +44,7 @@ impl HttpTransport for Server {
     fn send(
         &self,
         request: HttpRequest,
-    ) -> BoxProviderFuture<'_, acyclic_harness::Result<HttpResponse>> {
+    ) -> BoxProviderFuture<'_, acyclic_harness_core::Result<HttpResponse>> {
         Box::pin(async move {
             let (status, body) = self.reply(request)?;
             Ok(HttpResponse {
@@ -69,7 +69,7 @@ mod stock;
 
 fn fixture(
     replies: Vec<(u16, String)>,
-) -> acyclic_harness::Result<(tempfile::TempDir, CodexLogin, Arc<Server>, String)> {
+) -> acyclic_harness_core::Result<(tempfile::TempDir, CodexLogin, Arc<Server>, String)> {
     let root = tempfile::tempdir().map_err(|error| invalid(error.to_string()))?;
     let token = format!(
         "header.{}.signature",
@@ -102,7 +102,7 @@ fn fixture(
 
 #[tokio::test]
 async fn cli_unauthorized_recovery_refreshes_then_streams_the_same_prepared_request()
--> acyclic_harness::Result<()> {
+-> acyclic_harness_core::Result<()> {
     let (_root, login, server, initial) = fixture(vec![
         (401, String::new()),
         (200, json!({"access_token":"new-access"}).to_string()),
@@ -168,7 +168,7 @@ async fn cli_unauthorized_recovery_refreshes_then_streams_the_same_prepared_requ
 
 #[tokio::test]
 async fn api_key_precedence_uses_public_responses_without_reading_cli_login()
--> acyclic_harness::Result<()> {
+-> acyclic_harness_core::Result<()> {
     let (root, _login, server, _) = fixture(vec![(200, RESPONSE.into())])?;
     let login = CodexLogin::from_path(root.path().join("absent-auth.json"));
     let provider = Registry::with_transport(
@@ -195,7 +195,7 @@ async fn api_key_precedence_uses_public_responses_without_reading_cli_login()
 }
 
 #[tokio::test]
-async fn a_second_unauthorized_response_is_terminal() -> acyclic_harness::Result<()> {
+async fn a_second_unauthorized_response_is_terminal() -> acyclic_harness_core::Result<()> {
     let (_root, login, server, _) = fixture(vec![
         (401, String::new()),
         (200, json!({"access_token":"new-access"}).to_string()),
@@ -224,7 +224,7 @@ async fn a_second_unauthorized_response_is_terminal() -> acyclic_harness::Result
 }
 
 #[test]
-fn cli_credentials_cannot_be_forwarded_to_custom_endpoints() -> acyclic_harness::Result<()> {
+fn cli_credentials_cannot_be_forwarded_to_custom_endpoints() -> acyclic_harness_core::Result<()> {
     let (_root, login, server, _) = fixture(Vec::new())?;
     let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), server)
         .with_codex_login(login);
@@ -239,7 +239,7 @@ fn cli_credentials_cannot_be_forwarded_to_custom_endpoints() -> acyclic_harness:
                 "gpt-5".into(),
                 ModelSpec {
                     max_context_tokens: None,
-                    capacity: acyclic_harness::context::ModelContextCapacity {
+                    capacity: acyclic_harness_core::context::ModelContextCapacity {
                         context_tokens: 8192,
                         output_tokens: Some(1024),
                     },
@@ -264,7 +264,7 @@ fn cli_credentials_cannot_be_forwarded_to_custom_endpoints() -> acyclic_harness:
 
 #[tokio::test]
 async fn resolving_again_accepts_a_new_cli_account_without_switching_an_active_model()
--> acyclic_harness::Result<()> {
+-> acyclic_harness_core::Result<()> {
     let (root, login, server, _) = fixture(vec![(200, RESPONSE.into()), (200, RESPONSE.into())])?;
     let registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), server.clone())
         .with_codex_login(login);
@@ -304,7 +304,7 @@ async fn resolving_again_accepts_a_new_cli_account_without_switching_an_active_m
 
 #[test]
 fn codex_authentication_is_catalog_policy_independent_of_provider_ids()
--> acyclic_harness::Result<()> {
+-> acyclic_harness_core::Result<()> {
     let (_root, login, server, _) = fixture(Vec::new())?;
     let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), server)
         .with_codex_login(login);

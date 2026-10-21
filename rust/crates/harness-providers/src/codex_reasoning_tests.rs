@@ -1,6 +1,6 @@
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-use acyclic_harness::model::{
+use acyclic_harness_core::model::{
     ModelContent, ModelContentPart, ModelEvent, ModelMessage, ModelRole, PreparedModelRequest,
     ToolResultContent,
 };
@@ -55,21 +55,23 @@ async fn encrypted_reasoning_survives_login_refresh_and_durable_tool_followup() 
                     .resolve("openai/gpt-5")?;
             let (prepared, initial) = crate::tests::request(&provider)?;
             let mut request = prepared.request().clone();
-            request.tools.push(acyclic_harness::tool::ToolDefinition {
-                name: "echo".into(),
-                revision: "1".into(),
-                description: "Echo".into(),
-                input_schema: json!({"type":"object"}),
-                output_schema: json!({"type":"object"}),
-                projection_schema: json!({"type":"object"}),
-            });
+            request
+                .tools
+                .push(acyclic_harness_core::tool::ToolDefinition {
+                    name: "echo".into(),
+                    revision: "1".into(),
+                    description: "Echo".into(),
+                    input_schema: json!({"type":"object"}),
+                    output_schema: json!({"type":"object"}),
+                    projection_schema: json!({"type":"object"}),
+                });
             for step in 0..2 {
                 let prepared = PreparedModelRequest::prepare(
                     request.clone(),
-                    acyclic_harness::conversation::Limits::default(),
+                    acyclic_harness_core::conversation::Limits::default(),
                     None,
                 )?;
-                let dispatch = acyclic_harness::model::ModelDispatch {
+                let dispatch = acyclic_harness_core::model::ModelDispatch {
                     step,
                     request_digest: prepared.request_digest(),
                     ..initial

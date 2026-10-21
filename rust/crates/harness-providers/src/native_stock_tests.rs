@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_harness::{
+use acyclic_harness_core::{
     Admission, AgentId, Capabilities, OperationId,
     context::{CompactionPolicy, ContextManifest},
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
@@ -181,7 +181,7 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
         )
         .await?;
         assert!(
-            matches!(outcome, acyclic_harness::Outcome::Succeeded(_)),
+            matches!(outcome, acyclic_harness_core::Outcome::Succeeded(_)),
             "{adapter:?}: {outcome:?}"
         );
         assert_eq!(transport.sent.load(Ordering::SeqCst), 1, "{adapter:?}");
@@ -194,7 +194,7 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
     adapter: Adapter,
     policy: CompactionPolicy,
     filesystem: acyclic_fs::Fs<acyclic_fs::MemoryAuthorityBackend, O>,
-) -> Result<acyclic_harness::Outcome<serde_json::Value>> {
+) -> Result<acyclic_harness_core::Outcome<serde_json::Value>> {
     let model = provider.model().clone();
     let stages = Arc::new(probe::Stages::default());
     let provider = Arc::new(probe::Probe {
@@ -376,7 +376,7 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
     let TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task }) = attempt else {
         panic!("{adapter:?}: the stock turn did not reach a terminal outcome");
     };
-    use acyclic_harness::runtime::TaskStateProvider as _;
+    use acyclic_harness_core::runtime::TaskStateProvider as _;
     let outcome = runtime
         .task_host()
         .outcome(task)

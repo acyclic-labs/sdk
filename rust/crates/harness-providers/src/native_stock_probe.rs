@@ -3,7 +3,7 @@
 // retain the stock request, cancellation and original allocation ledger.
 use super::*;
 use acyclic_fs::NativeAllocation;
-use acyclic_harness::{
+use acyclic_harness_core::{
     NativeFutureBundle,
     context::{ModelContextCapacity, ModelTokenCount},
     model::NativeModelStream,

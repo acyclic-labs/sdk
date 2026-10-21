@@ -3,7 +3,7 @@ use crate::{
     Adapter, projection,
     tests::{provider, request},
 };
-use acyclic_harness::model::{
+use acyclic_harness_core::model::{
     ModelContent, ModelContentPart, ModelMessage, ModelRequest, ModelRole, ToolCall,
     ToolResultContent,
 };
@@ -14,14 +14,16 @@ fn history(input: &[String], adapter: Adapter) -> (crate::ResolvedModel, ModelRe
     let (provider, _) = provider(adapter, 200);
     let (prepared, _) = request(&provider).unwrap();
     let mut request = prepared.request().clone();
-    request.tools.push(acyclic_harness::tool::ToolDefinition {
-        name: "echo".into(),
-        revision: "1".into(),
-        description: "Echo".into(),
-        input_schema: json!({"type":"object"}),
-        output_schema: json!({}),
-        projection_schema: json!({}),
-    });
+    request
+        .tools
+        .push(acyclic_harness_core::tool::ToolDefinition {
+            name: "echo".into(),
+            revision: "1".into(),
+            description: "Echo".into(),
+            input_schema: json!({"type":"object"}),
+            output_schema: json!({}),
+            projection_schema: json!({}),
+        });
     if input.is_empty() {
         return (provider, request);
     }
@@ -199,8 +201,8 @@ fn native_replay_restores_the_original_binding_for_call_and_result() {
 fn sampled(
     adapter: Adapter,
     id: &str,
-    dispatch: acyclic_harness::model::ModelDispatch,
-) -> acyclic_harness::model::ToolCall {
+    dispatch: acyclic_harness_core::model::ModelDispatch,
+) -> acyclic_harness_core::model::ToolCall {
     let call = match adapter {
         Adapter::Chat => format!(
             "data: {}\n\ndata: [DONE]\n\n",
@@ -229,11 +231,12 @@ fn sampled(
     )
     .unwrap();
     let encoded = serde_json::to_vec(&events).unwrap();
-    let replay: Vec<acyclic_harness::model::ModelEvent> = serde_json::from_slice(&encoded).unwrap();
+    let replay: Vec<acyclic_harness_core::model::ModelEvent> =
+        serde_json::from_slice(&encoded).unwrap();
     replay
         .into_iter()
         .find_map(|event| match event {
-            acyclic_harness::model::ModelEvent::ToolCall(call) => Some(call),
+            acyclic_harness_core::model::ModelEvent::ToolCall(call) => Some(call),
             _ => None,
         })
         .unwrap()
@@ -246,7 +249,7 @@ proptest! {
         operation in any::<[u8;16]>(), step in any::<u32>(), first in 0usize..4,
         same_provider in any::<bool>(), same_operation in any::<bool>(),
     ) {
-        use acyclic_harness::{OperationId, model::{ModelDispatch, PreparedModelRequest}, conversation::Limits};
+        use acyclic_harness_core::{OperationId, model::{ModelDispatch, PreparedModelRequest}, conversation::Limits};
         let adapters=[Adapter::Anthropic,Adapter::Responses,Adapter::Chat,Adapter::Gemini];
         let first_adapter=adapters[first];
         let next_adapter=adapters[if same_provider {first} else {(first+1)%4}];

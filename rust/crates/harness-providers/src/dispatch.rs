@@ -1,7 +1,7 @@
 use crate::{
     Adapter, HttpRequest, HttpResponse, HttpTransport as _, ResolvedModel, invalid, projection,
 };
-use acyclic_harness::{
+use acyclic_harness_core::{
     Result,
     model::{ModelDispatch, ModelEvent, PreparedModelRequest},
 };
@@ -130,8 +130,8 @@ pub(crate) async fn encode(
     provider: &ResolvedModel,
     request: &PreparedModelRequest,
     names: &crate::tool_names::Names<'_>,
-    io: Option<&acyclic_harness::conversation::ContentIo>,
-    origin: &acyclic_harness::model::ReasoningOrigin,
+    io: Option<&acyclic_harness_core::conversation::ContentIo>,
+    origin: &acyclic_harness_core::model::ReasoningOrigin,
 ) -> Result<Vec<u8>> {
     let mut files = crate::files::resolve(&provider.files, request.request(), io).await?;
     let body = projection::body_named(provider, request.request(), names, origin, &mut files)?;
@@ -218,8 +218,8 @@ pub(crate) struct Recovery {
 }
 #[cfg(not(target_arch = "wasm32"))]
 impl Recovery {
-    pub(crate) fn retry(&mut self, error: &acyclic_harness::Error) -> bool {
-        if error.code() != acyclic_harness::wire::ErrorCode::Unauthorized
+    pub(crate) fn retry(&mut self, error: &acyclic_harness_core::Error) -> bool {
+        if error.code() != acyclic_harness_core::wire::ErrorCode::Unauthorized
             || self.output
             || self.retried
         {

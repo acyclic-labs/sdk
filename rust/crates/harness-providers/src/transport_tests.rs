@@ -1,7 +1,7 @@
 //! Real-socket transport failures: each class is typed, redelivered only when retryable and
 //! before output, and counted exactly.
 use super::*;
-use acyclic_harness::ModelTransportFailure;
+use acyclic_harness_core::ModelTransportFailure;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -152,7 +152,10 @@ async fn unreachable_host_is_a_typed_connect_failure_after_bounded_redelivery() 
         Some(ModelTransportFailure::Connect),
         "{error}"
     );
-    assert_eq!(error.code(), acyclic_harness::wire::ErrorCode::Unavailable);
+    assert_eq!(
+        error.code(),
+        acyclic_harness_core::wire::ErrorCode::Unavailable
+    );
     assert!(!error.to_string().contains("127.0.0.1"), "{error}");
     assert!(!error.to_string().contains("scripted-key"));
     assert_eq!(transport.sent.load(Ordering::SeqCst), ATTEMPTS);
@@ -228,7 +231,7 @@ async fn tls_failure_is_typed_and_never_redelivered() -> Result<()> {
     let (provider, transport) = model(&format!("https://127.0.0.1:{port}/v1"))?;
     let error = generate(&provider).await.expect_err("not TLS");
     assert_eq!(failure(&error), Some(ModelTransportFailure::Tls), "{error}");
-    assert_eq!(error.code(), acyclic_harness::wire::ErrorCode::Invalid);
+    assert_eq!(error.code(), acyclic_harness_core::wire::ErrorCode::Invalid);
     assert_eq!(transport.sent.load(Ordering::SeqCst), 1);
     assert_eq!(accepted.load(Ordering::SeqCst), 1);
     Ok(())

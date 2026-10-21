@@ -1,6 +1,6 @@
 use super::*;
 use acyclic_fs::NativeMaterializationWork;
-use acyclic_harness::NativeFutureBundle;
+use acyclic_harness_core::NativeFutureBundle;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Backend {
@@ -18,7 +18,7 @@ impl HttpTransport for Backend {
         &self,
         wait: std::time::Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<acyclic_harness::NativeFutureBundle<'static, ()>> {
+    ) -> acyclic_harness_core::Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
         crate::fixtures::native_delay(wait, work)
     }
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
@@ -163,8 +163,8 @@ async fn stock(broken: bool) -> Result<()> {
     }
     // This fixture declares an 8192-token context in its catalog. Enable
     // automatic counting with explicit compaction budgets inside that window.
-    let policy = acyclic_harness::context::CompactionPolicy::Threshold(
-        acyclic_harness::context::ThresholdCompaction {
+    let policy = acyclic_harness_core::context::CompactionPolicy::Threshold(
+        acyclic_harness_core::context::ThresholdCompaction {
             response_reserve_tokens: 1024,
             recent_tokens: 2048,
             retention: Default::default(),
@@ -190,14 +190,14 @@ async fn stock(broken: bool) -> Result<()> {
     if broken {
         // The public counter's refusal is the provider's: the task fails without generating.
         assert!(
-            matches!(&result, acyclic_harness::Outcome::Failed { .. }),
+            matches!(&result, acyclic_harness_core::Outcome::Failed { .. }),
             "{result:?}"
         );
         assert_eq!(backend.counts.load(Ordering::SeqCst), 1);
         assert_eq!(backend.generations.load(Ordering::SeqCst), 0);
     } else {
         assert!(
-            matches!(&result, acyclic_harness::Outcome::Succeeded(_)),
+            matches!(&result, acyclic_harness_core::Outcome::Succeeded(_)),
             "{result:?}"
         );
         assert_eq!(backend.counts.load(Ordering::SeqCst), 0);

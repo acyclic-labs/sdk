@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_harness::{
+use acyclic_harness_core::{
     context::ModelContextCapacity,
     conversation::Limits,
     model::{
@@ -100,7 +100,7 @@ async fn all_adapters_parse_fragmented_utf8_tools_reasoning_and_usage() -> Resul
             assert_eq!(
                 *visible[2],
                 ModelEvent::ToolCall(
-                    acyclic_harness::model::ToolCall::new(
+                    acyclic_harness_core::model::ToolCall::new(
                         dispatch.tool_call_id(0),
                         "echo".into(),
                         json!({"value":1})
@@ -352,7 +352,7 @@ pub(super) fn request(provider: &ResolvedModel) -> Result<(PreparedModelRequest,
         None,
     )?;
     let dispatch = ModelDispatch {
-        operation_id: acyclic_harness::OperationId::new(),
+        operation_id: acyclic_harness_core::OperationId::new(),
         step: 0,
         request_digest: prepared.request_digest(),
     };
@@ -396,11 +396,11 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
                 assert_eq!(blocks[0].text, None);
                 assert_eq!(
                     blocks[0].kind,
-                    acyclic_harness::model::ReasoningKind::Opaque
+                    acyclic_harness_core::model::ReasoningKind::Opaque
                 );
                 assert_eq!(
                     blocks[0].outcome,
-                    acyclic_harness::model::ReasoningOutcome::SuppressedDisplay
+                    acyclic_harness_core::model::ReasoningOutcome::SuppressedDisplay
                 );
                 assert_eq!(json(&blocks[0].continuity)?, json!({"text":"hé"}));
                 blocks[1]
@@ -532,7 +532,7 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
 
 #[tokio::test]
 async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol() -> Result<()> {
-    use acyclic_harness::model::{ModelContentPart, ToolResultContent};
+    use acyclic_harness_core::model::{ModelContentPart, ToolResultContent};
     for (adapter, content, expected) in fixtures().into_iter().flat_map(|(adapter, _)| {
         [
             (
@@ -551,7 +551,7 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
         .map(move |(content, expected)| (adapter, content, expected))
     }) {
         let (provider, script) = provider(adapter, 200);
-        let tool = acyclic_harness::tool::ToolDefinition {
+        let tool = acyclic_harness_core::tool::ToolDefinition {
             name: "echo".into(),
             revision: "1".into(),
             description: "Echo text".into(),
@@ -572,7 +572,7 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
                 ModelMessage {
                     role: ModelRole::Assistant,
                     content: ModelContent::Part(ModelContentPart::ToolCall(
-                        acyclic_harness::model::ToolCall::new(
+                        acyclic_harness_core::model::ToolCall::new(
                             "call".into(),
                             "echo".into(),
                             json!({"value":1}),
@@ -592,7 +592,7 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
         let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
         let count = provider.count_tokens(&prepared).await?;
         let dispatch = ModelDispatch {
-            operation_id: acyclic_harness::OperationId::new(),
+            operation_id: acyclic_harness_core::OperationId::new(),
             step: 1,
             request_digest: prepared.request_digest(),
         };
@@ -726,7 +726,7 @@ async fn dropping_model_stream_cancels_the_owned_http_body() -> Result<()> {
 
 fn parser_dispatch() -> ModelDispatch {
     ModelDispatch {
-        operation_id: acyclic_harness::OperationId::new(),
+        operation_id: acyclic_harness_core::OperationId::new(),
         step: 0,
         request_digest: [0; 32],
     }

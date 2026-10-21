@@ -1,7 +1,7 @@
 //! Original-ledger admission for the shared wire projections and parsers.
 use crate::{Adapter, HttpTransport as _, ResolvedModel, dispatch, sse, stream};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
-use acyclic_harness::{
+use acyclic_harness_core::{
     Error, NativeFutureBundle, Result,
     model::{ModelDispatch, ModelEvent, ModelProvider, NativeModelStream, PreparedModelRequest},
     wire::ErrorCode,
@@ -39,7 +39,7 @@ async fn encode(
         nodes,
         key.map_or(0, |key| key.len() as u64) + account.map_or(0, |account| account.len() as u64),
     )?;
-    let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+    let io = acyclic_harness_core::filesystem::PreparationIo::from_native_work(work)?;
     let origin = provider.reasoning_origin(key, account);
     let body = diagnostic(
         dispatch::encode(provider, request, names, Some(&io), &origin).await,
@@ -323,7 +323,7 @@ fn parse_response<'a>(
     work: &'a NativeMaterializationWork,
     response: crate::HttpResponse,
     input_bytes: usize,
-    origin: acyclic_harness::model::ReasoningOrigin,
+    origin: acyclic_harness_core::model::ReasoningOrigin,
     origin_custody: NativeAllocation,
 ) -> Result<NativeModelStream<'a>> {
     let maximum = provider.config.max_event_bytes;

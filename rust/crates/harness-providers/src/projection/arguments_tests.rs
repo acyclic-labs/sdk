@@ -5,7 +5,7 @@ use super::*;
 use crate::projection::arguments::{
     ADAPTERS, CODEC, Codec, ENVELOPE, INVARIANTS, Seen, call, decoded, encode, normalization, slot,
 };
-use acyclic_harness::model::{ModelContentPart, ToolCall, ToolResultContent};
+use acyclic_harness_core::model::{ModelContentPart, ToolCall, ToolResultContent};
 use acyclic_test_support::differential::oracle::{Observer, Oracle, Stop};
 use proptest::prelude::*;
 
@@ -461,11 +461,11 @@ fn checked_in_boundary_depth_runs_the_full_codec_fuzz_oracle() {
 #[test]
 fn literal_model_payloads_reject_depth_beyond_the_existing_record_bound() {
     let arguments = (0..129).fold(json!(0), |inner, _| json!([inner]));
-    let event = acyclic_harness::model::ModelEvent::ToolCall(ToolCall::new(
+    let event = acyclic_harness_core::model::ModelEvent::ToolCall(ToolCall::new(
         "call".into(),
         "echo".into(),
         arguments,
     ));
     let value = serde_json::to_value(&event).unwrap();
-    assert!(serde_json::from_value::<acyclic_harness::model::ModelEvent>(value).is_err());
+    assert!(serde_json::from_value::<acyclic_harness_core::model::ModelEvent>(value).is_err());
 }

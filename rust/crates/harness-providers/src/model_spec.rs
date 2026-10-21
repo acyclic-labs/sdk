@@ -1,4 +1,4 @@
-use acyclic_harness::context::ModelContextCapacity;
+use acyclic_harness_core::context::ModelContextCapacity;
 use serde::{Deserialize, Serialize};
 
 /// Features explicitly advertised by a model's catalog entry.

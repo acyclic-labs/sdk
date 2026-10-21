@@ -1,5 +1,5 @@
 use crate::RetrySpec;
-use acyclic_harness::{Error, model::ModelDispatch, wire::ErrorCode};
+use acyclic_harness_core::{Error, model::ModelDispatch, wire::ErrorCode};
 use std::time::Duration;
 
 /// One exchange's redelivery budget. Only a request the endpoint refused before any output is
@@ -100,7 +100,7 @@ pub(crate) fn retry_after_at(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acyclic_harness::OperationId;
+    use acyclic_harness_core::OperationId;
 
     fn dispatch() -> ModelDispatch {
         ModelDispatch {
@@ -111,7 +111,7 @@ mod tests {
     }
     fn unavailable() -> Error {
         Error::ModelUnavailable {
-            failure: acyclic_harness::ModelTransportFailure::Status(503),
+            failure: acyclic_harness_core::ModelTransportFailure::Status(503),
             excerpt: String::new(),
         }
     }
@@ -153,16 +153,16 @@ mod tests {
         // TLS failures meet the same peer again; every other transport class is redelivered.
         assert_eq!(
             fresh.next(
-                &transport(acyclic_harness::ModelTransportFailure::Tls),
+                &transport(acyclic_harness_core::ModelTransportFailure::Tls),
                 None,
                 false
             ),
             None
         );
         for failure in [
-            acyclic_harness::ModelTransportFailure::Connect,
-            acyclic_harness::ModelTransportFailure::Timeout,
-            acyclic_harness::ModelTransportFailure::Interrupted,
+            acyclic_harness_core::ModelTransportFailure::Connect,
+            acyclic_harness_core::ModelTransportFailure::Timeout,
+            acyclic_harness_core::ModelTransportFailure::Interrupted,
         ] {
             let mut each = Redelivery::new(RetrySpec::DEFAULT, dispatch());
             assert!(each.next(&transport(failure), None, false).is_some());

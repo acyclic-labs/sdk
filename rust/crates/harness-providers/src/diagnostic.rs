@@ -39,7 +39,7 @@ pub(super) fn excerpt(cause: impl fmt::Display) -> String {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-    use acyclic_harness::ModelTransportFailure::*;
+    use acyclic_harness_core::ModelTransportFailure::*;
     #[test]
     fn native_failures_never_render_discarded_causes() {
         struct Cause(std::cell::Cell<usize>);
@@ -54,7 +54,7 @@ mod tests {
             let allocated = acyclic_test_support::measure(|| {
                 assert!(matches!(
                     crate::transport_failure(true, failure, &cause),
-                    acyclic_harness::Error::ModelUnavailable { excerpt, .. } if excerpt.is_empty()
+                    acyclic_harness_core::Error::ModelUnavailable { excerpt, .. } if excerpt.is_empty()
                 ));
             });
             assert_eq!(allocated.count_total, 0);

@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_harness::model::{ModelContentPart, ToolResultContent};
+use acyclic_harness_core::model::{ModelContentPart, ToolResultContent};
 use proptest::prelude::*;
 use serde_json::Value;
 
@@ -217,7 +217,7 @@ proptest! {
         let (provider, _) = provider(Adapter::Gemini, 200);
         let (initial, dispatch) = request(&provider).unwrap();
         let mut request = initial.request().clone();
-        request.tools.push(acyclic_harness::tool::ToolDefinition {
+        request.tools.push(acyclic_harness_core::tool::ToolDefinition {
             name:"echo".into(),revision:"1".into(),description:"echo".into(),
             input_schema:json!({"type":"object"}),output_schema:json!({}),projection_schema:json!({}),
         });

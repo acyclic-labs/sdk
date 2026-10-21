@@ -1,5 +1,5 @@
 use acyclic_fs::{NativeAllocation, WorkCounters};
-use acyclic_harness::Result;
+use acyclic_harness_core::Result;
 use bytes::Bytes;
 
 struct Owned<T> {
@@ -21,8 +21,8 @@ pub(crate) fn owned<T: AsRef<[u8]> + Send + 'static>(
 ) -> Result<Bytes> {
     let (layout, _) = std::alloc::Layout::new::<std::sync::atomic::AtomicUsize>()
         .extend(std::alloc::Layout::new::<Owned<T>>())
-        .map_err(|_| acyclic_harness::Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Invalid,
+        .map_err(|_| acyclic_harness_core::Error::NativeBoundary {
+            code: acyclic_harness_core::wire::ErrorCode::Invalid,
             reason: "provider Bytes owner size overflows",
         })?;
     let mut control = custody.work().claim(

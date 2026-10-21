@@ -1,6 +1,6 @@
 use super::{error, to_js_json};
 use crate::ResolvedModel;
-use acyclic_harness::model::{ModelDispatch, ModelEvent};
+use acyclic_harness_core::model::{ModelDispatch, ModelEvent};
 use acyclic_stream::BoxProviderStream;
 use futures::StreamExt as _;
 use std::{
@@ -54,7 +54,7 @@ extern "C" {
 }
 
 struct State {
-    stream: RefCell<Option<BoxProviderStream<'static, acyclic_harness::Result<ModelEvent>>>>,
+    stream: RefCell<Option<BoxProviderStream<'static, acyclic_harness_core::Result<ModelEvent>>>>,
     busy: Cell<bool>,
     cancellation: crate::cancellation::Cancellation,
 }

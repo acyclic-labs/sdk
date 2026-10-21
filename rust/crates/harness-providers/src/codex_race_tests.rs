@@ -204,7 +204,7 @@ async fn cli_account_changes_during_refresh_are_rejected_without_overwriting_the
         );
         assert!(matches!(
             login.bearer(&transport, None, None).await,
-            Err(acyclic_harness::Error::Unauthorized(_))
+            Err(acyclic_harness_core::Error::Unauthorized(_))
         ));
         assert_eq!(
             std::fs::read(&transport.path).map_err(|_| invalid("fixture read"))?,
@@ -253,7 +253,7 @@ async fn oauth_transient_statuses_keep_the_retryable_classification() -> Result<
         assert!(error.to_string().contains(&status.to_string()));
         assert!(matches!(
             error,
-            acyclic_harness::Error::ModelUnavailable { failure: acyclic_harness::ModelTransportFailure::Status(found), .. } if found == status
+            acyclic_harness_core::Error::ModelUnavailable { failure: acyclic_harness_core::ModelTransportFailure::Status(found), .. } if found == status
         ));
     }
     Ok(())
@@ -481,7 +481,7 @@ async fn account_binding_errors_are_not_shared_with_a_newly_resolved_model() -> 
     let (_, rejected, accepted) = futures::join!(holder, old_request, new_request);
     assert!(matches!(
         rejected,
-        Err(acyclic_harness::Error::Unauthorized(_))
+        Err(acyclic_harness_core::Error::Unauthorized(_))
     ));
     assert_eq!(accepted?, (access, Some("new-account".into())));
     assert!(transport.sent.lock().unwrap().is_empty());

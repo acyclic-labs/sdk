@@ -499,6 +499,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-harness",
+ "acyclic-harness-core",
  "acyclic-objects",
  "acyclic-stream",
  "acyclic-test-support",

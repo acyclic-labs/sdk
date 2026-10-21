@@ -135,7 +135,7 @@ fn request() -> HttpRequest {
     }
 }
 
-fn js_error(error: acyclic_harness::Error) -> JsValue {
+fn js_error(error: acyclic_harness_core::Error) -> JsValue {
     JsValue::from_str(&error.to_string())
 }
 

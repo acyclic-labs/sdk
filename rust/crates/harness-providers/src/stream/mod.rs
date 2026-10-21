@@ -10,7 +10,7 @@ mod responses;
 pub(crate) use reasoning::family;
 
 use crate::{Adapter, invalid, json, sse};
-use acyclic_harness::{
+use acyclic_harness_core::{
     Result,
     conversation::validate_portable_json,
     model::{ModelDispatch, ModelEvent},
@@ -34,7 +34,7 @@ pub(crate) struct State<'work> {
     metadata: serde_json::Map<String, Value>,
     pub(crate) terminal: bool,
     thinking: BTreeMap<u64, reasoning::Thinking>,
-    origin: Option<acyclic_harness::model::ReasoningOrigin>,
+    origin: Option<acyclic_harness_core::model::ReasoningOrigin>,
     budget: budget::Budget<'work>,
 }
 
@@ -54,7 +54,7 @@ pub(crate) fn events_named<'a>(
     maximum: usize,
     dispatch: ModelDispatch,
     names: Option<&'a crate::tool_names::Names<'a>>,
-    origin: Option<acyclic_harness::model::ReasoningOrigin>,
+    origin: Option<acyclic_harness_core::model::ReasoningOrigin>,
 ) -> BoxProviderStream<'a, Result<ModelEvent>> {
     Box::pin(async_stream::try_stream! {
         let mut input = sse::decode(body, maximum);
@@ -106,7 +106,7 @@ pub(crate) fn finish(
         // The body ended early: the connection was cut off, not the protocol violated.
         return Err(crate::transport_failure(
             false,
-            acyclic_harness::ModelTransportFailure::Interrupted,
+            acyclic_harness_core::ModelTransportFailure::Interrupted,
             "model stream ended without a terminal marker",
         ));
     }
@@ -182,7 +182,7 @@ pub(crate) fn finish(
             metadata.insert("native".into(), call.metadata);
         }
         calls.push(ModelEvent::ToolCall(
-            acyclic_harness::model::ToolCall::new(
+            acyclic_harness_core::model::ToolCall::new(
                 dispatch.tool_call_id(ordinal),
                 call.name,
                 arguments,
@@ -318,7 +318,7 @@ fn text(events: &mut Vec<ModelEvent>, value: &Value, reasoning: bool) {
 fn index(value: &Value, field: &str) -> Result<u64> {
     value[field]
         .as_u64()
-        .filter(|value| *value <= acyclic_harness::conversation::MAX_EXACT_JS_INTEGER)
+        .filter(|value| *value <= acyclic_harness_core::conversation::MAX_EXACT_JS_INTEGER)
         .ok_or_else(|| invalid("invalid tool index"))
 }
 

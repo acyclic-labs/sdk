@@ -46,14 +46,14 @@ impl<'de> Deserialize<'de> for CatalogDocument {
     }
 }
 
-pub(crate) fn parse(bytes: &[u8]) -> acyclic_harness::Result<CatalogDocument> {
+pub(crate) fn parse(bytes: &[u8]) -> acyclic_harness_core::Result<CatalogDocument> {
     let mut decoder = serde_json::Deserializer::from_slice(bytes);
     let document = serde_path_to_error::deserialize(&mut decoder).map_err(diagnostic)?;
     decoder.end().map_err(diagnostic)?;
     Ok(document)
 }
 
-fn diagnostic(error: impl fmt::Display) -> acyclic_harness::Error {
+fn diagnostic(error: impl fmt::Display) -> acyclic_harness_core::Error {
     #[cfg(test)]
     if tests::ERASE_DIAGNOSTIC.with(std::cell::Cell::get) {
         return crate::invalid("invalid provider catalog");

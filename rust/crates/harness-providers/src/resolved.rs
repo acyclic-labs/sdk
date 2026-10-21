@@ -1,7 +1,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 use crate::HttpTransport;
 use crate::{ProviderSpec, invalid};
-use acyclic_harness::{
+use acyclic_harness_core::{
     Result,
     context::{ModelContextCapacity, ModelTokenCount},
     model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
@@ -36,7 +36,7 @@ impl ResolvedModel {
         &self,
         key: Option<&str>,
         account: Option<&str>,
-    ) -> acyclic_harness::model::ReasoningOrigin {
+    ) -> acyclic_harness_core::model::ReasoningOrigin {
         let family = crate::stream::family(self.config.adapter);
         let mut scope = blake3::Hasher::new();
         scope.update(b"harness-reasoning-scope-v1\0");
@@ -48,7 +48,7 @@ impl ResolvedModel {
             scope.update(&(value.len() as u64).to_be_bytes());
             scope.update(value.as_bytes());
         }
-        acyclic_harness::model::ReasoningOrigin {
+        acyclic_harness_core::model::ReasoningOrigin {
             provider: family.into(),
             model: self.model.name.clone(),
             credential_scope: Some(*scope.finalize().as_bytes()),
@@ -85,7 +85,7 @@ impl ResolvedModel {
 impl ModelProvider for ResolvedModel {
     fn bind_content(
         &self,
-        reader: Arc<dyn acyclic_harness::conversation::ContentResidencyVerifier>,
+        reader: Arc<dyn acyclic_harness_core::conversation::ContentResidencyVerifier>,
         maximum_bytes: u64,
     ) -> Option<Arc<dyn ModelProvider>> {
         Some(Arc::new(Self {
@@ -119,8 +119,8 @@ impl ModelProvider for ResolvedModel {
     ) -> Result<ModelContextCapacity> {
         work.remaining()?;
         if model != &self.model {
-            return Err(acyclic_harness::Error::NativeBoundary {
-                code: acyclic_harness::wire::ErrorCode::Invalid,
+            return Err(acyclic_harness_core::Error::NativeBoundary {
+                code: acyclic_harness_core::wire::ErrorCode::Invalid,
                 reason: "request model differs from resolved selection",
             });
         }
@@ -133,10 +133,13 @@ impl ModelProvider for ResolvedModel {
         request: &'a PreparedModelRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<
-        acyclic_harness::NativeFutureBundle<'a, (ModelTokenCount, acyclic_fs::NativeAllocation)>,
+        acyclic_harness_core::NativeFutureBundle<
+            'a,
+            (ModelTokenCount, acyclic_fs::NativeAllocation),
+        >,
     > {
         self.context_capacity_with_native_work(&request.request().model, work)?;
-        acyclic_harness::NativeFutureBundle::new(work, || async move {
+        acyclic_harness_core::NativeFutureBundle::new(work, || async move {
             let cancelled = work.cancellation_wait()?;
             let exchange = crate::counting::count(self, request, Some(work));
             futures::pin_mut!(cancelled, exchange);
@@ -148,8 +151,8 @@ impl ModelProvider for ResolvedModel {
                     let (count, custody) = result?;
                     Ok((
                         count,
-                        custody.ok_or(acyclic_harness::Error::NativeBoundary {
-                            code: acyclic_harness::wire::ErrorCode::Invalid,
+                        custody.ok_or(acyclic_harness_core::Error::NativeBoundary {
+                            code: acyclic_harness_core::wire::ErrorCode::Invalid,
                             reason: "verified count lost native custody",
                         })?,
                     ))
@@ -165,7 +168,10 @@ impl ModelProvider for ResolvedModel {
         dispatch: ModelDispatch,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<
-        acyclic_harness::NativeFutureBundle<'a, acyclic_harness::model::NativeModelStream<'a>>,
+        acyclic_harness_core::NativeFutureBundle<
+            'a,
+            acyclic_harness_core::model::NativeModelStream<'a>,
+        >,
     > {
         crate::native::generate(self, request, dispatch, work)
     }
@@ -177,12 +183,12 @@ impl ModelProvider for ResolvedModel {
         _: &'a [ModelEvent],
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<
-        acyclic_harness::NativeFutureBundle<
+        acyclic_harness_core::NativeFutureBundle<
             'a,
             (Option<Vec<ModelEvent>>, acyclic_fs::NativeAllocation),
         >,
     > {
-        acyclic_harness::NativeFutureBundle::new(work, || async move {
+        acyclic_harness_core::NativeFutureBundle::new(work, || async move {
             Ok((None, work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?))
         })
     }

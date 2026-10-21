@@ -1,6 +1,6 @@
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-use acyclic_harness::model::{ModelEvent, ModelProvider};
+use acyclic_harness_core::model::{ModelEvent, ModelProvider};
 use futures::StreamExt as _;
 use std::sync::atomic::AtomicUsize;
 
@@ -91,7 +91,7 @@ async fn ordinary_and_native_share_one_retry_budget_for_headers_and_preoutput_ss
             if !succeeds {
                 assert_eq!(
                     error.as_ref().unwrap().code(),
-                    acyclic_harness::wire::ErrorCode::Unauthorized
+                    acyclic_harness_core::wire::ErrorCode::Unauthorized
                 );
             }
             drop(error);
@@ -145,7 +145,7 @@ impl HttpTransport for CancelRefresh {
         &self,
         wait: std::time::Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<acyclic_harness::NativeFutureBundle<'static, ()>> {
+    ) -> acyclic_harness_core::Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
         crate::fixtures::native_delay(wait, work)
     }
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
@@ -158,8 +158,8 @@ impl HttpTransport for CancelRefresh {
         &'a self,
         request: HttpRequest,
         work: &'a NativeMaterializationWork,
-    ) -> Result<acyclic_harness::NativeFutureBundle<'a, HttpResponse>> {
-        acyclic_harness::NativeFutureBundle::new(work, || async move {
+    ) -> Result<acyclic_harness_core::NativeFutureBundle<'a, HttpResponse>> {
+        acyclic_harness_core::NativeFutureBundle::new(work, || async move {
             if request.url.ends_with("/oauth/token") {
                 self.cancel.cancel();
                 std::future::pending().await

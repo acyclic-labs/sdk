@@ -1,6 +1,6 @@
 use super::{HttpRequest, HttpResponse, HttpTransport};
 use crate::invalid;
-use acyclic_harness::Result;
+use acyclic_harness_core::Result;
 use acyclic_stream::BoxProviderFuture;
 use bytes::Bytes;
 use js_sys::{Function, Promise, Reflect, Uint8Array};
@@ -78,7 +78,7 @@ impl HttpTransport for BrowserTransport {
                 .map_err(|_| {
                     crate::transport_failure(
                         false,
-                        acyclic_harness::ModelTransportFailure::Interrupted,
+                        acyclic_harness_core::ModelTransportFailure::Interrupted,
                         "browser model dispatch failed",
                     )
                 })?;
@@ -87,7 +87,7 @@ impl HttpTransport for BrowserTransport {
                 .map_err(|_| {
                     crate::transport_failure(
                         false,
-                        acyclic_harness::ModelTransportFailure::Interrupted,
+                        acyclic_harness_core::ModelTransportFailure::Interrupted,
                         "browser model exchange failed",
                     )
                 })?
@@ -120,7 +120,7 @@ impl HttpTransport for BrowserTransport {
                     let chunk = JsFuture::from(body.reader.read()).await.map_err(|_| {
                         crate::transport_failure(
                             false,
-                            acyclic_harness::ModelTransportFailure::Interrupted,
+                            acyclic_harness_core::ModelTransportFailure::Interrupted,
                             "browser model body interrupted",
                         )
                     })?;

@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_harness::model::{
+use acyclic_harness_core::model::{
     ModelContentPart, ReasoningBlock, ReasoningKind, ReasoningOutcome, ToolCall, ToolResultContent,
 };
 
@@ -33,7 +33,10 @@ async fn absent_arguments_are_empty_but_invalid_supplied_arguments_are_rejected(
             };
             assert_eq!(call.arguments, json!({}));
         } else {
-            assert!(matches!(parsed, Err(acyclic_harness::Error::Invalid(_))));
+            assert!(matches!(
+                parsed,
+                Err(acyclic_harness_core::Error::Invalid(_))
+            ));
         }
     }
     Ok(())
@@ -44,14 +47,16 @@ fn parallel_batches_and_signatures_survive_prepared_request_replay() -> Result<(
     let (provider, _) = provider(Adapter::Gemini, 200);
     let (initial, _) = request(&provider)?;
     let mut request = initial.request().clone();
-    request.tools.push(acyclic_harness::tool::ToolDefinition {
-        name: "echo".into(),
-        revision: "1".into(),
-        description: "echo".into(),
-        input_schema: json!({"type":"object"}),
-        output_schema: json!({}),
-        projection_schema: json!({}),
-    });
+    request
+        .tools
+        .push(acyclic_harness_core::tool::ToolDefinition {
+            name: "echo".into(),
+            revision: "1".into(),
+            description: "echo".into(),
+            input_schema: json!({"type":"object"}),
+            output_schema: json!({}),
+            projection_schema: json!({}),
+        });
     for step in 0..2 {
         for index in 0..2 {
             let mut parts = Vec::new();

@@ -1,5 +1,5 @@
 //! Codex has no public preflight count route. Keep usage plus a local delta.
-use acyclic_harness::{Result, model::PreparedModelRequest};
+use acyclic_harness_core::{Result, model::PreparedModelRequest};
 use serde::Serialize as _;
 
 use crate::usage_snapshot::{Snapshot, Usage};

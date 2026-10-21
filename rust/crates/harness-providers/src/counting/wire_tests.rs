@@ -92,7 +92,7 @@ proptest! {
         let bytes = serde_json::to_vec(&json!({"input_tokens":count})).unwrap();
         let admitted = response(&bytes, &policy);
         let expected = count + u64::from(overhead);
-        if expected > acyclic_harness::conversation::MAX_EXACT_JS_INTEGER {
+        if expected > acyclic_harness_core::conversation::MAX_EXACT_JS_INTEGER {
             prop_assert!(admitted.is_err());
         } else {
             prop_assert_eq!(admitted.unwrap(), expected);

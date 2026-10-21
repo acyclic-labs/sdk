@@ -35,7 +35,7 @@ impl<S: Stream<Item = Result<Bytes>> + Unpin> Stream for Body<S> {
                             ..WorkCounters::UNCHARGED
                         },
                     )
-                    .map_err(acyclic_harness::Error::from)
+                    .map_err(acyclic_harness_core::Error::from)
                     .and_then(|custody| super::owned_bytes::owned(bytes, custody));
                 Poll::Ready(Some(result))
             }

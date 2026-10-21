@@ -74,7 +74,7 @@ pub use registry::Registry;
 pub use resolved::ResolvedModel;
 pub use spec::{Authentication, ProviderSpec, RetrySpec, TimeoutSpec};
 
-use acyclic_harness::{Error, Result};
+use acyclic_harness_core::{Error, Result};
 use serde_json::Value;
 mod sync;
 
@@ -102,7 +102,7 @@ const EXCERPT_BYTES: usize = 256;
 
 fn unavailable(status: u16, body: &[u8]) -> Option<Error> {
     matches!(status, 408 | 429 | 500..=599).then(|| Error::ModelUnavailable {
-        failure: acyclic_harness::ModelTransportFailure::Status(status),
+        failure: acyclic_harness_core::ModelTransportFailure::Status(status),
         excerpt: excerpt(body),
     })
 }
@@ -111,7 +111,7 @@ fn unavailable(status: u16, body: &[u8]) -> Option<Error> {
 /// empty excerpt, retaining the typed cause without allocating before ledger admission.
 fn transport_failure(
     native: bool,
-    failure: acyclic_harness::ModelTransportFailure,
+    failure: acyclic_harness_core::ModelTransportFailure,
     cause: impl std::fmt::Display,
 ) -> Error {
     #[cfg(not(target_arch = "wasm32"))]
@@ -178,7 +178,7 @@ fn excerpt(body: &[u8]) -> String {
 
 fn json(bytes: &[u8]) -> Result<Value> {
     let mut decoder = serde_json::Deserializer::from_slice(bytes);
-    let value = acyclic_harness::deserialize_json_value(&mut decoder)
+    let value = acyclic_harness_core::deserialize_json_value(&mut decoder)
         .map_err(|error| invalid(error.to_string()))?;
     decoder.end().map_err(|error| invalid(error.to_string()))?;
     Ok(value)
