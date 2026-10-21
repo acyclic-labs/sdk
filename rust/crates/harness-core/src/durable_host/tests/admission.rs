@@ -314,3 +314,87 @@ proptest::proptest! {
         });
     }
 }
+
+#[test]
+fn canonical_payload_decode_borrows_the_owned_value_tree() -> Result<()> {
+    let expected = Value::Array(
+        (0..256)
+            .map(|index| {
+                json!({
+                    "label": format!("payload-{index}"),
+                    "items": [null, false, index, {"escaped\\key": "quoted\"text"}],
+                })
+            })
+            .collect(),
+    );
+    let bytes = crate::contract::canonical_json_bytes(&expected)?;
+    let mut decoded = None;
+    let optimized = acyclic_test_support::measure(|| {
+        decoded = Some(super::super::admission::decode_payload(
+            &bytes,
+            bytes.len() as u64,
+            None,
+        ));
+    });
+    let decoded = decoded.unwrap()?;
+    assert_eq!(decoded, expected);
+    let mut restored = None;
+    let legacy = acyclic_test_support::measure(|| {
+        let mut value: Value = crate::contract::json_from_slice(&bytes).unwrap();
+        value.sort_all_objects();
+        let canonical = canonical_payload(&value, bytes.len() as u64, None).unwrap();
+        assert_eq!(canonical.as_ref(), bytes.as_slice());
+        restored = Some(value);
+    });
+    assert_eq!(restored.unwrap(), expected);
+    eprintln!(
+        "CANONICAL_PAYLOAD_ALLOCS new={} restored={}",
+        optimized.count_total, legacy.count_total
+    );
+    assert!(
+        optimized.count_total * 4 < legacy.count_total * 3,
+        "payload read cloned its already owned tree: optimized={optimized:?}, restored={legacy:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn canonical_payload_decode_checks_source_bytes_and_exact_bound() -> Result<()> {
+    for value in [
+        json!(null),
+        json!(true),
+        json!(-17),
+        json!(u64::MAX),
+        json!(-0.0),
+        json!(1.25),
+        json!("escaped\"\\\n"),
+        json!([1, {"b": [false], "a": null}]),
+    ] {
+        let bytes = crate::contract::canonical_json_bytes(&value)?;
+        assert_eq!(
+            super::super::admission::decode_payload(&bytes, bytes.len() as u64, None)?,
+            value
+        );
+        assert!(
+            matches!(super::super::admission::decode_payload(&bytes, bytes.len() as u64 - 1, None),
+            Err(Error::Invalid(reason)) if reason == "durable payload exceeds its byte limit")
+        );
+    }
+    for bytes in [
+        b" null".as_slice(),
+        br#"{"z":1,"a":2}"#,
+        br#"{"a":1,"a":1}"#,
+        br#""\u0061""#,
+        b"1e0",
+        b"[",
+    ] {
+        assert!(
+            matches!(
+                super::super::admission::decode_payload(bytes, bytes.len() as u64, None),
+                Err(Error::Invalid(_))
+            ),
+            "accepted noncanonical payload {bytes:?}"
+        );
+    }
+    Ok(())
+}

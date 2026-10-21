@@ -1,6 +1,43 @@
 //! Main durable task operations.
 use super::*;
 
+/// Decode once and encode the already sorted value without cloning its tree.
+pub(super) fn decode_payload(
+    bytes: &[u8],
+    maximum: u64,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<Value> {
+    let mut value: Value = match io {
+        #[cfg(feature = "filesystem")]
+        Some(io) => io.decode_json(bytes)?,
+        _ => crate::contract::json_from_slice(bytes)
+            .map_err(|error| Error::Invalid(error.to_string()))?,
+    };
+    value.sort_all_objects();
+    let canonical = match io {
+        #[cfg(feature = "filesystem")]
+        Some(io) => io.encode(&value, maximum, false)?,
+        _ => {
+            // Sorting is complete, so serializing the borrowed Value preserves
+            // canonical bytes without converting it to another owned Value.
+            let encoded =
+                serde_json::to_vec(&value).map_err(|error| Error::Invalid(error.to_string()))?;
+            if encoded.len() as u64 > maximum {
+                return Err(Error::Invalid(
+                    "durable payload exceeds its byte limit".into(),
+                ));
+            }
+            OwnedBytes::from(encoded)
+        }
+    };
+    if canonical.as_ref() != bytes {
+        return Err(Error::Invalid(
+            "durable task payload is not canonical JSON".into(),
+        ));
+    }
+    Ok(value)
+}
+
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
     /// Binds a trusted owner, its exact task/machine registries, and immutable
     /// admission payload provider. The host validates definitions even when a
@@ -274,24 +311,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .read(reference, reference.descriptor().byte_length(), io)?
             .await?;
         reference.descriptor().verify(&bytes, &mut work)?;
-        let mut value: Value = match io {
-            #[cfg(feature = "filesystem")]
-            Some(io) => io.decode_json(&bytes)?,
-            _ => crate::contract::json_from_slice(&bytes)
-                .map_err(|error| Error::Invalid(error.to_string()))?,
-        };
-        value.sort_all_objects();
-        let canonical = match io {
-            #[cfg(feature = "filesystem")]
-            Some(io) => io.encode(&value, reference.descriptor().byte_length(), false)?,
-            _ => canonical_payload(&value, reference.descriptor().byte_length(), io)?,
-        };
-        if canonical.as_ref() != bytes.as_ref() {
-            return Err(Error::Invalid(
-                "durable task payload is not canonical JSON".into(),
-            ));
-        }
-        Ok(value)
+        decode_payload(&bytes, reference.descriptor().byte_length(), io)
     }
 
     pub(super) async fn retained_declaration(
