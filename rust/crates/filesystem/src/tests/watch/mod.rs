@@ -859,6 +859,9 @@ fn fence_queues_every_completed_write_and_hides_its_cookie()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::time::{Duration, Instant};
 
+    #[cfg(windows)]
+    let directory = crate::windows_test_filesystems::ntfs_tempdir()?;
+    #[cfg(not(windows))]
     let directory = tempfile::tempdir()?;
     std::fs::create_dir(directory.path().join(".git"))?;
     let limits = VolumeLimits::default();

@@ -155,7 +155,11 @@ fn dense_capture_equals_queried_capture_with_bounded_admission()
         |(length, byte)| {
             runtime.block_on(async {
                 for kind in 0..5 {
-                    let source = tempfile::tempdir().unwrap();
+                    let source = if kind == 3 {
+                        crate::windows_test_filesystems::ntfs_tempdir().unwrap()
+                    } else {
+                        tempfile::tempdir().unwrap()
+                    };
                     fixture(&source.path().join("file"), kind, length, byte);
                     let options = CaptureOptions {
                         source_root: source.path().to_owned(),

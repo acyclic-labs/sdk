@@ -65,6 +65,9 @@ pub(crate) fn initialize_test_native_io() {
     });
 }
 
+#[cfg(all(test, windows))]
+mod windows_test_filesystems;
+
 pub mod access;
 mod arc_layout;
 mod operation_claim;
