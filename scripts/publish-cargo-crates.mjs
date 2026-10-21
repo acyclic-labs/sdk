@@ -20,7 +20,7 @@ function run(command, args, options = {}) {
   return result;
 }
 
-function metadata(releaseVersion) {
+export function metadata(releaseVersion) {
   const result = run("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"]);
   if (result.status !== 0) fail(result.stderr || "cargo metadata failed");
   const packages = JSON.parse(result.stdout).packages;
