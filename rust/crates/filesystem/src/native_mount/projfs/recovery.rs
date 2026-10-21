@@ -39,7 +39,22 @@ pub(super) fn reject_nested_projection(
         FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
     use windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS;
-    let destination = std::path::absolute(destination)?;
+    // Open with normal traversal: a lexical ancestor walk can miss a ProjFS
+    // root hidden behind a directory junction or symbolic link. Resolve the
+    // held candidate through GetFinalPathNameByHandleW before walking parents.
+    let directory = (&mut &*work).attempt_io(ReadOperations.delta(1), || {
+        std::fs::OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES.0)
+            .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
+            .open(destination)
+    })?;
+    let directory = cap_std::fs::Dir::from_std_file(directory);
+    let (canonical, _canonical_allocation) =
+        crate::native_host::canonical_directory_wide(&directory, &mut &*work)?;
+    let (canonical, _path_allocation) =
+        crate::native_host::decode_windows_name(&canonical, &mut &*work)?;
+    let destination = std::path::PathBuf::from(canonical);
     for ancestor in destination.ancestors().skip(1) {
         // The ProjFS filter hides a virtualization root's tag from attribute
         // queries; only the reparse buffer itself reports it.

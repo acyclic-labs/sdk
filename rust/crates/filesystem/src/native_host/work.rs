@@ -278,7 +278,7 @@ pub(crate) fn ordinary_error(error: DemandError) -> io::Error {
 }
 
 #[cfg(windows)]
-pub(super) fn decode_windows_name<W: NativeHostWork>(
+pub(crate) fn decode_windows_name<W: NativeHostWork>(
     name: &[u16],
     work: &mut W,
 ) -> Result<(OsString, W::Allocation), W::Error> {

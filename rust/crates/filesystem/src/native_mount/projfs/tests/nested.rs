@@ -36,3 +36,59 @@ async fn nested_destination_is_rejected_before_marking() -> Result<(), Box<dyn s
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
     Ok(())
 }
+
+#[tokio::test]
+async fn junction_cannot_hide_a_parent_projection() -> Result<(), Box<dyn std::error::Error>> {
+    let work = setup_work()?;
+    let parent = windows_checkout_source().await?;
+    let (_root, destination, mut session) = mount_source(&parent)?;
+    let subdirectory = destination.join("subdirectory");
+    std::fs::create_dir(&subdirectory)?;
+    let aliases = tempfile::tempdir()?;
+    let alias = aliases.path().join("alias");
+    create_junction(&alias, &subdirectory)?;
+    let child = alias.join("child");
+    std::fs::create_dir(&child)?;
+    // Exercise the pre-mark guard itself: the old implementation accepts this
+    // layout, without starting a second driver or leaving a rejected root.
+    let rejected = reject_nested_projection(&child, &work);
+    std::fs::remove_dir(&child)?;
+    std::fs::remove_dir(&alias)?;
+    session.stop()?;
+    assert!(
+        matches!(rejected, Err(NativeMountError::NestedDestination)),
+        "junction hid the parent projection: {rejected:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn junction_to_an_ordinary_directory_remains_allowed() -> Result<(), Box<dyn std::error::Error>> {
+    let work = setup_work()?;
+    let ordinary = tempfile::tempdir()?;
+    let aliases = tempfile::tempdir()?;
+    let alias = aliases.path().join("alias");
+    create_junction(&alias, ordinary.path())?;
+    let child = alias.join("child");
+    std::fs::create_dir(&child)?;
+    let result = reject_nested_projection(&child, &work);
+    std::fs::remove_dir(&alias)?;
+    result?;
+    Ok(())
+}
+
+fn create_junction(alias: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+    let mut command = std::process::Command::new("cmd.exe");
+    command
+        .args(["/D", "/C", "mklink", "/J"])
+        .arg(alias)
+        .arg(target);
+    let status =
+        acyclic_native_runtime::process_status(&mut command, std::time::Duration::from_secs(5))?;
+    if !status.success() {
+        return Err(std::io::Error::other(format!(
+            "junction creation failed: {status}"
+        )));
+    }
+    Ok(())
+}
