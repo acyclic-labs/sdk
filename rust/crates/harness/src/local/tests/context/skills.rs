@@ -173,3 +173,69 @@ async fn binding_an_existing_runtime_discovers_checkout_and_user_skills() -> Res
     assert!(catalog.iter().any(|skill| skill.name == "user"));
     Ok(())
 }
+
+#[tokio::test]
+async fn selected_child_authored_skill_loads_with_native_work_from_its_retained_cut() -> Result<()>
+{
+    let root = tempfile::tempdir().map_err(super::super::super::storage)?;
+    let provider = scripted([
+        super::super::checked_commands::call(0, "fs", "checkout -b skill-child"),
+        ScriptedTurn::Text("done".into()),
+    ]);
+    let harness = LocalHarness::open(checkout_config(root.path(), (model()?, provider))?).await?;
+    assert_eq!(harness.run("select a child").await?.text, "done");
+    let workspace = harness.workspace.as_ref().unwrap();
+    let selected = workspace.selected_view().await?.0.unwrap();
+    assert_ne!(selected.workspace().id(), workspace.view().workspace().id());
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+        work: &work,
+        cancellation: &cancellation,
+    };
+    let path = "/.agents/skills/child/SKILL.md";
+    let body = "---\nname: child\ndescription: Selected child skill\n---\nRetained authored body";
+    selected
+        .write(
+            path,
+            acyclic_stream::OwnedBytes::copy_from_slice(body.as_bytes()),
+            acyclic_fs::IdempotencyKey::new(),
+            acyclic_fs::PublicationPermit::Unrestricted,
+            &mut accounting,
+        )
+        .await?;
+    let skills = harness.skills(None).await?;
+    let [skill] = skills.as_slice() else {
+        return Err(Error::Invalid("expected one selected child skill".into()));
+    };
+    assert_eq!(skill.description, "Selected child skill");
+    // Advance the child after discovery; body loading must still use its cut.
+    selected
+        .write(
+            path,
+            acyclic_stream::OwnedBytes::from_static(b"later body"),
+            acyclic_fs::IdempotencyKey::new(),
+            acyclic_fs::PublicationPermit::Unrestricted,
+            &mut accounting,
+        )
+        .await?;
+    let reader = harness.context_reader()?;
+    let io = crate::executor::PreparationIo::from_native_work(&work)?;
+    let (_, bytes, _) = reader
+        .read_private_path(
+            &skill.source.root.volume,
+            &skill.source.root.directory,
+            &skill.source.path,
+            Some(&skill.source.generation),
+            4096,
+            Some(&io),
+        )?
+        .await?;
+    assert_eq!(bytes.as_ref(), body.as_bytes());
+    assert_eq!(skill.source.root.volume, harness.journal);
+    Ok(())
+}

@@ -96,7 +96,6 @@ impl LocalHarness {
             files,
             skill_directory,
             volume,
-            volume,
             workspace.as_ref(),
             settings.skill_roots().to_vec(),
         )?;

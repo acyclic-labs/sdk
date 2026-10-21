@@ -171,7 +171,6 @@ impl Opening {
             files,
             directory.join("skill-sources"),
             &journal,
-            &owner.project,
             workspace.as_ref(),
             self.user_roots(),
         )?;
@@ -337,14 +336,12 @@ pub(super) fn retain_skills(
     files: Arc<LocalFilesystem>,
     directory: PathBuf,
     journal: &VolumeRef,
-    project: &VolumeRef,
     workspace: Option<&Arc<workspace::LocalWorkspace>>,
     user_roots: Vec<PathBuf>,
 ) -> Result<Arc<LocalFilesystem>> {
     files.with_native_skills(crate::context::native_skills::NativeSkills::new(
         directory,
         journal.clone(),
-        project.clone(),
         workspace.map(|workspace| {
             (
                 workspace.view(),

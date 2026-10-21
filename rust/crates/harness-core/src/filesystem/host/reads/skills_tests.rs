@@ -78,7 +78,6 @@ async fn fixture() -> Result<Fixture> {
     let sources = NativeSkills::new(
         retained.path().join("sources"),
         volume.clone(),
-        volume.clone(),
         None,
         vec![home.path().into()],
     )?;
@@ -136,7 +135,6 @@ async fn committed_skill_body_recovers_its_receipt_without_the_host_source() -> 
         .map_err(|error| Error::Storage(error.to_string()))?;
     let sources = NativeSkills::new(
         fixture.retained.path().join("sources"),
-        fixture.volume.clone(),
         fixture.volume.clone(),
         None,
         Vec::new(),
@@ -207,7 +205,6 @@ async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Resul
     // share the journal owner and retained source directory.
     let replacement = NativeSkills::new(
         retained.path().join("replacement"),
-        volume.clone(),
         volume.clone(),
         None,
         Vec::new(),

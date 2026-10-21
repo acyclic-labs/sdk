@@ -61,7 +61,6 @@ struct SkillWorkspace {
 pub struct NativeSkills {
     directory: PathBuf,
     journal: VolumeRef,
-    project: VolumeRef,
     workspace: Option<SkillWorkspace>,
     pub(crate) materializer: super::skill_materializer::SkillMaterializer,
     user_roots: Vec<PathBuf>,
@@ -130,7 +129,6 @@ impl NativeSkills {
     pub fn new(
         directory: PathBuf,
         journal: VolumeRef,
-        project: VolumeRef,
         workspace: Option<(&View, acyclic_fs::LocalFs, acyclic_fs::LocalCoreStateStore)>,
         user_roots: Vec<PathBuf>,
     ) -> Result<Arc<Self>> {
@@ -154,7 +152,6 @@ impl NativeSkills {
         Ok(Arc::new(Self {
             directory,
             journal,
-            project,
             workspace,
             materializer: super::skill_materializer::SkillMaterializer::new(),
             user_roots,
@@ -663,7 +660,10 @@ impl ProjectCatalog<'_> {
             acyclic_fs::LazyLookup::Source { node, .. } => {
                 self.sources.retain(&self.native, self.root, &path, *node)?
             }
-            acyclic_fs::LazyLookup::Shadow { record, .. } => {
+            acyclic_fs::LazyLookup::Authored { record, .. }
+            | acyclic_fs::LazyLookup::Shadow { record, .. } => {
+                // Both records belong to this immutable cut, including a
+                // selected child. Load through the journal with native work.
                 self.sources
                     .retain_record(&RetainedSource::Shadow(Box::new(ShadowSource {
                         volume: self.sources.journal.clone(),
@@ -671,20 +671,6 @@ impl ProjectCatalog<'_> {
                         file_id: record.file_id,
                     })))?
             }
-            acyclic_fs::LazyLookup::Authored { .. } => PinnedContextPath {
-                root: ContextRoot {
-                    volume: self.sources.project.clone(),
-                    directory: directory.into(),
-                },
-                generation: crate::resources::GenerationRef::new(
-                    self.sources.project.provider(),
-                    &self.cut.authored_generation.digest().into_bytes(),
-                    None,
-                    None,
-                )?
-                .0,
-                path: relative,
-            },
         };
         self.view.retire_lookup((lookup, allocation), accounting)?;
         let (prefix, _) = self
