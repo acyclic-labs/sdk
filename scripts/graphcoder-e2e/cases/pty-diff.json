@@ -46,7 +46,7 @@
           "when": {
             "contains": [
               "DONE_EDIT",
-              "\u25cb"
+              "○"
             ]
           },
           "prompt": "/diff "
@@ -54,12 +54,38 @@
         {
           "when": {
             "contains": [
-              "DIFF_E2E_CONTENT"
+              "diff.txt (added) +1 -0",
+              "+DIFF_E2E_CONTENT"
             ]
           },
           "send": "\u0004"
         }
       ]
+    },
+    {
+      "actions": [
+        {
+          "prompt": "/diff ",
+          "when": {
+            "contains": [
+              "GraphCoder",
+              "DONE_EDIT"
+            ],
+            "cursor": true
+          }
+        },
+        {
+          "send": "\u0004",
+          "when": {
+            "contains": [
+              "diff.txt (added) +1 -0",
+              "+DIFF_E2E_CONTENT"
+            ]
+          }
+        }
+      ],
+      "resume": true,
+      "mode": "pty"
     }
   ],
   "assert": {
