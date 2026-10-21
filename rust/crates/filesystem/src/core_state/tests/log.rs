@@ -132,3 +132,130 @@ fn owned_core_commits_are_crash_atomic() {
 fn shared_core_commits_are_crash_atomic() {
     assert_core_commits_are_crash_atomic(false);
 }
+
+#[test]
+fn checkpoint_batches_family_barriers_before_discarding_the_wal() {
+    for native in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let cancellation = crate::CancellationToken::new();
+        let work =
+            crate::NativeMaterializationWork::new(native::finite_budget(), &cancellation).unwrap();
+        let store = LocalCoreStateStore::new(directory.path());
+        let store = if native {
+            store.materialization(work.clone())
+        } else {
+            store
+        };
+        let namespace = store.namespace().unwrap();
+        let keys = [
+            RecordKey::Context(WorkspaceContextId::from_bytes([1; 16])),
+            RecordKey::Context(WorkspaceContextId::from_bytes([2; 16])),
+            RecordKey::Children(WorkspaceContextId::from_bytes([1; 16])),
+            RecordKey::Children(WorkspaceContextId::from_bytes([2; 16])),
+            RecordKey::ChildCount(WorkspaceContextId::from_bytes([1; 16])),
+            RecordKey::ChildCount(WorkspaceContextId::from_bytes([2; 16])),
+            RecordKey::ChildIndex,
+            RecordKey::Lineage(WorkspaceId::from_bytes([1; 16])),
+            RecordKey::Lineage(WorkspaceId::from_bytes([2; 16])),
+            RecordKey::LazyWorkspace(WorkspaceId::from_bytes([1; 16])),
+            RecordKey::LazyWorkspace(WorkspaceId::from_bytes([2; 16])),
+        ];
+        let mut log = CoreLog::open(&namespace, Arc::default()).unwrap();
+        let mut change = if native {
+            Change::new(&work).unwrap()
+        } else {
+            Change::default()
+        };
+        for key in keys {
+            change.put((key, None).into()).unwrap();
+        }
+        log.commit(&namespace, change).unwrap();
+        let wal = namespace.record(CORE_LOG_FAMILY, &[0; 16]).unwrap().current;
+        assert!(std::fs::metadata(&wal).unwrap().len() > 0);
+        let before = work.receipt();
+        log.checkpoint(&namespace).unwrap();
+        if native {
+            // Eleven physical record-file barriers plus six distinct family
+            // directory barriers. The commit already flushed its WAL frame.
+            assert_eq!(
+                work.receipt().durability_operations - before.durability_operations,
+                keys.len() as u64 + 6,
+                "checkpoint flushed the same family repeatedly"
+            );
+        }
+        assert_eq!(std::fs::metadata(&wal).unwrap().len(), 0);
+        drop(log);
+        // Discard every resident cache. Each family must independently survive
+        // the empty WAL, including the singleton index and absent records.
+        let reopened = CoreLog::open(&namespace, Arc::default()).unwrap();
+        assert!(reopened.dirty.is_empty());
+        for key in keys {
+            let path = key.paths(&namespace).unwrap().current;
+            assert_eq!(std::fs::read(path).unwrap(), b"null");
+        }
+        work.receipt().verify(native::finite_budget()).unwrap();
+    }
+}
+
+#[test]
+fn checkpoint_reuses_each_native_family_parent_for_all_records() {
+    fn checkpoint(records: u8) -> crate::WorkCounters {
+        let directory = tempfile::tempdir().unwrap();
+        let cancellation = crate::CancellationToken::new();
+        let work =
+            crate::NativeMaterializationWork::new(native::finite_budget(), &cancellation).unwrap();
+        let store = LocalCoreStateStore::new(directory.path()).materialization(work.clone());
+        let namespace = store.namespace().unwrap();
+        let mut log = CoreLog::open(&namespace, Arc::default()).unwrap();
+        let mut change = Change::new(&work).unwrap();
+        for byte in 1..=records {
+            change
+                .put(
+                    (
+                        RecordKey::Context(WorkspaceContextId::from_bytes([byte; 16])),
+                        None,
+                    )
+                        .into(),
+                )
+                .unwrap();
+        }
+        log.commit(&namespace, change).unwrap();
+        let before = work.receipt();
+        log.checkpoint(&namespace).unwrap();
+        let after = work.receipt();
+        drop(log);
+        let reopened = CoreLog::open(&namespace, Arc::default()).unwrap();
+        assert!(reopened.dirty.is_empty());
+        for byte in 1..=records {
+            assert_eq!(
+                std::fs::read(
+                    RecordKey::Context(WorkspaceContextId::from_bytes([byte; 16]))
+                        .paths(&namespace)
+                        .unwrap()
+                        .current
+                )
+                .unwrap(),
+                b"null"
+            );
+        }
+        work.receipt().verify(native::finite_budget()).unwrap();
+        crate::WorkCounters {
+            backend_read_operations: after.backend_read_operations - before.backend_read_operations,
+            durability_operations: after.durability_operations - before.durability_operations,
+            object_bytes_written: after.object_bytes_written - before.object_bytes_written,
+            ..Default::default()
+        }
+    }
+    let one = checkpoint(1);
+    let two = checkpoint(2);
+    // A creating leaf open is a backend write; its regular-file metadata
+    // check is one backend read on both Windows and Unix. Parent traversal,
+    // creation, validation and flushing are per family.
+    assert_eq!(
+        two.backend_read_operations - one.backend_read_operations,
+        1,
+        "checkpoint reopened the same native family parent per record"
+    );
+    assert_eq!(two.durability_operations - one.durability_operations, 1);
+    assert_eq!(two.object_bytes_written - one.object_bytes_written, 4);
+}
