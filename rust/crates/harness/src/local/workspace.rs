@@ -289,8 +289,8 @@ pub(super) async fn open(
         volume,
         scratch,
         directory,
-        operation,
         native_mounts,
+        ..
     } = attach;
     // The held root is the root its holder validated; binding and every setup
     // side effect work in it and never reopen the path, so a replacement
@@ -308,6 +308,63 @@ pub(super) async fn open(
     if let Some(setup) = &setup {
         volumes::recover_after_crash(setup)?;
     }
+    let (view, fresh) = lazy_view(filesystem, attach, root, existing, &store).await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    acyclic_fs::WorkspaceGraph::new(store.clone())
+        .register_root(view.workspace())
+        .await
+        .map_err(storage)?;
+    let mut mounts = mounts::owner(
+        &path,
+        volume,
+        None,
+        native_mounts.then(|| ("scratch".into(), scratch.clone(), None)),
+    )?;
+    if let Some(setup) = &setup {
+        volumes::attach(filesystem, &store, setup, &mut mounts).await?;
+        Box::pin(volumes::parents::bind(&view, setup, &mounts, &cancellation)).await?;
+    }
+    let context_line = mounts.context_line();
+    let mounts = Arc::new(mounts);
+    let state = StateArc::new(AsyncMutex::new(super::checkout_tools::State::new(
+        view.workspace().id(),
+        Arc::clone(&mounts),
+    )));
+    Ok(LocalWorkspace {
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        selection_reads: std::sync::atomic::AtomicUsize::new(0),
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        mount_advances: std::sync::atomic::AtomicUsize::new(0),
+        path,
+        fresh,
+        view,
+        mount_directory: directory.join("task-views"),
+        mounted: None,
+        filesystem: filesystem.clone(),
+        store,
+        identity,
+        state,
+        context_line,
+        mounts,
+        processes,
+    })
+}
+
+/// The checkout's lazy view: reopened from its retained state, bound to an
+/// existing volume, or attached fresh. Returns whether it is fresh.
+async fn lazy_view(
+    filesystem: &acyclic_fs::LocalFs,
+    attach: &Attach<'_>,
+    root: acyclic_fs::HeldRoot,
+    existing: bool,
+    store: &LocalCoreStateStore,
+) -> Result<(View, bool)> {
+    let &Attach {
+        volume,
+        operation,
+        native_mounts,
+        ..
+    } = attach;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -365,44 +422,7 @@ pub(super) async fn open(
         .map(|(view, ..)| view),
     }
     .map_err(storage)?;
-    acyclic_fs::WorkspaceGraph::new(store.clone())
-        .register_root(view.workspace())
-        .await
-        .map_err(storage)?;
-    let mut mounts = mounts::owner(
-        &path,
-        volume,
-        None,
-        native_mounts.then(|| ("scratch".into(), scratch.clone(), None)),
-    )?;
-    if let Some(setup) = &setup {
-        volumes::attach(filesystem, &store, setup, &mut mounts).await?;
-        Box::pin(volumes::parents::bind(&view, setup, &mounts, &cancellation)).await?;
-    }
-    let context_line = mounts.context_line();
-    let mounts = Arc::new(mounts);
-    let state = StateArc::new(AsyncMutex::new(super::checkout_tools::State::new(
-        view.workspace().id(),
-        Arc::clone(&mounts),
-    )));
-    Ok(LocalWorkspace {
-        #[cfg(all(test, not(acyclic_harness_loom)))]
-        selection_reads: std::sync::atomic::AtomicUsize::new(0),
-        #[cfg(all(test, not(acyclic_harness_loom)))]
-        mount_advances: std::sync::atomic::AtomicUsize::new(0),
-        path,
-        fresh,
-        view,
-        mount_directory: directory.join("task-views"),
-        mounted: None,
-        filesystem: filesystem.clone(),
-        store,
-        identity,
-        state,
-        context_line,
-        mounts,
-        processes,
-    })
+    Ok((view, fresh))
 }
 
 /// The held root's native source. Scratch mounts and the incarnation
