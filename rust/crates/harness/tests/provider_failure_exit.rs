@@ -19,14 +19,17 @@ use acyclic_harness_providers::{
     ModelSpec, ProviderSpec, Registry, ReqwestTransport, RetrySpec, TimeoutSpec, TokenCountField,
     TokenCounterSpec,
 };
-use acyclic_stream::BoxProviderFuture;
-use futures::StreamExt as _;
+use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
+use bytes::Bytes;
+use futures::{Stream, StreamExt as _};
 use std::{
     collections::{BTreeMap, VecDeque},
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
+    task::{Context, Poll},
     time::Duration,
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -54,25 +57,75 @@ enum Reply {
 const IDLE_MS: u32 = 300;
 
 /// Whether a run measures the server's silence after output.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 enum Silence {
     /// No deadline elapses: the scripted reply alone decides the outcome.
     Unmeasured,
-    /// Once output has arrived, deadline wake-ups elapse, so a silent body times out.
-    Measured,
+    /// Deadline wake-ups elapse once the consumer has taken this many leading body bytes, the
+    /// complete output event, so a body silent after them times out.
+    Measured(usize),
 }
 
 /// The fixture clock deadlines are measured on. It is frozen, so neither scheduling nor a slow
 /// consumer between polls counts as silence. Redelivery backoffs, shorter than the idle deadline,
-/// elapse at once. A deadline wake-up elapses only after output arrived in a [`Silence::Measured`]
-/// run, and then advances the clock by its wait, so it expires exactly the deadline it was armed
+/// elapse at once. A deadline wake-up elapses only once a [`Silence::Measured`] run has started
+/// the clock, and then advances it by its wait, so it expires exactly the deadline it was armed
 /// for.
 struct Clock {
     silence: Silence,
     /// Nanoseconds since the origin.
     now: AtomicU64,
-    /// Set once output arrived in a measured run.
-    output: tokio::sync::watch::Sender<bool>,
+    /// Set once the consumer has taken the complete output event in a measured run.
+    started: tokio::sync::watch::Sender<bool>,
+}
+
+/// A measured model body. It delivers every chunk in two pieces, with the second pending for one
+/// poll as a split read would be, so the output event never arrives whole. It starts the clock only when the consumer polls again after the whole output
+/// prefix has arrived. By then the decoder has taken the complete output event, however the
+/// bytes were split.
+struct Measured {
+    body: BoxProviderStream<'static, Result<Bytes>>,
+    clock: Arc<Clock>,
+    /// Output bytes not yet delivered.
+    output: usize,
+    /// The second piece of the last chunk, and whether it has been pending for a poll.
+    rest: Option<(Bytes, bool)>,
+}
+
+impl Measured {
+    fn deliver(&mut self, bytes: Bytes) -> Poll<Option<Result<Bytes>>> {
+        self.output = self.output.saturating_sub(bytes.len());
+        Poll::Ready(Some(Ok(bytes)))
+    }
+}
+
+impl Stream for Measured {
+    type Item = Result<Bytes>;
+
+    fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if this.output == 0 {
+            this.clock.started.send_replace(true);
+        }
+        match this.rest.take() {
+            Some((rest, true)) => return this.deliver(rest),
+            Some((rest, false)) => {
+                this.rest = Some((rest, true));
+                context.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            None => {}
+        }
+        match this.body.poll_next_unpin(context) {
+            Poll::Ready(Some(Ok(mut bytes))) => {
+                if bytes.len() > 1 {
+                    this.rest = Some((bytes.split_off(bytes.len() / 2), false));
+                }
+                this.deliver(bytes)
+            }
+            other => other,
+        }
+    }
 }
 
 impl Clock {
@@ -97,16 +150,21 @@ impl HttpTransport for Counted {
         if !request.url.ends_with(COUNT_PATH) {
             self.sent.fetch_add(1, Ordering::SeqCst);
         }
+        let measured = match self.clock.silence {
+            Silence::Measured(output) if !request.url.ends_with(COUNT_PATH) => Some(output),
+            _ => None,
+        };
         let clock = self.clock.clone();
         let send = self.inner.send(request);
         Box::pin(async move {
             let mut response = send.await?;
-            if clock.silence == Silence::Measured {
-                response.body = Box::pin(response.body.inspect(move |item| {
-                    if matches!(item, Ok(bytes) if !bytes.is_empty()) {
-                        clock.output.send_replace(true);
-                    }
-                }));
+            if let Some(output) = measured {
+                response.body = Box::pin(Measured {
+                    body: response.body,
+                    clock,
+                    output,
+                    rest: None,
+                });
             }
             Ok(response)
         })
@@ -117,10 +175,10 @@ impl HttpTransport for Counted {
         }
         let clock = self.clock.clone();
         let due = clock.now().saturating_add(wait);
-        let mut output = clock.output.subscribe();
+        let mut started = clock.started.subscribe();
         Box::pin(async move {
             // The clock owns the sender, so the channel stays open while this waits.
-            let _ = output.wait_for(|arrived| *arrived).await;
+            let _ = started.wait_for(|started| *started).await;
             let due = u64::try_from(due.as_nanos()).unwrap_or(u64::MAX);
             clock.now.fetch_max(due, Ordering::SeqCst);
         })
@@ -218,7 +276,7 @@ async fn headless(base_url: String, silence: Silence) -> Result<Run> {
         clock: Arc::new(Clock {
             silence,
             now: AtomicU64::new(0),
-            output: tokio::sync::watch::channel(false).0,
+            started: tokio::sync::watch::channel(false).0,
         }),
         sent: AtomicUsize::new(0),
         all: AtomicUsize::new(0),
@@ -354,12 +412,13 @@ async fn a_body_cut_after_output_is_final_and_exits_1() -> Result<()> {
 
 #[tokio::test]
 async fn a_body_silent_after_output_times_out_and_exits_1() -> Result<()> {
-    // Output escaped, so the idle timeout is final: one request, a typed timeout, exit 1.
+    // Output escaped, so the idle timeout is final: one request, a typed timeout, exit 1. The
+    // output event reaches the decoder split in two, and silence counts only after all of it.
     let body = format!("{TEXT}{DONE}");
     let replies = vec![Reply::Hold(body, TEXT.len())];
     let Run {
         code, jsonl, sent, ..
-    } = headless(serve(replies).await?, Silence::Measured).await?;
+    } = headless(serve(replies).await?, Silence::Measured(TEXT.len())).await?;
     assert_eq!(code, 1, "{jsonl}");
     assert_eq!(sent, 1);
     assert!(
