@@ -112,20 +112,46 @@ fn host_commands_resolve_package_manager_launchers_through_pathext() {
     let second = fixture.data.join("second");
     fs::create_dir_all(&first).unwrap();
     fs::create_dir_all(&second).unwrap();
-    fs::write(second.join("codex.cmd"), "").unwrap();
-    fs::write(second.join("codex"), "").unwrap();
+    let executable = |path: PathBuf| {
+        fs::write(&path, "").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    };
+    executable(second.join("codex.cmd"));
+    executable(second.join("codex"));
+    // On Unix a file without execute permission earlier on PATH does not
+    // hide the command, exactly as execvp skips it.
+    #[cfg(unix)]
+    fs::write(first.join("codex"), "").unwrap();
     let directories = || [first.clone(), second.clone()];
     assert_eq!(
-        executable_in(directories(), "codex", Some(std::ffi::OsStr::new(".COM;.EXE;.BAT;.CMD"))),
+        executable_in(
+            directories(),
+            "codex",
+            Some(std::ffi::OsStr::new(".COM;.EXE;.BAT;.CMD"))
+        ),
         Some(second.join("codex.cmd"))
     );
-    assert_eq!(executable_in(directories(), "codex", None), Some(second.join("codex")));
-    fs::write(first.join("codex.exe"), "").unwrap();
     assert_eq!(
-        executable_in(directories(), "codex", Some(std::ffi::OsStr::new(".EXE;.CMD"))),
+        executable_in(directories(), "codex", None),
+        Some(second.join("codex"))
+    );
+    executable(first.join("codex.exe"));
+    assert_eq!(
+        executable_in(
+            directories(),
+            "codex",
+            Some(std::ffi::OsStr::new(".EXE;.CMD"))
+        ),
         Some(first.join("codex.exe"))
     );
-    assert_eq!(executable_in(directories(), "claude", Some(std::ffi::OsStr::new(".EXE"))), None);
+    assert_eq!(
+        executable_in(directories(), "claude", Some(std::ffi::OsStr::new(".EXE"))),
+        None
+    );
 }
 
 #[test]

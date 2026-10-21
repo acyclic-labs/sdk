@@ -90,7 +90,11 @@ pub(crate) fn find_executable(name: &str) -> Option<PathBuf> {
     executable_in(
         env::split_paths(&paths),
         name,
-        cfg!(windows).then(|| extensions.as_deref().unwrap_or(std::ffi::OsStr::new(".COM;.EXE;.BAT;.CMD"))),
+        cfg!(windows).then(|| {
+            extensions
+                .as_deref()
+                .unwrap_or(std::ffi::OsStr::new(".COM;.EXE;.BAT;.CMD"))
+        }),
     )
 }
 
@@ -112,13 +116,28 @@ pub(crate) fn executable_in(
     directories.into_iter().find_map(|directory| {
         if extensions.is_empty() {
             let candidate = directory.join(name);
-            return candidate.is_file().then_some(candidate);
+            return runnable(&candidate).then_some(candidate);
         }
         extensions.iter().find_map(|extension| {
             let candidate = directory.join(format!("{name}{extension}"));
-            candidate.is_file().then_some(candidate)
+            runnable(&candidate).then_some(candidate)
         })
     })
+}
+
+/// A file the operating system would execute: on Unix, as `execvp` does, a
+/// file without execute permission does not hide a later `PATH` entry.
+fn runnable(candidate: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::metadata(candidate)
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        candidate.is_file()
+    }
 }
 
 /// A command for the host CLI `name` as installed on `PATH`.
