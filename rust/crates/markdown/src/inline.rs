@@ -8,6 +8,15 @@ struct Mark {
     bytes: usize,
 }
 
+// Content before this mark is retained only while the same span still crosses
+// its synthetic opener. An unmatched opener or a changed outer span reopens the
+// real paragraph. Delimiter runs inside styled text remain before the mark.
+#[derive(Clone)]
+struct Carry {
+    prefix: String,
+    kind: Option<TagEnd>,
+}
+
 #[derive(Default)]
 pub(super) struct Checkpoint {
     offset: usize,
@@ -15,6 +24,7 @@ pub(super) struct Checkpoint {
     cost: usize,
     pub(super) valid: Range<usize>,
     openers: delimiters::State,
+    carry: Option<Carry>,
 }
 
 #[derive(Default)]
@@ -27,11 +37,14 @@ pub(super) struct Inline {
 impl Inline {
     #[cfg(test)]
     pub(super) fn retained(&self) -> usize {
-        self.checkpoint.openers.retained()
-            + self
-                .provisional
-                .as_ref()
-                .map_or(0, |checkpoint| checkpoint.openers.retained())
+        let retained = |checkpoint: &Checkpoint| {
+            checkpoint.openers.retained()
+                + checkpoint
+                    .carry
+                    .as_ref()
+                    .map_or(0, |carry| carry.prefix.capacity())
+        };
+        retained(&self.checkpoint) + self.provisional.as_ref().map_or(0, retained)
     }
     pub(super) fn visible_frontier(&self, stable: usize, fallback: usize) -> (usize, usize) {
         let mark = self.checkpoint.mark;
@@ -54,7 +67,9 @@ impl Markdown {
         let base = checkpoint.offset;
         let mark = checkpoint.mark;
         let tail = self.source.get(base..).unwrap_or_default();
-        let context = if base == inline.start {
+        let context = if let Some(carry) = &checkpoint.carry {
+            carry.prefix.clone()
+        } else if base == inline.start {
             String::new()
         } else if self
             .source
@@ -82,16 +97,39 @@ impl Markdown {
                 .saturating_sub(self.reference_cost)
                 .saturating_sub(cost),
         );
+        let continues = |event: &Event<'_>, range: &Range<usize>| {
+            range.start < sentinel
+                && range.end > sentinel
+                && checkpoint.carry.as_ref().is_some_and(|carry| {
+                    range.start == sentinel - carry.prefix.len()
+                        && match (carry.kind, event) {
+                            (None, Event::Code(_)) => true,
+                            (Some(kind), Event::Start(tag)) => tag.to_end() == kind,
+                            _ => false,
+                        }
+                })
+        };
+        if checkpoint.carry.is_some()
+            && !events.iter().any(|(event, range)| continues(event, range))
+        {
+            return None;
+        }
         if !paragraph(&source, &events)
             || events.iter().any(|(event, range)| {
                 matches!(event, Event::Start(tag) if !matches!(tag, Tag::Paragraph))
                     && range.start < sentinel
                     && range.end > sentinel
+                    && !continues(event, range)
             })
         {
             return None;
         }
-        let (boundary, provisional, openers) = boundary(&source, &events, sentinel);
+        let (boundary, mut provisional, openers, limit) = boundary(&source, &events, sentinel);
+        let carry = carry(&source, &events, sentinel)
+            .filter(|(end, _)| *end > provisional.unwrap_or(sentinel) && *end <= limit);
+        if let Some((end, _)) = &carry {
+            provisional = Some(*end);
+        }
         let (cost, valid) = references::extend_expansion(
             cost,
             &checkpoint.valid,
@@ -113,7 +151,17 @@ impl Markdown {
         let mut previous_mark = mark;
         let mut depth = 0usize;
         for (event, range) in &events {
+            if range.end <= sentinel && !matches!(event, Event::Start(_) | Event::End(_)) {
+                continue;
+            }
             match event {
+                Event::Code(text) if range.start < sentinel => {
+                    // The retained code prefix contains one synthetic content byte.
+                    renderer.event_in(
+                        &Event::Code(text.get(1..).unwrap_or_default().into()),
+                        Some(&self.references),
+                    );
+                }
                 Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph) => continue,
                 Event::Text(text) if source.get(range.clone()) == Some(text.as_ref()) => {
                     let start = sentinel.saturating_sub(range.start).min(text.len());
@@ -151,6 +199,13 @@ impl Markdown {
             if depth == 0 && range.end == boundary {
                 committed = renderer.inline_mark(mark);
             }
+            if carry.as_ref().is_some_and(|(end, _)| match event {
+                Event::Code(_) => range.start < *end && *end < range.end,
+                Event::Text(_) => range.end == *end,
+                _ => false,
+            }) {
+                previous_mark = renderer.inline_mark(mark);
+            }
             if depth == 0 && Some(range.end) == provisional {
                 previous_mark = renderer.inline_mark(mark);
             }
@@ -173,6 +228,9 @@ impl Markdown {
                 cost,
                 valid,
                 openers: delimiters::State::compile(&openers, boundary),
+                carry: (boundary == sentinel)
+                    .then(|| checkpoint.carry.clone())
+                    .flatten(),
             },
             provisional: provisional.map(|end| {
                 let (cost, valid) = references::extend_expansion(
@@ -186,6 +244,11 @@ impl Markdown {
                     cost,
                     valid,
                     openers: delimiters::State::compile(&openers, end),
+                    carry: carry.as_ref().map(|(_, carry)| carry.clone()).or_else(|| {
+                        (end == sentinel)
+                            .then(|| checkpoint.carry.clone())
+                            .flatten()
+                    }),
                 }
             }),
             start: inline.start,
@@ -205,7 +268,7 @@ impl Markdown {
             .rsplit_once('&')
             .is_some_and(|(_, rest)| rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '#'));
         self.plain_spaces = tail.bytes().rev().take_while(|byte| *byte == b' ').count();
-        self.plain = tail.len() >= 8 && !table_candidate(&source) && !block_pending(tail.rsplit('\n').next().unwrap_or_default()) && events.iter().rev().find(|(event, _)| !matches!(event, Event::End(_)))
+        self.plain = tail.len() >= 8 && !tail.rsplit('\n').next().unwrap_or_default().trim_start_matches([' ', '\t']).starts_with('<') && !table_candidate(&source) && !block_pending(tail.rsplit('\n').next().unwrap_or_default()) && events.iter().rev().find(|(event, _)| !matches!(event, Event::End(_)))
             .is_some_and(|(event, range)| matches!(event, Event::Text(text) if text.chars().next_back().is_some_and(plain_character))
                 && range.end > sentinel && range.end == source.trim_end_matches(' ').len());
         Some(first)
@@ -232,6 +295,7 @@ impl Markdown {
                 cost: 0,
                 valid: 0..usize::MAX,
                 openers: delimiters::State::default(),
+                carry: None,
             },
             provisional: None,
             start: base + source.len() - source.trim_start_matches([' ', '\t']).len(),
@@ -243,7 +307,122 @@ impl Markdown {
     }
 }
 
+fn carry(
+    source: &str,
+    events: &[(Event<'_>, Range<usize>)],
+    sentinel: usize,
+) -> Option<(usize, Carry)> {
+    let mut style = None;
+    let mut depth = 0usize;
+    let mut candidate = None;
+    let mut blocked = false;
+    for (event, range) in events {
+        match event {
+            Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph) => {}
+            Event::Start(tag) => {
+                depth += 1;
+                if depth == 1 {
+                    blocked = false;
+                    let marker = source.as_bytes().get(range.start);
+                    let whole_run =
+                        range.start == 0 || source.as_bytes().get(range.start - 1) != marker;
+                    style = if whole_run {
+                        match tag {
+                            Tag::Emphasis => {
+                                Some((tag.to_end(), &source[range.start..range.start + 1]))
+                            }
+                            Tag::Strong => {
+                                Some((tag.to_end(), &source[range.start..range.start + 2]))
+                            }
+                            Tag::Strikethrough => None,
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    if whole_run && matches!(tag, Tag::Strikethrough) {
+                        let count = source[range.start..]
+                            .bytes()
+                            .take_while(|byte| *byte == b'~')
+                            .count();
+                        style = Some((tag.to_end(), &source[range.start..range.start + count]));
+                    }
+                }
+            }
+            Event::End(_) => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    style = None;
+                }
+            }
+            Event::Text(text)
+                if depth == 1
+                    && range.end > sentinel
+                    && source.get(range.clone()) == Some(text.as_ref()) =>
+            {
+                blocked |= unstable_text(source, range.clone());
+                if !blocked && let Some((kind, opening)) = style {
+                    candidate = Some((
+                        range.end,
+                        Carry {
+                            prefix: format!("{opening}{}", left_context(text)),
+                            kind: Some(kind),
+                        },
+                    ));
+                }
+            }
+            Event::Code(text) if depth == 0 => {
+                let raw = source.get(range.clone())?;
+                let count = raw.bytes().take_while(|byte| *byte == b'`').count();
+                let end = range.end.checked_sub(count)?;
+                let body = source.get(range.start + count..end)?;
+                if count > 0
+                    && end > sentinel
+                    && body == text.as_ref()
+                    && !body.starts_with(' ')
+                    && !body.contains('\n')
+                {
+                    candidate = Some((
+                        end,
+                        Carry {
+                            prefix: format!("{}x", &raw[..count]),
+                            kind: None,
+                        },
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    candidate
+}
+
+fn unstable_text(source: &str, range: Range<usize>) -> bool {
+    #[cfg(test)]
+    work::scan(range.len());
+    let mut cursor = range.start;
+    for (index, byte) in source[range.clone()].bytes().enumerate() {
+        let position = range.start + index;
+        if position < cursor {
+            continue;
+        }
+        match byte {
+            b'*' | b'_' | b'~' => match delimiters::scan(source, position, 0) {
+                Some((end, None)) if end < source.len() => cursor = end,
+                _ => return true,
+            },
+            b'[' | b'`' | b'<' | b'&' | b'\\' => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 fn left_context(source: &str) -> String {
+    let trimmed = source.trim_end_matches([' ', '\t']);
+    if trimmed.ends_with('\n') {
+        return format!("x\n{}", &source[trimmed.len()..]);
+    }
     match source.chars().next_back() {
         Some(c) if c.is_whitespace() => "x ".into(),
         Some(c) if !c.is_ascii() => format!("x{c}"),
@@ -339,7 +518,12 @@ fn boundary(
     source: &str,
     events: &[(Event<'_>, Range<usize>)],
     sentinel: usize,
-) -> (usize, Option<usize>, Vec<(usize, delimiters::Opener)>) {
+) -> (
+    usize,
+    Option<usize>,
+    Vec<(usize, delimiters::Opener)>,
+    usize,
+) {
     let (prefix, row) = source.rsplit_once('\n').unwrap_or(("", source));
     let mut limit = if block_pending(row) {
         prefix.len()
@@ -493,7 +677,7 @@ fn boundary(
             boundary = range.end;
         }
     }
-    (boundary, provisional, openers)
+    (boundary, provisional, openers, limit)
 }
 
 impl render::Renderer {

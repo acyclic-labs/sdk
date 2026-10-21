@@ -257,7 +257,9 @@ fn parsed_table(
     let Some((Event::Start(Tag::Table(alignments)), start)) = events.first() else {
         return None;
     };
-    if start.start != 0
+    if !source
+        .get(..start.start)
+        .is_some_and(|prefix| prefix.bytes().all(|byte| matches!(byte, b' ' | b'\t')))
         || !events.last().is_some_and(|(event, range)| {
             matches!(event, Event::End(TagEnd::Table)) && range.end == source.len()
         })

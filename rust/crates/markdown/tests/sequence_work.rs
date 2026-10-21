@@ -259,3 +259,109 @@ proptest! {
         prop_assert!(large.1 <= 2 * small.1 + 1024, "storage {} -> {}", small.1, large.1);
     }
 }
+
+#[test]
+fn hard_break_checkpoint_preserves_following_indentation() {
+    measure(&[16, 16, 33], 1, "unused", 4, &[1, 3], 2);
+}
+
+#[test]
+fn repeated_inline_spans_have_linear_work() {
+    for (actions, count, separators) in [
+        (&[16][..], 6, &[0, 1, 0, 1][..]),
+        (&[26][..], 7, &[0, 3][..]),
+        (&[17][..], 6, &[0][..]),
+        (&[19][..], 5, &[0][..]),
+        (&[13, 14][..], 1, &[1, 0, 0][..]),
+    ] {
+        let small = measure(actions, count, "unused", 3, separators, 1);
+        let large = measure(actions, count, "unused", 3, separators, 2);
+        assert!(
+            large.0 <= 2 * small.0 + 1024,
+            "actions {actions:?}: work {} -> {}",
+            small.0,
+            large.0
+        );
+    }
+}
+
+#[test]
+fn inline_spans_preserve_every_cut() {
+    for span in [
+        "`a`",
+        "``a`b``",
+        "*a*",
+        "_a_",
+        "**a**",
+        "__a__",
+        "~~a~~",
+        "~a~",
+        "[a](u)",
+        "![a](u)",
+        "&amp;",
+        "\\*",
+        "***a***",
+        "` a `",
+        "*a b*",
+        "`a\nb`",
+        "*!`¡À*",
+        "[*x][y][z*][ref]",
+    ] {
+        for middle in ["", " ", "x", "!", "  \n ", "\\\n "] {
+            super::block_checkpoints::check_inline_cuts(&[&format!(
+                "{span}{middle}{span}{middle}{span}\n\na"
+            )]);
+        }
+    }
+}
+
+#[test]
+fn retained_span_content_is_processed_once() {
+    for span in [
+        "`code`",
+        "_em_",
+        "*em*",
+        "**bold**",
+        "__bold__",
+        "~~strike~~",
+    ] {
+        let measure = |count| {
+            let mut markdown = Markdown::default();
+            let mut used = 0;
+            for index in 0..count {
+                let before = work::current();
+                markdown.push(span);
+                used += work::current() - before;
+                assert_eq!(
+                    markdown.lines(),
+                    full_parse(&span.repeat(index + 1)),
+                    "span {span:?}, count {}",
+                    index + 1
+                );
+            }
+            assert_eq!(markdown.lines(), full_parse(&span.repeat(count)));
+            used
+        };
+        let small = measure(128);
+        let large = measure(256);
+        assert!(large <= 2 * small + 1024, "{span}: work {small} -> {large}");
+    }
+}
+
+#[test]
+fn partial_html_block_names_remain_provisional() {
+    super::block_checkpoints::check_inline_cuts(&[
+        "[x](url)```rust\n<div>\na",
+        "word\n</div>\na",
+        "word\n <table>\na",
+    ]);
+}
+
+#[test]
+fn short_inline_spans_preserve_all_partitions() {
+    for source in [
+        "*a*b", "_a_b", "`a`b", "**a**b", "~~a~~b", "`a``a`", "_a__a_", "*a**a*",
+    ] {
+        super::block_checkpoints::check_all_partitions(source);
+    }
+}

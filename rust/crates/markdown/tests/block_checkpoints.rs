@@ -1,6 +1,6 @@
 use super::*;
 
-fn check_all_partitions(source: &str) {
+pub(super) fn check_all_partitions(source: &str) {
     let archive = "retained archive\n\n";
     let ends: Vec<_> = source
         .char_indices()
@@ -100,6 +100,7 @@ fn list_marker_variants_preserve_every_partition() {
 
 #[test]
 fn list_indentation_and_padding_preserve_every_cut() {
+    let mut fixtures = Vec::new();
     for marker in [
         "*",
         "-",
@@ -117,25 +118,48 @@ fn list_indentation_and_padding_preserve_every_cut() {
             for padding in ["", " ", "  ", "    ", "     ", "\t", " \t", "\t "] {
                 for content in ["a", ""] {
                     for next in ["  a", "   a", "    a", "     a", "\ta", "*"] {
-                        check_rewrites(&[&format!(
-                            "{indent}{marker}{padding}{content}\n{next}\n\na"
-                        )]);
-                        check_rewrites(&[&format!(
+                        fixtures.push(format!("{indent}{marker}{padding}{content}\n{next}\n\na"));
+                        fixtures.push(format!(
                             "> {indent}{marker}{padding}{content}\n> {next}\n>\n\na"
-                        )]);
-                        check_rewrites(&[&format!(
+                        ));
+                        fixtures.push(format!(
                             "- {indent}{marker}{padding}{content}\n  {next}\n\na"
-                        )]);
+                        ));
                     }
                 }
             }
         }
     }
+
+    fixtures.sort_unstable();
+    fixtures.dedup();
+    let workers = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(16);
+    std::thread::scope(|scope| {
+        for batch in fixtures.chunks(fixtures.len().div_ceil(workers)) {
+            scope.spawn(move || {
+                let sources: Vec<_> = batch.iter().map(String::as_str).collect();
+                check_rewrites(&sources);
+            });
+        }
+    });
 }
 
-fn check_rewrites(sources: &[&str]) {
+pub(super) fn check_rewrites(sources: &[&str]) {
+    let mut previous = String::new();
+    let mut expected = Vec::new();
     for source in sources {
         let source = format!("retained archive\n\n{source}");
+        let shared = previous
+            .bytes()
+            .zip(source.bytes())
+            .take_while(|(a, b)| a == b)
+            .count();
+        expected.truncate(shared + 1);
+        for end in expected.len()..=source.len() {
+            expected.push(source.get(..end).map(full_parse));
+        }
         for cut in source.char_indices().map(|(index, _)| index) {
             let mut markdown = Markdown::default();
             markdown.push(&source[..cut]);
@@ -147,10 +171,35 @@ fn check_rewrites(sources: &[&str]) {
                 let end = markdown.source.len();
                 assert_eq!(
                     rows,
-                    full_parse(&source[..end]),
+                    expected[end].as_ref().unwrap().as_slice(),
                     "cut {cut}, end {end}: {source:?}"
                 );
             }
+        }
+        previous = source;
+    }
+}
+
+pub(super) fn check_inline_cuts(sources: &[&str]) {
+    check_rewrites(sources);
+    for source in sources {
+        let source = format!("retained archive\n\n{source}");
+        let expected = full_parse(&source);
+        let mut whole = Markdown::default();
+        whole.push(&source);
+        assert_eq!(whole.lines(), expected);
+        for cut in source
+            .char_indices()
+            .map(|(index, _)| index)
+            .chain([source.len()])
+        {
+            let mut markdown = Markdown::default();
+            markdown.push(&source[..cut]);
+            let mut rows = markdown.lines().to_vec();
+            let changed = markdown.push(&source[cut..]);
+            rows.truncate(changed);
+            rows.extend_from_slice(&markdown.lines()[changed..]);
+            assert_eq!(rows, expected, "two chunks at {cut}: {source:?}");
         }
     }
 }
