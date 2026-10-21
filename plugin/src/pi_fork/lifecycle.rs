@@ -100,6 +100,9 @@ impl<'a> PiForkCoordinator<'a> {
             .is_none()
         {
             let commands = self.runtime.runtime.commands().with_fork_preparer(preparer);
+            // The preparation run is its own invocation on the fork's ledger.
+            let run = work.invocation_window()?;
+            let work = &run;
             let recovered = crate::pi_native_host::recover_task(
                 &self.runtime,
                 plan.preparation.task_id(),

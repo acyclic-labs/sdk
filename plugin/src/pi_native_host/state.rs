@@ -330,7 +330,7 @@ impl PiNativeCommandHost {
                 });
             }
         } else {
-            handles.preparation_work = Some(work.clone());
+            handles.preparation_work = Some(work.outside_window());
         }
         Ok(())
     }

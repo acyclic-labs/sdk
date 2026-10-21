@@ -305,6 +305,9 @@ impl EffectProvider for PiRootProvider {
     {
         self.check_native_ledger(work)?;
         acyclic_harness::NativeFutureBundle::new(work, || async move {
+            // The root effect is its own invocation on the session ledger.
+            let window = work.invocation_window()?;
+            let work = &window;
             let mut state = self.state.lock().await;
             let original = self
                 .authenticate_with_native_work(request.attempt_id, false, work)
@@ -365,6 +368,9 @@ impl EffectProvider for PiRootProvider {
     > {
         self.check_native_ledger(work)?;
         acyclic_harness::NativeFutureBundle::new(work, || async move {
+            // The root effect is its own invocation on the session ledger.
+            let window = work.invocation_window()?;
+            let work = &window;
             let mut state = self.state.lock().await;
             self.execution_owner()?
                 .verify(

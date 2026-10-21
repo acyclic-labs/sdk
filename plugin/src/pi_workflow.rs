@@ -18,36 +18,37 @@ impl PiControlHost<'_> {
         let PluginTaskBinding::Pi(binding) = &self.retained.task_binding else {
             return Err(boundary("Pi driver requires its original admitted root"));
         };
+        // The root run is its own invocation on the control request's ledger.
+        let work = &self.work.invocation_window()?;
         {
             let admission = self
                 .runtime
                 .runtime
                 .task_host()
-                .observe_admission_with_native_work(binding.task_id, &self.work)?
+                .observe_admission_with_native_work(binding.task_id, work)?
                 .await?;
             pi_recovery::authenticate_pi_task(
                 &admission.0,
                 binding,
                 pi_recovery::PiTaskOrigin::RootState(self.retained),
-                &self.work,
+                work,
                 self.runtime.definition.identity(),
             )?;
         }
         let (recovered, custody) =
-            pi_native_host::recover_task(&self.runtime, binding.task_id, &self.work).await?;
+            pi_native_host::recover_task(&self.runtime, binding.task_id, work).await?;
         match recovered {
             WorkPull::Claimed(lease) | WorkPull::Unresolved { lease, .. } => {
                 let result = self
                     .runtime
                     .runtime
-                    .resume_task_with_native_work(lease, custody, self, 8, &self.work)
+                    .resume_task_with_native_work(lease, custody, self, 8, work)
                     .await?;
                 Ok((Some(result.0), result.1))
             }
             WorkPull::Idle => {
                 drop(custody);
-                let id =
-                    guarded_cli_text(&["pi-native:", &self.resources.instance_id], &self.work)?;
+                let id = guarded_cli_text(&["pi-native:", &self.resources.instance_id], work)?;
                 let worker = Worker {
                     id: id.0,
                     available: Default::default(),
@@ -58,7 +59,7 @@ impl PiControlHost<'_> {
                     &worker,
                     binding.task_id,
                     self,
-                    &self.work,
+                    work,
                 )
                 .await;
                 drop(worker);

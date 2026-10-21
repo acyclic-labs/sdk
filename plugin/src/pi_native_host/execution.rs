@@ -26,7 +26,8 @@ impl PiNativeCommandHost {
     ) -> Result<(Option<TaskWorkerAttempt>, NativeAllocation)> {
         let entry = self.registered_entry(task)?;
         let _run = entry.run.lock().await;
-        let work = self.preparation_work(&entry).await?;
+        // Each run is its own invocation on the task's session ledger.
+        let work = self.preparation_work(&entry).await?.invocation_window()?;
         let observed = self.resume_claim(task, &work).await?;
         if observed.0.is_some() {
             return Ok(observed);
@@ -52,7 +53,7 @@ impl PiNativeCommandHost {
     ) -> Result<(Option<TaskWorkerAttempt>, NativeAllocation)> {
         let entry = self.registered_entry(task)?;
         let _run = entry.run.lock().await;
-        let work = self.preparation_work(&entry).await?;
+        let work = self.preparation_work(&entry).await?.invocation_window()?;
         self.resume_claim(task, &work).await
     }
 
@@ -117,7 +118,7 @@ impl PiNativeCommandHost {
         }
         let task = bound.owner.task_id();
         let entry = self.registered_entry(task)?;
-        let work = self.preparation_work(&entry).await?;
+        let work = self.preparation_work(&entry).await?.invocation_window()?;
         let maximum = bound
             .context
             .scope()

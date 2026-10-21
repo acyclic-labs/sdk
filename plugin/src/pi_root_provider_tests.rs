@@ -235,8 +235,9 @@ impl Fixture {
             labels: Default::default(),
         };
         let (first, custody) = {
-            let io =
-                acyclic_harness::filesystem::PreparationIo::from_native_work(&startup).unwrap();
+            // Like every production run, the worker run is its own invocation window.
+            let run = startup.invocation_window().unwrap();
+            let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&run).unwrap();
             let value = runtime
                 .runtime
                 .run_operation(&worker, task, &runtime.runtime.commands(), 1, Some(&io))
