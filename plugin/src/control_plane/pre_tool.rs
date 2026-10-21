@@ -170,20 +170,30 @@ impl ControlPlane {
             .roots
             .get(&root_key(selected_root_id))
             .ok_or_else(|| "caller root is absent from its workspace context".to_owned())?;
-        let selected_binding = self
-            .state
-            .roots
-            .get(&root_key(selected_root_id))
-            .ok_or_else(|| "caller physical root binding is missing".to_owned())?;
         let selected_path = route.mount_path.join(selected_route_root.mount_name());
+        // The child's views are forks of its parent's checkout roots, so a
+        // path the host spells under a parent root names the same relative
+        // path in the child's view of that root.
+        let views = route
+            .roots
+            .iter()
+            .map(|(key, route_root)| {
+                self.state
+                    .roots
+                    .get(key)
+                    .map(|binding| {
+                        RootView::new(
+                            &binding.path,
+                            route.mount_path.join(route_root.mount_name()),
+                        )
+                    })
+                    .ok_or_else(|| "caller physical root binding is missing".to_owned())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let original =
             normalize_tool_input(input.get("tool_input").cloned().unwrap_or(Value::Null))?;
-        for binding in self.state.roots.values() {
-            reject_original_root_references(&original, None, &binding.path.to_string_lossy())?;
-        }
         let acyclic_cli = is_acyclic_cli_invocation(&tool_name, &original)?;
-        let mut updated =
-            rewrite_tool_input(&tool_name, original, &selected_binding.path, &selected_path)?;
+        let mut updated = rewrite_tool_input(&tool_name, original, &views, &selected_path)?;
         if acyclic_cli {
             // The CLI opens its own core operation lease. Wrapping it in the host-tool
             // lease would deadlock the compatibility command behind itself.

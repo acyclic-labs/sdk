@@ -136,9 +136,10 @@ const shell = (id, command) => (windows
   : bash(id, command));
 const setText = (path, text) => (windows ? `Set-Content -NoNewline -Path ${path} -Value ${text}` : `printf ${text} > ${path}`);
 const after = id => `"tool_use_id":"${id}"`;
-// Children write through the shell tool: Claude Code resolves a file tool's
-// relative path against the session directory, which the plugin denies to an
-// isolated child (finding F3 in the plugin-e2e findings).
+// Claude Code resolves a child's relative file-tool path against the
+// session directory, the parent's checkout: the plugin maps it to the same
+// path in the child's fork view. The merge and left children write with the
+// file tool, the others with the shell tool.
 const childStep = (child, tool) => ({ when: { user: `CHILD-${child}` }, tools: [tool] });
 const childDone = (child, id) => ({ when: { user: `CHILD-${child}`, contains: after(id) }, text: [`${child.toUpperCase()}DONE`] });
 
@@ -165,7 +166,7 @@ const claudeCases = {
     steps: [
       { when: { user: "CASE-merge" }, tools: [agent("a", "merge")] },
       childDone("merge", "merge-w"),
-      childStep("merge", shell("merge-w", setText("child.txt", "child"))),
+      childStep("merge", write("merge-w", "child.txt", "child")),
       { when: { user: "CASE-merge", tool_result: "MERGEDONE" }, tools: [write("p", "parent.txt", "parent")] },
       { when: { user: "CASE-merge", contains: after("p") }, tools: [shell("m", ALL("merge"))] },
       { when: { user: "CASE-merge", contains: after("m") }, text: ["done"] },
@@ -196,7 +197,7 @@ const claudeCases = {
       { when: { user: "CASE-parallel" }, tools: [agent("a1", "left"), agent("a2", "right")] },
       childDone("left", "left-w"),
       childDone("right", "right-w"),
-      childStep("left", shell("left-w", setText("left.txt", "left"))),
+      childStep("left", write("left-w", "left.txt", "left")),
       childStep("right", shell("right-w", setText("right.txt", "right"))),
       { when: { user: "CASE-parallel", contains: "LEFTDONE", tool_result: "RIGHTDONE" }, tools: [shell("m", ALL("merge"))] },
       { when: { user: "CASE-parallel", contains: after("m") }, text: ["done"] },

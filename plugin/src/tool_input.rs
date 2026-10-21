@@ -13,16 +13,183 @@ pub(crate) async fn wait_for_root_release(
         .map_err(|error| format!("filesystem release barrier failed: {error}"))
 }
 
+/// A parent checkout root and the child's fork view of the same tree.
+pub(crate) struct RootView {
+    /// The parent's checkout root in each spelling a host may use for it,
+    /// longest first so a spelling never matches inside a longer one.
+    spellings: Vec<String>,
+    /// The child's fork view of that root.
+    view: PathBuf,
+    /// The view in comparable form: text already naming the view is kept,
+    /// even where the view lies under the root it maps.
+    view_spelling: String,
+}
+
+impl RootView {
+    pub(crate) fn new(root: &Path, view: PathBuf) -> Self {
+        let mut spellings = vec![comparable_path(&root.to_string_lossy())];
+        if let Ok(canonical) = root.canonicalize() {
+            spellings.push(comparable_path(&canonical.to_string_lossy()));
+        }
+        spellings.sort_by_key(|spelling| std::cmp::Reverse(spelling.len()));
+        spellings.dedup();
+        let view_spelling = comparable_path(&view.to_string_lossy());
+        Self {
+            spellings,
+            view,
+            view_spelling,
+        }
+    }
+}
+
+/// The Windows verbatim path prefix.
+const VERBATIM_PREFIX: &str = r"\\?\";
+
+/// A path spelling in comparable form: on Windows without the verbatim
+/// prefix, with one separator and ASCII case folded.
+fn comparable_path(path: &str) -> String {
+    if cfg!(windows) {
+        comparable_text(path.strip_prefix(VERBATIM_PREFIX).unwrap_or(path))
+    } else {
+        path.to_owned()
+    }
+}
+
+/// `text` with each character in comparable form at its own byte offset:
+/// ASCII case folding and separator unification preserve lengths, so a
+/// match in the comparable text is a match at the same offsets in `text`.
+fn comparable_text(text: &str) -> String {
+    if cfg!(windows) {
+        text.replace('/', "\\").to_ascii_lowercase()
+    } else {
+        text.to_owned()
+    }
+}
+
+fn is_path_separator(character: char) -> bool {
+    character == '/' || cfg!(windows) && character == '\\'
+}
+
+/// Whether `character` continues a path component, so a root spelling that
+/// borders it is part of a longer name rather than the root itself.
+fn continues_name(character: char) -> bool {
+    character.is_alphanumeric() || matches!(character, '_' | '-' | '.' | '~')
+}
+
+/// Rewrites each absolute path under a parent checkout root in `text` to the
+/// same relative path in the child's fork view of that root. Paths outside
+/// every root are left for the ordinary access decision.
+pub(crate) fn map_root_references(text: &str, views: &[RootView]) -> String {
+    let comparable = comparable_text(text);
+    let mut mapped = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut index = 0;
+    while let Some(character) = text[index..].chars().next() {
+        let at_boundary = text[..index]
+            .chars()
+            .next_back()
+            .is_none_or(|before| !continues_name(before) && !is_path_separator(before));
+        // A verbatim prefix belongs to the path it introduces.
+        let body = if cfg!(windows) && comparable[index..].starts_with(VERBATIM_PREFIX) {
+            index + VERBATIM_PREFIX.len()
+        } else {
+            index
+        };
+        let names = |spelling: &str| {
+            let end = body + spelling.len();
+            let bounded = text
+                .get(end..)
+                .and_then(|rest| rest.chars().next())
+                .is_none_or(|after| is_path_separator(after) || !continues_name(after));
+            (at_boundary && bounded && comparable.get(body..end) == Some(spelling)).then_some(end)
+        };
+        if let Some(end) = views.iter().find_map(|view| names(&view.view_spelling)) {
+            index = end;
+        } else if let Some((end, view)) = views.iter().find_map(|view| {
+            view.spellings
+                .iter()
+                .find_map(|spelling| names(spelling).map(|end| (end, view)))
+        }) {
+            mapped.push_str(&text[copied..index]);
+            mapped.push_str(&view.view.to_string_lossy());
+            copied = end;
+            index = end;
+        } else {
+            index += character.len_utf8();
+        }
+    }
+    mapped.push_str(&text[copied..]);
+    mapped
+}
+
+/// Keys whose strings are file content or edit text, never paths: they reach
+/// the workspace verbatim.
+fn is_content_field(key: &str) -> bool {
+    matches!(
+        key,
+        "content" | "old_string" | "new_string" | "new_source" | "old_str" | "new_str"
+    )
+}
+
+/// Maps parent-root references in every non-content string of a tool input.
+/// An apply_patch command maps only its file headers: its body is content.
+fn map_tool_input_roots(tool_name: &str, value: &mut Value, key: Option<&str>, views: &[RootView]) {
+    match value {
+        Value::String(text) if key.is_none_or(|key| !is_content_field(key)) => {
+            *text = if tool_name == "apply_patch" && key == Some("command") {
+                text.split('\n')
+                    .map(|line| match patch_header_path(line) {
+                        Some((prefix, path)) => {
+                            format!("{prefix}{}", map_root_references(path, views))
+                        }
+                        None => line.to_owned(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                map_root_references(text, views)
+            };
+        }
+        Value::Array(values) => {
+            for value in values {
+                map_tool_input_roots(tool_name, value, key, views);
+            }
+        }
+        Value::Object(values) => {
+            for (key, value) in values {
+                map_tool_input_roots(tool_name, value, Some(key), views);
+            }
+        }
+        _ => {}
+    }
+}
+
+const PATCH_HEADER_PREFIXES: [&str; 5] = [
+    "*** Add File: ",
+    "*** Update File: ",
+    "*** Delete File: ",
+    "*** Move to: ",
+    "*** Copy to: ",
+];
+
+fn patch_header_path(line: &str) -> Option<(&'static str, &str)> {
+    PATCH_HEADER_PREFIXES
+        .iter()
+        .find_map(|prefix| line.strip_prefix(prefix).map(|path| (*prefix, path)))
+}
+
+/// Routes a child's tool input into its fork view: an absolute path under a
+/// parent checkout root becomes the same relative path in the child's view
+/// of that root, a relative path resolves in `child`, and every path is then
+/// held to the child's workspace.
 pub(crate) fn rewrite_tool_input(
     tool_name: &str,
     mut input: Value,
-    root: &Path,
+    views: &[RootView],
     child: &Path,
 ) -> Result<Value, String> {
-    let root_text = root.to_string_lossy();
     let child_text = child.to_string_lossy();
-    reject_original_root_references(&input, None, &root_text)?;
-    rewrite_strings(&mut input, &root_text, &child_text);
+    map_tool_input_roots(tool_name, &mut input, None, views);
     rewrite_relative_tool_paths(&mut input, None, child)?;
     if matches!(tool_name, "Bash" | "PowerShell") {
         let command_key = if input.get("command").is_some() {
@@ -278,6 +445,7 @@ pub(crate) fn is_path_field(key: &str) -> bool {
             | "source"
             | "cwd"
             | "workdir"
+            | "notebook_path"
             | "referenced_image_paths"
     )
 }
@@ -355,42 +523,6 @@ pub(crate) fn validate_shell_paths(command: &str, child: &Path) -> Result<(), St
         validate_path(token, child)?;
     }
     Ok(())
-}
-
-pub(crate) fn reject_original_root_references(
-    value: &Value,
-    key: Option<&str>,
-    root: &str,
-) -> Result<(), String> {
-    match value {
-        Value::String(text) if !matches!(key, Some("workdir" | "cwd")) => {
-            let contains = if cfg!(target_os = "windows") {
-                text.to_lowercase().contains(&root.to_lowercase())
-            } else {
-                text.contains(root)
-            };
-            if contains {
-                return Err(
-                    "hard-coded parent checkout paths are denied in an isolated agent workspace"
-                        .to_owned(),
-                );
-            }
-            Ok(())
-        }
-        Value::Array(values) => {
-            for value in values {
-                reject_original_root_references(value, key, root)?;
-            }
-            Ok(())
-        }
-        Value::Object(values) => {
-            for (key, value) in values {
-                reject_original_root_references(value, Some(key), root)?;
-            }
-            Ok(())
-        }
-        _ => Ok(()),
-    }
 }
 
 /// Host subtrees owned by version control or SDK state, never workspace
@@ -594,23 +726,6 @@ pub(crate) fn normalize_tool_input(input: Value) -> Result<Value, String> {
     }
 }
 
-pub(crate) fn rewrite_strings(value: &mut Value, from: &str, to: &str) {
-    match value {
-        Value::String(text) => *text = text.replace(from, to),
-        Value::Array(values) => {
-            for value in values {
-                rewrite_strings(value, from, to);
-            }
-        }
-        Value::Object(values) => {
-            for value in values.values_mut() {
-                rewrite_strings(value, from, to);
-            }
-        }
-        _ => {}
-    }
-}
-
 pub(crate) fn rewrite_relative_tool_paths(
     value: &mut Value,
     key: Option<&str>,
@@ -647,39 +762,31 @@ pub(crate) fn rewrite_relative_tool_paths(
 }
 
 pub(crate) fn rewrite_patch_header(line: &str, child: &Path) -> Result<String, String> {
-    for prefix in [
-        "*** Add File: ",
-        "*** Update File: ",
-        "*** Delete File: ",
-        "*** Move to: ",
-        "*** Copy to: ",
-    ] {
-        if let Some(path) = line.strip_prefix(prefix) {
-            let path = Path::new(path);
-            if path
-                .components()
-                .any(|component| matches!(component, Component::ParentDir))
-            {
-                return Err("parent traversal is denied in an isolated agent patch".to_owned());
-            }
-            validate_path(
-                path.to_str()
-                    .ok_or_else(|| "patch path is not valid Unicode".to_owned())?,
-                child,
-            )?;
-            if path.is_absolute() {
-                if !path.starts_with(child) {
-                    return Err(format!(
-                        "absolute patch path '{}' escapes the isolated agent workspace",
-                        path.display()
-                    ));
-                }
-                return Ok(line.to_owned());
-            }
-            return Ok(format!("{prefix}{}", child.join(path).display()));
-        }
+    let Some((prefix, path)) = patch_header_path(line) else {
+        return Ok(line.to_owned());
+    };
+    let path = Path::new(path);
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err("parent traversal is denied in an isolated agent patch".to_owned());
     }
-    Ok(line.to_owned())
+    validate_path(
+        path.to_str()
+            .ok_or_else(|| "patch path is not valid Unicode".to_owned())?,
+        child,
+    )?;
+    if path.is_absolute() {
+        if !path.starts_with(child) {
+            return Err(format!(
+                "absolute patch path '{}' escapes the isolated agent workspace",
+                path.display()
+            ));
+        }
+        return Ok(line.to_owned());
+    }
+    Ok(format!("{prefix}{}", child.join(path).display()))
 }
 
 pub(crate) fn subagent_context(path: &Path) -> Value {
