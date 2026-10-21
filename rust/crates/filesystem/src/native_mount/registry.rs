@@ -7,7 +7,7 @@ static DIRECTORY: std::sync::OnceLock<Result<PathBuf, Arc<std::io::Error>>> =
 
 pub(super) fn initialize() -> Result<(), NativeMountError> {
     DIRECTORY.get_or_init(|| {
-        let directory = dirs::data_local_dir()
+        let directory = persistent_base()
             .ok_or_else(|| {
                 std::io::Error::new(
                     std::io::ErrorKind::NotFound,
@@ -84,3 +84,25 @@ where
     )?
     .into())
 }
+
+// Match the service's persistent state-root selection before consulting OS
+// defaults. Known Folder lookup ignores an explicitly supplied LOCALAPPDATA.
+fn persistent_base() -> Option<PathBuf> {
+    #[cfg(windows)]
+    if let Some(directory) = std::env::var_os("LOCALAPPDATA") {
+        return Some(directory.into());
+    }
+    #[cfg(not(windows))]
+    {
+        if let Some(directory) = std::env::var_os("XDG_STATE_HOME") {
+            return Some(directory.into());
+        }
+        if let Some(directory) = std::env::var_os("HOME") {
+            return Some(PathBuf::from(directory).join(".local").join("state"));
+        }
+    }
+    dirs::data_local_dir()
+}
+
+#[cfg(test)]
+mod tests;
