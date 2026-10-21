@@ -4,7 +4,7 @@ use acyclic_fs::{DemandError, HeldRoot};
 
 pub(super) struct Exclusion {
     common: HeldRoot,
-    pattern: String,
+    pattern: Vec<u8>,
 }
 
 fn missing(error: &DemandError) -> bool {
@@ -217,17 +217,16 @@ impl Exclusion {
         // Serialize the read/append pair across processes; retain opaque user
         // bytes and avoid duplicate records on reopen.
         file.lock().map_err(storage)?;
-        let (present, line_ended) =
-            contains(&mut file, self.pattern.as_bytes()).map_err(storage)?;
+        let (present, line_ended) = contains(&mut file, &self.pattern).map_err(storage)?;
         if !present {
-            let mut appended = String::new();
+            let mut appended = Vec::new();
             if !line_ended {
-                appended.push('\n');
+                appended.push(b'\n');
             }
-            appended.push_str("# acyclic harness checkout incarnation\n");
-            appended.push_str(&self.pattern);
-            appended.push('\n');
-            acyclic_native_runtime::write_file_all(&mut file, appended.as_bytes()).map_err(storage)?;
+            appended.extend_from_slice(b"# acyclic harness checkout incarnation\n");
+            appended.extend_from_slice(&self.pattern);
+            appended.push(b'\n');
+            acyclic_native_runtime::write_file_all(&mut file, &appended).map_err(storage)?;
         }
         // A previous publisher may have died after writing the complete rule
         // but before flushing it. The reader must settle those same bytes too.
@@ -236,25 +235,32 @@ impl Exclusion {
     }
 }
 
-fn pattern(path: &Path) -> Result<String> {
-    let mut result = String::new();
+/// The anchored Git exclusion rule for `path`, as raw filename bytes: Git
+/// matches paths as bytes on Unix, and records them as UTF-8 on Windows.
+fn pattern(path: &Path) -> Result<Vec<u8>> {
+    let mut result = Vec::new();
     for part in path.components() {
         let std::path::Component::Normal(part) = part else {
             return Err(Error::Invalid("checkout exclusion must be relative".into()));
         };
-        let name = part
-            .to_str()
-            .filter(|name| !name.contains(['\r', '\n', '\0']))
+        #[cfg(unix)]
+        let name = Some(std::os::unix::ffi::OsStrExt::as_bytes(part));
+        #[cfg(not(unix))]
+        let name = part.to_str().map(str::as_bytes);
+        // A rule is one line, so a name with a line break has no exact rule.
+        let name = name
+            .filter(|name| !name.iter().any(|byte| matches!(byte, b'\r' | b'\n' | 0)))
             .ok_or_else(|| {
                 Error::Unsupported("checkout path cannot be represented in Git exclusions".into())
             })?;
-        result.push('/');
-        for character in name.chars() {
-            if matches!(character, '*' | '?' | '[' | '\\' | '!' | '#') || character.is_whitespace()
+        result.push(b'/');
+        for &byte in name {
+            if matches!(byte, b'*' | b'?' | b'[' | b'\\' | b'!' | b'#')
+                || byte.is_ascii_whitespace()
             {
-                result.push('\\');
+                result.push(b'\\');
             }
-            result.push(character);
+            result.push(byte);
         }
     }
     Ok(result)
@@ -360,6 +366,35 @@ mod tests {
         assert!(
             git(root, &["status", "--porcelain", "--untracked-files=all"])
                 .contains(".incarnation/token")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_checkout_directories_publish_their_exact_rule() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        git(root, &["init", "-q"]);
+        let nested = root.join(std::ffi::OsStr::from_bytes(b"nested\xff *"));
+        fs::create_dir(&nested).unwrap();
+        let held = acyclic_fs::hold_root(&nested).unwrap();
+        Exclusion::capture(&held)
+            .unwrap()
+            .unwrap()
+            .publish()
+            .unwrap();
+        fs::create_dir_all(nested.join(".volumes/.incarnation")).unwrap();
+        fs::write(nested.join(".volumes/.incarnation/token"), "owned").unwrap();
+        fs::write(nested.join("user"), "user").unwrap();
+        let status = git(root, &["status", "--porcelain", "--untracked-files=all"]);
+        assert!(!status.contains(".incarnation"), "{status}");
+        // Negative control: a sibling user file in the same directory stays visible.
+        assert!(status.contains("user"), "{status}");
+        assert!(
+            fs::read(root.join(".git/info/exclude"))
+                .unwrap()
+                .ends_with(b"/nested\xff\\ \\*/.volumes/.incarnation\n")
         );
     }
 
