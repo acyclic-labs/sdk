@@ -914,20 +914,20 @@ mod tests {
         git(root, &["init", "-q"]);
         let info = root.join(".git/info");
         let exclude = info.join("exclude");
+        // Windows honors the read-only attribute only on files; Unix also
+        // refuses new names in the directory.
+        let guarded = if cfg!(unix) {
+            vec![exclude.clone(), info]
+        } else {
+            vec![exclude.clone()]
+        };
         let held = acyclic_fs::hold_root(root).unwrap();
         let exclusion = Exclusion::capture(&held).unwrap().unwrap();
         // (a) The rule is already effective: reopening needs no write access.
         exclusion.publish().unwrap();
         let published = fs::read(&exclude).unwrap();
         {
-            // Windows honors the read-only attribute only on files; Unix also
-            // refuses new names in the directory.
-            let paths = if cfg!(unix) {
-                vec![exclude.clone(), info.clone()]
-            } else {
-                vec![exclude.clone()]
-            };
-            let _read_only = ReadOnly::new(&paths);
+            let _read_only = ReadOnly::new(&guarded);
             // Negative control: the metadata really refuses a writer, which
             // is what publication used to open first.
             assert!(fs::OpenOptions::new().append(true).open(&exclude).is_err());
@@ -941,12 +941,7 @@ mod tests {
         // (b) The rule is missing: the typed error names the file to fix.
         let user = b"# user\n/keep\n";
         fs::write(&exclude, user).unwrap();
-        let paths = if cfg!(unix) {
-            vec![exclude.clone(), info.clone()]
-        } else {
-            vec![exclude.clone()]
-        };
-        let read_only = ReadOnly::new(&paths);
+        let read_only = ReadOnly::new(&guarded);
         match exclusion.publish() {
             Err(Error::ReadOnlyGitMetadata { path }) => assert_eq!(
                 fs::canonicalize(path).unwrap(),

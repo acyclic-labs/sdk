@@ -151,19 +151,23 @@ async fn bound_workspace(
             let operation = acyclic_fs::OperationId::from_bytes(
                 digest[..16].try_into().map_err(storage_error)?,
             );
+            let store = acyclic_fs::LocalCoreStateStore::new(directory.join("workspace"))
+                .with_ownership_anchor(state_owner);
+            let attach = workspace::Attach {
+                volume,
+                scratch: volume,
+                directory: &directory,
+                operation,
+                native_mounts: false,
+            };
             Some(Arc::new(
                 workspace::open(
                     filesystem,
-                    volume,
-                    volume,
+                    &attach,
                     root,
-                    &directory,
-                    operation,
                     true,
-                    false,
                     workspace::OwnerState {
-                        store: acyclic_fs::LocalCoreStateStore::new(directory.join("workspace"))
-                            .with_ownership_anchor(state_owner),
+                        store,
                         processes: None,
                     },
                 )

@@ -1274,7 +1274,7 @@ async fn show_rev_path_reads_a_tracked_file_from_the_commit_tree() {
             .expect("show file"),
         file
     );
-    let short = commit.id.to_hex()[..12].to_owned();
+    let short: String = commit.id.to_hex().chars().take(12).collect();
     assert_eq!(
         shown(&repository, &format!("{short}:tracked.txt"))
             .await

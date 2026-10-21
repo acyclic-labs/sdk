@@ -33,8 +33,11 @@ pub(crate) fn directory_sync(fd: std::os::fd::RawFd) {
     DIRECTORY_SYNCS.with_borrow_mut(|syncs| {
         if let Some(syncs) = syncs {
             // SAFETY: the caller holds the directory for the entire query.
-            let stat =
-                rustix::fs::fstat(unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) }).unwrap();
+            // A failed probe records nothing, so the comparing test fails.
+            let Ok(stat) = rustix::fs::fstat(unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) })
+            else {
+                return;
+            };
             syncs.push(NativeRootIdentity {
                 device: device_id(stat.st_dev),
                 object: stat.st_ino,

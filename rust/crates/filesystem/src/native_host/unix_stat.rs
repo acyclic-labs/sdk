@@ -255,9 +255,8 @@ pub(super) fn root_file_handle<W: NativeHostWork>(
         let injected = stat_probe::fault("handle");
         #[cfg(not(test))]
         let injected: Option<io::Error> = None;
-        let error = match injected {
-            Some(error) => error,
-            None => {
+        let error = match injected.map_or_else(
+            || {
                 // SAFETY: every pointer refers to a live, writable local of
                 // the layout the kernel expects, `handle_bytes` is the capacity
                 // of `f_handle`, the empty name is NUL-terminated, and the call
@@ -273,10 +272,15 @@ pub(super) fn root_file_handle<W: NativeHostWork>(
                     )
                 };
                 if result == 0 {
-                    return Ok(handle);
+                    Ok(())
+                } else {
+                    Err(io::Error::last_os_error())
                 }
-                io::Error::last_os_error()
-            }
+            },
+            Err,
+        ) {
+            Ok(()) => return Ok(handle),
+            Err(error) => error,
         };
         #[cfg(test)]
         if stat_probe::fold_errors() {
@@ -292,13 +296,13 @@ pub(super) fn root_file_handle<W: NativeHostWork>(
             error
         })
     })?;
-    let length = usize::try_from(handle.handle_bytes)
+    let bytes = usize::try_from(handle.handle_bytes)
         .ok()
-        .filter(|length| *length <= handle.f_handle.len())
+        .and_then(|length| handle.f_handle.get(..length))
         .ok_or_else(|| io::Error::other("kernel file handle exceeds its buffer"))?;
     let mut digest = blake3::Hasher::new();
     digest.update(&handle.handle_type.to_le_bytes());
-    digest.update(&handle.f_handle[..length]);
+    digest.update(bytes);
     Ok(*digest.finalize().as_bytes())
 }
 

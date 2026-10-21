@@ -109,6 +109,7 @@ fn committed(
     })
 }
 
+mod actions;
 mod agents;
 mod commands;
 mod errors;

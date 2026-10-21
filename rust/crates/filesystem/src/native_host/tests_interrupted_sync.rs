@@ -29,7 +29,8 @@ extern "C" fn fsync(descriptor: libc::c_int) -> libc::c_int {
         return -1;
     }
     // SAFETY: the raw syscall acts only on the caller's descriptor.
-    unsafe { libc::syscall(libc::SYS_fsync, descriptor) as libc::c_int }
+    let result = unsafe { libc::syscall(libc::SYS_fsync, descriptor) };
+    libc::c_int::try_from(result).unwrap_or(-1)
 }
 
 /// Runs `sync` under two injected interruptions; returns the metered

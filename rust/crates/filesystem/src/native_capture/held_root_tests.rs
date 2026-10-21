@@ -72,27 +72,33 @@ fn negative_control_a_folded_handle_error_changes_the_incarnation() {
 }
 
 /// The physical native queries of one held-root capture.
-fn capture_queries(duplicate: bool) -> Vec<&'static str> {
-    let directory = tempfile::tempdir().unwrap();
+fn capture_queries(duplicate: bool) -> Result<Vec<&'static str>, DemandError> {
+    let directory = tempfile::tempdir()?;
     let probe = Probe::rescan(false);
     if duplicate {
         probe.duplicate_queries();
     }
-    capture(directory.path()).unwrap();
-    events()
+    capture(directory.path())?;
+    Ok(events())
 }
 
 #[test]
-fn a_held_root_capture_makes_exactly_one_open_identity_handle_and_volume_query() {
+fn a_held_root_capture_makes_exactly_one_open_identity_handle_and_volume_query()
+-> Result<(), DemandError> {
     assert_eq!(
-        capture_queries(false),
+        capture_queries(false)?,
         ["openat", "fstat", "handle", "fsid"]
     );
+    Ok(())
 }
 
 #[test]
-fn negative_control_a_repeated_identity_query_is_counted() {
-    assert_ne!(capture_queries(true), ["openat", "fstat", "handle", "fsid"]);
+fn negative_control_a_repeated_identity_query_is_counted() -> Result<(), DemandError> {
+    assert_ne!(
+        capture_queries(true)?,
+        ["openat", "fstat", "handle", "fsid"]
+    );
+    Ok(())
 }
 
 /// A remount may renumber `st_dev`; the held root's volume is the filesystem's
@@ -126,7 +132,7 @@ fn a_held_root_names_its_volume_by_the_filesystem_id_not_the_device() {
 /// with another candidate, in a fresh held directory.
 fn killed_then_published(step: usize, torn: bool) -> Result<[u8; 16], DemandError> {
     use crate::native_host::publish_probe;
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir()?;
     let held = hold_root(directory.path())?;
     let leaf = std::path::Path::new("token");
     publish_probe::tear(torn);
@@ -194,8 +200,8 @@ fn concurrent_publishers_return_one_record() {
 /// require none, even when the candidate source is unavailable.
 fn candidate_work(eager: bool, readers: usize) -> Result<(), String> {
     use crate::native_host::publish_probe;
-    let directory = tempfile::tempdir().unwrap();
-    let root = hold_root(directory.path()).unwrap();
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let root = hold_root(directory.path()).map_err(|error| error.to_string())?;
     let leaf = std::path::Path::new("token");
     let unavailable = || Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into());
     // Candidate failures keep their cause and publish nothing.
@@ -210,7 +216,7 @@ fn candidate_work(eager: bool, readers: usize) -> Result<(), String> {
             calls.set(calls.get() + 1);
             Ok([7; 16])
         })
-        .unwrap();
+        .map_err(|error| error.to_string())?;
     assert_eq!(calls.get(), 1);
     assert_eq!(published, [7; 16]);
     publish_probe::generate_candidates_eagerly(eager);

@@ -1,6 +1,6 @@
-//! A raw syscall leaf must be exactly one normal component. Path::components
+//! A raw syscall leaf must be exactly one normal component. `Path::components`
 //! normalizes trailing separators and `/.`; passing those raw names to the
-//! kernel can follow a directory symlink despite O_NOFOLLOW.
+//! kernel can follow a directory symlink despite `O_NOFOLLOW`.
 use std::{
     io,
     path::{Component, Path},
