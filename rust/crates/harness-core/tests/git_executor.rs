@@ -1164,3 +1164,56 @@ async fn merges_cut_at_every_step_resume_tracking_what_the_join_published() -> R
         }
     }
 }
+
+/// A child forked from a demand-backed checkout edits a host file the parent
+/// never touched. Both sides materialize that file under the same
+/// source-derived identity, which the fork's authored generation never bound,
+/// so the merge must take its base from the materialized fork cut: the edit
+/// merges cleanly instead of conflicting with the parent's unchanged copy.
+#[tokio::test]
+async fn agent_merge_takes_an_unmaterialized_host_file_base_from_the_fork_cut() -> Result<()> {
+    let (_temp, root, fs, store, main) = fixture().await?;
+    std::fs::write(root.join("calc.py"), b"return a - b\n")?;
+    std::fs::write(root.join("notes.txt"), b"one\ntwo\nthree\n")?;
+    write_text(&main, "/parent.txt", b"BASE\n").await?;
+    acyclic_fs::WorkspaceGraph::new(store.clone())
+        .register_root(main.workspace())
+        .await?;
+    let repo = main.workspace().id();
+    let (_, child) = run(&fs, &store, &main, repo, &["checkout", "-b", "agents/kid"]).await?;
+    let child = child.ok_or("missing child view")?;
+    write_text(&child, "/calc.py", b"return a + b\n").await?;
+    write_text(&child, "/notes.txt", b"one\ntwo\nTHREE\n").await?;
+    write_text(&child, "/child-new.txt", b"CHILD_NEW\n").await?;
+    run(&fs, &store, &child, repo, &["checkout", "main"]).await?;
+    write_text(&main, "/parent.txt", b"BASE\nPARENT_ONLY\n").await?;
+    // The parent also edits a host file the child left alone.
+    write_text(&main, "/notes.txt", b"ONE\ntwo\nthree\n").await?;
+    let (output, _) = run(&fs, &store, &main, repo, &["merge", "agents/kid"]).await?;
+    let GitCommandOutput::Committed(merge) = output else {
+        return Err(format!("expected the merge commit, got {output:?}").into());
+    };
+    assert_eq!(
+        merge.tracked_paths,
+        std::collections::BTreeSet::from([
+            "calc.py".to_owned(),
+            "child-new.txt".to_owned(),
+            "notes.txt".to_owned(),
+        ])
+    );
+    let stop = CancellationToken::new();
+    let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
+    for (path, expected) in [
+        ("/calc.py", &b"return a + b\n"[..]),
+        ("/notes.txt", b"ONE\ntwo\nTHREE\n"),
+        ("/parent.txt", b"BASE\nPARENT_ONLY\n"),
+        ("/child-new.txt", b"CHILD_NEW\n"),
+    ] {
+        assert_eq!(
+            main.read(path, 64, &mut work).await?.bytes.as_ref(),
+            expected,
+            "{path}"
+        );
+    }
+    Ok(())
+}

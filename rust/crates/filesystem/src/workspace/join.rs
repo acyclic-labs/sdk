@@ -285,6 +285,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
         source_head.workspace = self.source;
         target_head.workspace = self.target;
         let plan = JoinPlan {
+            // Every discovered ancestor is reachable from the target.
+            base_workspace: target_head.workspace.clone(),
             source_head,
             target_head,
             target_authority_head,
@@ -300,12 +302,63 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
     }
 }
 
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
+    /// Merges against an exact form of the discovered common ancestor.
+    ///
+    /// A lazy view's authored generation leaves its unresolved source entries
+    /// out, while every view that materializes them binds the same
+    /// source-derived identities. Against that ancestor both sides add those
+    /// identities, so an edit to a source file on one side conflicts with its
+    /// unchanged copy on the other. The refinement is the ancestor with such
+    /// entries of its cut materialized. It must descend from the discovered
+    /// ancestor, so the plan's lineage is unchanged; it supplies the base
+    /// records the ancestor left unresolved.
+    pub async fn refine_base(
+        mut self,
+        refinement: &Generation<A, O>,
+    ) -> Result<Self, WorkspaceError> {
+        let fs = &self.target_head.workspace.volume.fs;
+        if !fs.same_deployment(&refinement.workspace.volume.fs)
+            || refinement.workspace.volume.config != self.target_head.workspace.volume.config
+        {
+            return Err(WorkspaceError::ForeignGeneration);
+        }
+        let cancellation = CancellationToken::new();
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let base = Generation {
+            workspace: self.base_workspace.clone(),
+            id: self.base.id,
+            publication_closure: None,
+        };
+        let found = fs
+            .workspace_common_ancestor_with_accounting(
+                refinement,
+                &base,
+                self.maximum_generations,
+                &mut accounting,
+                &cancellation,
+            )
+            .await?;
+        if found.id != self.base.id {
+            return Err(WorkspaceError::IncompatibleWorkspace);
+        }
+        self.base = crate::facade::WorkspaceCommonAncestor {
+            id: refinement.id,
+            volume_id: refinement.workspace.volume.id,
+        };
+        self.base_workspace = refinement.workspace.clone();
+        Ok(self)
+    }
+}
+
 /// Immutable side-effect-free join plan.
 pub struct JoinPlan<A, O> {
     pub(super) source_head: Generation<A, O>,
     pub(super) target_head: Generation<A, O>,
     pub(super) target_authority_head: crate::Head,
     pub(crate) base: crate::facade::WorkspaceCommonAncestor,
+    /// Workspace through which the base generation is read.
+    pub(super) base_workspace: Workspace<A, O>,
     pub(super) history: JoinHistory,
     pub(super) git_metadata: bool,
     pub(super) maximum_generations: u32,

@@ -941,3 +941,95 @@ async fn concurrent_stale_cas_and_epoch_fencing_preserve_exactly_once_replay()
     ));
     Ok(())
 }
+
+/// A join base may only be refined to a descendant of the discovered common
+/// ancestor: the refinement then plans as the base, while an earlier
+/// generation or an unrelated workspace is refused.
+#[tokio::test]
+async fn join_base_refines_only_to_a_descendant_of_the_common_ancestor()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = |name: &'static str| {
+        let fs = fs.clone();
+        async move {
+            fs.create_workspace(
+                name,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
+        }
+    };
+    let target = workspace("refine-target").await?;
+    target.write_text("/early", "early").await?;
+    let head = |workspace: acyclic_fs::Workspace<_, _>| async move {
+        workspace
+            .head(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
+    };
+    let early = head(target.clone()).await?;
+    target.write_text("/base", "base").await?;
+    let base = head(target.clone()).await?;
+    let fork = |name: &'static str, from: acyclic_fs::Generation<_, _>, key: u8| {
+        let target = target.clone();
+        async move {
+            target
+                .fork::<_, _, acyclic_fs::WorkspaceError>(
+                    name,
+                    ForkOptions::from_generation(from, IdempotencyKey::from_bytes([key; 16])),
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                    &mut |_| {
+                        std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                            value: (),
+                            work: acyclic_fs::WorkCounters::default(),
+                        }))
+                    },
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+        }
+    };
+    let source = fork("refine-source", base.clone(), 1).await?;
+    source.write_text("/source", "source").await?;
+    target.write_text("/target", "target").await?;
+    let refined = fork("refine-base", base.clone(), 2).await?;
+    refined.write_text("/materialized", "cut").await?;
+    let refined = head(refined).await?;
+    let unrelated = workspace("refine-unrelated").await?;
+    unrelated.write_text("/other", "other").await?;
+    let unrelated = head(unrelated).await?;
+    let plan = || async {
+        source
+            .join_into(&target)
+            .plan(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
+    };
+    assert_eq!(plan().await?.common_ancestor(), base.id());
+    assert_eq!(
+        plan().await?.refine_base(&refined).await?.common_ancestor(),
+        refined.id()
+    );
+    // Negative controls: an ancestor of the base, the base's own workspace at
+    // an earlier generation, and an unrelated workspace.
+    assert!(matches!(
+        plan().await?.refine_base(&early).await,
+        Err(acyclic_fs::WorkspaceError::IncompatibleWorkspace)
+    ));
+    assert!(plan().await?.refine_base(&unrelated).await.is_err());
+    Ok(())
+}

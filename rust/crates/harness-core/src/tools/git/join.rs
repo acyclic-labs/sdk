@@ -46,6 +46,29 @@ where
             idempotency_key: IdempotencyKey::from_bytes(operation.into_bytes()),
         };
         let initial = plan.apply(options, BTreeMap::new(), self.permit).await?;
+        let (plan, initial) = match initial {
+            JoinOutcome::Conflicted {
+                conflicts,
+                truncated,
+            } => match self
+                .exact_base(&plan, &source, conflicts.clone(), truncated)
+                .await?
+            {
+                Some(base) => {
+                    let plan = plan.refine_base(&base).await.map_err(Error::from)?;
+                    let initial = plan.apply(options, BTreeMap::new(), self.permit).await?;
+                    (plan, initial)
+                }
+                None => (
+                    plan,
+                    JoinOutcome::Conflicted {
+                        conflicts,
+                        truncated,
+                    },
+                ),
+            },
+            initial => (plan, initial),
+        };
         let mut unresolved = false;
         let outcome =
             if let JoinOutcome::Conflicted {
@@ -234,6 +257,100 @@ where
             &|| self.validate(),
         )
         .await
+    }
+
+    /// The fork cut materialized at the paths whose identity both sides
+    /// added, when the plan's common ancestor is a lazy fork's cut.
+    ///
+    /// A lazy view's authored generation leaves unresolved source files out,
+    /// and each view that materializes one binds the same source-derived
+    /// identity. When both sides of a fork materialize a file the cut never
+    /// bound, the cut's authored generation reads them as two additions of one
+    /// identity, so an edit on one side conflicts with the unchanged copy on
+    /// the other. Their true base is the cut's content. Only those identities
+    /// are materialized: a file one side never materialized is unresolved
+    /// there, not deleted, and must keep its absent base. The cut of either
+    /// side's fork counts, so a parent merging its child and a child merging
+    /// its parent agree.
+    async fn exact_base(
+        &self,
+        plan: &acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>,
+        source: &LocalWorkspace,
+        conflicts: Vec<acyclic_fs::MergeConflict>,
+        truncated: bool,
+    ) -> crate::Result<Option<LocalGeneration>> {
+        let View::Checkout(current) = self.lazy_current else {
+            return Ok(None);
+        };
+        let described = plan.describe_conflicts(conflicts, truncated).await?;
+        let mut paths = described
+            .conflicts
+            .iter()
+            .filter(|conflict| {
+                matches!(conflict.key, acyclic_fs::ConflictKey::File(_))
+                    && matches!(conflict.base, acyclic_fs::ConflictValue::Absent)
+                    && !matches!(conflict.ours, acyclic_fs::ConflictValue::Absent)
+                    && !matches!(conflict.theirs, acyclic_fs::ConflictValue::Absent)
+            })
+            .filter_map(|conflict| conflict.path.clone())
+            .collect::<Vec<_>>();
+        if paths.is_empty() {
+            return Ok(None);
+        }
+        paths.sort_unstable();
+        let cancellation = CancellationToken::new();
+        for workspace in [source, &self.current] {
+            let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+            let lazy = match current
+                .open_related(workspace.clone(), &mut accounting)
+                .await
+            {
+                Ok(lazy) => lazy,
+                // A workspace without a lazy binding has no unresolved source.
+                Err(acyclic_fs::LazyWorkspaceError::NotFound) => continue,
+                Err(error) => return Err(Error::from(error)),
+            };
+            let Some(origin) = lazy
+                .state(&mut accounting)
+                .await
+                .map_err(Error::from)?
+                .fork_origin
+            else {
+                continue;
+            };
+            let cut = origin.snapshot;
+            if cut.authored_generation != plan.common_ancestor() {
+                continue;
+            }
+            let owner = current
+                .open_related(self.workspace(cut.workspace_id).await?, &mut accounting)
+                .await
+                .map_err(Error::from)?;
+            // One scratch fork per cut and path set, so its batch keys are
+            // never reused for different promotions.
+            let mut hash = blake3::Hasher::new();
+            hash.update(b"acyclic.git.join-exact-base/v1\0");
+            hash.update(&cut.id.into_bytes());
+            for path in &paths {
+                hash.update(&(path.len() as u64).to_le_bytes());
+                hash.update(path.as_bytes());
+            }
+            let hash = hash.finalize();
+            let mut key = [0; 16];
+            key.copy_from_slice(&hash.as_bytes()[..16]);
+            return owner
+                .exactify_cut(
+                    cut,
+                    &format!("git-base-{}", hex::encode(&hash.as_bytes()[..12])),
+                    IdempotencyKey::from_bytes(key),
+                    &paths,
+                    &mut accounting,
+                )
+                .await
+                .map(Some)
+                .map_err(Error::from);
+        }
+        Ok(None)
     }
 
     async fn join_generation(

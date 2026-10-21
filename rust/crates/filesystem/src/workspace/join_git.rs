@@ -114,9 +114,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             [Some(_), Some(_), None] => (&self.source_head, &self.target_head, 2),
             _ => return Ok(None),
         };
-        // The common ancestor is readable through the target's volume.
         let base = Generation {
-            workspace: self.target_head.workspace.clone(),
+            workspace: self.base_workspace.clone(),
             id: self.base.id,
             publication_closure: None,
         };
