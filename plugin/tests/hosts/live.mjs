@@ -86,9 +86,10 @@ env.PATH = [commands, process.env.PATH].join(delimiter);
 timings.package = Date.now() - started;
 
 // The host's login file, linked rather than copied, and only for the run.
+// The login the caller's host uses, wherever its configuration lives.
 const login = host === "codex"
-  ? { source: join(homedir(), ".codex", "auth.json"), link: join(home, "codex", "auth.json") }
-  : { source: join(homedir(), ".claude", ".credentials.json"), link: join(home, "claude", ".credentials.json") };
+  ? { source: join(process.env.CODEX_HOME || join(homedir(), ".codex"), "auth.json"), link: join(home, "codex", "auth.json") }
+  : { source: join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), ".credentials.json"), link: join(home, "claude", ".credentials.json") };
 
 started = Date.now();
 const installOutput = run(native, ["install", host]);
@@ -152,8 +153,10 @@ try {
   child.stdout.on("data", chunk => { stdout += chunk; });
   child.stderr.on("data", chunk => { stderr += chunk; });
   const budget = setTimeout(() => child.kill(), LIVE_BUDGET_MS);
-  const status = await new Promise(done => child.on("close", done));
-  clearTimeout(budget);
+  const status = await new Promise((done, failed) => {
+    child.once("error", failed);
+    child.once("close", done);
+  }).finally(() => clearTimeout(budget));
   timings.host = Date.now() - started;
   writeFileSync(join(root, "host.stdout"), stdout);
   writeFileSync(join(root, "host.stderr"), stderr);
@@ -162,13 +165,29 @@ try {
   const agents = spawnSync(native, ["agents", "--json"], { cwd: workspace, env, encoding: "utf8" });
   const doctor = spawnSync(native, ["doctor"], { cwd: workspace, env, encoding: "utf8" });
   writeFileSync(join(root, "after.txt"), [log.stdout, log.stderr, agents.stdout, agents.stderr, doctor.stdout, doctor.stderr].join("\n---\n"));
+  // Outcomes are proved by the plugin's own reports, not by file state alone:
+  // a child that never started also leaves no discard.txt behind.
+  // The plugin's JSON reply, as the host relays it (possibly JSON-escaped).
+  const reported = status => new RegExp(String.raw`status\\?":\s*\\?"` + status).test(stdout);
+  const hookResponses = stdout.split("\n").flatMap(line => {
+    try {
+      const event = JSON.parse(line);
+      return event.type === "system" && event.subtype === "hook_response" && event.outcome === "success" ? [event.hook_event] : [];
+    } catch { return []; }
+  });
+  const doctorCheck = name => new RegExp(String.raw`^pass\s+` + name + String.raw`\s`, "m").test(doctor.stdout);
   const checks = {
     exited: status === 0,
     rootEdit: read("root.txt") === "root",
     bash: read("bash.txt") === "bash",
-    childMerged: read("child.txt") === "child",
-    discarded: read("discard.txt") === null,
-    hookSeen: /acyclic/i.test(stdout + stderr) || existsSync(join(home, "AppData", "Local", "Acyclic")) || existsSync(join(home, "state", "acyclic")),
+    childMerged: read("child.txt") === "child" && reported("applied"),
+    discarded: read("discard.txt") === null && reported("discarded"),
+    // Claude Code reports each hook it ran; Codex reports none, and a merged
+    // child proves its spawn hooks routed it.
+    hooksRan: host === "claude-code"
+      ? ["SessionStart", "PreToolUse", "SubagentStart", "SubagentStop"].every(event => hookResponses.includes(event))
+      : reported("applied"),
+    installed: doctorCheck(host === "codex" ? "codex-install" : "claude-code-install") && doctorCheck("service"),
   };
   verdict = { host, platform: `${process.platform}-${process.arch}`, pass: Object.values(checks).every(Boolean), checks, timings, evidence: root };
 } finally {
