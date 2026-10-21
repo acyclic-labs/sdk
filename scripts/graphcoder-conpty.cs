@@ -6,6 +6,16 @@ using System.Text;
 using System.Threading;
 
 public static class GraphcoderConPty {
+    // Compiled ahead of qualification; direct launch avoids one PowerShell per PTY.
+    public static int Main(string[] args) {
+        try {
+            int deadline;
+            if (args.Length != 7 || !Int32.TryParse(args[5], out deadline) ||
+                (args[6] != "fresh" && args[6] != "resume"))
+                throw new ArgumentException("usage: conpty BINARY WORKSPACE CATALOG SETTINGS MODEL DEADLINE fresh|resume");
+            return Run(args[0], args[1], args[2], args[3], args[4], deadline, args[6] == "resume");
+        } catch (Exception error) { Console.Error.WriteLine(error); return 125; }
+    }
     [StructLayout(LayoutKind.Sequential)] struct Coord { public short X, Y; }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct StartupInfo {
         public int cb; public string reserved, desktop, title;
@@ -58,6 +68,10 @@ public static class GraphcoderConPty {
         return Run(binary, workspace, catalog, settings, model, deadline, false);
     }
     public static int Run(string binary, string workspace, string catalog, string settings, string model, int deadline, bool resume) {
+        if (!Path.IsPathRooted(binary) || !Path.IsPathRooted(workspace) || !Path.IsPathRooted(catalog) || !Path.IsPathRooted(settings))
+            throw new ArgumentException("ConPTY paths must be absolute");
+        if (deadline < 1000 || deadline > 120000)
+            throw new ArgumentException("ConPTY deadline must be finite (1000..120000 ms)");
         IntPtr inRead = IntPtr.Zero, inWrite = IntPtr.Zero, outRead = IntPtr.Zero, outWrite = IntPtr.Zero;
         IntPtr console = IntPtr.Zero, attributes = IntPtr.Zero, job = IntPtr.Zero;
         ProcessInfo process = new ProcessInfo(); bool attributeInitialized = false;

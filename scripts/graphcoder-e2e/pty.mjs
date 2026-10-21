@@ -28,7 +28,10 @@ export function matches(screen, raw, condition) {
 
 export async function pty(processes, binary, fixture, input, capture) {
   let program, args;
-  if (process.platform === "win32") {
+  if (process.platform === "win32" && process.env.E2E_CONPTY_HOST) {
+    program = process.env.E2E_CONPTY_HOST;
+    args = [binary, fixture.workspace, fixture.catalog, fixture.settings, "e2e/tiny", "8000", input.resume ? "resume" : "fresh"];
+  } else if (process.platform === "win32") {
     program = join(process.env.SystemRoot, "System32/WindowsPowerShell/v1.0/powershell.exe");
     args = ["-NoProfile", "-NonInteractive", "-File", fileURLToPath(new URL("../graphcoder-conpty.ps1", import.meta.url)),
       "-Binary", binary, "-Workspace", fixture.workspace, "-Catalog", fixture.catalog,
