@@ -2,6 +2,10 @@
 //! refused connections, refusal statuses, a body cut after output escaped and a body that falls
 //! silent after output. A recovered refusal is the negative control, and exits 0 with the
 //! provider's text. Harness state lives in fixture directories only.
+//!
+//! Deadlines are measured on a fixture clock, not the wall clock: time passes only when the
+//! scripted server has fallen silent after output, so scheduling delay on a loaded host never
+//! reads as provider silence, and the one test that measures silence measures only that.
 #![cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 
 use acyclic_harness::{
@@ -16,12 +20,14 @@ use acyclic_harness_providers::{
     TokenCounterSpec,
 };
 use acyclic_stream::BoxProviderFuture;
+use futures::StreamExt as _;
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -44,12 +50,41 @@ enum Reply {
     Hold(String, usize),
 }
 
-/// The idle deadline of these exchanges, short enough for a test and far above loopback gaps.
+/// The idle deadline of these exchanges, on the fixture [`Clock`].
 const IDLE_MS: u32 = 300;
 
-/// Counts the requests sent through the platform transport, whose timer it keeps.
+/// Whether a run measures the server's silence after output.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Silence {
+    /// No deadline elapses: the scripted reply alone decides the outcome.
+    Unmeasured,
+    /// Once output has arrived, deadline wake-ups elapse, so a silent body times out.
+    Measured,
+}
+
+/// The fixture clock deadlines are measured on. It is frozen, so neither scheduling nor a slow
+/// consumer between polls counts as silence. Redelivery backoffs, shorter than the idle deadline,
+/// elapse at once. A deadline wake-up elapses only after output arrived in a [`Silence::Measured`]
+/// run, and then advances the clock by its wait, so it expires exactly the deadline it was armed
+/// for.
+struct Clock {
+    silence: Silence,
+    /// Nanoseconds since the origin.
+    now: AtomicU64,
+    /// Set once output arrived in a measured run.
+    output: tokio::sync::watch::Sender<bool>,
+}
+
+impl Clock {
+    fn now(&self) -> Duration {
+        Duration::from_nanos(self.now.load(Ordering::SeqCst))
+    }
+}
+
+/// Counts the requests sent through the platform transport, and keeps the fixture clock.
 struct Counted {
     inner: ReqwestTransport,
+    clock: Arc<Clock>,
     /// Model requests.
     sent: AtomicUsize,
     /// Every request, token counts included.
@@ -62,13 +97,36 @@ impl HttpTransport for Counted {
         if !request.url.ends_with(COUNT_PATH) {
             self.sent.fetch_add(1, Ordering::SeqCst);
         }
-        self.inner.send(request)
+        let clock = self.clock.clone();
+        let send = self.inner.send(request);
+        Box::pin(async move {
+            let mut response = send.await?;
+            if clock.silence == Silence::Measured {
+                response.body = Box::pin(response.body.inspect(move |item| {
+                    if matches!(item, Ok(bytes) if !bytes.is_empty()) {
+                        clock.output.send_replace(true);
+                    }
+                }));
+            }
+            Ok(response)
+        })
     }
-    fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, ()> {
-        self.inner.delay(wait)
+    fn delay(&self, wait: Duration) -> BoxProviderFuture<'static, ()> {
+        if wait < Duration::from_millis(IDLE_MS.into()) {
+            return Box::pin(async {});
+        }
+        let clock = self.clock.clone();
+        let due = clock.now().saturating_add(wait);
+        let mut output = clock.output.subscribe();
+        Box::pin(async move {
+            // The clock owns the sender, so the channel stays open while this waits.
+            let _ = output.wait_for(|arrived| *arrived).await;
+            let due = u64::try_from(due.as_nanos()).unwrap_or(u64::MAX);
+            clock.now.fetch_max(due, Ordering::SeqCst);
+        })
     }
-    fn now(&self) -> std::time::Duration {
-        self.inner.now()
+    fn now(&self) -> Duration {
+        self.clock.now()
     }
 }
 
@@ -152,11 +210,16 @@ struct Run {
 }
 
 /// Runs one headless prompt against `base_url` with fixture state only.
-async fn headless(base_url: String) -> Result<Run> {
+async fn headless(base_url: String, silence: Silence) -> Result<Run> {
     let workspace = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
     let transport = Arc::new(Counted {
         inner: ReqwestTransport::new()?,
+        clock: Arc::new(Clock {
+            silence,
+            now: AtomicU64::new(0),
+            output: tokio::sync::watch::channel(false).0,
+        }),
         sent: AtomicUsize::new(0),
         all: AtomicUsize::new(0),
     });
@@ -234,7 +297,7 @@ async fn refused_connections_fail_the_turn_with_a_typed_cause_and_exit_1() -> Re
     drop(listener);
     let Run {
         code, jsonl, all, ..
-    } = headless(format!("http://127.0.0.1:{port}/v1")).await?;
+    } = headless(format!("http://127.0.0.1:{port}/v1"), Silence::Unmeasured).await?;
     assert_eq!(code, 1, "{jsonl}");
     // The first exchange to meet the refusal, a token count or the request, ends the turn
     // after exactly its bounded attempts.
@@ -255,7 +318,7 @@ async fn refusal_statuses_fail_with_their_status_and_body_and_exit_1() -> Result
         .collect();
     let Run {
         code, jsonl, sent, ..
-    } = headless(serve(replies).await?).await?;
+    } = headless(serve(replies).await?, Silence::Unmeasured).await?;
     assert_eq!(code, 1, "{jsonl}");
     assert_eq!(sent, attempts());
     assert!(
@@ -266,7 +329,7 @@ async fn refusal_statuses_fail_with_their_status_and_body_and_exit_1() -> Result
     let replies = vec![Reply::Full(400, "bad request".into())];
     let Run {
         code, jsonl, sent, ..
-    } = headless(serve(replies).await?).await?;
+    } = headless(serve(replies).await?, Silence::Unmeasured).await?;
     assert_eq!(code, 1, "{jsonl}");
     assert_eq!(sent, 1);
     assert!(jsonl.contains("status 400"), "{jsonl}");
@@ -279,7 +342,7 @@ async fn a_body_cut_after_output_is_final_and_exits_1() -> Result<()> {
     let replies = vec![Reply::Cut(body, TEXT.len())];
     let Run {
         code, jsonl, sent, ..
-    } = headless(serve(replies).await?).await?;
+    } = headless(serve(replies).await?, Silence::Unmeasured).await?;
     assert_eq!(code, 1, "{jsonl}");
     assert_eq!(sent, 1);
     assert!(
@@ -296,7 +359,7 @@ async fn a_body_silent_after_output_times_out_and_exits_1() -> Result<()> {
     let replies = vec![Reply::Hold(body, TEXT.len())];
     let Run {
         code, jsonl, sent, ..
-    } = headless(serve(replies).await?).await?;
+    } = headless(serve(replies).await?, Silence::Measured).await?;
     assert_eq!(code, 1, "{jsonl}");
     assert_eq!(sent, 1);
     assert!(
@@ -316,7 +379,7 @@ async fn a_recovered_refusal_completes_and_exits_0() -> Result<()> {
     ];
     let Run {
         code, jsonl, sent, ..
-    } = headless(serve(replies).await?).await?;
+    } = headless(serve(replies).await?, Silence::Unmeasured).await?;
     assert_eq!(code, 0, "{jsonl}");
     assert_eq!(sent, 2);
     assert!(jsonl.contains("loopback ok"), "{jsonl}");
