@@ -42,13 +42,9 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             )
             .map_err(AuthorityStoreError::DurableCodec)??;
             work.append_record(&mut request.mutations, records, [genesis, encoded])?;
-            self.locate_operation_in(
-                authority,
-                &record,
-                &mut request.conditions,
-                &mut request.mutations,
-                work,
-            )?;
+            // Sequence one is intrinsically addressable. Its authenticated
+            // record carries the operation identity and atomic commit identity,
+            // so it needs no separate operation-locator record.
             generation_from_payload(authority, record.sequence, record.payload, work)?
         } else {
             work.append_record(&mut request.mutations, records, [genesis])?;

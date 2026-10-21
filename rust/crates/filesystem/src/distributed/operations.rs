@@ -24,6 +24,39 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         work.append_record(mutations, path, [value])
     }
 
+    // The first semantic record has a fixed address even when later records
+    // require an operation locator. Read its authenticated identity directly.
+    async fn initial_operation(
+        &self,
+        authority: AuthorityId,
+        operation: OperationId,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<Option<(DurableCommit, acyclic_stream::CommitId)>, AuthorityStoreError> {
+        let path = work.path(authority, "/records", None)?;
+        let tail = match self.tail(path.clone(), work).await {
+            Err(error) if authority_missing(&error) => return Ok(None),
+            result => result?,
+        };
+        if tail <= 1 {
+            return Ok(None);
+        }
+        let record = self.record(path, 1, work).await?;
+        let durable = authority_decode_borrowed(authority, &record.0.value, work)?;
+        if durable.sequence != Sequence::new(1) || record.0.sequence != 1 {
+            return Err(authority_corrupt(
+                "initial operation has an invalid sequence",
+                work,
+            ));
+        }
+        if durable.operation_id != operation {
+            return Ok(None);
+        }
+        let payload = work.bytes(durable.payload)?;
+        let commit = durable_commit(durable, record.0.committed_at_micros, payload);
+        work.check()?;
+        Ok(Some((commit, record.0.commit_id)))
+    }
+
     pub(super) async fn located_operation(
         &self,
         authority: AuthorityId,
@@ -34,7 +67,9 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         self.authority_require_live(authority, work).await?;
         let path = work.operation_path(authority, operation)?;
         match self.tail(path.clone(), work).await {
-            Err(error) if authority_missing(&error) => return Ok(None),
+            Err(error) if authority_missing(&error) => {
+                return self.initial_operation(authority, operation, work).await;
+            }
             Err(error) => return Err(error),
             Ok(1) => {}
             Ok(_) => {

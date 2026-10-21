@@ -249,8 +249,9 @@ async fn durable_operation_lookup_is_constant_work_for_long_histories() -> TestR
             .await?
             .ok_or("durable operation was not found")?;
         assert_eq!(found.operation_id, proposed(operation).operation_id);
-        assert_eq!(lookup.spent().authority_records_read, 2);
-        assert_eq!(lookup.spent().backend_read_operations, 5);
+        let (records, backend_reads) = if operation == 1 { (1, 4) } else { (2, 5) };
+        assert_eq!(lookup.spent().authority_records_read, records);
+        assert_eq!(lookup.spent().backend_read_operations, backend_reads);
     }
     Ok(())
 }
@@ -746,6 +747,63 @@ async fn operation_index_shares_its_parent_across_authorities_at_capacity() -> T
                 .ok_or("capacity-admitted authority lost its operation")?;
             assert_eq!(located.0.operation_id, commit.operation_id);
         }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn initial_operation_recovery_needs_no_separate_locator_record() -> TestResult {
+    for native in [false, true] {
+        let stream = Arc::new(MemoryStream::default());
+        let store = StreamAuthorityStore::new(stream);
+        let token = CancellationToken::new();
+        let budget = WorkBudget {
+            authority_records_appended: 5,
+            ..BUDGET
+        };
+        let original =
+            crate::NativeMaterializationWork::new(budget, &token).map_err(|(error, _)| error)?;
+        let mut work = if native {
+            AuthorityWork::native(&original, &token)
+        } else {
+            AuthorityWork::new(budget, &token)
+        };
+        let authority = AuthorityId::from_bytes([81; 16]);
+        let first = proposed(82);
+        assert!(
+            store
+                .create_first_record(authority, first.clone(), &mut work, None::<&mut ()>)
+                .await?
+        );
+        let recovered = store
+            .located_operation(authority, first.operation_id, &mut work)
+            .await?
+            .ok_or("initial operation was not recovered")?;
+        assert_eq!(recovered.0.sequence, Sequence::new(1));
+        assert_eq!(recovered.0.fingerprint, first.fingerprint);
+        assert_eq!(recovered.0.payload, first.payload);
+        assert!(matches!(
+            store
+                .compare_and_append(
+                    crate::GuardedAppend {
+                        authority_id: authority,
+                        epoch: Epoch::GENESIS,
+                        expected: Head::genesis(Epoch::GENESIS),
+                        commit: first,
+                        permit: PublicationPermit::Unrestricted,
+                    },
+                    &mut work,
+                    None::<&mut ()>
+                )
+                .await?,
+            FsAppendOutcome::AlreadyCommitted(_)
+        ));
+        assert!(
+            store
+                .located_operation(authority, proposed(83).operation_id, &mut work)
+                .await?
+                .is_none()
+        );
     }
     Ok(())
 }
