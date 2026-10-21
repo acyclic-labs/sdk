@@ -160,7 +160,9 @@ pub(crate) fn open_windows_at_without_reparse<W: NativeHostWork>(
     )
 }
 
-fn open_windows_named_with_options<W: NativeHostWork>(
+/// Opens `name` below `parent` with exactly `options` and `attributes`:
+/// without `FILE_OPEN_REPARSE_POINT`, the object manager follows links.
+pub(super) fn open_windows_named_with_options<W: NativeHostWork>(
     parent: &Dir,
     name: &win::UNICODE_STRING,
     access: fs::FILE_ACCESS_RIGHTS,

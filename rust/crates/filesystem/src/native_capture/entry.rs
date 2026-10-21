@@ -105,6 +105,98 @@ impl HeldRoot {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    /// A search-only view of this held directory, never reopened by path.
+    pub fn search(&self) -> Result<SearchRoot, DemandError> {
+        let held = self.try_clone()?;
+        Ok(SearchRoot {
+            root: held.root,
+            path: held.path,
+        })
+    }
+}
+
+/// A directory held for name lookup only. Holding it needs search
+/// (traverse) permission, never read (list) permission, so an ancestor a
+/// process may cross but not list still anchors no-follow lookups below it.
+pub struct SearchRoot {
+    root: HostRoot,
+    path: PathBuf,
+}
+
+impl SearchRoot {
+    /// The descendant directory at `relative`, held for search only. No
+    /// component is followed through a link.
+    pub fn open_search_directory(&self, relative: &Path) -> Result<Self, DemandError> {
+        Ok(Self {
+            root: self
+                .root
+                .open_search_directory(relative, &mut crate::native_host::ordinary_work())?,
+            path: self.path.join(relative),
+        })
+    }
+
+    /// The readable descendant directory at `relative`, reached through
+    /// search-only intermediate directories. No component is followed
+    /// through a link.
+    pub fn open_directory(&self, relative: &Path) -> Result<HeldRoot, DemandError> {
+        Ok(HeldRoot {
+            root: self
+                .root
+                .open_directory_searching(relative, &mut crate::native_host::ordinary_work())?,
+            path: self.path.join(relative),
+        })
+    }
+
+    /// Opens an existing regular leaf for reading, never through a link.
+    #[cfg(any(test, feature = "native-mount"))]
+    pub fn open_file(&self, leaf: &Path) -> Result<std::fs::File, DemandError> {
+        self.root
+            .open_record_file(leaf, false, &mut crate::native_host::ordinary_work())
+    }
+
+    /// The device and object id of whatever `leaf` names once the kernel
+    /// follows every link from this held directory.
+    pub fn resolved_identity(&self, leaf: &Path) -> Result<NativeRootIdentity, DemandError> {
+        self.root
+            .resolved_identity(leaf, &mut crate::native_host::ordinary_work())
+    }
+
+    /// The held directory's device and object id, read when it was opened.
+    #[must_use]
+    pub const fn identity(&self) -> NativeRootIdentity {
+        self.root.identity()
+    }
+
+    /// The path the directory was opened at.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl std::fmt::Debug for SearchRoot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SearchRoot")
+            .field("path", &self.path)
+            .field("identity", &self.identity())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Holds the directory at `path` for search only; a final link is refused.
+pub fn hold_search_root(path: &Path) -> Result<SearchRoot, DemandError> {
+    Ok(SearchRoot {
+        root: HostRoot::open_search(path, &mut crate::native_host::ordinary_work())?,
+        path: path.to_path_buf(),
+    })
+}
+
+/// The device and object id of an open file, comparable with
+/// [`SearchRoot::resolved_identity`].
+pub fn file_identity(file: &std::fs::File) -> Result<NativeRootIdentity, DemandError> {
+    crate::native_host::file_identity(file, &mut crate::native_host::ordinary_work())
 }
 
 impl std::fmt::Debug for HeldRoot {

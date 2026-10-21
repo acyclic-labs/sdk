@@ -1,6 +1,6 @@
 //! Git metadata is captured once, then every publication uses held directories.
 use super::*;
-use acyclic_fs::{DemandError, HeldRoot};
+use acyclic_fs::{DemandError, HeldRoot, SearchRoot};
 
 pub(super) struct Exclusion {
     common: HeldRoot,
@@ -11,11 +11,14 @@ fn missing(error: &DemandError) -> bool {
     matches!(error, DemandError::Io(error) if error.kind() == std::io::ErrorKind::NotFound)
 }
 
-fn read(root: &HeldRoot, leaf: &str) -> std::result::Result<Vec<u8>, DemandError> {
+fn read(root: &SearchRoot, leaf: &str) -> std::result::Result<Vec<u8>, DemandError> {
+    bounded(root.open_file(Path::new(leaf))?)
+}
+
+fn bounded(file: fs::File) -> std::result::Result<Vec<u8>, DemandError> {
     // Pointer records follow the existing local owner-record bound. An opaque
     // exclude file is streamed separately and never needs a size-based buffer.
     const MAXIMUM_METADATA_BYTES: u64 = 65_536;
-    let file = root.open_file(Path::new(leaf), false)?;
     if file.metadata()?.len() > MAXIMUM_METADATA_BYTES {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -93,7 +96,10 @@ fn settled(effective: bool, negation: bool, rule: bool) -> bool {
     !negation && (effective || rule)
 }
 
-fn pointed_directory(root: &HeldRoot, pointer: &Path) -> Result<HeldRoot> {
+/// The directory a Git metadata pointer names. A relative pointer is resolved
+/// below the nearest common ancestor, held for search only, and accepted only
+/// if that ancestor's held descendant is `root`.
+fn pointed_directory(root: &SearchRoot, pointer: &Path) -> Result<HeldRoot> {
     if pointer.is_absolute() {
         // Absolute metadata pointers explicitly name their own authority.
         return acyclic_fs::hold_root(pointer).map_err(storage);
@@ -116,18 +122,21 @@ fn pointed_directory(root: &HeldRoot, pointer: &Path) -> Result<HeldRoot> {
         .ancestors()
         .find(|ancestor| target.starts_with(ancestor))
         .ok_or_else(|| Error::Invalid("Git metadata pointer has no common ancestor".into()))?;
-    let held = if ancestor == root.path() {
-        root.try_clone().map_err(storage)?
-    } else {
-        let held = acyclic_fs::hold_root(ancestor).map_err(storage)?;
-        let relative = root.path().strip_prefix(ancestor).map_err(storage)?;
-        if held.open_directory(relative).map_err(storage)?.identity() != root.identity() {
-            return Err(Error::Unauthorized("Git metadata root was replaced".into()));
-        }
-        held
-    };
-    held.open_directory(target.strip_prefix(ancestor).map_err(storage)?)
-        .map_err(storage)
+    let relative = target.strip_prefix(ancestor).map_err(storage)?;
+    if ancestor == root.path() {
+        return root.open_directory(relative).map_err(storage);
+    }
+    let held = acyclic_fs::hold_search_root(ancestor).map_err(storage)?;
+    let descendant = root.path().strip_prefix(ancestor).map_err(storage)?;
+    if held
+        .open_search_directory(descendant)
+        .map_err(storage)?
+        .identity()
+        != root.identity()
+    {
+        return Err(Error::Unauthorized("Git metadata root was replaced".into()));
+    }
+    held.open_directory(relative).map_err(storage)
 }
 
 fn pointer_line(text: &[u8]) -> Result<&[u8]> {
@@ -151,17 +160,51 @@ fn pointer_path(line: &[u8]) -> Result<PathBuf> {
     path.ok_or_else(|| Error::Invalid("Git metadata pointer is not a path".into()))
 }
 
-fn metadata(root: &HeldRoot) -> Result<Option<HeldRoot>> {
+fn metadata(root: &SearchRoot) -> Result<Option<HeldRoot>> {
     match root.open_directory(Path::new(".git")) {
         Ok(directory) => Ok(Some(directory)),
         Err(error) if missing(&error) => Ok(None),
-        Err(directory_error) => {
-            // A linked worktree stores a regular .git pointer instead.
-            let text = read(root, ".git").map_err(|_| storage(directory_error))?;
-            let pointer = pointer_line(&text)?
-                .strip_prefix(b"gitdir: ")
-                .ok_or_else(|| Error::Invalid("checkout .git file has no gitdir pointer".into()))?;
-            pointed_directory(root, &pointer_path(pointer)?).map(Some)
+        // A linked worktree stores a regular .git pointer instead.
+        Err(_) => match read(root, ".git") {
+            Ok(text) => gitfile(root, &text).map(Some),
+            Err(_) => linked(root).map(Some),
+        },
+    }
+}
+
+/// The Git directory a gitfile names. Git resolves a relative pointer from
+/// the directory holding `.git`, even when `.git` itself is a link.
+fn gitfile(root: &SearchRoot, text: &[u8]) -> Result<HeldRoot> {
+    let pointer = pointer_line(text)?
+        .strip_prefix(b"gitdir: ")
+        .ok_or_else(|| Error::Invalid("checkout .git file has no gitdir pointer".into()))?;
+    pointed_directory(root, &pointer_path(pointer)?)
+}
+
+/// Git follows a link at `.git` to a Git directory or to a gitfile. The
+/// link's target is named by path, then held without following links, and
+/// accepted only if it is the object the held checkout's `.git` resolves to.
+fn linked(root: &SearchRoot) -> Result<HeldRoot> {
+    let name = Path::new(".git");
+    let resolved = root.resolved_identity(name).map_err(storage)?;
+    let target = fs::canonicalize(root.path().join(name)).map_err(storage)?;
+    let (Some(parent), Some(leaf)) = (target.parent(), target.file_name()) else {
+        return Err(Error::Invalid("checkout .git link has no target".into()));
+    };
+    let (parent, leaf) = (
+        acyclic_fs::hold_search_root(parent).map_err(storage)?,
+        Path::new(leaf),
+    );
+    let replaced = || Error::Unauthorized("checkout .git link changed during capture".into());
+    match parent.open_directory(leaf) {
+        Ok(git) if git.identity() == resolved => Ok(git),
+        Ok(_) => Err(replaced()),
+        Err(_) => {
+            let file = parent.open_file(leaf).map_err(storage)?;
+            if acyclic_fs::file_identity(&file).map_err(storage)? != resolved {
+                return Err(replaced());
+            }
+            gitfile(root, &bounded(file).map_err(storage)?)
         }
     }
 }
@@ -169,12 +212,13 @@ fn metadata(root: &HeldRoot) -> Result<Option<HeldRoot>> {
 impl Exclusion {
     pub(super) fn capture(root: &HeldRoot) -> Result<Option<Self>> {
         let mut top = root.path();
-        let mut held = root.try_clone().map_err(storage)?;
+        let mut held = root.search().map_err(storage)?;
         loop {
             if let Some(git) = metadata(&held)? {
-                let common = match read(&git, "commondir") {
+                let search = git.search().map_err(storage)?;
+                let common = match read(&search, "commondir") {
                     Ok(pointer) => {
-                        pointed_directory(&git, &pointer_path(pointer_line(&pointer)?)?)?
+                        pointed_directory(&search, &pointer_path(pointer_line(&pointer)?)?)?
                     }
                     Err(error) if missing(&error) => git,
                     Err(error) => return Err(storage(error)),
@@ -187,12 +231,14 @@ impl Exclusion {
             let Some(parent) = top.parent() else {
                 return Ok(None);
             };
-            let ancestor = acyclic_fs::hold_root(parent).map_err(storage)?;
+            // Ancestors are held for search only: a checkout below a
+            // directory the process may cross but not list still opens.
+            let ancestor = acyclic_fs::hold_search_root(parent).map_err(storage)?;
             // Named ancestor discovery is only accepted if its held descendant
             // is the captured checkout. A replaced path cannot redirect it.
             let relative = root.path().strip_prefix(parent).map_err(storage)?;
             if ancestor
-                .open_directory(relative)
+                .open_search_directory(relative)
                 .map_err(storage)?
                 .identity()
                 != root.identity()
@@ -311,7 +357,7 @@ mod tests {
         file.write_all(b"gitdir: ").unwrap();
         file.set_len(65_537).unwrap();
         let held = acyclic_fs::hold_root(temporary.path()).unwrap();
-        assert!(read(&held, ".git").is_err());
+        assert!(read(&held.search().unwrap(), ".git").is_err());
         assert!(Exclusion::capture(&held).is_err());
         assert!(!temporary.path().join(".volumes").exists());
     }
@@ -551,6 +597,151 @@ mod tests {
             fs::read_to_string(root.join(".git/info/exclude"))
                 .unwrap()
                 .contains("/.volumes/.incarnation")
+        );
+    }
+
+    fn commit(root: &Path) {
+        git(
+            root,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ],
+        );
+    }
+
+    /// Denies listing a directory while keeping traversal, and restores
+    /// listing on drop so the temporary tree can be removed.
+    struct Unlisted(PathBuf);
+
+    /// Every user, so the deny entry applies to the test process itself.
+    #[cfg(windows)]
+    const EVERYONE_LIST: &str = "*S-1-1-0:(RD)";
+
+    impl Unlisted {
+        fn new(path: &Path) -> Self {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                fs::set_permissions(path, fs::Permissions::from_mode(0o311)).unwrap();
+            }
+            #[cfg(windows)]
+            assert!(icacls(path, &["/deny", EVERYONE_LIST]));
+            Self(path.to_path_buf())
+        }
+    }
+
+    impl Drop for Unlisted {
+        fn drop(&mut self) {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
+            }
+            #[cfg(windows)]
+            let _ = icacls(&self.0, &["/remove:d", "*S-1-1-0"]);
+        }
+    }
+
+    #[cfg(windows)]
+    fn icacls(path: &Path, arguments: &[&str]) -> bool {
+        std::process::Command::new("icacls")
+            .arg(path)
+            .args(arguments)
+            .output()
+            .is_ok_and(|output| output.status.success())
+    }
+
+    #[test]
+    fn ancestors_that_can_be_searched_but_not_listed_still_lead_to_metadata() {
+        let temporary = tempfile::tempdir().unwrap();
+        let repo = temporary.path().join("repo");
+        let locked = repo.join("locked");
+        let checkout = locked.join("checkout");
+        fs::create_dir_all(&checkout).unwrap();
+        git(&repo, &["init", "-q"]);
+        commit(&repo);
+        let linked = locked.join("linked");
+        git(&repo, &["worktree", "add", "-q", linked.to_str().unwrap()]);
+        // Git can record a relative pointer; resolving it crosses `locked`.
+        fs::write(linked.join(".git"), "gitdir: ../../.git/worktrees/linked\n").unwrap();
+        let _restore = Unlisted::new(&locked);
+        // The process may cross `locked` but not list it. A process that
+        // overrides access checks could list it, exercising nothing.
+        assert!(
+            fs::read_dir(&locked).is_err(),
+            "test must not run with an access-check override"
+        );
+        for path in [&checkout, &linked] {
+            let held = acyclic_fs::hold_root(path).unwrap();
+            Exclusion::capture(&held)
+                .unwrap()
+                .unwrap()
+                .publish()
+                .unwrap();
+            assert_eq!(
+                git(path, &["check-ignore", ".volumes/.incarnation/token"]),
+                ".volumes/.incarnation/token\n"
+            );
+        }
+        let exclude = fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+        assert!(
+            exclude.contains("\n/locked/checkout/.volumes/.incarnation\n"),
+            "{exclude}"
+        );
+        assert!(exclude.contains("\n/.volumes/.incarnation\n"), "{exclude}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_git_metadata_publishes_in_the_git_directory_it_names() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = temporary.path().join("store");
+        fs::create_dir(&store).unwrap();
+        git(&store, &["init", "-q"]);
+        commit(&store);
+        // `.git` is a link to a Git directory.
+        let checkout = temporary.path().join("checkout");
+        fs::create_dir(&checkout).unwrap();
+        std::os::unix::fs::symlink("../store/.git", checkout.join(".git")).unwrap();
+        // `.git` is a link to a linked worktree's gitfile.
+        let linked = temporary.path().join("linked");
+        git(&store, &["worktree", "add", "-q", linked.to_str().unwrap()]);
+        let gitfile = temporary.path().join("linked.gitfile");
+        fs::rename(linked.join(".git"), &gitfile).unwrap();
+        std::os::unix::fs::symlink(&gitfile, linked.join(".git")).unwrap();
+        for path in [&checkout, &linked] {
+            let held = acyclic_fs::hold_root(path).unwrap();
+            Exclusion::capture(&held)
+                .unwrap()
+                .unwrap()
+                .publish()
+                .unwrap();
+            fs::create_dir_all(path.join(".volumes/.incarnation")).unwrap();
+            fs::write(path.join(".volumes/.incarnation/token"), "owned").unwrap();
+            fs::write(path.join("user"), "user").unwrap();
+            let status = git(path, &["status", "--porcelain", "--untracked-files=all"]);
+            assert!(!status.contains(".incarnation"), "{status}");
+            // Negative control: a user file beside the token stays visible.
+            assert!(status.contains("user"), "{status}");
+        }
+        // Both publish in the real common directory, never through the link.
+        assert!(
+            fs::symlink_metadata(checkout.join(".git"))
+                .unwrap()
+                .is_symlink()
+        );
+        assert!(
+            fs::read_to_string(store.join(".git/info/exclude"))
+                .unwrap()
+                .contains("\n/.volumes/.incarnation\n")
         );
     }
 }

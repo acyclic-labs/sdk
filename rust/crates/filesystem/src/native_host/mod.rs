@@ -88,6 +88,10 @@ pub(crate) use reader::*;
 mod root;
 pub(crate) use root::*;
 mod held_files;
+#[cfg(feature = "native-watch")]
+mod search;
+#[cfg(feature = "native-watch")]
+pub(crate) use search::file_identity;
 #[cfg(all(test, target_os = "linux", acyclic_fs_native_loom))]
 pub(crate) use held_files::models as held_record_models;
 #[cfg(all(test, target_os = "linux"))]
