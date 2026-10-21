@@ -35,11 +35,13 @@ export async function pty(processes, binary, fixture, input, capture) {
       "-SettingsRoot", fixture.settings, "-Model", "e2e/tiny", "-DeadlineMilliseconds", "8000"];
     assert.ok(process.env.E2E_CONPTY_ASSEMBLY, "prebuild the ConPTY host with prepare-conpty.ps1 and set E2E_CONPTY_ASSEMBLY");
     args.push("-HostAssembly", process.env.E2E_CONPTY_ASSEMBLY);
+    if (input.resume) args.push("-Resume");
   } else {
     // Python sets the controlling terminal on Linux and macOS and exposes a
     // kill signal targeting the executable, so wrapper death cannot fake SIGKILL.
     program = "python3";
     args = [fileURLToPath(new URL("../graphcoder-pty/transport.py", import.meta.url)), binary, ...fixture.args];
+    if (input.resume) args.push("--resume");
   }
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
   const killSignal = process.platform === "win32" ? "SIGKILL" : "SIGUSR1";

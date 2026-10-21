@@ -2,7 +2,9 @@
   "id": "web-search",
   "workspace": {
     "kind": "plain",
-    "files": {}
+    "files": {
+      "search.json": "{\"provider\": \"exa\", \"api_keys\": {\"exa\": \"e2e-unused-key\"}, \"endpoint\": \"{{url}}/search\"}"
+    }
   },
   "model": {
     "steps": [
@@ -47,7 +49,11 @@
     {
       "mode": "headless",
       "text": "search fixture query",
-      "answer": "done"
+      "answer": "done",
+      "extra_args": [
+        "--search-config",
+        "{{workspace}}/search.json"
+      ]
     }
   ],
   "assert": {
@@ -57,6 +63,18 @@
     ],
     "model_contains": [
       "\"name\":\"web_search\""
+    ],
+    "http": [
+      {
+        "path": "search",
+        "body": {
+          "query": "fixture query",
+          "numResults": 5,
+          "contents": {
+            "highlights": true
+          }
+        }
+      }
     ]
   }
 }

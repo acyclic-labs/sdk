@@ -55,6 +55,9 @@ public static class GraphcoderConPty {
         result.Append('\\', slashes * 2); return result.Append('"').ToString();
     }
     public static int Run(string binary, string workspace, string catalog, string settings, string model, int deadline) {
+        return Run(binary, workspace, catalog, settings, model, deadline, false);
+    }
+    public static int Run(string binary, string workspace, string catalog, string settings, string model, int deadline, bool resume) {
         IntPtr inRead = IntPtr.Zero, inWrite = IntPtr.Zero, outRead = IntPtr.Zero, outWrite = IntPtr.Zero;
         IntPtr console = IntPtr.Zero, attributes = IntPtr.Zero, job = IntPtr.Zero;
         ProcessInfo process = new ProcessInfo(); bool attributeInitialized = false;
@@ -82,7 +85,7 @@ public static class GraphcoderConPty {
                 Require(SetStdHandle(-10, IntPtr.Zero), "clear inherited input");
                 Require(SetStdHandle(-11, IntPtr.Zero), "clear inherited output");
                 Require(SetStdHandle(-12, IntPtr.Zero), "clear inherited error");
-                Require(CreateProcessW(binary, new StringBuilder(Quote(binary) + " --workspace " + Quote(workspace) + " --settings-root " + Quote(settings) + " --catalog " + Quote(catalog) + " --model " + Quote(model)), IntPtr.Zero, IntPtr.Zero, false,
+                Require(CreateProcessW(binary, new StringBuilder(Quote(binary) + " --workspace " + Quote(workspace) + " --settings-root " + Quote(settings) + " --catalog " + Quote(catalog) + " --model " + Quote(model) + (resume ? " --resume" : "")), IntPtr.Zero, IntPtr.Zero, false,
                     0x00080000 | 0x00000004, IntPtr.Zero, workspace, ref startup, out process), "CreateProcessW with real ConPTY");
             } finally {
                 bool restoredInput = SetStdHandle(-10, parentInput);

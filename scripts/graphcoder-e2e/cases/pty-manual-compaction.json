@@ -58,11 +58,15 @@
         {
           "when": {
             "contains": [
-              "COMPACTED_E2E_FACT",
+              "MANUAL_E2E_FIRST",
               "\u25cb"
             ]
           },
-          "prompt": "after compact"
+          "prompt": "after compact",
+          "after_request": {
+            "path": "responses",
+            "step": 1
+          }
         },
         {
           "when": {

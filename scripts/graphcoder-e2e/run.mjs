@@ -103,7 +103,7 @@ async function execute(test, gitOrigin) {
       }
       const op = input.operation ?? operation;
       const args = input.args ?? (input.mode === "jsonl" ? ["--operation", op, "--input-format", "jsonl"] : ["--operation", op, "-p", input.text ?? "hello"]);
-      const running = processes.start(binary, [...fixture.args, ...args], { cwd: fixture.workspace, env: fixture.env });
+      const running = processes.start(binary, [...fixture.args, ...args, ...(input.extra_args ?? [])], { cwd: fixture.workspace, env: fixture.env });
       if (input.kill_on) {
         await Promise.race([events.wait(event => event.case === test.id && event.path === input.kill_on.path && event.step === input.kill_on.step), running.closed.then(result => { throw new Error(`exited before kill point: ${JSON.stringify(result)}`); })]);
         running.child.kill("SIGKILL");

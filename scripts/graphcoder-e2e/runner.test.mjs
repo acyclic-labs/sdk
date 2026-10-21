@@ -11,6 +11,8 @@ test("request assertions reject omitted, duplicated, unmatched and fabricated re
   const record = (step, input) => ({ path: "responses", step, status: 200, body: { input } });
   const valid = [record(0, [{ role: "user", content: "hello" }]), record(1, [{ type: "function_call_output", output: '{"text":"REAL_RESULT"}' }])];
   requests(fixture, valid);
+  requests({ ...fixture, assert: { ...fixture.assert, http: [{ path: "responses", body: { input: valid[0].body.input } }] } }, valid);
+  assert.throws(() => requests({ ...fixture, assert: { ...fixture.assert, http: [{ path: "search", body: { query: "real query" } }] } }, valid), /missing HTTP request/);
   assert.throws(() => requests(fixture, valid.slice(1)), /generation count/);
   assert.throws(() => requests(fixture, [valid[0], valid[0]]), /exactly once/);
   assert.throws(() => requests(fixture, [valid[0], { ...valid[1], status: 409 }]), /unmatched/);

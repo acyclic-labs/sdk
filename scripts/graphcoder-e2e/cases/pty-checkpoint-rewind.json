@@ -1,0 +1,19 @@
+{
+  "id": "pty-checkpoint-rewind",
+  "workspace": {"kind":"plain","files":{}},
+  "model": {"steps":[
+    {"when":{"user":"remember REWIND_E2E_FACT"},"text":["REWIND_E2E_FIRST"]},
+    {"when":{"contains":"Summarize this conversation"},"text":["REWIND_E2E_CHECKPOINT"]},
+    {"when":{"user":"discard this turn"},"text":["REWIND_E2E_DISCARDED"]},
+    {"when":{"user":"continue after rewind","contains":"REWIND_E2E_CHECKPOINT"},"text":["REWIND_E2E_DONE"]}
+  ]},
+  "inputs":[{"mode":"pty","actions":[
+    {"when":{"contains":["GraphCoder"],"cursor":true},"prompt":"remember REWIND_E2E_FACT"},
+    {"when":{"contains":["REWIND_E2E_FIRST","\u25cb"]},"prompt":"/compact "},
+    {"when":{"contains":["REWIND_E2E_FIRST","\u25cb"]},"after_request":{"path":"responses","step":1},"prompt":"discard this turn"},
+    {"when":{"contains":["REWIND_E2E_DISCARDED","\u25cb"]},"prompt":"/rewind "},
+    {"when":{"contains":["Rewound to selected checkpoint","\u25cb"]},"prompt":"continue after rewind"},
+    {"when":{"contains":["REWIND_E2E_DONE","\u25cb"]},"send":"\u0004"}
+  ]}],
+  "assert":{"requests":4,"last_model_contains":["REWIND_E2E_CHECKPOINT"],"last_model_absent":["REWIND_E2E_DISCARDED","discard this turn"]}
+}

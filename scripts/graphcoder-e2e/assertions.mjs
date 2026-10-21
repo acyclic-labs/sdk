@@ -24,6 +24,7 @@ export function requests(test, records) {
   const expected = test.assert.steps ?? test.model.steps.map((_, index) => index);
   assert.deepEqual(records.filter(record => record.step !== null).map(record => record.step).sort((a,b) => a-b), [...expected].sort((a,b) => a-b), "each expected script step consumed exactly once");
   assert.ok(records.every(record => record.status !== 409), "unmatched model request");
+  for (const expected of test.assert.http ?? []) assert.ok(records.some(record => subset(record, expected)), `missing HTTP request ${JSON.stringify(expected)}`);
   const wire = JSON.stringify(records), last = JSON.stringify(generations.at(-1)?.body);
   for (const text of test.assert.model_contains ?? []) assert.ok(wire.includes(text), `model wire missing ${text}`);
   for (const text of test.assert.model_absent ?? []) assert.ok(!wire.includes(text), `model wire contains forbidden ${text}`);

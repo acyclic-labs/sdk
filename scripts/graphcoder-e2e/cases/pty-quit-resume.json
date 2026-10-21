@@ -42,7 +42,7 @@
           "when": {
             "contains": [
               "QUIT_E2E_FIRST",
-              "\u25cb"
+              "○"
             ]
           },
           "prompt": "/quit "
@@ -66,12 +66,13 @@
           "when": {
             "contains": [
               "QUIT_E2E_DONE",
-              "\u25cb"
+              "○"
             ]
           },
           "send": "\u0004"
         }
-      ]
+      ],
+      "resume": true
     }
   ],
   "assert": {

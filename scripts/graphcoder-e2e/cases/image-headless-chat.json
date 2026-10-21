@@ -1,0 +1,36 @@
+{
+  "id": "image-headless-chat",
+  "workspace": {
+    "kind": "plain",
+    "files": {
+      "pixel.png": {
+        "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXk8AAAAASUVORK5CYII="
+      }
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "text": [
+          "IMAGE_E2E_REPLY"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "describe @pixel.png",
+      "answer": "IMAGE_E2E_REPLY"
+    }
+  ],
+  "assert": {
+    "requests": 1,
+    "model_contains": [
+      "image_url",
+      "image/png",
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXk8AAAAASUVORK5CYII="
+    ]
+  },
+  "adapter": "chat"
+}
