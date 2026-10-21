@@ -21,8 +21,22 @@ impl Guard {
     }
 
     pub async fn run<F: Future>(&mut self, future: F) -> Result<F::Output, String> {
+        self.run_retiring(future, || Ok(())).await
+    }
+
+    /// Quiesce thread-affine caller drivers before publishing shared cancellation.
+    /// Retirement only drops callers; this guard still drives all accepted owners.
+    pub async fn run_retiring<F: Future>(
+        &mut self,
+        future: F,
+        retire: impl FnOnce() -> Result<(), String>,
+    ) -> Result<F::Output, String> {
         let mut future = Box::pin(future);
         let result = self.drive(future.as_mut()).await;
+        let result = match retire() {
+            Ok(()) => result,
+            Err(error) => Err(error),
+        };
         if result.is_err() {
             self.io.cancel();
         }

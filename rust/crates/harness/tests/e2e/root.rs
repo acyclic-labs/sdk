@@ -1,6 +1,7 @@
 // Data-driven harness scenarios. `E2E_FILTER` selects a path substring.
 #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
 mod agents;
+mod case_workers;
 mod composer;
 mod composer_entry;
 mod deadline_tests;
@@ -302,7 +303,7 @@ fn scenarios() -> TestResult {
             .try_init();
     }
     let started = Instant::now();
-    scenario_runtime()?.block_on(run_scenarios(started))
+    run_scenarios(started)
 }
 
 fn scenario_runtime() -> TestResult<tokio::runtime::Runtime> {
@@ -358,29 +359,15 @@ fn scenario_admission<I>(
     capacity: usize,
 ) -> impl futures::Stream<Item = <I::Item as std::future::Future>::Output>
 where
-    I: ExactSizeIterator,
+    I: Iterator,
     I::Item: std::future::Future,
 {
     assert!(capacity > 0, "scenario capacity is zero");
-    let capacity = runtime_tests::admission_capacity(capacity).min(cases.len());
+    let capacity = runtime_tests::admission_capacity(capacity);
     stream::iter(cases).buffer_unordered(capacity)
 }
 
-async fn run_scenarios(started: Instant) -> TestResult {
-    let mut guard = progress_guard::Guard::new();
-    let registry = guard.registry.clone();
-    let io = guard.io.clone();
-    guard
-        .run(run_guarded_scenarios(started, registry, io))
-        .await
-        .map_err(std::io::Error::other)?
-}
-
-async fn run_guarded_scenarios(
-    started: Instant,
-    registry: std::sync::Arc<progress_registry::Registry>,
-    io: acyclic_native_runtime::testing::Schedule,
-) -> TestResult {
+fn run_scenarios(started: Instant) -> TestResult {
     let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
     let mut paths = Vec::new();
     discover(&root, &mut paths)?;
@@ -401,9 +388,28 @@ async fn run_guarded_scenarios(
     let count = paths.len();
     let capacity = scenario_capacity()?;
 
+    let available = std::thread::available_parallelism().map_or(1, usize::from);
+    let budget = available.clamp(2, MAX_ASYNC_WORKERS);
+    let (services, drivers) = case_workers::layout(budget, capacity);
+    // Reassign the existing CPU budget: one or more async service threads plus
+    // thread-affine scenario drivers. The blocking/native pools are unchanged.
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return Err("scenario services must start before the async runtime".into());
+    }
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let runtime = scenario_builder().worker_threads(services).build()?;
+    let mut guard = progress_guard::Guard::new();
+    let registry = guard.registry.clone();
+    let io = guard.io.clone();
     let admitted = std::sync::Arc::new((AtomicUsize::new(0), AtomicUsize::new(0)));
-    let mut results = scenario_admission(
-        paths.into_iter().map(|path| {
+    let mut failures = Vec::new();
+    let _results = case_workers::run(
+        &runtime,
+        paths,
+        capacity,
+        drivers,
+        &mut guard,
+        |path: std::path::PathBuf| {
             let root = root.clone();
             let admitted = admitted.clone();
             let registry = registry.clone();
@@ -427,22 +433,23 @@ async fn run_guarded_scenarios(
                 running.fetch_sub(1, Ordering::SeqCst);
                 (path, result)
             }
-        }),
-        capacity,
-    );
-    let mut failures = Vec::new();
-    while let Some((path, result)) = results.next().await {
-        let name = path
-            .strip_prefix(Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests"))?
-            .display();
-        match result {
-            Ok(()) => println!("PASS {name}"),
-            Err(error) => {
-                eprintln!("FAIL {name}: {error}");
-                failures.push(path);
+        },
+        |(path, result)| {
+            let name = path
+                .strip_prefix(
+                    Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests"),
+                )
+                .unwrap_or(path)
+                .display();
+            match result {
+                Ok(()) => println!("PASS {name}"),
+                Err(error) => {
+                    eprintln!("FAIL {name}: {error}");
+                    failures.push(path.clone());
+                }
             }
-        }
-    }
+        },
+    )?;
     let peak = admitted.1.load(Ordering::SeqCst);
     println!(
         "{} scenarios, {} failed, peak {} admitted of capacity {}, {:.3}s",
