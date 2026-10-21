@@ -58,11 +58,17 @@ impl ControlPlane {
                     Err("the retried subagent spawn is not fully prepared".to_owned())
                 };
             }
-            if !self.state.pending.is_empty() {
-                return Err(
-                    "a subagent spawn handshake is already pending; retry after SubagentStart"
-                        .to_owned(),
-                );
+            // Hosts start concurrent spawns without saying which spawn tool
+            // call each `SubagentStart` answers. Only spawns that are
+            // interchangeable may wait together: one parent, one fork point.
+            const SPAWN_PENDING: &str = "a subagent spawn handshake from another fork point is pending; retry after SubagentStart";
+            if self
+                .state
+                .pending
+                .iter()
+                .any(|spawn| spawn.parent_agent_id != caller)
+            {
+                return Err(SPAWN_PENDING.to_owned());
             }
             let fork_key = IdempotencyKey::new();
             self.state.pending.push_back(PendingSpawn {
@@ -82,6 +88,7 @@ impl ControlPlane {
                 ),
                 fork_key: fork_key.into_bytes(),
                 roots: BTreeMap::new(),
+                fork_generations: BTreeMap::new(),
                 mount_path: self
                     .workspace_mount_root()
                     .join(compact_id(&fork_key.into_bytes())),
@@ -99,6 +106,18 @@ impl ControlPlane {
                         "{error}; failed to recover the rejected spawn: {cleanup}"
                     )),
                 };
+            }
+            let prepared = self
+                .state
+                .pending
+                .iter()
+                .find(|spawn| spawn.fork_key == fork_key.into_bytes())
+                .ok_or_else(|| "prepared spawn disappeared".to_owned())?;
+            if !self.state.pending.iter().all(|spawn| {
+                spawn.fork_key == prepared.fork_key || spawn.interchangeable_with(prepared)
+            }) {
+                self.discard_pending_spawn(fork_key.into_bytes()).await?;
+                return Err(SPAWN_PENDING.to_owned());
             }
             return Ok(json!({}));
         }

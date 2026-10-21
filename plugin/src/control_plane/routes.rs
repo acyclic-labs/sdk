@@ -45,6 +45,11 @@ pub(crate) struct PendingSpawn {
     pub(crate) workspace_name: String,
     pub(crate) fork_key: [u8; 16],
     pub(crate) roots: BTreeMap<String, RouteRoot>,
+    /// The parent generation each root was forked from. Spawns of one parent
+    /// forked from the same generations are interchangeable, so concurrent
+    /// spawns need no host identity to pair with their `SubagentStart`.
+    #[serde(default)]
+    pub(crate) fork_generations: BTreeMap<String, [u8; 32]>,
     pub(crate) mount_path: PathBuf,
     pub(crate) lifecycle: PendingSpawnLifecycle,
 }
@@ -94,6 +99,21 @@ impl RouteLifecycle {
 }
 
 impl PendingSpawn {
+    /// Whether a host may start `self` for a request that prepared `other`:
+    /// the same parent and active root, forked from the same generations.
+    pub(crate) fn interchangeable_with(&self, other: &Self) -> bool {
+        self.lifecycle == PendingSpawnLifecycle::Prepared
+            && other.lifecycle == PendingSpawnLifecycle::Prepared
+            && matches!(self.task_binding, PluginTaskBinding::HostManaged)
+            && matches!(other.task_binding, PluginTaskBinding::HostManaged)
+            && self.agent_id.is_none()
+            && other.agent_id.is_none()
+            && self.parent_agent_id == other.parent_agent_id
+            && self.active_root_id == other.active_root_id
+            && !self.fork_generations.is_empty()
+            && self.fork_generations == other.fork_generations
+    }
+
     pub(crate) fn context_id(&self) -> WorkspaceContextId {
         WorkspaceContextId::from_bytes(self.fork_key)
     }

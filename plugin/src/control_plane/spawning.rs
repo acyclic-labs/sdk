@@ -49,6 +49,7 @@ impl ControlPlane {
             return Err("active root is missing from parent context".to_owned());
         }
         let mut route_roots = pending.roots.clone();
+        let mut fork_generations = BTreeMap::new();
         if pending.lifecycle == PendingSpawnLifecycle::Preparing {
             // Every root's fork binding, lineage, and the child context commit
             // as one change set, durable before the mount mark below.
@@ -145,6 +146,7 @@ impl ControlPlane {
                     parent_workspace_id: Some(parent_lazy.workspace().id()),
                     mount_path: Some(pending.mount_path.join(&root_name)),
                 });
+                fork_generations.insert(root_key(*root_id), fork_generation.digest().into_bytes());
                 route_roots.insert(
                     root_key(*root_id),
                     RouteRoot {
@@ -166,6 +168,7 @@ impl ControlPlane {
                 .find(|candidate| candidate.fork_key == fork_key.into_bytes())
                 .ok_or_else(|| "pending spawn disappeared before mount intent".to_owned())?;
             prepared.roots.clone_from(&route_roots);
+            prepared.fork_generations = fork_generations;
             prepared.lifecycle = PendingSpawnLifecycle::Mounting;
             // Flushed: a mount can leave placeholders behind across a power
             // loss, which recovery accepts only after this mark.
