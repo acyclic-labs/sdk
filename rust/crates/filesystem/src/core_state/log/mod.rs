@@ -127,11 +127,18 @@ impl CoreLog {
     }
 }
 
+#[cfg(test)]
+static REACHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+pub(super) fn crash_point_count() -> u64 {
+    REACHED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// Stops at a physical WAL cut until the supervising process hard-kills the child.
 #[cfg(test)]
 pub(super) fn crash_point(label: &str, flushed: u64) {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static REACHED: AtomicU64 = AtomicU64::new(0);
+    use std::sync::atomic::Ordering;
     let Some(target) = std::env::var_os("ACYCLIC_CORE_STATE_CRASH_POINT") else {
         return;
     };
