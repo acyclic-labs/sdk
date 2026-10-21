@@ -120,6 +120,14 @@ use thiserror::Error;
 
 mod fork_selection;
 
+#[cfg(all(
+    test,
+    feature = "memory",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
+mod seeded_memory_tests;
+
 #[cfg(all(test, feature = "memory"))]
 #[path = "../tests/facade/mod.rs"]
 mod tests;
