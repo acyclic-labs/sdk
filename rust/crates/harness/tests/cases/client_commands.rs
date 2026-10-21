@@ -185,7 +185,7 @@ async fn mention_cases_resolve_exact_files_at_the_command_revision() -> Result<(
         ("project/.claude/commands/read.md", "Read $ARGUMENTS"),
         ("project/a.txt", "before"),
         ("project/space name.txt", "spaces"),
-        ("project/Î».txt", "unicode"),
+        ("project/λ.txt", "unicode"),
     ])
     .await?;
     let catalog = fixture
@@ -241,7 +241,7 @@ async fn mention_cases_resolve_exact_files_at_the_command_revision() -> Result<(
     for (text, expected) in [
         ("@a.txt @a.txt", vec!["project/a.txt", "project/a.txt"]),
         ("Read @\"space name.txt\"", vec!["project/space name.txt"]),
-        ("Î» @Î».txt", vec!["project/Î».txt"]),
+        ("λ @λ.txt", vec!["project/λ.txt"]),
         ("mail@example.com \\@a.txt", vec![]),
     ] {
         let mentions = resolve_file_mentions(
