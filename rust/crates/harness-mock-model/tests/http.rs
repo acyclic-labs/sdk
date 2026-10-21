@@ -26,6 +26,13 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
         ]}));
     }
     cases.insert("errors".into(), json!({"steps":[{"tools":[{"id":"missing","name":"read","arguments":{"file":{"$tool_result":"/file"}}}]}]}));
+    cases.insert(
+        "mixed".into(),
+        json!({"steps":[{
+            "when":{"user":"latest user","tool_result":"last-file"},
+            "tools":[{"id":"bound","name":"edit","arguments":{"file":{"$tool_result":"/file"}}}]
+        }]}),
+    );
     std::fs::write(&script, json!({"cases":cases}).to_string()).unwrap();
     let mut server = Server(
         Command::new(env!("CARGO_BIN_EXE_harness-mock-model"))
@@ -102,6 +109,23 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
         run("chat", "chat/completions"),
         run("anthropic", "messages")
     );
+    let mixed = client
+        .post(format!("{root}/mixed/v1/messages"))
+        .json(&json!({"messages":[
+            {"role":"user","content":"older user"},
+            {"role":"user","content":[
+                {"type":"tool_result","tool_use_id":"first","content":"{\"file\":\"first-file\"}"},
+                {"type":"text","text":"latest user"},
+                {"type":"tool_result","tool_use_id":"last","content":"{\"file\":\"last-file\"}"}
+            ]}
+        ]}))
+        .send()
+        .await
+        .unwrap();
+    assert!(mixed.status().is_success());
+    let mixed = mixed.text().await.unwrap();
+    assert!(mixed.contains("last-file"));
+    assert!(!mixed.contains("first-file"));
     assert_eq!(
         client
             .post(format!("{root}/errors/v1/responses"))
@@ -131,7 +155,7 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
             .status(),
         500
     );
-    for _ in 0..18 {
+    for _ in 0..19 {
         assert!(
             lines
                 .next()
@@ -145,7 +169,7 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    assert_eq!(records.len(), 18);
+    assert_eq!(records.len(), 19);
     for (index, record) in records.iter().enumerate() {
         assert_eq!(record["sequence"], index + 1);
     }
