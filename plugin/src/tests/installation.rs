@@ -253,3 +253,20 @@ fn executable_digests_are_reused_only_for_the_same_settled_file() {
         first.blake3
     );
 }
+
+#[test]
+fn doctor_fails_a_damaged_codex_ownership_record_instead_of_calling_it_absent() {
+    let directory = tempfile::tempdir().unwrap();
+    let record = directory.path().join("codex-plugin.json");
+    let absent = codex_installation_check(&read_codex_ownership(&record), false, &record);
+    assert_eq!(absent["status"], "warn");
+    fs::write(&record, b"{ damaged").unwrap();
+    let damaged = codex_installation_check(&read_codex_ownership(&record), false, &record);
+    assert_eq!(damaged["status"], "fail");
+    assert!(
+        damaged["detail"]
+            .as_str()
+            .unwrap()
+            .contains(&record.display().to_string())
+    );
+}

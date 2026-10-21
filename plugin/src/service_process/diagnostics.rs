@@ -139,10 +139,6 @@ pub(crate) fn codex_json(arguments: &[&str]) -> Result<Value, String> {
     serde_json::from_slice(&output.stdout).map_err(display)
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each argument is one independently gathered service fact"
-)]
 /// What the running service reports about itself to doctor.
 pub(crate) struct ServiceSummary {
     pub(crate) identity: String,
@@ -245,36 +241,28 @@ pub(crate) fn doctor_report(
                 if marketplace_owned { "pass" } else { "fail" },
                 marketplace.display().to_string(),
             ));
-            let ownership = read_codex_ownership(&codex_ownership_path()).ok().flatten();
+            let ownership = read_codex_ownership(&codex_ownership_path());
             // A service Codex started runs from Codex's copy of the plugin,
             // so the installation is judged by the owned marketplace.
-            let configured_owned = ownership.as_ref().is_some_and(|ownership| {
-                ownership.version == 1
-                    && codex_home().is_ok_and(|codex_home| {
-                        runs_owned_codex_plugin(ownership, root, &codex_home)
-                    })
-                    && plan_codex_config(ownership).is_ok()
-                    && codex_plugin_configuration_matches(ownership, &ownership.marketplace_root)
-            });
-            checks.push(doctor_check(
-                "codex-install",
-                // Like every host, Codex is optional: only an installation
-                // that exists can be broken.
-                match (&ownership, configured_owned) {
-                    (None, _) => "warn",
-                    (Some(_), true) => "pass",
-                    (Some(_), false) => "fail",
-                },
-                ownership.as_ref().map_or_else(
-                    || "no owned Codex installation".to_owned(),
-                    |ownership| {
-                        format!(
-                            "marketplace={} plugin-version={}",
-                            ownership.marketplace_root.display(),
-                            env!("CARGO_PKG_VERSION")
+            let configured_owned = ownership
+                .as_ref()
+                .ok()
+                .and_then(Option::as_ref)
+                .is_some_and(|ownership| {
+                    ownership.version == 1
+                        && codex_home().is_ok_and(|codex_home| {
+                            runs_owned_codex_plugin(ownership, root, &codex_home)
+                        })
+                        && plan_codex_config(ownership).is_ok()
+                        && codex_plugin_configuration_matches(
+                            ownership,
+                            &ownership.marketplace_root,
                         )
-                    },
-                ),
+                });
+            checks.push(codex_installation_check(
+                &ownership,
+                configured_owned,
+                &codex_ownership_path(),
             ));
             let hooks = root.join("hooks/hooks.json");
             let mcp = root.join(".mcp.json");
@@ -416,6 +404,35 @@ pub(crate) fn doctor_report(
         "platform": {"os": env::consts::OS, "arch": env::consts::ARCH},
         "checks": checks,
     }))
+}
+
+/// Like every host, Codex is optional: only an installation that exists can
+/// be broken, and a damaged ownership record is a broken installation.
+pub(crate) fn codex_installation_check(
+    ownership: &Result<Option<CodexPluginOwnership>, String>,
+    configured_owned: bool,
+    record: &Path,
+) -> Value {
+    match ownership {
+        Ok(None) => doctor_check("codex-install", "warn", "no owned Codex installation"),
+        Ok(Some(ownership)) => doctor_check(
+            "codex-install",
+            if configured_owned { "pass" } else { "fail" },
+            format!(
+                "marketplace={} plugin-version={}",
+                ownership.marketplace_root.display(),
+                env!("CARGO_PKG_VERSION")
+            ),
+        ),
+        Err(error) => doctor_check(
+            "codex-install",
+            "fail",
+            format!(
+                "cannot read the Codex ownership record {}: {error}",
+                record.display()
+            ),
+        ),
+    }
 }
 
 /// The service and durable-state checks, from the service's own summary or
