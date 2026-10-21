@@ -210,16 +210,6 @@ async fn stock_native_context_projects_deep_payload_and_stops_at_exact_source_li
     work.receipt().verify(finite_budget()).unwrap();
 }
 
-async fn assert_bucket(
-    store: &LocalCoreStateStore,
-    parent: WorkspaceContextId,
-    expected: BTreeSet<WorkspaceContextId>,
-) {
-    let children: Option<ContextChildren> = store.load_logged(parent).await.unwrap();
-    let count: Option<ContextChildCount> = store.load_logged(parent).await.unwrap();
-    assert_bucket_values(children, count, expected);
-}
-
 fn assert_bucket_values(
     children: Option<ContextChildren>,
     count: Option<ContextChildCount>,

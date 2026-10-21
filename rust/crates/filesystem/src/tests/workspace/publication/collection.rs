@@ -79,32 +79,40 @@ async fn collections_run_alongside_publications() -> Result<(), Box<dyn Error>> 
     let cancellation = CancellationToken::new();
     let fs = Fs::local(crate::LocalOptions::new(root)).await?;
     unbounded!(fs, create_workspace("repo"))?;
-    let writer = tokio::spawn({
-        let fs = fs.clone();
-        async move {
-            let main = unbounded!(fs, open_workspace("repo"))?;
-            for round in 0..24_u32 {
-                main.write_text("/churn.txt", &round.to_string().repeat(20_000))
-                    .await?;
-                let agent = fork_workspace(
-                    &main,
-                    &format!("agent-{round}"),
-                    ForkOptions::from_generation(unbounded!(main, head())?, IdempotencyKey::new()),
-                )
-                .await?;
-                agent
-                    .write_text("/agent.txt", &format!("agent {round} ").repeat(8_192))
-                    .await?;
-                agent.delete(IdempotencyKey::new()).await?;
-            }
-            Ok::<_, WorkspaceError>(())
-        }
-    });
+    let main = unbounded!(fs, open_workspace("repo"))?;
     let mut removed = 0_u64;
-    while !writer.is_finished() {
-        removed += fs.collect_local_garbage(None, &cancellation).await?.removed;
+    let mut concurrent_collections = 0;
+    for round in 0..24_u32 {
+        // Readiness drives one collection alongside each publication round.
+        // Repeating collections while the same writer is pending only adds I/O.
+        let collection = async {
+            concurrent_collections += 1;
+            fs.collect_local_garbage(None, &cancellation).await
+        };
+        let publication = async {
+            main.write_text("/churn.txt", &round.to_string().repeat(20_000))
+                .await?;
+            let agent = fork_workspace(
+                &main,
+                &format!("agent-{round}"),
+                ForkOptions::from_generation(unbounded!(main, head())?, IdempotencyKey::new()),
+            )
+            .await?;
+            agent
+                .write_text("/agent.txt", &format!("agent {round} ").repeat(8_192))
+                .await?;
+            agent.delete(IdempotencyKey::new()).await?;
+            Ok::<_, WorkspaceError>(())
+        };
+        let (collected, published) = tokio::join!(collection, publication);
+        removed += collected?.removed;
+        published?;
     }
-    writer.await??;
+    assert_eq!(
+        concurrent_collections, 24,
+        "one concurrent collection must cover each publication round"
+    );
+    drop(main);
     removed += fs.collect_local_garbage(None, &cancellation).await?.removed;
     assert!(removed > 0);
     close_local(fs).await?;
