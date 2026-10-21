@@ -33,6 +33,13 @@ or changed source before materialization fails rather than substituting a newer
 body. Neither model-supplied host paths nor project-authored records can register
 these native sources.
 
+First-time body materialization has one async owner per journal. Cache rechecks,
+pinned publication and retained receipts run under that owner, so concurrent
+loads of different skills cannot pin the same journal head. Replacement catalog
+registrations retain the same owner and source directory, including while an
+older registration has an in-flight load. Reads of already retained bodies use
+their immutable generations without waiting for materialization.
+
 Constructing declarations and binding snapshots is pure. An authorized caller
 explicitly invokes `ContextDiscovery::capture`, then binds the complete snapshot
 with `HarnessBuilder::declared_context` or `DiscoveredContext::stage`. These are
