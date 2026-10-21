@@ -9,9 +9,9 @@ fn sse(value: Value) -> String {
     format!("{event}data: {value}\n\n")
 }
 
-pub(crate) fn events(path: &str, step: &Step) -> Option<Vec<String>> {
+pub(crate) fn events(path: &str, step: &Step, input_tokens: u64) -> Option<Vec<String>> {
     let mut output = Vec::new();
-    let usage = json!({"input_tokens":64,"output_tokens":2});
+    let usage = json!({"input_tokens":input_tokens,"output_tokens":2});
     match path {
         "responses" => {
             output.push(sse(json!({"type":"response.created","response":{"id":"mock-response","status":"in_progress"}})));
@@ -41,7 +41,7 @@ pub(crate) fn events(path: &str, step: &Step) -> Option<Vec<String>> {
                 } else {
                     "tool_calls"
                 };
-                output.push(sse(json!({"choices":[{"index":0,"delta":{},"finish_reason":reason}],"usage":{"prompt_tokens":64,"completion_tokens":2}})));
+                output.push(sse(json!({"choices":[{"index":0,"delta":{},"finish_reason":reason}],"usage":{"prompt_tokens":input_tokens,"completion_tokens":2}})));
                 output.push("data: [DONE]\n\n".into());
             }
         }

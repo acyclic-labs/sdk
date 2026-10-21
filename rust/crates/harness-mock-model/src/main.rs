@@ -1,7 +1,7 @@
 //! Real loopback HTTP server. Stdout is a flushed, line-oriented event stream.
 use axum::body::{Body, Bytes};
 use futures::{StreamExt as _, stream};
-use harness_mock_model::{Engine, Script, bind_result, events};
+use harness_mock_model::{Engine, Script, bind_result, events_with_usage};
 use http_body_util::BodyExt as _;
 use hyper::{Request, Response, StatusCode, body::Incoming, service::service_fn};
 use hyper_util::rt::TokioIo;
@@ -54,6 +54,7 @@ fn answer(
         endpoint,
         "count" | "responses/input_tokens" | "messages/count_tokens"
     );
+    let tokens = host.engine.input_tokens(namespace, &body).unwrap_or(0);
     let (step, reply) = if let Some((index, step)) = host.engine.take(namespace, endpoint, &body) {
         let status = step.status.unwrap_or(200);
         let reply = if let Some(json) = &step.json {
@@ -67,7 +68,7 @@ fn answer(
             response(500, "json", Body::from(json!({"error":error}).to_string()))
         } else if let Some(events) = bind_result(step, &body)
             .ok()
-            .and_then(|bound| events(endpoint, &bound))
+            .and_then(|bound| events_with_usage(endpoint, &bound, tokens))
         {
             let chunks = stream::iter(
                 events

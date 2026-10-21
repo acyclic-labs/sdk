@@ -30,7 +30,7 @@
 //! `token_counter` with `path: "count"`, `adapter` matching the provider adapter,
 //! `response_field: "input_tokens"`, `framing_tokens: 0`. Token requests are
 //! recorded but do not consume steps. Native token-count paths work too.
-//! `count_bytes: true` adds serialized request bytes to the count for compaction
+//! `count_bytes: true` adds serialized request bytes to both count responses and generation usage for compaction
 //! cases. A step with explicit `when.path: "count"` overrides automatic counting;
 //! combine `json` and `hold` to suspend preparation until the process is killed.
 //!
@@ -248,7 +248,13 @@ impl Engine {
 
 /// Generate provider-native SSE chunks; no sleeps, clocks or randomized IDs.
 pub fn events(path: &str, step: &Step) -> Option<Vec<String>> {
-    wire::events(path, step)
+    wire::events(path, step, 64)
+}
+
+/// Generate the same events with the request's deterministic counted usage.
+/// The HTTP host uses this for both fixed and byte-counted namespaces.
+pub fn events_with_usage(path: &str, step: &Step, input_tokens: u64) -> Option<Vec<String>> {
+    wire::events(path, step, input_tokens)
 }
 
 /// Resolve a `{"$tool_result":"/json/pointer"}` argument leaf from the last

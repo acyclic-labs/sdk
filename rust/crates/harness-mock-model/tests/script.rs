@@ -5,6 +5,17 @@ use serde_json::json;
 
 proptest! {
     #[test]
+    fn every_adapter_retains_exact_counted_usage(tokens in 0_u64..u64::MAX) {
+        let step: Step = serde_json::from_value(json!({"text":["done"]})).unwrap();
+        for path in ["responses", "chat/completions", "messages"] {
+            let wire = harness_mock_model::events_with_usage(path, &step, tokens).unwrap().concat();
+            let events: Vec<serde_json::Value> = wire.lines().filter_map(|line| line.strip_prefix("data: ")).filter_map(|line| serde_json::from_str(line).ok()).collect();
+            let usage = events.iter().find_map(|event| event.pointer("/response/usage").or_else(|| event.pointer("/message/usage")).or_else(|| event.get("usage"))).unwrap();
+            prop_assert_eq!(usage.get("input_tokens").or_else(|| usage.get("prompt_tokens")).unwrap(), &json!(tokens));
+        }
+    }
+
+    #[test]
     fn adjacent_anthropic_results_and_user_text_retain_independent_latest_values(text in "[a-zA-Z0-9]{1,40}", files in prop::collection::vec("[a-z]{1,12}",2..6)) {
         let step: Step = serde_json::from_value(json!({"tools":[{"id":"edit","name":"edit","arguments":{"file":{"$tool_result":"/file"}}}]})).unwrap();
         let mut parts: Vec<_> = files.iter().map(|file| json!({"type":"tool_result","tool_use_id":file,"content":json!({"file":file}).to_string()})).collect();

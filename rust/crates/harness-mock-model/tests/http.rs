@@ -20,7 +20,7 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
     let record = directory.path().join("requests.jsonl");
     let mut cases = serde_json::Map::new();
     for namespace in ["responses", "chat", "anthropic"] {
-        cases.insert(namespace.into(),json!({"steps":[
+        cases.insert(namespace.into(),json!({"count_bytes":true,"steps":[
             {"when":{"user":"hello"},"text":["hé","\n**world**"],"tools":[{"id":"call_1","name":"read","arguments":{"path":"a.txt"}}]},
             {"when":{"tool_result":"tool-result"},"text":["done"]}
         ]}));
@@ -75,6 +75,31 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
             assert!(stream.contains("hé"));
             assert!(stream.contains("call_1"));
             assert!(stream.contains("a.txt"));
+            let expected = 64
+                + json!({"messages":[{"role":"user","content":"hello"}]})
+                    .to_string()
+                    .len() as u64;
+            let events: Vec<Value> = stream
+                .lines()
+                .filter_map(|line| line.strip_prefix("data: "))
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect();
+            let usage = events
+                .iter()
+                .find_map(|event| {
+                    event
+                        .pointer("/response/usage")
+                        .or_else(|| event.pointer("/message/usage"))
+                        .or_else(|| event.get("usage"))
+                })
+                .unwrap();
+            assert_eq!(
+                usage
+                    .get("input_tokens")
+                    .or_else(|| usage.get("prompt_tokens"))
+                    .unwrap(),
+                expected
+            );
             let count = client
                 .post(format!("{root}/{namespace}/v1/count"))
                 .json(&json!({}))
@@ -84,7 +109,7 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
                 .json::<Value>()
                 .await
                 .unwrap();
-            assert_eq!(count["input_tokens"], 64);
+            assert_eq!(count["input_tokens"], 66);
             let next = client
                 .post(&url)
                 .json(&json!({"messages":[{"role":"tool","content":"tool-result"}]}))
