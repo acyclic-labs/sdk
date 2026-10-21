@@ -150,7 +150,12 @@ impl HostRoot {
             self.stat_source(path, work)
         }
     }
-    #[cfg(any(test, feature = "native-mount", not(target_os = "linux")))]
+    #[cfg(any(
+        test,
+        feature = "native-mount",
+        feature = "native-watch",
+        not(target_os = "linux")
+    ))]
     pub(crate) fn stat_file<W: NativeHostWork>(
         &self,
         file: &File,
