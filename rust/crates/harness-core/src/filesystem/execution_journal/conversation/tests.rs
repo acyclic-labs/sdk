@@ -202,11 +202,30 @@ async fn open(
     Ok(Binding { journal, bundle })
 }
 
+fn copy_work(state: &crate::conversation::ConversationState) -> Result<serde_json::Value> {
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    let (copy, _) = state.copy(&mut Some(&mut io.history_io()), None)?;
+    assert_eq!(&copy, state);
+    drop(copy);
+    drop(io);
+    Ok(serde_json::to_value(work.receipt()).expect("work counters"))
+}
+
+fn constant_copy_work(small: &serde_json::Value, large: &serde_json::Value) {
+    assert_eq!(small, large, "copy work depends on archived history");
+}
+
 #[tokio::test]
 async fn durable_turn_growth_reopens_and_replays_original_identity() -> Result<()> {
-    const N: u16 = 1;
     const WARMUP: u16 = 4;
-    const TURNS: u16 = WARMUP + 10 * N;
+    // Two settled post-compaction sizes, with two turns after the cold reopen.
+    // Exact copy work detects growth without a tenfold repeated workload.
+    const TURNS: u16 = WARMUP + 4;
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let agent = AgentId::new();
     let model = Arc::new(counted_model(usize::from(TURNS) * 2));
@@ -224,6 +243,7 @@ async fn durable_turn_growth_reopens_and_replays_original_identity() -> Result<(
         .await?;
     let mut first = None;
     let mut observations = Vec::new();
+    let mut full_history_observations = Vec::new();
     for index in 0..TURNS {
         let operation = if index == 0 {
             initial_operation
@@ -252,18 +272,37 @@ async fn durable_turn_growth_reopens_and_replays_original_identity() -> Result<(
             if index >= 3 {
                 assert!(state.resident_after_sequence() > 0);
             }
-            if index + 1 == WARMUP + N || index + 1 == TURNS {
-                let work = acyclic_fs::NativeMaterializationWork::new(
-                    acyclic_fs::performance::BOUNDARY_BUDGET,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-                let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-                let (copy, _) = state.copy(&mut Some(&mut io.history_io()), None)?;
-                assert_eq!(&copy, state);
-                drop(copy);
-                drop(io);
-                observations.push(serde_json::to_value(work.receipt()).expect("work counters"));
+            if index + 1 == WARMUP + 1 || index + 1 == TURNS {
+                observations.push(copy_work(state)?);
+                // Restore the full authoritative history into the same state
+                // type, reproducing the redundant retained-prefix copy.
+                let reader = aggregate.history_reader()?;
+                let cursor = reader.pin(0, None).await?;
+                let messages = reader
+                    .conversation_range(
+                        &cursor,
+                        0,
+                        state.logical_revision(),
+                        crate::store::HistoryReadLimits {
+                            maximum_events: u32::from(TURNS) * 2,
+                            maximum_bytes: 262_144,
+                        },
+                        &mut None,
+                    )
+                    .await?;
+                let (full, _) = crate::conversation::ConversationState::from_wire(
+                    crate::conversation::ConversationStateWire {
+                        agent: Some(agent),
+                        messages,
+                        archived_prefix: None,
+                    },
+                    262_144,
+                    &mut None,
+                )?;
+                assert_eq!(full.logical_revision(), state.logical_revision());
+                assert!(full.messages().len() > state.messages().len());
+                assert!(full.messages().ends_with(state.messages()));
+                full_history_observations.push(copy_work(&full)?);
             }
         }
         if index == TURNS - 3 {
@@ -278,6 +317,12 @@ async fn durable_turn_growth_reopens_and_replays_original_identity() -> Result<(
     let [small, large] = observations.as_slice() else {
         return Err(Error::Invalid("missing growth observations".into()));
     };
+    constant_copy_work(small, large);
+    let [small_full, large_full] = full_history_observations.as_slice() else {
+        return Err(Error::Invalid("missing full-history observations".into()));
+    };
+    std::panic::catch_unwind(|| constant_copy_work(small_full, large_full))
+        .expect_err("full-history copying evaded the exact work assertion");
     for (counter, value) in small.as_object().expect("work counters") {
         assert!(
             large

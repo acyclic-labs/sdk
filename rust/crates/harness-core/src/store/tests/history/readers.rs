@@ -43,16 +43,17 @@ async fn empty_history_cursor_stays_terminal_after_first_publication() -> Result
 }
 
 #[tokio::test]
-async fn cold_history_reader_bounds_ten_thousand_events_without_reducer_restore() -> Result<()> {
-    let client = projection_fixture(10_000).await?;
+async fn cold_history_reader_bounds_pages_across_checkpoints_without_reducer_restore() -> Result<()> {
+    const EVENTS: u64 = 2 * DEFAULT_PROJECTION_EVENTS as u64 + 2;
+    let client = projection_fixture(EVENTS).await?;
     let mut writer = with_content(&client).await?;
-    let last = writer.read_event_at(10_000, &mut None).await?.0;
+    let last = writer.read_event_at(EVENTS, &mut None).await?.0;
     let reader = writer.history_reader()?;
-    let cursor = reader.pin(9_997, None).await?;
+    let cursor = reader.pin(EVENTS - 3, None).await?;
     client.forbid_writes.store(false, Ordering::SeqCst);
     writer
         .execute(
-            projection_command(10_001, 10_000)?,
+            projection_command(u128::from(EVENTS + 1), EVENTS)?,
             #[cfg(feature = "filesystem")]
             None,
             &mut None,
@@ -63,11 +64,20 @@ async fn cold_history_reader_bounds_ten_thousand_events_without_reducer_restore(
         maximum_events: 2,
         maximum_bytes: 131_072,
     };
+    client.reset_io();
+    client.observation_maximum.store(0, Ordering::SeqCst);
     let first = reader.read_page(&cursor, limits, None).await?;
     assert_eq!(first.events.len(), 2);
-    assert_eq!(first.cursor.after_revision, 9_999);
+    assert_eq!(first.cursor.after_revision, EVENTS - 1);
+    let work = client.io_snapshot();
+    let page_work = (
+        work.reads,
+        work.tails,
+        client.observation_maximum.load(Ordering::SeqCst),
+    );
+    assert_eq!(page_work, (1, 1, 2));
     let second = reader.read_page(&first.cursor, limits, None).await?;
-    assert_eq!(second.events, vec![last]);
+    assert_eq!(second.events, vec![last.clone()]);
     assert!(
         reader
             .read_page(&second.cursor, limits, None)
@@ -78,6 +88,38 @@ async fn cold_history_reader_bounds_ten_thousand_events_without_reducer_restore(
     client.history_read_fault.store(3, Ordering::SeqCst);
     assert!(reader.read_page(&cursor, limits, None).await.is_err());
     assert_eq!(reader.read_page(&cursor, limits, None).await?, first);
+    // A scan of the canonical prefix returns the same suffix, but must fail
+    // the same exact page-work detector even with this smaller fixture.
+    let mut full = cursor.clone();
+    full.after_revision = 0;
+    client.reset_io();
+    client.observation_maximum.store(0, Ordering::SeqCst);
+    let scanned = reader
+        .read_page(
+            &full,
+            HistoryReadLimits {
+                maximum_events: EVENTS as u32,
+                maximum_bytes: u64::MAX,
+            },
+            None,
+        )
+        .await?;
+    assert_eq!(scanned.events.len(), EVENTS as usize);
+    assert_eq!(scanned.events.last(), Some(&last));
+    assert_eq!(
+        &scanned.events[EVENTS as usize - 3..EVENTS as usize - 1],
+        first.events
+    );
+    let work = client.io_snapshot();
+    assert_ne!(
+        (
+            work.reads,
+            work.tails,
+            client.observation_maximum.load(Ordering::SeqCst),
+        ),
+        page_work,
+        "full-prefix scan evaded the exact page-work detector"
+    );
     for bounds in [
         HistoryReadLimits {
             maximum_bytes: 1,
@@ -91,7 +133,7 @@ async fn cold_history_reader_bounds_ten_thousand_events_without_reducer_restore(
         assert!(reader.read_page(&cursor, bounds, None).await.is_err());
     }
     let mut invalid = cursor.clone();
-    invalid.through_revision = 10_002;
+    invalid.through_revision = EVENTS + 2;
     assert!(reader.read_page(&invalid, limits, None).await.is_err());
     invalid = cursor;
     invalid.authority.id = "other".into();
