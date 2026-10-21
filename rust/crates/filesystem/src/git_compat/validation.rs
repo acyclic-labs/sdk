@@ -87,6 +87,7 @@ pub(super) fn validate_git_state(state: &GitCompatState) -> Result<(), ()> {
         .branches
         .values()
         .map(|branch| branch.workspace_id)
+        .chain(state.retired_workspaces.iter().copied())
         .collect();
     validate_git_commits(state, &known_workspaces)?;
     validate_git_commit_graph(state)?;

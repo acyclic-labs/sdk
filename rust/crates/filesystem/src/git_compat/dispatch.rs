@@ -236,10 +236,22 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
                     "cannot discard the checked-out branch '{branch}'"
                 )));
             }
-            state
+            let retired = state
                 .branches
                 .remove(&branch)
-                .ok_or(GitCompatError::UnknownObject(branch))?;
+                .ok_or(GitCompatError::UnknownObject(branch))?
+                .workspace_id;
+            // Commits (possibly already merged elsewhere) and stashes recorded
+            // in that workspace stay valid history, so its ownership is kept.
+            if state
+                .commits
+                .values()
+                .map(|commit| commit.workspace_tree)
+                .chain(state.stash.iter().copied())
+                .any(|tree| tree.workspace_id() == retired)
+            {
+                state.retired_workspaces.insert(retired);
+            }
             GitCommandOutput::Branches {
                 current: state.current_branch.clone(),
                 branches: state.branches.values().cloned().collect(),

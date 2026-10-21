@@ -7,7 +7,7 @@ fn current_state_round_trips_and_obsolete_versions_are_rejected() {
     let mut decoded: GitCompatState =
         serde_json::from_slice(&encoded).expect("decode current state");
     assert!(validate_git_state(&decoded).is_ok());
-    for version in [0, 2, 9, u32::MAX] {
+    for version in [0, 1, 3, u32::MAX] {
         decoded.version = version;
         assert!(validate_git_state(&decoded).is_err());
     }

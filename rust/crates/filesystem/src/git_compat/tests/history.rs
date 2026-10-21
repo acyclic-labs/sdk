@@ -1068,3 +1068,162 @@ fn merge_ancestry_uses_reachability_across_merge_parents() {
     // distance and picks A, so it cannot answer whether S is an ancestor.
     assert_ne!(nearest_common_ancestor(&state, head.id, s.id), Some(s.id));
 }
+
+/// How far a child branch got before the parent discards it.
+#[derive(Clone, Copy, Debug)]
+enum DiscardedChild {
+    Uncommitted,
+    Committed,
+    PartiallyMerged,
+    Stashed,
+}
+
+#[tokio::test]
+async fn discard_keeps_every_record_a_discarded_branch_produced() {
+    let child = workspace_identity([9; 16], "discard-history");
+    let child_tree = |byte| GitTreeRef::exact(child, generation(byte));
+    let applied = |tree: GitTreeRef, tracked: Option<&[&str]>| {
+        TestExecutor::returning(GitFilesystemResult::Applied {
+            tree: Some(tree),
+            tracked_paths: tracked
+                .map(|paths| paths.iter().map(|path| (*path).to_owned()).collect()),
+        })
+    };
+    let commit = |message: &str| GitCommand::Commit {
+        message: message.to_owned(),
+        author: "agent".to_owned(),
+        authored_at_seconds: 1,
+    };
+    let captured = |tree: GitTreeRef| {
+        TestExecutor::returning(GitFilesystemResult::Captured {
+            tree,
+            tracked_paths: BTreeSet::from(["child.txt".to_owned()]),
+            proof: None,
+        })
+    };
+    let switch = |branch: &str| GitCommand::Switch {
+        branch: branch.to_owned(),
+        create: false,
+    };
+    for scenario in [
+        DiscardedChild::Uncommitted,
+        DiscardedChild::Committed,
+        DiscardedChild::PartiallyMerged,
+        DiscardedChild::Stashed,
+    ] {
+        let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
+        repository
+            .run(
+                GitCommand::Branch {
+                    create: Some("agents/kid".to_owned()),
+                },
+                tree(1),
+                &TestExecutor::returning(GitFilesystemResult::Forked {
+                    workspace_id: child,
+                }),
+            )
+            .await
+            .expect("child branch");
+        let mut merged = None;
+        if !matches!(scenario, DiscardedChild::Uncommitted) {
+            repository
+                .run(switch("agents/kid"), tree(1), &applied(child_tree(1), None))
+                .await
+                .expect("enter child");
+            let GitCommandOutput::Committed(first) = repository
+                .run(
+                    commit("child work"),
+                    child_tree(2),
+                    &captured(child_tree(2)),
+                )
+                .await
+                .expect("child commit")
+            else {
+                panic!("child commit records history");
+            };
+            if matches!(scenario, DiscardedChild::Stashed) {
+                repository
+                    .run(
+                        GitCommand::StashPush,
+                        child_tree(3),
+                        &applied(child_tree(2), None),
+                    )
+                    .await
+                    .expect("child stash");
+            }
+            repository
+                .run(switch("main"), child_tree(2), &applied(tree(1), None))
+                .await
+                .expect("leave child");
+            if matches!(scenario, DiscardedChild::PartiallyMerged) {
+                repository
+                    .run(
+                        GitCommand::Merge {
+                            branch: "agents/kid".to_owned(),
+                        },
+                        tree(1),
+                        &applied(tree(4), Some(&["child.txt"])),
+                    )
+                    .await
+                    .expect("merge first child commit");
+                // The child keeps working past what the parent merged.
+                repository
+                    .run(switch("agents/kid"), tree(4), &applied(child_tree(2), None))
+                    .await
+                    .expect("re-enter child");
+                repository
+                    .run(commit("unmerged"), child_tree(5), &captured(child_tree(5)))
+                    .await
+                    .expect("unmerged child commit");
+                repository
+                    .run(switch("main"), child_tree(5), &applied(tree(4), None))
+                    .await
+                    .expect("leave child again");
+                merged = Some(first);
+            }
+        }
+        let main_tree = if merged.is_some() { tree(4) } else { tree(1) };
+        let discarded = repository
+            .run(
+                GitCommand::Discard {
+                    branch: "agents/kid".to_owned(),
+                },
+                main_tree,
+                &TestExecutor::failing(),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{scenario:?}: discard failed: {error:?}"));
+        let GitCommandOutput::Branches { branches, .. } = discarded else {
+            panic!("{scenario:?}: discard lists the remaining branches");
+        };
+        assert_eq!(branches.len(), 1, "{scenario:?}");
+        // The repository stays writable and merged history stays reachable.
+        let GitCommandOutput::Commits(log) = repository
+            .run(
+                GitCommand::Log { maximum: 10 },
+                main_tree,
+                &TestExecutor::failing(),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{scenario:?}: log failed: {error:?}"))
+        else {
+            panic!("{scenario:?}: log lists commits");
+        };
+        if let Some(first) = &merged {
+            assert!(
+                log.contains(first),
+                "{scenario:?}: merged child commit lost"
+            );
+        }
+        repository
+            .run(commit("parent after discard"), tree(6), &captured(tree(6)))
+            .await
+            .unwrap_or_else(|error| panic!("{scenario:?}: commit after discard: {error:?}"));
+        if matches!(scenario, DiscardedChild::Stashed) {
+            repository
+                .run(GitCommand::StashPop, tree(6), &applied(tree(7), None))
+                .await
+                .unwrap_or_else(|error| panic!("stash from a discarded branch: {error:?}"));
+        }
+    }
+}

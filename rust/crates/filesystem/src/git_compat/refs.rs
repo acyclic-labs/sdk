@@ -24,6 +24,10 @@ pub struct GitCompatState {
     pub current_branch: String,
     /// Branch catalog.
     pub branches: BTreeMap<String, GitBranch>,
+    /// Workspaces of discarded branches that recorded commits or stashes
+    /// still held here. Workspace ownership outlives the branch name, so
+    /// discarding a branch never orphans the history it already produced.
+    pub retired_workspaces: BTreeSet<WorkspaceId>,
     /// Explicit commit records.
     pub commits: BTreeMap<GitCommitId, GitCommit>,
     /// Cross-repository parents introduced by direct child publication.
@@ -63,6 +67,7 @@ impl GitCompatState {
             revision: 0,
             current_branch: branch,
             branches,
+            retired_workspaces: BTreeSet::new(),
             commits: BTreeMap::new(),
             external_parents: BTreeSet::new(),
             tags: BTreeMap::new(),
