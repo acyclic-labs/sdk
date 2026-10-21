@@ -45,7 +45,12 @@ fn patch_paths_are_routed_and_cannot_escape() {
 fn structured_paths_are_routed_and_cannot_escape() {
     let fixture = Fixture::new();
     let child = fixture.directory("workspace");
-    validate_tool_paths("Read", &json!({"path":child.join("src/lib.rs")}), &child).unwrap();
+    let child_views = views(&fixture, &child);
+    let scope = ChildScope {
+        views: &child_views,
+        selected: &child,
+    };
+    validate_tool_paths("Read", &json!({"path":child.join("src/lib.rs")}), &scope).unwrap();
     let rewritten = rewrite_tool_input(
         "Write",
         json!({"file_path":"relative.txt","content":"child"}),
@@ -61,7 +66,7 @@ fn structured_paths_are_routed_and_cannot_escape() {
         PathBuf::from("../parent"),
         fixture.temporary.path().join("outside/file.rs"),
     ] {
-        assert!(validate_tool_paths("Read", &json!({"path":path}), &child).is_err());
+        assert!(validate_tool_paths("Read", &json!({"path":path}), &scope).is_err());
     }
 }
 
@@ -77,7 +82,12 @@ fn shell_routing_denies_parent_paths_and_expansion() {
         "echo value>../outside",
         "echo value 2>../outside",
     ] {
-        assert!(validate_shell_paths(command, &child).is_err());
+        let views = views(&fixture, &child);
+        let scope = ChildScope {
+            views: &views,
+            selected: &child,
+        };
+        assert!(validate_shell_paths(command, &scope).is_err());
     }
     let root = fixture.root.display().to_string();
     let rewritten = rewrite_tool_input(
@@ -124,8 +134,13 @@ fn symlinks_cannot_escape_the_child() {
     let child = fixture.directory("workspace");
     let outside = fixture.directory("outside");
     std::os::unix::fs::symlink(&outside, child.join("escape")).unwrap();
+    let child_views = views(&fixture, &child);
+    let scope = ChildScope {
+        views: &child_views,
+        selected: &child,
+    };
     assert!(
-        validate_tool_paths("Read", &json!({"path":child.join("escape/file")}), &child).is_err()
+        validate_tool_paths("Read", &json!({"path":child.join("escape/file")}), &scope).is_err()
     );
     assert!(
         rewrite_tool_input(
@@ -227,13 +242,8 @@ fn every_parent_root_maps_to_its_own_view() {
         fixture.root.join("a.txt").display(),
         second_root.join("b.txt").display()
     );
-    let rewritten = rewrite_tool_input(
-        "Bash",
-        json!({"command":command}),
-        &views,
-        &fixture.directory("views"),
-    )
-    .unwrap();
+    let rewritten =
+        rewrite_tool_input("Bash", json!({"command":command}), &views, &first_view).unwrap();
     assert!(
         rewritten["command"].as_str().unwrap().ends_with(&format!(
             "cat {} {}",
@@ -281,6 +291,71 @@ fn every_spelling_of_the_parent_root_names_the_view() {
             mapped.starts_with(&child) && mapped.ends_with("file.rs"),
             "{spelling} mapped to {}",
             mapped.display()
+        );
+    }
+}
+
+/// Two parent roots, each with its own view: a child working in either root
+/// reaches the other root by its absolute path, and the access decision runs
+/// against the view the path was mapped into.
+#[test]
+fn a_path_under_either_parent_root_is_decided_in_that_roots_view() {
+    let fixture = Fixture::new();
+    let first_root = fixture.root.clone();
+    let second_root = fixture.directory("second");
+    let first_view = fixture.directory("views/first");
+    let second_view = fixture.directory("views/second");
+    let views = [
+        RootView::new(&first_root, first_view.clone()),
+        RootView::new(&second_root, second_view.clone()),
+    ];
+    for (selected, other_root, other_view) in [
+        (&first_view, &second_root, &second_view),
+        (&second_view, &first_root, &first_view),
+    ] {
+        let scope = ChildScope {
+            views: &views,
+            selected,
+        };
+        let named = other_root.join("src").join("lib.rs");
+        let (view, routed) = route_path(&named.display().to_string(), &scope).unwrap();
+        assert_eq!(view.view(), other_view.as_path());
+        assert_eq!(routed, other_view.join("src").join("lib.rs"));
+        let rewritten = rewrite_tool_input(
+            "Write",
+            json!({"file_path":named,"content":"x"}),
+            &views,
+            selected,
+        )
+        .unwrap();
+        assert_eq!(
+            rewritten["file_path"],
+            other_view.join("src").join("lib.rs").display().to_string()
+        );
+        let patch = format!(
+            "*** Begin Patch\n*** Add File: {}\n+x\n*** End Patch",
+            named.display()
+        );
+        let rewritten =
+            rewrite_tool_input("apply_patch", json!({"command":patch}), &views, selected).unwrap();
+        assert!(
+            rewritten["command"]
+                .as_str()
+                .unwrap()
+                .contains(&other_view.join("src").join("lib.rs").display().to_string()),
+            "{rewritten}"
+        );
+        // A relative path stays in the view the child works in.
+        let (view, routed) = route_path("notes.md", &scope).unwrap();
+        assert_eq!(view.view(), selected.as_path());
+        assert_eq!(routed, selected.join("notes.md"));
+        // A path outside every parent root stays denied.
+        let outside = fixture.directory("outside").join("file.rs");
+        let error = rewrite_tool_input("Read", json!({"file_path":outside}), &views, selected)
+            .expect_err("a path outside every root stays denied");
+        assert!(
+            error.contains("escapes the isolated agent workspace"),
+            "{error}"
         );
     }
 }

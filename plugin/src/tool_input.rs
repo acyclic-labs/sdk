@@ -40,6 +40,73 @@ impl RootView {
             view_spelling,
         }
     }
+
+    /// The child's fork view of this root.
+    pub(crate) fn view(&self) -> &Path {
+        &self.view
+    }
+}
+
+/// Every fork view of one child and the view its relative paths resolve in.
+pub(crate) struct ChildScope<'a> {
+    pub(crate) views: &'a [RootView],
+    pub(crate) selected: &'a Path,
+}
+
+/// Maps one path a child names into its fork views and decides access to it,
+/// returning the root view the path lies in and its path there. A path under
+/// a parent root names the same relative path in the child's view of that
+/// root, a relative path resolves in the selected view, and the access
+/// decision then holds the path to the view it was mapped into. Mapping and
+/// validation are one step, so they cannot choose different roots.
+pub(crate) fn route_path<'a>(
+    path: &str,
+    scope: &ChildScope<'a>,
+) -> Result<(&'a RootView, PathBuf), String> {
+    let mapped = map_root_references(path, scope.views);
+    let mapped = Path::new(&mapped);
+    if mapped
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err("parent traversal is denied in an isolated agent workspace".to_owned());
+    }
+    let (view, candidate) = if mapped.is_absolute() {
+        let view = scope
+            .views
+            .iter()
+            .filter(|view| mapped.starts_with(&view.view))
+            .max_by_key(|view| view.view.components().count())
+            .ok_or_else(|| {
+                format!(
+                    "absolute path '{}' escapes the isolated agent workspace",
+                    mapped.display()
+                )
+            })?;
+        (view, mapped.to_path_buf())
+    } else {
+        let view = scope
+            .views
+            .iter()
+            .find(|view| view.view == scope.selected)
+            .ok_or_else(|| "the selected root has no view in this workspace".to_owned())?;
+        (view, scope.selected.join(mapped))
+    };
+    let view_root = view.view.canonicalize().map_err(display)?;
+    let mut existing = candidate.as_path();
+    while fs::symlink_metadata(existing).is_err() {
+        existing = existing
+            .parent()
+            .ok_or_else(|| "path has no existing isolated ancestor".to_owned())?;
+    }
+    let resolved = existing.canonicalize().map_err(display)?;
+    if !resolved.starts_with(&view_root) {
+        return Err(format!(
+            "path '{}' resolves through a link outside the isolated agent workspace",
+            mapped.display()
+        ));
+    }
+    Ok((view, candidate))
 }
 
 /// The Windows verbatim path prefix.
@@ -188,6 +255,10 @@ pub(crate) fn rewrite_tool_input(
     views: &[RootView],
     child: &Path,
 ) -> Result<Value, String> {
+    let scope = ChildScope {
+        views,
+        selected: child,
+    };
     let child_text = child.to_string_lossy();
     map_tool_input_roots(tool_name, &mut input, None, views);
     rewrite_relative_tool_paths(&mut input, None, child)?;
@@ -224,7 +295,7 @@ pub(crate) fn rewrite_tool_input(
             .to_owned();
         let rewritten = command
             .lines()
-            .map(|line| rewrite_patch_header(line, child))
+            .map(|line| rewrite_patch_header(line, &scope))
             .collect::<Result<Vec<_>, _>>()?
             .join("\n");
         input
@@ -232,7 +303,7 @@ pub(crate) fn rewrite_tool_input(
             .ok_or_else(|| "apply_patch input must be an object".to_owned())?
             .insert("command".to_owned(), Value::String(rewritten));
     }
-    validate_tool_paths(tool_name, &input, child)?;
+    validate_tool_paths(tool_name, &input, &scope)?;
     Ok(input)
 }
 
@@ -394,7 +465,7 @@ pub(crate) fn split_standalone_command(command: &str) -> Result<Vec<String>, Str
 pub(crate) fn validate_tool_paths(
     tool_name: &str,
     input: &Value,
-    child: &Path,
+    scope: &ChildScope<'_>,
 ) -> Result<(), String> {
     if (matches!(tool_name, "Bash" | "PowerShell") || is_exec_command_tool(tool_name))
         && let Some(command) = input
@@ -402,9 +473,9 @@ pub(crate) fn validate_tool_paths(
             .or_else(|| input.get("command"))
             .and_then(Value::as_str)
     {
-        validate_shell_paths(command, child)?;
+        validate_shell_paths(command, scope)?;
     }
-    validate_structured_paths(input, None, child)
+    validate_structured_paths(input, None, scope)
 }
 
 pub(crate) fn is_exec_command_tool(tool_name: &str) -> bool {
@@ -414,19 +485,19 @@ pub(crate) fn is_exec_command_tool(tool_name: &str) -> bool {
 pub(crate) fn validate_structured_paths(
     value: &Value,
     key: Option<&str>,
-    child: &Path,
+    scope: &ChildScope<'_>,
 ) -> Result<(), String> {
     match value {
-        Value::String(path) if key.is_some_and(is_path_field) => validate_path(path, child),
+        Value::String(path) if key.is_some_and(is_path_field) => validate_path(path, scope),
         Value::Array(values) => {
             for value in values {
-                validate_structured_paths(value, key, child)?;
+                validate_structured_paths(value, key, scope)?;
             }
             Ok(())
         }
         Value::Object(values) => {
             for (key, value) in values {
-                validate_structured_paths(value, Some(key), child)?;
+                validate_structured_paths(value, Some(key), scope)?;
             }
             Ok(())
         }
@@ -450,43 +521,11 @@ pub(crate) fn is_path_field(key: &str) -> bool {
     )
 }
 
-pub(crate) fn validate_path(path: &str, child: &Path) -> Result<(), String> {
-    let path = Path::new(path);
-    if path
-        .components()
-        .any(|component| matches!(component, Component::ParentDir))
-    {
-        return Err("parent traversal is denied in an isolated agent workspace".to_owned());
-    }
-    if path.is_absolute() && !path.starts_with(child) {
-        return Err(format!(
-            "absolute path '{}' escapes the isolated agent workspace",
-            path.display()
-        ));
-    }
-    let child_root = child.canonicalize().map_err(display)?;
-    let candidate = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        child.join(path)
-    };
-    let mut existing = candidate.as_path();
-    while fs::symlink_metadata(existing).is_err() {
-        existing = existing
-            .parent()
-            .ok_or_else(|| "path has no existing isolated ancestor".to_owned())?;
-    }
-    let resolved = existing.canonicalize().map_err(display)?;
-    if !resolved.starts_with(&child_root) {
-        return Err(format!(
-            "path '{}' resolves through a link outside the isolated agent workspace",
-            path.display()
-        ));
-    }
-    Ok(())
+pub(crate) fn validate_path(path: &str, scope: &ChildScope<'_>) -> Result<(), String> {
+    route_path(path, scope).map(drop)
 }
 
-pub(crate) fn validate_shell_paths(command: &str, child: &Path) -> Result<(), String> {
+pub(crate) fn validate_shell_paths(command: &str, scope: &ChildScope<'_>) -> Result<(), String> {
     if command.contains(['$', '`'])
         || cfg!(target_os = "windows") && command.contains('%')
         || command
@@ -516,11 +555,11 @@ pub(crate) fn validate_shell_paths(command: &str, child: &Path) -> Result<(), St
                     || value.contains('/')
                     || value.contains('\\'))
             {
-                validate_path(value, child)?;
+                validate_path(value, scope)?;
             }
             continue;
         }
-        validate_path(token, child)?;
+        validate_path(token, scope)?;
     }
     Ok(())
 }
@@ -761,32 +800,12 @@ pub(crate) fn rewrite_relative_tool_paths(
     }
 }
 
-pub(crate) fn rewrite_patch_header(line: &str, child: &Path) -> Result<String, String> {
+pub(crate) fn rewrite_patch_header(line: &str, scope: &ChildScope<'_>) -> Result<String, String> {
     let Some((prefix, path)) = patch_header_path(line) else {
         return Ok(line.to_owned());
     };
-    let path = Path::new(path);
-    if path
-        .components()
-        .any(|component| matches!(component, Component::ParentDir))
-    {
-        return Err("parent traversal is denied in an isolated agent patch".to_owned());
-    }
-    validate_path(
-        path.to_str()
-            .ok_or_else(|| "patch path is not valid Unicode".to_owned())?,
-        child,
-    )?;
-    if path.is_absolute() {
-        if !path.starts_with(child) {
-            return Err(format!(
-                "absolute patch path '{}' escapes the isolated agent workspace",
-                path.display()
-            ));
-        }
-        return Ok(line.to_owned());
-    }
-    Ok(format!("{prefix}{}", child.join(path).display()))
+    let (_, routed) = route_path(path, scope)?;
+    Ok(format!("{prefix}{}", routed.display()))
 }
 
 pub(crate) fn subagent_context(path: &Path) -> Value {
