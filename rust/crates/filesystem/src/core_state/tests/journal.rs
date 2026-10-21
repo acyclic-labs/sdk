@@ -369,3 +369,92 @@ fn checkpoint_record_buffer_failures_are_reported_before_the_barrier() {
         );
     }
 }
+
+#[test]
+fn checkpoint_native_accounting_tracks_encoded_and_written_bytes_once() {
+    fn checkpoint(children: ContextChildren, native: bool) -> (u64, u64, u64, usize) {
+        let directory = tempfile::tempdir().unwrap();
+        let cancellation = crate::CancellationToken::new();
+        let work =
+            crate::NativeMaterializationWork::new(super::native::finite_budget(), &cancellation)
+                .unwrap();
+        let store = LocalCoreStateStore::new(directory.path());
+        let store = if native {
+            store.materialization(work.clone())
+        } else {
+            store
+        };
+        let namespace = store.namespace().unwrap();
+        let id = WorkspaceContextId::from_bytes([0x63; 16]);
+        let expected = serde_json::to_vec(&children).unwrap();
+        let mut log = CoreLog::open(&namespace, Arc::default()).unwrap();
+        let mut change = if native {
+            Change::new(&work).unwrap()
+        } else {
+            Change::default()
+        };
+        change
+            .put(
+                (
+                    RecordKey::Children(id),
+                    Some(RecordValue::Children(children)),
+                )
+                    .into(),
+            )
+            .unwrap();
+        log.commit(&namespace, change).unwrap();
+        let before = work.receipt();
+        log.checkpoint(&namespace).unwrap();
+        let after = work.receipt();
+        assert_eq!(
+            std::fs::read(children_paths(&namespace, id).current).unwrap(),
+            expected
+        );
+        drop(log);
+        let mut reopened = CoreLog::open(&namespace, Arc::default()).unwrap();
+        let loaded = reopened
+            .get::<ContextChildren>(&namespace, id, None, None)
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(serde_json::to_vec(&loaded).unwrap(), expected);
+        work.receipt()
+            .verify(super::native::finite_budget())
+            .unwrap();
+        (
+            after.bytes_encoded - before.bytes_encoded,
+            after.object_bytes_written - before.object_bytes_written,
+            after.backend_write_operations - before.backend_write_operations,
+            expected.len(),
+        )
+    }
+    for native in [false, true] {
+        let empty = checkpoint(ContextChildren::default(), native);
+        let populated = checkpoint(
+            ContextChildren(
+                [1_u8, 2, 3, 4]
+                    .map(|byte| WorkspaceContextId::from_bytes([byte; 16]))
+                    .into(),
+            ),
+            native,
+        );
+        assert!(populated.3 > empty.3);
+        if native {
+            let growth = (populated.3 - empty.3) as u64;
+            // Equal-length random fixture names and identical record paths
+            // cancel all fixed path encoding and filesystem operations. Only
+            // the independently serialized JSON payload grows.
+            assert_eq!(
+                populated.0 - empty.0,
+                growth,
+                "production checkpoint charged payload encoding twice"
+            );
+            assert_eq!(empty.1, empty.3 as u64);
+            assert_eq!(populated.1, populated.3 as u64);
+            assert_eq!(
+                populated.2, empty.2,
+                "production checkpoint backend writes depend on JSON tokens"
+            );
+        }
+    }
+}
