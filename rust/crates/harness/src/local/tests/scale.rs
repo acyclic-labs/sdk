@@ -585,11 +585,12 @@ mod bounds {
     /// Resident memory retained per idle agent.
     pub(super) const IDLE_RSS_BYTES: PerAgent = PerAgent::whole(12 * 1024 * 1024);
     /// Open descriptors retained per idle agent.
-    pub(super) const IDLE_FDS: PerAgent = PerAgent::whole(24);
+    pub(super) const IDLE_FDS: PerAgent = PerAgent::whole(16);
     /// inotify watches retained per idle agent.
-    pub(super) const WATCHES: PerAgent = PerAgent::whole(9);
-    /// Threads retained per idle agent beyond the process-wide pools.
-    pub(super) const IDLE_THREADS: PerAgent = PerAgent::whole(1);
+    pub(super) const WATCHES: PerAgent = PerAgent::whole(7);
+    /// Threads retained per idle agent beyond the process-wide pools: none,
+    /// since source watches share one routing hub.
+    pub(super) const IDLE_THREADS: PerAgent = PerAgent::whole(0);
     /// Process-wide pools that persist while idle: the native host's I/O and
     /// native workers, with headroom.
     pub(super) const POOL_THREADS: u64 = 32;
