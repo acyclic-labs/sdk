@@ -371,6 +371,38 @@ mod original {
         Ok(())
     }
     #[test]
+    fn any_live_ledger_stops_a_shared_watch_from_its_birth_credit() -> TestResult {
+        let budget = budget();
+        let (_root, held) = held()?;
+        let origin = birth(budget, &CancellationToken::new());
+        let mut work = crate::NativeMaterializationWork::from_meter(origin.clone());
+        let watch = driver(&held, &mut work)?;
+        let before = origin.with_original_leaf(|work| work.work);
+        // Negative control: a cancelled foreign caller is refused before any native step.
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let mut refused = crate::NativeMaterializationWork::from_meter(birth(budget, &cancelled));
+        assert!(!watch.shared.delivery.birth_matches(&refused));
+        assert!(matches!(
+            watch.stop_with_work(&mut refused),
+            Err(DemandError::Cancelled)
+        ));
+        assert!(!watch.is_stopped());
+        assert!(watch.delivery().is_exact());
+        // A live foreign ledger, such as a later request's, stops the same watch.
+        let caller = birth(budget, &CancellationToken::new());
+        let mut foreign = crate::NativeMaterializationWork::from_meter(caller.clone());
+        assert!(!watch.shared.delivery.birth_matches(&foreign));
+        watch.stop_with_work(&mut foreign)?;
+        assert!(watch.is_stopped());
+        assert_retired(&watch.shared);
+        // The native suffix was paid from the birth's reserved cleanup credit.
+        assert_eq!(foreign.receipt(), WorkCounters::UNCHARGED);
+        no_growth(&origin, before, budget);
+        origin.with_original_leaf(|work| assert!(work.take_native_io_failure().is_none()));
+        Ok(())
+    }
+    #[test]
     fn poisoned_last_drop_uses_the_same_born_worker() -> TestResult {
         let cancellation = CancellationToken::new();
         let budget = budget();

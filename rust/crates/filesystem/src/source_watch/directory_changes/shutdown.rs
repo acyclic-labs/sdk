@@ -46,9 +46,14 @@ impl NativeSourceWatch {
             return Ok(());
         }
         let native = self.shared.delivery.original.is_some();
-        if native && !self.shared.delivery.birth_matches(work) {
-            return Err(DemandError::NativeWorkUnavailable);
-        }
+        // A shared watch may be stopped through any live ledger, as on every other
+        // platform: the native suffix is paid from the cleanup credit its birth reserved,
+        // and native failures are recorded on the birth ledger.
+        let birth = if native && !self.shared.delivery.birth_matches(work) {
+            self.shared.delivery.original.clone()
+        } else {
+            None
+        };
         let mut reads = lock(&self.shared.reads, wait)?;
         let mut thread = lock(&self.shared.thread, wait)?;
         check_wait(wait)?;
@@ -136,7 +141,10 @@ impl NativeSourceWatch {
                     .wait(reads)
                     .unwrap_or_else(PoisonError::into_inner);
             }
-            let failure = work.with_original_leaf(DemandWork::take_native_io_failure);
+            let failure = match birth {
+                Some(mut birth) => birth.with_original_leaf(DemandWork::take_native_io_failure),
+                None => work.with_original_leaf(DemandWork::take_native_io_failure),
+            };
             if !self.is_stopped() {
                 return Err(failure.unwrap_or(DemandError::NativeWorkUnavailable));
             }
