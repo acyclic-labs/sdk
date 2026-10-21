@@ -176,7 +176,9 @@ pub(super) fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
             | LazyWorkspaceError::StaleCursor
             | LazyWorkspaceError::StaleIdentity
             | LazyWorkspaceError::Concurrent
-            | LazyWorkspaceError::Demand(DemandError::StaleVersion) => MountSourceError::Stale,
+            | LazyWorkspaceError::Demand(DemandError::StaleSource | DemandError::StaleVersion) => {
+                MountSourceError::Stale
+            }
             _ => MountSourceError::Engine(error.to_string().into()),
         },
     }
