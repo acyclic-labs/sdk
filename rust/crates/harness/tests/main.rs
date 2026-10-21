@@ -1,4 +1,5 @@
 //! Integration behaviour tests.
+acyclic_test_support::counting_allocator!();
 
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
 #[path = "support/stream/mod.rs"]

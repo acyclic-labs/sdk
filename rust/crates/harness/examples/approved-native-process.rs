@@ -1,4 +1,6 @@
 //! Public consumer: explicitly approved native execution and receipt-only recovery.
+#[cfg(test)]
+acyclic_test_support::counting_allocator!();
 
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs, PublicationPermit, WorkBudget};
 use acyclic_harness::{

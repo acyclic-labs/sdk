@@ -1,4 +1,5 @@
 #![no_main]
+acyclic_test_support::counting_allocator!();
 
 use libfuzzer_sys::fuzz_target;
 

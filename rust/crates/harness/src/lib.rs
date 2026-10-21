@@ -16,6 +16,8 @@
     )
 )]
 #![doc = include_str!("../README.md")]
+#[cfg(test)]
+acyclic_test_support::counting_allocator!();
 
 // Everything below the client and host compositions lives in
 // `acyclic-harness-core`; its public items keep their paths here.

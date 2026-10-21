@@ -1,4 +1,6 @@
 //! Argv, the harness client, and shared TUI composition.
+#[cfg(test)]
+acyclic_test_support::counting_allocator!();
 
 #[path = "graphcoder/args.rs"]
 mod args;

@@ -19,6 +19,8 @@
 //!
 //! Depend on `acyclic-harness`; it re-exports every public item of this crate
 //! at the same path and adds the client, TUI, local and browser compositions.
+#[cfg(test)]
+acyclic_test_support::counting_allocator!();
 
 #[cfg(any(
     test,

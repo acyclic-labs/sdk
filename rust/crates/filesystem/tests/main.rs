@@ -1,4 +1,6 @@
 //! Integration behaviour tests.
+#[cfg(not(target_arch = "wasm32"))]
+acyclic_test_support::counting_allocator!();
 
 mod distributed;
 mod linux_ext4_perf;

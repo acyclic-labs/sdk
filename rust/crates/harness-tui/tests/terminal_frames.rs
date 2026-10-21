@@ -2,6 +2,7 @@
 //! per-command writes showed, optionally wrapped in synchronized output
 //! (DECSET 2026); a frame identical to the screen writes nothing.
 #![cfg(feature = "tui")]
+acyclic_test_support::counting_allocator!();
 
 use std::cell::RefCell;
 use std::io::{self, Write};

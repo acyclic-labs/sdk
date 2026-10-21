@@ -1,4 +1,6 @@
 //! Shared streaming adapters and immutable model selection.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+acyclic_test_support::counting_allocator!();
 
 mod accounting;
 mod adapter;

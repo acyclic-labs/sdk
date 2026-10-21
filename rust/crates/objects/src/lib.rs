@@ -1,4 +1,6 @@
 #![doc = include_str!("../README.md")]
+#[cfg(test)]
+acyclic_test_support::counting_allocator!();
 mod body;
 mod obs;
 mod sync;

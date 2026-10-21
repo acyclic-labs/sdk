@@ -1,4 +1,5 @@
 #![no_main]
+acyclic_test_support::counting_allocator!();
 
 use acyclic_harness::executor::json::{JsonBounds, JsonCodecCharge, json_value_bounded};
 use libfuzzer_sys::fuzz_target;

@@ -1,8 +1,14 @@
 //! Thread-local allocation measurements and independent differential runs.
+//!
+//! A library never installs a global allocator: two in one binary fail to
+//! link, and a dependency would silently replace the allocator of every
+//! binary that links it. A test, bench or fuzz binary that measures declares
+//! [`counting_allocator!`] once at its crate root.
 pub mod differential;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
+    sync::atomic::{AtomicBool, Ordering},
 };
 /// Successful allocations and net live storage within a measurement scope.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -47,7 +53,16 @@ impl Drop for Scope {
     }
 }
 /// Measure this thread, including nested scopes; restore on unwind without allocating.
+///
+/// # Panics
+///
+/// If this binary does not install [`CountingAllocator`], which would report
+/// every closure as allocation-free.
 pub fn measure(run: impl FnOnce()) -> AllocationInfo {
+    assert!(
+        INSTALLED.load(Ordering::Relaxed),
+        "acyclic_test_support::measure needs `acyclic_test_support::counting_allocator!();` at this binary's crate root"
+    );
     let scope = Scope(COUNTER.replace(Some(AllocationInfo::default())));
     run();
     let result = COUNTER.get().unwrap_or_default();
@@ -73,7 +88,14 @@ pub fn differential<T: Eq + std::fmt::Debug>(
     )
 }
 
+// Set by the first allocation through a CountingAllocator. Read before the
+// store so steady-state allocations only share the cache line.
+static INSTALLED: AtomicBool = AtomicBool::new(false);
+
 fn record(pointer: *mut u8, size: usize, allocate: bool) -> *mut u8 {
+    if !INSTALLED.load(Ordering::Relaxed) {
+        INSTALLED.store(true, Ordering::Relaxed);
+    }
     if !pointer.is_null()
         && let Some(mut info) = COUNTER.get()
     {
@@ -90,7 +112,27 @@ fn record(pointer: *mut u8, size: usize, allocate: bool) -> *mut u8 {
     }
     pointer
 }
-struct CountingAllocator<A>(A);
+/// Forwards to `A` and counts this thread's allocations inside [`measure`].
+pub struct CountingAllocator<A>(A);
+
+impl CountingAllocator<System> {
+    /// The counting allocator over the system allocator.
+    #[must_use]
+    pub const fn system() -> Self {
+        Self(System)
+    }
+}
+
+/// Installs [`CountingAllocator`] as this binary's global allocator. Invoke it
+/// once at the crate root of each test, bench or fuzz binary that measures.
+#[macro_export]
+macro_rules! counting_allocator {
+    () => {
+        #[global_allocator]
+        static ACYCLIC_TEST_SUPPORT_ALLOCATOR: $crate::CountingAllocator<::std::alloc::System> =
+            $crate::CountingAllocator::system();
+    };
+}
 // SAFETY: each operation forwards its unchanged inputs to the same allocator;
 // thread-local bookkeeping neither reads nor modifies the allocated storage.
 unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
@@ -113,7 +155,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
         unsafe { self.0.dealloc(pointer, layout) };
     }
 }
-#[global_allocator]
-static GLOBAL: CountingAllocator<System> = CountingAllocator(System);
+#[cfg(test)]
+counting_allocator!();
 #[cfg(test)]
 mod tests;

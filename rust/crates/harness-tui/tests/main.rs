@@ -1,4 +1,5 @@
 //! Integration behaviour tests.
+acyclic_test_support::counting_allocator!();
 
 #[path = "cases/completion.rs"]
 mod completion;

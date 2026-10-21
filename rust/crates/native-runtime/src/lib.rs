@@ -1,4 +1,6 @@
 //! Native file and owned-process primitives shared by SDK host consumers.
+#[cfg(test)]
+acyclic_test_support::counting_allocator!();
 
 use bytes::Bytes;
 use std::cell::Cell;

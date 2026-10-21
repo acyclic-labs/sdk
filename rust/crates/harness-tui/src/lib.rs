@@ -1,4 +1,6 @@
 //! Grapheme-safe prompt editing without a terminal or application dependency.
+#[cfg(test)]
+acyclic_test_support::counting_allocator!();
 
 mod buffer;
 #[cfg(feature = "tui")]

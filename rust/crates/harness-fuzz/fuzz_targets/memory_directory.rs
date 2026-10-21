@@ -1,5 +1,7 @@
 //! Fuzz directory selection, generation visibility and serialized-page round trips.
 #![no_main]
+#[cfg(test)]
+acyclic_test_support::counting_allocator!();
 use libfuzzer_sys::fuzz_target;
 #[path = "../../harness-core/src/memory_store/directory/page.rs"]
 mod page;

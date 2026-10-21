@@ -1,4 +1,6 @@
 #![no_main]
+#[cfg(test)]
+acyclic_test_support::counting_allocator!();
 
 use acyclic_harness::{Error, Result};
 use libfuzzer_sys::fuzz_target;

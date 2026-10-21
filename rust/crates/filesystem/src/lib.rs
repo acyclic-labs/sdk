@@ -10,6 +10,8 @@
     )
 )]
 #![doc = include_str!("../README.md")]
+#[cfg(all(test, not(target_arch = "wasm32")))]
+acyclic_test_support::counting_allocator!();
 
 /// Generated public gRPC schema and client/server bindings.
 #[allow(
