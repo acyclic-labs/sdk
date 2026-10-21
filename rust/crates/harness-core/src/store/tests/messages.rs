@@ -126,7 +126,21 @@ async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction
         .await?;
     let reader = writer.history_reader()?;
     let empty = reader.pin(0, None).await?;
-    for sequence in 1..=10_000 {
+    // Cross two persisted checkpoint boundaries and retain a nonempty suffix.
+    // Read counts prove bounded work independently of history size.
+    const MESSAGES: u64 = 2 * super::super::checkpoints::DEFAULT_PROJECTION_EVENTS as u64 + 2;
+    const MIDDLE: u64 = MESSAGES / 2;
+    let lookup_work = || {
+        (
+            client.observation_reads.load(Ordering::SeqCst),
+            client.observation_maximum.load(Ordering::SeqCst),
+        )
+    };
+    let reset_lookup_work = || {
+        client.observation_reads.store(0, Ordering::SeqCst);
+        client.observation_maximum.store(0, Ordering::SeqCst);
+    };
+    for sequence in 1..=MESSAGES {
         writer
             .execute(
                 conversation_command(
@@ -140,40 +154,67 @@ async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction
                 &mut None,
             )
             .await?;
-        if matches!(sequence, 1 | 1_000 | 10_000) {
+        if [1, MIDDLE, MESSAGES].contains(&sequence) {
             let cold = writer.history_reader()?;
             client.forbid_writes.store(true, Ordering::SeqCst);
+            reset_lookup_work();
             assert_eq!(
                 cold.latest_conversation_message(65_536).await?,
                 Some(message(sequence)?)
             );
+            assert_eq!(
+                lookup_work(),
+                (2, 1),
+                "head lookup must read only its locator and canonical event"
+            );
             client.forbid_writes.store(false, Ordering::SeqCst);
         }
     }
+    assert_eq!(writer.reducer().archived_through_revision(), MESSAGES);
     client.forbid_writes.store(true, Ordering::SeqCst);
+    // Negative control: restoring a canonical-history scan must fail the same
+    // exact work bound even though the returned latest message is unchanged.
+    reset_lookup_work();
+    let scanned = acyclic_stream::Stream::new(client.clone(), authority().stream_path(&mut None)?)?
+        .read(0, u32::try_from(MESSAGES + 1).expect("bounded fixture"))
+        .await?
+        .try_collect::<Vec<_>>()
+        .await?;
+    assert_eq!(scanned.len() as u64, MESSAGES + 1);
+    assert_eq!(
+        reader.latest_conversation_message(65_536).await?,
+        Some(message(MESSAGES)?)
+    );
+    assert_ne!(
+        lookup_work(),
+        (2, 1),
+        "canonical scan escaped the work detector"
+    );
     let restored = with_content(&client).await?;
     assert_eq!(
         restored
             .reducer()
             .conversation()
             .unwrap()
-            .history_prefix_digest(10_000, &mut None)?,
+            .history_prefix_digest(MESSAGES, &mut None)?,
         writer
             .reducer()
             .conversation()
             .unwrap()
-            .history_prefix_digest(10_000, &mut None)?
+            .history_prefix_digest(MESSAGES, &mut None)?
     );
     client.forbid_writes.store(false, Ordering::SeqCst);
     let selection = crate::conversation::ModelContextSelection {
-        conversation_revision: 10_000,
-        message_ids: [1, 5_000, 10_000].map(uuid::Uuid::from_u128).into(),
+        conversation_revision: MESSAGES,
+        message_ids: [1, MIDDLE, MESSAGES]
+            .map(|sequence| uuid::Uuid::from_u128(u128::from(sequence)))
+            .into(),
         checkpoint: None,
     };
     writer
         .execute(
             conversation_command(
-                10_001,
+                MESSAGES + 1,
                 Action::SelectModelContext {
                     selection: selection.clone(),
                 },
@@ -184,12 +225,12 @@ async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction
         )
         .await?;
     let pinned = reader.pin(0, None).await?;
-    let mut future = message(10_001)?;
+    let mut future = message(MESSAGES + 1)?;
     future.kind = crate::conversation::MessageKind::Interaction;
     writer
         .execute(
             conversation_command(
-                10_002,
+                MESSAGES + 2,
                 Action::AppendConversationMessage {
                     message: Box::new(future.clone()),
                 },
@@ -247,21 +288,21 @@ async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction
     ));
     assert_eq!(
         reader
-            .conversation_range(&pinned, 9_997, 10_000, limits, &mut None)
+            .conversation_range(&pinned, MESSAGES - 3, MESSAGES, limits, &mut None)
             .await?,
-        [9_998, 9_999, 10_000]
+        [MESSAGES - 2, MESSAGES - 1, MESSAGES]
             .into_iter()
             .map(message)
             .collect::<Result<Vec<_>>>()?
     );
     assert!(matches!(
         reader
-            .conversation_range(&pinned, 10_000, 10_001, limits, &mut None)
+            .conversation_range(&pinned, MESSAGES, MESSAGES + 1, limits, &mut None)
             .await,
         Err(Error::Storage(_))
     ));
     let mut two_record_bytes = 0;
-    for sequence in [9_998, 9_999] {
+    for sequence in [MESSAGES - 2, MESSAGES - 1] {
         for (path, after) in [
             (
                 format!(
@@ -283,8 +324,8 @@ async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction
         reader
             .conversation_range(
                 &pinned,
-                9_997,
-                10_000,
+                MESSAGES - 3,
+                MESSAGES,
                 HistoryReadLimits {
                     maximum_bytes: two_record_bytes,
                     ..limits
@@ -294,7 +335,7 @@ async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction
             .await,
         Err(Error::Invalid(_))
     ));
-    for sequence in [1, 5_000, 10_000] {
+    for sequence in [1, MIDDLE, MESSAGES] {
         assert_eq!(
             reader
                 .conversation_message(&pinned, message(sequence)?.id, 65_536)
@@ -323,7 +364,7 @@ async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction
     let current = reader.pin(0, None).await?;
     assert_eq!(
         reader
-            .conversation_range(&current, 10_000, 10_001, limits, &mut None)
+            .conversation_range(&current, MESSAGES, MESSAGES + 1, limits, &mut None)
             .await?,
         vec![future.clone()]
     );

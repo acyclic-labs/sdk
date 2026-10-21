@@ -49,22 +49,24 @@ async fn write(local: &LocalHarness, task: TaskId, name: &str, value: Value) -> 
 }
 // Drives each production consumer once per admitted turn. No provider/model
 // executes; the counter is at TaskStateProvider::observe_admission itself.
-async fn conversation(turns: usize, full_collect: bool) -> Result<u64> {
+async fn conversation(turns: usize, full_collect: bool) -> Result<Vec<u64>> {
     let directory = tempfile::tempdir().map_err(storage)?;
     let local = open(directory.path()).await?;
-    let (result, calls) = measure(async {
-        let foreign = TaskId::from_bytes([0xff; 16]);
-        CommandControl::change(
-            &local.task_files.inner,
-            Some(foreign),
-            &[],
-            Some(true),
-            local.limits.file_bytes,
-        )
-        .await?;
-        let mut parent = None;
-        let mut root = None;
-        for _ in 0..turns {
+    let foreign = TaskId::from_bytes([0xff; 16]);
+    CommandControl::change(
+        &local.task_files.inner,
+        Some(foreign),
+        &[],
+        Some(true),
+        local.limits.file_bytes,
+    )
+    .await?;
+    let mut parent = None;
+    let mut root = None;
+    let mut prefixes = Vec::with_capacity(turns);
+    let mut total = 0;
+    for _ in 0..turns {
+        let (result, calls) = measure(async {
             let task = child(&local, parent).await?;
             let root = *root.get_or_insert(task);
             if full_collect {
@@ -85,16 +87,22 @@ async fn conversation(turns: usize, full_collect: bool) -> Result<u64> {
             assert!(!local.command_has_ancestor(Some(task), foreign).await?);
             local.wait_command_control(task).await?;
             parent = Some(task);
-        }
-        Ok::<_, Error>(())
-    })
-    .await;
-    result?;
-    Ok(calls)
+            Ok::<_, Error>(())
+        })
+        .await;
+        result?;
+        total += calls;
+        prefixes.push(total);
+    }
+    Ok(prefixes)
 }
 async fn assert_paired_work(turns: usize, full_collect: bool) -> Result<()> {
-    let small = conversation(turns, full_collect).await?;
-    let large = conversation(2 * turns, full_collect).await?;
+    // The first N turns of the 2N run are the same initially empty conversation:
+    // retain its cumulative count instead of admitting that prefix a second time.
+    // Candidate and full-collect control still own independent native stores.
+    let prefixes = conversation(2 * turns, full_collect).await?;
+    let small = prefixes[turns - 1];
+    let large = prefixes[2 * turns - 1];
     println!("N={turns}, full_collect={full_collect}: {small}/{large} observe_admission calls");
     assert!(
         large <= 2 * small + 1,
