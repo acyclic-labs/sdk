@@ -6,6 +6,8 @@ import { promisify } from "node:util";
 import { VERSION, SessionManager } from "@earendil-works/pi-coding-agent";
 import { invokePi, nodeExecutable, pinnedPiCli, piEnvironment } from "./pi-fixture.ts";
 
+import { nativeServiceReadinessProbe } from "./native-service-readiness.ts";
+
 const execute = promisify(execFile);
 
 /** Install Pi and own its service process. */
@@ -51,9 +53,7 @@ export async function installedNativeFixture(
     const timeout = setTimeout(() => reject(new Error("original native service did not publish readiness within its allowance")), 30_000);
     let watcher: FSWatcher | undefined;
     try {
-      watcher = watch(data, (_event, filename) => {
-        if (String(filename) === "service.identity" && existsSync(marker) && readFileSync(marker, "utf8") !== previous) resolve();
-      });
+      watcher = watch(data, nativeServiceReadinessProbe(marker, previous, resolve));
       service = spawn(binary, ["__service"], { cwd: project, env: environment, windowsHide: true, stdio: "ignore" });
       service.once("error", reject);
       service.once("exit", code => reject(new Error(`original native service exited before readiness: ${code}`)));
