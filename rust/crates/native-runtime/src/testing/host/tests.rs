@@ -34,7 +34,17 @@ fn abandoned_replay_releases_parked_native_and_blocking_workers() {
                         host = &mut running => break host.unwrap(),
                     }
                 };
-                assert!(lock(&host.state).phase == Phase::Parked);
+                // The worker hands over its host before it blocks; wait for
+                // it to reach the original future's Pending.
+                let mut state = host.state.lock().unwrap_or_else(PoisonError::into_inner);
+                while matches!(state.phase, Phase::Starting | Phase::Running) {
+                    state = host
+                        .changed
+                        .wait(state)
+                        .unwrap_or_else(PoisonError::into_inner);
+                }
+                assert!(state.phase == Phase::Parked);
+                drop(state);
                 drop(root);
                 host
             });

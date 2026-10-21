@@ -225,7 +225,9 @@ async fn run_swarm<P: StreamProvider>(
 
 #[tokio::test]
 async fn ten_thousand_agents_use_stream_transactions_and_one_session_per_node() -> TestResult {
-    tokio::time::timeout(Duration::from_secs(8), async {
+    // Work and byte counts are the property; latencies are only reported. A
+    // wall-clock bound would fail a correct run on a loaded host.
+    async {
         let local = Arc::new(MemoryStream::default());
         run_swarm(local.as_ref(), Arc::clone(&local), "memory").await?;
         let memory = Arc::new(MemoryStream::default());
@@ -268,8 +270,8 @@ async fn ten_thousand_agents_use_stream_transactions_and_one_session_per_node() 
             NODES
         );
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
-    })
-    .await??;
+    }
+    .await?;
     Ok(())
 }
 

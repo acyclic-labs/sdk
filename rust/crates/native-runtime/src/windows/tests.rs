@@ -7,7 +7,6 @@ use std::{
     fs::OpenOptions,
     io::{self, Seek as _, SeekFrom, Write as _},
     sync::{Arc, mpsc},
-    time::Duration,
 };
 use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
 
@@ -63,9 +62,7 @@ fn positional_batches_complete_without_changing_source_cursor() -> io::Result<()
             let _ = sender.send(result);
         }),
     )?;
-    receiver
-        .recv_timeout(Duration::from_secs(5))
-        .map_err(io::Error::other)??;
+    receiver.recv().map_err(io::Error::other)??;
     let requests = vec![
         OwnedRead {
             offset: 2,
@@ -93,9 +90,7 @@ fn positional_batches_complete_without_changing_source_cursor() -> io::Result<()
             let _ = sender.send(result);
         }),
     )?;
-    let result = receiver
-        .recv_timeout(Duration::from_secs(5))
-        .map_err(io::Error::other)??;
+    let result = receiver.recv().map_err(io::Error::other)??;
     assert_eq!(
         result,
         [

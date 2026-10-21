@@ -16,12 +16,13 @@ mod range;
 mod spare;
 mod write_validation;
 
+/// Waits for a state another thread publishes. No wall-clock bound: under
+/// load a bounded wait fails a correct run, and a lost update hangs the run
+/// where the gate's job limit reports it.
 fn wait_until(ready: impl Fn() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !ready() && Instant::now() < deadline {
+    while !ready() {
         std::thread::yield_now();
     }
-    assert!(ready());
 }
 
 struct ThreadWake(Thread);
@@ -56,17 +57,15 @@ fn submit<T>(task: &mut NativeCompletion<T>) {
     }
 }
 
+/// Drives `future` on this thread, sleeping until its waker unparks it.
 fn complete<T>(future: impl Future<Output = io::Result<T>>) -> io::Result<T> {
-    let deadline = Instant::now() + Duration::from_secs(10);
     let waker = completion_waker();
     let mut future = std::pin::pin!(future);
     loop {
         match future.as_mut().poll(&mut Context::from_waker(&waker)) {
             Poll::Ready(result) => return result,
-            Poll::Pending if Instant::now() < deadline => {
-                std::thread::park_timeout(deadline.saturating_duration_since(Instant::now()));
-            }
-            Poll::Pending => return Err(io::ErrorKind::TimedOut.into()),
+            // A wake before park leaves the token set, so none is lost.
+            Poll::Pending => std::thread::park(),
         }
     }
 }

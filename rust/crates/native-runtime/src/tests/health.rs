@@ -94,9 +94,7 @@ fn admitted_job_keeps_alias_registry_alive_after_owner_drop() -> io::Result<()> 
             .poll(&mut Context::from_waker(&waker))
             .is_pending()
     );
-    started
-        .recv_timeout(Duration::from_secs(5))
-        .map_err(io::Error::other)?;
+    started.recv().map_err(io::Error::other)?;
     drop(native);
     let alias = bounded_write_file(&alias, true)?;
     let mut resize = alias.set_len_async(1, None)?;

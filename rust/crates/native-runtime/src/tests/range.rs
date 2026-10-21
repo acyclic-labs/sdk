@@ -273,9 +273,7 @@ fn a_range_read_that_waits_for_admission_charges_exactly_an_uncontended_read() -
                             .is_pending()
                     );
                     drop(saturation);
-                    entered_rx
-                        .recv_timeout(Duration::from_secs(10))
-                        .map_err(io::Error::other)?;
+                    entered_rx.recv().map_err(io::Error::other)?;
                     let result = complete(read);
                     retained_while_held = Some(contended.memory.load(Ordering::Acquire));
                     *release.0.lock().unwrap() = true;

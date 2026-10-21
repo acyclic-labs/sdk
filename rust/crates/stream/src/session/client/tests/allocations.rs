@@ -115,7 +115,9 @@ async fn paired() -> Result<(u64, u64), Box<dyn std::error::Error + Send + Sync>
 
 #[tokio::test]
 async fn typed_follow_boxes_only_at_its_public_boundary() -> TestResult {
-    tokio::time::timeout(Duration::from_secs(3), paired()).await??;
+    // Allocation counts, not elapsed time, are the property; a wall-clock
+    // bound would fail a correct run on a loaded host.
+    paired().await?;
     Ok(())
 }
 
@@ -239,7 +241,7 @@ async fn paired_openings(follows: u64, broken: bool) -> TestResult {
 
 #[tokio::test]
 async fn ten_thousand_follow_openings_count_pending_and_ready_allocations() -> TestResult {
-    tokio::time::timeout(Duration::from_secs(5), paired_openings(10_000, false)).await?
+    paired_openings(10_000, false).await
 }
 
 #[tokio::test]

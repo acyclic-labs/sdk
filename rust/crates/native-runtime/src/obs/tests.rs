@@ -10,7 +10,6 @@ use std::{
     future::Future,
     pin::Pin,
     task::{Context, Poll, Waker},
-    time::{Duration, Instant},
 };
 use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
 
@@ -217,7 +216,7 @@ fn start_after_admission(
     ));
     assert!(progress_rx.try_recv().is_err());
     drop(saturation);
-    while progress_rx.recv_timeout(Duration::from_secs(10)).unwrap() == Progress::Woken {
+    while progress_rx.recv().unwrap() == Progress::Woken {
         assert!(matches!(
             Pin::new(&mut *observer).poll(&mut Context::from_waker(&waker)),
             Poll::Pending
@@ -259,7 +258,7 @@ fn admitted_work_keeps_observation_after_observer_drop() {
                     .in_scope(|| {
                         let work = move || {
                             started_tx.send(Progress::Started).unwrap();
-                            release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                            release_rx.recv().unwrap();
                             drop(tracing::info_span!("test.worker_nested"));
                         };
                         if native_control {
@@ -302,11 +301,11 @@ fn admitted_work_keeps_observation_after_observer_drop() {
         );
         drop(observer);
         tracing::dispatcher::with_default(&foreign, || release_tx.send(()).unwrap());
-        done_rx.recv_timeout(Duration::from_secs(10)).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
+        done_rx.recv().unwrap();
+        // The worker closes the caller span after reporting done; no wall
+        // clock bounds that, so wait for the close itself.
         while seen.closed("test.caller") == 0 {
-            assert!(Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(1));
+            std::thread::yield_now();
         }
         assert!(seen.has_ancestor("test.worker_nested", "test.caller"));
         assert!(

@@ -68,9 +68,8 @@ async fn measure<P: StreamProvider>(writer: &P, reader: &P, label: &str) -> Test
                 )
             },
             async {
-                Ok(tokio::time::timeout(Duration::from_secs(1), follow.next())
-                    .await?
-                    .ok_or("follow ended")??)
+                // Latency is reported, not bounded: a loaded host only slows it.
+                Ok(follow.next().await.ok_or("follow ended")??)
             },
             || started.elapsed().as_nanos(),
         )

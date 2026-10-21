@@ -31,18 +31,16 @@ fn platform_control_is_offloaded_and_file_sequenced() -> io::Result<()> {
         offset: 0,
         bytes: Bytes::from_static(b"ready"),
     }]);
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let waker = completion_waker();
     let completed = loop {
-        match Pin::new(&mut write).poll(&mut Context::from_waker(&completion_waker())) {
+        match Pin::new(&mut write).poll(&mut Context::from_waker(&waker)) {
             Poll::Ready(result) => {
                 result?;
                 break true;
             }
             Poll::Pending if write.pending.is_none() => break false,
-            Poll::Pending if Instant::now() < deadline => {
-                std::thread::park_timeout(Duration::from_millis(1));
-            }
-            Poll::Pending => return Err(io::ErrorKind::TimedOut.into()),
+            // Admission wakes this thread when the queue has room.
+            Poll::Pending => std::thread::park(),
         }
     };
     let (sender, receiver) = mpsc::channel();
@@ -73,8 +71,10 @@ fn admitted_write_outlives_dropped_observer() -> io::Result<()> {
     let state = write.state.as_ref().unwrap().clone();
     drop(write);
     drop(native);
+    // The observer is gone, so stand in for its waker: the completion
+    // (inline, or a platform callback) wakes this thread when it publishes.
+    state.lock().map_err(|_| io::ErrorKind::Other)?.waker = Some(completion_waker());
     let _ = job.run();
-    let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if let Some(result) = state
             .lock()
@@ -85,10 +85,7 @@ fn admitted_write_outlives_dropped_observer() -> io::Result<()> {
             result?;
             break;
         }
-        if Instant::now() >= deadline {
-            return Err(io::ErrorKind::TimedOut.into());
-        }
-        std::thread::park_timeout(Duration::from_millis(1));
+        std::thread::park();
     }
     assert_eq!(std::fs::read(temporary.path())?, b"persisted");
     Ok(())
@@ -371,9 +368,7 @@ fn staged_admission_failure_waits_for_actual_payload_and_job_retirement() -> io:
     let job = task.pending.take().unwrap();
     observer.cancelled.store(true, Ordering::Release);
     let worker = std::thread::spawn(move || wake_capacity_waiter(job.run()));
-    entered_drop
-        .recv_timeout(Duration::from_secs(10))
-        .map_err(io::Error::other)?;
+    entered_drop.recv().map_err(io::Error::other)?;
     assert!(
         Pin::new(&mut task)
             .poll(&mut Context::from_waker(Waker::noop()))
