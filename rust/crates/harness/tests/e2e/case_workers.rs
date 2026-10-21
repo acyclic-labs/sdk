@@ -85,10 +85,11 @@ where
         // Its drop signals every actual driver, so all case registrations and
         // their futures retire before the accepted completions are drained.
         let fallback = Stop(stop.clone());
+        let mut receive = receive;
         let output = runtime.block_on(guard.run_retiring(
-            async move {
+            async {
                 let _stop = fallback;
-                collect_results(receive, &mut report).await
+                collect_results(&mut receive, &mut report).await
             },
             move || {
                 // Quiesce caller polling before the shared Schedule marks CANCEL.
@@ -98,6 +99,12 @@ where
                 join_drivers(workers)
             },
         ));
+        // Retirement can finish a case whose poll was already in progress.
+        // Every sender has retired, so report that final queue before returning
+        // a stall or retirement error and discarding the collector's output.
+        while let Ok(result) = receive.try_recv() {
+            report(&result);
+        }
         output.map_err(|error| std::io::Error::other(error).into())
     })
 }
@@ -105,7 +112,7 @@ where
 // Report completed cases immediately, including when another driver never
 // finishes. The supervisor may retire this collector without losing diagnostics.
 async fn collect_results<R>(
-    mut receive: mpsc::UnboundedReceiver<R>,
+    receive: &mut mpsc::UnboundedReceiver<R>,
     mut report: impl FnMut(&R),
 ) -> Vec<R> {
     let mut output = Vec::new();
@@ -338,10 +345,10 @@ mod reporting_tests {
 
     #[test]
     fn completed_results_are_reported_while_the_next_driver_is_pending() {
-        let (send, receive) = mpsc::unbounded_channel();
+        let (send, mut receive) = mpsc::unbounded_channel();
         let reported = RefCell::new(Vec::new());
         send.send("completed failure").unwrap();
-        let pending = collect_results(receive, |record| reported.borrow_mut().push(*record));
+        let pending = collect_results(&mut receive, |record| reported.borrow_mut().push(*record));
         futures::pin_mut!(pending);
         assert!(pending.as_mut().now_or_never().is_none());
         assert_eq!(
@@ -354,5 +361,90 @@ mod reporting_tests {
         assert_eq!(reported.borrow().len(), 2);
         // The sender stays alive, just like a sibling that has not completed.
         // Dropping the receiver cannot erase reports already delivered.
+    }
+}
+
+#[cfg(test)]
+mod shutdown_reporting_tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    };
+
+    #[test]
+    fn run_reports_a_completed_failure_queued_during_retirement() -> TestResult {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()?;
+        let mut guard = progress_guard::Guard::new();
+        let registry = guard.registry.clone();
+        let registration = registry.register(std::path::Path::new("stalled-sibling"));
+        drop(registration.polling());
+        let waiting = registration.waiting("status follow");
+        let (release, blocked) = mpsc::channel();
+        struct Release {
+            send: Option<mpsc::Sender<()>>,
+            _waiting: super::super::progress_registry::Waiting,
+            _registration: super::super::progress_registry::Registration,
+        }
+        impl Drop for Release {
+            fn drop(&mut self) {
+                self.send.take().unwrap().send(()).unwrap();
+            }
+        }
+        let release = Mutex::new(Some(Release {
+            send: Some(release),
+            _waiting: waiting,
+            _registration: registration,
+        }));
+        let blocked = Mutex::new(blocked);
+        let entered = Arc::new(AtomicUsize::new(0));
+        // Keep virtual time from advancing until both real owner threads are
+        // polling. No wall-clock deadline or sleep determines the race.
+        let ready = entered.clone();
+        let clock = runtime.spawn(async move {
+            while ready.load(Ordering::SeqCst) != 2 {
+                tokio::task::yield_now().await;
+            }
+        });
+        let mut reported = Vec::new();
+        let result = run(
+            &runtime,
+            vec![false, true],
+            2,
+            2,
+            &mut guard,
+            |complete| {
+                let release = &release;
+                let blocked = &blocked;
+                let entered = &entered;
+                async move {
+                    if complete {
+                        entered.fetch_add(1, Ordering::SeqCst);
+                        // This poll finishes only when retirement drops its
+                        // pending sibling, after the collector's final poll.
+                        blocked.lock().unwrap().recv().unwrap();
+                        "completed failure: retained/failure.json"
+                    } else {
+                        let _release = release.lock().unwrap().take().unwrap();
+                        entered.fetch_add(1, Ordering::SeqCst);
+                        std::future::pending::<&str>().await
+                    }
+                }
+            },
+            |record| reported.push(*record),
+        );
+        runtime.block_on(clock)?;
+        assert!(result.unwrap_err().to_string().contains("stalled-sibling"));
+        assert!(registry.snapshot().1.is_empty());
+        assert_eq!(
+            reported,
+            vec!["completed failure: retained/failure.json"],
+            "retirement discarded a completed case report"
+        );
+        Ok(())
     }
 }
