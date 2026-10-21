@@ -126,7 +126,8 @@ pub(crate) fn canonical_json_matches<T: Serialize + ?Sized>(
     Ok(writer.matches && writer.remaining.is_empty())
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod json_match_tests;
 
 /// Decodes a complete JSON value without an unrelated nesting policy ceiling.

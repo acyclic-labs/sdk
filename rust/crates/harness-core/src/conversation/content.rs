@@ -22,13 +22,15 @@ pub struct BoundedContentFuture<'a, T> {
     pub(super) _native: Option<acyclic_fs::NativeAllocation>,
 }
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 thread_local! {
     static PAD_FRAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 impl<'a, T> BoundedContentFuture<'a, T> {
-    #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn with_padded_frame<R>(enabled: bool, operation: impl FnOnce() -> R) -> R {
         struct Reset(bool);
         impl Drop for Reset {
@@ -75,7 +77,8 @@ impl<'a, T> BoundedContentFuture<'a, T> {
             }
         }
         let _ = io;
-        #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if PAD_FRAME.get() {
             // Size-only mutation: keep the shipping future inline in its one
             // allocation, with extra retained state across the real await.

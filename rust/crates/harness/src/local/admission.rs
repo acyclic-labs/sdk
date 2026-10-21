@@ -37,14 +37,16 @@ pub(super) mod publication_phase {
     }
 }
 mod goal;
-#[cfg(all(test, acyclic_harness_loom))]
+#[cfg(test)]
+#[cfg(acyclic_harness_loom)]
 mod model;
 #[cfg(test)]
 #[cfg(all(feature = "native-execution", not(acyclic_harness_loom)))]
 mod poll_sweep;
 #[cfg(test)]
 pub(in crate::local) mod snapshot;
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod tests;
 
 const HEAD: &str = "inputs/current.json";

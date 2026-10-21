@@ -401,7 +401,8 @@ pub(crate) use wait::CancellationWaitError;
 pub use wait::Cancelled;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "native-mount")))]
 use wait::WaitMeter;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod native_tests;
 #[cfg(test)]
 #[path = "../tests/cancellation.rs"]

@@ -69,7 +69,8 @@ pub fn capture_process(
     Some(provider(request, check, observe))
 }
 
-#[cfg(all(test, not(acyclic_native_runtime_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_native_runtime_loom))]
 mod tests {
     use super::*;
 

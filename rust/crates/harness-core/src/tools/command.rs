@@ -50,7 +50,8 @@ pub fn parse_command(command: &str) -> Result<Vec<String>> {
     Ok(arguments)
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

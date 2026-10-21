@@ -257,9 +257,12 @@ pub fn durable_operation<T>(
     result
 }
 
-#[cfg(all(test, acyclic_native_runtime_loom))]
+#[cfg(test)]
+#[cfg(acyclic_native_runtime_loom)]
 mod models;
-#[cfg(all(test, not(acyclic_native_runtime_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_native_runtime_loom))]
 mod native;
-#[cfg(all(test, not(acyclic_native_runtime_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_native_runtime_loom))]
 mod tests;

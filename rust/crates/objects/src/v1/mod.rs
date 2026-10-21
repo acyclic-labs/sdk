@@ -63,9 +63,11 @@ pub use memory::{MemoryObjects, MemoryOptions};
 
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub mod grpc;
-#[cfg(all(test, feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod grpc_tests;
-#[cfg(all(test, feature = "http", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 mod http_tests;
 #[cfg(test)]
 mod tests;

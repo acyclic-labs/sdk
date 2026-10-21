@@ -35,7 +35,8 @@ impl ContentInput for OwnedBytes {
     }
 }
 
-#[cfg(all(test, feature = "native-execution", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 

@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 mod confirmation;
-#[cfg(all(test, acyclic_harness_loom))]
+#[cfg(test)]
+#[cfg(acyclic_harness_loom)]
 mod model;
 mod pending;
 

@@ -5,13 +5,15 @@ use acyclic_fs::{
     demand::native::NativeDemandSource, kernel::KernelAccounting,
 };
 mod bootstrap;
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod performance_tests;
 
 mod mounts;
 pub(super) mod projection;
 pub(super) mod volumes;
-#[cfg(all(test, feature = "native-execution", unix))]
+#[cfg(test)]
+#[cfg(all(feature = "native-execution", unix))]
 pub(super) use crate::sync::owned::lock_owned;
 pub(super) use crate::sync::owned::{Arc as StateArc, Mutex as AsyncMutex};
 
@@ -59,9 +61,11 @@ pub struct LocalWorkspace {
     pub(super) state: StateArc<AsyncMutex<super::checkout_tools::State>>,
     pub(super) mounts: Arc<Mounts>,
     pub(super) context_line: String,
-    #[cfg(all(test, not(acyclic_harness_loom)))]
+    #[cfg(test)]
+    #[cfg(not(acyclic_harness_loom))]
     pub(super) selection_reads: std::sync::atomic::AtomicUsize,
-    #[cfg(all(test, not(acyclic_harness_loom)))]
+    #[cfg(test)]
+    #[cfg(not(acyclic_harness_loom))]
     pub(super) mount_advances: std::sync::atomic::AtomicUsize,
 }
 
@@ -143,7 +147,9 @@ impl LocalWorkspace {
         }
         // Bind auxiliary volumes outside the sparse projection. Linux's
         // elevated mount helper cannot traverse an owner-only FUSE parent.
-        let root = self.mount_directory.join(crate::identity::fresh_uuid().to_string());
+        let root = self
+            .mount_directory
+            .join(crate::identity::fresh_uuid().to_string());
         std::fs::create_dir_all(&root).map_err(storage)?;
         let mut mounts = mounts::owner(
             &root,
@@ -155,7 +161,8 @@ impl LocalWorkspace {
         Ok(Arc::new(mounts))
     }
 
-    #[cfg(all(test, feature = "native-execution", unix))]
+    #[cfg(test)]
+    #[cfg(all(feature = "native-execution", unix))]
     pub(super) async fn current(
         &self,
     ) -> acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend> {
@@ -189,7 +196,8 @@ impl LocalWorkspace {
         acyclic_fs::WorkspaceId,
         Option<checkout_tools::reconciliation::Pending>,
     )> {
-        #[cfg(all(test, not(acyclic_harness_loom)))]
+        #[cfg(test)]
+        #[cfg(not(acyclic_harness_loom))]
         self.selection_reads
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root = self.view.workspace().id();
@@ -368,9 +376,11 @@ pub(super) async fn open(
         Arc::clone(&mounts),
     )));
     Ok(LocalWorkspace {
-        #[cfg(all(test, not(acyclic_harness_loom)))]
+        #[cfg(test)]
+        #[cfg(not(acyclic_harness_loom))]
         selection_reads: std::sync::atomic::AtomicUsize::new(0),
-        #[cfg(all(test, not(acyclic_harness_loom)))]
+        #[cfg(test)]
+        #[cfg(not(acyclic_harness_loom))]
         mount_advances: std::sync::atomic::AtomicUsize::new(0),
         path,
         fresh,

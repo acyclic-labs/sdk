@@ -670,7 +670,8 @@ fn cleanup_wait_original_start_precancel_and_finite_io_denial_are_prebirth() -> 
     Ok(())
 }
 
-#[cfg(all(test, not(target_os = "linux")))]
+#[cfg(test)]
+#[cfg(not(target_os = "linux"))]
 #[test]
 fn measured_admission_on_recursive_hosts_does_not_spend_work()
 -> Result<(), Box<dyn std::error::Error>> {

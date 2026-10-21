@@ -28,6 +28,7 @@ pub fn query<K: Ord, S: Eq, T: Clone, E>(
     Ok(value)
 }
 
-#[cfg(all(test, not(acyclic_sdk_docs_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_sdk_docs_loom))]
 #[path = "concrete_versions/tests.rs"]
 mod tests;

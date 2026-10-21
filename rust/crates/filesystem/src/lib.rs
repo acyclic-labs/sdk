@@ -57,7 +57,8 @@ pub(crate) fn descriptor_digest() -> String {
     blake3::hash(FILE_DESCRIPTOR_SET).to_hex().to_string()
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn initialize_test_native_io() {
     static INITIALIZED: std::sync::Once = std::sync::Once::new();
     INITIALIZED.call_once(|| {
@@ -76,7 +77,8 @@ mod watch_queue;
 pub use acyclic_stream::{OperationClaim, OperationClaims};
 
 pub mod accounting;
-#[cfg(all(test, feature = "memory", feature = "distributed"))]
+#[cfg(test)]
+#[cfg(all(feature = "memory", feature = "distributed"))]
 #[path = "tests/accounting/mod.rs"]
 mod accounting_tests;
 pub mod async_storage;
@@ -159,7 +161,8 @@ pub mod speculation;
 pub mod staged_objects;
 pub mod storage;
 pub mod streams_record;
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "tests/support.rs"]
 pub(crate) mod test_support;
 pub use acyclic_fs_base::text_merge;

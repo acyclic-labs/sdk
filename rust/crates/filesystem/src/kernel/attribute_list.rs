@@ -95,6 +95,7 @@ fn to_listing(receipt: persistent_pagination::Receipt<AttributeEntry>) -> Attrib
     }
 }
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "tests/attribute_list.rs"]
 mod tests;

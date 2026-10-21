@@ -3972,7 +3972,8 @@ fn demand_watch_error(error: crate::demand::DemandError) -> NativeWatchError {
     }
 }
 
-#[cfg(all(test, any(windows, target_os = "macos")))]
+#[cfg(test)]
+#[cfg(any(windows, target_os = "macos"))]
 mod demand_admission_tests {
     use super::*;
     use crate::demand::{DemandDirectoryObserver, DemandError};

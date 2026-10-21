@@ -256,6 +256,7 @@ pub(crate) async fn prove_blob_closure_async<S: crate::AsyncObjectStore>(
     Ok((objects, context.meter.work()))
 }
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "../tests/closure/mod.rs"]
 mod tests;

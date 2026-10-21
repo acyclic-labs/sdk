@@ -21,17 +21,21 @@ pub use contracts::*;
 /// Native provider backed by a held, no-follow directory capability.
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod native;
-#[cfg(all(test, feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 mod tests;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod accounting;
 
-#[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(acyclic_fs_loom), not(target_arch = "wasm32")))]
 mod scope_tests;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod write_probe;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use write_probe::WriteProbe;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -70,5 +74,6 @@ mod paths;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub(crate) use paths::*;
 
-#[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(acyclic_fs_loom, not(target_arch = "wasm32")))]
 mod context_loom_tests;

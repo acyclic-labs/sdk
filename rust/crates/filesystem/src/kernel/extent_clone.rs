@@ -131,6 +131,7 @@ pub enum ExtentCloneError {
     Work(#[from] WorkError),
 }
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "tests/extent_clone.rs"]
 mod tests;

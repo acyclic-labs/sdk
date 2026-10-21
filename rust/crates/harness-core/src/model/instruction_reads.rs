@@ -232,7 +232,8 @@ pub(crate) fn deduplicate_reads(
     })
 }
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
 fn owned_read_identity_reserves_before_decoding_with_unfunded_negative_control() {
     let file = super::instruction_tests::file("AGENTS.md", "rules", "rules");

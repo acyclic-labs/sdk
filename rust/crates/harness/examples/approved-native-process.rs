@@ -748,7 +748,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     if std::env::args().any(|arg| arg == "--native-properties") {
         return task::properties::verify_native_callbacks().map_err(Into::into);
     }
-    #[cfg(all(test, feature = "filesystem-local"))]
+    #[cfg(test)]
+    #[cfg(feature = "filesystem-local")]
     if std::env::args().any(|arg| arg == "--mcp-host-death-child") {
         return faults::host_child().await;
     }

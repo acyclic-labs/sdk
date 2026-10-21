@@ -186,7 +186,8 @@ pub mod checkpoint_fixture {
         .unwrap();
     }
 
-    #[cfg(all(test, not(acyclic_harness_loom)))]
+    #[cfg(test)]
+    #[cfg(not(acyclic_harness_loom))]
     proptest::proptest! {
         #[test]
         fn checkpoint_and_selection_round_trip(

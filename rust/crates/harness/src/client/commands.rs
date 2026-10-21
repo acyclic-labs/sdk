@@ -29,7 +29,8 @@ mod view;
 pub use view::render_command_record;
 mod view_files;
 pub use view_files::CommandViewFiles;
-#[cfg(all(test, acyclic_loom))]
+#[cfg(test)]
+#[cfg(acyclic_loom)]
 mod model;
 pub use control::CommandControl;
 mod name_index;

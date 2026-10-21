@@ -139,6 +139,7 @@ use decode::claim_read_allocation;
 use decode::clone_page;
 pub(crate) use decode::{clone_key, clone_value, decode_read_with_accounting};
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "../tests/persistent_io.rs"]
 mod tests;

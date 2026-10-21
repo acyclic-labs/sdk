@@ -120,10 +120,12 @@ pub(super) async fn fenced_inputs<T>(
     prepared
 }
 
-#[cfg(all(test, acyclic_harness_loom, acyclic_fs_loom))]
+#[cfg(test)]
+#[cfg(all(acyclic_harness_loom, acyclic_fs_loom))]
 mod models;
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

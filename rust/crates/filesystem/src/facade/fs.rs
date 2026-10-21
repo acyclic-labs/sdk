@@ -259,7 +259,8 @@ pub type MemoryAuthorityBackend =
 /// Filesystem object adapter backed by the public in-memory Objects provider.
 pub type MemoryObjectBackend = crate::LogicalObjectStore<acyclic_objects::v1::MemoryObjects>;
 
-#[cfg(all(test, feature = "memory", feature = "distributed"))]
+#[cfg(test)]
+#[cfg(all(feature = "memory", feature = "distributed"))]
 pub(crate) type MemoryCheckout = Checkout<MemoryAuthorityBackend, MemoryObjectBackend>;
 
 impl<A, S> Fs<A, crate::cache::CachedObjectStore<S>> {

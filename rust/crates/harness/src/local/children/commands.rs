@@ -109,7 +109,8 @@ impl Commands<'_> {
                 .as_ref()
                 .is_err_and(|error| stopped(cancellation.is_cancelled(), error))
         {
-            #[cfg(all(test, not(acyclic_harness_loom)))]
+            #[cfg(test)]
+            #[cfg(not(acyclic_harness_loom))]
             if matches!(
                 &result,
                 Err(Error::InteractionRejected(
@@ -197,7 +198,8 @@ fn stopped(cancelled: bool, error: &Error) -> bool {
             ))
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

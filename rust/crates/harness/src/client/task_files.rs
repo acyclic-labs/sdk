@@ -199,5 +199,6 @@ impl TaskFileClient {
         self.apply_change(change)
     }
 }
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod tests;

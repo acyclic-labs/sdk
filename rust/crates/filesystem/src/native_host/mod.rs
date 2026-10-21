@@ -75,9 +75,11 @@ mod metadata;
 pub(crate) use macos_metadata::*;
 mod stat;
 pub(crate) use stat::*;
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 pub(crate) mod stat_probe;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 pub(crate) use unix_stat::stat_probe;
 mod reader;
 pub(crate) use reader::*;
@@ -137,22 +139,28 @@ pub use sparse::punch_hole;
 pub use stat::{HostDataRange, HostListedEntry, HostStat};
 #[cfg(windows)]
 pub use yielding::{Yielded, YieldingFile};
-#[cfg(all(test, any(windows, target_os = "linux", target_os = "macos")))]
+#[cfg(test)]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 #[path = "tests_bounded_record.rs"]
 mod bounded_record_tests;
-#[cfg(all(test, any(windows, target_os = "linux", target_os = "macos")))]
+#[cfg(test)]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 #[path = "tests_bounded_source.rs"]
 mod bounded_source_tests;
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
+#[cfg(target_os = "macos")]
 #[path = "tests_macos_metadata.rs"]
 mod macos_metadata_tests;
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 #[path = "tests_unix.rs"]
 mod tests;
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 #[path = "tests_windows_clone.rs"]
 mod windows_clone_tests;
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 #[path = "tests_yielding.rs"]
 mod yielding_tests;
 
@@ -164,6 +172,7 @@ use test_support::{test_path, test_root};
 #[cfg(windows)]
 pub(crate) mod private_file;
 
-#[cfg(all(test, any(windows, target_os = "linux", target_os = "macos")))]
+#[cfg(test)]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 #[path = "tests_flat_parent.rs"]
 mod flat_parent_tests;

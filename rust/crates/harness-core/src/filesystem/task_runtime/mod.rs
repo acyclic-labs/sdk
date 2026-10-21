@@ -40,7 +40,8 @@ mod reconciliation;
 pub use inspection::TaskSourceInspection;
 mod command_input;
 pub(super) mod observed;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests;
 
 /// Trusted command adapter.

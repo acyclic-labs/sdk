@@ -23,7 +23,8 @@ pub use renderer::*;
 mod composition;
 pub use composition::apply_context_projection;
 pub(super) use composition::{place_context, place_snapshot};
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod tests;
 fn boundary(work: &Option<&mut dyn HistoryIo>, reason: &'static str) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

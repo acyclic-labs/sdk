@@ -36,8 +36,10 @@ where
     }
 }
 
-#[cfg(all(test, acyclic_harness_loom))]
+#[cfg(test)]
+#[cfg(acyclic_harness_loom)]
 mod models;
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod tests;

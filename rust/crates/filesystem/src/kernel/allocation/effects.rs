@@ -1,12 +1,14 @@
 use crate::{CancellationToken, FsError, NativeMaterializationWork, WorkCounters};
 
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(test)]
+#[cfg(acyclic_fs_loom)]
 loom::thread_local! {
     pub(crate) static OMIT_RESERVATION: std::cell::Cell<bool> = std::cell::Cell::new(false);
     pub(crate) static OMIT_REFUND: std::cell::Cell<bool> = std::cell::Cell::new(false);
 }
 
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(test)]
+#[cfg(acyclic_fs_loom)]
 pub(crate) fn broken_reservation() -> bool {
     OMIT_RESERVATION.with(std::cell::Cell::get)
 }
@@ -103,7 +105,8 @@ fn reserve(
         let next = pending
             .checked_add(delta)
             .map_err(crate::NativeTreeMaterializationError::from)?;
-        #[cfg(all(test, acyclic_fs_loom))]
+        #[cfg(test)]
+        #[cfg(acyclic_fs_loom)]
         let broken = broken_reservation();
         #[cfg(not(all(test, acyclic_fs_loom)))]
         let broken = false;
@@ -141,7 +144,8 @@ fn refund(work: &NativeMaterializationWork, pending: &mut WorkCounters) {
     if *pending == WorkCounters::UNCHARGED {
         return;
     }
-    #[cfg(all(test, acyclic_fs_loom))]
+    #[cfg(test)]
+    #[cfg(acyclic_fs_loom)]
     if OMIT_REFUND.with(std::cell::Cell::get) {
         return;
     }
@@ -154,5 +158,6 @@ fn refund(work: &NativeMaterializationWork, pending: &mut WorkCounters) {
     });
 }
 
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_fs_loom))]
 mod tests;

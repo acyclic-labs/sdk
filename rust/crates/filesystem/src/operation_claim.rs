@@ -2,7 +2,8 @@
 #[cfg(test)]
 use acyclic_stream::OperationClaims;
 
-#[cfg(all(test, feature = "memory", not(acyclic_fs_loom)))]
+#[cfg(test)]
+#[cfg(all(feature = "memory", not(acyclic_fs_loom)))]
 mod tests {
     use super::*;
     use std::cell::Cell;
@@ -135,7 +136,8 @@ mod tests {
     }
 }
 
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(test)]
+#[cfg(acyclic_fs_loom)]
 mod models {
     use super::*;
     use loom::sync::{

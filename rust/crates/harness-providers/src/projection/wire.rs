@@ -70,7 +70,8 @@ impl Body<'_> {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 impl<'a> Body<'a> {
     pub(crate) fn fixture(mut value: Value, field: &'static str) -> Self {
         let mut fields = std::mem::take(value.as_object_mut().unwrap());

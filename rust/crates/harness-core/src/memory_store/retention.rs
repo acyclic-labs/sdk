@@ -307,7 +307,8 @@ impl MemoryStore {
 #[path = "retention_scan.rs"]
 mod owned_scan;
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[path = "retention_accounting_tests.rs"]
 mod accounting_tests;
 
@@ -322,6 +323,7 @@ pub(super) fn native_cache_custody(
     }
 }
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[path = "retention_tests.rs"]
 mod tests;

@@ -38,7 +38,8 @@ impl ChildTurnResult {
     }
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

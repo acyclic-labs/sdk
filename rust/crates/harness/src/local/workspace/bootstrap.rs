@@ -1,7 +1,10 @@
 use super::*;
 
 pub(super) fn staging(directory: &Path) -> Result<PathBuf> {
-    let path = directory.join(format!("project-initializing-{}", crate::identity::fresh_uuid()));
+    let path = directory.join(format!(
+        "project-initializing-{}",
+        crate::identity::fresh_uuid()
+    ));
     let builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     let mut builder = builder;
@@ -31,7 +34,9 @@ pub(super) async fn initialize(
     }
 }
 
-#[cfg(all(test, acyclic_harness_loom))]
+#[cfg(test)]
+#[cfg(acyclic_harness_loom)]
 mod loom_tests;
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod tests;

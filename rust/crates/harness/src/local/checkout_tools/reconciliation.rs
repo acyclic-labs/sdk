@@ -200,7 +200,8 @@ where
 {
     if let Some(mount) = &workspace.mounted {
         before_effect().await?;
-        #[cfg(all(test, not(acyclic_harness_loom)))]
+        #[cfg(test)]
+        #[cfg(not(acyclic_harness_loom))]
         workspace
             .mount_advances
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -210,7 +211,8 @@ where
     Ok(())
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

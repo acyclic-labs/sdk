@@ -266,7 +266,8 @@ async fn wait<P: StreamProvider + ?Sized>(
     let value = files::bounded(json!({"agents":results}), limits)?;
     if input.mode == Some(WaitMode::Any) {
         let saved = selection::save(files, selection, binding, value.clone(), owner).await;
-        #[cfg(all(test, not(acyclic_harness_loom)))]
+        #[cfg(test)]
+        #[cfg(not(acyclic_harness_loom))]
         if saved.is_err() && selection::SWALLOW_SAVE_ERROR.with(std::cell::Cell::get) {
             return Ok(Some(value));
         }
@@ -345,5 +346,6 @@ fn storage(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod tests;

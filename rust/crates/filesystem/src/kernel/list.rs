@@ -134,6 +134,7 @@ pub enum DirectoryReadError {
     Work(#[from] WorkError),
 }
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "tests/list.rs"]
 mod tests;

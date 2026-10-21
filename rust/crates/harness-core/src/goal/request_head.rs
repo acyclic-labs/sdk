@@ -21,7 +21,8 @@ pub fn decode(bytes: &[u8]) -> serde_json::Result<Turn> {
     serde_json::from_slice(bytes)
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

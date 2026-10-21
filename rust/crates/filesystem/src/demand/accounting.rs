@@ -49,7 +49,8 @@ impl DemandWork {
     ) -> R {
         let saved = std::mem::replace(field(self), value);
         let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(self)));
-        #[cfg(all(test, not(acyclic_fs_loom)))]
+        #[cfg(test)]
+        #[cfg(not(acyclic_fs_loom))]
         let restore = !super::scope_tests::omit_restore();
         #[cfg(not(all(test, not(acyclic_fs_loom))))]
         let restore = true;

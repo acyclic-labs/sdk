@@ -3,7 +3,8 @@
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 pub use crate::hooks::identity_test_support::assert_canonical_tool_consumers;
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) mod accounted;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]

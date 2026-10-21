@@ -26,6 +26,7 @@ pub struct MemoryStorePage {
 mod index;
 pub(crate) use index::DirectoryIndex;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "page/tests.rs"]
 mod tests;

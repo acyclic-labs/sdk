@@ -344,6 +344,7 @@ impl Stream for Guarded {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "deadline_tests.rs"]
 mod tests;

@@ -696,6 +696,7 @@ fn work_value(work: TaskWorkerAttempt) -> WasmBrowserWork {
     }
 }
 
-#[cfg(all(test, target_arch = "wasm32"))]
+#[cfg(test)]
+#[cfg(target_arch = "wasm32")]
 #[path = "task_runtime/accounting_tests.rs"]
 mod accounting_tests;

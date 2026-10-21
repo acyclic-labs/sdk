@@ -2,7 +2,8 @@ use super::{Error, Generation, Result, TaskVolume, apply, item_examined, segment
 use acyclic_stream::{ReadRequest, StreamProvider, StreamWatermarks};
 use futures::StreamExt as _;
 
-#[cfg(all(test, acyclic_harness_loom))]
+#[cfg(test)]
+#[cfg(acyclic_harness_loom)]
 #[path = "../../../harness/tests/task_volume/refresh_model.rs"]
 mod tests;
 

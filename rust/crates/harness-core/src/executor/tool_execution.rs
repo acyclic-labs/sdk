@@ -895,7 +895,8 @@ pub(super) fn metadata_for_call<'a>(
     Ok(&call.metadata)
 }
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod refusal_admission_tests {
     use super::*;
 

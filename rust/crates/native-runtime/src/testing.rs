@@ -24,12 +24,14 @@ mod process;
 pub use process::{ProcessCapture, capture_process};
 mod metadata;
 pub use metadata::{NativeMetadataInput, NativeTimes, capture_native_times};
-#[cfg(all(test, acyclic_native_runtime_loom))]
+#[cfg(test)]
+#[cfg(acyclic_native_runtime_loom)]
 mod model;
 #[cfg(test)]
 #[cfg(not(acyclic_native_runtime_loom))]
 mod queue;
-#[cfg(all(test, acyclic_native_runtime_loom))]
+#[cfg(test)]
+#[cfg(acyclic_native_runtime_loom)]
 mod queue_model;
 
 tokio::task_local! { static CURRENT: Option<Context>; }
@@ -63,7 +65,8 @@ struct State {
     cancelled: bool,
     trace: Vec<String>,
     ready_reads: usize,
-    wall: Option<clock::Wall>,
+    // Read only through a seeded schedule; see `Schedule::is_seeded`.
+    wall: clock::Wall,
     writes: durability::Writes,
     process: Option<Arc<process::Provider>>,
     metadata: Option<Arc<metadata::Provider>>,
@@ -161,10 +164,7 @@ impl Schedule {
             Self(
                 Arc::new(Inner {
                     events,
-                    state: Mutex::new(State {
-                        wall: seed.map(|_| clock::Wall::new()),
-                        ..State::default()
-                    }),
+                    state: Mutex::new(State::default()),
                     entropy: seed
                         .filter(|_| entropy)
                         .map(|seed| Arc::new(entropy::Source::new(seed))),
@@ -191,8 +191,8 @@ impl Schedule {
         {
             return future.await;
         }
-        if let Some(wall) = self.0.state().wall.as_mut() {
-            wall.start();
+        if self.is_seeded() {
+            self.0.state().wall.start();
         }
         let future = CURRENT.scope(
             Some(Context {

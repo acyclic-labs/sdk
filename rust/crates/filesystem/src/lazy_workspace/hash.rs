@@ -76,10 +76,12 @@ fn hash_with_charge<T: Serialize>(
     Ok(*sink.hash.finalize().as_bytes())
 }
 
-#[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(acyclic_fs_loom), not(target_arch = "wasm32")))]
 #[path = "hash_tests.rs"]
 mod tests;
 
-#[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(acyclic_fs_loom, not(target_arch = "wasm32")))]
 #[path = "hash_loom_tests.rs"]
 mod models;

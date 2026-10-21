@@ -109,7 +109,8 @@ impl LocalHarness {
                     &mut generation,
                 )
                 .await?;
-                #[cfg(all(test, not(acyclic_harness_loom)))]
+                #[cfg(test)]
+                #[cfg(not(acyclic_harness_loom))]
                 super::cuts::follow_probe(files.as_ref(), &reference, &mut cursor).await?;
                 let state = desired(&reference, &values)?;
                 let previous = execution(&reference, &values)?;
@@ -295,7 +296,8 @@ impl LocalHarness {
                 {
                     continue;
                 }
-                #[cfg(all(test, not(acyclic_harness_loom)))]
+                #[cfg(test)]
+                #[cfg(not(acyclic_harness_loom))]
                 super::cuts::stop("status", OperationId::from_bytes(child.into_bytes()))?;
                 let (child_files, context) = self.child_files(child, files.as_ref()).await?;
                 let journal = self.runtime.workflow_journal_with_context(&context)?;
@@ -503,7 +505,8 @@ fn execution(
         .transpose()
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 fn input_count(reference: &Component, values: &BTreeMap<FileKey, FileValue>) -> u64 {
     values
         .keys()
@@ -537,7 +540,8 @@ fn settled_turn(
     })
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 fn needs_work(
     reference: &Component,
     values: &BTreeMap<FileKey, FileValue>,
@@ -588,7 +592,8 @@ fn release_completed(
     ready
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod tests;
 
 async fn publish<P: StreamProvider + ?Sized>(

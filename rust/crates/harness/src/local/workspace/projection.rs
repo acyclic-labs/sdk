@@ -190,5 +190,6 @@ impl MountedVolume {
     }
 }
 
-#[cfg(all(test, acyclic_harness_loom))]
+#[cfg(test)]
+#[cfg(acyclic_harness_loom)]
 mod tests;

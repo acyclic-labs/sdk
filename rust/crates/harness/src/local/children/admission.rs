@@ -463,7 +463,8 @@ impl LocalHarness {
         ) {
             return Err(Error::Indeterminate(preparation_operation));
         }
-        #[cfg(all(test, not(acyclic_harness_loom)))]
+        #[cfg(test)]
+        #[cfg(not(acyclic_harness_loom))]
         super::cuts::stop("prepared", operation)?;
         let child_id = workspace
             .filesystem
@@ -485,7 +486,8 @@ impl LocalHarness {
                 return Err(Error::Indeterminate(operation_id));
             }
         };
-        #[cfg(all(test, not(acyclic_harness_loom)))]
+        #[cfg(test)]
+        #[cfg(not(acyclic_harness_loom))]
         super::cuts::stop("admitted", operation)?;
         Ok(task)
     }
@@ -573,5 +575,6 @@ fn source_volumes(
     ))
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod work_tests;

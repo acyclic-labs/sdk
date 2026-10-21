@@ -297,6 +297,7 @@ pub(super) fn output_bytes(sequence: u64, result: &Result<Value>, maximum: u64) 
     Ok(output.bytes)
 }
 
-#[cfg(all(test, feature = "tui", not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(all(feature = "tui", not(acyclic_harness_loom)))]
 #[path = "session_settings_tests.rs"]
 mod settings_tests;

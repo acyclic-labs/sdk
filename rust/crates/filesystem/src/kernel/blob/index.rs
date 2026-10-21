@@ -232,7 +232,8 @@ impl BlobIndexBuilder {
     }
 }
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "index_tests.rs"]
 mod tests;
 

@@ -593,7 +593,7 @@ fn storage_gate_scans_every_production_item() {
             vec!["body.rs uses resize 1 times, allowed 0".to_owned()],
         );
     }
-    let module = "#[cfg(all(test, not(target_arch = \"wasm32\")))]\npub(crate) mod work {\n";
+    let module = "#[cfg(test)]\n#[cfg(not(target_arch = \"wasm32\"))]\npub(crate) mod work {\n";
     let body = include_str!("../body.rs");
     assert!(body.contains(module));
     let test_only = body.replacen(

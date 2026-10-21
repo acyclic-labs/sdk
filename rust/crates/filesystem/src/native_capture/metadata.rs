@@ -162,7 +162,8 @@ pub(super) fn capture_metadata(metadata: &HostStat) -> FileMetadata {
 
 fn physical_metadata(metadata: &HostStat) -> FileMetadata {
     let created = metadata.birth_time();
-    #[cfg(all(test, any(target_os = "linux", windows)))]
+    #[cfg(test)]
+    #[cfg(any(target_os = "linux", windows))]
     let created = if crate::native_host::stat_probe::legacy_birth_time() {
         metadata.created().ok()
     } else {

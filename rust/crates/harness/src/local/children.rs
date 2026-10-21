@@ -7,7 +7,8 @@ mod admission;
 mod commands;
 #[cfg(feature = "native-execution")]
 mod controller;
-#[cfg(all(test, feature = "native-execution", not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(all(feature = "native-execution", not(acyclic_harness_loom)))]
 mod cuts;
 #[cfg(feature = "native-execution")]
 mod lazy;

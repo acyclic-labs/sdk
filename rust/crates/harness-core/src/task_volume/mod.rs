@@ -8,16 +8,17 @@ pub use child::{ChildFile, ChildRequest, ChildState, ChildStatus, Control};
 pub use child_result::ChildTurnResult;
 #[doc(hidden)]
 pub mod command_query;
-#[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 mod derived_tests;
 mod durability;
 mod files;
 mod follow;
 mod heads;
 mod listing;
-mod model_turn;
 #[cfg(acyclic_harness_loom)]
 pub mod model_checking;
+mod model_turn;
 mod page;
 mod plan_name;
 mod publication;
@@ -535,7 +536,9 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 path: self.path.clone(),
                 records: vec![segment],
             }],
-            idempotency_key: IdempotencyKey::new(crate::identity::fresh_uuid().as_bytes().to_vec())?,
+            idempotency_key: IdempotencyKey::new(
+                crate::identity::fresh_uuid().as_bytes().to_vec(),
+            )?,
         };
         // Readers must be able to project accepted records while the provider's
         // append acknowledgement is still waiting for its durability barrier.
@@ -762,9 +765,3 @@ impl<P: StreamProvider + 'static> TaskVolume<P> {
     }
 }
 
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-impl TaskVolume<dyn StreamProvider> {
-    pub(crate) async fn reopen_erased(&self) -> Result<Self> {
-        Self::open(Arc::clone(&self.provider), self.path.clone()).await
-    }
-}

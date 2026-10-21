@@ -1,7 +1,8 @@
 use super::*;
 use crate::runtime::OwnedTaskMailbox;
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 thread_local! {
     pub(super) static IGNORE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     pub(super) static SWALLOW_SAVE_ERROR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -20,7 +21,8 @@ pub(super) async fn load<P: StreamProvider + ?Sized>(
     key: &FileKey,
     binding: &Value,
 ) -> Result<Option<Value>> {
-    #[cfg(all(test, not(acyclic_harness_loom)))]
+    #[cfg(test)]
+    #[cfg(not(acyclic_harness_loom))]
     if IGNORE.with(std::cell::Cell::get) {
         return Ok(None);
     }
@@ -69,7 +71,8 @@ pub(super) async fn load<P: StreamProvider + ?Sized>(
         )
         .map_err(storage)?;
     }
-    #[cfg(all(test, not(acyclic_harness_loom)))]
+    #[cfg(test)]
+    #[cfg(not(acyclic_harness_loom))]
     if DROP_METADATA.with(std::cell::Cell::get) {
         if let Some(outcome) = result["agents"][0]["result"]["outcome"]["Succeeded"].as_object_mut()
         {
@@ -86,7 +89,8 @@ pub(super) async fn save<P: StreamProvider + ?Sized>(
     result: Value,
     owner: Option<&dyn OwnedTaskMailbox>,
 ) -> Result<()> {
-    #[cfg(all(test, not(acyclic_harness_loom)))]
+    #[cfg(test)]
+    #[cfg(not(acyclic_harness_loom))]
     if IGNORE.with(std::cell::Cell::get) {
         return Ok(());
     }

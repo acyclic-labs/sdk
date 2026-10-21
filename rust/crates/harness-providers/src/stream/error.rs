@@ -44,6 +44,7 @@ pub(super) fn classify(adapter: Adapter, event: &Value) -> Error {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "error_tests.rs"]
 mod tests;

@@ -39,10 +39,12 @@ impl Cursor {
         cancellation: &CancellationToken,
     ) -> Result<WatchBatch> {
         self.watcher.begin_rescan().map_err(storage)?;
-        #[cfg(all(test, not(acyclic_harness_loom)))]
+        #[cfg(test)]
+        #[cfg(not(acyclic_harness_loom))]
         self.inject("begin")?;
         self.watcher.watch_tree(EXCLUDED).map_err(storage)?;
-        #[cfg(all(test, not(acyclic_harness_loom)))]
+        #[cfg(test)]
+        #[cfg(not(acyclic_harness_loom))]
         self.inject("watch-tree")?;
         capture_baseline(
             checkout,
@@ -53,10 +55,12 @@ impl Cursor {
         )
         .await
         .map_err(storage)?;
-        #[cfg(all(test, not(acyclic_harness_loom)))]
+        #[cfg(test)]
+        #[cfg(not(acyclic_harness_loom))]
         self.inject("baseline")?;
         let batch = self.watcher.finish_rescan().map_err(storage)?;
-        #[cfg(all(test, not(acyclic_harness_loom)))]
+        #[cfg(test)]
+        #[cfg(not(acyclic_harness_loom))]
         self.inject("finish")?;
         Ok(batch)
     }
@@ -77,7 +81,8 @@ pub(super) async fn capture(
     baseline |= matches!(initial, Some(WatchBatch::RescanRequired { .. }));
     if !baseline {
         cursor.watcher.fence(WATCH_FENCE_TIMEOUT).map_err(storage)?;
-        #[cfg(all(test, not(acyclic_harness_loom)))]
+        #[cfg(test)]
+        #[cfg(not(acyclic_harness_loom))]
         cursor.inject("fence")?;
     }
     let mut rescans = 0;
@@ -149,7 +154,8 @@ async fn drain(
             Some(batch) => batch,
             None => cursor.poll(cancellation)?,
         };
-        #[cfg(all(test, not(acyclic_harness_loom)))]
+        #[cfg(test)]
+        #[cfg(not(acyclic_harness_loom))]
         cursor.inject("poll")?;
         let empty = match &batch {
             WatchBatch::Changes { changes, .. } => {
@@ -197,7 +203,8 @@ pub(super) async fn replay(
         return Ok(false);
     }
     arrivals::register(&mut cursor.watcher, &batch, physical, policy)?;
-    #[cfg(all(test, not(acyclic_harness_loom)))]
+    #[cfg(test)]
+    #[cfg(not(acyclic_harness_loom))]
     cursor.inject("register")?;
     let result = capture_watch_batch(
         checkout,
@@ -208,7 +215,8 @@ pub(super) async fn replay(
         cancellation,
     )
     .await;
-    #[cfg(all(test, not(acyclic_harness_loom)))]
+    #[cfg(test)]
+    #[cfg(not(acyclic_harness_loom))]
     cursor.inject("replay")?;
     match result {
         Ok(_) => Ok(true),

@@ -38,6 +38,7 @@ mod read_batch;
 pub(crate) use read_batch::object_error;
 pub use read_batch::read_many_sequential;
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "../tests/async_storage.rs"]
 mod tests;

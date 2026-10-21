@@ -147,7 +147,8 @@ pub(crate) fn resume<W: Write>(
     Ok(())
 }
 
-#[cfg(all(test, not(acyclic_harness_tui_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_tui_loom))]
 mod poison_tests {
     use super::*;
 
@@ -175,7 +176,8 @@ mod poison_tests {
     }
 }
 
-#[cfg(all(test, acyclic_harness_tui_loom))]
+#[cfg(test)]
+#[cfg(acyclic_harness_tui_loom)]
 mod terminal_lifecycle_model {
     use super::*;
     use crate::term::ModeState;

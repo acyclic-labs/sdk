@@ -75,5 +75,6 @@ pub(crate) fn lock<T, const RANK: u16>(
     mutex.lock()
 }
 
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_fs_loom))]
 mod tests;

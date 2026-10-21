@@ -548,6 +548,7 @@ pub(super) fn set_insert<K: Ord>(
     }
 }
 
-#[cfg(all(test, feature = "memory", not(acyclic_fs_loom)))]
+#[cfg(test)]
+#[cfg(all(feature = "memory", not(acyclic_fs_loom)))]
 #[path = "memory/tests.rs"]
 mod tests;

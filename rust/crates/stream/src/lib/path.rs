@@ -190,7 +190,8 @@ impl std::borrow::Borrow<str> for StreamPath {
 
 impl Clone for StreamPath {
     fn clone(&self) -> Self {
-        #[cfg(all(test, not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(not(target_arch = "wasm32"))]
         if matches!(&self.text, PathText::Plain(_)) && crate::path_text_tests::copy_on_clone() {
             return Self::new(self.as_str())
                 .unwrap_or_else(|_| unreachable!("validated path clone"));

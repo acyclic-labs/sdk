@@ -227,8 +227,10 @@ async fn during<T>(
     }
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod tests;
 
-#[cfg(all(test, acyclic_harness_loom, acyclic_loom))]
+#[cfg(test)]
+#[cfg(all(acyclic_harness_loom, acyclic_loom))]
 mod models;

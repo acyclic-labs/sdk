@@ -23,7 +23,8 @@ impl<'a, 'root> EncodeAccounting<'a, 'root> {
     }
 
     pub(crate) fn observe(&mut self, step: &EncodeWorkStep) -> Result<(), crate::FsError> {
-        #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(all(acyclic_fs_loom, not(target_arch = "wasm32")))]
         model_checking::completed_effect(step);
         match step {
             EncodeWorkStep::Check => self.accounting.check(),
@@ -101,7 +102,8 @@ impl<'a, 'root> EncodeAccounting<'a, 'root> {
     }
 
     fn admit(&mut self, delta: crate::WorkCounters) -> Result<(), crate::FsError> {
-        #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(all(acyclic_fs_loom, not(target_arch = "wasm32")))]
         if allocation::effects::broken_reservation() {
             return self.accounting.admit(delta);
         }
@@ -110,7 +112,8 @@ impl<'a, 'root> EncodeAccounting<'a, 'root> {
             // Canonical writers announce a whole record before its header and
             // fields. Those nested checks cover the same outstanding effects;
             // only the deficit above existing credit needs another reservation.
-            #[cfg(all(test, acyclic_fs_loom))]
+            #[cfg(test)]
+            #[cfg(acyclic_fs_loom)]
             let reuse = !model_checking::additive_reservation();
             #[cfg(not(all(test, acyclic_fs_loom)))]
             let reuse = true;
@@ -120,7 +123,8 @@ impl<'a, 'root> EncodeAccounting<'a, 'root> {
     }
 
     fn record_completed(&mut self, delta: crate::WorkCounters) -> Result<(), crate::FsError> {
-        #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(all(acyclic_fs_loom, not(target_arch = "wasm32")))]
         if allocation::effects::broken_reservation() {
             return self.accounting.record_completed(delta);
         }
@@ -171,7 +175,9 @@ impl Drop for EncodeAccounting<'_, '_> {
     }
 }
 
-#[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(acyclic_fs_loom, not(target_arch = "wasm32")))]
 mod model_checking;
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_fs_loom))]
 mod tests;

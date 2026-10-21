@@ -417,7 +417,9 @@ pub(in crate::local) async fn publish<P: StreamProvider + ?Sized>(
     Ok((key, selected))
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod crash_cut_tests;
-#[cfg(all(test, acyclic_harness_loom))]
+#[cfg(test)]
+#[cfg(acyclic_harness_loom)]
 mod model;

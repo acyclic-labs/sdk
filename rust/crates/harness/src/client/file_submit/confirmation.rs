@@ -31,7 +31,8 @@ pub(super) async fn confirm<P: StreamProvider + ?Sized>(
     if durability == FileClientDurability::Accepted {
         return Ok(());
     }
-    #[cfg(all(test, acyclic_harness_loom))]
+    #[cfg(test)]
+    #[cfg(acyclic_harness_loom)]
     match super::model::fault() {
         Some(super::model::Fault::Skip(omitted)) if omitted == barrier => return Ok(()),
         Some(super::model::Fault::Refuse) => {

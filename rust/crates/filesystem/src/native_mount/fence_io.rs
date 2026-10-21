@@ -25,21 +25,24 @@ impl std::ops::Deref for MountLockFile {
     }
 }
 
-#[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(all(acyclic_fs_native_loom, target_os = "linux"))]
 pub(super) struct MountLockFile(
     File,
     std::sync::Arc<super::disconnected::kernel::Kernel>,
     usize,
 );
 
-#[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(all(acyclic_fs_native_loom, target_os = "linux"))]
 impl std::fmt::Debug for MountLockFile {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Debug::fmt(&self.0, formatter)
     }
 }
 
-#[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(all(acyclic_fs_native_loom, target_os = "linux"))]
 impl From<File> for MountLockFile {
     fn from(file: File) -> Self {
         let domain = super::disconnected::kernel::Kernel::lock_domain(&file);
@@ -50,14 +53,16 @@ impl From<File> for MountLockFile {
         )
     }
 }
-#[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(all(acyclic_fs_native_loom, target_os = "linux"))]
 impl std::ops::Deref for MountLockFile {
     type Target = File;
     fn deref(&self) -> &File {
         &self.0
     }
 }
-#[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(all(acyclic_fs_native_loom, target_os = "linux"))]
 impl Drop for MountLockFile {
     fn drop(&mut self) {
         // The real retirement worker may outlive the model's main closure.
@@ -67,14 +72,16 @@ impl Drop for MountLockFile {
 }
 
 pub(super) fn try_lock(file: &MountLockFile) -> io::Result<()> {
-    #[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
+    #[cfg(test)]
+    #[cfg(all(acyclic_fs_native_loom, target_os = "linux"))]
     return file.1.try_lock(file, file.2);
     #[cfg(not(all(test, acyclic_fs_native_loom, target_os = "linux")))]
     file.0.try_lock(FileLockMode::Exclusive)
 }
 
 pub(super) fn unlock(file: &MountLockFile) -> io::Result<()> {
-    #[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
+    #[cfg(test)]
+    #[cfg(all(acyclic_fs_native_loom, target_os = "linux"))]
     {
         file.1.unlock(file, file.2);
         return Ok(());
@@ -86,7 +93,8 @@ pub(super) fn unlock(file: &MountLockFile) -> io::Result<()> {
 // A blocking OS lock is one admitted syscall, independent of contention.
 // The model replaces that syscall with the same kernel-owned wait queue.
 pub(super) fn lock(file: &MountLockFile) -> io::Result<()> {
-    #[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
+    #[cfg(test)]
+    #[cfg(all(acyclic_fs_native_loom, target_os = "linux"))]
     loop {
         if file.2 == 0 && file.1.registry_wait_disabled() {
             return file.1.try_lock(file, file.2);

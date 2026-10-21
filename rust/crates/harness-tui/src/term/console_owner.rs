@@ -370,7 +370,8 @@ impl<W: Write + Send + 'static> Owner<W> {
     }
 }
 
-#[cfg(all(test, acyclic_harness_tui_loom))]
+#[cfg(test)]
+#[cfg(acyclic_harness_tui_loom)]
 mod tests {
     use super::*;
     use crate::term::{Capabilities, ModeState};

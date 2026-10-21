@@ -411,6 +411,7 @@ pub(crate) fn set_windows_name<W: NativeHostWork>(
     result
 }
 
-#[cfg(all(test, feature = "native-watch"))]
+#[cfg(test)]
+#[cfg(feature = "native-watch")]
 #[path = "tests_windows_stat.rs"]
 mod stat_tests;

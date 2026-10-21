@@ -6,7 +6,8 @@ use std::sync::Arc;
 #[path = "ownership_accounting.rs"]
 pub(super) mod accounting;
 
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(test)]
+#[cfg(acyclic_fs_loom)]
 #[path = "ownership_loom_tests.rs"]
 mod loom_tests;
 
@@ -385,7 +386,8 @@ impl Drop for NativeMountAllocationCustody {
     }
 }
 
-#[cfg(all(test, feature = "native-watch", any(target_os = "linux", windows)))]
+#[cfg(test)]
+#[cfg(all(feature = "native-watch", any(target_os = "linux", windows)))]
 mod properties {
     use super::*;
     use proptest::prelude::*;

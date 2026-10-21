@@ -2,7 +2,7 @@
 //! Both instrumented modules below are production source.
 #![cfg(acyclic_harness_loom)]
 
-pub use acyclic_harness_core::{Error, Result};
+pub use acyclic_harness_core::{Error, ProcessError, Result};
 
 pub(crate) mod sync {
     include!("../src/sync/arc.rs");

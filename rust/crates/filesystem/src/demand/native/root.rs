@@ -138,7 +138,8 @@ impl NativeDemandSource {
         work.finish(result, &accounting)
     }
 
-    #[cfg(all(test, unix, feature = "native-mount"))]
+    #[cfg(test)]
+    #[cfg(all(unix, feature = "native-mount"))]
     pub(crate) fn unwatched(self) -> Self {
         Self {
             watchable: false,

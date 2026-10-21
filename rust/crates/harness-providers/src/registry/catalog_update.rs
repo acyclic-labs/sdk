@@ -47,7 +47,8 @@ impl Registry {
             validate_spec(provider, spec)?;
         }
         let retained = self.default_model.as_ref();
-        #[cfg(all(test, not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(not(target_arch = "wasm32"))]
         let retained = if tests::SKIP_RETAINED_DEFAULT.with(std::cell::Cell::get) {
             None
         } else {
@@ -68,7 +69,8 @@ impl Registry {
                     .ok_or_else(|| invalid("catalog default_model is absent from its models"))?;
                 let counted =
                     selection::counts_input(entry, name, self.observe(&mut observed, provider)?);
-                #[cfg(all(test, not(target_arch = "wasm32")))]
+                #[cfg(test)]
+                #[cfg(not(target_arch = "wasm32"))]
                 let counted = if tests::SKIP_DEFAULT_COUNTER.with(std::cell::Cell::get) {
                     Ok(())
                 } else {
@@ -100,5 +102,6 @@ impl Registry {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) mod tests;

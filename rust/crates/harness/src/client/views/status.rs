@@ -102,7 +102,8 @@ impl Agents {
 
     pub(super) fn retire(&mut self, agent: &StreamPath) {
         if let Some(retired) = self.entries.remove(agent) {
-            #[cfg(all(test, not(acyclic_harness_loom)))]
+            #[cfg(test)]
+            #[cfg(not(acyclic_harness_loom))]
             if LEAK.with(std::cell::Cell::get) {
                 return;
             }
@@ -203,7 +204,8 @@ impl Agents {
             statuses: self,
             previous: Some(previous),
         };
-        #[cfg(all(test, not(acyclic_harness_loom)))]
+        #[cfg(test)]
+        #[cfg(not(acyclic_harness_loom))]
         if ABANDON.with(std::cell::Cell::get) {
             return Err(Error::Invalid("abandoned status reservation".into()));
         }
@@ -264,7 +266,8 @@ impl Reservation<'_> {
 
 impl Drop for Reservation<'_> {
     fn drop(&mut self) {
-        #[cfg(all(test, not(acyclic_harness_loom)))]
+        #[cfg(test)]
+        #[cfg(not(acyclic_harness_loom))]
         if LEAK.with(std::cell::Cell::get) {
             return;
         }
@@ -275,13 +278,16 @@ impl Drop for Reservation<'_> {
     }
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 thread_local! {
     static ABANDON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static LEAK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-#[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(acyclic_harness_loom), not(target_arch = "wasm32")))]
 mod retention;
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod tests;

@@ -730,5 +730,6 @@ pub(super) fn update_path_identity(hasher: &mut blake3::Hasher, path: &Path) {
     hasher.update(path.to_string_lossy().as_bytes());
 }
 
-#[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(all(acyclic_fs_native_loom, target_os = "linux"))]
 mod models;

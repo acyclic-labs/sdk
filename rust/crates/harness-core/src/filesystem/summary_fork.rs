@@ -28,7 +28,8 @@ type References = BTreeMap<[u8; 32], FileRef>;
 const CONTEXT_PATH: &str = ".system/inherited-conversation/summary-context.json";
 const ZERO_VERSION: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "summary_fork/tests.rs"]
 mod tests;
 

@@ -356,6 +356,7 @@ fn relative<'a>(path: &'a str, root: &str) -> Option<&'a str> {
     }
 }
 
-#[cfg(all(test, acyclic_loom))]
+#[cfg(test)]
+#[cfg(acyclic_loom)]
 #[path = "source_models.rs"]
 mod models;

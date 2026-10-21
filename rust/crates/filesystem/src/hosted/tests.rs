@@ -1,4 +1,5 @@
-#[cfg(all(test, feature = "memory", feature = "distributed"))]
+#[cfg(test)]
+#[cfg(all(feature = "memory", feature = "distributed"))]
 mod tests {
     use super::*;
     use crate::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer;

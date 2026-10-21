@@ -41,13 +41,17 @@ pub use authority::decode_aggregate_kind;
 pub use authority::encode_authority;
 pub(crate) use authority::{decode_authority, decode_scope};
 use authority::{decode_reference, encode_reference, parse_scope_agent};
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod admission_tests;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod command_tests;
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod event_decode_tests;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod protocol_tests;
 #[cfg(test)]
 mod tests;

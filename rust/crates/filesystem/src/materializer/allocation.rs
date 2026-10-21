@@ -84,7 +84,8 @@ impl NativeAllocation {
     /// Releases destroyed backing capacity.
     pub fn release(&mut self, bytes: u64) -> Result<(), NativeTreeMaterializationError> {
         let empty = bytes == 0;
-        #[cfg(all(test, acyclic_fs_loom))]
+        #[cfg(test)]
+        #[cfg(acyclic_fs_loom)]
         let empty = empty && !model_checking::force_ledger_release();
         if empty {
             return Ok(());
@@ -221,9 +222,11 @@ impl Drop for NativeResourceRetirement {
     }
 }
 
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(test)]
+#[cfg(acyclic_fs_loom)]
 #[path = "allocation_model.rs"]
 mod model_checking;
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_fs_loom))]
 #[path = "allocation_tests.rs"]
 mod tests;

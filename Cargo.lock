@@ -466,6 +466,7 @@ version = "0.0.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-harness",
+ "acyclic-harness-core",
  "acyclic-stream",
  "acyclic-test-support",
  "blake3",

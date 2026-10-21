@@ -1,5 +1,6 @@
 //! Shared native/browser command journal codec and Rust replay.
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 use crate::OwnedBytes as Bytes;
 use crate::wire_codec;
 use crate::{AppendRequest, CommitRequest, ForkRequest, MemoryStream, StreamError, StreamProvider};
@@ -90,7 +91,8 @@ mod journal_command {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[allow(
     clippy::indexing_slicing,
     reason = "Malformed codec fixtures deliberately slice canonical bytes at every boundary"

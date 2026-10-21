@@ -28,7 +28,8 @@ pub use plan::TaskEffectPlan;
 pub use plan::task_effect_id;
 mod host;
 pub use host::ConversationEffectHost;
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod tests;
 #[cfg(feature = "filesystem")]
 fn history(work: NativeWork<'_>) -> Result<Option<HistoryWork>> {

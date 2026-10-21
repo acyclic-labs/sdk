@@ -46,7 +46,8 @@ pub(super) async fn routed<R, T>(
     observe: impl AsyncFnOnce() -> Result<R>,
     act: impl AsyncFnOnce(R) -> Result<T>,
 ) -> Result<T> {
-    #[cfg(all(test, acyclic_harness_loom))]
+    #[cfg(test)]
+    #[cfg(acyclic_harness_loom)]
     if model::observes_outside_the_gate() {
         let observed = observe().await?;
         return super::admission::serialized(gate, async || act(observed).await).await;
@@ -54,5 +55,6 @@ pub(super) async fn routed<R, T>(
     super::admission::serialized(gate, async || act(observe().await?).await).await
 }
 
-#[cfg(all(test, acyclic_harness_loom))]
+#[cfg(test)]
+#[cfg(acyclic_harness_loom)]
 mod model;

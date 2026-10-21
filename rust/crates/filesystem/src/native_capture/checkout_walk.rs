@@ -141,7 +141,8 @@ pub(super) async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: As
             return capture_drop_path(child, meter);
         }
         let move_leaf = entry.record.kind != FileKind::Directory;
-        #[cfg(all(test, feature = "memory"))]
+        #[cfg(test)]
+        #[cfg(feature = "memory")]
         let move_leaf = move_leaf && !super::leaf_path_tests::clone_leaves();
         if move_leaf {
             meter.clone().check().map_err(capture_demand_error)?;

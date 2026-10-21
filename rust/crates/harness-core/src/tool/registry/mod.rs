@@ -51,7 +51,8 @@ mod lookup;
 mod native;
 mod registration;
 mod selection;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests;
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

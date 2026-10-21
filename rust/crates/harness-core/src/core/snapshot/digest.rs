@@ -1,6 +1,7 @@
 use super::*;
 use serde::ser::{SerializeMap, SerializeSeq};
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod message_tests;
 
 struct Canonical<T>(T);

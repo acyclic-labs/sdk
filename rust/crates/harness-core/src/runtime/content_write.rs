@@ -457,7 +457,8 @@ fn can_write_volume(
     })
 }
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 

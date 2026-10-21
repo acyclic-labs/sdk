@@ -71,12 +71,14 @@ use file::*;
 mod metadata;
 use metadata::*;
 pub(crate) use work::NativeMaterializationActionPhase;
-#[cfg(all(test, any(target_os = "macos", windows)))]
+#[cfg(test)]
+#[cfg(any(target_os = "macos", windows))]
 #[path = "tests/clone_tests.rs"]
 mod clone_tests;
 #[cfg(test)]
 #[path = "tests/restore_recovery_tests.rs"]
 mod restore_recovery_tests;
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 #[path = "tests/windows_name_tests.rs"]
 mod windows_name_tests;

@@ -291,9 +291,11 @@ async fn load_chunks<P: StreamProvider>(
 
 mod staging;
 pub(super) use staging::*;
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native_malformed_receipt_tests;
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(in crate::store) mod native_staging_custody_tests;
 
 fn decode_projection_location(

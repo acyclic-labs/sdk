@@ -26,7 +26,8 @@ use tokio::{spawn, task::spawn_blocking};
 mod children;
 #[cfg(acyclic_loom)]
 pub(crate) mod parking_model;
-#[cfg(all(test, not(acyclic_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_loom))]
 mod snapshot_ready;
 #[cfg(test)]
 use tracing::Instrument as _;

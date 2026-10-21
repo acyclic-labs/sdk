@@ -1,7 +1,8 @@
 use super::{Result, Value, invalid};
 use std::mem::size_of;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "budget_properties.rs"]
 mod properties;
 
@@ -31,7 +32,8 @@ impl<'work> Budget<'work> {
         }
         Ok(self.used.bytes)
     }
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn used(&self) -> (usize, usize) {
         (self.used.bytes, self.used.items)
     }

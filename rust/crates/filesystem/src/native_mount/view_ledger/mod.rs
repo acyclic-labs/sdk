@@ -53,7 +53,8 @@ impl ViewStamp {
     }
 
     /// Records a change after every previously sampled stamp.
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
+    #[cfg(target_os = "linux")]
     pub(super) fn record(slot: &AtomicU64) -> Self {
         let position = Self::next();
         position.record_in(slot);

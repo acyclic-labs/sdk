@@ -5,7 +5,8 @@ use futures::stream::FuturesUnordered;
 use tokio::sync::mpsc;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 use native::Connect;
 #[cfg(all(any(test, acyclic_stream_loom), not(target_arch = "wasm32")))]
 use tonic::transport::Channel as TransportChannel;
@@ -47,7 +48,8 @@ pub use pool::model::{
 };
 #[cfg(acyclic_stream_loom)]
 pub use pool::retry_model::verify_initial_retry_yield;
-#[cfg(all(test, not(acyclic_stream_loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(acyclic_stream_loom), not(target_arch = "wasm32")))]
 use routes::Routes;
 mod progress;
 use progress::Progress;

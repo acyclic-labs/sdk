@@ -98,7 +98,8 @@ impl CommandControl {
             .map_err(storage)?;
         Self::publish_matching(volume, task, &matches, paused, maximum, snapshot).await
     }
-    #[cfg(all(test, acyclic_loom, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(all(acyclic_loom, not(target_arch = "wasm32")))]
     async fn publish_change<P: StreamProvider + ?Sized>(
         volume: &TaskVolume<P>,
         task: Option<TaskId>,
@@ -217,11 +218,13 @@ fn storage(error: crate::task_volume::Error) -> Error {
     Error::Storage(error.to_string())
 }
 
-#[cfg(all(test, acyclic_loom, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(acyclic_loom, not(target_arch = "wasm32")))]
 #[path = "control_models.rs"]
 mod models;
 
-#[cfg(all(test, not(acyclic_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_loom))]
 mod invariants {
     use super::*;
     use proptest::prelude::*;

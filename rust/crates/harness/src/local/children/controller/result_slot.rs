@@ -17,7 +17,8 @@ pub(super) fn evict(values: &mut BTreeMap<FileKey, FileValue>, reference: &Compo
     }
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod tests {
     use super::*;
     use acyclic_test_support::differential;

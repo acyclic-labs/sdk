@@ -28,9 +28,11 @@ pub(super) async fn drain(
     }
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod checkpoints;
-#[cfg(all(test, acyclic_harness_loom, acyclic_fs_loom))]
+#[cfg(test)]
+#[cfg(all(acyclic_harness_loom, acyclic_fs_loom))]
 mod models;
 
 pub(in crate::local::children) fn requested(state: ChildState) -> bool {

@@ -2,7 +2,7 @@ use super::Snapshot;
 use crate::query_sync::SyncMutex;
 use std::{
     future::{Future, poll_fn},
-    sync::Arc,
+    sync::{Arc, PoisonError},
     task::{Poll, Waker},
 };
 
@@ -68,7 +68,10 @@ impl<S: Snapshot> Future for Receiver<S> {
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Self::Output> {
         let value = {
-            let mut completed = self.completed.lock().unwrap();
+            let mut completed = self
+                .completed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             let value = completed.value.take();
             if value.is_none() {
                 completed.waker = Some(cx.waker().clone());
@@ -89,14 +92,23 @@ impl<S: Snapshot> Drop for Receiver<S> {
     fn drop(&mut self) {
         if self.satisfied {
             #[cfg(acyclic_loom)]
-            if self.completed.lock().unwrap().mutant != super::model::Mutant::ArmedAfterCompletion {
+            if self
+                .completed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .mutant
+                != super::model::Mutant::ArmedAfterCompletion
+            {
                 return;
             }
             #[cfg(not(acyclic_loom))]
             return;
         }
         let (value, worker) = {
-            let mut completed = self.completed.lock().unwrap();
+            let mut completed = self
+                .completed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             completed.abandoned = true;
             completed.waker = None;
             #[cfg(acyclic_loom)]
@@ -116,13 +128,17 @@ impl<S: Snapshot> Drop for Receiver<S> {
 impl<S: Snapshot> Job<S> {
     pub(super) async fn run(mut self) {
         let completed = self.completed.clone();
+        // A job owns its state until it finishes, and it runs once.
+        let Some(state) = self.state.as_mut() else {
+            return;
+        };
         let result = {
-            let mut read = std::pin::pin!(self.state.as_mut().unwrap().read());
+            let mut read = std::pin::pin!(state.read());
             // Abandonment is checked before every read poll, so a job whose
             // consumer is gone never enters, or stays queued on, a lock.
             poll_fn(|cx| {
                 {
-                    let mut completed = completed.lock().unwrap();
+                    let mut completed = completed.lock().unwrap_or_else(PoisonError::into_inner);
                     if completed.abandoned {
                         #[cfg(acyclic_loom)]
                         if completed.mutant == super::model::Mutant::LeakReservation {
@@ -148,11 +164,17 @@ impl<S: Snapshot> Job<S> {
             return;
         };
         let (waker, worker) = {
-            let mut completed = self.completed.lock().unwrap();
+            let mut completed = self
+                .completed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             completed.value = Some((state, result));
             #[cfg(acyclic_loom)]
             if completed.mutant == super::model::Mutant::ArmedAfterCompletion {
-                return drop(completed.waker.take().map(Waker::wake));
+                if let Some(waker) = completed.waker.take() {
+                    waker.wake();
+                }
+                return;
             }
             (completed.waker.take(), completed.worker.take())
         };

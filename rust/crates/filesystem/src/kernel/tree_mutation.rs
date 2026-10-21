@@ -376,6 +376,7 @@ pub enum TreeMutationError {
     Work(#[from] WorkError),
 }
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "tests/tree_mutation.rs"]
 mod tests;

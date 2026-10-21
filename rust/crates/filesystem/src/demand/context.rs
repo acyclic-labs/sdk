@@ -21,7 +21,8 @@ impl NativeDemandReadMeter {
     }
     #[track_caller]
     pub(crate) fn lock(&self) -> crate::lock_order::MutexGuard<'_, DemandWork> {
-        #[cfg(all(test, not(acyclic_fs_loom)))]
+        #[cfg(test)]
+        #[cfg(not(acyclic_fs_loom))]
         lock_probe::visit(self);
         crate::lock_order::lock::<_, { crate::lock_order::LEAF }>(&self.0).unwrap_or_else(
             |poisoned| {
@@ -31,7 +32,8 @@ impl NativeDemandReadMeter {
             },
         )
     }
-    #[cfg(all(test, not(acyclic_fs_loom)))]
+    #[cfg(test)]
+    #[cfg(not(acyclic_fs_loom))]
     pub(crate) fn count_locks<T>(&self, operation: impl FnOnce() -> T) -> (T, usize) {
         lock_probe::count(self, operation)
     }
@@ -45,10 +47,12 @@ impl NativeDemandReadMeter {
     }
 }
 
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_fs_loom))]
 mod lock_probe;
 
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(test)]
+#[cfg(acyclic_fs_loom)]
 mod model_checking;
 
 pub(crate) struct CaptureTransientCustody {
@@ -91,7 +95,8 @@ impl CaptureTransientCustody {
         self.retained.fetch_add(bytes, Ordering::AcqRel);
     }
     pub(super) fn release(&self, bytes: u64) {
-        #[cfg(all(test, acyclic_fs_loom))]
+        #[cfg(test)]
+        #[cfg(acyclic_fs_loom)]
         if model_checking::broken_release() {
             let current = self.retained.load(Ordering::Acquire);
             self.retained

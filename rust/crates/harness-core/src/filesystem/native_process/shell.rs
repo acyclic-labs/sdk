@@ -1,15 +1,18 @@
 use super::Invocation;
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 use super::{NativeProcessObserver, NativeProcessResult, capture};
 use crate::{Error, Result, tools::ShellInput, workspace::MountTable};
 use acyclic_fs::access::Action;
 use std::path::Path;
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 use std::sync::Arc;
 
 /// Validates the already-composed task namespace and uses the native provider's
 /// capture path. Its caller retains the view and publishes each writable mount.
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 pub(crate) async fn run<T>(
     input: ShellInput,
     mounts: &MountTable<T>,
@@ -91,5 +94,6 @@ pub fn prepare<T>(
     Ok(invocation)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests;

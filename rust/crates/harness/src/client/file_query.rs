@@ -14,7 +14,8 @@ fn goal_revision(file: Option<&FileValue>) -> Option<crate::OperationId> {
     file.and_then(|file| file.publication)
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod goal_lines_tests;
 
 /// Disposable goal rendering at the file query's current cursor.

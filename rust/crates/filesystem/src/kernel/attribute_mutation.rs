@@ -401,6 +401,7 @@ pub enum AttributeMutationError {
     Work(#[from] WorkError),
 }
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "tests/attribute_mutation.rs"]
 mod tests;

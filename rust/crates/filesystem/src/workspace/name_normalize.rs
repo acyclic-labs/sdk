@@ -39,7 +39,8 @@ pub(super) fn parse(
     while let Some(character) = normalized.next() {
         let end = length + character.len_utf8();
         let Some(slot) = output.get_mut(length..end) else {
-            #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+            #[cfg(test)]
+            #[cfg(all(not(acyclic_fs_loom), not(target_arch = "wasm32")))]
             let check = !name_tests::skip_length_cancellation();
             #[cfg(not(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32"))))]
             let check = true;

@@ -16,7 +16,8 @@ mod confirmation;
 mod consumption;
 #[path = "session_init.rs"]
 mod init;
-#[cfg(all(test, acyclic_harness_loom))]
+#[cfg(test)]
+#[cfg(acyclic_harness_loom)]
 #[path = "session_init_models.rs"]
 mod init_models;
 #[path = "session_input.rs"]
@@ -709,6 +710,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     }
 }
 
-#[cfg(all(test, acyclic_loom))]
+#[cfg(test)]
+#[cfg(acyclic_loom)]
 #[path = "session_models.rs"]
 mod models;

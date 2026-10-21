@@ -182,15 +182,18 @@ fn storage(error: impl std::fmt::Display) -> crate::Error {
     crate::Error::Storage(error.to_string())
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod tests;
 
 #[cfg(test)]
 mod fixtures;
-#[cfg(all(test, acyclic_harness_loom))]
+#[cfg(test)]
+#[cfg(acyclic_harness_loom)]
 mod models;
 
-#[cfg(all(test, acyclic_harness_loom))]
+#[cfg(test)]
+#[cfg(acyclic_harness_loom)]
 pub(crate) async fn model_files(
     provider: Arc<dyn StreamProvider>,
     path: StreamPath,

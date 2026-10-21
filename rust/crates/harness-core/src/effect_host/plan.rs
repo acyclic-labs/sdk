@@ -61,7 +61,8 @@ pub(super) fn identity<T: serde::Serialize>(
     Ok(id)
 }
 
-#[cfg(all(test, feature = "filesystem"))]
+#[cfg(test)]
+#[cfg(feature = "filesystem")]
 mod tests {
     use super::*;
     use crate::conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef};

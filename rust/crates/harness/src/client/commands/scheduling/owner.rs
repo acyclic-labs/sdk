@@ -16,7 +16,8 @@ pub(in crate::client::commands) async fn drive_command_owner<T, E: From<crate::E
     }
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod tests {
     // Model the real race with a publication waiting for owner progress. The
     // channel is a model input, not a replacement for a production lock: this

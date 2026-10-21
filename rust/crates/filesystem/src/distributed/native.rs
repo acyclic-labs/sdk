@@ -532,13 +532,16 @@ pub(super) fn codec_work(encoded: u64, copied: u64, hashed: u64) -> WorkCounters
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "native_path_tests.rs"]
 mod path_tests;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "native_tests.rs"]
 mod tests;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "native_lease_path_tests.rs"]
 mod lease_path_tests;

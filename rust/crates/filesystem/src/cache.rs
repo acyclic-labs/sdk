@@ -3,7 +3,8 @@
 //! This layer owns no authority. Every entry is keyed by a canonical typed
 //! object identity and may be discarded without changing filesystem results.
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 use crate::WorkBudget;
 use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue,
@@ -745,13 +746,16 @@ mod reads;
 
 mod provider;
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "tests/cache/mod.rs"]
 mod tests;
 
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(test)]
+#[cfg(acyclic_fs_loom)]
 #[path = "cache/decoded_model.rs"]
 mod decoded_model;
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_fs_loom))]
 #[path = "cache/decoded_properties.rs"]
 mod decoded_properties;

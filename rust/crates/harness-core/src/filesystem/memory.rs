@@ -585,10 +585,12 @@ mod tests;
 #[path = "memory_summary_tests/mod.rs"]
 mod summary_tests;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "memory/workspace_binding_properties.rs"]
 mod workspace_binding_properties;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "memory/binding_differential.rs"]
 mod binding_differential;

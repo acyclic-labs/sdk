@@ -346,6 +346,7 @@ impl NativeMaterializationWork {
     pub const MAXIMUM_BUILTIN_BYTES: usize = 262_144;
 }
 
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_fs_loom))]
 #[path = "work_normalization_tests.rs"]
 mod tests;

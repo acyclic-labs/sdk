@@ -4,18 +4,26 @@ use super::*;
 /// Native timestamp facts, including fields the host cannot observe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NativeTimes {
+    /// Creation (birth) time in nanoseconds since the Unix epoch, if known.
     pub created_ns: Option<i64>,
+    /// Last content modification time in nanoseconds since the Unix epoch.
     pub modified_ns: Option<i64>,
+    /// Last access time in nanoseconds since the Unix epoch.
     pub accessed_ns: Option<i64>,
+    /// Last metadata (inode) change time in nanoseconds since the Unix epoch.
     pub changed_ns: Option<i64>,
 }
 
 /// Physical identity and kind remain host facts; a fixture supplies only time.
 #[derive(Clone, Copy, Debug)]
 pub struct NativeMetadataInput {
+    /// Device holding the object, as the host reports it.
     pub device: u64,
+    /// Object identity on that device (inode or file index).
     pub object: u64,
+    /// Whether the object is a directory.
     pub directory: bool,
+    /// The timestamps the host observed for the object.
     pub times: NativeTimes,
 }
 

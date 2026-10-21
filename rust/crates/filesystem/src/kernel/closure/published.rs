@@ -96,16 +96,19 @@ impl<T> Unpublished<T> {
         drop(replaced);
     }
 
-    #[cfg(all(test, acyclic_fs_loom))]
+    #[cfg(test)]
+    #[cfg(acyclic_fs_loom)]
     pub(super) fn install_unpublished(self) {
         self.install::<true, true>(Sequence::new(1));
     }
 }
 
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(test)]
+#[cfg(acyclic_fs_loom)]
 mod loom_tests;
 
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_fs_loom))]
 mod tests;
 
 #[cfg(test)]

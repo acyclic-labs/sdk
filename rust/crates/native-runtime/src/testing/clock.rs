@@ -16,7 +16,10 @@ impl CapturedClock {
     /// Captures the active seed and runtime, or returns None outside simulation.
     pub fn capture() -> Option<Self> {
         let context = Context::simulation()?;
-        let runtime = context.schedule.0.state().wall.as_ref()?.runtime.clone()?;
+        if !context.schedule.is_seeded() {
+            return None;
+        }
+        let runtime = context.schedule.0.state().wall.runtime.clone()?;
         let origin = {
             let _runtime = runtime.enter();
             tokio::time::Instant::now().into_std()
@@ -31,13 +34,7 @@ impl CapturedClock {
     /// Reads simulated wall time, including elapsed time and injected jumps.
     pub fn unix_millis(&self) -> u64 {
         let _runtime = self.runtime.enter();
-        self.schedule
-            .0
-            .state()
-            .wall
-            .as_mut()
-            .expect("seeded clock")
-            .now()
+        self.schedule.0.state().wall.now()
     }
 
     /// Reads the creating runtime's monotonic clock on any callback thread.
@@ -60,8 +57,8 @@ pub(super) struct Wall {
     lose_elapsed: bool,
 }
 
-impl Wall {
-    pub(super) fn new() -> Self {
+impl Default for Wall {
+    fn default() -> Self {
         Self {
             millis: 1_700_000_000_000,
             anchor: None,
@@ -70,7 +67,9 @@ impl Wall {
             lose_elapsed: false,
         }
     }
+}
 
+impl Wall {
     // Anchor on entry into the runtime, before the first user poll or timer.
     // Later scopes and captured callbacks retain the same clock origin.
     pub(super) fn start(&mut self) {
@@ -95,17 +94,22 @@ impl Wall {
 
 /// The active simulation's wall clock, or `None` during ordinary execution.
 pub fn unix_millis() -> Option<u64> {
-    Context::simulation().and_then(|context| {
-        let mut state = context.schedule.0.state();
-        state.wall.as_mut().map(Wall::now)
-    })
+    Context::simulation()
+        .filter(|context| context.schedule.is_seeded())
+        .map(|context| context.schedule.0.state().wall.now())
 }
 
 impl Schedule {
+    /// Only a seeded schedule has a simulated clock; an unseeded one keeps a
+    /// wall that nothing reads.
+    pub(super) fn is_seeded(&self) -> bool {
+        self.0.executor.is_some()
+    }
+
     /// Changes wall time without changing elapsed time or expiring a timer.
     pub fn set_unix_millis(&self, millis: u64) {
         let mut state = self.0.state();
-        let wall = state.wall.as_mut().expect("clock requires a seeded scope");
+        let wall = &mut state.wall;
         wall.millis = millis;
         wall.anchor = Some(tokio::time::Instant::now());
     }
@@ -117,13 +121,14 @@ impl Schedule {
             let mut state = self.0.state();
             // Establish the wall's anchor before any monotonic advancement,
             // including Tokio's own automatic advancement while the driver idles.
-            state.wall.as_mut().expect("seeded clock").now();
+            state.wall.now();
         }
         tokio::time::advance(duration).await;
     }
 }
 
-#[cfg(all(test, not(acyclic_native_runtime_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_native_runtime_loom))]
 mod tests {
     use super::*;
 
@@ -176,13 +181,13 @@ mod tests {
             .build()
             .unwrap();
         let (schedule, _) = Schedule::seeded(71);
-        schedule.0.state().wall.as_mut().unwrap().lose_elapsed = lose_elapsed;
+        schedule.0.state().wall.lose_elapsed = lose_elapsed;
         runtime.block_on(async {
             tokio::time::pause();
             schedule
                 .scope(async {
                     if lazy_anchor {
-                        schedule.0.state().wall.as_mut().unwrap().anchor = None;
+                        schedule.0.state().wall.anchor = None;
                     }
                     let captured = capture.then(|| CapturedClock::capture().unwrap());
                     let start = tokio::time::Instant::now();

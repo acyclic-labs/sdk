@@ -66,7 +66,8 @@ pub fn parse_fs_command(command: &str) -> Result<FsCommand> {
     Ok(FsCommand { arguments, volume })
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

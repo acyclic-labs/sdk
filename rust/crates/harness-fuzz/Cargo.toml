@@ -256,6 +256,9 @@ doc = false
 bench = false
 
 [dev-dependencies]
+# The directory-page bench compiles harness-core sources that read fixture
+# controls through its environment seam.
+acyclic-harness-core = { path = "../harness-core" }
 acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 tracing.workspace = true

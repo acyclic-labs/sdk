@@ -267,7 +267,8 @@ fn preparation_state_schema() -> Value {
     serde_json::json!({"oneOf":[{"type":"object","required":["phase","command","request_digest"],"properties":{"phase":{"const":"ready"},"command":{"type":"object"},"request_digest":{"type":"array","minItems":32,"maxItems":32,"items":{"type":"integer","minimum":0,"maximum":255}}},"additionalProperties":false},{"type":"object","required":["phase","operation_id","request_digest"],"properties":{"phase":{"const":"waiting"},"operation_id":{"type":"string"},"request_digest":{"type":"array","minItems":32,"maxItems":32,"items":{"type":"integer","minimum":0,"maximum":255}}},"additionalProperties":false},{"type":"null"}]})
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod tests;
 
 const PREPARATION_INPUT_SCHEMA: &[u8] = br#"{"type":"object","required":["provider","child","creation_grant","maximum_resources","maximum_work","maximum_bytes","payload","command"],"properties":{"provider":{"type":"object"},"child":{"type":"object"},"creation_grant":{"const":"fork:publish"},"maximum_resources":{"type":"integer","minimum":1,"maximum":4294967295},"maximum_work":{"type":"integer","minimum":1,"maximum":18446744073709551614},"maximum_bytes":{"type":"integer","minimum":1,"maximum":18446744073709551614},"payload":{"type":"object"},"source_checkpoint":{"type":["object","null"]},"input_files":{"type":"array","items":{"type":"object"}},"read_authorization":{"type":["object","null"]},"command":{"type":"object","required":["operation_id","kind","payload"],"properties":{"operation_id":{"type":"string","minLength":1},"kind":{"const":"acyclic.fork.prepare.v1"},"payload":{"type":"object"}},"additionalProperties":false}},"additionalProperties":false}"#;

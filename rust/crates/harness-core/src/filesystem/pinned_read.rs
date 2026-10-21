@@ -48,5 +48,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedRead<A, O> {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod retention_tests;

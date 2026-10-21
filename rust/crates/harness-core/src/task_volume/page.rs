@@ -32,7 +32,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     }
 }
 
-#[cfg(all(test, acyclic_loom))]
+#[cfg(test)]
+#[cfg(acyclic_loom)]
 mod models {
     use super::*;
     use acyclic_stream::{MemoryStream, StreamPath, verification::block_on};

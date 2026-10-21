@@ -461,5 +461,6 @@ where
     }
 }
 
-#[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod tests;

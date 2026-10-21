@@ -200,5 +200,6 @@ mod local_identity;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use local_identity::local_identity;
 
-#[cfg(all(test, feature = "tui", not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(all(feature = "tui", not(acyclic_harness_loom)))]
 mod task_files_tests;

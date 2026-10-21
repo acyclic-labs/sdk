@@ -171,7 +171,8 @@ fn rendered(keys: &[FileKey]) -> String {
 }
 
 /// The selected listing, or the volume's typed failure.
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 async fn listing<P: StreamProvider + ?Sized>(
     files: &crate::task_volume::TaskVolume<P>,
     query: &crate::task_volume::Query,
@@ -185,10 +186,12 @@ async fn listing<P: StreamProvider + ?Sized>(
     ))
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod listing_tests;
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 pub(super) fn status(
     reference: &Component,
     files: &[FileValue],
@@ -290,7 +293,8 @@ fn storage(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

@@ -229,7 +229,8 @@ fn successor(prefix: &str) -> Option<String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn timestamp() -> Result<prost_types::Timestamp, Error> {
-    #[cfg(all(test, feature = "local"))]
+    #[cfg(test)]
+    #[cfg(feature = "local")]
     if let Some(timestamp) = persistence::work::timestamp() {
         return Ok(timestamp);
     }

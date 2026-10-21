@@ -121,5 +121,6 @@ impl<I: AsyncWrite + Unpin> AsyncWrite for Socket<'_, I> {
     }
 }
 
-#[cfg(all(test, feature = "filesystem"))]
+#[cfg(test)]
+#[cfg(feature = "filesystem")]
 mod tests;

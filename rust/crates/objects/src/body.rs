@@ -352,7 +352,8 @@ pub(crate) fn native_storage(
 }
 
 /// Test observation of native read work, recorded on the calling thread for the differential harness.
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod work {
     use std::cell::Cell;
 
@@ -445,7 +446,8 @@ pub(crate) struct LocalBodyReference {
     pub(crate) location: LocalBodyLocation,
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod tests {
     use super::*;
     use proptest::prelude::*;

@@ -11,7 +11,8 @@ use acyclic_stream::BoxProviderFuture;
 mod capture;
 mod children;
 mod git;
-#[cfg(all(test, unix, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(all(unix, not(acyclic_harness_loom)))]
 mod git_mount_tests;
 mod hooks;
 mod output;
@@ -26,7 +27,8 @@ pub(super) mod shell;
 ))]
 mod task_view_volumes_tests;
 mod task_views;
-#[cfg(all(test, acyclic_harness_loom))]
+#[cfg(test)]
+#[cfg(acyclic_harness_loom)]
 mod tests;
 
 pub(super) struct CheckoutTools {

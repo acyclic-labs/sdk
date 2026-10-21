@@ -73,9 +73,11 @@ mod append;
 mod authority;
 mod bindings;
 mod head_payload;
-#[cfg(all(test, acyclic_fs_loom, not(acyclic_loom)))]
+#[cfg(test)]
+#[cfg(all(acyclic_fs_loom, not(acyclic_loom)))]
 compile_error!("head-payload models require RUSTFLAGS='--cfg acyclic_fs_loom --cfg acyclic_loom'");
-#[cfg(all(test, acyclic_fs_loom, acyclic_loom))]
+#[cfg(test)]
+#[cfg(all(acyclic_fs_loom, acyclic_loom))]
 mod head_payload_loom_tests;
 mod lineage;
 mod operations;
@@ -94,9 +96,11 @@ pub(crate) fn authority_records_path(
     stream_path(volume_authority_id(volume), "/records")
 }
 mod accounting;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod append_retry_tests;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod head_record_tests;
 #[cfg(test)]
 mod tests;

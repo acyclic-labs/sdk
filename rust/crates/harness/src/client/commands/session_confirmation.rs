@@ -73,6 +73,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     }
 }
 
-#[cfg(all(test, acyclic_harness_loom))]
+#[cfg(test)]
+#[cfg(acyclic_harness_loom)]
 #[path = "session_confirmation/tests.rs"]
 mod tests;

@@ -10,7 +10,8 @@ pub(super) struct Pinned {
 }
 
 fn stat(file: &OwnedFd, flags: AtFlags) -> std::io::Result<(FileType, Option<u64>)> {
-    #[cfg(all(test, acyclic_fs_native_loom))]
+    #[cfg(test)]
+    #[cfg(acyclic_fs_native_loom)]
     if let Some(kernel) = super::kernel::current() {
         return metadata(file, flags, kernel.stat(file.as_raw_fd(), flags), || {
             kernel
@@ -124,7 +125,8 @@ impl Pinned {
     }
 
     fn current_stat(&self) -> rustix::io::Result<rustix::fs::Statx> {
-        #[cfg(all(test, acyclic_fs_native_loom))]
+        #[cfg(test)]
+        #[cfg(acyclic_fs_native_loom)]
         if let Some(kernel) = super::kernel::current() {
             return Ok(kernel.current_stat());
         }
@@ -161,5 +163,6 @@ impl Pinned {
     }
 }
 
-#[cfg(all(test, not(acyclic_fs_native_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_fs_native_loom))]
 mod tests;

@@ -257,8 +257,10 @@ mod index;
 mod read;
 mod write;
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 mod tests;
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 pub(crate) use tests::restore_eager_index;

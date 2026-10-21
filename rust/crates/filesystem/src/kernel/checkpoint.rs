@@ -270,6 +270,7 @@ pub enum CheckpointError {
     Work(#[from] WorkError),
 }
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "tests/checkpoint.rs"]
 mod tests;

@@ -1,7 +1,8 @@
 use super::{Error, FileValue, Result, TaskVolume};
 use acyclic_stream::StreamProvider;
 
-#[cfg(all(test, acyclic_harness_loom))]
+#[cfg(test)]
+#[cfg(acyclic_harness_loom)]
 #[path = "../../../harness/tests/task_volume/durability_model.rs"]
 mod tests;
 

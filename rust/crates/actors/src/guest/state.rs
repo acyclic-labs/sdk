@@ -69,7 +69,8 @@ impl<State> GuestState<State> {
     }
 }
 
-#[cfg(all(test, loom))]
+#[cfg(test)]
+#[cfg(loom)]
 mod tests {
     use super::*;
 

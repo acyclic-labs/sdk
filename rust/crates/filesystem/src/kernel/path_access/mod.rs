@@ -147,7 +147,8 @@ pub(crate) use api::{
     observe_path_async_with_accounting, observe_paths_async_with_accounting,
 };
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "../tests/path_access/mod.rs"]
 mod tests;
 pub(super) fn path_error(error: crate::FsError) -> PathLookupError {

@@ -371,6 +371,7 @@ fn lease_identity(
     acyclic_fs::OperationLeaseId::from_bytes(identity)
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 #[path = "git_tests.rs"]
 mod tests;

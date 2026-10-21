@@ -430,7 +430,8 @@ fn insert_value<F: Format, const PREFIX: bool>(
 ) -> Result<(), FsError> {
     let prepared = (|| {
         let compare = |entry: &ValueChange<F::Key, F::Value>| {
-            #[cfg(all(test, feature = "memory"))]
+            #[cfg(test)]
+            #[cfg(feature = "memory")]
             tests::ordered::record_comparison();
             entry.key.cmp(F::key(&value.value))
         };
@@ -599,6 +600,7 @@ pub(crate) async fn diff_tree_entries_with_accounting<S: AsyncObjectStore>(
     .await
 }
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "tests/persistent_diff.rs"]
 mod tests;

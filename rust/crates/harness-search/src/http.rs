@@ -336,7 +336,8 @@ impl SearchProvider for TinyFish {
     }
 }
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native_tests;
 #[cfg(test)]
 mod tests;

@@ -128,7 +128,8 @@ mod fork_selection;
 ))]
 mod seeded_memory_tests;
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "../tests/facade/mod.rs"]
 mod tests;
 
@@ -244,7 +245,8 @@ pub use fs::LocalOperationWindowStore;
 pub use fs::LocalVolume;
 #[cfg(all(feature = "memory", feature = "distributed"))]
 pub use fs::MemoryAuthorityBackend;
-#[cfg(all(test, feature = "memory", feature = "distributed"))]
+#[cfg(test)]
+#[cfg(all(feature = "memory", feature = "distributed"))]
 pub(crate) use fs::MemoryCheckout;
 #[cfg(all(feature = "memory", feature = "distributed"))]
 pub use fs::MemoryFs;
@@ -312,11 +314,13 @@ use work::remaining;
 use work::{authority_work, record_authority_work};
 use workspace_creation::decode_first_creation_record;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "../tests/opaque_authority.rs"]
 pub(crate) mod test_authority;
 
 use crate::kernel::{decode_published_generation, decode_volume_created};
 
-#[cfg(all(test, feature = "memory", feature = "distributed"))]
+#[cfg(test)]
+#[cfg(all(feature = "memory", feature = "distributed"))]
 pub(crate) mod test_fixtures;

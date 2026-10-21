@@ -7,7 +7,8 @@ use crate::{
 use acyclic_native_runtime::ProcessOutput;
 use acyclic_stream::OwnedBytes;
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod tests;
 
 pub(super) const CONTROL_TIMEOUT_MS: u32 = 1000;

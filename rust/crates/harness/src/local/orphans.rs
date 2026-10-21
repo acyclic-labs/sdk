@@ -231,7 +231,8 @@ impl LocalHarness {
 
 // A new prompt supersedes only a head no driver holds. The real gate and the
 // real driver registry decide; the shared cell stands in for the outcome.
-#[cfg(all(test, acyclic_harness_loom))]
+#[cfg(test)]
+#[cfg(acyclic_harness_loom)]
 mod model {
     use super::*;
     use crate::sync::owned::{Arc as StateArc, Mutex};

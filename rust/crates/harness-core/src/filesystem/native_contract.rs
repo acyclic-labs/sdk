@@ -451,7 +451,8 @@ pub enum NativeProcessStopKind {
     CaptureFailed,
 }
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native_result_decode_tests {
     use super::*;
 

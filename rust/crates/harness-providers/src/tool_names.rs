@@ -137,14 +137,16 @@ fn digest_into(
     fund: &mut impl FnMut(u64) -> Result<()>,
 ) -> Result<()> {
     let hashed = (DIGEST_DOMAIN.len() + size_of::<u32>() + name.len()) as u64;
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     let skip = tests::SKIP_HASH_ADMISSION.with(std::cell::Cell::get);
     #[cfg(not(all(test, not(target_arch = "wasm32"))))]
     let skip = false;
     if !skip {
         fund(hashed)?;
     }
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     tests::ACTUAL_HASHED.with(|counter| counter.set(counter.get() + hashed));
     built.hashed += hashed;
     buffer.clear();
@@ -430,7 +432,8 @@ impl<'a> Names<'a> {
         for entry in resalted {
             bindings[entry.index].wire = Cow::Owned(entry.alias);
         }
-        #[cfg(all(test, not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(not(target_arch = "wasm32"))]
         let changed = changed || tests::REDUNDANT_WIRE_SORT.with(std::cell::Cell::get);
         if changed {
             sort_wire(&mut by_wire, &bindings, &mut built, order);
@@ -537,6 +540,7 @@ fn sort_wire<'a>(
     });
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "tool_names_budget_tests.rs"]
 mod tests;

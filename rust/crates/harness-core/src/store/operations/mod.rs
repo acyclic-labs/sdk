@@ -28,9 +28,11 @@ mod sdk;
 pub(crate) use sdk::*;
 mod lookup;
 pub(crate) use lookup::*;
-#[cfg(all(test, feature = "native-execution", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod native_only_provider_tests;
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native_publication_custody_tests;
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

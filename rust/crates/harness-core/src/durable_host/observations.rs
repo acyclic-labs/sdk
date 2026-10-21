@@ -101,7 +101,8 @@ fn project_terminal<T>(outcome: &Outcome<T>) -> Outcome<()> {
     }
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod tests;
 
 #[cfg(all(

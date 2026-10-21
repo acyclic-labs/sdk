@@ -92,7 +92,8 @@ fn validate_request_protocol(protocol: Option<&wire::ProtocolIdentity>) -> Resul
     validate_protocol(protocol, COMPILED_PROTOCOL, wire::ErrorCode::Invalid, &None)
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "wire_api_protocol_tests.rs"]
 mod protocol_tests;
 

@@ -108,7 +108,8 @@ pub(crate) fn negative() {
     admitted!(super::RwLock::stalled_reader_control(()));
 }
 
-#[cfg(all(test, not(acyclic_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_loom))]
 #[test]
 fn admission_and_cancellation_match_tokio() {
     run();

@@ -15,9 +15,11 @@ type Work = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 tokio::task_local! { static POLLING_EXECUTOR: Arc<Executor>; }
 
-#[cfg(all(test, acyclic_native_runtime_loom))]
+#[cfg(test)]
+#[cfg(acyclic_native_runtime_loom)]
 mod models;
-#[cfg(all(test, not(acyclic_native_runtime_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_native_runtime_loom))]
 mod tests;
 
 struct State {

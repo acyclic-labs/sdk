@@ -2,7 +2,8 @@ use super::super::adapter::NativeDemandCarrier;
 use super::*;
 use crate::demand::NativeMountAllocationCustody;
 
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(test)]
+#[cfg(acyclic_fs_loom)]
 #[path = "model_checking.rs"]
 mod model_checking;
 
@@ -107,10 +108,12 @@ pub(super) fn record(
     loop {
         let plan = Plan::of(&map.read().unwrap_or_else(PoisonError::into_inner), key);
         if plan.tracked != 0 {
-            #[cfg(all(test, acyclic_fs_loom))]
+            #[cfg(test)]
+            #[cfg(acyclic_fs_loom)]
             let broken_lock = model_checking::hold_map_while_charging(map);
             let charged = charge(carrier, scan_work(1));
-            #[cfg(all(test, acyclic_fs_loom))]
+            #[cfg(test)]
+            #[cfg(acyclic_fs_loom)]
             drop(broken_lock.map(std::mem::ManuallyDrop::into_inner));
             charged?;
         }
@@ -118,7 +121,8 @@ pub(super) fn record(
             let mut positions = map.write().unwrap_or_else(PoisonError::into_inner);
             if plan.holds_for(&positions, key) {
                 let at = positions.latest.entry(key).or_insert(position.0);
-                #[cfg(all(test, acyclic_fs_loom))]
+                #[cfg(test)]
+                #[cfg(acyclic_fs_loom)]
                 if model_checking::overwrite_stamp() {
                     *at = position.0;
                     return Ok(());

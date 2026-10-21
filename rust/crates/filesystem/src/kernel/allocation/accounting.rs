@@ -325,7 +325,8 @@ impl<'a> KernelAccounting<'a> {
     /// Records and checks bounded work.
     #[inline]
     pub fn charge(&mut self, delta: WorkCounters) -> Result<(), crate::FsError> {
-        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(all(not(acyclic_fs_loom), not(target_arch = "wasm32")))]
         charge_tests::redundant_allocation();
         match self {
             Self::Standalone {
@@ -348,7 +349,8 @@ impl<'a> KernelAccounting<'a> {
             }
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeOriginal { work, cancellation } => {
-                #[cfg(all(test, acyclic_fs_loom))]
+                #[cfg(test)]
+                #[cfg(acyclic_fs_loom)]
                 if charge_model::split_charge() {
                     work.admit(WorkCounters::UNCHARGED)?;
                     cancellation.check()?;
@@ -373,7 +375,8 @@ impl<'a> KernelAccounting<'a> {
         delta: WorkCounters,
         effect: impl FnOnce() -> T,
     ) -> Result<T, crate::FsError> {
-        #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(all(acyclic_fs_loom, not(target_arch = "wasm32")))]
         if super::effects::broken_reservation() {
             self.admit(delta)?;
             let output = effect();
@@ -511,8 +514,10 @@ impl<'a> KernelAccounting<'a> {
 #[path = "accounting_tests.rs"]
 mod tests;
 
-#[cfg(all(test, not(target_arch = "wasm32"), not(acyclic_fs_loom)))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32"), not(acyclic_fs_loom)))]
 mod charge_tests;
 
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(test)]
+#[cfg(acyclic_fs_loom)]
 mod charge_model;

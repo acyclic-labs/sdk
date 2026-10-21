@@ -2,7 +2,8 @@ use super::*;
 use std::{alloc::Layout, collections::hash_map::RandomState, hash::BuildHasher};
 
 pub(super) fn hash_state() -> RandomState {
-    #[cfg(all(test, feature = "memory"))]
+    #[cfg(test)]
+    #[cfg(feature = "memory")]
     {
         // Independent differential fixtures use identical hash keys, never
         // shared table contents, so their exact probe receipts are comparable.
@@ -114,10 +115,12 @@ impl<'a, T> Index<'a, T> {
     }
 }
 
-#[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "memory", not(target_arch = "wasm32")))]
 #[path = "index_tests.rs"]
 mod tests;
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "index_properties.rs"]
 mod properties;

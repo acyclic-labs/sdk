@@ -34,7 +34,8 @@ impl ThresholdCompaction {
     #[doc(hidden)]
     pub fn for_capacity(capacity: ModelContextCapacity, fixed_tokens: u32) -> Result<Self> {
         capacity.validate()?;
-        #[cfg(all(test, not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(not(target_arch = "wasm32"))]
         if capacity.output_tokens.is_none()
             && unknown_output_tests::REQUIRE_OUTPUT_BOUND.with(std::cell::Cell::get)
         {
@@ -97,7 +98,8 @@ impl ThresholdCompaction {
         input_tokens: u64,
     ) -> Result<bool> {
         self.validate(capacity, None)?;
-        #[cfg(all(test, not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(not(target_arch = "wasm32"))]
         if capacity.output_tokens.is_none()
             && unknown_output_tests::IGNORE_CONTEXT_PRESSURE.with(std::cell::Cell::get)
         {
@@ -152,12 +154,15 @@ pub(crate) use copying::{clone_context, clone_messages, clone_metadata};
 mod allocation;
 pub(crate) use allocation::reserve_vector;
 use allocation::{quota_vector, retire_vector};
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod copying_tests;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod defaults_tests;
 #[cfg(test)]
 mod tests;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod unknown_output_tests;

@@ -110,7 +110,8 @@ macro_rules! demand_meter {
             }
             fn examine(&self, items: u64, copied: u64) -> std::io::Result<()> {
                 let result = self.io(|state| state.charge(crate::WorkCounters { items_examined: items, bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }));
-                #[cfg(all(test, any(target_os = "linux", windows)))]
+                #[cfg(test)]
+                #[cfg(any(target_os = "linux", windows))]
                 if result.is_ok() {
                     crate::native_host::stat_probe::examined(items);
                 }

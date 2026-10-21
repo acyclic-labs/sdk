@@ -94,7 +94,8 @@ async fn animation_frame<const ENABLED: bool>(busy: bool) {
     .await;
 }
 
-#[cfg(all(test, feature = "tui", not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(all(feature = "tui", not(acyclic_harness_loom)))]
 #[path = "native_input/animation.rs"]
 mod animation;
 

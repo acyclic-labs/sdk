@@ -163,6 +163,7 @@ pub(crate) use api::publish_generation_async_guarded;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use api::publish_generation_async_guarded_with_native_work;
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "../tests/publication/mod.rs"]
 mod tests;

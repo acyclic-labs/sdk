@@ -4,7 +4,8 @@ use acyclic_stream::{StreamProvider, wire as session};
 use futures::{StreamExt, TryStreamExt};
 use std::sync::Arc;
 
-#[cfg(all(test, feature = "memory", not(acyclic_loom)))]
+#[cfg(test)]
+#[cfg(all(feature = "memory", not(acyclic_loom)))]
 mod tests;
 #[cfg(test)]
 thread_local! {

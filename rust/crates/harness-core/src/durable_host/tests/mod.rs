@@ -15,24 +15,33 @@ use serde_json::json;
 #[cfg(feature = "filesystem")]
 #[doc(hidden)]
 pub mod fixture;
-#[cfg(all(test, feature = "filesystem"))]
+#[cfg(test)]
+#[cfg(feature = "filesystem")]
 use fixture::Fixture;
-#[cfg(all(test, feature = "filesystem"))]
+#[cfg(test)]
+#[cfg(feature = "filesystem")]
 mod admission;
-#[cfg(all(test, feature = "filesystem"))]
+#[cfg(test)]
+#[cfg(feature = "filesystem")]
 mod journal;
-#[cfg(all(test, feature = "filesystem"))]
+#[cfg(test)]
+#[cfg(feature = "filesystem")]
 mod mail;
-#[cfg(all(test, feature = "filesystem"))]
+#[cfg(test)]
+#[cfg(feature = "filesystem")]
 mod recovery;
-#[cfg(all(test, feature = "filesystem"))]
+#[cfg(test)]
+#[cfg(feature = "filesystem")]
 mod timers;
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod release;
 
-#[cfg(all(test, feature = "filesystem"))]
+#[cfg(test)]
+#[cfg(feature = "filesystem")]
 mod preparation;
 
-#[cfg(all(test, feature = "filesystem"))]
+#[cfg(test)]
+#[cfg(feature = "filesystem")]
 pub(crate) mod created_fixture;

@@ -88,7 +88,8 @@ impl<'work> State<'work> {
         Ok((target, &mut self.budget))
     }
 
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn retain_thinking(&mut self, index: u64, value: &Value) -> Result<()> {
         self.raw_part(index, value, None, false)
     }

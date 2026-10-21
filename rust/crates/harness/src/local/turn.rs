@@ -301,6 +301,7 @@ impl LocalHarness {
         Ok((receive, model))
     }
 
+    #[cfg(test)]
     pub(super) async fn stage_turn_with_limits(
         &self,
         operation: OperationId,

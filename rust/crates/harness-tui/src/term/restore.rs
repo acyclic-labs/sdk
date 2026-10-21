@@ -389,7 +389,8 @@ impl<W: Write> super::Present for RestoreGuard<W> {
 /// Made only by `RestoreGuard::alternate_screen` on a confirmed alternate screen.
 struct OnAlternateScreen(());
 
-#[cfg(all(test, unix, not(acyclic_harness_tui_loom)))]
+#[cfg(test)]
+#[cfg(all(unix, not(acyclic_harness_tui_loom)))]
 #[test]
 fn resume_reapplies_the_latest_exclusive_selection() {
     let mut caps = Capabilities::default();

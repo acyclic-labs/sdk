@@ -16,5 +16,6 @@ pub(super) async fn publish<P: StreamProvider + ?Sized>(
     super::publish(files, reference, status, values, generation).await
 }
 
-#[cfg(all(test, acyclic_harness_loom, acyclic_loom))]
+#[cfg(test)]
+#[cfg(all(acyclic_harness_loom, acyclic_loom))]
 mod models;

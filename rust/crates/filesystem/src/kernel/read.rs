@@ -203,6 +203,7 @@ pub enum TreeReadError {
     Work(#[from] WorkError),
 }
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "tests/read.rs"]
 mod tests;

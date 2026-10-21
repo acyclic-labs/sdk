@@ -169,10 +169,12 @@ fn record_outcome(span: &tracing::Span, kind: Option<&'static str>) {
     };
 }
 
-#[cfg(all(test, feature = "native-mount", target_os = "linux"))]
+#[cfg(test)]
+#[cfg(all(feature = "native-mount", target_os = "linux"))]
 pub(crate) use worker_context_tests::assert_filtered_callback_isolation;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod worker_context_tests {
     use std::sync::{Arc, Mutex, mpsc};
     use std::time::Duration;

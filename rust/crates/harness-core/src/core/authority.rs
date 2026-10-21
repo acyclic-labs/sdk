@@ -659,7 +659,8 @@ impl AuthorityVerifier {
     }
 }
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[path = "effect_root_tests.rs"]
 pub(crate) mod effect_root_tests;
 

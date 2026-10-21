@@ -258,7 +258,8 @@ fn register(
     Ok((tools, capabilities))
 }
 
-#[cfg(all(test, feature = "mcp-stdio"))]
+#[cfg(test)]
+#[cfg(feature = "mcp-stdio")]
 mod path_tests;
 #[cfg(test)]
 mod tests;

@@ -7,7 +7,8 @@ use acyclic_fs::{CancellationToken, OperationReceipt, WorkBudget, WorkCounters, 
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Mutex;
 mod codec;
-#[cfg(all(test, not(target_arch = "wasm32"), not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32"), not(acyclic_harness_loom)))]
 mod codec_properties;
 mod history;
 mod quota;
@@ -301,10 +302,12 @@ impl PreparationIo {
                     .checked_add(allocations.live_bytes())
                     .ok_or(acyclic_fs::WorkError::Overflow)?;
             }
-            #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
+            #[cfg(test)]
+            #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
             crate::accounting_trace::before(crate::accounting_trace::Phase::Preflight, &next);
             let result = accounting.admit(next);
-            #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
+            #[cfg(test)]
+            #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
             crate::accounting_trace::after(
                 crate::accounting_trace::Phase::Preflight,
                 &next,
@@ -345,10 +348,12 @@ impl PreparationIo {
                     .checked_add(allocations.live_bytes())
                     .ok_or(acyclic_fs::WorkError::Overflow)?;
             }
-            #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
+            #[cfg(test)]
+            #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
             crate::accounting_trace::before(crate::accounting_trace::Phase::Charge, &next);
             let result = accounting.charge(next);
-            #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
+            #[cfg(test)]
+            #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
             crate::accounting_trace::after(crate::accounting_trace::Phase::Charge, &next, &result);
             result
         })

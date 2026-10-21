@@ -111,7 +111,8 @@ pub(crate) fn traced_future<'a, T: 'a>(
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn traced_future_retains_one_payload_and_records_only_when_ready() {
     use std::{

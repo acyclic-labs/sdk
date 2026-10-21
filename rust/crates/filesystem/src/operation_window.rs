@@ -251,7 +251,8 @@ pub trait OperationWindowStore: acyclic_stream::ProviderPlatform {
 
 #[cfg(feature = "distributed")]
 mod streams;
-#[cfg(all(test, feature = "distributed"))]
+#[cfg(test)]
+#[cfg(feature = "distributed")]
 pub(crate) use streams::stream_lease_path;
 #[cfg(feature = "distributed")]
 pub use streams::{StreamOperationWindowStore, StreamOperationWindowStoreError};

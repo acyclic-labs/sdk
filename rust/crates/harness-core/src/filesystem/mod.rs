@@ -473,9 +473,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
         io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        #[cfg(all(test, not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(not(target_arch = "wasm32"))]
         pinned_read_tests::retained::sample_items(false, io);
-        #[cfg(all(test, not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(not(target_arch = "wasm32"))]
         if pinned_read_tests::retained::reopen() {
             let result = self.read_pinned_io(reference, maximum_bytes, io).await;
             pinned_read_tests::retained::sample_items(true, io);
@@ -515,7 +517,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         acyclic_native_runtime::differential::record(("read", maximum_bytes));
         let bytes = read_generation(generation, &path, maximum_bytes, io).await?;
         crate::executor::with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
-        #[cfg(all(test, not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(not(target_arch = "wasm32"))]
         pinned_read_tests::retained::sample_items(true, io);
         Ok(bytes)
     }
@@ -721,7 +724,8 @@ use pinned_read::PinnedRead;
 #[cfg(test)]
 mod tests;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod pinned_read_tests;
 
 mod stock_turn;

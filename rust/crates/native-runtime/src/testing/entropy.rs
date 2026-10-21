@@ -33,7 +33,8 @@ pub fn fill_seeded(bytes: &mut [u8]) -> bool {
     }
 }
 
-#[cfg(all(test, not(acyclic_native_runtime_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_native_runtime_loom))]
 mod tests {
     use super::*;
 
@@ -164,7 +165,8 @@ mod tests {
     }
 }
 
-#[cfg(all(test, acyclic_native_runtime_loom))]
+#[cfg(test)]
+#[cfg(acyclic_native_runtime_loom)]
 mod models {
     use super::*;
 

@@ -6,9 +6,11 @@ pub(super) const SCRATCH_PATH: &str = ".volumes/scratch";
 
 mod exclude;
 pub(super) mod parents;
-#[cfg(all(test, feature = "native-execution", not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(all(feature = "native-execution", not(acyclic_harness_loom)))]
 mod publication_tests;
-#[cfg(all(test, target_os = "linux", not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(all(target_os = "linux", not(acyclic_harness_loom)))]
 mod recovery_tests;
 
 #[cfg(target_os = "linux")]
@@ -468,7 +470,8 @@ fn mount_io(cause: std::io::Error) -> Error {
     acyclic_fs::NativeTreeMaterializationError::Io(cause).into()
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
 

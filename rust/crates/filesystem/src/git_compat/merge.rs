@@ -77,7 +77,8 @@ pub async fn git_merge_resolution<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     Ok(Some(resolved))
 }
 
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_fs_loom))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

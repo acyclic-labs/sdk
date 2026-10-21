@@ -314,7 +314,8 @@ macro_rules! record {
 }
 pub(crate) use record;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
     use acyclic_grpc_observability::tests::Capture;

@@ -293,7 +293,8 @@ pub(in crate::filesystem) fn journal_absent(error: &Error) -> bool {
 
 use crate::executor::{stock_boundary, stock_string_copy};
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
 

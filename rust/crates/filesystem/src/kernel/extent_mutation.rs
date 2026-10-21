@@ -758,6 +758,7 @@ impl From<AllocationError> for ExtentMutationError {
     }
 }
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "tests/extent_mutation.rs"]
 mod tests;

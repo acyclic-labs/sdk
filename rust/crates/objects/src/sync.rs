@@ -75,7 +75,8 @@ impl<T, const ORDER: u8> DerefMut for MutexGuard<'_, T, ORDER> {
     }
 }
 
-#[cfg(all(test, not(objects_loom), debug_assertions))]
+#[cfg(test)]
+#[cfg(all(not(objects_loom), debug_assertions))]
 mod tests {
     use super::*;
 

@@ -321,7 +321,8 @@ impl DirectoryIndex {
         root
     }
 
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn assert_linear_storage(&self) {
         assert!(
             self.nodes.len() <= 8 * self.names.len(),
@@ -333,7 +334,8 @@ impl DirectoryIndex {
             "rewrites must not accumulate directory roots"
         );
     }
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn assert_invariants(&self) {
         fn check(
             index: &DirectoryIndex,
@@ -442,7 +444,8 @@ impl DirectoryIndex {
         }
     }
 
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn counted_page(
         &self,
         path: &str,
@@ -549,7 +552,8 @@ impl<'a> Cursor<'a> {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn repeated_root_seek_negative_control() {
     let mut index = DirectoryIndex::default();

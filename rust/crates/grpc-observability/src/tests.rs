@@ -310,7 +310,8 @@ pub fn tls_fixture(
     )))
 }
 
-#[cfg(all(test, feature = "runtime"))]
+#[cfg(test)]
+#[cfg(feature = "runtime")]
 mod runtime {
     #![allow(
         clippy::unwrap_used,

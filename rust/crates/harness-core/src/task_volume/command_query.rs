@@ -102,7 +102,8 @@ pub fn matches(session: &Component, key: &FileKey) -> bool {
     }
 }
 
-#[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 type Executions = Vec<((Option<Component>, u64), FileKey)>;
 /// Completed executions in publication order and the unfinished inbox, per owner.
 #[derive(Default)]
@@ -148,7 +149,8 @@ impl Commands {
             _ => {}
         }
     }
-    #[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     pub(super) fn parts(&self) -> (Executions, Vec<(Option<Component>, Vec<FileKey>)>) {
         let pending = self.pending.iter();
         (

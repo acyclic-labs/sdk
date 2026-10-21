@@ -81,5 +81,6 @@ pub(super) async fn finish<F, T>(
     let _ = futures::future::join(parent, children).await;
 }
 
-#[cfg(all(test, acyclic_harness_loom, acyclic_fs_loom))]
+#[cfg(test)]
+#[cfg(all(acyclic_harness_loom, acyclic_fs_loom))]
 mod models;

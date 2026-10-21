@@ -446,7 +446,8 @@ impl NativeRecoveryState {
             if self.guard.is_none() {
                 return Ok(false);
             }
-            #[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
+            #[cfg(test)]
+            #[cfg(all(acyclic_fs_native_loom, target_os = "linux"))]
             if super::disconnected::kernel::current().is_some_and(|kernel| kernel.early_release()) {
                 self.guard
                     .as_mut()

@@ -172,5 +172,6 @@ impl Drop for Content {
     }
 }
 
-#[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(acyclic_harness_loom), not(target_arch = "wasm32")))]
 mod tests;

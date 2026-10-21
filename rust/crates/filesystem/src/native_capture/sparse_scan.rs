@@ -38,9 +38,11 @@ pub(super) fn block_has_data(
         .map_err(capture_demand_error)
 }
 
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(test)]
+#[cfg(acyclic_fs_loom)]
 #[path = "sparse_scan_loom.rs"]
 mod model_checking;
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_fs_loom))]
 #[path = "sparse_scan_tests.rs"]
 mod tests;

@@ -77,7 +77,8 @@ impl Host {
             .ok()
             .flatten()
     }
-    #[cfg(all(test, acyclic_native_runtime_loom))]
+    #[cfg(test)]
+    #[cfg(acyclic_native_runtime_loom)]
     pub(super) fn new(threads: usize) -> Arc<Self> {
         Self::with_pool(Pool::new(threads))
     }
@@ -318,7 +319,9 @@ pub fn blocking_on<F: Future>(future: F) -> F::Output {
     }
 }
 
-#[cfg(all(test, acyclic_native_runtime_loom))]
+#[cfg(test)]
+#[cfg(acyclic_native_runtime_loom)]
 mod models;
-#[cfg(all(test, not(acyclic_native_runtime_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_native_runtime_loom))]
 mod tests;

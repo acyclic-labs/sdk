@@ -21,9 +21,11 @@ mod accounting;
 mod capture_policy_tests;
 mod entry;
 mod model;
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod native_view_baseline_tests;
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 mod reserve_tests;
 use accounting::*;
 #[cfg(windows)]
@@ -35,11 +37,13 @@ use sparse::*;
 mod paths;
 use paths::*;
 mod names;
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 mod path_error_tests;
 use names::*;
 mod host_walk;
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 mod leaf_path_tests;
 use host_walk::*;
 #[cfg(test)]
@@ -60,32 +64,43 @@ use transaction::*;
 mod stage;
 use stage::*;
 mod metadata;
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(test)]
+#[cfg(feature = "test-support")]
 mod metadata_input_tests;
-#[cfg(all(test, any(target_os = "linux", windows), feature = "memory"))]
+#[cfg(test)]
+#[cfg(all(any(target_os = "linux", windows), feature = "memory"))]
 mod rescan_probe_tests;
-#[cfg(all(test, target_os = "linux", feature = "memory"))]
+#[cfg(test)]
+#[cfg(all(target_os = "linux", feature = "memory"))]
 mod stat_probe_tests;
 use metadata::*;
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 mod empty_stage_tests;
 #[cfg(test)]
 mod host_file_race_tests;
 #[cfg(test)]
 mod native_range_tests;
-#[cfg(all(test, feature = "memory", any(windows, target_os = "linux")))]
+#[cfg(test)]
+#[cfg(all(feature = "memory", any(windows, target_os = "linux")))]
 mod owner_allocation_tests;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod reuse_properties;
-#[cfg(all(test, unix, feature = "native-mount"))]
+#[cfg(test)]
+#[cfg(all(unix, feature = "native-mount"))]
 mod root_capture_regression;
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod unix_name_tests;
-#[cfg(all(test, windows, feature = "memory"))]
+#[cfg(test)]
+#[cfg(all(windows, feature = "memory"))]
 mod windows_dense_tests;
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 mod windows_name_tests;
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 mod windows_sparse_tests;
 
 #[cfg(feature = "native-mount")]

@@ -420,6 +420,7 @@ pub enum FileTableMutationError {
     Work(#[from] WorkError),
 }
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "tests/file_table_mutation.rs"]
 mod tests;

@@ -37,7 +37,8 @@ struct Held(u16, &'static Location<'static>);
 impl Held {
     #[track_caller]
     fn check(rank: u16) {
-        #[cfg(all(test, acyclic_fs_loom))]
+        #[cfg(test)]
+        #[cfg(acyclic_fs_loom)]
         if model::fault() == model::Fault::MissingCheck {
             return;
         }
@@ -219,7 +220,8 @@ fn wait<G, R>(
     Held::check(rank);
     let wrap = |(inner, timeout)| {
         let held = Held(rank, site);
-        #[cfg(all(test, acyclic_fs_loom))]
+        #[cfg(test)]
+        #[cfg(acyclic_fs_loom)]
         let held = if model::fault() == model::Fault::MissingRestore {
             held
         } else {
@@ -235,5 +237,6 @@ fn wait<G, R>(
     }
 }
 
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(test)]
+#[cfg(acyclic_fs_loom)]
 mod model;

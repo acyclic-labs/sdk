@@ -201,5 +201,6 @@ impl NativeMaterializationWork {
     }
 }
 
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_fs_loom))]
 pub(super) mod tests;

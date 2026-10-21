@@ -320,7 +320,8 @@ impl From<ChangeForm<'_>> for Change {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::Head;
     use crate::task_volume::{FileKey, HeadFile};

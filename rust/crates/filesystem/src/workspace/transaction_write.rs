@@ -623,21 +623,26 @@ fn classify_batch_paths(
     Ok(())
 }
 
-#[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "memory", not(target_arch = "wasm32")))]
 #[path = "transaction_batch_properties.rs"]
 mod batch_properties;
 
-#[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "memory", not(target_arch = "wasm32")))]
 #[path = "transaction_batch_differential.rs"]
 mod batch_differential;
-#[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "memory", not(target_arch = "wasm32")))]
 #[path = "transaction_batch_original.rs"]
 mod batch_original;
 
-#[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "memory", not(target_arch = "wasm32")))]
 #[path = "transaction_batch_index_properties.rs"]
 mod batch_index_properties;
 
-#[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "memory", not(target_arch = "wasm32")))]
 #[path = "transaction_batch_rebase.rs"]
 mod batch_rebase;

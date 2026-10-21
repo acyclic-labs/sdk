@@ -1453,6 +1453,7 @@ pub enum AuthenticatedProbeError {
     Context(Box<crate::FsError>),
 }
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "tests/probe/mod.rs"]
 mod tests;

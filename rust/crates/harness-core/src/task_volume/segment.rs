@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 const MAGIC: &[u8; 8] = b"ACYTASK1";
 const PREFIX: usize = 12;
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[path = "segment_tests.rs"]
 mod tests;
 

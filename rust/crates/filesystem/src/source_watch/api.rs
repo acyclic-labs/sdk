@@ -110,7 +110,8 @@ impl NativeSourceWatch {
         bytes
     }
 
-    #[cfg(all(test, not(target_os = "linux")))]
+    #[cfg(test)]
+    #[cfg(not(target_os = "linux"))]
     pub(crate) fn admit_with_work<W: crate::demand::SourceDemandReadWork>(
         &self,
         directory: &std::path::Path,

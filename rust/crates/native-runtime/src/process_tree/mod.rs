@@ -50,7 +50,8 @@ mod platform;
 mod platform;
 #[cfg(test)]
 mod tests;
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 mod wait_tests;
 
 /// One child and descendants that remain in its operating-system containment.
