@@ -252,6 +252,7 @@ const mock = spawn(mockBinary, ["--script", join(root, "script.json"), "--record
 const notifications = createInterface({ input: mock.stdout });
 const port = await new Promise((done, failed) => {
   mock.once("exit", code => failed(new Error(`mock model exited before readiness: ${code}`)));
+  mock.once("error", failed);
   notifications.once("line", line => done(JSON.parse(line).port));
 });
 const unmatched = {};
@@ -270,7 +271,9 @@ function host(command, args, options) {
     child.stdout.on("data", chunk => { stdout += chunk; });
     child.stderr.on("data", chunk => { stderr += chunk; });
     const budget = setTimeout(() => child.kill(), CASE_BUDGET_MS);
-    child.on("close", status => { clearTimeout(budget); done({ status, stdout, stderr }); });
+    // A host that cannot launch is a failed case, not a crashed suite.
+    child.once("error", error => { clearTimeout(budget); done({ status: null, stdout, stderr: `${stderr}${error}` }); });
+    child.once("close", status => { clearTimeout(budget); done({ status, stdout, stderr }); });
   });
 }
 
@@ -329,8 +332,12 @@ async function claudeCase(name, definition) {
   return { host: "claude-code", case: name, pass: Object.values(checks).every(Boolean), checks, ms: Date.now() - started, evidence: caseRoot };
 }
 
-const results = await Promise.all(selected.map(([name, definition]) => claudeCase(name, definition)));
-mock.kill();
+let results;
+try {
+  results = await Promise.all(selected.map(([name, definition]) => claudeCase(name, definition)));
+} finally {
+  mock.kill();
+}
 for (const result of results) console.log(JSON.stringify(result));
 const pass = results.every(result => result.pass);
 console.log(JSON.stringify({
