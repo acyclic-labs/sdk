@@ -126,7 +126,11 @@ mod jsonl_wire;
 #[path = "cases/mcp_oauth_provider.rs"]
 mod mcp_oauth_provider;
 
-#[cfg(all(feature = "filesystem-local", feature = "mcp-http", feature = "test-support"))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "mcp-http",
+    feature = "test-support"
+))]
 #[path = "cases/mcp_durable.rs"]
 mod mcp_durable;
 
