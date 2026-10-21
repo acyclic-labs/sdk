@@ -130,6 +130,7 @@ tracing-subscriber.workspace = true
 loom = "0.7.2"
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["local", "test-support"] }
 tempfile = "3.27.0"
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util", "process"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
