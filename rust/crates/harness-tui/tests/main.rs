@@ -30,12 +30,6 @@ mod terminal_decoder;
 #[path = "cases/terminal_frame_faults.rs"]
 mod terminal_frame_faults;
 
-#[path = "cases/terminal_frames.rs"]
-mod terminal_frames;
-
-#[path = "cases/terminal_negotiation.rs"]
-mod terminal_negotiation;
-
 #[path = "cases/terminal_regions.rs"]
 mod terminal_regions;
 

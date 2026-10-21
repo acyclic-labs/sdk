@@ -63,3 +63,13 @@ workspace = true
 [[test]]
 name = "main"
 path = "tests/main.rs"
+
+# These suites acquire the process-wide terminal owner, including ignored
+# real-device measurements. Keep them isolated from the ordinary tests.
+[[test]]
+name = "terminal_negotiation"
+path = "tests/terminal_negotiation.rs"
+
+[[test]]
+name = "terminal_frames"
+path = "tests/terminal_frames.rs"
