@@ -11,7 +11,7 @@ import { loadPiContextHelpers } from "./pi-fixture.ts";
 
 const {
   assertParentCutCurrent, captureParentCut,
-  nativeChildSession, piToolOperations, PiControlAcknowledgementError,
+  nativeChildSession, piToolOperations, PiControlAcknowledgementError, piControlFailureReason,
   visibleControlResult, observePiOperation, persistedPiInboxCursor, consumePiInbox, approvePiWriteback,
 } = await loadPiContextHelpers();
 
@@ -256,6 +256,19 @@ test("the same SDK operation retains uncertain acknowledgement and never reseeds
   assert.equal(nativeId, retainedNativeId);
   assert.throws(() => operations("caller", "original-spawn-tool", { id: "replacement" }, invoke));
   assert.throws(() => operations("caller", "", {}, invoke));
+});
+
+test("a missing Pi acknowledgement keeps the control process's own failure visible", async () => {
+  const failure = Object.assign(new Error("Command failed: acyclic __pi SessionStart"),
+    { code: 1, stderr: "cancelled task cannot publish new execution work\n" });
+  const reason = piControlFailureReason(failure);
+  assert.equal(reason, "exit 1: cancelled task cannot publish new execution work");
+  assert.equal(piControlFailureReason(Object.assign(new Error("spawn acyclic ENOENT"), { code: "ENOENT" })), "ENOENT: spawn acyclic ENOENT");
+  assert.equal(piControlFailureReason(Object.assign(new Error("killed"), { killed: true, signal: "SIGTERM", stderr: "" })), "signal SIGTERM: killed");
+  const retained = piToolOperations()("caller", "original-control", {}, async () => { throw new PiControlAcknowledgementError(undefined, reason); });
+  await assert.rejects(retained, (error: unknown) => error instanceof PiControlAcknowledgementError &&
+    error.operation === "original-control" && error.reason === reason && error.message.endsWith(`: ${reason}`) &&
+    error.message.includes("outcome uncertain"));
 });
 
 test("successful concurrent SDK invocation is single-flight and child routing uses its own identity", async () => {

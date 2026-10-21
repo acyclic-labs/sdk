@@ -138,9 +138,17 @@ export function visibleControlResult(value: unknown): unknown {
 }
 /** Missing acknowledgement never authorizes a second effect. */
 export class PiControlAcknowledgementError extends Error {
-  constructor(readonly operation?: string) {
-    super(`Pi service acknowledgement unavailable${operation ? ` for original operation ${JSON.stringify(operation)}` : ""}; outcome uncertain, retain this operation and inspect its status`);
+  constructor(readonly operation?: string, readonly reason?: string) {
+    super(`Pi service acknowledgement unavailable${operation ? ` for original operation ${JSON.stringify(operation)}` : ""}; outcome uncertain, retain this operation and inspect its status${reason ? `: ${reason}` : ""}`);
   }
+}
+/** The control process's own account of a missing acknowledgement, bounded. */
+export function piControlFailureReason(error: unknown) {
+  if (!error || typeof error !== "object") return String(error).slice(0, 4096);
+  const { code, signal, stderr, message } = error as { code?: unknown; signal?: unknown; stderr?: unknown; message?: unknown };
+  const status = typeof code === "number" ? `exit ${code}` : signal ? `signal ${String(signal)}` : typeof code === "string" ? code : undefined;
+  const text = (typeof stderr === "string" && stderr.trim() ? stderr.trim() : typeof message === "string" ? message : "").slice(-4096);
+  return [status, text].filter(Boolean).join(": ") || "no control response";
 }
 /** Retain the original invocation and rejection for each SDK operation. */
 export function piToolOperations() {
@@ -154,7 +162,7 @@ export function piToolOperations() {
     }
     if (invocations.size >= 4096) throw new Error("Pi retained control invocation bound exceeded");
     const result = Promise.resolve().then(invoke).catch(error => {
-      if (error instanceof PiControlAcknowledgementError) throw new PiControlAcknowledgementError(operation);
+      if (error instanceof PiControlAcknowledgementError) throw new PiControlAcknowledgementError(operation, error.reason);
       throw error;
     });
     invocations.set(key, { request, result }); return result;
@@ -422,7 +430,7 @@ export default function acyclic(pi: ExtensionAPI) {
     });
     invocation.child.stdin?.end(input);
     let result: Record<string, unknown>;
-    try { result = JSON.parse((await invocation).stdout); } catch { throw new PiControlAcknowledgementError(); }
+    try { result = JSON.parse((await invocation).stdout); } catch (error) { throw new PiControlAcknowledgementError(undefined, piControlFailureReason(error)); }
     const scoped = scopedPiControls.has(operation);
     if (!result || typeof result !== "object" || result.native_session !== native || typeof result.session !== "string" ||
         ctx.sessionManager.getSessionId() !== native || (!scoped && !Array.isArray(result.tasks))) throw new Error("Pi control returned another or changed native session");
@@ -651,7 +659,7 @@ export default function acyclic(pi: ExtensionAPI) {
                 windowsHide: true, encoding: "utf8", ...(signal ? { signal } : {}) });
               const acknowledgement: unknown = JSON.parse(stdout);
               if (!acknowledgement || typeof acknowledgement !== "object") throw new Error("invalid operator acknowledgement");
-            } catch { throw new PiControlAcknowledgementError(id); }
+            } catch (error) { throw new PiControlAcknowledgementError(id, piControlFailureReason(error)); }
           },
         })));
     },
