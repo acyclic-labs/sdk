@@ -377,3 +377,103 @@ async fn joins_keep_a_file_moved_onto_a_deleted_path_conflicted() -> Result<(), 
     );
     Ok(())
 }
+
+/// The replacement rule follows directory identity, not full paths: under a
+/// directory both sides renamed, a replaced file still reaches the text
+/// driver as one text conflict and keeps its original identity.
+#[tokio::test]
+async fn joins_merge_a_replaced_file_under_a_renamed_directory() -> Result<(), Box<dyn Error>> {
+    for agent_replaces in [true, false] {
+        let fs = Fs::memory();
+        let main = unbounded!(fs, create_workspace("renamed-main"))?;
+        let mut seeding = unbounded!(main, begin_transaction(IdempotencyKey::new()))?;
+        unbounded!(seeding, create_directory("/d"))?;
+        let TransactionCommit::Committed(_) = commit(&mut seeding).await? else {
+            return Err("directory did not commit".into());
+        };
+        main.write_text("/d/a", "one\ntwo\nthree\n").await?;
+        let original = unbounded!(main, stat("/d/a"))?.file_id;
+        let agent = fork_workspace(
+            &main,
+            "renamed-agent",
+            ForkOptions::from_generation(unbounded!(main, head())?, IdempotencyKey::new()),
+        )
+        .await?;
+        for side in [&main, &agent] {
+            let mut renaming = unbounded!(side, begin_transaction(IdempotencyKey::new()))?;
+            unbounded!(renaming, rename("/d", "/e", true))?;
+            let TransactionCommit::Committed(_) = commit(&mut renaming).await? else {
+                return Err("rename did not commit".into());
+            };
+        }
+        let (replacing, editing) = if agent_replaces {
+            (&agent, &main)
+        } else {
+            (&main, &agent)
+        };
+        replacing.remove("/e/a").await?;
+        replacing.write_text("/e/a", "one\ntwo\nTHREE\n").await?;
+        assert_ne!(unbounded!(replacing, stat("/e/a"))?.file_id, original);
+        editing.write_text("/e/a", "ONE\ntwo\nthree\n").await?;
+
+        let plan = agent
+            .join_into(&main)
+            .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?;
+        let JoinOutcome::Conflicted {
+            conflicts,
+            truncated,
+        } = plan
+            .apply(
+                ApplyOptions {
+                    if_target: plan.target_head(),
+                    idempotency_key: IdempotencyKey::new(),
+                },
+                BTreeMap::new(),
+                crate::PublicationPermit::Unrestricted,
+            )
+            .await?
+        else {
+            return Err("overlapping whole-file edits must reach the driver".into());
+        };
+        let described = plan.describe_conflicts(conflicts, truncated).await?;
+        assert_eq!(
+            described.conflicts.len(),
+            1,
+            "agent_replaces={agent_replaces}"
+        );
+        assert_eq!(
+            described.conflicts[0].kind,
+            crate::ConflictKind::Text,
+            "agent_replaces={agent_replaces}"
+        );
+        let mut registry = crate::MergeDriverRegistry::new();
+        registry.register("text", Arc::new(crate::DefaultTextMergeDriver))?;
+        registry.set_default("text")?;
+        let mut cache = crate::MemoryMergeResolutionCache::default();
+        assert!(matches!(
+            plan.apply_with_drivers(
+                ApplyOptions {
+                    if_target: plan.target_head(),
+                    idempotency_key: IdempotencyKey::new(),
+                },
+                &registry,
+                &mut cache,
+                false,
+                crate::PublicationPermit::Unrestricted,
+            )
+            .await?,
+            JoinOutcome::Applied(_)
+        ));
+        assert_eq!(
+            String::from_utf8(unbounded!(main, read("/e/a", 64))?.to_vec())?,
+            "ONE\ntwo\nTHREE\n"
+        );
+        let record = unbounded!(main, stat("/e/a"))?;
+        assert_eq!(record.file_id, original);
+        assert_eq!(record.link_count, 1);
+    }
+    Ok(())
+}

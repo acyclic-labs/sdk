@@ -37,6 +37,35 @@ pub(super) struct ReplacedFile {
     pub(super) records: [FileRecord; 3],
 }
 
+/// The record that `name` in directory `directory` binds in `view`, if any.
+/// The directory is found by identity, so a renamed or moved directory still
+/// names the same binding in every generation, as the kernel sees it.
+async fn bound_in_directory<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    view: &Generation<A, O>,
+    directory: FileId,
+    name: &str,
+) -> Result<Option<WorkspaceStat>, WorkspaceError> {
+    let paths = view
+        .paths_for_file_id(
+            directory,
+            1,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
+    let Some(parent) = paths.into_iter().next() else {
+        return Ok(None);
+    };
+    let path = if parent == "/" {
+        format!("/{name}")
+    } else {
+        format!("{parent}/{name}")
+    };
+    bound_record(view, &path).await
+}
+
 /// The record `path` binds in `view`, if any.
 async fn bound_record<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     view: &Generation<A, O>,
@@ -56,11 +85,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
     /// Finds a conflicted file whose identity exactly one side replaced at
     /// `path` with a single-link regular file it created.
     ///
-    /// This is the kernel's replacement rule seen through paths: the base and
-    /// the editing side bind `path` to `file_id`, and the deleting side binds
-    /// it to a file absent from the base. Only then does the kernel bind the
-    /// path back to `file_id`, so a resolution supplied for anything else
-    /// (a file moved onto the path, say) would be left unbound and dropped.
+    /// This is the kernel's replacement rule seen through names: `path` is
+    /// where the editing side binds `file_id`; the base binds the same name in
+    /// the same directory identity (wherever that directory now lives) to
+    /// `file_id`, and the deleting side binds it to a file absent from the
+    /// base. Only then does the kernel bind the name back to `file_id`, so a
+    /// resolution supplied for anything else (a file moved onto the path, say)
+    /// would be left unbound and dropped.
     pub(super) async fn replaced_file(
         &self,
         file_id: FileId,
@@ -89,15 +120,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             id: self.base.id,
             publication_closure: None,
         };
-        for view in [&base, editing] {
-            if bound_record(view, path)
+        let Some((parent, name)) = path.rsplit_once('/') else {
+            return Ok(None);
+        };
+        let parent = if parent.is_empty() { "/" } else { parent };
+        if bound_record(editing, path)
+            .await?
+            .is_none_or(|record| record.file_id != file_id)
+        {
+            return Ok(None);
+        }
+        let Some(directory) = bound_record(editing, parent).await? else {
+            return Ok(None);
+        };
+        if directory.kind != FileKind::Directory
+            || bound_in_directory(&base, directory.file_id, name)
                 .await?
                 .is_none_or(|record| record.file_id != file_id)
-            {
-                return Ok(None);
-            }
+        {
+            return Ok(None);
         }
-        let Some(replacement) = bound_record(side, path).await? else {
+        let Some(replacement) = bound_in_directory(side, directory.file_id, name).await? else {
             return Ok(None);
         };
         if replacement.kind != FileKind::Regular
