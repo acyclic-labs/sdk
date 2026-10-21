@@ -29,7 +29,164 @@ fn metadata(base: FileMetadata, mut ours: FileMetadata, theirs: FileMetadata) ->
     ours
 }
 
+/// A Git path whose identity one side replaced while the other side kept it.
+/// Git has no file identities: the replacing side still holds the path's
+/// content, so the conflict merges content by path and keeps the base identity.
+pub(super) struct GitRebound {
+    /// Base, ours and theirs records at the path; one is the replacement.
+    pub(super) records: [FileRecord; 3],
+    /// Index of the side record that still carries the base identity.
+    kept: usize,
+    /// The path's binding, which the resolution points back at the base identity.
+    binding: MergeConflict,
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
+    /// Finds a Git path whose identity exactly one side replaced with a
+    /// single-link regular file while the other side still holds it.
+    pub(super) async fn git_rebound(
+        &self,
+        file_id: FileId,
+        path: &str,
+    ) -> Result<Option<GitRebound>, WorkspaceError> {
+        if !self.git_metadata {
+            return Ok(None);
+        }
+        let volume = &self.target_head.workspace.volume;
+        let fs = &volume.fs;
+        let mut records = [None; 3];
+        for (slot, generation) in
+            records
+                .iter_mut()
+                .zip([self.base.id, self.target_head.id, self.source_head.id])
+        {
+            *slot = fs
+                .workspace_conflict_record(volume, generation, file_id)
+                .await?;
+        }
+        let (side, kept, replaced) = match records {
+            [Some(_), None, Some(_)] => (&self.target_head, 2, 1),
+            [Some(_), Some(_), None] => (&self.source_head, 1, 2),
+            _ => return Ok(None),
+        };
+        let cancellation = CancellationToken::new();
+        let replacement = match side.stat(path, WorkBudget::UNBOUNDED, &cancellation).await {
+            Ok(receipt) => receipt.value,
+            Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => return Ok(None),
+            Err(failure) => return Err(failure.error),
+        };
+        if replacement.kind != FileKind::Regular || replacement.file_id == file_id {
+            return Ok(None);
+        }
+        records[replaced] = fs
+            .workspace_conflict_record(volume, side.id, replacement.file_id)
+            .await?;
+        let [Some(base), Some(ours), Some(theirs)] = records else {
+            return Ok(None);
+        };
+        let records = [base, ours, theirs];
+        if records
+            .iter()
+            .any(|record| record.kind != FileKind::Regular || record.link_count != 1)
+        {
+            return Ok(None);
+        }
+        Ok(Some(GitRebound {
+            records,
+            kept,
+            binding: self.binding_conflict(&self.target_head, path).await?,
+        }))
+    }
+
+    /// Resolves a replaced Git path to the selected content under the base
+    /// identity and rebinds the path to it; the replacement loses its only
+    /// link, so the join prunes it.
+    pub(super) async fn git_rebound_resolution(
+        &self,
+        file_id: FileId,
+        rebound: GitRebound,
+        resolution: &MergeResolution,
+        resolutions: &mut BTreeMap<MergeConflict, MergeConflictResolution>,
+    ) -> Result<(), DrivenJoinError> {
+        let volume = &self.target_head.workspace.volume;
+        let template = FileRecord {
+            file_id,
+            ..rebound.records[rebound.kept]
+        };
+        let mut record = match resolution {
+            MergeResolution::Select(side) => FileRecord {
+                payload: rebound.records[match side {
+                    ConflictSide::Base => 0,
+                    ConflictSide::Ours => 1,
+                    ConflictSide::Theirs => 2,
+                }]
+                .payload,
+                ..template
+            },
+            MergeResolution::Text(text) => {
+                volume
+                    .fs
+                    .stage_merge_regular_record(
+                        volume,
+                        template,
+                        Bytes::copy_from_slice(text.as_bytes()),
+                    )
+                    .await?
+            }
+            MergeResolution::Binary(bytes) => {
+                volume
+                    .fs
+                    .stage_merge_regular_record(volume, template, Bytes::copy_from_slice(bytes))
+                    .await?
+            }
+            MergeResolution::Metadata(_)
+            | MergeResolution::Binding(_)
+            | MergeResolution::Unresolved => {
+                return Err(DrivenJoinError::UnsupportedResolution(ConflictKey::File(
+                    file_id,
+                )));
+            }
+        };
+        record.metadata = self.git_merged_metadata(&rebound.records).await?;
+        resolutions.insert(
+            MergeConflict::File(file_id),
+            MergeConflictResolution::File(Some(record)),
+        );
+        resolutions.insert(
+            rebound.binding,
+            MergeConflictResolution::Binding(Some(file_id)),
+        );
+        Ok(())
+    }
+
+    async fn binding_conflict(
+        &self,
+        view: &Generation<A, O>,
+        path: &str,
+    ) -> Result<MergeConflict, WorkspaceError> {
+        let config = self.target_head.workspace.volume.config;
+        let namespace = customer_path(path, config)?;
+        let (_, name) = namespace
+            .split_last()
+            .ok_or(WorkspaceError::InvalidMergeResolution)?;
+        let (parent, _) = path
+            .rsplit_once('/')
+            .ok_or(WorkspaceError::InvalidMergeResolution)?;
+        let parent = view
+            .stat(
+                if parent.is_empty() { "/" } else { parent },
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        Ok(MergeConflict::Binding {
+            directory_id: parent.file_id,
+            name: name.clone(),
+        })
+    }
+
     pub(super) async fn git_delete_binding(
         &self,
         conflict: &crate::ConflictView,
@@ -51,23 +208,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         } else {
             &self.target_head
         };
-        let config = self.target_head.workspace.volume.config;
-        let namespace = customer_path(path, config)?;
-        let (_, name) = namespace
-            .split_last()
-            .ok_or(WorkspaceError::InvalidMergeResolution)?;
-        let (parent, _) = path
-            .rsplit_once('/')
-            .ok_or(WorkspaceError::InvalidMergeResolution)?;
-        let parent = view
-            .stat(
-                if parent.is_empty() { "/" } else { parent },
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map_err(|failure| failure.error)?
-            .value;
+        let key = self.binding_conflict(view, path).await?;
         let binding = match resolution {
             MergeConflictResolution::Select(side) => MergeConflictResolution::Select(*side),
             MergeConflictResolution::File(Some(_)) => {
@@ -80,12 +221,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             MergeConflictResolution::File(None) => MergeConflictResolution::Binding(None),
             _ => return Ok(()),
         };
-        resolutions
-            .entry(MergeConflict::Binding {
-                directory_id: parent.file_id,
-                name: name.clone(),
-            })
-            .or_insert(binding);
+        resolutions.entry(key).or_insert(binding);
         Ok(())
     }
 
@@ -134,16 +270,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         if record.kind != FileKind::Regular {
             return Ok(MergeConflictResolution::File(Some(record)));
         }
-        let cancellation = CancellationToken::new();
-        let mut work = WorkBudget::UNBOUNDED.accounting(&cancellation);
         if records
             .iter()
             .all(|original| original.metadata == record.metadata)
         {
             return Ok(MergeConflictResolution::File(Some(record)));
         }
+        record.metadata = self.git_merged_metadata(&records).await?;
+        Ok(MergeConflictResolution::File(Some(record)))
+    }
+
+    /// Target metadata with the executable bit merged as Git merges it.
+    async fn git_merged_metadata(
+        &self,
+        records: &[FileRecord; 3],
+    ) -> Result<crate::ObjectId, DrivenJoinError> {
+        let volume = &self.target_head.workspace.volume;
+        let fs = &volume.fs;
+        let cancellation = CancellationToken::new();
+        let mut work = WorkBudget::UNBOUNDED.accounting(&cancellation);
         let mut values = [FileMetadata::default(); 3];
-        for (slot, original) in values.iter_mut().zip(&records) {
+        for (slot, original) in values.iter_mut().zip(records) {
             *slot = crate::facade::read_record_metadata_to_file_root_with_accounting(
                 volume,
                 *original,
@@ -154,12 +301,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             .map_err(WorkspaceError::from)?;
         }
         let merged = metadata(values[0], values[1], values[2]);
-        record.metadata = if merged == values[1] {
+        Ok(if merged == values[1] {
             records[1].metadata
         } else {
             fs.stage_merge_metadata_value(merged).await?
-        };
-        Ok(MergeConflictResolution::File(Some(record)))
+        })
     }
 }
 

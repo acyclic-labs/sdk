@@ -177,9 +177,15 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                     None
                 };
                 // A file-level delete/modify choice can retain this binding
-                // even when its isolated three-way name delta chose deletion.
+                // even when its isolated three-way name delta chose deletion,
+                // and a file-level choice can rebind a name that one side
+                // pointed at a replacement identity.
                 if (resolved.is_none()
-                    || (base_value.is_some() && (ours_value.is_none() ^ theirs_value.is_none())))
+                    || (base_value.is_some() && (ours_value.is_none() ^ theirs_value.is_none()))
+                    || (base_value.is_some()
+                        && ours_value
+                            .zip(theirs_value)
+                            .is_some_and(|(ours, theirs)| ours.file_id != theirs.file_id)))
                     && let Some(resolution) = requested.binding(directory_id, name, accounting)?
                 {
                     resolved = match resolution {

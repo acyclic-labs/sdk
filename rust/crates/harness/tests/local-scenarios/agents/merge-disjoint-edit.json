@@ -1,0 +1,193 @@
+{
+  "driver": "agents",
+  "prompt": "merge a child's disjoint edit of a file committed in the host repository before the session",
+  "seed": {
+    ".gitignore": "__pycache__/\n",
+    "calc.py": "def add(a, b):\n    return a - b\n",
+    "parent.txt": "BASE\n",
+    "test_calc.py": "import unittest\nfrom calc import add\nclass AddTest(unittest.TestCase):\n    def test_add(self): self.assertEqual(add(2,3),5)\nif __name__ == \"__main__\": unittest.main()\n"
+  },
+  "repository": true,
+  "models": {
+    "parent": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "append",
+          "name": "bash",
+          "arguments": {
+            "command": "printf 'PARENT_ONLY\n' >> parent.txt"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "spawn",
+          "name": "spawn",
+          "arguments": {
+            "task": "fix calc.py in the fork",
+            "name": "worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "wait",
+          "arguments": {
+            "agents": [
+              "worker"
+            ]
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "diff",
+          "name": "fs",
+          "arguments": {
+            "command": "diff agents/worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "merge",
+          "name": "fs",
+          "arguments": {
+            "command": "merge agents/worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "parent finished"
+    ],
+    "worker": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "inspect",
+          "name": "bash",
+          "arguments": {
+            "command": "ls -la; cat calc.py"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "edit",
+          "name": "bash",
+          "arguments": {
+            "command": "python3 - <<'PY'\nfrom pathlib import Path\np = Path('calc.py')\np.write_text(p.read_text().replace('return a - b', 'return a + b'))\nPath('child-new.txt').write_text('CHILD_NEW\\n')\nPY"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "test",
+          "name": "bash",
+          "arguments": {
+            "command": "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -v"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "child finished"
+    ]
+  },
+  "expect": {
+    "text": "parent finished",
+    "requests": {
+      "parent": 6,
+      "worker": 4
+    },
+    "task_files": {},
+    "model_requests": {
+      "parent": [
+        {
+          "messages": [
+            {
+              "role": "tool",
+              "content": {
+                "call_id": "merge",
+                "content": {
+                  "kind": "json",
+                  "value": {
+                    "result": {
+                      "Committed": {
+                        "tracked_paths": [
+                          "calc.py",
+                          "child-new.txt"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "files": {
+      "calc.py": "def add(a, b):\n    return a + b\n",
+      "parent.txt": "BASE\nPARENT_ONLY\n",
+      "child-new.txt": "CHILD_NEW\n"
+    }
+  },
+  "routes": {
+    "fix calc.py in the fork": "worker"
+  }
+}

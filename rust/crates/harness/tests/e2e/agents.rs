@@ -25,6 +25,9 @@ struct Case {
     prompt: String,
     #[serde(default)]
     seed: BTreeMap<String, String>,
+    /// Commit the seed into a host Git repository before the harness opens.
+    #[serde(default)]
+    repository: bool,
     models: BTreeMap<String, Vec<ScriptedTurn>>,
     #[serde(default)]
     routes: BTreeMap<String, String>,
@@ -320,6 +323,33 @@ pub(super) async fn run(value: Value) -> TestResult {
         let path = file_path(directory.path(), &path)?;
         std::fs::create_dir_all(path.parent().ok_or("missing seed parent")?)?;
         std::fs::write(path, text)?;
+    }
+    if case.repository {
+        for args in [
+            &["init", "-q"][..],
+            &["add", "-A"],
+            &[
+                "-c",
+                "user.name=Scenario",
+                "-c",
+                "user.email=scenario@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "seed",
+            ],
+        ] {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(directory.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .status()?;
+            if !status.success() {
+                return Err(format!("seed repository git {args:?} failed: {status}").into());
+            }
+        }
     }
     let model = Model::new("scripted".into(), "parent".into(), "1".into(), Value::Null)?;
     // The test composition owns its state and settings; nothing reaches the per-user store.

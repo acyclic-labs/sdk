@@ -148,6 +148,15 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
     let bytes = (bytes, allocation);
     if let Some(payload) = bytes.0.as_ref() {
         let mut cached = crate::path_index::decode(payload, generation, ids, limits, accounting)?;
+        // A complete traversal that reached none of the identities is cached
+        // as an empty answer; there is no path left to revalidate.
+        if cached.value.as_ref().is_some_and(Vec::is_empty) {
+            cached.retire(accounting)?;
+            matches.0.complete = true;
+            let bytes_count = bytes.0.as_ref().map_or(0, workspace_vec_bytes);
+            reverse_drop(bytes, bytes_count, accounting)?;
+            return Ok(matches);
+        }
         if let Some(paths) = cached
             .value
             .as_ref()

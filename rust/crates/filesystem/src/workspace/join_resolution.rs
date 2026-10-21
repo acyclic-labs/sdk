@@ -97,6 +97,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             .zip(theirs)
             .map(|((base, ours), theirs)| (base, ours, theirs))
         else {
+            if let Some(text) = path.as_deref()
+                && let Some(rebound) = self.git_rebound(file_id, text).await?
+                && let Some(view) = self
+                    .regular_conflict_view(file_id, path.clone(), rebound.records)
+                    .await?
+            {
+                return Ok(view);
+            }
             return Ok(crate::ConflictView {
                 key: ConflictKey::File(file_id),
                 path,

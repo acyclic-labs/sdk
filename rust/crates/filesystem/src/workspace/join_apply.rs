@@ -122,6 +122,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             if !resolution_matches_conflict(&conflict.key, resolution) {
                 return Err(DrivenJoinError::UnsupportedResolution(conflict.key.clone()));
             }
+            if let ConflictKey::File(file_id) = conflict.key
+                && let Some(path) = conflict.path.as_deref()
+                && let Some(rebound) = self.git_rebound(file_id, path).await?
+            {
+                self.git_rebound_resolution(file_id, rebound, resolution, &mut resolutions)
+                    .await?;
+                continue;
+            }
             let resolution = match resolution {
                 MergeResolution::Select(side) => side_resolution(*side),
                 MergeResolution::Text(text) => crate::kernel::MergeConflictResolution::File(Some(

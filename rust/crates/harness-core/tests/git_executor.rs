@@ -958,3 +958,112 @@ async fn merge_continue_tracks_the_joined_generation_not_the_live_source() -> Re
     );
     Ok(())
 }
+
+/// Git merges by path. A side that replaced a file under a new identity (an
+/// atomic save, or a native checkout rewriting it) still holds that path's
+/// content, so the merge combines both sides' edits instead of reporting a
+/// delete/modify conflict on the replaced identity.
+#[tokio::test]
+async fn merge_combines_edits_when_one_side_replaced_the_file() -> Result<()> {
+    for (ours_replaces, ours_text, expected) in [
+        (true, &b"one\ntwo\nthree\n"[..], &b"one\ntwo\nTHREE\n"[..]),
+        (true, b"ONE\ntwo\nthree\n", b"ONE\ntwo\nTHREE\n"),
+        (false, b"ONE\ntwo\nthree\n", b"ONE\ntwo\nTHREE\n"),
+    ] {
+        let (_temp, _root, fs, store, main) = fixture().await?;
+        write_text(&main, "/notes.txt", b"one\ntwo\nthree\n").await?;
+        acyclic_fs::WorkspaceGraph::new(store.clone())
+            .register_root(main.workspace())
+            .await?;
+        let repo = main.workspace().id();
+        run(&fs, &store, &main, repo, &["commit", "-m", "base"]).await?;
+        let (_, topic) = run(&fs, &store, &main, repo, &["checkout", "-b", "topic"]).await?;
+        let topic = topic.ok_or("missing topic view")?;
+        if !ours_replaces {
+            topic.workspace().remove("/notes.txt").await?;
+        }
+        write_text(&topic, "/notes.txt", b"one\ntwo\nTHREE\n").await?;
+        run(&fs, &store, &topic, repo, &["commit", "-m", "topic"]).await?;
+        run(&fs, &store, &topic, repo, &["checkout", "main"]).await?;
+        if ours_replaces {
+            main.workspace().remove("/notes.txt").await?;
+        }
+        write_text(&main, "/notes.txt", ours_text).await?;
+        if ours_text != b"one\ntwo\nthree\n" {
+            run(&fs, &store, &main, repo, &["commit", "-m", "main"]).await?;
+        }
+        let (output, _) = run(&fs, &store, &main, repo, &["merge", "topic"]).await?;
+        assert!(
+            matches!(output, GitCommandOutput::Committed(_)),
+            "{ours_replaces} {output:?}"
+        );
+        let stop = CancellationToken::new();
+        let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
+        assert_eq!(
+            main.read("/notes.txt", 64, &mut work).await?.bytes.as_ref(),
+            expected,
+            "ours replaces: {ours_replaces}"
+        );
+        assert_eq!(
+            main.workspace()
+                .stat("/notes.txt", WorkBudget::UNBOUNDED, &stop)
+                .await
+                .map_err(|failure| failure.error)?
+                .value
+                .link_count,
+            1
+        );
+    }
+    Ok(())
+}
+
+/// Continuing re-examines the same resolution generation each time: a
+/// conflicted identity the resolution removed has no paths, and asking again
+/// reports the remaining markers instead of failing the lookup.
+#[tokio::test]
+async fn merge_continue_reexamines_a_resolution_whose_conflicted_identity_is_gone() -> Result<()> {
+    let (_temp, _root, fs, store, main) = fixture().await?;
+    write_text(&main, "/notes.txt", b"base\n").await?;
+    acyclic_fs::WorkspaceGraph::new(store.clone())
+        .register_root(main.workspace())
+        .await?;
+    let repo = main.workspace().id();
+    run(&fs, &store, &main, repo, &["commit", "-m", "base"]).await?;
+    let (_, topic) = run(&fs, &store, &main, repo, &["checkout", "-b", "topic"]).await?;
+    let topic = topic.ok_or("missing topic view")?;
+    write_text(&topic, "/notes.txt", b"topic\n").await?;
+    run(&fs, &store, &topic, repo, &["commit", "-m", "topic"]).await?;
+    run(&fs, &store, &topic, repo, &["checkout", "main"]).await?;
+    main.workspace().remove("/notes.txt").await?;
+    run(&fs, &store, &main, repo, &["commit", "-m", "remove"]).await?;
+    assert!(
+        run(&fs, &store, &main, repo, &["merge", "topic"])
+            .await
+            .is_err(),
+        "delete/modify leaves the merge pending"
+    );
+    main.workspace().remove("/notes.txt").await?;
+    write_text(
+        &main,
+        "/notes.txt",
+        b"<<<<<<< ours\n=======\ntopic\n>>>>>>> theirs\n",
+    )
+    .await?;
+    for _ in 0..2 {
+        let error = match run(&fs, &store, &main, repo, &["merge", "--continue"]).await {
+            Ok(_) => return Err("a marker-bearing resolution continued".into()),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("conflict markers"), "{error}");
+    }
+    write_text(&main, "/notes.txt", b"topic\n").await?;
+    let GitCommandOutput::Committed(merge) =
+        run(&fs, &store, &main, repo, &["merge", "--continue"])
+            .await?
+            .0
+    else {
+        return Err("expected the continued merge commit".into());
+    };
+    assert!(merge.tracked_paths.contains("notes.txt"));
+    Ok(())
+}
