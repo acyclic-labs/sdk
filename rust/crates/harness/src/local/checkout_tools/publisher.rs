@@ -407,7 +407,7 @@ impl ContentPublisher for CheckoutPublisher {
                         .observe_staged_once(operation, maximum, None)?
                         .await?
                         .0;
-                    if let Some(file) = file {
+                    if let Some(mut file) = file {
                         mount.check(
                             acyclic_fs::access::Action::Write,
                             file.path(),
@@ -420,6 +420,9 @@ impl ContentPublisher for CheckoutPublisher {
                             }
                         } else {
                             self.materialize(view, operation, &file).await?;
+                            // A recovered publication names the same
+                            // generation the original write returned.
+                            file = self.observed(view, file).await?;
                         }
                         return Ok((Some(file), None));
                     }

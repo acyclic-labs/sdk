@@ -464,8 +464,7 @@ async fn a_written_file_ref_is_immediately_editable() -> Result<()> {
         .stage_once(
             OperationId::new(),
             "result.txt",
-            b"before edit
-",
+            b"before edit\n",
             "text/plain",
             "result.txt",
             None,
@@ -474,34 +473,20 @@ async fn a_written_file_ref_is_immediately_editable() -> Result<()> {
     // Before the fix the returned version named the staged generation, and
     // capturing the write's own host metadata made that generation stale.
     let (edited, _) = publisher
-        .stage_at(
-            OperationId::new(),
-            &written,
-            b"after edit
-",
-            None,
-        )?
+        .stage_at(OperationId::new(), &written, b"after edit\n", None)?
         .await?;
     assert_eq!(edited.path(), "result.txt");
     assert_eq!(
         std::fs::read(directory.path().join("result.txt")).map_err(storage)?,
-        b"after edit
-"
+        b"after edit\n"
     );
     // The edit's own reference is just as current.
     publisher
-        .stage_at(
-            OperationId::new(),
-            &edited,
-            b"third
-",
-            None,
-        )?
+        .stage_at(OperationId::new(), &edited, b"third\n", None)?
         .await?;
     assert_eq!(
         std::fs::read(directory.path().join("result.txt")).map_err(storage)?,
-        b"third
-"
+        b"third\n"
     );
     Ok(())
 }
@@ -515,27 +500,15 @@ async fn a_foreign_change_after_a_write_still_conflicts() -> Result<()> {
         .stage_once(
             OperationId::new(),
             "result.txt",
-            b"agent bytes
-",
+            b"agent bytes\n",
             "text/plain",
             "result.txt",
             None,
         )?
         .await?;
     let path = directory.path().join("result.txt");
-    std::fs::write(
-        &path,
-        b"user bytes
-",
-    )
-    .map_err(storage)?;
-    let conflict = match publisher.stage_at(
-        OperationId::new(),
-        &written,
-        b"overwrite
-",
-        None,
-    ) {
+    std::fs::write(&path, b"user bytes\n").map_err(storage)?;
+    let conflict = match publisher.stage_at(OperationId::new(), &written, b"overwrite\n", None) {
         Ok(staged) => staged.await.err(),
         Err(error) => Some(error),
     };
@@ -545,10 +518,38 @@ async fn a_foreign_change_after_a_write_still_conflicts() -> Result<()> {
         crate::wire::ErrorCode::Conflict,
         "{conflict}"
     );
+    assert_eq!(std::fs::read(&path).map_err(storage)?, b"user bytes\n");
+    Ok(())
+}
+
+// Recovery returns the reference the write returned, and it stays editable.
+// Negative control: before recovery rebound its reference, observing the
+// operation returned the staged generation, and the edit conflicted.
+#[tokio::test]
+async fn a_recovered_write_returns_the_written_reference() -> Result<()> {
+    let (directory, _state, _harness, publisher) = fixture().await?;
+    let operation = OperationId::new();
+    let (written, _) = publisher
+        .stage_once(
+            operation,
+            "result.txt",
+            b"agent bytes\n",
+            "text/plain",
+            "result.txt",
+            None,
+        )?
+        .await?;
+    let (observed, _) = publisher
+        .observe_staged_once(operation, 1024, None)?
+        .await?;
+    let observed = observed.ok_or_else(|| Error::Invalid("the write was not recovered".into()))?;
+    assert_eq!(observed.version(), written.version());
+    publisher
+        .stage_at(OperationId::new(), &observed, b"edited\n", None)?
+        .await?;
     assert_eq!(
-        std::fs::read(&path).map_err(storage)?,
-        b"user bytes
-"
+        std::fs::read(directory.path().join("result.txt")).map_err(storage)?,
+        b"edited\n"
     );
     Ok(())
 }
