@@ -47,9 +47,12 @@ esac
       assert.match(tests[1], /--workspace .*--doc -- --skip known-hang/u);
       assert.ok(tests.every(line => !line.includes("-p harness")), "legacy roots cannot narrow main");
       assert.ok(tests.every(line => !line.includes("--keep-going")), "cargo test has no keep-going option");
-      if (early) assert.doesNotMatch(result.stdout, /GATE_TEST_COVERAGE (all-targets|phase=targets)/u);
+      if (target || doc) assert.doesNotMatch(result.stdout, /GATE_TEST_COVERAGE all-targets\+doc/u);
       else assert.match(result.stdout, /GATE_TEST_COVERAGE all-targets\+doc packages=examples,harness/u);
-      assert.match(result.stdout, /GATE_TEST_COVERAGE phase=docs packages=examples,harness/u);
+      if (target) assert.doesNotMatch(result.stdout, /GATE_TEST_COVERAGE phase=targets/u);
+      else assert.match(result.stdout, /GATE_TEST_COVERAGE phase=targets packages=examples,harness/u);
+      if (doc) assert.doesNotMatch(result.stdout, /GATE_TEST_COVERAGE phase=docs/u);
+      else assert.match(result.stdout, /GATE_TEST_COVERAGE phase=docs packages=examples,harness/u);
       if (target || doc) assert.match(result.stdout, /error\[E0061\]: diagnostic on stderr/u);
       assert.match(result.stdout, new RegExp(`GATE_DONE rc=${expected}`));
     }

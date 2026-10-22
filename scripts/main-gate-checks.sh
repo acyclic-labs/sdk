@@ -1,6 +1,7 @@
 #!/bin/bash
 # Full workspace baseline: ordinary targets and doctests require separate runs.
 # Main browser target coverage v1
+# Main baseline completion v2
 set -u
 exec 2>&1
 started=$SECONDS
@@ -54,7 +55,7 @@ run_tests(){
   status=("${PIPESTATUS[@]}")
   if [ "${status[1]}" != 0 ]; then echo 'error: gate could not retain Cargo output'; return 2; fi
   echo "GATE_TEST_WALL phase=$phase seconds=$((SECONDS-phase_started)) rc=${status[0]}"
-  if grep -aq '^test result:' ".gate-$phase.out"; then
+  if [ "${status[0]}" = 0 ]; then
     echo "GATE_TEST_COVERAGE phase=$phase packages=$members"
   fi
   return "${status[0]}"
@@ -90,7 +91,7 @@ rc=$targets_rc; [ "$rc" != 0 ] || rc=$docs_rc
 [ "$rc" != 0 ] || rc=$browser_rc
 # A partial auxiliary step must not leave the main baseline falsely green.
 if [ "$rc" = 0 ] && { [ "$(cat .gate-clippy.rc)" != 0 ] || [ "$(cat .gate-features.rc)" != 0 ]; }; then rc=1; fi
-if grep -aq '^test result:' .gate-targets.out && grep -aq '^test result:' .gate-docs.out; then
+if [ "$targets_rc" = 0 ] && [ "$docs_rc" = 0 ]; then
   echo "GATE_TEST_COVERAGE all-targets+doc packages=$members"
 fi
 echo "GATE_WALL seconds=$((SECONDS-started)) test_rc=$targets_rc doc_rc=$docs_rc browser_rc=$browser_rc"
