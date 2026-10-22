@@ -630,6 +630,91 @@ fn linear_work_preserves_quoted_tasks_when_references_resolve() {
     check_chunks(&source, &cuts);
 }
 
+fn reference_work_is_linear(
+    count: usize,
+    fragments: &[usize],
+    defined: [bool; 5],
+    ending: bool,
+    cuts: &[usize],
+) -> Result<(), TestCaseError> {
+    let words = [
+        "[x][y]",
+        "[x][]",
+        "[x](u)",
+        "[outer [x][y]][ref]",
+        "[x*][y][z*][ref]",
+        "[*x][y][z*][ref]",
+        "[**x**][ref]",
+        "[`[x]`][ref]",
+        "[a\\]b][ref]",
+    ];
+    let pattern: String = fragments
+        .iter()
+        .filter_map(|index| words.get(*index))
+        .copied()
+        .collect();
+    let pattern = pattern.repeat(count);
+    let mut previous = 0;
+    for copies in [1, 2] {
+        let source = format!(
+            "{}{}\n\n",
+            pattern.repeat(copies),
+            if ending { "(u)" } else { "" }
+        );
+        let before = references::PARSED_BYTES.get();
+        let mut markdown = Markdown::default();
+        markdown.push(&source);
+        let parsed = references::PARSED_BYTES.get() - before;
+        prop_assert!(
+            parsed <= source.len() * 16,
+            "{} input bytes: {parsed} parser bytes",
+            source.len()
+        );
+        if previous > 0 {
+            prop_assert!(parsed * 10 <= previous * 22, "{previous} -> {parsed}");
+        }
+        previous = parsed;
+        prop_assert_eq!(markdown.lines(), full_parse(&source));
+        let mut complete = source.clone();
+        for (label, present) in ["x", "y", "z", "ref", "outer [x][y]"]
+            .into_iter()
+            .zip(defined)
+        {
+            if present {
+                let definition = format!("[{label}]: /target\n\n");
+                let before = references::PARSED_BYTES.get();
+                markdown.push(&definition);
+                let work = references::PARSED_BYTES.get() - before;
+                // Dependent templates are disjoint leaves of `source`; each is
+                // re-rendered once. The pushed block costs at most four linear
+                // passes: definition scan, frontier parse, template key scan and,
+                // when one of its references resolves, the budgeted re-render.
+                prop_assert!(
+                    work <= source.len() + definition.len() * 4,
+                    "{work} parser bytes for {definition:?} after {} source bytes",
+                    source.len()
+                );
+                complete.push_str(&definition);
+                prop_assert_eq!(markdown.lines(), full_parse(&complete));
+            }
+        }
+    }
+    check_chunks(
+        &format!("{pattern}\n\n[x]: /x\n\n[y]: /y\n\n[ref]: /ref\n\n"),
+        cuts,
+    );
+    Ok(())
+}
+
+#[test]
+fn bracketed_label_paragraph_costs_four_passes_without_source_slack() {
+    // `[outer [x][y]]: /target` is not a definition (labels cannot nest
+    // brackets): it is a paragraph whose `[y]` already resolves. A tiny
+    // document leaves no source slack to absorb its fourth linear pass.
+    reference_work_is_linear(2, &[0], [false, true, false, false, true], false, &[1])
+        .unwrap_or_else(|error| panic!("{error}"));
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::Direct(
@@ -645,34 +730,7 @@ proptest! {
         ending in any::<bool>(),
         cuts in prop::collection::vec(1usize..24, 1..8),
     ) {
-        let words = ["[x][y]", "[x][]", "[x](u)", "[outer [x][y]][ref]", "[x*][y][z*][ref]", "[*x][y][z*][ref]", "[**x**][ref]", "[`[x]`][ref]", "[a\\]b][ref]"];
-        let pattern: String = fragments.iter().filter_map(|index| words.get(*index)).copied().collect();
-        let pattern = pattern.repeat(count);
-        let mut previous = 0;
-        for copies in [1, 2] {
-            let source = format!("{}{}\n\n", pattern.repeat(copies), if ending { "(u)" } else { "" });
-            let before = references::PARSED_BYTES.get();
-            let mut markdown = Markdown::default();
-            markdown.push(&source);
-            let parsed = references::PARSED_BYTES.get() - before;
-            prop_assert!(parsed <= source.len() * 16, "{} input bytes: {parsed} parser bytes", source.len());
-            if previous > 0 { prop_assert!(parsed * 10 <= previous * 22, "{previous} -> {parsed}"); }
-            previous = parsed;
-            prop_assert_eq!(markdown.lines(), full_parse(&source));
-            let mut complete = source.clone();
-            for (label, present) in ["x", "y", "z", "ref", "outer [x][y]"].into_iter().zip(defined) {
-                if present {
-                    let definition = format!("[{label}]: /target\n\n");
-                    let before = references::PARSED_BYTES.get();
-                    markdown.push(&definition);
-                    let work = references::PARSED_BYTES.get() - before;
-                    prop_assert!(work <= source.len() + definition.len() * 3);
-                    complete.push_str(&definition);
-                    prop_assert_eq!(markdown.lines(), full_parse(&complete));
-                }
-            }
-        }
-        check_chunks(&format!("{pattern}\n\n[x]: /x\n\n[y]: /y\n\n[ref]: /ref\n\n"), &cuts);
+        reference_work_is_linear(count, &fragments, defined, ending, &cuts)?;
     }
 
     #[test]
