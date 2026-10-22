@@ -142,7 +142,7 @@ impl NativeSourceWatch {
                     .unwrap_or_else(PoisonError::into_inner);
             }
             let failure = match birth {
-                Some(mut birth) => birth.with_original_leaf(DemandWork::take_native_io_failure),
+                Some(birth) => birth.with_original_leaf(DemandWork::take_native_io_failure),
                 None => work.with_original_leaf(DemandWork::take_native_io_failure),
             };
             if !self.is_stopped() {
