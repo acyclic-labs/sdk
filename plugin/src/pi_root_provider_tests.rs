@@ -1317,7 +1317,7 @@ async fn staged_durable_inputs_are_canonical_json() {
     let reopened = super::inputs::decode_root_artifact::<crate::pi_task::PiControlInput>(
         &fixture.owner,
         &canonical,
-        &JsonValueSchema::None,
+        JsonValueSchema::None,
         &fixture.startup,
     )
     .unwrap();
@@ -1326,7 +1326,7 @@ async fn staged_durable_inputs_are_canonical_json() {
         super::inputs::decode_root_artifact::<crate::pi_task::PiControlInput>(
             &fixture.owner,
             &declared,
-            &JsonValueSchema::None,
+            JsonValueSchema::None,
             &fixture.startup,
         ),
         Err(Error::NativeBoundary {

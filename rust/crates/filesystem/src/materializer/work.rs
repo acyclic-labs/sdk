@@ -12,7 +12,6 @@ pub struct NativeMaterializationWork {
     pub(crate) window: Option<Arc<NativeWorkWindow>>,
     #[cfg(feature = "native-mount")]
     pub(crate) execution: Option<Arc<NativeSourceExecutionView>>,
-    cancellation: crate::CancellationToken,
     recheck_items: bool,
 }
 impl std::fmt::Debug for NativeMaterializationWork {
@@ -34,7 +33,8 @@ impl NativeMaterializationWork {
     pub fn cancellation_wait(
         &self,
     ) -> Result<crate::Cancelled<'static>, NativeTreeMaterializationError> {
-        self.cancellation
+        self.state
+            .cancellation()
             .prepare_cancelled_with_native_work(self)
             .map_err(|cause| match cause {
                 crate::cancellation::CancellationWaitError::Work(cause) => cause.into(),
@@ -72,7 +72,6 @@ impl NativeMaterializationWork {
                 )
             })?;
         Ok(Self {
-            cancellation: cancellation.clone(),
             state: Arc::new(crate::demand::NativeDemandReadMeter::new(state)),
             resource: None,
             recheck_items: false,
@@ -85,7 +84,6 @@ impl NativeMaterializationWork {
     }
     #[cfg(feature = "native-mount")]
     pub(crate) fn from_meter(state: Arc<crate::demand::NativeDemandReadMeter>) -> Self {
-        let cancellation = state.lock().cancellation().clone();
         Self {
             state,
             resource: None,
@@ -95,14 +93,13 @@ impl NativeMaterializationWork {
             window: None,
             #[cfg(feature = "native-mount")]
             execution: None,
-            cancellation,
         }
     }
     /// Current invocation cancellation.
     pub fn cancellation(&self) -> &crate::CancellationToken {
         self.invocation
             .as_ref()
-            .map_or(&self.cancellation, |view| &view.cancellation)
+            .map_or(self.state.cancellation(), |view| &view.cancellation)
     }
     // The leaf stays locked through operation. Do not re-enter demand or drop
     // owners whose destruction releases through this leaf.

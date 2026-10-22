@@ -4,9 +4,9 @@
       695,
       100,
       153,
-      250833,
+      249233,
       12323,
-      45178
+      44786
     ],
     "work": {
       "allocationOperations": 470,
@@ -16,7 +16,7 @@
       "authorityRecordsRead": 0,
       "backendReadOperations": 10,
       "backendWriteOperations": 10,
-      "bytesCopied": 23314,
+      "bytesCopied": 23170,
       "bytesEncoded": 2146,
       "bytesHashed": 5122,
       "durabilityOperations": 0,
@@ -29,7 +29,7 @@
       "outputBytes": 0,
       "pageReads": 53,
       "pageWrites": 8,
-      "peakAllocationBytes": 67124879,
+      "peakAllocationBytes": 67124719,
       "sourceBytesRead": 547,
       "sourceEntriesVisited": 0,
       "sourcePathComponents": 22
@@ -40,9 +40,9 @@
       137,
       14,
       69,
-      64169,
+      63441,
       2580,
-      41138
+      40546
     ],
     "work": {
       "allocationOperations": 120,
@@ -52,7 +52,7 @@
       "authorityRecordsRead": 0,
       "backendReadOperations": 3,
       "backendWriteOperations": 0,
-      "bytesCopied": 4485,
+      "bytesCopied": 4421,
       "bytesEncoded": 410,
       "bytesHashed": 1349,
       "durabilityOperations": 0,
@@ -65,7 +65,7 @@
       "outputBytes": 0,
       "pageReads": 5,
       "pageWrites": 0,
-      "peakAllocationBytes": 67125660,
+      "peakAllocationBytes": 67125500,
       "sourceBytesRead": 0,
       "sourceEntriesVisited": 0,
       "sourcePathComponents": 17

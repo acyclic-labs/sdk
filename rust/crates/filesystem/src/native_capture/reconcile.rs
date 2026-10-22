@@ -200,6 +200,31 @@ impl CaptureBatch<'_> {
         Ok(None)
     }
 
+    /// Records a metadata-only change of an existing same-kind node; an unchanged record
+    /// stages nothing. Returns whether the node changed.
+    fn metadata_only(
+        &mut self,
+        path: NamespacePath,
+        host_path: CaptureHostPath,
+        metadata: &HostStat,
+        canonical_metadata: FileMetadata,
+        prior_metadata: Option<FileMetadata>,
+    ) -> Result<bool, CaptureError> {
+        if prior_metadata == Some(canonical_metadata) {
+            capture_drop_path(path, self.meter)?;
+            capture_drop_host_path(host_path, self.meter)?;
+            return Ok(false);
+        }
+        ensure_current_host_node(self.source_root, &host_path, metadata, self.meter)?;
+        capture_reserve(&mut self.mutations, 1, self.meter)?;
+        self.mutations.push(AuthoredMutation::SetMetadata {
+            path,
+            metadata: canonical_metadata,
+        });
+        capture_drop_host_path(host_path, self.meter)?;
+        Ok(true)
+    }
+
     async fn present<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         &mut self,
         checkout: &mut Checkout<A, O>,
@@ -268,22 +293,14 @@ impl CaptureBatch<'_> {
         } else {
             None
         };
-        let changed = if intent == CaptureIntent::MetadataOnly
-            && exists_with_kind
-            && prior_metadata == Some(canonical_metadata)
-        {
-            capture_drop_path(path, self.meter)?;
-            capture_drop_host_path(host_path, self.meter)?;
-            false
-        } else if intent == CaptureIntent::MetadataOnly && exists_with_kind {
-            ensure_current_host_node(self.source_root, &host_path, &metadata, self.meter)?;
-            capture_reserve(&mut self.mutations, 1, self.meter)?;
-            self.mutations.push(AuthoredMutation::SetMetadata {
+        let changed = if intent == CaptureIntent::MetadataOnly && exists_with_kind {
+            self.metadata_only(
                 path,
-                metadata: canonical_metadata,
-            });
-            capture_drop_host_path(host_path, self.meter)?;
-            true
+                host_path,
+                &metadata,
+                canonical_metadata,
+                prior_metadata,
+            )?
         } else if host_kind == FileKind::Regular {
             self.regular(
                 checkout,

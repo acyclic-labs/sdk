@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 // Lock order: observer registry (35), source cursors (40), original leaf (50),
 // gate counters (60). Resource allowances follow the leaf, ancestors first.
-pub(crate) struct NativeDemandReadMeter(pub(crate) Mutex<DemandWork>);
+/// The original ledger, with its cancellation readable without the leaf lock. Every
+/// handle on the ledger shares this one token instead of carrying its own copy.
+pub(crate) struct NativeDemandReadMeter(pub(crate) Mutex<DemandWork>, CancellationToken);
 impl std::fmt::Debug for NativeDemandReadMeter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NativeDemandReadMeter")
@@ -17,7 +19,12 @@ impl std::fmt::Debug for NativeDemandReadMeter {
 }
 impl NativeDemandReadMeter {
     pub(crate) fn new(work: DemandWork) -> Self {
-        Self(Mutex::new(work))
+        let cancellation = work.cancellation.clone();
+        Self(Mutex::new(work), cancellation)
+    }
+    /// The original ledger's cancellation.
+    pub(crate) const fn cancellation(&self) -> &CancellationToken {
+        &self.1
     }
     #[track_caller]
     pub(crate) fn lock(&self) -> crate::lock_order::MutexGuard<'_, DemandWork> {

@@ -431,3 +431,15 @@ fn native_io_of_a_view_is_charged_to_the_window_opened_on_it() {
     // A recorded overrun is still work done; a refused native charge is not.
     assert_eq!(session.receipt().bytes_copied, 3 * COPIED + 1);
 }
+
+#[test]
+fn a_window_never_widens_a_native_work_handle() {
+    // Every native allocation and error custody carries a work handle by value: the
+    // window replaces a per-handle copy of the ledger's cancellation, which the shared
+    // ledger now holds once, so the handle keeps its size without a window.
+    let words = if cfg!(feature = "native-mount") { 7 } else { 6 };
+    assert_eq!(
+        std::mem::size_of::<NativeMaterializationWork>(),
+        words * std::mem::size_of::<usize>()
+    );
+}
