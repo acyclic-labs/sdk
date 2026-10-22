@@ -96,13 +96,16 @@ pub fn decode_json<'a, T: PreparationRecord>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         {
-            let parsed = io.decode(
+            let mut parsed = io.decode(
                 std::marker::PhantomData::<Value>,
                 bytes,
                 crate::wire::ErrorCode::Storage,
             )?;
             let _canonical_hold;
-            let canonical = io.encode(&parsed.0, bytes.len() as u64, true)?;
+            // The admitted Value already owns normalized JSON data. Sort it in
+            // place instead of encoding and decoding a duplicate Value tree.
+            parsed.0.sort_all_objects();
+            let canonical = io.encode(&parsed.0, bytes.len() as u64, false)?;
             _canonical_hold = io.guard_bytes(&canonical)?;
             if canonical.as_ref() != bytes {
                 return Err(stock_boundary(

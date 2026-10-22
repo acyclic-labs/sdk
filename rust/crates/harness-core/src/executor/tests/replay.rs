@@ -1,5 +1,77 @@
 use super::*;
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+fn canonical_replay_encodes_each_admitted_document_once() -> Result<()> {
+    for bytes in [
+        b"null".as_slice(),
+        b"1.5",
+        br#"{"a":[{"a":true,"b":"literal"}],"b":null}"#,
+        br#"{"a":"\"\\\n","b":[]}"#,
+    ] {
+        let expected: Value = crate::contract::json_from_slice(bytes)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        for native in [false, true] {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let mut budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+            budget.bytes_encoded = bytes.len() as u64;
+            let work = native
+                .then(|| acyclic_fs::NativeMaterializationWork::new(budget, &cancellation))
+                .transpose()
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let before = work.as_ref().map(|work| work.live_allocation_bytes());
+            let io = match &work {
+                Some(work) => PreparationIo::from_native_work(work)?,
+                None => PreparationIo::from_budget(budget, &cancellation)?,
+            };
+            let (actual, hold) = decode_json::<Value>(bytes, Some(&io))?;
+            assert_eq!(actual, expected);
+            assert_eq!(io.receipt().bytes_encoded, bytes.len() as u64);
+            drop(actual);
+            drop(hold);
+            drop(io);
+            if let Some(work) = work {
+                assert_eq!(Some(work.live_allocation_bytes()), before);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+fn finite_replay_keeps_canonical_rejection_after_sorting_admitted_values() -> Result<()> {
+    for bytes in [
+        br#"{"b":2,"a":1}"#.as_slice(),
+        br#" {"a":1}"#,
+        br#"{"a":1,"a":2}"#,
+        br#"{"\u0061":1}"#,
+        b"1e0",
+        b"[1,]",
+    ] {
+        assert!(decode_json::<Value>(bytes, None).is_err());
+        for native in [false, true] {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+            let work = native
+                .then(|| acyclic_fs::NativeMaterializationWork::new(budget, &cancellation))
+                .transpose()
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let before = work.as_ref().map(|work| work.live_allocation_bytes());
+            let io = match &work {
+                Some(work) => PreparationIo::from_native_work(work)?,
+                None => PreparationIo::from_budget(budget, &cancellation)?,
+            };
+            assert!(decode_json::<Value>(bytes, Some(&io)).is_err());
+            drop(io);
+            if let Some(work) = work {
+                assert_eq!(Some(work.live_allocation_bytes()), before);
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn execution_journal_rejects_noncanonical_json_before_replay() -> Result<()> {
     let journal = Journal::default();
