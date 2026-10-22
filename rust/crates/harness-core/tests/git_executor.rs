@@ -1372,3 +1372,105 @@ async fn agent_discard_retires_only_the_parent_reference() -> Result<()> {
     );
     Ok(())
 }
+
+/// Reads `path` from the view's head, or `None` when it is absent.
+async fn read_text(view: &Lazy, path: &str) -> Result<Option<Vec<u8>>> {
+    let stop = CancellationToken::new();
+    let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
+    Ok(view
+        .read(path, 64, &mut work)
+        .await
+        .ok()
+        .map(|read| read.bytes.as_ref().to_vec()))
+}
+
+/// A stash cut at every effect boundary, followed by a workspace write
+/// before the next command, still completes: the retried restore replays
+/// the transaction its operation committed instead of building another one
+/// from the moved head under the same identity.
+#[tokio::test]
+async fn a_stash_cut_at_every_step_and_written_after_still_completes() -> Result<()> {
+    let mut cut = 0;
+    loop {
+        cut += 1;
+        let (_temp, _root, fs, store, main) = fixture().await?;
+        write_text(&main, "/base.txt", b"base\n").await?;
+        let repo = main.workspace().id();
+        run(&fs, &store, &main, repo, &["add", "base.txt"]).await?;
+        run(&fs, &store, &main, repo, &["commit", "-m", "base"]).await?;
+        write_text(&main, "/base.txt", b"changed\n").await?;
+        write_text(&main, "/nested/new.txt", b"new\n").await?;
+
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let interrupted = git::run_with_guard(
+            git::Workspace {
+                filesystem: &fs,
+                store: &store,
+                view: (&main).into(),
+                root: std::path::Path::new("."),
+                repository: repo,
+                lease: None,
+                checkout: None,
+                reserved: &[],
+                author: "test",
+                authored_at_seconds: 1,
+            },
+            &["stash".to_owned()],
+            || {
+                let call = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                std::future::ready(if call == cut {
+                    Err(Error::Unauthorized("cut".into()))
+                } else {
+                    Ok(())
+                })
+            },
+        )
+        .await;
+        let completed = interrupted.is_ok();
+        // The workspace moves on before the next command recovers the stash.
+        write_text(&main, "/later.txt", b"later\n").await?;
+        let mut answered = false;
+        for _ in 0..2 {
+            let output = git::run(
+                git::Workspace {
+                    filesystem: &fs,
+                    store: &store,
+                    view: (&main).into(),
+                    root: std::path::Path::new("."),
+                    repository: repo,
+                    lease: None,
+                    checkout: None,
+                    reserved: &[],
+                    author: "test",
+                    authored_at_seconds: 1,
+                },
+                &["status".to_owned()],
+            )
+            .await?;
+            if output.command.is_some() {
+                answered = true;
+                break;
+            }
+        }
+        assert!(answered, "status never answered after cut {cut}");
+        if read_text(&main, "/base.txt").await?.as_deref() == Some(b"changed\n".as_slice()) {
+            // Cut before the transition was recorded: nothing to resume, so
+            // the stash is simply run again.
+            run(&fs, &store, &main, repo, &["stash"]).await?;
+        }
+        assert_eq!(
+            read_text(&main, "/base.txt").await?.as_deref(),
+            Some(b"base\n".as_slice()),
+            "cut at effect {cut}"
+        );
+        assert_eq!(
+            read_text(&main, "/nested/new.txt").await?,
+            None,
+            "cut at effect {cut}"
+        );
+        if completed {
+            assert!(cut > 1, "the stash has effect boundaries to cut");
+            return Ok(());
+        }
+    }
+}

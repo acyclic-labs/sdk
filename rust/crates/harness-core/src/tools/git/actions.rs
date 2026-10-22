@@ -231,6 +231,11 @@ where
                 "an exact workspace restore cannot use a foreign generation",
             ));
         }
+        // Replay a committed restore before deriving paths from a head that
+        // later writes may have moved.
+        if let Some(replayed) = self.committed_restore(operation_id).await? {
+            return Ok(replayed);
+        }
         let current = self
             .current
             .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
