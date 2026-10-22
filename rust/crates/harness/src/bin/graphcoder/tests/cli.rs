@@ -160,6 +160,22 @@ async fn scenario(mode: Mode) {
     } else {
         "tiny"
     };
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    let settings = directory.path().join("settings");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::create_dir(&settings).unwrap();
+    let cwd = workspace.canonicalize().unwrap();
+    let cwd = cwd.to_string_lossy();
+    let cwd = cwd.trim_start_matches(r"\\?\");
+    let environment = [
+        format!("<cwd>{cwd}</cwd>"),
+        format!("<os>{}</os>", std::env::consts::OS),
+        "<shell>bash</shell>".to_owned(),
+        "<current_date>".to_owned(),
+        "<timezone>UTC</timezone>".to_owned(),
+        format!("<model>{model}</model>"),
+    ];
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (requests, mut observed) = tokio::sync::mpsc::unbounded_channel();
@@ -180,17 +196,29 @@ async fn scenario(mode: Mode) {
             "/responses",
             post(move |Json(body): Json<Value>| {
                 let requests = requests.clone();
+                let environment = environment.clone();
                 async move {
                     assert_eq!(body["model"], model, "generation uses the selected opaque model");
                     assert!(body.to_string().contains("hello"));
                     if instructions {
+                        let input = body["input"].as_array().unwrap();
+                        assert_eq!(input[0]["type"], "message");
+                        assert_eq!(input[0]["role"], "system");
+                        assert_eq!(input[0]["content"].as_array().unwrap().len(), 1);
+                        assert_eq!(input[0]["content"][0]["type"], "input_text");
+                        let text = input[0]["content"][0]["text"].as_str().unwrap();
+                        assert!(text.starts_with("<environment_context>\n"), "{text}");
+                        assert!(text.ends_with("</environment_context>"), "{text}");
+                        for fact in &environment {
+                            assert!(text.contains(fact), "missing {fact}: {text}");
+                        }
                         // A one-shot prompt without GOAL.md carries no goal guidance.
-                        assert_eq!(body["input"], json!([
+                        assert_eq!(&input[1..], json!([
                             {"type":"message","role":"system","content":[{"type":"input_text","text":"Volumes: . (rw), .volumes/scratch (rw)"}]},
                             {"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for .\n\n<INSTRUCTIONS>\nReply using the workspace instructions. λ\n\n</INSTRUCTIONS>"}]},
                             {"type":"message","role":"user","content":[{"type":"input_text","text":"# CLAUDE.md instructions for .\n\n<INSTRUCTIONS>\nProject marker: claude-context λ\n</INSTRUCTIONS>"}]},
                             {"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}
-                        ]));
+                        ]).as_array().unwrap());
                         assert_eq!(body["store"], false);
                         assert_eq!(body["stream"], true);
                         assert!(body.get("instructions").is_none());
@@ -210,11 +238,6 @@ async fn scenario(mode: Mode) {
             .await
             .unwrap();
     });
-    let directory = tempfile::tempdir().unwrap();
-    let workspace = directory.path().join("workspace");
-    let settings = directory.path().join("settings");
-    std::fs::create_dir(&workspace).unwrap();
-    std::fs::create_dir(&settings).unwrap();
     if matches!(mode, Mode::NestedWorkspace) {
         std::fs::create_dir_all(workspace.join("nested/deep")).unwrap();
         std::fs::write(workspace.join("nested/deep/source.txt"), "cold workspace").unwrap();
