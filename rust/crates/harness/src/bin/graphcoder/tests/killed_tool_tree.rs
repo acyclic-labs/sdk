@@ -111,14 +111,17 @@ mod oracle {
             }
         }
 
-        /// Blocks until the last process of the tree exits: the reader held
-        /// since before the tree started polls readable at end-of-file, once
-        /// every writer has closed.
+        /// Blocks until the last process of the tree exits: a blocking read
+        /// on the reader held since before the tree started returns
+        /// end-of-file once every writer has closed. (macOS `poll` does not
+        /// report a FIFO's end-of-file, so the read itself waits.)
         pub(super) fn wait_exit(&self) {
-            use rustix::event::{PollFd, PollFlags, poll};
-            while self.alive() {
-                poll(&mut [PollFd::new(&self.alive, PollFlags::IN)], None).unwrap();
-            }
+            use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
+            let flags = fcntl_getfl(&self.alive).unwrap();
+            fcntl_setfl(&self.alive, flags - OFlags::NONBLOCK).unwrap();
+            let read = (&self.alive).read(&mut [0; 16]);
+            fcntl_setfl(&self.alive, flags).unwrap();
+            assert_eq!(read.unwrap(), 0, "the tree wrote to its liveness pipe");
         }
 
         /// A tree outside any custody: its parent exits at once.
