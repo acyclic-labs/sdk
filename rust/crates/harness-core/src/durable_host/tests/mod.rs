@@ -43,5 +43,9 @@ mod release;
 mod preparation;
 
 #[cfg(test)]
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+mod readonly;
+
+#[cfg(test)]
 #[cfg(feature = "filesystem")]
 pub(crate) mod created_fixture;

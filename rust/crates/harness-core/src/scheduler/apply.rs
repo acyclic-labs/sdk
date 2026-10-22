@@ -312,6 +312,7 @@ impl Scheduler {
                 }
             }
             SchedulerEvent::WorkflowSuspended {
+                fence,
                 workflow_revision,
                 waiting_command,
                 ..
@@ -321,6 +322,7 @@ impl Scheduler {
                     revision: workflow_revision,
                     waiting_command,
                     input: None,
+                    released: Some(fence),
                 });
                 state.reservation = None;
                 state.phase = OperationPhase::Suspended;

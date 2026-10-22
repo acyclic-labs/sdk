@@ -47,6 +47,7 @@ fn workflow_suspension_releases_shared_capacity_and_fences_wakes() -> Result<()>
             revision: 1,
             waiting_command: None,
             input: None,
+            released: Some(fence(1)),
         })
     );
     assert!(ready(&scheduler, 92));

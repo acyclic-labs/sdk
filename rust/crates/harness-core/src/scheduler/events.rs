@@ -287,6 +287,7 @@ impl SchedulerEvent {
             Self::Rejected { reason, .. } => Ok(reason.capacity() as u64),
             Self::Checkpointed { checkpoint, .. } => checkpoint.logical_owned_bytes(),
             Self::WorkflowResumed { input, .. } => input.logical_owned_bytes(),
+            Self::WorkflowSuspended { fence, .. } => fence.logical_owned_bytes(),
             Self::Completed { outcome, .. } | Self::Orchestrated { outcome, .. } => {
                 outcome.logical_owned_bytes()
             }

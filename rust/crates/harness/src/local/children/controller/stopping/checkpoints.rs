@@ -69,6 +69,7 @@ fn checkpoint_cuts(predicate: Predicate, task: TaskId, turns: u64, assert_proper
             revision,
             waiting_command: Some(command),
             input: None,
+            released: None,
         };
         let receive = slot(checkpoint.revision, transition.commands[0].operation_id);
         actual.push(predicate(previous, task, turn - 1, Some(&receive)));

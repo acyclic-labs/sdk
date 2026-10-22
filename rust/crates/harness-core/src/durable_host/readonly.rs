@@ -368,10 +368,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             let witness = self.admission_reader(task, work).await?;
             let observation = crate::filesystem::preparation_owner(&witness, work)?.await?;
             let Some((recorded_task, original_fence, _custody)) = observation else {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::NotFound,
-                    reason: "protected original native preparation journal is unavailable",
-                });
+                return self
+                    .retained_journal_owner(task, witness.admission_operation(), work)
+                    .await;
             };
             if recorded_task != task {
                 return Err(Error::NativeBoundary {
@@ -388,6 +387,55 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
 #[cfg(feature = "native-execution")]
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
+    /// Opens the readonly owner of a task that has not prepared a native view yet.
+    ///
+    /// The fence comes from the coordinator's active reservation for the same task, or from
+    /// the lease its committed workflow suspension released, and is accepted only after its
+    /// original admitted and started origins verify.
+    async fn retained_journal_owner(
+        self: &Arc<Self>,
+        task: TaskId,
+        operation: OperationId,
+        work: &NativeMaterializationWork,
+    ) -> Result<TaskJournalOwner<P>> {
+        let fence_io = PreparationIo::from_native_work(work)?;
+        let fence = {
+            let mut history = Some(&mut fence_io.history_io() as &mut dyn HistoryIo);
+            let mut coordinator = self.coordinator.lock().await;
+            coordinator.refresh(&mut history).await?;
+            let state = coordinator.observe_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                OperationId::from_bytes(task.into_bytes()),
+                &mut history,
+            )?;
+            if let Some(reservation) = &state.reservation {
+                let crate::scheduler::Reservation { id, placement, .. } =
+                    reservation.clone_with_work(&mut history)?;
+                crate::scheduler::LeaseFence {
+                    reservation_id: id,
+                    placement,
+                }
+            } else if let Some(released) = state
+                .workflow
+                .as_ref()
+                .and_then(|suspension| suspension.released.as_ref())
+            {
+                released.clone_with_work(&mut history)?
+            } else {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::NotFound,
+                    reason: "protected original native preparation journal is unavailable",
+                });
+            }
+        };
+        let _fence_custody = fence_io.take_native_custody(fence_io.owned_bytes()?)?;
+        let io = PreparationIo::from_native_work(work)?;
+        self.original_journal_owner(task, operation, &fence, &io)
+            .await
+    }
+
     async fn admission_reader(
         self: &Arc<Self>,
         task: TaskId,

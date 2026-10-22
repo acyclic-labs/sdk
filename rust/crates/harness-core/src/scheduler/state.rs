@@ -57,6 +57,9 @@ pub struct WorkflowSuspension {
     pub waiting_command: Option<OperationId>,
     /// Retained owner-authorized wake input.
     pub input: Option<FileRef>,
+    /// Lease fence the suspension released, retained as the task's latest original identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub released: Option<LeaseFence>,
 }
 
 impl Outcome<FileRef> {
@@ -88,11 +91,21 @@ impl Outcome<FileRef> {
 }
 impl WorkflowSuspension {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        self.input
+        let input = self
+            .input
             .as_ref()
             .map(FileRef::logical_owned_bytes)
-            .transpose()
-            .map(|bytes| bytes.unwrap_or(0))
+            .transpose()?
+            .unwrap_or(0);
+        let released = self
+            .released
+            .as_ref()
+            .map(LeaseFence::logical_owned_bytes)
+            .transpose()?
+            .unwrap_or(0);
+        input
+            .checked_add(released)
+            .ok_or_else(|| Error::Invalid("workflow suspension ownership overflows".into()))
     }
     pub(super) fn copy_fields(&self, quota: &mut CodecQuota<'_, '_>) -> Result<Self> {
         observe(quota.work())?;
@@ -103,6 +116,11 @@ impl WorkflowSuspension {
                 .input
                 .as_ref()
                 .map(|input| input.clone_in_quota(quota))
+                .transpose()?,
+            released: self
+                .released
+                .as_ref()
+                .map(|fence| fence.copy_fields(quota))
                 .transpose()?,
         })
     }
