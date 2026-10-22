@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let objects = HttpObjects::new(
         &std::env::var("OBJECTS_ENDPOINT")?,
         &std::env::var("ACYCLIC_API_KEY")?,
-        1024 * 1024,
+        1024 * 1024, None,
     )?;
     let bucket = objects.head_bucket(wire::HeadBucketRequest {
         bucket: Some(wire::BucketRef { name: std::env::var("OBJECTS_BUCKET")? }),
@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 Append-only record streams with forks and atomic commits. This example reads the tail position of an existing stream through the hosted HTTP provider.
 
 ```rust,no_run
-use acyclic_stream::{StreamClient, http::HttpStream};
+use acyclic_stream::{Stream, http::HttpStream};
 use std::sync::Arc;
 
 #[tokio::main]
@@ -43,8 +43,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         &std::env::var("ACYCLIC_API_KEY")?,
         1024 * 1024,
     )?;
-    let client = StreamClient::new(Arc::new(provider));
-    println!("{}", client.stream(std::env::var("STREAM_PATH")?)?.tail().await?);
+    let client = Stream::new(Arc::new(provider), std::env::var("STREAM_PATH")?)?;
+    println!("{}", client.tail().await?);
     Ok(())
 }
 ```
@@ -85,7 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let endpoint = std::env::var("EDGE_ENDPOINT")?;
     let token = std::env::var("ACYCLIC_API_KEY")?;
     let workers = Client::new(http::Client::new(&endpoint, &token, 1024 * 1024)?,
-        HttpObjects::new(&endpoint, &token, 1024 * 1024)?, "actors-code".into());
+        HttpObjects::new(&endpoint, &token, 1024 * 1024, None)?, "actors-code".into());
     let digest = workers.publish(std::fs::read("worker.mjs")?.into(), "publish-worker".into()).await?;
     let actor = workers.create(&wire::CreateActorRequest {
         code_sha256: digest.to_vec(), home_region: "la".into(),
@@ -105,11 +105,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 Versioned filesystem workspaces and generations. This example opens an existing workspace through the hosted filesystem provider.
 
 ```rust,no_run
-use acyclic_fs::{Fs, HostedFsOptions};
+use acyclic_fs::{HostedFs, HostedFsOptions};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let filesystem = Fs::hosted(HostedFsOptions::new(
+    let filesystem = HostedFs::connect(HostedFsOptions::new(
         std::env::var("FS_ENDPOINT")?,
         std::env::var("ACYCLIC_API_KEY")?,
     )).await?;

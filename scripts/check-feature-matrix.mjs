@@ -14,6 +14,7 @@
 // Every extra worker uses its own target directory, so Cargo's build lock never
 // serializes them; the compiler cache still deduplicates their dependencies.
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { metadata } from "./publish-cargo-crates.mjs";
@@ -59,6 +60,14 @@ export function featureSets(item, eachFeature = true) {
     .map(([set]) => ["check", "--locked", "--manifest-path", item.manifest_path, "--lib", ...set]);
 }
 
+// Keep each (package, feature selection) in the same cache when another crate
+// or feature is added, or when PR and main use different matrix sizes. Absolute
+// manifest paths differ between checkouts and must not be part of the key.
+export function featureWorker(name, args, workers) {
+  const key = [name, ...args.slice(5)].join("\0");
+  return createHash("sha256").update(key).digest().readUInt32LE(0) % workers;
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const list = args.includes("--list");
@@ -67,27 +76,28 @@ async function main() {
   // Every publishable local crate, in publication order (the publish check
   // already proves the order lists each exactly once).
   const eachFeature = args.includes("--each-feature");
-  const sets = [...metadata().values()].flatMap(item => featureSets(item, eachFeature));
+  const sets = [...metadata().values()].flatMap(item => featureSets(item, eachFeature)
+    .map(args => ({ name: item.name, args })));
   if (list) {
-    for (const set of sets) console.log(`cargo ${set.join(" ")}`);
+    for (const { args } of sets) console.log(`cargo ${args.join(" ")}`);
     return;
   }
   const failures = [];
   let passed = 0;
-  // Set k always runs in worker k mod WORKERS, and so in the same target
-  // directory, so a later run finds what it built there; taking sets from a
-  // shared queue sent them to whichever worker was free and a warm run
-  // rebuilt nearly everything (199 s against 8 s on bb2 for the PR sets).
-  const queues = Array.from({ length: workers }, (_, index) => sets.filter((_, set) => set % workers === index));
+  const queues = Array.from({ length: workers }, () => []);
+  for (const { name, args } of sets) queues[featureWorker(name, args, workers)].push(args);
   async function worker(index) {
     const env = index === 0 ? process.env
       : { ...process.env, CARGO_TARGET_DIR: `${process.env.CARGO_TARGET_DIR ?? join(root, "target")}-features-${index}` };
     for (const set of queues[index]) {
+      const checkStarted = Date.now();
       const child = spawn("cargo", set, { cwd: root, env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
       let output = "";
       child.stdout.on("data", chunk => (output += chunk));
       child.stderr.on("data", chunk => (output += chunk));
       const status = await new Promise((done, reject) => child.on("error", reject).on("close", done));
+      const rebuilt = [...output.matchAll(/^\s+(?:Checking|Compiling) /gmu)].length;
+      console.log(`feature check: worker=${index} seconds=${((Date.now() - checkStarted) / 1000).toFixed(1)} rebuilt=${rebuilt} manifest=${set[3]} flags=${set.slice(5).join(" ") || "defaults"}`);
       if (status === 0) passed += 1;
       else {
         failures.push(`cargo ${set.join(" ")}`);

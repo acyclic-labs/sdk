@@ -253,6 +253,7 @@ dependencies = [
  "acyclic-fs",
  "libfuzzer-sys",
  "loom",
+ "proptest",
  "rustix 1.1.5",
  "serde",
  "serde_json",
@@ -864,7 +865,10 @@ dependencies = [
  "acyclic-fs",
  "acyclic-harness",
  "acyclic-proto-build",
+ "acyclic-test-support",
+ "arrayvec",
  "libfuzzer-sys",
+ "proptest",
  "prost",
  "serde_json",
 ]

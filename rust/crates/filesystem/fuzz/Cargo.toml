@@ -18,6 +18,7 @@ tempfile = "3.27.0"
 rustix = { workspace = true, features = ["fs", "net"] }
 
 [dev-dependencies]
+proptest.workspace = true
 loom = "0.7"
 
 [[test]]
