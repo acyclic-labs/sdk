@@ -46,7 +46,7 @@ mod prepared;
 pub use prepared::PreparedClosedProcess;
 #[cfg(unix)]
 use prepared::prepared_process_vec;
-#[cfg(all(test, any(target_os = "linux", windows)))]
+#[cfg(test)]
 mod custody_tests;
 #[cfg(unix)]
 #[path = "unix.rs"]

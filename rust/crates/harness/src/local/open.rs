@@ -206,9 +206,9 @@ impl Opening {
         let store = acyclic_fs::LocalCoreStateStore::open_shared_owner(directory.join("workspace"))
             .map_err(storage)?
             .with_ownership_anchor(self.config.test_state.clone());
-        // This owner now holds the state exclusively. Before anything reads
-        // the checkout or records an interruption, every tool tree a dead
-        // previous owner left is dead.
+        // This process now holds the state exclusively. Before anything
+        // reads the checkout or records an interruption, every tool tree a
+        // dead previous owner left is dead; owners in this process share it.
         let processes = Some(fence_stale_processes(directory.join("processes")).await?);
         let workspace = match &self.config.project {
             LocalProject::Workspace(path) => Some(
@@ -410,18 +410,15 @@ impl PrivateVolumes {
     }
 }
 
-/// Opens this owner's process custody and kills every tool tree a dead
-/// previous owner left, awaiting each tree's exit before returning.
+/// This owner's process custody. The first owner of the directory in this
+/// process kills every tool tree a dead previous owner left, awaiting each
+/// tree's exit; a later owner in the same process shares the live custody.
 #[cfg(feature = "native-execution")]
 async fn fence_stale_processes(
     path: std::path::PathBuf,
 ) -> Result<Arc<acyclic_native_runtime::ProcessCustody>> {
-    tokio::task::spawn_blocking(move || {
-        let custody = acyclic_native_runtime::ProcessCustody::open(&path)?;
-        custody.fence_stale()?;
-        Ok::<_, std::io::Error>(Arc::new(custody))
-    })
-    .await
-    .map_err(storage)?
-    .map_err(storage)
+    tokio::task::spawn_blocking(move || acyclic_native_runtime::ProcessCustody::acquire(&path))
+        .await
+        .map_err(storage)?
+        .map_err(storage)
 }

@@ -85,6 +85,93 @@ pub(super) fn boot_identity(buffer: &mut [u8; BOOT_BYTES]) -> io::Result<usize> 
     }
 }
 
+/// Bytes of process start identity a record holds.
+pub(super) const START_BYTES: usize = 32;
+
+/// The start identity of process `pid`, zombie or not. No later process that
+/// reuses the PID shares it. `NotFound` when no such process exists.
+pub(super) fn start_identity(pid: pid_t, buffer: &mut [u8; START_BYTES]) -> io::Result<usize> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut name = [0; 24];
+        let digits = record_name(pid, &mut name)
+            .ok_or(io::ErrorKind::InvalidInput)?
+            .to_bytes();
+        let mut path = [0_u8; 40];
+        let mut length = 0;
+        for byte in [b"/proc/".as_slice(), digits, b"/stat\0"]
+            .iter()
+            .flat_map(|part| part.iter())
+        {
+            *path.get_mut(length).ok_or(io::ErrorKind::InvalidInput)? = *byte;
+            length += 1;
+        }
+        let path = CStr::from_bytes_with_nul(path.get(..length).unwrap_or_default())
+            .map_err(|_| io::ErrorKind::InvalidInput)?;
+        // SAFETY: a NUL-terminated path.
+        let file = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+        if file < 0 {
+            let error = io::Error::last_os_error();
+            return Err(if error.raw_os_error() == Some(libc::ENOENT) {
+                io::ErrorKind::NotFound.into()
+            } else {
+                error
+            });
+        }
+        let mut stat = [0_u8; 1024];
+        let read = read_full(file, &mut stat);
+        // SAFETY: the descriptor opened above.
+        unsafe { libc::close(file) };
+        let stat = stat.get(..read?).unwrap_or_default();
+        // After the parenthesized command name: field 3 (state) onwards;
+        // field 22 is the start time in clock ticks since boot.
+        let after = stat
+            .iter()
+            .rposition(|byte| *byte == b')')
+            .and_then(|end| stat.get(end + 1..))
+            .ok_or(io::ErrorKind::InvalidData)?;
+        let field = after
+            .split(|byte| *byte == b' ')
+            .filter(|field| !field.is_empty())
+            .nth(19)
+            .ok_or(io::ErrorKind::InvalidData)?;
+        let mut written = 0;
+        for (slot, byte) in buffer.iter_mut().zip(field) {
+            *slot = *byte;
+            written += 1;
+        }
+        Ok(written)
+    }
+    #[cfg(target_vendor = "apple")]
+    {
+        // SAFETY: plain integer fields; all-zero is a valid value.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>())
+            .map_err(|_| io::ErrorKind::InvalidInput)?;
+        // SAFETY: writable storage of the stated size. BSD info is reported
+        // for zombies too.
+        let filled = unsafe {
+            libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size)
+        };
+        if filled != size {
+            let error = io::Error::last_os_error();
+            return Err(if error.raw_os_error() == Some(libc::ESRCH) {
+                io::ErrorKind::NotFound.into()
+            } else {
+                error
+            });
+        }
+        let seconds = info.pbi_start_tvsec.to_le_bytes();
+        let micros = info.pbi_start_tvusec.to_le_bytes();
+        let mut written = 0;
+        for (slot, byte) in buffer.iter_mut().zip(seconds.iter().chain(micros.iter())) {
+            *slot = *byte;
+            written += 1;
+        }
+        Ok(written)
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn read_full(file: c_int, buffer: &mut [u8]) -> io::Result<usize> {
     let mut filled = 0;
@@ -142,7 +229,7 @@ pub(super) fn enter(directory: c_int, owner: pid_t) -> io::Result<()> {
         // SAFETY: the same directory and name as the record created above.
         unsafe { libc::unlinkat(directory, name.as_ptr(), 0) };
     };
-    let watch = match arm(record, owner) {
+    let watch = match arm(record, owner, warden) {
         Ok(watch) => watch,
         Err(error) => {
             unlink();
@@ -168,8 +255,9 @@ pub(super) fn enter(directory: c_int, owner: pid_t) -> io::Result<()> {
     supervise(directory, record, watch, owner, warden, program, name)
 }
 
-/// Locks the record, writes its boot, and returns the owner's exit watch.
-fn arm(record: c_int, owner: pid_t) -> io::Result<c_int> {
+/// Locks the record, writes the warden's identity, and returns the owner's
+/// exit watch.
+fn arm(record: c_int, owner: pid_t, warden: pid_t) -> io::Result<c_int> {
     // The kernel releases this lock only when the warden's last descriptor
     // of the record closes: when the warden has exited.
     // SAFETY: the record descriptor opened by the caller.
@@ -177,8 +265,12 @@ fn arm(record: c_int, owner: pid_t) -> io::Result<c_int> {
         return Err(io::Error::last_os_error());
     }
     let mut boot = [0; BOOT_BYTES];
-    let length = boot_identity(&mut boot)?;
-    write_full(record, boot.get(..length).unwrap_or_default())?;
+    boot_identity(&mut boot)?;
+    let mut start = [0; START_BYTES];
+    let length = start_identity(warden, &mut start)?;
+    // The boot, zero-padded to its fixed width, then the warden's start.
+    write_full(record, &boot)?;
+    write_full(record, start.get(..length).unwrap_or_default())?;
     #[cfg(target_os = "linux")]
     // SAFETY: marks this process as the reaper of its orphaned descendants.
     if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) } != 0 {

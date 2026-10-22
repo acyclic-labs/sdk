@@ -18,11 +18,13 @@
 //! - Windows: each tree is a named Job with `KILL_ON_JOB_CLOSE`. A fence
 //!   opens each recorded Job by name, terminates it and awaits every member.
 
+use std::collections::BTreeMap;
 use std::fs;
 #[cfg(unix)]
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, Weak};
 
 /// One owner's directory of live process-tree records.
 pub struct ProcessCustody {
@@ -57,6 +59,27 @@ impl ProcessCustody {
         })
     }
 
+    /// This process's custody of `path`. Owners in one process share the
+    /// custody of a directory: the first fences it, and later ones reuse it
+    /// while it lives, never waiting on a live owner's running trees. Opens
+    /// of different directories never wait on each other.
+    pub fn acquire(path: &Path) -> io::Result<Arc<Self>> {
+        fs::create_dir_all(path)?;
+        let key = fs::canonicalize(path)?;
+        let slot = {
+            let mut live = LIVE.lock().map_err(|_| poisoned())?;
+            Arc::clone(live.entry(key.clone()).or_default())
+        };
+        let mut slot = slot.lock().map_err(|_| poisoned())?;
+        if let Some(custody) = slot.upgrade() {
+            return Ok(custody);
+        }
+        let custody = Arc::new(Self::open(&key)?);
+        custody.fence_stale()?;
+        *slot = Arc::downgrade(&custody);
+        Ok(custody)
+    }
+
     /// Kills every tree a previous owner of this directory left and returns
     /// once each is dead. Returns how many records it fenced.
     pub fn fence_stale(&self) -> io::Result<usize> {
@@ -68,6 +91,29 @@ impl ProcessCustody {
             }
         }
         Ok(fenced)
+    }
+}
+
+/// Each directory's live custody in this process, behind its own lock so a
+/// fence of one directory never delays another.
+type Slot = Arc<Mutex<Weak<ProcessCustody>>>;
+static LIVE: Mutex<BTreeMap<PathBuf, Slot>> = Mutex::new(BTreeMap::new());
+
+fn poisoned() -> io::Error {
+    io::Error::other("process custody registry poisoned")
+}
+
+impl Drop for ProcessCustody {
+    fn drop(&mut self) {
+        // Forget this directory unless an owner is acquiring it right now:
+        // acquirers clone the slot under the registry lock held here.
+        if let Ok(mut live) = LIVE.lock()
+            && let Some(slot) = live.get(&self.path)
+            && Arc::strong_count(slot) == 1
+            && slot.try_lock().is_ok_and(|slot| slot.strong_count() == 0)
+        {
+            live.remove(&self.path);
+        }
     }
 }
 
@@ -159,11 +205,15 @@ mod unix {
         let mut recorded = Vec::new();
         record.read_to_end(&mut recorded)?;
         let mut boot = [0; super::super::warden::BOOT_BYTES];
-        let length = super::super::warden::boot_identity(&mut boot)?;
+        super::super::warden::boot_identity(&mut boot)?;
         // A record from another boot, or one whose warden died before it
-        // forked the program, names no live tree.
-        if boot.get(..length) == Some(recorded.as_slice()) {
-            fence_group(pid)?;
+        // recorded its start (and so before it forked the program), names no
+        // live tree.
+        if let Some(start) = recorded
+            .strip_prefix(boot.as_slice())
+            .filter(|start| !start.is_empty())
+        {
+            fence_group(pid, start)?;
         }
         match fs::remove_file(path) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
@@ -171,16 +221,23 @@ mod unix {
         }
     }
 
-    /// Kills and awaits a group whose warden was killed outright. A PID that
-    /// names a live process is not this tree's warden (its lock is free), and
-    /// while any member of the group lives its ID cannot be reused, so a live
-    /// process with that PID means the group is already empty.
-    fn fence_group(group: libc::pid_t) -> io::Result<()> {
-        // SAFETY: signal 0 only probes for existence.
-        if unsafe { libc::kill(group, 0) } == 0
-            || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-        {
-            return Ok(());
+    /// Kills and awaits the group of a warden that was killed outright and
+    /// recorded `start` as its own start identity.
+    ///
+    /// A process with the warden's PID and that identity is the warden itself,
+    /// a zombie whose orphaned tree may still run. One with another identity
+    /// reused the PID, which the kernel allows only once no process uses it as
+    /// a process group ID: the warden's group is already empty, and a group
+    /// with that ID now is someone else's. With no such process at all, the
+    /// group ID stays reserved while any member of the warden's group lives.
+    fn fence_group(group: libc::pid_t, start: &[u8]) -> io::Result<()> {
+        let mut current = [0; super::super::warden::START_BYTES];
+        match super::super::warden::start_identity(group, &mut current) {
+            Ok(length) if current.get(..length) != Some(start) => return Ok(()),
+            // Another user's process is never this owner's warden.
+            Err(error) if error.raw_os_error() == Some(libc::EPERM) => return Ok(()),
+            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+            _ => {}
         }
         loop {
             // SAFETY: a negative PID names exactly this process group.

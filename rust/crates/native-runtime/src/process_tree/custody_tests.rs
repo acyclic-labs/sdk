@@ -1,6 +1,7 @@
 //! Custody ties a tree to its owner: once a reopened owner's fence returns,
 //! no process of a tree whose owner was killed exists, and an ordinary tree
 //! without custody demonstrably survives the same kill.
+#![cfg(any(target_os = "linux", windows))]
 
 use super::{ProcessCustody, ProcessTree};
 use std::fs;
@@ -52,18 +53,15 @@ fn custody_owner_helper() {
     };
     let root = PathBuf::from(std::env::var_os(ROOT).expect("owner root"));
     let mut command = program(&root);
-    let tree = match mode.as_str() {
-        "custodied" => {
-            let custody = ProcessCustody::open(&root.join("processes")).expect("custody");
-            Some(ProcessTree::spawn_in_custody(&mut command, &custody).expect("custodied spawn"))
-        }
-        _ => {
-            let child = command.spawn().expect("uncontained spawn");
-            #[cfg(windows)]
-            fs::write(root.join("pid"), child.id().to_string()).expect("pid");
-            drop(child);
-            None
-        }
+    let tree = if mode == "custodied" {
+        let custody = ProcessCustody::open(&root.join("processes")).expect("custody");
+        Some(ProcessTree::spawn_in_custody(&mut command, &custody).expect("custodied spawn"))
+    } else {
+        let child = command.spawn().expect("uncontained spawn");
+        #[cfg(windows)]
+        fs::write(root.join("pid"), child.id().to_string()).expect("pid");
+        drop(child);
+        None
     };
     #[cfg(windows)]
     if let Some(tree) = &tree {
@@ -120,6 +118,7 @@ struct Watch {
     fd: std::os::fd::OwnedFd,
     #[cfg(windows)]
     handle: windows_sys::Win32::Foundation::HANDLE,
+    #[cfg(unix)]
     pid: u32,
 }
 
@@ -158,7 +157,7 @@ impl Watch {
             assert_eq!(error.raw_os_error(), Some(87), "OpenProcess: {error}");
             return None;
         }
-        Some(Self { handle, pid })
+        Some(Self { handle })
     }
 
     /// Whether the process has exited, without waiting.
@@ -183,6 +182,20 @@ impl Watch {
             // SAFETY: an owned process handle; zero timeout.
             unsafe { WaitForSingleObject(self.handle, 0) == WAIT_OBJECT_0 }
         }
+    }
+
+    /// Blocks until the process has exited.
+    #[cfg(target_os = "linux")]
+    fn wait(&self) {
+        use std::os::fd::AsRawFd as _;
+        let mut ready = libc::pollfd {
+            fd: self.fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one initialized pollfd; no timeout.
+        let polled = unsafe { libc::poll(&raw mut ready, 1, -1) };
+        assert_eq!(polled, 1, "poll: {}", std::io::Error::last_os_error());
     }
 
     fn kill(&self) {
@@ -282,4 +295,96 @@ fn custodied_tree_reports_the_programs_outcome_and_leaves_no_descendant() {
             0
         );
     }
+}
+
+fn tree_pid(tree: &ProcessTree) -> u32 {
+    #[cfg(unix)]
+    {
+        tree.owned_child_id().expect("child id")
+    }
+    #[cfg(windows)]
+    {
+        tree.child
+            .as_ref()
+            .map(std::process::Child::id)
+            .expect("child id")
+    }
+}
+
+/// A second owner in the same process shares the live custody: it neither
+/// waits on nor kills the first owner's running tree.
+#[test]
+fn a_second_owner_in_one_process_shares_the_live_custody() {
+    let root = tempfile::tempdir().expect("root");
+    let processes = root.path().join("processes");
+    let first = ProcessCustody::acquire(&processes).expect("first owner");
+    #[cfg(unix)]
+    let mut command = crate::shell_command("sleep 30", Some("sh"));
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = Command::new("ping");
+        command.args(["-n", "30", "127.0.0.1"]);
+        command
+    };
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut tree = ProcessTree::spawn_in_custody(&mut command, &first).expect("spawn");
+    let watch = Watch::new(tree_pid(&tree)).expect("running tree");
+    let second = ProcessCustody::acquire(&processes).expect("second owner");
+    // A fence would have returned only once the tree was dead.
+    let running = !watch.exited();
+    tree.terminate(None).expect("terminate");
+    assert!(std::sync::Arc::ptr_eq(&first, &second));
+    assert!(running, "a second owner fenced a live owner's running tree");
+}
+
+/// A warden killed outright while its owner lives stays an unreaped zombie
+/// that keeps its PID and group while its orphaned tree still runs; the
+/// fence recognizes it by its recorded start and kills that tree.
+#[cfg(target_os = "linux")]
+#[test]
+fn fence_kills_the_tree_of_a_zombie_warden() {
+    let root = tempfile::tempdir().expect("root");
+    let processes = root.path().join("processes");
+    let custody = ProcessCustody::open(&processes).expect("custody");
+    let pid = root.path().join("pid");
+    let mut command = crate::shell_command(
+        &format!(
+            "sleep 3600 & echo $! > '{0}.tmp'; mv '{0}.tmp' '{0}'; wait",
+            pid.display()
+        ),
+        Some("sh"),
+    );
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
+    while !pid.exists() {
+        thread::sleep(Duration::from_millis(5));
+    }
+    let descendant = Watch::new(
+        fs::read_to_string(&pid)
+            .expect("pid")
+            .trim()
+            .parse()
+            .expect("numeric pid"),
+    )
+    .expect("running descendant");
+    let warden = libc::pid_t::try_from(tree_pid(&tree)).expect("warden pid");
+    let warden_watch = Watch::new(tree_pid(&tree)).expect("running warden");
+    // SAFETY: this test's own unreaped child.
+    assert_eq!(unsafe { libc::kill(warden, libc::SIGKILL) }, 0);
+    warden_watch.wait();
+    let survived = !descendant.exited();
+    ProcessCustody::open(&processes)
+        .expect("reopen custody")
+        .fence_stale()
+        .expect("fence");
+    let fenced = descendant.exited();
+    tree.terminate(None).expect("terminate");
+    assert!(survived, "the zombie warden's tree must outlive the warden");
+    assert!(fenced, "the fence left a zombie warden's tree running");
 }

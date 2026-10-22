@@ -4,11 +4,11 @@
 //! The oracle observes the tree from outside it. Every process in the tree
 //! holds `alive`; it reaches end-of-file only once all of them have exited. The
 //! tree's effect waits on `gate`, which can be released only while a member of
-//! the tree is still blocked reading it.
+//! the tree is still blocked reading it. Unix only: Windows trees are Jobs,
+//! covered by native-runtime's custody tests.
 use super::*;
 use std::{sync::Mutex, time::Instant};
 
-#[cfg(unix)]
 mod oracle {
     use std::{
         fs::{File, OpenOptions},
@@ -161,7 +161,6 @@ fn wait_for(path: &Path, child: &mut std::process::Child) {
 
 /// Negative control: the oracle sees a tree that outlives its parent and
 /// lets its effect land, so the assertions below can fail.
-#[cfg(unix)]
 #[test]
 fn oracle_observes_an_uncontained_tree_landing_its_effect() {
     let directory = tempfile::tempdir().unwrap();
@@ -179,7 +178,6 @@ fn oracle_observes_an_uncontained_tree_landing_its_effect() {
     assert_eq!(std::fs::read_to_string(&tree.effect).unwrap(), "SLEPT");
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn killed_client_tool_tree_is_dead_before_the_next_turn() {
     let directory = tempfile::tempdir().unwrap();
