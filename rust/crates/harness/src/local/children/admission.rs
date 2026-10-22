@@ -295,6 +295,11 @@ impl LocalHarness {
                             },
                         ],
                     };
+                    self.prepare_inheritance(
+                        crate::runtime::task_id_for_admission(operation),
+                        Some(parent),
+                    )
+                    .await?;
                     let (receive, model, manifest) = self
                         .stage_turn_with_output(
                             operation,

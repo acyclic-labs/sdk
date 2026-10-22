@@ -215,6 +215,9 @@ async fn child_request_prepares_a_replayable_lazy_fork_and_runs_under_its_origin
     )?)
     .await?;
     let operation = OperationId::new();
+    harness
+        .retain_settings(operation, &json!({"model":"spawn-environment"}))
+        .await?;
     let Admission::Accepted(crate::runtime::RuntimeTask::Durable {
         task_id: parent, ..
     }) = harness.submit(operation, "parent").await?
@@ -297,6 +300,15 @@ async fn child_request_prepares_a_replayable_lazy_fork_and_runs_under_its_origin
     let bytes = child_context.read_file(&command.payload, None).await?;
     let model: crate::filesystem::ModelTaskCommand =
         crate::contract::json_from_slice(&bytes).map_err(super::super::storage)?;
+    let bytes = child_context
+        .read_file(&model.context_manifest, None)
+        .await?;
+    let manifest: crate::context::ContextManifest =
+        crate::contract::json_from_slice(&bytes).map_err(super::super::storage)?;
+    let facts = manifest.environment.unwrap();
+    assert!(facts.cwd.is_none(), "spawn child advertised parent cwd");
+    assert!(facts.git_status.is_none());
+    assert_eq!(facts.model, "spawn-environment");
     let project = model.selected_output_volume.unwrap();
     child_context
         .stage_file(
