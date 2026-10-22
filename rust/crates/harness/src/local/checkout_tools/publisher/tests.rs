@@ -132,6 +132,18 @@ async fn executor_bindings_share_one_initial_checkout_selection() -> Result<()> 
     Ok(())
 }
 
+/// A replay publishes the staged file again: the staged reference itself,
+/// or, once the replay finished the write's pending capture, the reference
+/// at that capture, which holds exactly the same bytes. Later edits name the
+/// reference the replay returned, as an agent would.
+fn assert_republished(replayed: &FileRef, staged: &FileRef) -> FileRef {
+    assert_eq!(
+        (replayed.volume(), replayed.path(), replayed.descriptor()),
+        (staged.volume(), staged.path(), staged.descriptor()),
+    );
+    replayed.clone()
+}
+
 #[tokio::test]
 async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_completed_edits()
 -> Result<()> {
@@ -166,19 +178,19 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
         std::fs::read(directory.path().join("once.txt")).map_err(storage)?,
         b"once"
     );
-    assert_eq!(
-        publisher
+    assert_republished(
+        &publisher
             .stage_once(
                 operation,
                 "once.txt",
                 b"once",
                 "text/plain",
                 "once.txt",
-                None
+                None,
             )?
             .await?
             .0,
-        original
+        &original,
     );
 
     let operation = OperationId::new();
@@ -193,19 +205,19 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
         )?
         .await?;
     assert!(!directory.path().join("path.txt").exists());
-    assert_eq!(
-        publisher
+    let original = assert_republished(
+        &publisher
             .stage(
                 operation,
                 "path.txt",
                 b"path",
                 "text/plain",
                 "path.txt",
-                None
+                None,
             )?
             .await?
             .0,
-        original
+        &original,
     );
     assert_eq!(
         std::fs::read(directory.path().join("path.txt")).map_err(storage)?,
@@ -220,12 +232,12 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
         std::fs::read(directory.path().join("path.txt")).map_err(storage)?,
         b"path"
     );
-    assert_eq!(
-        publisher
+    assert_republished(
+        &publisher
             .stage_at(operation, &original, b"replacement", None)?
             .await?
             .0,
-        replacement
+        &replacement,
     );
     assert_eq!(
         std::fs::read(directory.path().join("path.txt")).map_err(storage)?,
@@ -240,12 +252,12 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
         .value
         .id();
     std::fs::write(directory.path().join("path.txt"), b"later user edit").map_err(storage)?;
-    assert_eq!(
-        publisher
+    assert_republished(
+        &publisher
             .stage_at(operation, &original, b"replacement", None)?
             .await?
             .0,
-        replacement
+        &replacement,
     );
     assert_eq!(
         std::fs::read(directory.path().join("path.txt")).map_err(storage)?,
@@ -253,9 +265,15 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
     );
     // Git recovery may enter with the already-committed target as both
     // heads. It must use the saved source and retain later checkout edits too.
+    // The replay above already captured the write, so the target is the
+    // staged generation below the head.
     let head = view
         .workspace()
-        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .generation(
+            publisher.staged_generation(&replacement)?,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await
         .map_err(storage)?
         .value;
