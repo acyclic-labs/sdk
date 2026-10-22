@@ -77,7 +77,12 @@ impl Journal {
                 let frame = encode_frame(&record, &mut publication)?;
                 obs::record!("bytes" = frame.len());
                 let start = tail.bytes;
-                if let Err(error) = self.write(&mut tail.file, start, &frame, &mut publication) {
+                let written = tail
+                    .file
+                    .lease_metered(publication.native.as_ref().map(|(meter, _)| meter.as_ref()))
+                    .map_err(NativeObjectsError::from)
+                    .and_then(|file| self.write(&file, start, &frame, &mut publication));
+                if let Err(error) = written {
                     self.poisoned.store(true, Ordering::Release);
                     return Err(error);
                 }
@@ -196,7 +201,7 @@ impl Journal {
     }
     pub(super) fn write(
         &self,
-        file: &mut File,
+        file: &acyclic_native_runtime::FileLease,
         offset: u64,
         frame: &[u8],
         publication: &mut Publication,
@@ -214,28 +219,46 @@ impl Journal {
                     let cut = self.fault_bytes.swap(u64::MAX, Ordering::AcqRel);
                     if cut != u64::MAX {
                         let count = usize::try_from(cut).unwrap_or(frame.len()).min(frame.len());
-                        crate::physical::write_publication(
-                            file,
-                            offset,
-                            frame
-                                .get(..count)
-                                .ok_or_else(|| std::io::Error::other("invalid fault point"))?,
-                            publication,
-                        )?;
-                        crate::physical::sync_publication(
-                            file,
-                            self.limits.durability,
-                            publication,
-                        )?;
+                        let partial = frame
+                            .get(..count)
+                            .ok_or_else(|| std::io::Error::other("invalid fault point"))?;
+                        file.write(|file| {
+                            Ok(crate::physical::write_publication(
+                                file,
+                                offset,
+                                partial,
+                                publication,
+                            ))
+                        })??;
+                        file.flush(|file| {
+                            Ok(crate::physical::sync_publication(
+                                file,
+                                self.limits.durability,
+                                publication,
+                            ))
+                        })??;
                         return Err(std::io::Error::other("injected journal write failure").into());
                     }
                 }
-                crate::physical::write_publication(file, offset, frame, publication)?;
+                file.write(|file| {
+                    Ok(crate::physical::write_publication(
+                        file,
+                        offset,
+                        frame,
+                        publication,
+                    ))
+                })??;
                 #[cfg(test)]
                 if self.fault_sync.swap(false, Ordering::AcqRel) {
                     return Err(std::io::Error::other("injected journal sync failure").into());
                 }
-                crate::physical::sync_publication(file, self.limits.durability, publication)
+                file.flush(|file| {
+                    Ok(crate::physical::sync_publication(
+                        file,
+                        self.limits.durability,
+                        publication,
+                    ))
+                })?
             },
         )
     }

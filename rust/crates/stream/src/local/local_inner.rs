@@ -78,7 +78,7 @@ impl LocalInner {
     fn flush_through(
         &self,
         target: u64,
-        file: &File,
+        file: &acyclic_native_runtime::FileLease,
         durability: LocalDurability,
         work: Option<&crate::memory::Work>,
     ) {
@@ -96,8 +96,8 @@ impl LocalInner {
             }
         }
         let flushed = match &work {
-            Some(work) => work.sync(|| sync_file_data(file, durability)),
-            None => sync_file_data(file, durability),
+            Some(work) => file.flush(|file| work.sync(|| sync_file_data(file, durability))),
+            None => file.flush(|file| sync_file_data(file, durability)),
         };
         let Ok(mut journal) = self.journal.lock() else {
             self.poison();

@@ -1,14 +1,11 @@
-/// Creates `root` if it is missing and takes its exclusive lock.
-fn lock_root(root: &Path, limits: LocalStreamLimits) -> Result<FileLock, LocalStreamError> {
+/// Creates `root` if it is missing and claims it exclusively.
+fn lock_root(
+    root: &Path,
+    limits: LocalStreamLimits,
+) -> Result<acyclic_native_runtime::StoreClaim, LocalStreamError> {
     std::fs::create_dir_all(root)?;
     sync_directory(root, limits.durability)?;
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(root.join(LOCK_FILE))?;
-    FileLock::try_acquire(lock, FileLockMode::Exclusive).map_err(|error| {
+    acyclic_native_runtime::StoreClaim::acquire(&root.join(LOCK_FILE)).map_err(|error| {
         if acyclic_native_runtime::is_exclusive_lock_contention(&error) {
             LocalStreamError::AlreadyOpen
         } else {

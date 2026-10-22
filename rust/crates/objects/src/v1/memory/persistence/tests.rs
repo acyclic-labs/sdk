@@ -704,3 +704,47 @@ async fn store_spans_omit_customer_names() -> Result<(), Box<dyn std::error::Err
     }
     Ok(())
 }
+
+/// An idle store's journal closes its descriptor; its next append and reads
+/// reopen it and land after every earlier frame.
+#[tokio::test]
+async fn a_journal_reopened_after_closing_appends_after_its_frames()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The process keeps one idle descriptor, so opening another store
+    // closes this one's journal. The bound is the process's, so the test runs
+    // in its own process, where its evictions cannot change other tests'
+    // measured work.
+    if acyclic_native_runtime::cached_descriptor_capacity() != 1 {
+        let module = module_path!();
+        let test = format!(
+            "{}::a_journal_reopened_after_closing_appends_after_its_frames",
+            module.split_once("::").map_or(module, |(_, path)| path)
+        );
+        let status = std::process::Command::new(std::env::current_exe()?)
+            .args([test.as_str(), "--exact", "--nocapture"])
+            .env(acyclic_native_runtime::CACHED_DESCRIPTORS_VARIABLE, "1")
+            .status()?;
+        assert!(status.success(), "child test failed: {status}");
+        return Ok(());
+    }
+    let root = tempfile::tempdir()?;
+    let other = tempfile::tempdir()?;
+    let core = seeded(root.path()).await?;
+    let closing = seeded(other.path()).await;
+    let appended = core
+        .put(put("reopened"), OwnedBytes::from_static(b"after"))
+        .await;
+    closing?;
+    appended?;
+    drop(core);
+    let core = reopen(root.path())?;
+    assert_eq!(
+        core.get(get(bucket(), "retained"), 6).await?.into_body(),
+        OwnedBytes::from_static(b"before")
+    );
+    assert_eq!(
+        core.get(get(bucket(), "reopened"), 5).await?.into_body(),
+        OwnedBytes::from_static(b"after")
+    );
+    Ok(())
+}

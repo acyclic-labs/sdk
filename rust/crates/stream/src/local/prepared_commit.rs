@@ -11,10 +11,14 @@ impl LocalStream {
         let stream = self.clone();
         crate::NativeProviderFuture::new(&Arc::clone(&original), async move {
             let work = crate::memory::Work::new(meter)?;
-            let stream = Self {
+            let mut stream = Self {
                 work: Some(Arc::clone(&work)),
                 ..stream
             };
+            // The caller's handle stays with this future and the prepared
+            // commit it returns; the detached work holds none, so it drains
+            // as the store closes.
+            let handle = stream.handle.take();
             let provider = stream.inner.provider.with_context(Arc::clone(&work));
             let result = async {
                 let _visibility = stream.inner.visibility.read().await;
@@ -64,6 +68,7 @@ impl LocalStream {
                     worker.await
                 });
                 let future = match crate::NativeProviderFuture::try_new(&work.meter, async move {
+                    let _handle = handle;
                     task.await.map_err(std::io::Error::other)?
                 }) {
                     Ok(future) => future,

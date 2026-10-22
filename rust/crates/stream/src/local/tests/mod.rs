@@ -4,7 +4,6 @@ include!("cases_1.rs");
 include!("fixtures.rs");
 mod accepted;
 mod children;
-#[cfg(target_os = "linux")]
 mod descriptors;
 mod native;
 mod ownership;

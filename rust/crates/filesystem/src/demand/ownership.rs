@@ -70,7 +70,7 @@ impl SourcePayloadOwnership {
     }
     /// Fund new watch storage on its owner, while charging copying to this call.
     /// A reused source can deliver a watch to a different invocation ledger.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     pub(crate) fn claim_retained<W: SourceDemandReadWork>(
         &self,
         bytes: u64,
@@ -144,7 +144,7 @@ impl SourcePayloadOwnership {
             }
         }
     }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub(crate) fn has_native_custody(&self) -> bool {
         !matches!(self, Self::Borrowed)
     }

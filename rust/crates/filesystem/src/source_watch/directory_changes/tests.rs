@@ -42,7 +42,7 @@ fn driver(
 }
 fn assert_retired(shared: &Shared) {
     assert!(shared.retired(&shared.lock_reads()));
-    assert!(!shared.buffer_owned.load(Ordering::Acquire));
+    assert_eq!(shared.buffer_bytes.load(Ordering::Acquire), 0);
 }
 fn wait_retired(shared: &Shared) -> Instant {
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -134,7 +134,6 @@ fn stop_denial_and_cancellation_retain_the_same_native_owner() -> TestResult {
     let watch = driver(&held, &mut startup)?;
     assert!(!watch.shared.recursive);
     let directory = watch.shared.directory.load(Ordering::Acquire);
-    let completed = watch.shared.completed.load(Ordering::Acquire);
     let owned = watch.platform_owned_bytes();
     assert!(matches!(
         watch.stop_with_cleanup_wait(&CancellationToken::new()),
@@ -164,10 +163,11 @@ fn stop_denial_and_cancellation_retain_the_same_native_owner() -> TestResult {
         Err(DemandError::Cancelled)
     ));
     assert_eq!(work.work, WorkCounters::UNCHARGED);
+    // Stopping cancels the pending read, waits for it and closes the
+    // directory: two writes.
     let mut denied = DemandWork::new(
         WorkBudget {
-            backend_read_operations: 1,
-            backend_write_operations: 4,
+            backend_write_operations: 1,
             ..WorkBudget::UNBOUNDED
         },
         &CancellationToken::new(),
@@ -180,12 +180,11 @@ fn stop_denial_and_cancellation_retain_the_same_native_owner() -> TestResult {
     assert!(!watch.is_stopped());
     assert!(watch.delivery().is_exact());
     assert_eq!(watch.shared.directory.load(Ordering::Acquire), directory);
-    assert_eq!(watch.shared.completed.load(Ordering::Acquire), completed);
     assert_eq!(watch.platform_owned_bytes(), owned);
     let mut admitted = DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
     watch.stop_with_work(&mut admitted)?;
     assert_eq!(admitted.work.allocation_operations, 0);
-    assert_eq!(watch.platform_owned_bytes(), owned - BUFFER_BYTES);
+    assert_eq!(watch.platform_owned_bytes(), owned - INITIAL_BUFFER_BYTES);
     assert_retired(&watch.shared);
     assert!(!watch.delivery().is_exact());
     assert!(watch.is_stopped());
@@ -302,8 +301,9 @@ mod original {
     #[test]
     fn native_birth_denies_the_known_final_drop_plan_before_the_first_native_owner() -> TestResult {
         let (_root, held) = held()?;
+        // One write short of the six that two retirement attempts reserve.
         let budget = WorkBudget {
-            backend_write_operations: 9,
+            backend_write_operations: 5,
             ..budget()
         };
         let birth = birth(budget, &CancellationToken::new());
@@ -483,19 +483,16 @@ mod original {
         assert!(owner.upgrade().is_some());
         assert_eq!(completion.directory.load(Ordering::Acquire), directory);
         assert!(is_open(&completion.directory));
-        assert!(completion.buffer_owned.load(Ordering::Acquire));
+        assert_eq!(
+            completion.buffer_bytes.load(Ordering::Acquire),
+            INITIAL_BUFFER_BYTES
+        );
         assert_eq!(completion.lock_reads().cursor, cursor);
         assert!(matches!(
             watch.stop_with_cleanup_wait(&CancellationToken::new()),
             Err(DemandError::NativeWorkUnavailable)
         ));
-        assert!(
-            completion
-                .thread
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .is_some()
-        );
+        assert!(!completion.parked.load(Ordering::Acquire));
         // The retry still owns its terminal reservation. Its capacity cannot
         // return to the original ledger until the protected handle retires.
         let parked_budget = birth.with_original_leaf(|work| work.budget);

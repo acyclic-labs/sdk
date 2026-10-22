@@ -12,7 +12,6 @@ use crate::query_sync::{RwLock, SyncMutex as Mutex, watch};
 use acyclic_native_runtime::OwnershipAnchor;
 #[cfg(all(not(acyclic_loom), feature = "test-support"))]
 use acyclic_native_runtime::testing::{spawn, spawn_blocking};
-use acyclic_native_runtime::{FileLock, FileLockMode};
 use async_trait::async_trait;
 use futures::{StreamExt as _, stream};
 #[cfg(acyclic_loom)]

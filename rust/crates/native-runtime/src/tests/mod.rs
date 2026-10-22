@@ -8,6 +8,7 @@ use std::thread::Thread;
 use std::time::{Duration, Instant};
 
 mod admission;
+mod claim;
 mod completion;
 mod custody;
 mod namespace;
@@ -169,7 +170,7 @@ impl Drop for Saturation {
 pub(super) struct ReadBudgetMeter {
     pub(super) used_operations: AtomicU64,
     used_bytes: AtomicU64,
-    used_allocations: AtomicU64,
+    pub(super) used_allocations: AtomicU64,
     examined_items: AtomicU64,
     encoded: AtomicU64,
     copied: AtomicU64,

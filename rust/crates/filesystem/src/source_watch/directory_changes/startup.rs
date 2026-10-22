@@ -8,16 +8,35 @@ impl NativeSourceWatch {
     ) -> Result<Self, DemandError> {
         Self::open_watch(root.directory_handle(), delivery, true, None, true, work)
     }
-    #[allow(
-        clippy::too_many_lines,
-        reason = "This state transition keeps admission, effects and resource retirement in one frame."
-    )]
     pub(crate) fn open_watch<W: SourceDemandReadWork>(
         root: std::os::windows::io::BorrowedHandle<'_>,
         delivery: Arc<Delivery>,
         pin_name: bool,
         complete: Option<bool>,
         recursive: bool,
+        work: &mut W,
+    ) -> Result<Self, DemandError> {
+        Self::open_watch_growing_to(
+            root,
+            delivery,
+            pin_name,
+            complete,
+            recursive,
+            MAXIMUM_BUFFER_BYTES,
+            work,
+        )
+    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "This state transition keeps admission, effects and resource retirement in one frame."
+    )]
+    pub(super) fn open_watch_growing_to<W: SourceDemandReadWork>(
+        root: std::os::windows::io::BorrowedHandle<'_>,
+        delivery: Arc<Delivery>,
+        pin_name: bool,
+        complete: Option<bool>,
+        recursive: bool,
+        maximum_buffer_bytes: u64,
         work: &mut W,
     ) -> Result<Self, DemandError> {
         work.admit(READ)?;
@@ -30,20 +49,21 @@ impl NativeSourceWatch {
         let result = (|| {
             let mut active = work
                 .native_source_work()
-                .map(|original| original.allocation_work().reserve_work(io_work(3, 10)))
+                .map(|original| original.allocation_work().reserve_work(io_work(2, 6)))
                 .transpose()
                 .map_err(crate::native_name::original_name_error)?;
             let terminal = active
                 .as_mut()
-                .map(|credit| credit.partition_work(io_work(1, 5), None))
+                .map(|credit| credit.partition_work(io_work(1, 3), None))
                 .transpose()
                 .map_err(crate::native_name::original_name_error)?;
             if !native {
-                reserve_cleanup(work, io_work(2, 5))?;
+                reserve_cleanup(work, io_work(1, 2))?;
             }
+            hub::ensure()?;
             for allocation in [
                 size_of::<OVERLAPPED>() as u64,
-                BUFFER_BYTES,
+                INITIAL_BUFFER_BYTES,
                 super::super::arc_control_bytes::<Shared>(),
             ] {
                 work.claim_allocation(allocation, 1, WorkCounters::UNCHARGED)?;
@@ -52,24 +72,28 @@ impl NativeSourceWatch {
             ownership.retain(bytes, work)?;
             shared = Some(Arc::new(Shared {
                 directory: AtomicPtr::new(std::ptr::null_mut()),
-                completed: AtomicPtr::new(std::ptr::null_mut()),
-                thread: Mutex::new(None),
                 extended: AtomicBool::new(true),
                 complete: AtomicBool::new(complete.unwrap_or(false)),
                 recursive,
+                pin_name,
+                maximum_buffer_bytes,
                 reads: Mutex::new(Reads {
                     overlapped: Box::default(),
-                    buffer: Some(Box::<[u64; BUFFER_WORDS]>::new_uninit()),
+                    buffer: Some(buffer(INITIAL_BUFFER_BYTES)),
                     pending: false,
                     filled: 0,
                     cursor: 0,
                     loss: false,
                     blocked: false,
+                    cancelling: false,
                 }),
-                buffer_owned: AtomicBool::new(true),
-                reading_changed: Condvar::new(),
+                buffer_bytes: AtomicU64::new(INITIAL_BUFFER_BYTES),
+                arrived: Condvar::new(),
+                arrivals: Mutex::new(()),
+                missed: AtomicBool::new(false),
                 stopping: AtomicBool::new(false),
                 stop_completed: AtomicBool::new(false),
+                parked: AtomicBool::new(false),
                 ownership,
                 cleanup: Mutex::new([active, terminal]),
                 dropped: AtomicBool::new(false),
@@ -78,10 +102,6 @@ impl NativeSourceWatch {
                 delivery,
             }));
             let state = shared.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
-            if native {
-                *state.thread.lock().unwrap_or_else(PoisonError::into_inner) =
-                    Some(create_reader(state, work)?);
-            }
             state.directory.store(
                 open(root, pin_name, work)?.into_raw_handle(),
                 Ordering::Release,
@@ -99,10 +119,7 @@ impl NativeSourceWatch {
                 );
             }
             work.started_io(WRITE)?;
-            // SAFETY: one unnamed manual-reset event, owned by this state.
-            let event =
-                unsafe { CreateEventW(None, true, false, None) }.map_err(io::Error::from)?;
-            state.completed.store(event.0, Ordering::Release);
+            hub::attach(state, HANDLE(state.directory.load(Ordering::Acquire)))?;
             let mut reads = state.lock_reads();
             if let Err(error) = state.issue(&mut reads, work) {
                 if !matches!(&error, DemandError::Io(error) if error.raw_os_error() == Some(ERROR_INVALID_FUNCTION.to_hresult().0))
@@ -112,12 +129,7 @@ impl NativeSourceWatch {
                 state.extended.store(false, Ordering::Release);
                 state.issue(&mut reads, work)?;
             }
-            if !native {
-                *state.thread.lock().unwrap_or_else(PoisonError::into_inner) =
-                    Some(create_reader(state, work)?);
-            }
             drop(reads);
-            state.reading_changed.notify_all();
             Ok(Self {
                 shared: shared.take().ok_or(DemandError::NativeWorkUnavailable)?,
             })
@@ -158,36 +170,7 @@ pub(super) fn reserve_cleanup<W: SourceDemandReadWork>(
 ) -> Result<(), DemandError> {
     work.with_original_leaf(|work| super::super::reserve_cleanup_credits(work, delta))
 }
-fn create_reader<W: SourceDemandReadWork>(
-    state: &Arc<Shared>,
-    work: &mut W,
-) -> Result<OwnedHandle, DemandError> {
-    work.admit(io_work(1, 1))?;
-    work.started_io(WRITE)?;
-    let parameter = Arc::into_raw(Arc::clone(state));
-    // SAFETY: successful creation transfers this Arc to the callback.
-    match unsafe {
-        CreateThread(
-            None,
-            0,
-            Some(super::reader::reader_thread),
-            Some(parameter.cast()),
-            Default::default(),
-            None,
-        )
-    } {
-        Ok(handle) => {
-            // SAFETY: successful CreateThread returned one owned handle.
-            Ok(unsafe { OwnedHandle::from_raw_handle(handle.0) })
-        }
-        Err(error) => {
-            // SAFETY: failed creation transferred no callback owner.
-            drop(unsafe { Arc::from_raw(parameter) });
-            Err(io::Error::from(error).into())
-        }
-    }
-}
-fn open<W: SourceDemandReadWork>(
+pub(super) fn open<W: SourceDemandReadWork>(
     root: std::os::windows::io::BorrowedHandle<'_>,
     pin_name: bool,
     work: &mut W,
@@ -197,7 +180,9 @@ fn open<W: SourceDemandReadWork>(
         FILE_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_FOR_BACKUP_INTENT, NtCreateFile,
     };
     use windows::Win32::Foundation::{RtlNtStatusToDosError, UNICODE_STRING};
-    use windows::Win32::Storage::FileSystem::{FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_DELETE};
+    use windows::Win32::Storage::FileSystem::{
+        FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_DELETE, SYNCHRONIZE,
+    };
     use windows::Win32::System::IO::IO_STATUS_BLOCK;
     let name = UNICODE_STRING::default();
     let attributes = OBJECT_ATTRIBUTES {
@@ -214,7 +199,8 @@ fn open<W: SourceDemandReadWork>(
     let status = unsafe {
         NtCreateFile(
             &mut handle,
-            FILE_LIST_DIRECTORY,
+            // Waiting for a read without an event waits on the handle.
+            FILE_LIST_DIRECTORY | SYNCHRONIZE,
             &attributes,
             &mut status_block,
             None,

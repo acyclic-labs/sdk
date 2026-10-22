@@ -17,10 +17,13 @@ impl LocalStream {
         let stream = self.clone();
         crate::NativeProviderFuture::new(&Arc::clone(&original), async move {
             let work = crate::memory::Work::new(meter)?;
-            let stream = Self {
+            let mut stream = Self {
                 work: Some(Arc::clone(&work)),
                 ..stream
             };
+            // The caller's handle stays with this future; the detached work
+            // holds none, so it drains as the store closes.
+            let _handle = stream.handle.take();
             let provider = stream.inner.provider.with_context(Arc::clone(&work));
             let input = match provider.request_claim(&request) {
                 Ok(input) => input,

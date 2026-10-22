@@ -36,14 +36,17 @@ impl Cursor {
         // the checkout. Register directories once; subsequent commands consume
         // only push hints on this persistent watcher.
         let mut options = NativeWatchOptions::new(config.limits);
-        // FSEvents observes the whole root recursively. Inotify and Windows
-        // register individual directories as capture discovers them.
-        options.recursive = cfg!(target_os = "macos");
+        // FSEvents and ReadDirectoryChangesW observe the whole root on one
+        // stream or handle, filtering excluded subtrees as changes arrive: a
+        // handle per directory would grow with the checkout. Inotify watches
+        // are per directory on one descriptor, so Linux registers each
+        // directory as capture discovers it.
+        options.recursive = cfg!(any(target_os = "macos", windows));
         #[cfg(not(target_os = "macos"))]
         let mut watcher = NativeWatch::open_with_profile(&workspace.path, config.profile, options)
             .map_err(storage)?;
         // FSEvents' held-source adapter requires retained native custody. Linux
-        // and Windows already select their held source for a nonrecursive watch.
+        // selects its held source for a nonrecursive watch, Windows always.
         #[cfg(target_os = "macos")]
         let work = acyclic_fs::NativeMaterializationWork::new(
             WorkBudget::UNBOUNDED,

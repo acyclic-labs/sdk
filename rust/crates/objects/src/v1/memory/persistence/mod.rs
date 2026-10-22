@@ -34,7 +34,7 @@ pub enum LocalOpenError {
 }
 
 struct Tail {
-    file: File,
+    file: acyclic_native_runtime::CachedFile,
     bytes: u64,
     operations: u64,
     inline_bytes: u64,
@@ -45,8 +45,8 @@ pub(super) struct Journal {
     limits: LocalObjectsLimits,
     header: Header,
     poisoned: AtomicBool,
-    /// Unlocked explicitly when dropped, even if a child inherited it.
-    _owner: acyclic_native_runtime::FileLock,
+    /// Held without a descriptor, and released only after the log closes.
+    _owner: acyclic_native_runtime::StoreClaim,
     _anchor: Option<acyclic_native_runtime::OwnershipAnchor>,
     #[cfg(test)]
     fault_bytes: std::sync::atomic::AtomicU64,
@@ -119,6 +119,17 @@ pub(super) fn put_record_bytes(query: &wire::PutObjectHeader, body: &OwnedBytes)
     inline
         .saturating_add(query.encoded_len().saturating_mul(3))
         .saturating_add(1024)
+}
+
+/// The journal at `path`, which holds a descriptor only while recently used
+/// and reopens by `path`, the name it has or is about to be renamed to.
+/// Caching it charges `meter`, when there is one.
+fn journal_file(
+    file: File,
+    path: &Path,
+    meter: Option<&dyn acyclic_native_runtime::NativeReadMeter>,
+) -> std::io::Result<acyclic_native_runtime::CachedFile> {
+    acyclic_native_runtime::CachedFile::new_metered(file, path, true, true, meter)
 }
 
 fn sync(file: &File, limits: LocalObjectsLimits) -> std::io::Result<()> {

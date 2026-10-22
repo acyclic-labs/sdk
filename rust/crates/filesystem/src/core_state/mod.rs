@@ -68,7 +68,9 @@ enum Ownership {
 /// Lifetime-long exclusive ownership of one namespace.
 #[derive(Debug)]
 struct Owner {
-    _lock: OwnerLock,
+    /// Held without a descriptor; transactions of other handles refuse while
+    /// it names a live owner.
+    _claim: acyclic_native_runtime::StoreClaim,
     /// Cached logged records, `None` when absent. Joinable owners bound this cache.
     residents: Arc<RwLock<Residents>>,
     /// Core-state log, opened by the first logged transaction. Its mutex
@@ -76,7 +78,7 @@ struct Owner {
     cache_limit: Option<usize>,
 }
 
-/// One held `owner.lock`, released when dropped.
+/// One held lock file, released when dropped.
 #[derive(Debug)]
 struct OwnerLock(FileLock, OwnerLockRelease);
 
@@ -113,7 +115,8 @@ impl OwnerLock {
         Ok(())
     }
 
-    fn acquire(root: &Path, mode: LockMode) -> Result<Self, LocalCoreStateStoreError> {
+    /// Admits one transaction of a handle that does not own the namespace.
+    fn shared(root: &Path) -> Result<Self, LocalCoreStateStoreError> {
         std::fs::create_dir_all(root)?;
         let lock = OpenOptions::new()
             .create(true)
@@ -121,13 +124,21 @@ impl OwnerLock {
             .read(true)
             .write(true)
             .open(root.join(OWNER_LOCK))?;
-        match FileLock::try_acquire(lock, mode.into()) {
-            Ok(lock) => Ok(Self::new(lock, None)),
-            Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => Err(
-                LocalCoreStateStoreError::OwnershipConflict(root.to_path_buf()),
-            ),
-            Err(error) => Err(error.into()),
+        let lock = match FileLock::try_acquire(lock, FileLockMode::Shared) {
+            Ok(lock) => Self::new(lock, None),
+            Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => {
+                return Err(LocalCoreStateStoreError::OwnershipConflict(
+                    root.to_path_buf(),
+                ));
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if acyclic_native_runtime::StoreClaim::is_claimed(&lock.0)? {
+            return Err(LocalCoreStateStoreError::OwnershipConflict(
+                root.to_path_buf(),
+            ));
         }
+        Ok(lock)
     }
 }
 
@@ -185,11 +196,20 @@ impl LocalCoreStateStore {
     /// Owns the namespace exclusively until this store and all its clones drop.
     pub fn open_owned(root: impl Into<PathBuf>) -> Result<Self, LocalCoreStateStoreError> {
         let root = root.into();
-        let lock = OwnerLock::acquire(&root, LockMode::Exclusive)?;
+        std::fs::create_dir_all(&root)?;
+        let claim = acyclic_native_runtime::StoreClaim::acquire(&root.join(OWNER_LOCK)).map_err(
+            |error| {
+                if acyclic_native_runtime::is_exclusive_lock_contention(&error) {
+                    LocalCoreStateStoreError::OwnershipConflict(root.clone())
+                } else {
+                    error.into()
+                }
+            },
+        )?;
         Ok(Self {
             root: Arc::new(root),
             ownership: Ownership::Owned(Arc::new(Owner {
-                _lock: lock,
+                _claim: claim,
                 residents: Arc::default(),
                 log: Mutex::default(),
                 cache_limit: None,
@@ -252,14 +272,40 @@ impl LocalCoreStateStore {
                     work,
                 )?;
                 let cleanup = work.reserve_cleanup_write()?;
-                let read = crate::WorkCounters {
-                    backend_read_operations: 1,
+                let reads = |backend_read_operations| crate::WorkCounters {
+                    backend_read_operations,
                     ..crate::WorkCounters::UNCHARGED
                 };
-                work.admit(read)?;
-                let acquired = FileLock::try_acquire(lock, FileLockMode::Shared)
-                    .map(|lock| OwnerLock::new(lock, Some(cleanup)));
-                work.spent(read)?;
+                // The lock, then the claim check: its record and the probes
+                // of the owner it names.
+                work.admit(reads(
+                    1 + acyclic_native_runtime::StoreClaim::CHECK_READ_OPERATIONS,
+                ))?;
+                // Every buffer the check may allocate, held across it.
+                let check_allocation = work.claim(
+                    acyclic_native_runtime::StoreClaim::CHECK_ALLOCATION_BYTES,
+                    acyclic_native_runtime::StoreClaim::CHECK_ALLOCATIONS,
+                    crate::WorkCounters::UNCHARGED,
+                )?;
+                let mut spent = 1;
+                let acquired = FileLock::try_acquire(lock, FileLockMode::Shared).and_then(|lock| {
+                    // A claim names its owner inside the lock file instead of
+                    // holding the lock, so a free lock alone does not admit.
+                    let checked = acyclic_native_runtime::StoreClaim::check(&lock);
+                    // A failed check made at most every read it may make.
+                    spent += checked.as_ref().map_or(
+                        acyclic_native_runtime::StoreClaim::CHECK_READ_OPERATIONS,
+                        |check| check.read_operations,
+                    );
+                    // Refused, the lock unlocks as it drops.
+                    match checked {
+                        Ok(check) if !check.claimed => Ok(OwnerLock::new(lock, Some(cleanup))),
+                        Ok(_) => Err(std::io::Error::from(std::io::ErrorKind::WouldBlock)),
+                        Err(error) => Err(error),
+                    }
+                });
+                drop(check_allocation);
+                work.spent(reads(spent))?;
                 match acquired {
                     Ok(owner_lock) => Admission::Shared { _lock: owner_lock },
                     Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => {
@@ -273,7 +319,7 @@ impl LocalCoreStateStore {
                 }
             }
             (Ownership::Shared, None) => Admission::Shared {
-                _lock: OwnerLock::acquire(&root, LockMode::Shared)?,
+                _lock: OwnerLock::shared(&root)?,
             },
             (Ownership::Owned(owner), _) => Admission::Owned(Arc::clone(owner)),
         };

@@ -25,33 +25,28 @@ pub(crate) fn open(
             maximum_entries: usize::MAX,
         };
         fs::create_dir_all(root.join("segments"))?;
-        let owner = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(root.join("owner.lock"))?;
-        let owner = acyclic_native_runtime::FileLock::try_acquire(
-            owner,
-            acyclic_native_runtime::FileLockMode::Exclusive,
-        )
-        .map_err(|error| {
-            if acyclic_native_runtime::is_exclusive_lock_contention(&error) {
-                LocalOpenError::AlreadyOwned
-            } else {
-                LocalOpenError::Io(error)
-            }
-        })?;
+        let owner = acyclic_native_runtime::StoreClaim::acquire(&root.join("owner.lock")).map_err(
+            |error| {
+                if acyclic_native_runtime::is_exclusive_lock_contention(&error) {
+                    LocalOpenError::AlreadyOwned
+                } else {
+                    LocalOpenError::Io(error)
+                }
+            },
+        )?;
+        let path = root.join("mutations.log");
         let mut file = OpenOptions::new()
             .create(true)
             .truncate(false)
             .read(true)
             .write(true)
-            .open(root.join("mutations.log"))?;
+            .open(&path)?;
         let header = load_header(&mut file, &root, limits, super::super::fill_entropy)?;
         let root = Arc::new(crate::physical::LocalRoot::new(root));
         let (state, operations, inline_bytes) = replay(&mut file, &root, options, limits)?;
         let bytes = file.stream_position()?;
+        // Idle, the journal holds no descriptor: it reopens when next used.
+        let file = journal_file(file, &path, None)?;
         obs::record!("frames" = operations, "bytes" = bytes);
         let mut references = BTreeSet::new();
         for bucket in state.buckets.values() {

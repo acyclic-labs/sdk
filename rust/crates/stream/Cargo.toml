@@ -85,6 +85,8 @@ proptest.workspace = true
 tokio = { version = "1.48.0", features = ["macros", "rt", "test-util"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# The OS resource sampler the descriptor tests count with.
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
 acyclic-test-support = { path = "../test-support" }
 axum = { workspace = true, features = ["ws"] }
 tonic-web.workspace = true

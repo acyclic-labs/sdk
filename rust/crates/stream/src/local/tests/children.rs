@@ -21,8 +21,9 @@ async fn local_children_reports_failure_on_an_unrelated_stream()
         .await?;
     assert!(futures::poll!(children.next()).is_pending());
     // Force a real journal write error after the unrelated memory mutation.
+    let journal = directory.path().join(JOURNAL_FILE);
     provider.inner.journal.lock().map_err(|_| "journal")?.file =
-        Arc::new(File::open(directory.path().join(JOURNAL_FILE))?);
+        acyclic_native_runtime::CachedFile::new(File::open(&journal)?, &journal, false, true)?;
     assert_eq!(
         provider
             .append(AppendRequest {

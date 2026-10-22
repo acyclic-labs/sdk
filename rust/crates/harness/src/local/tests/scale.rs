@@ -238,7 +238,7 @@ impl ModelProvider for ScaleProvider {
     }
 }
 
-/// Process-wide OS resources, read from procfs where available.
+/// Process-wide OS resources, read from the OS on every platform.
 #[derive(Clone, Copy, Debug, Default)]
 struct Resources {
     rss: u64,
@@ -249,68 +249,46 @@ struct Resources {
     cpu_ticks: u64,
 }
 
-#[cfg(target_os = "linux")]
-fn resources() -> Resources {
-    Resources {
-        watches: std::fs::read_dir("/proc/self/fdinfo").map_or(0, |entries| {
-            entries
-                .filter_map(|entry| std::fs::read_to_string(entry.ok()?.path()).ok())
-                .map(|info| {
-                    info.lines()
-                        .filter(|line| line.starts_with("inotify"))
-                        .count() as u64
-                })
-                .sum()
-        }),
-        ..sample()
+impl From<acyclic_native_runtime::testing::ProcessResources> for Resources {
+    fn from(resources: acyclic_native_runtime::testing::ProcessResources) -> Self {
+        Self {
+            rss: resources.memory_bytes,
+            threads: resources.threads,
+            fds: resources.descriptors,
+            mounts: resources.mounts,
+            watches: resources.watches,
+            cpu_ticks: resources.cpu_centiseconds,
+        }
     }
 }
 
-/// Cheap counters for the concurrent sampler; inotify watches are read once at the end.
-#[cfg(target_os = "linux")]
-fn sample() -> Resources {
-    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
-    let field = |name: &str| {
-        status
-            .lines()
-            .find_map(|line| line.strip_prefix(name))
-            .and_then(|rest| rest.split_whitespace().next()?.parse::<u64>().ok())
-            .unwrap_or(0)
-    };
-    let fds = std::fs::read_dir("/proc/self/fd").map_or(0, |entries| entries.count() as u64);
-    let mounts =
-        std::fs::read_to_string("/proc/self/mountinfo").map_or(0, |m| m.lines().count() as u64);
-    let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
-    let cpu_ticks = stat.rsplit(')').next().map_or(0, |rest| {
-        rest.split_whitespace()
-            .skip(11)
-            .take(2)
-            .filter_map(|tick| tick.parse::<u64>().ok())
-            .sum()
-    });
-    Resources {
-        rss: field("VmRSS:") * 1024,
-        threads: field("Threads:"),
-        fds,
-        mounts,
-        watches: 0,
-        cpu_ticks,
-    }
+/// Every counter, watches included.
+fn resources() -> Result<Resources> {
+    acyclic_native_runtime::testing::process_resources()
+        .map(Resources::from)
+        .map_err(storage)
 }
 
-#[cfg(target_os = "linux")]
+/// Cheap counters for the concurrent sampler; watches are read once at the end.
+fn sample() -> std::io::Result<Resources> {
+    acyclic_native_runtime::testing::sample_process_resources().map(Resources::from)
+}
+
 fn diagnose(root: &Path) {
+    use acyclic_native_runtime::testing::Descriptor;
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let mut fds = std::collections::BTreeMap::<String, u64>::new();
-    for entry in std::fs::read_dir("/proc/self/fd")
+    for descriptor in acyclic_native_runtime::testing::descriptors()
         .into_iter()
         .flatten()
-        .flatten()
     {
-        let target =
-            std::fs::read_link(entry.path()).map_or("?".into(), |t| t.display().to_string());
+        let target = match descriptor {
+            Descriptor::File(path) => path.display().to_string(),
+            Descriptor::Other(kind) => kind,
+        };
         let target = target.replace(&root.display().to_string(), "<root>");
         let shape: String = target
-            .split('/')
+            .split(['/', '\\'])
             .map(|part| {
                 if part.chars().all(|c| c.is_ascii_digit())
                     || part.len() > 24
@@ -326,6 +304,15 @@ fn diagnose(root: &Path) {
             .join("/");
         *fds.entry(shape).or_default() += 1;
     }
+    println!("scale diag fds={fds:#?}");
+    diagnose_threads_and_files(&root);
+}
+
+#[cfg(not(target_os = "linux"))]
+fn diagnose_threads_and_files(_: &Path) {}
+
+#[cfg(target_os = "linux")]
+fn diagnose_threads_and_files(root: &Path) {
     let mut threads = std::collections::BTreeMap::<String, u64>::new();
     for entry in std::fs::read_dir("/proc/self/task")
         .into_iter()
@@ -335,10 +322,7 @@ fn diagnose(root: &Path) {
         let name = std::fs::read_to_string(entry.path().join("comm")).unwrap_or_default();
         *threads.entry(name.trim().to_owned()).or_default() += 1;
     }
-    println!(
-        "scale diag fds={fds:#?}
-threads={threads:#?}"
-    );
+    println!("scale diag threads={threads:#?}");
     let mut files = Vec::new();
     let mut pending = vec![root.join("0")];
     while let Some(directory) = pending.pop() {
@@ -359,19 +343,6 @@ threads={threads:#?}"
     for (bytes, path) in files.iter().rev() {
         println!("scale diag file {bytes} {path}");
     }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn diagnose(_: &Path) {}
-
-#[cfg(not(target_os = "linux"))]
-fn resources() -> Resources {
-    Resources::default()
-}
-
-#[cfg(not(target_os = "linux"))]
-fn sample() -> Resources {
-    Resources::default()
 }
 
 fn disk_bytes(path: &Path) -> (u64, u64) {
@@ -410,7 +381,6 @@ impl PerAgent {
     fn of(total: u64, agents: u64) -> Self {
         Self(total.saturating_mul(1000) / agents.max(1))
     }
-    #[cfg(target_os = "linux")]
     const fn whole(value: u64) -> Self {
         Self(value * 1000)
     }
@@ -490,14 +460,14 @@ async fn run_agents(agents: u64, children: usize, directory: &Path) -> Result<Re
         timings: Arc::default(),
         content: None,
     });
-    let baseline = resources();
+    let baseline = resources()?;
     let peak = Arc::new(Mutex::new(baseline));
     let sampling = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let sampler = {
         let (peak, sampling) = (peak.clone(), sampling.clone());
-        std::thread::spawn(move || {
+        std::thread::spawn(move || -> std::io::Result<()> {
             while sampling.load(std::sync::atomic::Ordering::Relaxed) {
-                let now = sample();
+                let now = sample()?;
                 let mut peak = peak.lock().unwrap_or_else(PoisonError::into_inner);
                 peak.rss = peak.rss.max(now.rss);
                 peak.threads = peak.threads.max(now.threads);
@@ -506,6 +476,7 @@ async fn run_agents(agents: u64, children: usize, directory: &Path) -> Result<Re
                 drop(peak);
                 std::thread::sleep(Duration::from_millis(100));
             }
+            Ok(())
         })
     };
     let started = Instant::now();
@@ -525,19 +496,28 @@ async fn run_agents(agents: u64, children: usize, directory: &Path) -> Result<Re
         assert!(output.text.starts_with("done "), "{output:?}");
         idle_agents.push(harness);
     }
+    // The negative control's leak: descriptors each idle agent keeps, on a
+    // file outside the agents' directories so only descriptors grow.
+    let leaked_per_agent = setting::<u64>(LEAKED_DESCRIPTORS).unwrap_or(0);
+    let leak = tempfile::NamedTempFile::new().map_err(storage)?;
+    let leaked = (0..agents * leaked_per_agent)
+        .map(|_| std::fs::File::open(leak.path()))
+        .collect::<std::io::Result<Vec<_>>>()
+        .map_err(storage)?;
     let elapsed = started.elapsed();
     sampling.store(false, std::sync::atomic::Ordering::Relaxed);
     sampler
         .join()
-        .map_err(|_| Error::Storage("resource sampler panicked".into()))?;
+        .map_err(|_| Error::Storage("resource sampler panicked".into()))?
+        .map_err(storage)?;
     if crate::native_environment::variable("ACYCLIC_SCALE_DIAG").is_some() {
         diagnose(directory);
     }
-    let before_idle = resources();
+    let before_idle = resources()?;
     let idle_ms = setting("ACYCLIC_SCALE_IDLE_MS").unwrap_or(500);
     println!("scale idle begin pid={}", std::process::id());
     tokio::time::sleep(Duration::from_millis(idle_ms)).await;
-    let idle = resources();
+    let idle = resources()?;
     let (disk_bytes, disk_files) = disk_bytes(directory);
     let mut timings = std::mem::take(
         &mut *provider
@@ -546,6 +526,7 @@ async fn run_agents(agents: u64, children: usize, directory: &Path) -> Result<Re
             .unwrap_or_else(PoisonError::into_inner),
     );
     drop(idle_agents);
+    drop(leaked);
     let mut peak = *peak.lock().unwrap_or_else(PoisonError::into_inner);
     peak.watches = idle.watches;
     Ok(Report {
@@ -580,12 +561,14 @@ fn measure(agents: u64, children: usize) -> Result<Report> {
 
 /// Per-agent ceilings for the CI-sized run. Each is a ratchet: a fix that
 /// lowers a cost lowers its ceiling in the same change.
-#[cfg(target_os = "linux")]
 mod bounds {
     /// Resident memory retained per idle agent.
     pub(super) const IDLE_RSS_BYTES: PerAgent = PerAgent::whole(12 * 1024 * 1024);
-    /// Open descriptors retained per idle agent.
-    pub(super) const IDLE_FDS: PerAgent = PerAgent::whole(16);
+    /// Open descriptors retained per idle agent. Store ownership holds none
+    /// (store claims), and stream and objects journals only within the
+    /// process's descriptor cache; the core-state log and directory handles
+    /// remain.
+    pub(super) const IDLE_FDS: PerAgent = PerAgent::whole(6);
     /// inotify watches retained per idle agent.
     pub(super) const WATCHES: PerAgent = PerAgent::whole(7);
     /// Threads retained per idle agent beyond the process-wide pools: none,
@@ -600,7 +583,6 @@ mod bounds {
     use super::PerAgent;
 }
 
-#[cfg(target_os = "linux")]
 impl Report {
     fn assert_bounds(&self) {
         use bounds::*;
@@ -635,12 +617,14 @@ impl Report {
     }
 }
 
-/// The CI-sized run executes in its own process so that concurrently running
-/// tests do not perturb its process-wide counters.
-#[cfg(target_os = "linux")]
-#[test]
-fn per_agent_cost_is_bounded() -> Result<()> {
-    let output = std::process::Command::new(std::env::current_exe().map_err(storage)?)
+/// Descriptors each idle agent keeps beyond the harness's own: the negative
+/// control's leak.
+const LEAKED_DESCRIPTORS: &str = "ACYCLIC_SCALE_LEAKED_DESCRIPTORS";
+
+/// The CI-sized run, bounds asserted, in its own process so that concurrently
+/// running tests do not perturb its process-wide counters.
+fn bounded_run(leaked_per_agent: u64) -> Result<std::process::Output> {
+    std::process::Command::new(std::env::current_exe().map_err(storage)?)
         .args([concat!(module_path!(), "::ramp")
             .split_once("::")
             .map_or("", |(_, name)| name)])
@@ -649,9 +633,16 @@ fn per_agent_cost_is_bounded() -> Result<()> {
         .env("ACYCLIC_SCALE_CHILDREN", "0")
         .env("ACYCLIC_SCALE_IDLE_MS", "300")
         .env("ACYCLIC_SCALE_BOUNDS", "1")
+        .env(LEAKED_DESCRIPTORS, leaked_per_agent.to_string())
+        .env(acyclic_native_runtime::CACHED_DESCRIPTORS_VARIABLE, "16")
         .env_remove("ACYCLIC_SCALE_DIAG")
         .output()
-        .map_err(storage)?;
+        .map_err(storage)
+}
+
+#[test]
+fn per_agent_cost_is_bounded() -> Result<()> {
+    let output = bounded_run(0)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     println!("{stdout}");
     assert!(
@@ -659,6 +650,23 @@ fn per_agent_cost_is_bounded() -> Result<()> {
         "{stdout}
 {}",
         String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+/// The bound fails an agent that keeps one descriptor more than it allows,
+/// on whichever OS counts them, so the counts it checks are real.
+#[test]
+fn a_descriptor_leaked_per_agent_fails_the_bound() -> Result<()> {
+    let output = bounded_run(bounds::IDLE_FDS.0 / 1000 + 1)?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success()
+            && stdout.contains("scale agents=48 ")
+            && format!("{stdout}{stderr}").contains("idle fds/agent"),
+        "{stdout}
+{stderr}"
     );
     Ok(())
 }
@@ -678,15 +686,15 @@ fn ramp() -> Result<()> {
     let agents = crate::native_environment::variable("ACYCLIC_SCALE_AGENTS")
         .and_then(|agents| agents.into_string().ok())
         .unwrap_or_else(|| "100,1000".into());
+    // Idle stores' journals and logs hold descriptors only within the
+    // process-wide bound `ACYCLIC_CACHED_DESCRIPTORS` sets, so it bounds
+    // their total at any agent count.
     for count in agents.split(',') {
         let children = setting("ACYCLIC_SCALE_CHILDREN").unwrap_or(0);
         let report = measure(count.trim().parse().map_err(storage)?, children)?;
-        #[cfg(target_os = "linux")]
         if crate::native_environment::variable("ACYCLIC_SCALE_BOUNDS").is_some() {
             report.assert_bounds();
         }
-        #[cfg(not(target_os = "linux"))]
-        let _ = report;
     }
     Ok(())
 }

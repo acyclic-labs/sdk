@@ -19,12 +19,22 @@ pub(super) async fn spawn_blocking<T>(
 
 pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
     let limits = LocalStreamLimits::default();
-    let mut file = tempfile::tempfile()?;
+    // The claim and the journal outlive their temporary directory: releasing
+    // a removed claim file is a no-op, and the journal keeps its descriptor
+    // while the cache holds no more than its capacity.
+    let claims = tempfile::tempdir()?;
+    let path = claims.path().join(JOURNAL_FILE);
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .read(true)
+        .write(true)
+        .open(&path)?;
     let header = encode_header(limits, 0)?;
     file.write_all(&header)?;
     let journal = Journal {
-        lock: file.try_clone()?,
-        file: Arc::new(file),
+        claim: acyclic_native_runtime::StoreClaim::acquire(&claims.path().join(LOCK_FILE))?,
+        file: acyclic_native_runtime::CachedFile::new(file, &path, true, true)?,
         epoch: 0,
         operations: 0,
         bytes: header.len() as u64,
@@ -45,6 +55,7 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
         pinned: Mutex::new(None),
     });
     Ok(LocalStream {
+        handle: None,
         inner: Arc::new(LocalInner {
             provider: MemoryStream::new_with_commit_clock(
                 limits.memory,
