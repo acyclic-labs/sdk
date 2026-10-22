@@ -306,4 +306,5 @@ fn exceeded() -> Error {
 }
 
 #[cfg(test)]
+#[path = "budget/tests.rs"]
 mod tests;

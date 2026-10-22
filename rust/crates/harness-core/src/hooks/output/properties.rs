@@ -1,5 +1,4 @@
 use super::*;
-use crate::hooks::HookDiagnostic;
 use proptest::prelude::*;
 use serde_json::json;
 

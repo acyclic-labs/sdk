@@ -1,5 +1,6 @@
 use super::*;
 use crate::native_settings::{NativeSettings, SettingsConfig};
+use proptest::prelude::*;
 use serde_json::json;
 
 mod failures;
@@ -1129,4 +1130,146 @@ exit 2
         Err(Error::Process(_))
     ));
     Ok(())
+}
+
+// The stock loop binds hooks exactly when an event fires at one of its sites,
+// so a Stop-only configuration still reaches the turn-end site.
+#[test]
+fn execution_hooks_cover_every_site_the_stock_loop_owns() -> Result<()> {
+    for event in HookEvent::ALL {
+        let mut hooks = crate::hooks::Hooks::default();
+        let document = serde_json::json!({"hooks":{event.name():[{"hooks":[
+            {"type":"command","command":"true"}
+        ]}]}});
+        hooks.add_json(
+            &serde_json::to_vec(&document).map_err(|error| Error::Invalid(error.to_string()))?,
+        )?;
+        let expected = event.site() != HookSite::Prompt;
+        assert_eq!(hooks.has_execution_hooks(), expected, "{}", event.name());
+    }
+    assert!(!crate::hooks::Hooks::default().has_execution_hooks());
+    Ok(())
+}
+
+#[test]
+fn aggregate_failure_preserves_an_already_decoded_denial() -> Result<()> {
+    futures::executor::block_on(async {
+        let mut hooks = Hooks::default();
+        hooks.add_rules([HookRule {
+            on: HookEvent::SessionStart,
+            matcher: String::new(),
+            hooks: vec![
+                HookSpec {
+                    run: HookRun::Executable {
+                        executable: "deny".into(),
+                        argv: vec![],
+                    },
+                    timeout_ms: 1000,
+                    failure: HookFailure::Report,
+                },
+                HookSpec {
+                    run: HookRun::Executable {
+                        executable: "expand".into(),
+                        argv: vec![],
+                    },
+                    timeout_ms: 1000,
+                    failure: HookFailure::Report,
+                },
+            ],
+        }])?;
+        let output = hooks
+            .run_commands(
+                HookEvent::SessionStart,
+                &json!({}),
+                &ToolRegistry::default(),
+                512,
+                |hook, quota| {
+                    let stdout = match &hook.run {
+                        HookRun::Executable { executable, .. } if executable == "deny" => {
+                            br#"{"continue":false,"stopReason":"deny"}"#.to_vec()
+                        }
+                        _ => vec![0; 100],
+                    };
+                    assert!(stdout.len() <= quota, "fixture exceeds capture quota");
+                    std::future::ready(Ok((Some(0), stdout, vec![])))
+                },
+            )
+            .await?;
+        assert!(
+            output.blocks(),
+            "bounded failure discarded an explicit guard decision"
+        );
+        assert!(matches!(
+            output
+                .diagnostics
+                .first()
+                .map(|diagnostic| &diagnostic.cause),
+            Some(crate::ProcessError::OutputLimit { .. })
+        ));
+        // The former failure-policy-only fallback loses the decoded denial.
+        assert!(!HookOutput::output_limit(false).blocks());
+        Ok(())
+    })
+}
+
+#[test]
+fn runner_folds_deny_after_encoded_overflow_in_config_order() -> Result<()> {
+    futures::executor::block_on(async {
+        let mut hooks = Hooks::default();
+        hooks.add_rules([HookRule {
+            on: HookEvent::SessionStart,
+            matcher: String::new(),
+            hooks: ["expand", "deny"]
+                .into_iter()
+                .map(|command| HookSpec {
+                    run: HookRun::Executable {
+                        executable: command.into(),
+                        argv: vec![],
+                    },
+                    timeout_ms: 1000,
+                    failure: HookFailure::Report,
+                })
+                .collect(),
+        }])?;
+        let mut calls = 0;
+        let output = hooks.run_commands(HookEvent::SessionStart, &json!({}), &ToolRegistry::default(), 4096,
+            |hook, quota| {
+                calls += 1;
+                let stdout = if matches!(&hook.run, HookRun::Executable { executable, .. } if executable == "expand") {
+                    vec![0;1000]
+                } else { br#"{"continue":false,"stopReason":"deny"}"#.to_vec() };
+                assert!(stdout.len() <= quota);
+                std::future::ready(Ok((Some(0),stdout,vec![])))
+            }).await?;
+        assert_eq!(calls, 2);
+        assert!(output.blocks(), "encoded overflow bypassed a later guard");
+        assert_eq!(output.blocked.as_deref(), Some("Hook denied"));
+        assert!(matches!(
+            output
+                .diagnostics
+                .first()
+                .map(|diagnostic| &diagnostic.cause),
+            Some(crate::ProcessError::OutputLimit { .. })
+        ));
+        assert!(
+            serde_json::to_vec(&output)
+                .map_err(|error| Error::Invalid(error.to_string()))?
+                .len()
+                <= 4096
+        );
+        Ok(())
+    })
+}
+
+proptest! {
+    // Property: simultaneously live capture quotas fit one aggregate byte
+    // budget for every command count, without a synchronization primitive.
+    #[test]
+    fn capture_partitions_bound_aggregate_storage(maximum in 256u64..=65_536, count in 2usize..512) {
+        let quota = capture_quota(maximum, count);
+        prop_assert!((quota as u64) * count as u64 <= maximum);
+        // The former independent per-command limit violates the same detector.
+        let broken = maximum.min(65_536);
+        prop_assert!(broken * count as u64 > maximum);
+    }
 }

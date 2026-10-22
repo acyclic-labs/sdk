@@ -62,21 +62,3 @@ fn each_event_is_fired_by_exactly_one_site() {
         [HookEvent::SessionStart, HookEvent::UserPromptSubmit]
     );
 }
-
-// The stock loop binds hooks exactly when an event fires at one of its sites,
-// so a Stop-only configuration still reaches the turn-end site.
-#[test]
-fn execution_hooks_cover_every_site_the_stock_loop_owns() {
-    for event in HookEvent::ALL {
-        let mut hooks = crate::hooks::Hooks::default();
-        let document = serde_json::json!({"hooks":{event.name():[{"hooks":[
-            {"type":"command","command":"true"}
-        ]}]}});
-        hooks
-            .add_json(&serde_json::to_vec(&document).unwrap())
-            .unwrap();
-        let expected = event.site() != HookSite::Prompt;
-        assert_eq!(hooks.has_execution_hooks(), expected, "{}", event.name());
-    }
-    assert!(!crate::hooks::Hooks::default().has_execution_hooks());
-}

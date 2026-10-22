@@ -101,6 +101,3 @@ impl Notifications {
         Ok(())
     }
 }
-#[cfg(test)]
-#[path = "notifications_tests.rs"]
-mod tests;

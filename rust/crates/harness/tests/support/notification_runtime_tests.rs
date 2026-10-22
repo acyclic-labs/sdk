@@ -14,11 +14,11 @@ const NESTED_REJECTED: &str = "from within another executor";
 // futures executor then panics on entry, and Tokio rejects a nested runtime, so
 // a constructor that stops returning Pending to Tokio fails at once instead of
 // spinning. No clock bounds the child: its exit is the parent's only event.
-fn unnested<F: Future>(future: F) -> impl Future<Output = F::Output> {
+fn unnested<F: Future>(future: F) -> impl Future<Output = TestResult<F::Output>> {
     let mut future = Box::pin(future);
     poll_fn(move |cx| {
-        let _executor = futures::executor::enter().expect("initialization polled re-entrantly");
-        future.as_mut().poll(cx)
+        let _executor = futures::executor::enter()?;
+        future.as_mut().poll(cx).map(Ok)
     })
 }
 
@@ -57,11 +57,11 @@ fn initialization_yields_after_exhausting_tokios_cooperative_budget() -> TestRes
                 })
                 .await;
                 tokio::task::yield_now().await;
-                let projection = initialization.await;
+                let projection = initialization.await?;
                 assert!(projection.view.files().is_empty());
                 TestResult::Ok(())
             },
-        ))?;
+        ))??;
     }
 
     for nested in [false, true] {

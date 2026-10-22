@@ -85,4 +85,5 @@ impl Serialize for Envelope<'_> {
 }
 
 #[cfg(test)]
+#[path = "input/tests.rs"]
 mod tests;

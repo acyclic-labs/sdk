@@ -29,6 +29,7 @@ mod local_workspace;
 mod matchers;
 mod notification_history;
 mod notifications;
+mod notifications_tests;
 #[path = "../support/ordered_matcher.rs"]
 mod ordered_matcher;
 mod plan_query;

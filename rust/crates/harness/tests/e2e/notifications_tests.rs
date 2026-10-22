@@ -1,20 +1,21 @@
-use super::*;
-use acyclic_harness::client::AttentionEvent;
+use super::{TestResult, notifications::Notifications};
+use acyclic_harness::client::{
+    AttentionEvent, AttentionNotification, NotificationMode, TerminalNotificationProtocol,
+};
 use proptest::prelude::*;
 use serde_json::json;
-use std::path::Path;
+use std::{future::Future, path::Path};
 
 #[path = "../support/notification_runtime_tests.rs"]
 mod runtime;
 
 // Property generators run outside Tokio. Only this outer test boundary owns an
 // executor; the shared implementation always returns its pending work to it.
-fn on_runtime<T>(future: impl Future<Output = T>) -> T {
-    tokio::runtime::Builder::new_current_thread()
+fn on_runtime<T>(future: impl Future<Output = T>) -> std::io::Result<T> {
+    Ok(tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .build()
-        .unwrap()
-        .block_on(future)
+        .build()?
+        .block_on(future))
 }
 
 fn record() -> impl Strategy<Value = AttentionNotification> {
@@ -46,7 +47,7 @@ proptest! {
         operations in proptest::collection::vec((record(), any::<bool>()), 0..64),
     ) {
         on_runtime(crate::notification_history::verify(operations,
-            (NotificationMode::On, TerminalNotificationProtocol::Osc9, false), false));
+            (NotificationMode::On, TerminalNotificationProtocol::Osc9, false), false))?;
     }
 
     // The actual case codec preserves all data, defaults and typed enum values.
@@ -61,7 +62,7 @@ proptest! {
             "expect":{"presented":records.len(), "output":""}});
         if let Some(mode) = mode { value["mode"] = json!(mode); }
         let case = Notifications::parse(value).unwrap();
-        let _ = on_runtime(case.verify_history());
+        let _ = on_runtime(case.verify_history())?;
         let bytes = serde_json::to_vec(&case).unwrap();
         let decoded = Notifications::parse(serde_json::from_slice(&bytes).unwrap()).unwrap();
         prop_assert_eq!(case, decoded);
@@ -181,8 +182,10 @@ fn bounded_history(count: u64, detail: &str) -> Vec<(AttentionNotification, bool
         .map(|record| (record, false))
         .collect();
     // A rejected write must not poison subsequent removals or admission.
-    operations.push((records[0].clone(), true));
-    operations.push((records.last().unwrap().clone(), false));
+    if let (Some(first), Some(last)) = (records.first(), records.last()) {
+        operations.push((first.clone(), true));
+        operations.push((last.clone(), false));
+    }
     operations
 }
 
@@ -193,12 +196,12 @@ proptest! {
     #[test]
     fn notification_limits_are_atomic_and_recoverable(count in 120_u64..134) {
         on_runtime(crate::notification_history::verify(bounded_history(count, "Ready"),
-            (NotificationMode::Off, TerminalNotificationProtocol::Bell, false), false));
+            (NotificationMode::Off, TerminalNotificationProtocol::Bell, false), false))?;
     }
     #[test]
     fn notification_byte_limit_is_atomic(detail_length in 1_048_400_usize..1_048_650) {
         on_runtime(crate::notification_history::verify(bounded_history(1, &"x".repeat(detail_length)),
-            (NotificationMode::Off, TerminalNotificationProtocol::Bell, false), false));
+            (NotificationMode::Off, TerminalNotificationProtocol::Bell, false), false))?;
     }
 }
 
@@ -207,8 +210,14 @@ fn notification_limit_seed_and_unwrap_negative_control() -> TestResult {
     let case = Notifications::parse(serde_json::from_slice(include_bytes!(
         "../../../harness-fuzz/corpus/notification_scenario/129-files.json"
     ))?)?;
-    assert_eq!(case.records.len(), 129);
-    assert!(on_runtime(case.verify_history()).is_empty());
+    assert_eq!(
+        serde_json::to_value(&case)?
+            .get("records")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(129)
+    );
+    assert!(on_runtime(case.verify_history())?.is_empty());
     for operations in [
         bounded_history(129, "Ready"),
         bounded_history(1, &"x".repeat(1_048_576)),
