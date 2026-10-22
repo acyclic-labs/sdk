@@ -32,6 +32,7 @@ pub use acyclic_harness_search::url_fetch;
 pub mod build_metadata;
 
 pub mod client;
+pub mod package;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub mod local;
 #[cfg(any(test, feature = "test-support"))]

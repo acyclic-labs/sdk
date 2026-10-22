@@ -1,5 +1,5 @@
 [package]
-include = ["clippy.toml", "Cargo.toml", "README.md", "src/**", "tests/**", "examples/**", "fixtures/**", "conformance/**", "fuzz/corpus/**", "fuzz-context/fuzz_targets/file_guidance_input.rs", "fuzz-context/corpus/file_guidance/**"]
+include = ["clippy.toml", "Cargo.toml", "README.md", "docs/**", "src/**", "tests/**", "examples/**", "fixtures/**", "conformance/**", "fuzz/corpus/**", "fuzz-context/fuzz_targets/file_guidance_input.rs", "fuzz-context/corpus/file_guidance/**"]
 autotests = false
 autobins = false
 name = "acyclic-harness"
