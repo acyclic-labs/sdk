@@ -85,7 +85,7 @@ async fn dirty_candidate_keeps_unpublished_files_and_shared_aliases_until_public
     checkout
         .apply_authored_transaction(
             vec![AuthoredMutation::CreateFile {
-                path: path,
+                path,
                 bytes: acyclic_stream::OwnedBytes::from_static(b"dirty"),
                 metadata: FileMetadata::default(),
             }],
@@ -359,7 +359,7 @@ async fn a_shadowed_identity_keeps_256k_of_content_across_restart() {
         checkout
             .apply_authored_transaction(
                 vec![AuthoredMutation::Remove {
-                    path: path,
+                    path,
                     expected_file_id: None,
                 }],
                 WorkBudget::UNBOUNDED,

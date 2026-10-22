@@ -1,6 +1,7 @@
 //! The process-incarnation decision shared by recovery and its state model.
 use super::NativeMountError;
 
+#[derive(Clone, Copy)]
 pub(super) enum ProcessObservation {
     Absent,
     Present { started: u64, exited: bool },
