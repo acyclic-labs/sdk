@@ -128,7 +128,10 @@ macro_rules! demand_meter {
 
 demand_meter!(crate::demand::NativeDemandReadMeter);
 demand_meter!(NativeResourceAllowance);
-demand_meter!(NativeWorkWindow);
+demand_meter!(@impl NativeWorkWindow,
+    |window: &NativeWorkWindow, kind| window.read_credit(kind),
+    |window: &NativeWorkWindow| window.allocation_owner()
+);
 demand_meter!(@impl NativeInvocationView,
     |view: &NativeInvocationView, kind| match kind {
         acyclic_native_runtime::NativeOperationKind::Read => Ok(view.read_credit),

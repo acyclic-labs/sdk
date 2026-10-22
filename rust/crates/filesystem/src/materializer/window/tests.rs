@@ -371,3 +371,63 @@ fn unbounded_windows_reserve_complete_and_refund_exactly() {
         .unwrap();
     assert!(window.remaining().is_ok());
 }
+
+#[test]
+fn opening_windows_leaves_no_charge_on_the_session() {
+    const OPERATIONS: u64 = 8;
+    let session = NativeMaterializationWork::new(
+        WorkBudget {
+            allocation_operations: OPERATIONS,
+            ..budget()
+        },
+        &crate::CancellationToken::new(),
+    )
+    .unwrap();
+    let before = session.remaining().unwrap().allocation_operations;
+    for _ in 0..4 * OPERATIONS {
+        let window = session.invocation_window().unwrap();
+        // The handle's own allocation is the window's work.
+        assert_eq!(
+            window.remaining().unwrap().allocation_operations,
+            OPERATIONS - 1
+        );
+        drop(window);
+    }
+    assert_eq!(session.remaining().unwrap().allocation_operations, before);
+}
+
+#[test]
+fn native_io_of_a_view_is_charged_to_the_window_opened_on_it() {
+    let session = root();
+    let (view, _cancellation) = session.invocation_view().unwrap();
+    let copied = |work: &NativeMaterializationWork, bytes| {
+        work.runtime_meter()
+            .examine(0, bytes)
+            .map_err(|error| work.runtime_error(error))
+    };
+    let first = view.invocation_window().unwrap();
+    let second = view.invocation_window().unwrap();
+    // Each window spends its own full copy budget through native I/O.
+    copied(&first, COPIED).unwrap();
+    copied(&second, COPIED).unwrap();
+    // Direct charges and native I/O spend the same window budget.
+    exceeded(
+        &first
+            .record_admitted(WorkCounters {
+                bytes_copied: 1,
+                ..WorkCounters::UNCHARGED
+            })
+            .unwrap_err(),
+        "bytes_copied",
+    );
+    let third = view.invocation_window().unwrap();
+    third
+        .record_admitted(WorkCounters {
+            bytes_copied: COPIED,
+            ..WorkCounters::UNCHARGED
+        })
+        .unwrap();
+    exceeded(&copied(&third, 1).unwrap_err(), "bytes_copied");
+    // A recorded overrun is still work done; a refused native charge is not.
+    assert_eq!(session.receipt().bytes_copied, 3 * COPIED + 1);
+}

@@ -187,23 +187,40 @@ impl NativeMaterializationWork {
         )
     }
     /// Existing runtime meter for this context.
+    ///
+    /// Inside an invocation window, native I/O is charged exactly like a direct charge
+    /// on this context: through the window, under the invocation cancellation, resource
+    /// allowance and read credit of the view the window was opened on.
     pub fn runtime_meter(&self) -> Arc<dyn acyclic_native_runtime::NativeReadMeter> {
+        let view = self.view_meter();
+        match &self.window {
+            Some(window) if window.binds(&view) => window.clone(),
+            _ => view,
+        }
+    }
+    /// The meter of the innermost view on this context, which a window binds.
+    pub(super) fn view_meter(&self) -> Arc<dyn acyclic_native_runtime::NativeReadMeter> {
         #[cfg(feature = "native-mount")]
         if let Some(execution) = &self.execution {
             return execution.clone();
         }
-        if let Some(invocation) = &self.invocation
-            && invocation.owns_resource(self.resource.as_ref())
-        {
+        if let Some(invocation) = self.metering_invocation() {
             return invocation.clone();
         }
         if let Some(resource) = &self.resource {
             return resource.clone();
         }
-        self.window.as_ref().map_or_else(
-            || self.state.clone() as Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-            |window| window.clone(),
-        )
+        self.state.clone()
+    }
+    /// The invocation view whose read credit meters this context's native reads.
+    pub(super) fn metering_invocation(&self) -> Option<&Arc<NativeInvocationView>> {
+        #[cfg(feature = "native-mount")]
+        if self.execution.is_some() {
+            return None;
+        }
+        self.invocation
+            .as_ref()
+            .filter(|invocation| invocation.owns_resource(self.resource.as_ref()))
     }
     /// Original typed runtime failure.
     pub fn runtime_error(&self, error: std::io::Error) -> NativeTreeMaterializationError {

@@ -13,7 +13,7 @@ use std::sync::Arc;
 pub(crate) struct NativeWorkWindow {
     // Locked only under the original leaf, which serializes every window of the ledger.
     ledger: Mutex<WindowLedger>,
-    // Claimed outside every window, so charging through it never stacks two windows.
+    // The handle's live bytes, claimed on the opening context outside every window.
     metadata: NativeAllocation,
 }
 
@@ -58,14 +58,41 @@ impl WindowLedger {
 }
 
 impl NativeWorkWindow {
-    /// The shared leaf seen from this window, for native I/O metered by the plain ledger.
+    /// The context this window was opened on, outside every window.
+    fn base(&self) -> &NativeMaterializationWork {
+        self.metadata.work()
+    }
+    /// The shared leaf seen from this window, under the views of the context it was
+    /// opened on, so native I/O is charged exactly like a direct charge in the window.
     pub(super) fn with_original_leaf<T>(
         &self,
         operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
     ) -> T {
-        self.metadata
-            .work()
+        self.base()
             .state(|state| state.within_window(Some(self), operation))
+    }
+    /// Whether `view` is the meter this window's opening context used: native I/O
+    /// metered through it belongs to this window. A view opened inside the window
+    /// already charges through it.
+    pub(super) fn binds(&self, view: &Arc<dyn acyclic_native_runtime::NativeReadMeter>) -> bool {
+        std::ptr::addr_eq(Arc::as_ptr(view), Arc::as_ptr(&self.base().view_meter()))
+    }
+    pub(super) fn read_credit(
+        &self,
+        kind: acyclic_native_runtime::NativeOperationKind,
+    ) -> std::io::Result<NativeResourceCredit> {
+        match (kind, self.base().metering_invocation()) {
+            (acyclic_native_runtime::NativeOperationKind::Read, Some(invocation)) => {
+                Ok(invocation.read_credit)
+            }
+            _ => crate::demand::DemandWork::byte_credit(kind),
+        }
+    }
+    /// Allocations stay with the owner the opening view delegates them to.
+    pub(super) fn allocation_owner(
+        &self,
+    ) -> Option<Arc<dyn acyclic_native_runtime::NativeReadMeter>> {
+        self.base().view_meter().allocation_owner()
     }
     fn ledger(&self) -> crate::sync::MutexGuard<'_, WindowLedger> {
         self.ledger
@@ -89,14 +116,18 @@ impl NativeMaterializationWork {
                 Err(_) => panic!("work window Arc layout overflow"),
             }
         };
+        // The handle's live bytes stay on the shared ledger, outside every window; the
+        // allocation that creates it is this invocation's own work, so no window ever
+        // leaves a permanent charge on the session.
         let mut base = self.allocation_work();
         base.window = None;
-        let metadata = base.claim(bytes, 1, WorkCounters::UNCHARGED)?;
+        let metadata = base.claim(bytes, 0, WorkCounters::UNCHARGED)?;
         let mut work = self.allocation_work();
         work.window = Some(Arc::new(NativeWorkWindow {
             ledger: Mutex::new(WindowLedger::default()),
             metadata,
         }));
+        drop(work.claim(0, 1, WorkCounters::UNCHARGED)?);
         Ok(work)
     }
 }
