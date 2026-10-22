@@ -193,7 +193,13 @@ pub async fn capture_with_custody<T: Send + 'static>(
                 ) {
                     return Ok(output);
                 }
-                let mut process = acyclic_native_runtime::ProcessTree::spawn(&mut command)?;
+                let mut process = match &invocation.process_custody {
+                    Some(custody) => acyclic_native_runtime::ProcessTree::spawn_in_custody(
+                        &mut command,
+                        custody,
+                    )?,
+                    None => acyclic_native_runtime::ProcessTree::spawn(&mut command)?,
+                };
                 let output = process.wait_with_output(
                     timeout,
                     maximum_output,

@@ -189,17 +189,36 @@ pub(super) fn spawn_controlled(
     meter: Option<&dyn crate::NativeReadMeter>,
     custody: &mut Option<super::ProcessTree>,
 ) -> io::Result<()> {
+    spawn_in_job(command, meter, custody, None)
+}
+
+/// Spawns into a Job created under `name`, which must not already exist.
+pub(super) fn spawn_named(
+    command: &mut Command,
+    custody: &mut Option<super::ProcessTree>,
+    name: &[u16],
+) -> io::Result<()> {
+    spawn_in_job(command, None, custody, Some(name))
+}
+
+fn spawn_in_job(
+    command: &mut Command,
+    meter: Option<&dyn crate::NativeReadMeter>,
+    custody: &mut Option<super::ProcessTree>,
+    name: Option<&[u16]>,
+) -> io::Result<()> {
     *custody = Some(super::ProcessTree {
         child: None,
         guard: Guard::empty(meter.is_none()),
         output_taken: false,
         cleanup_on_drop: meter.is_none(),
+        custody: None,
     });
     let initialized = custody
         .as_mut()
         .ok_or(io::ErrorKind::NotFound)?
         .guard
-        .initialize(meter);
+        .initialize(meter, name);
     if initialized.is_err() && custody.as_ref().is_some_and(super::ProcessTree::is_reaped) {
         custody.take();
     }
@@ -283,16 +302,31 @@ impl Guard {
     #[cfg(test)]
     fn new() -> io::Result<Self> {
         let mut guard = Self::empty(true);
-        guard.initialize(None)?;
+        guard.initialize(None, None)?;
         Ok(guard)
     }
 
-    fn initialize(&mut self, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<()> {
+    fn initialize(
+        &mut self,
+        meter: Option<&dyn crate::NativeReadMeter>,
+        name: Option<&[u16]>,
+    ) -> io::Result<()> {
         super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
-            // SAFETY: unnamed Job with default security, owned on success.
-            let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            let name = name.map_or(std::ptr::null(), <[u16]>::as_ptr);
+            // SAFETY: a Job with default security and either no name or a
+            // NUL-terminated one; owned on success.
+            let job = unsafe { CreateJobObjectW(std::ptr::null(), name) };
             if job.is_null() {
                 return Err(io::Error::last_os_error());
+            }
+            // A recorded name must name only this tree's Job.
+            if !name.is_null()
+                && io::Error::last_os_error().raw_os_error()
+                    == Some(windows_sys::Win32::Foundation::ERROR_ALREADY_EXISTS.cast_signed())
+            {
+                // SAFETY: the handle CreateJobObjectW just returned.
+                unsafe { CloseHandle(job) };
+                return Err(io::ErrorKind::AlreadyExists.into());
             }
             self.job = job;
             self.active = true;

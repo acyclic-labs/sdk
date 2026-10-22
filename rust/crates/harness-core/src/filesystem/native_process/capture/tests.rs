@@ -35,6 +35,7 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
         maximum_output_bytes: 32_768,
         standard_input: None,
         mcp_stdio: None,
+        process_custody: None,
     };
     let observer = Arc::new(move |_: acyclic_native_runtime::ProcessOutput<'_>| {
         // The old capture owner occupied this runtime's only blocking worker.
@@ -164,6 +165,7 @@ mod simulation {
                 cancellation_poll_ms: 25,
                 maximum_output_bytes: 3,
                 mcp_stdio: None,
+                process_custody: None,
                 standard_input: None,
             };
             let handle = tokio::runtime::Handle::current();

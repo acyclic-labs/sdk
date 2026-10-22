@@ -59,6 +59,9 @@ pub struct LocalWorkspace {
     pub(super) state: StateArc<AsyncMutex<super::checkout_tools::State>>,
     pub(super) mounts: Arc<Mounts>,
     pub(super) context_line: String,
+    /// Custody of this owner's tool process trees; absent in an embedded
+    /// binding, whose state directory has no exclusive owner to fence it.
+    pub(super) processes: Option<Arc<acyclic_native_runtime::ProcessCustody>>,
     #[cfg(all(test, not(acyclic_harness_loom)))]
     pub(super) selection_reads: std::sync::atomic::AtomicUsize,
     #[cfg(all(test, not(acyclic_harness_loom)))]
@@ -255,6 +258,7 @@ pub(super) async fn open(
     existing: bool,
     native_mounts: bool,
     store: LocalCoreStateStore,
+    processes: Option<Arc<acyclic_native_runtime::ProcessCustody>>,
 ) -> Result<LocalWorkspace> {
     let path = std::fs::canonicalize(path).map_err(storage)?;
     #[cfg(target_os = "linux")]
@@ -385,6 +389,7 @@ pub(super) async fn open(
         state,
         context_line,
         mounts,
+        processes,
     })
 }
 
@@ -399,6 +404,7 @@ pub(super) async fn open_volume(
     operation: acyclic_fs::OperationId,
     native_mounts: bool,
     store: LocalCoreStateStore,
+    processes: Option<Arc<acyclic_native_runtime::ProcessCustody>>,
 ) -> Result<LocalWorkspace> {
     let path = directory.join("project");
     if !path.try_exists().map_err(storage)? {
@@ -454,6 +460,7 @@ pub(super) async fn open_volume(
         true,
         native_mounts,
         store,
+        processes,
     )
     .await
 }

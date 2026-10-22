@@ -1,0 +1,285 @@
+//! Custody ties a tree to its owner: once a reopened owner's fence returns,
+//! no process of a tree whose owner was killed exists, and an ordinary tree
+//! without custody demonstrably survives the same kill.
+
+use super::{ProcessCustody, ProcessTree};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::Duration;
+
+const MODE: &str = "ACYCLIC_CUSTODY_TEST_MODE";
+const ROOT: &str = "ACYCLIC_CUSTODY_TEST_ROOT";
+
+/// A long-lived program whose PID the owner publishes. On Unix it is a
+/// background grandchild, so only whole-tree custody reaches it.
+fn program(root: &Path) -> Command {
+    #[cfg(unix)]
+    {
+        let pid = root.join("pid");
+        let mut command = crate::shell_command(
+            &format!(
+                "sleep 3600 & echo $! > '{0}.tmp'; mv '{0}.tmp' '{0}'; wait",
+                pid.display()
+            ),
+            Some("sh"),
+        );
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        command
+    }
+    #[cfg(windows)]
+    {
+        let _ = root;
+        let mut command = Command::new("ping");
+        command
+            .args(["-n", "3600", "127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        command
+    }
+}
+
+/// The owner: spawns the program, publishes its PID, and lives until killed.
+#[test]
+fn custody_owner_helper() {
+    let Ok(mode) = std::env::var(MODE) else {
+        return;
+    };
+    let root = PathBuf::from(std::env::var_os(ROOT).expect("owner root"));
+    let mut command = program(&root);
+    let tree = match mode.as_str() {
+        "custodied" => {
+            let custody = ProcessCustody::open(&root.join("processes")).expect("custody");
+            Some(ProcessTree::spawn_in_custody(&mut command, &custody).expect("custodied spawn"))
+        }
+        _ => {
+            let child = command.spawn().expect("uncontained spawn");
+            #[cfg(windows)]
+            fs::write(root.join("pid"), child.id().to_string()).expect("pid");
+            drop(child);
+            None
+        }
+    };
+    #[cfg(windows)]
+    if let Some(tree) = &tree {
+        let pid = tree
+            .child
+            .as_ref()
+            .map(std::process::Child::id)
+            .expect("child id");
+        fs::write(root.join("pid.tmp"), pid.to_string()).expect("pid");
+        fs::rename(root.join("pid.tmp"), root.join("pid")).expect("pid");
+    }
+    fs::write(root.join("owner-ready"), b"ready").expect("ready");
+    let _tree = tree;
+    loop {
+        thread::park();
+    }
+}
+
+fn owner(mode: &str, root: &Path) -> std::process::Child {
+    Command::new(std::env::current_exe().expect("test executable"))
+        .args([
+            "--exact",
+            "process_tree::custody_tests::custody_owner_helper",
+            "--nocapture",
+        ])
+        .env(MODE, mode)
+        .env(ROOT, root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("owner")
+}
+
+/// Waits for the owner's readiness, then reads the program's PID.
+fn published(root: &Path, owner: &mut std::process::Child) -> u32 {
+    while !(root.join("owner-ready").exists() && root.join("pid").exists()) {
+        assert!(
+            owner.try_wait().expect("owner").is_none(),
+            "owner exited early"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    fs::read_to_string(root.join("pid"))
+        .expect("pid")
+        .trim()
+        .parse()
+        .expect("numeric pid")
+}
+
+/// An exit watch on one process, independent of its parentage.
+struct Watch {
+    #[cfg(unix)]
+    fd: std::os::fd::OwnedFd,
+    #[cfg(windows)]
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    pid: u32,
+}
+
+impl Watch {
+    /// None when no such process exists any more.
+    #[cfg(unix)]
+    fn new(pid: u32) -> Option<Self> {
+        use std::os::fd::FromRawFd as _;
+        // SAFETY: pidfd_open takes a PID and zero flags.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        let fd = libc::c_int::try_from(fd).expect("pidfd");
+        if fd < 0 {
+            let error = std::io::Error::last_os_error();
+            assert_eq!(
+                error.raw_os_error(),
+                Some(libc::ESRCH),
+                "pidfd_open: {error}"
+            );
+            return None;
+        }
+        // SAFETY: the descriptor pidfd_open just returned.
+        let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+        Some(Self { fd, pid })
+    }
+
+    #[cfg(windows)]
+    fn new(pid: u32) -> Option<Self> {
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+        };
+        // SAFETY: opening a handle to a published PID; owned below.
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid) };
+        if handle.is_null() {
+            let error = std::io::Error::last_os_error();
+            // ERROR_INVALID_PARAMETER: no process has this PID.
+            assert_eq!(error.raw_os_error(), Some(87), "OpenProcess: {error}");
+            return None;
+        }
+        Some(Self { handle, pid })
+    }
+
+    /// Whether the process has exited, without waiting.
+    fn exited(&self) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd as _;
+            let mut ready = libc::pollfd {
+                fd: self.fd.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: one initialized pollfd; zero timeout.
+            let polled = unsafe { libc::poll(&raw mut ready, 1, 0) };
+            assert!(polled >= 0, "poll: {}", std::io::Error::last_os_error());
+            polled == 1
+        }
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+            use windows_sys::Win32::System::Threading::WaitForSingleObject;
+            // SAFETY: an owned process handle; zero timeout.
+            unsafe { WaitForSingleObject(self.handle, 0) == WAIT_OBJECT_0 }
+        }
+    }
+
+    fn kill(&self) {
+        #[cfg(unix)]
+        // SAFETY: the published, still-watched process.
+        unsafe {
+            libc::kill(libc::pid_t::try_from(self.pid).expect("pid"), libc::SIGKILL);
+        }
+        #[cfg(windows)]
+        // SAFETY: an owned handle with terminate access.
+        unsafe {
+            windows_sys::Win32::System::Threading::TerminateProcess(self.handle, 1);
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Watch {
+    fn drop(&mut self) {
+        // SAFETY: the handle opened in `new`.
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.handle) };
+    }
+}
+
+fn killed_owner_leaves(mode: &str) -> (tempfile::TempDir, Watch) {
+    let root = tempfile::tempdir().expect("root");
+    let mut owner = owner(mode, root.path());
+    let pid = published(root.path(), &mut owner);
+    let watch = Watch::new(pid).expect("the published program is running");
+    owner.kill().expect("kill owner");
+    owner.wait().expect("reap owner");
+    (root, watch)
+}
+
+#[test]
+fn reopened_owner_fence_returns_only_after_the_killed_owners_tree_is_dead() {
+    let (root, watch) = killed_owner_leaves("custodied");
+    let processes = root.path().join("processes");
+    ProcessCustody::open(&processes)
+        .expect("reopen custody")
+        .fence_stale()
+        .expect("fence");
+    assert!(watch.exited(), "a killed owner's tree outlived the fence");
+    assert_eq!(fs::read_dir(&processes).expect("records").count(), 0);
+}
+
+/// Negative control: the same program outside custody survives its owner.
+#[test]
+fn an_uncustodied_tree_outlives_its_killed_owner() {
+    let (_root, watch) = killed_owner_leaves("uncontained");
+    let survived = !watch.exited();
+    watch.kill();
+    assert!(survived, "the oracle cannot observe a surviving tree");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn custodied_tree_reports_the_programs_outcome_and_leaves_no_descendant() {
+    use std::os::unix::process::ExitStatusExt as _;
+    let root = tempfile::tempdir().expect("root");
+    let custody = ProcessCustody::open(&root.path().join("processes")).expect("custody");
+    let pid = root.path().join("pid");
+    for (script, code, signal) in [
+        ("exit 7", Some(7), None),
+        ("kill -TERM $$", None, Some(libc::SIGTERM)),
+    ] {
+        let mut command = crate::shell_command(
+            &format!("sleep 3600 & echo $! > '{}'; {script}", pid.display()),
+            Some("sh"),
+        );
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
+        let status = tree.wait(Duration::from_secs(30)).expect("wait");
+        let descendant = Watch::new(
+            fs::read_to_string(&pid)
+                .expect("pid")
+                .trim()
+                .parse()
+                .expect("numeric pid"),
+        );
+        // The warden drains the tree before it exits, so the reaped status
+        // already orders the descendant's death.
+        assert!(
+            descendant.is_none_or(|watch| watch.exited()),
+            "a descendant outlived its program"
+        );
+        tree.terminate(None).expect("terminate");
+        assert_eq!(status.code(), code);
+        assert_eq!(status.signal(), signal);
+        assert_eq!(
+            fs::read_dir(root.path().join("processes"))
+                .expect("records")
+                .count(),
+            0
+        );
+    }
+}

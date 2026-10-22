@@ -198,6 +198,7 @@ impl CheckoutTools {
             ))),
             mounts: mounts.unwrap_or_else(|| Arc::clone(&self.workspace.mounts)),
             context_line: self.workspace.context_line().into(),
+            processes: self.workspace.processes.clone(),
             path: path.clone(),
             fresh: false,
             mount_directory: self.workspace.mount_directory.clone(),
@@ -317,6 +318,7 @@ impl CheckoutTools {
             #[cfg(all(test, not(acyclic_harness_loom)))]
             mount_advances: std::sync::atomic::AtomicUsize::new(0),
             context_line: mounts.context_line(),
+            processes: self.workspace.processes.clone(),
             mounts: Arc::clone(&mounts),
             // This cached physical handle must not retain its owning cache.
             state: StateArc::new(AsyncMutex::new(State::new(

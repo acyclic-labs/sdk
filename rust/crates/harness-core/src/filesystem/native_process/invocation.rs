@@ -54,6 +54,9 @@ pub struct Invocation {
     pub maximum_output_bytes: usize,
     pub mcp_stdio: Option<crate::mcp::stdio::McpStdioRequest>,
     pub standard_input: Option<Vec<u8>>,
+    /// Owner custody that ties the process tree to this host and fences it
+    /// on reopen; `None` spawns an ordinary owned tree.
+    pub process_custody: Option<std::sync::Arc<acyclic_native_runtime::ProcessCustody>>,
 }
 
 impl From<&NativeProcessRequest> for Invocation {
@@ -70,6 +73,7 @@ impl From<&NativeProcessRequest> for Invocation {
             maximum_output_bytes: request.maximum_output_bytes as usize,
             mcp_stdio: request.mcp_stdio.clone(),
             standard_input: request.standard_input.clone(),
+            process_custody: None,
         }
     }
 }

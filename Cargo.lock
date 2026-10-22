@@ -2956,6 +2956,7 @@ dependencies = [
  "clap",
  "dirs",
  "futures",
+ "libc",
  "proptest",
  "rustix-openpty",
  "serde",

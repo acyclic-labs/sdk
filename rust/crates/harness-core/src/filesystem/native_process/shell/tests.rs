@@ -92,6 +92,7 @@ fn invocation(root: &Path) -> Invocation {
         cancellation_poll_ms: 25,
         maximum_output_bytes: 32_768,
         mcp_stdio: None,
+        process_custody: None,
         standard_input: None,
     }
 }

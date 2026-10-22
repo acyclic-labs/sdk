@@ -247,6 +247,7 @@ pub(super) fn spawn_controlled(
             cleanup_on_drop: meter.is_none(),
             spawn_resources: SpawnResources::default(),
             prepared_spawn: None,
+            custody: None,
         });
         Ok(())
     })
@@ -359,6 +360,7 @@ pub(super) fn spawn_closed_with_arguments(
             cleanup_on_drop: false,
             spawn_resources: SpawnResources::default(),
             prepared_spawn: None,
+            custody: None,
         });
         owner.spawn_resources = retained;
     }
@@ -471,6 +473,7 @@ impl SpawnObjects {
                             cleanup_on_drop: false,
                             spawn_resources: SpawnResources::default(),
                             prepared_spawn: None,
+                            custody: None,
                         });
                     }
                     spawn_status(status)

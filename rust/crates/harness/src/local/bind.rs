@@ -161,6 +161,7 @@ async fn bound_workspace(
                     false,
                     acyclic_fs::LocalCoreStateStore::new(directory.join("workspace"))
                         .with_ownership_anchor(state_owner),
+                    None,
                 )
                 .await?,
             ))

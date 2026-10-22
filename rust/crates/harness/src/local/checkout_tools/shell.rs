@@ -32,6 +32,7 @@ impl CheckoutTools {
             maximum_output_bytes: maximum_output,
             standard_input: None,
             mcp_stdio: None,
+            process_custody: workspace.processes.clone(),
         };
         let invocation = native_process::shell::prepare(
             input,
