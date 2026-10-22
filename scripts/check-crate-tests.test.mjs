@@ -47,7 +47,9 @@ test("real Cargo compilations overlap; restoring the shared build lock is reject
         writeFileSync(join(crate, "Cargo.toml"), `[package]\nname = "${name}"\nversion = "0.0.0"\nedition = "2024"\n`);
         writeFileSync(join(crate, "src/lib.rs"), "");
         writeFileSync(join(crate, "build.rs"), `fn main() {
-    let barrier = std::path::PathBuf::from(std::env::var_os("COMPILE_BARRIER").unwrap());
+    println!("cargo:rerun-if-env-changed=COMPILE_BARRIER");
+    let Some(barrier) = std::env::var_os("COMPILE_BARRIER") else { return };
+    let barrier = std::path::PathBuf::from(barrier);
     std::fs::write(barrier.join("${name}"), b"ready").unwrap();
     let started = std::time::Instant::now();
     while !barrier.join("${name === "first" ? "second" : "first"}").exists() {
@@ -59,16 +61,25 @@ test("real Cargo compilations overlap; restoring the shared build lock is reject
       }
       let output = "";
       const target = join(fixture, "target");
-      const failures = await checkCrateTests(["first", "second"], 2, target, async (args, buildDirectory) => {
+      const run = async (args, buildDirectory, measure) => {
+        const env = { ...process.env, CODEX_HOME: join(fixture, "codex"),
+          CARGO_BUILD_BUILD_DIR: shared ? target : buildDirectory };
+        delete env.COMPILE_BARRIER;
+        if (measure) env.COMPILE_BARRIER = barrier;
         const child = spawn("cargo", args, {
           cwd: fixture, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
-          env: { ...process.env, COMPILE_BARRIER: barrier, CODEX_HOME: join(fixture, "codex"),
-            CARGO_BUILD_BUILD_DIR: shared ? target : buildDirectory },
+          env,
         });
         child.stdout.on("data", chunk => { output += chunk; });
         child.stderr.on("data", chunk => { output += chunk; });
         return await new Promise((resolve, reject) => child.on("error", reject).on("close", resolve));
-      });
+      };
+      // Compile/link both build scripts before the barrier measures overlap.
+      // The tracked environment change reruns them without rebuilding them.
+      assert.deepEqual(await checkCrateTests(["first", "second"], 2, target,
+        (args, buildDirectory) => run(args, buildDirectory, false)), [], output);
+      const failures = await checkCrateTests(["first", "second"], 2, target,
+        (args, buildDirectory) => run(args, buildDirectory, true));
       if (shared) {
         assert.ok(failures.length > 0, "the original shared lock must prevent overlap");
         assert.match(output, /compilations did not overlap/);
