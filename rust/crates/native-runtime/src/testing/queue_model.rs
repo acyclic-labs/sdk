@@ -35,13 +35,7 @@ fn capacity(fault: Fault) {
         let mut admission = AdmissionState::new();
         admission.broken_wake = matches!(fault, Fault::Wake);
         admission.broken_accounting = matches!(fault, Fault::Accounting);
-        let workers = NativeWorkers {
-            sender,
-            admission: Arc::new(Mutex::new(admission)),
-            threads: 1,
-            #[cfg(feature = "test-support")]
-            host_pool: crate::testing::HostPool::new(1),
-        };
+        let workers = NativeWorkers::single(sender, admission);
         let mut filler = run_blocking_io(|| (), None).unwrap();
         assert!(
             workers
@@ -317,13 +311,7 @@ fn waiter_charge(cancel: bool, broken: bool) {
         let receiver = Arc::new(Mutex::new(receiver));
         let mut admission = AdmissionState::new();
         admission.broken_charge = broken;
-        let workers = NativeWorkers {
-            sender,
-            admission: Arc::new(Mutex::new(admission)),
-            threads: 1,
-            #[cfg(feature = "test-support")]
-            host_pool: crate::testing::HostPool::new(1),
-        };
+        let workers = NativeWorkers::single(sender, admission);
         let mut filler = run_blocking_io(|| (), None).unwrap();
         assert!(
             workers

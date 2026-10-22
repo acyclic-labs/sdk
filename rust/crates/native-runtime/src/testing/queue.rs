@@ -23,13 +23,7 @@ impl Wake for Woken {
 
 fn saturated_queue(bypass: bool) -> io::Result<()> {
     let (sender, receiver) = mpsc::sync_channel(1);
-    let workers = NativeWorkers {
-        sender,
-        admission: Arc::new(Mutex::new(AdmissionState::new())),
-        threads: 1,
-        #[cfg(feature = "test-support")]
-        host_pool: crate::testing::HostPool::new(1),
-    };
+    let workers = NativeWorkers::single(sender, AdmissionState::new());
     let filler = run_blocking_io(|| (), None)?
         .pending
         .take()

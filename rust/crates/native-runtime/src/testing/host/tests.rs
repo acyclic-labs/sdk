@@ -1,8 +1,5 @@
 use super::*;
 
-// Saturation fixtures share the process-wide physical pool.
-static SATURATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 #[test]
 fn abandoned_replay_releases_parked_native_and_blocking_workers() {
     for native in [false, true] {
@@ -287,13 +284,21 @@ fn inline_metered_waits_retain_the_original_host() {
 
 #[test]
 fn unscoped_physical_workers_leave_the_driver_available_to_reply() {
-    let _fixture = SATURATION.lock().unwrap_or_else(PoisonError::into_inner);
+    // Occupies every worker of the process-global host pool, so runs alone.
+    if crate::tests::passed_in_exclusive_process(
+        "testing::host::tests::unscoped_physical_workers_leave_the_driver_available_to_reply",
+    )
+    .unwrap()
+    {
+        return;
+    }
     let workers = crate::workers(&crate::BLOCKING_WORKERS, false).unwrap();
     let (started, receive) = std::sync::mpsc::channel();
     let mut occupants = Vec::new();
     let mut replies = Vec::new();
     let mut cx = std::task::Context::from_waker(Waker::noop());
-    for index in 0..workers.threads {
+    let threads = workers.exclusive_threads();
+    for index in 0..threads {
         let (reply, waiting) = std::sync::mpsc::channel();
         replies.push(reply);
         let started = started.clone();
@@ -311,7 +316,7 @@ fn unscoped_physical_workers_leave_the_driver_available_to_reply() {
         assert!(completion.as_mut().poll(&mut cx).is_pending());
         occupants.push(completion);
     }
-    for _ in 0..workers.threads {
+    for _ in 0..threads {
         receive.recv().unwrap();
     }
     let host = Host::for_workers(workers);
@@ -334,10 +339,17 @@ fn unscoped_physical_workers_leave_the_driver_available_to_reply() {
 
 #[test]
 fn queued_workers_leave_the_executor_available_to_reply() {
-    let _fixture = SATURATION.lock().unwrap_or_else(PoisonError::into_inner);
+    // Occupies every worker of the process-global host pool, so runs alone.
+    if crate::tests::passed_in_exclusive_process(
+        "testing::host::tests::queued_workers_leave_the_executor_available_to_reply",
+    )
+    .unwrap()
+    {
+        return;
+    }
     let count = crate::workers(&crate::BLOCKING_WORKERS, false)
         .unwrap()
-        .threads;
+        .exclusive_threads();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -505,10 +517,17 @@ proptest::proptest! {
 
 #[test]
 fn saturated_native_submission_leaves_the_simulated_deadline_available() {
-    let _fixture = SATURATION.lock().unwrap_or_else(PoisonError::into_inner);
+    // Occupies every worker of the process-global host pool, so runs alone.
+    if crate::tests::passed_in_exclusive_process(
+        "testing::host::tests::saturated_native_submission_leaves_the_simulated_deadline_available",
+    )
+    .unwrap()
+    {
+        return;
+    }
     let count = crate::workers(&crate::BLOCKING_WORKERS, false)
         .unwrap()
-        .threads;
+        .exclusive_threads();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .start_paused(true)

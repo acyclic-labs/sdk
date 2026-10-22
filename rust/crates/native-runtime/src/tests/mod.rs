@@ -40,6 +40,22 @@ fn completion_waker() -> Waker {
     Waker::from(Arc::new(ThreadWake(std::thread::current())))
 }
 
+/// Polls a pending host task until a worker queue accepted its job, parking
+/// until its admission waker fires between polls.
+fn submit<T>(task: &mut NativeCompletion<T>) {
+    let waker = completion_waker();
+    while task.pending.is_some() {
+        assert!(
+            Pin::new(&mut *task)
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        if task.pending.is_some() {
+            std::thread::park();
+        }
+    }
+}
+
 fn complete<T>(future: impl Future<Output = io::Result<T>>) -> io::Result<T> {
     let deadline = Instant::now() + Duration::from_secs(10);
     let waker = completion_waker();
@@ -55,20 +71,27 @@ fn complete<T>(future: impl Future<Output = io::Result<T>>) -> io::Result<T> {
     }
 }
 
+const EXCLUSIVE_CHILD: &str = "ACYCLIC_NATIVE_RUNTIME_EXCLUSIVE_TEST";
+
+/// Whether this process runs a single test started by
+/// [`passed_in_exclusive_process`], so that test owns the process-global pools.
+pub(crate) fn in_exclusive_process() -> bool {
+    std::env::var_os(EXCLUSIVE_CHILD).is_some()
+}
+
 /// Runs `test` alone in a fresh test process and returns true here once it
 /// passed there; returns false inside that process, which runs the body.
 ///
 /// The worker pools are process-global, so a test that asserts exact charges
 /// or forces admission order must not share them with concurrent tests.
 pub(crate) fn passed_in_exclusive_process(test: &str) -> io::Result<bool> {
-    const CHILD: &str = "ACYCLIC_NATIVE_RUNTIME_EXCLUSIVE_TEST";
-    if std::env::var_os(CHILD).is_some_and(|name| name == test) {
+    if std::env::var_os(EXCLUSIVE_CHILD).is_some_and(|name| name == test) {
         return Ok(false);
     }
     let output = crate::process_output(
         std::process::Command::new(std::env::current_exe()?)
             .args(["--exact", test, "--nocapture"])
-            .env(CHILD, test),
+            .env(EXCLUSIVE_CHILD, test),
         Duration::from_secs(120),
         8 * 1024 * 1024,
     )?;
@@ -91,7 +114,7 @@ pub(crate) struct Saturation {
 
 impl Saturation {
     pub(crate) fn new(pool: &'static LazyLock<io::Result<NativeWorkers>>) -> io::Result<Self> {
-        let threads = workers(pool, false)?.threads;
+        let threads = workers(pool, false)?.exclusive_threads();
         let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let mut held = Vec::new();
@@ -126,9 +149,7 @@ impl Saturation {
             if held.len() == threads {
                 // Every worker holds one gated job, so queued jobs stay queued.
                 for _ in 0..threads {
-                    started_rx
-                        .recv_timeout(Duration::from_secs(10))
-                        .map_err(io::Error::other)?;
+                    started_rx.recv().map_err(io::Error::other)?;
                 }
             }
         }

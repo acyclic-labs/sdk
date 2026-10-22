@@ -14,11 +14,42 @@ mod job;
 pub(crate) struct NativeWorkers {
     pub(crate) sender: mpsc::SyncSender<NativeJob>,
     pub(crate) admission: Arc<QueueMutex<AdmissionState>>,
-    /// Worker threads draining `sender`; tests use it to occupy every worker.
+    /// Worker threads draining `sender`. Private: a test reads it only through
+    /// [`NativeWorkers::exclusive_threads`], which proves the test owns the pool.
     #[cfg(test)]
-    pub(crate) threads: usize,
+    threads: usize,
     #[cfg(feature = "test-support")]
     pub(crate) host_pool: Arc<crate::testing::HostPool>,
+}
+
+#[cfg(test)]
+impl NativeWorkers {
+    /// A one-worker pool around `sender`, for tests that drive its queue by hand.
+    pub(crate) fn single(sender: mpsc::SyncSender<NativeJob>, admission: AdmissionState) -> Self {
+        Self {
+            sender,
+            admission: Arc::new(QueueMutex::new(admission)),
+            threads: 1,
+            #[cfg(feature = "test-support")]
+            host_pool: crate::testing::HostPool::new(1),
+        }
+    }
+
+    /// The worker count, for a test that occupies every worker of this pool.
+    ///
+    /// The global pools are fixed-size and shared by every test in the
+    /// process. Two such fixtures each hold part of the pool while waiting for
+    /// the rest (a circular wait), and while one holds it every other test's
+    /// host job queues behind it. So this panics unless the process runs only
+    /// the calling test (see [`crate::tests::passed_in_exclusive_process`]).
+    pub(crate) fn exclusive_threads(&self) -> usize {
+        assert!(
+            crate::tests::in_exclusive_process(),
+            "a test that occupies every worker of a process-global pool must run alone \
+             (crate::tests::passed_in_exclusive_process)"
+        );
+        self.threads
+    }
 }
 
 // Receive lock -> channel lock. Both are released before queue admission, and

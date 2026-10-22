@@ -97,21 +97,8 @@ fn host_task_panic_preserves_payload_and_retires_controls() -> io::Result<()> {
             },
             Some((meter.clone(), observed)),
         )?;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            assert!(
-                Pin::new(&mut task)
-                    .poll(&mut Context::from_waker(&completion_waker()))
-                    .is_pending()
-            );
-            match entered.try_recv() {
-                Ok(()) => break,
-                Err(mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
-                    std::thread::park_timeout(Duration::from_millis(1));
-                }
-                Err(error) => return Err(io::Error::other(error)),
-            }
-        }
+        submit(&mut task);
+        entered.recv().map_err(io::Error::other)?;
         if observed {
             release.send(()).map_err(io::Error::other)?;
             let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -183,20 +170,9 @@ fn measured_sync_wait_cancellation_wake_drains_real_read_prefix() -> io::Result<
             },
             Some((meter.clone(), false)),
         )?;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while task.pending.is_some() {
-            assert!(
-                Pin::new(&mut task)
-                    .poll(&mut Context::from_waker(&completion_waker()))
-                    .is_pending()
-            );
-            if Instant::now() >= deadline {
-                return Err(io::ErrorKind::TimedOut.into());
-            }
-            std::thread::park_timeout(Duration::from_millis(1));
-        }
+        submit(&mut task);
         let release = || {
-            entered.recv_timeout(Duration::from_secs(10)).unwrap();
+            entered.recv().unwrap();
             meter.cancelled.store(true, Ordering::Release);
             release_tx.send(()).unwrap();
         };
