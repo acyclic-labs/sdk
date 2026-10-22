@@ -139,10 +139,21 @@ impl Hub {
             } else {
                 ("acyclic-watch-service", Self::serve_forever)
             };
+            // A spawn can return before the new thread has set its OS name.
+            // Tests census the physical pool, so observe entry before making
+            // that pool visible to their first subscription.
+            #[cfg(test)]
+            let (ready, entered) = std::sync::mpsc::channel();
             std::thread::Builder::new()
                 .name(name.into())
-                .spawn(move || body(self))?;
+                .spawn(move || {
+                    #[cfg(test)]
+                    let _ = ready.send(());
+                    body(self);
+                })?;
             *started += 1;
+            #[cfg(test)]
+            entered.recv().map_err(io::Error::other)?;
         }
         Ok(())
     }
