@@ -872,7 +872,8 @@ fn blocking_restore_retries_real_platform_lock_contention()
                 fs2::lock_contended_error().raw_os_error()
             );
             // Release only after the OS has returned genuine contention.
-            // The retry decision still consumes that exact error.
+            // An inherited descriptor must not extend the test's ownership.
+            fs2::FileExt::unlock(held.as_ref().expect("first lock remains held"))?;
             drop(held.take());
         }
         result
