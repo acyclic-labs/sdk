@@ -55,6 +55,27 @@ async fn execute(
     execute_with(workspace, catalog, settings, operation, mode, ("hello", 0)).await
 }
 
+/// Replaces the checkout at the same path and runs the same operation there.
+/// A new checkout must run it afresh: it must neither replay nor refuse its
+/// predecessor's state.
+async fn recreate(
+    workspace: &Path,
+    catalog: &Path,
+    settings: &Path,
+    operation: OperationId,
+) -> std::io::Result<()> {
+    std::fs::remove_dir_all(workspace)?;
+    std::fs::create_dir(workspace)?;
+    let output = execute(workspace, catalog, settings, operation, Mode::Recreated).await;
+    assert!(String::from_utf8_lossy(&output).contains("fixture answer"));
+    let states = std::fs::read_dir(settings.join("acyclic/harness"))?.count();
+    assert_eq!(
+        states, 2,
+        "the new checkout inherited its predecessor's state"
+    );
+    Ok(())
+}
+
 async fn execute_with(
     workspace: &Path,
     catalog: &Path,
@@ -365,23 +386,8 @@ async fn scenario(mode: Mode) {
     // A second real process restores the same request/result instead of generating again.
     execute(&workspace, &catalog, &settings, operation, mode).await;
     if matches!(mode, Mode::Recreated) {
-        // A new checkout at the same path must run even the same operation
-        // afresh: it must neither replay nor refuse its predecessor's state.
-        std::fs::remove_dir_all(&workspace).unwrap();
-        std::fs::create_dir(&workspace).unwrap();
-        let output = execute(&workspace, &catalog, &settings, operation, mode).await;
-        assert!(
-            String::from_utf8(output)
-                .unwrap()
-                .contains("fixture answer")
-        );
-        let states = std::fs::read_dir(settings.join("acyclic/harness"))
-            .unwrap()
-            .count();
-        assert_eq!(
-            states, 2,
-            "the new checkout inherited its predecessor's state"
-        );
+        let recreated = recreate(&workspace, &catalog, &settings, operation).await;
+        assert!(recreated.is_ok(), "{recreated:?}");
     }
     let mut generated = 0;
     let mut counted = 0;

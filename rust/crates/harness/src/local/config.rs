@@ -8,13 +8,13 @@ pub(super) enum StateLocation {
 
 impl StateLocation {
     pub(super) fn resolve(
-        self,
+        &self,
         project: &LocalProject,
         checkout: Option<&owner::Checkout>,
     ) -> Result<PathBuf> {
         match self {
-            Self::Directory(directory) => Ok(directory),
-            Self::ProjectRoot(root) => owner::state_directory_in(&root, project, checkout),
+            Self::Directory(directory) => Ok(directory.clone()),
+            Self::ProjectRoot(root) => owner::state_directory_in(root, project, checkout),
         }
     }
 }
