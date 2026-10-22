@@ -131,6 +131,61 @@ async fn first_request_declares_project_and_user_skills_without_loading_bodies()
 }
 
 #[tokio::test]
+async fn overlapping_user_roots_are_scanned_once_before_the_first_request() -> TestResult {
+    let root = super::local_workspace::temporary()?;
+    let home = super::local_workspace::temporary()?;
+    let state = super::local_workspace::temporary()?;
+    write(
+        home.path(),
+        ".agents/skills/greet2/SKILL.md",
+        "---\nname: greet2\ndescription: Greet formally\n---\nbody",
+    )?;
+    let model = provider(1);
+    let harness = LocalHarness::open(
+        config(root.path(), home.path(), state.path(), model.clone())?.settings(
+            SettingsConfig::new(root.path(), home.path()).codex_home(home.path().join(".agents")),
+        ),
+    )
+    .await?;
+    assert_eq!(harness.run("inventory").await?.text, "done");
+    let skills = catalog(&model, 0)?;
+    let [skill] = skills.as_slice() else {
+        return Err("expected one skill from the overlapping roots".into());
+    };
+    assert_eq!(skill.name, "greet2");
+    assert_eq!(skill.description, "Greet formally");
+    Ok(())
+}
+
+#[tokio::test]
+async fn different_user_roots_still_reject_duplicate_skill_names() -> TestResult {
+    let root = super::local_workspace::temporary()?;
+    let home = super::local_workspace::temporary()?;
+    let state = super::local_workspace::temporary()?;
+    for prefix in [".agents", ".claude"] {
+        write(
+            home.path(),
+            &format!("{prefix}/skills/greet2/SKILL.md"),
+            "---\nname: greet2\ndescription: Greet formally\n---\nbody",
+        )?;
+    }
+    let model = provider(1);
+    let harness = LocalHarness::open(config(
+        root.path(),
+        home.path(),
+        state.path(),
+        model.clone(),
+    )?)
+    .await?;
+    assert!(matches!(
+        harness.run("inventory").await,
+        Err(Error::Conflict(_))
+    ));
+    assert!(model.requests().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn lazy_skill_source_survives_reopen_and_retains_materialized_bytes() -> TestResult {
     let root = super::local_workspace::temporary()?;
     let home = super::local_workspace::temporary()?;

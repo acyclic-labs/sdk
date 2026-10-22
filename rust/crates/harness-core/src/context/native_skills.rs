@@ -135,6 +135,11 @@ impl NativeSkills {
         user_roots: Vec<PathBuf>,
     ) -> Result<Arc<Self>> {
         std::fs::create_dir_all(&directory).map_err(storage)?;
+        let mut roots = std::collections::HashSet::new();
+        let user_roots = user_roots
+            .into_iter()
+            .filter(|root| roots.insert(root.clone()))
+            .collect();
         let workspace = workspace
             .map(|(view, filesystem, store)| {
                 let cancellation = acyclic_fs::CancellationToken::new();
@@ -162,7 +167,7 @@ impl NativeSkills {
         }))
     }
 
-    fn retain(
+    async fn retain(
         &self,
         source: &NativeDemandSource,
         root: &Path,
@@ -178,31 +183,25 @@ impl NativeSkills {
             node,
         };
         self.retain_record(&RetainedSource::Native(Box::new(record)))
+            .await
     }
 
-    fn retain_record(&self, record: &RetainedSource) -> Result<PinnedContextPath> {
+    async fn retain_record(&self, record: &RetainedSource) -> Result<PinnedContextPath> {
+        self.retain_record_with(record, write_retained_record).await
+    }
+
+    async fn retain_record_with(
+        &self,
+        record: &RetainedSource,
+        write: impl FnOnce(&Path, &[u8], blake3::Hash) -> Result<()> + Send + 'static,
+    ) -> Result<PinnedContextPath> {
         let bytes = serde_json::to_vec(record).map_err(storage)?;
         let digest = blake3::hash(&bytes);
-        let destination = self.directory.join(format!("{digest}.json"));
-        if !destination.exists() {
-            let temporary = self
-                .directory
-                .join(crate::identity::fresh_uuid().to_string());
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)
-                .map_err(storage)?;
-            file.write_all(&bytes).map_err(storage)?;
-            file.sync_all().map_err(storage)?;
-            drop(file);
-            if let Err(error) = std::fs::rename(&temporary, &destination) {
-                std::fs::remove_file(&temporary).map_err(storage)?;
-                if !destination.exists() {
-                    return Err(storage(error));
-                }
-            }
-        }
+        let directory = self.directory.clone();
+        acyclic_native_runtime::run_blocking_io(move || write(&directory, &bytes, digest), None)
+            .map_err(Error::process_io)?
+            .await
+            .map_err(Error::process_io)??;
         Ok(PinnedContextPath {
             root: ContextRoot {
                 volume: self.journal.clone(),
@@ -604,7 +603,7 @@ impl NativeSkills {
             .map_err(storage)?;
         Ok(Some(parse_skill_metadata(
             prefix.bytes.as_ref(),
-            self.retain(source, root, &path, node)?,
+            self.retain(source, root, &path, node).await?,
         )?))
     }
 
@@ -662,7 +661,9 @@ impl ProjectCatalog<'_> {
             .ok_or_else(|| Error::Invalid("skill length is absent".into()))?;
         let pinned = match &lookup {
             acyclic_fs::LazyLookup::Source { node, .. } => {
-                self.sources.retain(&self.native, self.root, &path, *node)?
+                self.sources
+                    .retain(&self.native, self.root, &path, *node)
+                    .await?
             }
             acyclic_fs::LazyLookup::Authored { record, .. }
             | acyclic_fs::LazyLookup::Shadow { record, .. } => {
@@ -673,7 +674,8 @@ impl ProjectCatalog<'_> {
                         volume: self.sources.journal.clone(),
                         cut: self.cut,
                         file_id: record.file_id,
-                    })))?
+                    })))
+                    .await?
             }
         };
         self.view.retire_lookup((lookup, allocation), accounting)?;
@@ -703,6 +705,31 @@ fn validate(skills: &[SkillMetadata]) -> Result<()> {
     }
     Ok(())
 }
+
+fn write_retained_record(directory: &Path, bytes: &[u8], digest: blake3::Hash) -> Result<()> {
+    let destination = directory.join(format!("{digest}.json"));
+    if !destination.exists() {
+        let temporary = directory.join(crate::identity::fresh_uuid().to_string());
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(storage)?;
+        file.write_all(bytes).map_err(storage)?;
+        file.sync_all().map_err(storage)?;
+        drop(file);
+        if let Err(error) = std::fs::rename(&temporary, &destination) {
+            std::fs::remove_file(&temporary).map_err(storage)?;
+            if !destination.exists() {
+                return Err(storage(error));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;
 
 fn storage(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
