@@ -67,7 +67,7 @@ proptest! {
         volume in any::<bool>(), workspace in any::<bool>(), hidden in any::<bool>(),
         revision in 1u8..=2, description in ".{0,32}",
     ) {
-        let builtins = ["bash", "fs", "read", "write", "edit", "spawn", "send", "wait", "archive"];
+        let builtins = [acyclic_harness::tools::shell::PLATFORM.name, "fs", "read", "write", "edit", "spawn", "send", "wait", "archive"];
         let mut registry = ToolRegistry::default();
         for &index in &names {
             for version in 1..=2 {
@@ -125,7 +125,15 @@ fn exported_defaults_can_replace_a_complete_bound_registry() -> Result<()> {
 fn defaults_are_exported_additive_and_explicitly_disabled() -> Result<()> {
     let defaults = acyclic_harness::tools::defaults()?;
     let names = [
-        "bash", "fs", "read", "write", "edit", "spawn", "send", "wait", "archive",
+        acyclic_harness::tools::shell::PLATFORM.name,
+        "fs",
+        "read",
+        "write",
+        "edit",
+        "spawn",
+        "send",
+        "wait",
+        "archive",
     ];
     for name in names {
         assert_eq!(
@@ -209,7 +217,13 @@ fn defaults_cannot_replace_custom_tools_or_broaden_bound_authority() -> Result<(
         .bindings(Bindings::local())
         .agent_loop(Arc::new(DelegatingLoop))
         .build()?;
-    for name in ["bash", "fs", "read", "write", "edit"] {
+    for name in [
+        acyclic_harness::tools::shell::PLATFORM.name,
+        "fs",
+        "read",
+        "write",
+        "edit",
+    ] {
         assert!(matches!(
             bound.runtime().tool(name),
             Err(Error::NotFound(_))
@@ -241,7 +255,7 @@ fn registration_and_grants_follow_available_bindings() -> Result<()> {
             }
             let harness = builder.build()?;
             for (name, available) in [
-                ("bash", workspace),
+                (acyclic_harness::tools::shell::PLATFORM.name, workspace),
                 ("fs", workspace),
                 ("read", volume),
                 ("write", volume),
@@ -272,7 +286,14 @@ fn registration_and_grants_follow_available_bindings() -> Result<()> {
         .build()?;
     assert_eq!(harness.runtime().tool("read")?.name, "read");
     for name in [
-        "bash", "fs", "write", "edit", "spawn", "send", "wait", "archive",
+        acyclic_harness::tools::shell::PLATFORM.name,
+        "fs",
+        "write",
+        "edit",
+        "spawn",
+        "send",
+        "wait",
+        "archive",
     ] {
         assert!(matches!(
             harness.runtime().tool(name),
@@ -334,7 +355,7 @@ async fn workspace_commands_reject_unbound_and_forged_calls_without_native_alloc
     let storage = MemoryHarnessStorage::new(AgentId::new(), limits.file_bytes).await?;
     run_admitted_file_case(&storage, limits, |task| async move {
         let tools = acyclic_harness::tools::defaults()?;
-        for name in ["bash", "fs"] {
+        for name in [acyclic_harness::tools::shell::PLATFORM.name, "fs"] {
             let tool = tools
                 .get(name, None, None)?
                 .ok_or_else(|| Error::NotFound(name.into()))?;
@@ -430,9 +451,13 @@ async fn workspace_commands_use_the_calling_runtime_without_approval() -> Result
                 "commands",
                 "1",
                 move |context, (): ()| async move {
-                    for (name, command) in
-                        [("bash", "printf captured"), ("fs", "diff agents/child")]
-                    {
+                    for (name, command) in [
+                        (
+                            acyclic_harness::tools::shell::PLATFORM.name,
+                            "printf captured",
+                        ),
+                        ("fs", "diff agents/child"),
+                    ] {
                         let result: Value = context
                             .call(&context.tool(name)?, json!({"command":command}))
                             .await?;

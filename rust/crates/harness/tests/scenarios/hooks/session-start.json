@@ -50,4 +50,33 @@
    }
   ]
  }
-}
+,
+ "platforms":{
+  "windows": {
+    "home": {
+      ".claude/settings.json": {
+        "hooks": {
+          "SessionStart": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "type": "command",
+                  "shell": "powershell",
+                  "command": "$null=[Console]::In.ReadToEnd(); [Console]::Write('HOOK-SESSION-LYNX')"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "results": {
+        "call": {
+          "name": "powershell"
+        }
+      }
+    }
+  }
+}}

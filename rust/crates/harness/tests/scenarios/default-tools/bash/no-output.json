@@ -1,2 +1,25 @@
 {"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"bash",
-  "arguments":{"command":"printf changed > plans/a.md"}},{"type":"event","kind":"completed","metadata":null}],"done"]}
+  "arguments":{"command":"printf changed > plans/a.md"}},{"type":"event","kind":"completed","metadata":null}],"done"],
+ "platforms":{
+  "windows": {
+    "turns": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "call",
+          "name": "powershell",
+          "arguments": {
+            "command": "[IO.File]::WriteAllText('plans/a.md', 'changed', [Text.UTF8Encoding]::new($false))"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "done"
+    ]
+  }
+}}

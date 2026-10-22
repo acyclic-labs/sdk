@@ -1,3 +1,26 @@
 {"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"bash",
   "arguments":{"command":"printf changed | cat > plans/a.md; printf pipe"}},{"type":"event","kind":"completed","metadata":null}],"done"],
- "expect":{"results":{"call":{"content":{"value":{"stdout":"pipe"}}}}}}
+ "expect":{"results":{"call":{"content":{"value":{"stdout":"pipe"}}}}},
+ "platforms":{
+  "windows": {
+    "turns": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "call",
+          "name": "powershell",
+          "arguments": {
+            "command": "'changed' | ForEach-Object { [IO.File]::WriteAllText('plans/a.md', $_, [Text.UTF8Encoding]::new($false)) }; [Console]::Write('pipe')"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "done"
+    ]
+  }
+}}

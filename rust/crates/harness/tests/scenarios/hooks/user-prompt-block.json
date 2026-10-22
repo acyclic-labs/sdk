@@ -52,4 +52,25 @@
    }
   ]
  }
-}
+,
+ "platforms":{
+  "windows": {
+    "home": {
+      ".claude/settings.json": {
+        "hooks": {
+          "UserPromptSubmit": [
+            {
+              "hooks": [
+                {
+                  "type": "command",
+                  "shell": "powershell",
+                  "command": "$null=[Console]::In.ReadToEnd(); [Console]::Write('{\"decision\":\"block\",\"reason\":\"HOOK-BLOCK-KITE\"}')"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+}}

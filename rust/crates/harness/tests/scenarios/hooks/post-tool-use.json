@@ -50,4 +50,33 @@
    }
   ]
  }
-}
+,
+ "platforms":{
+  "windows": {
+    "home": {
+      ".claude/settings.json": {
+        "hooks": {
+          "PostToolUse": [
+            {
+              "matcher": "PowerShell",
+              "hooks": [
+                {
+                  "type": "command",
+                  "shell": "powershell",
+                  "command": "$null=[Console]::In.ReadToEnd(); [Console]::Write('{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"HOOK-POST-HERON\"}}')"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "results": {
+        "call": {
+          "name": "powershell"
+        }
+      }
+    }
+  }
+}}

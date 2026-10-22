@@ -1,4 +1,15 @@
 {"seed":{"plans/a.md":"before\n"},
  "expect":{"wire":[{"file":null,
   "files":[{"key":{"Plan":"a"},"channel":null}],"removed":[]}],
-  "files":{"plans/a.md":"changed"},"results":{"call":{"name":"bash","content":{"kind":"json","value":{"success":true,"exit_code":0,"stdout":"","stderr":"","stop":null}}}}}}
+  "files":{"plans/a.md":"changed"},"results":{"call":{"name":"bash","content":{"kind":"json","value":{"success":true,"exit_code":0,"stdout":"","stderr":"","stop":null}}}}},
+ "platforms":{
+  "windows": {
+    "expect": {
+      "results": {
+        "call": {
+          "name": "powershell"
+        }
+      }
+    }
+  }
+}}

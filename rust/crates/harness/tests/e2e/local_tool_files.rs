@@ -21,7 +21,9 @@ pub(super) fn calls(turns: &[ScriptedTurn]) -> Vec<(u64, ToolCall)> {
                 _ => &[],
             };
             events.iter().filter_map(move |event| match event {
-                ScriptedEvent::Event(ModelEvent::ToolCall(call)) if call.name == "bash" => {
+                ScriptedEvent::Event(ModelEvent::ToolCall(call))
+                    if call.name == acyclic_harness::tools::shell::PLATFORM.name =>
+                {
                     Some((step as u64, call.clone()))
                 }
                 _ => None,

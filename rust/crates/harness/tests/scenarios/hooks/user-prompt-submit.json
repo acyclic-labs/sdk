@@ -49,4 +49,32 @@
    }
   ]
  }
-}
+,
+ "platforms":{
+  "windows": {
+    "home": {
+      ".claude/settings.json": {
+        "hooks": {
+          "UserPromptSubmit": [
+            {
+              "hooks": [
+                {
+                  "type": "command",
+                  "shell": "powershell",
+                  "command": "$inputObject=[Console]::In.ReadToEnd() | ConvertFrom-Json; if ($inputObject.prompt -eq 'Use the stock bash tool.') { [Console]::Write('HOOK-PROMPT-WREN') } else { exit 1 }"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "results": {
+        "call": {
+          "name": "powershell"
+        }
+      }
+    }
+  }
+}}

@@ -175,4 +175,115 @@
   "routes": {
     "author a project file": "worker"
   }
-}
+,
+ "platforms":{
+  "windows": {
+    "models": {
+      "parent": [
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "seed-private",
+            "name": "powershell",
+            "arguments": {
+              "command": "[IO.File]::WriteAllText('.volumes/scratch/parent-secret', 'parent-private', [Text.UTF8Encoding]::new($false))"
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "spawn",
+            "name": "spawn",
+            "arguments": {
+              "task": "author a project file",
+              "name": "worker"
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "wait",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "worker"
+              ]
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "diff",
+            "name": "fs",
+            "arguments": {
+              "command": "diff agents/worker"
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "merge",
+            "name": "fs",
+            "arguments": {
+              "command": "merge agents/worker"
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        "parent finished"
+      ],
+      "worker": [
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "child-shell",
+            "name": "powershell",
+            "arguments": {
+              "command": "[IO.File]::WriteAllText('.volumes/scratch/note', 'child-private', [Text.UTF8Encoding]::new($false)); [IO.File]::WriteAllText('newkid.txt', 'kid', [Text.UTF8Encoding]::new($false)); [Console]::Write('ok')"
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        "child finished"
+      ]
+    }
+  }
+}}

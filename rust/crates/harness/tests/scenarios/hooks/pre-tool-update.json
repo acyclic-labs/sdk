@@ -42,4 +42,38 @@
    }
   }
  }
-}
+,
+ "platforms":{
+  "windows": {
+    "home": {
+      ".claude/settings.json": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "PowerShell",
+              "hooks": [
+                {
+                  "type": "command",
+                  "shell": "powershell",
+                  "command": "$null=[Console]::In.ReadToEnd(); [Console]::Write('{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"updatedInput\":{\"command\":\"[IO.File]::WriteAllText(''plans/a.md'', ''hooked'', [Text.UTF8Encoding]::new($false)); [Console]::Write(''replaced'')\"}}}')"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "arguments": {
+        "call": {
+          "command": "[IO.File]::WriteAllText('plans/a.md', 'hooked', [Text.UTF8Encoding]::new($false)); [Console]::Write('replaced')"
+        }
+      },
+      "results": {
+        "call": {
+          "name": "powershell"
+        }
+      }
+    }
+  }
+}}

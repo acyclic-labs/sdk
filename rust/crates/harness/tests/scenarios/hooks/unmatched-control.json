@@ -51,4 +51,45 @@
    }
   ]
  }
-}
+,
+ "platforms":{
+  "windows": {
+    "home": {
+      ".claude/settings.json": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Edit",
+              "hooks": [
+                {
+                  "type": "command",
+                  "shell": "powershell",
+                  "command": "$null=[Console]::In.ReadToEnd(); [Console]::Write('{\"decision\":\"block\",\"reason\":\"HOOK-WRONG-TOOL\"}')"
+                }
+              ]
+            }
+          ],
+          "PostToolUse": [
+            {
+              "matcher": "Read",
+              "hooks": [
+                {
+                  "type": "command",
+                  "shell": "powershell",
+                  "command": "$null=[Console]::In.ReadToEnd(); [Console]::Write('{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"HOOK-WRONG-TOOL\"}}')"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "results": {
+        "call": {
+          "name": "powershell"
+        }
+      }
+    }
+  }
+}}

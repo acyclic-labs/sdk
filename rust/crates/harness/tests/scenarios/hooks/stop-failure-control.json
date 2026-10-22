@@ -39,4 +39,33 @@
    }
   }
  }
-}
+,
+ "platforms":{
+  "windows": {
+    "home": {
+      ".claude/settings.json": {
+        "hooks": {
+          "Stop": [
+            {
+              "hooks": [
+                {
+                  "type": "command",
+                  "shell": "powershell",
+                  "onFailure": "block",
+                  "command": "$null=[Console]::In.ReadToEnd(); [Console]::Error.Write('HOOK-STOP-FAILED'); exit 1"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "results": {
+        "call": {
+          "name": "powershell"
+        }
+      }
+    }
+  }
+}}

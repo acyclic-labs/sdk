@@ -1,3 +1,26 @@
 {"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"bash",
   "arguments":{"command":"printf changed > plans/a.md; printf diagnostic >&2"}},{"type":"event","kind":"completed","metadata":null}],"done"],
- "expect":{"results":{"call":{"content":{"value":{"stderr":"diagnostic"}}}}}}
+ "expect":{"results":{"call":{"content":{"value":{"stderr":"diagnostic"}}}}},
+ "platforms":{
+  "windows": {
+    "turns": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "call",
+          "name": "powershell",
+          "arguments": {
+            "command": "[IO.File]::WriteAllText('plans/a.md', 'changed', [Text.UTF8Encoding]::new($false)); [Console]::Error.Write('diagnostic')"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "done"
+    ]
+  }
+}}

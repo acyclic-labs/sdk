@@ -80,4 +80,52 @@
    }
   }
  }
-}
+,
+ "platforms":{
+  "windows": {
+    "home": {
+      ".claude/settings.json": {
+        "hooks": {
+          "Stop": [
+            {
+              "hooks": [
+                {
+                  "type": "command",
+                  "shell": "powershell",
+                  "command": "$inputObject=[Console]::In.ReadToEnd() | ConvertFrom-Json; if (!$inputObject.stop_hook_active) { [Console]::Write('{\"decision\":\"block\",\"reason\":\"HOOK-STOP-FINCH\"}') }"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "turns": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "call",
+          "name": "powershell",
+          "arguments": {
+            "command": "[IO.File]::WriteAllText('plans/a.md', 'changed', [Text.UTF8Encoding]::new($false)); [Console]::Write('visible')"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "done",
+      "finished"
+    ],
+    "expect": {
+      "results": {
+        "call": {
+          "name": "powershell"
+        }
+      }
+    }
+  }
+}}

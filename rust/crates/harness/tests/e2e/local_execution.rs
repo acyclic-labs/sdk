@@ -377,9 +377,15 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         // Only a failed case may stop before dispatch; validate() requires it.
         return Ok(());
     }
-    if ["bash", "fs", "read", "write", "edit"]
-        .iter()
-        .any(|name| !requests[0].tools.iter().any(|tool| tool.name == *name))
+    if [
+        acyclic_harness::tools::shell::PLATFORM.name,
+        "fs",
+        "read",
+        "write",
+        "edit",
+    ]
+    .iter()
+    .any(|name| !requests[0].tools.iter().any(|tool| tool.name == *name))
     {
         return Err("local scenario did not use the production default toolset".into());
     }

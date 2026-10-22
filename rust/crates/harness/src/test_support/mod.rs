@@ -29,7 +29,7 @@ pub fn local_harness_config(
         let mut config = config;
         config.environment_platform = crate::native_environment::PlatformPolicy::Fixture {
             os: std::env::consts::OS.into(),
-            shell: "bash".into(),
+            shell: crate::tools::shell::PLATFORM.name.into(),
         };
         config
     };
@@ -75,5 +75,11 @@ mod tests {
             config.settings.is_some(),
             "test configuration must select settings"
         );
+        #[cfg(feature = "native-execution")]
+        assert!(matches!(
+            config.environment_platform,
+            crate::native_environment::PlatformPolicy::Fixture { shell, .. }
+                if shell == crate::tools::shell::PLATFORM.name
+        ));
     }
 }

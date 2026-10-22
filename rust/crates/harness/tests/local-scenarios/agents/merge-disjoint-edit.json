@@ -190,4 +190,147 @@
   "routes": {
     "fix calc.py in the fork": "worker"
   }
-}
+,
+ "platforms":{
+  "windows": {
+    "models": {
+      "parent": [
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "append",
+            "name": "powershell",
+            "arguments": {
+              "command": "[IO.File]::AppendAllText('parent.txt', \"PARENT_ONLY`n\", [Text.UTF8Encoding]::new($false))"
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "spawn",
+            "name": "spawn",
+            "arguments": {
+              "task": "fix calc.py in the fork",
+              "name": "worker"
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "wait",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "worker"
+              ]
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "diff",
+            "name": "fs",
+            "arguments": {
+              "command": "diff agents/worker"
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "merge",
+            "name": "fs",
+            "arguments": {
+              "command": "merge agents/worker"
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        "parent finished"
+      ],
+      "worker": [
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "inspect",
+            "name": "powershell",
+            "arguments": {
+              "command": "Get-ChildItem -Force; [Console]::Write([IO.File]::ReadAllText('calc.py'))"
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "edit",
+            "name": "powershell",
+            "arguments": {
+              "command": "[IO.File]::WriteAllText('calc.py', ([IO.File]::ReadAllText('calc.py').Replace('return a - b', 'return a + b')), [Text.UTF8Encoding]::new($false)); [IO.File]::WriteAllText('child-new.txt', \"CHILD_NEW`n\", [Text.UTF8Encoding]::new($false))"
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "test",
+            "name": "powershell",
+            "arguments": {
+              "command": "$env:PYTHONDONTWRITEBYTECODE='1'; python -m unittest discover -v; exit $LASTEXITCODE"
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        "child finished"
+      ]
+    }
+  }
+}}

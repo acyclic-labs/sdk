@@ -1,3 +1,27 @@
 {"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"bash",
   "arguments":{"command":"printf changed > a.md; printf nested","cwd":"plans"}},{"type":"event","kind":"completed","metadata":null}],"done"],
- "expect":{"results":{"call":{"content":{"value":{"stdout":"nested"}}}}}}
+ "expect":{"results":{"call":{"content":{"value":{"stdout":"nested"}}}}},
+ "platforms":{
+  "windows": {
+    "turns": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "call",
+          "name": "powershell",
+          "arguments": {
+            "command": "[IO.File]::WriteAllText('a.md', 'changed', [Text.UTF8Encoding]::new($false)); [Console]::Write('nested')",
+            "cwd": "plans"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "done"
+    ]
+  }
+}}

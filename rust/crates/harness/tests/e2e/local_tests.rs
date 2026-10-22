@@ -201,7 +201,11 @@ proptest::proptest! {
 async fn bash_family_rejects_corrupted_stdout_with_the_same_persisted_bytes() -> crate::TestResult {
     reject_changed_command(
         "default-tools/bash/stdout.json",
-        "printf changed > plans/a.md; printf CORRUPTED",
+        if cfg!(windows) {
+            "[IO.File]::WriteAllText('plans/a.md', 'changed', [Text.UTF8Encoding]::new($false)); [Console]::Write('CORRUPTED')"
+        } else {
+            "printf changed > plans/a.md; printf CORRUPTED"
+        },
     )
     .await
 }

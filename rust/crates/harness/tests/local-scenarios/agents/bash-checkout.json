@@ -242,4 +242,229 @@
   "routes": {
     "run shell in the prepared fork": "worker"
   }
-}
+,
+ "platforms":{
+  "windows": {
+    "models": {
+      "parent": [
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "seed-private",
+            "name": "powershell",
+            "arguments": {
+              "command": "[IO.File]::WriteAllText('.volumes/scratch/parent-secret', 'parent-private', [Text.UTF8Encoding]::new($false))"
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "spawn",
+            "name": "spawn",
+            "arguments": {
+              "task": "run shell in the prepared fork",
+              "name": "worker"
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "wait",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "worker"
+              ]
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "merge",
+            "name": "fs",
+            "arguments": {
+              "command": "merge agents/worker"
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        "parent finished"
+      ],
+      "worker": [
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "child-shell",
+            "name": "powershell",
+            "arguments": {
+              "command": "if (Test-Path -LiteralPath .volumes/scratch/parent-secret) { exit 1 }; [IO.File]::WriteAllText('.volumes/scratch/parent-secret', 'child-private', [Text.UTF8Encoding]::new($false)); [IO.File]::WriteAllText('child.txt', 'shell-result', [Text.UTF8Encoding]::new($false)); [Console]::Write('child-shell-ok')"
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "side",
+            "name": "fs",
+            "arguments": {
+              "command": "checkout -b side"
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "side-shell",
+            "name": "powershell",
+            "arguments": {
+              "command": "[IO.File]::WriteAllText('side.txt', 'side-result', [Text.UTF8Encoding]::new($false)); [Console]::Write([IO.File]::ReadAllText('side.txt'))"
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "main",
+            "name": "fs",
+            "arguments": {
+              "command": "checkout main"
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "main-shell",
+            "name": "powershell",
+            "arguments": {
+              "command": "if (Test-Path -LiteralPath side.txt) { exit 1 }; [Console]::Write([IO.File]::ReadAllText('child.txt'))"
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        "child finished"
+      ]
+    },
+    "expect": {
+      "model_requests": {
+        "worker": [
+          {},
+          {
+            "messages": [
+              {
+                "role": "tool",
+                "content": {
+                  "kind": "tool_result",
+                  "call_id": "child-shell",
+                  "name": "powershell",
+                  "content": {
+                    "kind": "json",
+                    "value": {
+                      "success": true,
+                      "stdout": "child-shell-ok"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          {},
+          {
+            "messages": [
+              {
+                "role": "tool",
+                "content": {
+                  "kind": "tool_result",
+                  "call_id": "side-shell",
+                  "name": "powershell",
+                  "content": {
+                    "kind": "json",
+                    "value": {
+                      "success": true,
+                      "stdout": "side-result"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          {},
+          {
+            "messages": [
+              {
+                "role": "tool",
+                "content": {
+                  "kind": "tool_result",
+                  "call_id": "main-shell",
+                  "name": "powershell",
+                  "content": {
+                    "kind": "json",
+                    "value": {
+                      "success": true,
+                      "stdout": "shell-result"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}}

@@ -22,6 +22,14 @@ async fn active_controls_archive_drains_descendants_and_preserves_siblings() -> 
     exercise(Control::Archive).await
 }
 
+fn running_shell_command() -> &'static str {
+    if cfg!(windows) {
+        "[Console]::Write('child-ready'); Start-Sleep -Seconds 300"
+    } else {
+        "printf child-ready; exec sleep 300"
+    }
+}
+
 async fn exercise(control: Control) -> Result<()> {
     let directory = tempfile::tempdir().map_err(storage)?;
     let (dispatches, mut dispatched) = tokio::sync::mpsc::unbounded_channel();
@@ -30,8 +38,8 @@ async fn exercise(control: Control) -> Result<()> {
             ScriptedTurn::Events(vec![
                 ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
                     "running-shell".into(),
-                    "bash".into(),
-                    serde_json::json!({"command":"printf child-ready; exec sleep 300"}),
+                    crate::tools::shell::PLATFORM.name.into(),
+                    serde_json::json!({"command":running_shell_command()}),
                 ))),
                 ScriptedEvent::Event(ModelEvent::Completed {
                     metadata: serde_json::Value::Null,

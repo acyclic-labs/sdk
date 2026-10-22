@@ -1,3 +1,26 @@
 {"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"bash",
   "arguments":{"command":"printf changed > plans/a.md; printf partial; exit 42"}},{"type":"event","kind":"completed","metadata":null}],"done"],
- "expect":{"results":{"call":{"content":{"value":{"success":false,"exit_code":42,"stdout":"partial"}}}}}}
+ "expect":{"results":{"call":{"content":{"value":{"success":false,"exit_code":42,"stdout":"partial"}}}}},
+ "platforms":{
+  "windows": {
+    "turns": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "call",
+          "name": "powershell",
+          "arguments": {
+            "command": "[IO.File]::WriteAllText('plans/a.md', 'changed', [Text.UTF8Encoding]::new($false)); [Console]::Write('partial'); exit 42"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "done"
+    ]
+  }
+}}

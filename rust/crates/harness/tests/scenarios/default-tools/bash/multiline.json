@@ -1,3 +1,26 @@
 {"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"bash",
   "arguments":{"command":"printf 'one\\ntwo\\n' > plans/a.md"}},{"type":"event","kind":"completed","metadata":null}],"done"],
- "expect":{"files":{"plans/a.md":"one\ntwo\n"}}}
+ "expect":{"files":{"plans/a.md":"one\ntwo\n"}},
+ "platforms":{
+  "windows": {
+    "turns": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "call",
+          "name": "powershell",
+          "arguments": {
+            "command": "[IO.File]::WriteAllText('plans/a.md', \"one`ntwo`n\", [Text.UTF8Encoding]::new($false))"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "done"
+    ]
+  }
+}}

@@ -31,8 +31,11 @@ pub fn load_value(root: &Path, path: &Path) -> Result<Value, String> {
         match std::fs::read(&defaults) {
             Ok(bytes) => merge(
                 &mut merged,
-                serde_json::from_slice(&bytes)
-                    .map_err(|e| format!("{}: {e}", defaults.display()))?,
+                platform_case(
+                    serde_json::from_slice(&bytes)
+                        .map_err(|e| format!("{}: {e}", defaults.display()))?,
+                    cfg!(windows),
+                )?,
             ),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(format!("{}: {error}", defaults.display())),
@@ -40,10 +43,72 @@ pub fn load_value(root: &Path, path: &Path) -> Result<Value, String> {
     }
     merge(
         &mut merged,
-        serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?,
+        platform_case(
+            serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?,
+            cfg!(windows),
+        )?,
     );
     Ok(merged)
+}
+
+// Native shells have different languages. Fixtures author both programs and keep
+// the same file, output, lifecycle and wire oracles; execution never translates
+// an arbitrary model command or adds a shell alias to the production toolset.
+fn platform_case(mut value: Value, windows: bool) -> Result<Value, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Platforms {
+        windows: Option<serde_json::Map<String, Value>>,
+        unix: Option<serde_json::Map<String, Value>>,
+    }
+    let Some(overrides) = value.as_object_mut().and_then(|v| v.remove("platforms")) else {
+        return Ok(value);
+    };
+    let overrides: Platforms = serde_json::from_value(overrides).map_err(|e| e.to_string())?;
+    if let Some(selected) = if windows {
+        overrides.windows
+    } else {
+        overrides.unix
+    } {
+        merge(&mut value, Value::Object(selected));
+    }
+    Ok(value)
+}
+
+#[test]
+fn authored_platform_programs_keep_their_oracles_and_case_precedence() {
+    use serde_json::json;
+    let fixture = json!({
+        "turns":["unix program"], "expect":{"stdout":"same bytes","exit":7},
+        "platforms":{"windows":{"turns":["windows program"]}}
+    });
+    for windows in [false, true] {
+        let mut actual = platform_case(fixture.clone(), windows).unwrap();
+        assert_eq!(
+            actual["turns"],
+            json!([if windows {
+                "windows program"
+            } else {
+                "unix program"
+            }])
+        );
+        assert_eq!(actual["expect"], fixture["expect"]);
+        assert!(actual.get("platforms").is_none());
+        // A case's common field still overrides its parent's platform default.
+        merge(
+            &mut actual,
+            platform_case(json!({"turns":[]}), windows).unwrap(),
+        );
+        assert_eq!(actual["turns"], json!([]));
+    }
+    for bad in [
+        json!({"windwos":{}}),
+        json!({"windows":[]}),
+        json!({"unix":"program"}),
+    ] {
+        assert!(platform_case(json!({"platforms":bad}), true).is_err());
+    }
 }
 
 fn merge(base: &mut Value, delta: Value) {

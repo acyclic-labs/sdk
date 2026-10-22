@@ -87,4 +87,23 @@
       ]
     }
   }
-}
+,
+ "platforms":{
+  "windows": {
+    "expect": {
+      "toolsets": {
+        "parent": [
+          "powershell",
+          "fs",
+          "read",
+          "write",
+          "edit",
+          "spawn",
+          "send",
+          "wait",
+          "archive"
+        ]
+      }
+    }
+  }
+}}
