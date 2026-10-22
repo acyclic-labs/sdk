@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Select gate roots and their checkout-local Cargo dependencies."""
+import json
 import pathlib
 import shlex
 import subprocess
@@ -57,7 +58,16 @@ def packages(checkout):
             if target not in manifests or "package" not in manifests[target]:
                 raise ValueError(f"untracked local dependency: {path}: {alias}: {target}")
             pending.append(manifests[target]["package"]["name"])
-    return sorted(selected)
+    # Path dependencies outside the workspace can be traversed, but cargo test
+    # cannot select them as roots when they have dev-dependencies.
+    metadata = json.loads(subprocess.check_output(
+        ["cargo", "metadata", "--no-deps", "--format-version", "1", "--offline"],
+        cwd=root,
+    ))
+    member_ids = set(metadata["workspace_members"])
+    members = {package["name"] for package in metadata["packages"]
+               if package["id"] in member_ids}
+    return sorted(selected & members)
 
 
 if __name__ == "__main__":
