@@ -145,7 +145,7 @@ fn open_windows_named_with_options<W: NativeHostWork>(
     access: fs::FILE_ACCESS_RIGHTS,
     disposition: nt::NTCREATEFILE_CREATE_DISPOSITION,
     options: nt::NTCREATEFILE_CREATE_OPTIONS,
-    attributes: u32,
+    attributes: win::OBJECT_ATTRIBUTE_FLAGS,
     work: &mut W,
 ) -> Result<File, W::Error> {
     let attributes = windows::Wdk::Foundation::OBJECT_ATTRIBUTES {
@@ -185,7 +185,7 @@ fn open_windows_named_with_options<W: NativeHostWork>(
                     0,
                 )
             };
-            if attributes.Attributes & win::OBJ_DONT_REPARSE != 0
+            if (attributes.Attributes & win::OBJ_DONT_REPARSE).0 != 0
                 && status.0 == 0xC000_050B_u32.cast_signed()
             {
                 return Err(io::Error::new(

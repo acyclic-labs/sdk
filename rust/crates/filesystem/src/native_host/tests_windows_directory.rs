@@ -52,7 +52,7 @@ fn component_opens_preserve_identity_and_exact_work_for_both_dispositions()
         }
         let path = test_path(name);
         let mut work = ordinary_work();
-        let (result, events) = acyclic_test_support::differential::observe(
+        let (result, events) = acyclic_test_support::differential::observe::<_, _, &'static str>(
             || stat_probe::Probe::rescan(false),
             |probe| {
                 let result = directory_path(&root.directory, &path, create, &mut work);
@@ -70,7 +70,7 @@ fn component_opens_preserve_identity_and_exact_work_for_both_dispositions()
             test_root(&temporary.path().join(name))?.identity()
         );
         let mut control = ordinary_work();
-        let (result, events) = acyclic_test_support::differential::observe(
+        let (result, events) = acyclic_test_support::differential::observe::<_, _, &'static str>(
             || stat_probe::Probe::rescan(false),
             |probe| {
                 let result = open_windows_directory(&root.directory, &path, create, &mut control);
