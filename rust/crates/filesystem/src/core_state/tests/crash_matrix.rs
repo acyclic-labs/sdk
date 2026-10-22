@@ -1,23 +1,77 @@
-//! Independent physical WAL cuts share the existing native host service.
+//! Bounded physical WAL-cut supervisors leave native host I/O available.
 use super::*;
-use futures::FutureExt as _;
-use std::{future::Future, panic::AssertUnwindSafe, sync::Arc};
+use std::{panic::AssertUnwindSafe, sync::Arc};
 
-// Drain every accepted operation before propagating any panic. In particular,
-// the parent temporary directory outlives all hard-kills and recovery checks.
-async fn finish_jobs<F: Future>(jobs: Vec<F>) -> Vec<F::Output> {
-    let outcomes = futures::future::join_all(
-        jobs.into_iter()
-            .map(|job| AssertUnwindSafe(job).catch_unwind()),
-    )
-    .await;
-    outcomes
-        .into_iter()
-        .map(|result| match result {
-            Ok(value) => value,
-            Err(panic) => std::panic::resume_unwind(panic),
-        })
-        .collect()
+// A process supervisor can wait indefinitely for a child or crash marker.
+// Keep those waits off the shared native host-I/O service: provider opens and
+// terminal cleanup must make progress while every crash supervisor is busy.
+fn cut_workers() -> usize {
+    std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .saturating_mul(2)
+        .clamp(2, 16)
+}
+
+// Preserve the original service's aggregate process bound across independent
+// crash matrices, while reserving the native host service for actual host I/O.
+static ACTIVE_CUTS: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+static CUT_FINISHED: std::sync::Condvar = std::sync::Condvar::new();
+
+fn catch_cut(job: impl FnOnce() -> usize) -> std::thread::Result<usize> {
+    let mut active = ACTIVE_CUTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    while *active >= cut_workers() {
+        active = CUT_FINISHED
+            .wait(active)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
+    *active += 1;
+    drop(active);
+    let outcome = std::panic::catch_unwind(AssertUnwindSafe(job));
+    let mut active = ACTIVE_CUTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *active -= 1;
+    drop(active);
+    CUT_FINISHED.notify_one();
+    outcome
+}
+
+fn finish_cuts<F: FnOnce() -> usize + Send + 'static>(jobs: Vec<F>) -> Vec<usize> {
+    let workers = cut_workers().min(jobs.len());
+    let jobs = std::sync::Mutex::new(jobs.into_iter());
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let _inline = acyclic_native_runtime::InlineBlocking::enter();
+                    let mut outcomes = Vec::new();
+                    loop {
+                        let job = jobs.lock().unwrap().next();
+                        let Some(job) = job else { break };
+                        outcomes.push(catch_cut(job));
+                    }
+                    outcomes
+                })
+            })
+            .collect();
+        // Join every supervisor before inspecting any panic. The temporary
+        // directory therefore outlives all child kills and recovery reads.
+        let outcomes: Vec<_> = workers
+            .into_iter()
+            .flat_map(|worker| worker.join().unwrap())
+            .collect();
+        let mut finished: Vec<_> = outcomes
+            .into_iter()
+            .map(|outcome| match outcome {
+                Ok(point) => point,
+                Err(panic) => std::panic::resume_unwind(panic),
+            })
+            .collect();
+        finished.sort_unstable();
+        finished
+    })
 }
 
 pub(in crate::core_state) fn assert_core_commits_are_crash_atomic(owned: bool) {
@@ -40,21 +94,13 @@ pub(in crate::core_state) fn assert_core_commits_are_crash_atomic(owned: bool) {
         .map(|point| {
             let directory = directory.path().to_path_buf();
             let snapshots = snapshots.clone();
-            acyclic_native_runtime::run_blocking_io(
-                move || {
-                    // This is an existing host worker, outside Tokio. Its synchronous
-                    // recovery reads may execute nested host work on this same worker.
-                    let _blocking = acyclic_native_runtime::InlineBlocking::enter();
-                    assert_eq!(run_cut(&directory, &snapshots, owned, point), None);
-                    point
-                },
-                None,
-            )
-            .unwrap()
+            move || {
+                assert_eq!(run_cut(&directory, &snapshots, owned, point), None);
+                point
+            }
         })
         .collect();
-    let finished = futures::executor::block_on(finish_jobs(jobs));
-    let points: Vec<_> = finished.into_iter().map(|result| result.unwrap()).collect();
+    let points = finish_cuts(jobs);
     assert_eq!(points, (1..=count).collect::<Vec<_>>());
 }
 
@@ -159,45 +205,69 @@ fn run_cut(
 }
 
 #[test]
-fn every_cut_is_admitted_before_waiting_for_the_first_completion() {
-    use std::sync::{
-        atomic::{AtomicUsize, Ordering},
-        mpsc,
-    };
-    acyclic_native_runtime::initialize_native_io_services().unwrap();
-    let polled = Arc::new(AtomicUsize::new(0));
-    let mut release = Vec::new();
-    let jobs: Vec<_> = (0..2)
-        .map(|value| {
-            let (send, receive) = mpsc::channel();
-            release.push(send);
-            let polled = polled.clone();
-            async move {
-                polled.fetch_add(1, Ordering::SeqCst);
-                acyclic_native_runtime::run_blocking_io(
-                    move || {
-                        receive.recv().unwrap();
-                        value
-                    },
-                    None,
-                )
-                .unwrap()
-                .await
-                .unwrap()
+fn cut_waits_leave_native_host_io_available() {
+    use std::sync::mpsc;
+    let (started, entered) = mpsc::channel();
+    let mut releases = Vec::new();
+    let jobs: Vec<_> = (0..cut_workers())
+        .map(|point| {
+            let (release, wait) = mpsc::channel();
+            releases.push(release);
+            let started = started.clone();
+            move || {
+                started.send(()).unwrap();
+                wait.recv().unwrap();
+                point
             }
         })
         .collect();
-    let pending = finish_jobs(jobs);
-    futures::pin_mut!(pending);
-    assert!(pending.as_mut().now_or_never().is_none());
-    let before_completion = polled.load(Ordering::SeqCst);
-    // Release actual workers before asserting, including in the serial control.
-    for send in release {
-        send.send(()).unwrap();
+    let supervisor = std::thread::spawn(move || finish_cuts(jobs));
+    for _ in 0..cut_workers() {
+        entered.recv().unwrap();
     }
-    assert_eq!(futures::executor::block_on(pending), vec![0, 1]);
+    // All supervisor slots are occupied by original blocking waits. An
+    // unrelated real host-I/O request must still complete before release.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let progressed = runtime.block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            acyclic_native_runtime::run_blocking_io(|| 42, None).unwrap(),
+        )
+        .await
+    });
+    // Release and join even when the negative control starves the host pool.
+    for release in releases {
+        release.send(()).unwrap();
+    }
     assert_eq!(
-        before_completion, 2,
-        "cut admission waits for an earlier completion"
+        supervisor.join().unwrap(),
+        (0..cut_workers()).collect::<Vec<_>>()
     );
+    assert_eq!(progressed.unwrap().unwrap(), 42);
+}
+
+#[test]
+fn a_panicking_cut_still_drains_every_other_cut_before_returning() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let finished = Arc::new(AtomicUsize::new(0));
+    let result = std::panic::catch_unwind(|| {
+        let jobs: Vec<_> = (0..37)
+            .map(|point| {
+                let finished = finished.clone();
+                move || {
+                    if point == 0 {
+                        panic!("deliberate cut failure");
+                    }
+                    finished.fetch_add(1, Ordering::SeqCst);
+                    point
+                }
+            })
+            .collect();
+        finish_cuts(jobs)
+    });
+    assert!(result.is_err());
+    assert_eq!(finished.load(Ordering::SeqCst), 36);
 }
