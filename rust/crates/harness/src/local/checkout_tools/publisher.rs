@@ -129,39 +129,58 @@ impl CheckoutPublisher {
             if let Some(native) = native {
                 native.advance_to_head().await?;
             } else if mount.view.source.is_none() {
-                self.materialize(view, operation, &file).await?;
-                #[cfg(test)]
-                if tests::KILL_BEFORE_CAPTURE.get() {
-                    return Err(Error::Storage("killed before the write's capture".into()));
-                }
-                // The physical write carries host metadata (mode, owner,
-                // times) that the staged generation cannot predict. Capture
-                // it now, under the same lock, so the agent's own write is
-                // not observed later as a foreign change to its file.
-                // The capture is pending exactly while the staged generation
-                // is still the head: a replay after an interrupted capture
-                // finishes it, and a replay after any later commit never
-                // reuses this capture's identity for other content. One
-                // operation may publish several paths, so the capture's
-                // identity names the path too.
-                #[cfg(test)]
-                let pending = if tests::REPLAY_SKIPS_CAPTURE.get() {
-                    original.is_none()
-                } else {
-                    self.head_is_staged(view, &file).await?
-                };
-                #[cfg(not(test))]
-                let pending = self.head_is_staged(view, &file).await?;
-                if pending {
-                    let captured = OperationId::from_bytes(publication_operation(operation, &relative).into_bytes());
-                    self.tools.capture((&self.tools.workspace, view), watcher, captured, 1, PublicationPermit::Unrestricted, None).await?;
-                }
-                return self.observed(view, file).await;
+                return self.settle(view, watcher, operation, file).await;
             }
             Ok(file)
         })
         .await
         .inspect_err(|error| tracing::error!(%operation, ?error, "checkout file publication did not complete"))
+    }
+
+    /// Settles a staged file in an unmounted checkout: materializes its exact
+    /// bytes, finishes the capture of that physical write while it is still
+    /// pending, and returns the reference to the generation that holds exactly
+    /// those bytes. A first attempt and every replay, whether it enters
+    /// through the write or through recovery, settle the same way.
+    async fn settle(
+        &self,
+        view: &workspace::View,
+        watcher: &mut Option<capture::Cursor>,
+        operation: OperationId,
+        file: FileRef,
+    ) -> Result<FileRef> {
+        self.materialize(view, operation, &file).await?;
+        #[cfg(test)]
+        if tests::KILL_BEFORE_CAPTURE.get() {
+            return Err(Error::Storage("killed before the write's capture".into()));
+        }
+        // The physical write carries host metadata (mode, owner, times) that
+        // the staged generation cannot predict. Capture it now, under the
+        // same lock, so the agent's own write is not observed later as a
+        // foreign change to its file. The capture is pending exactly while
+        // the staged generation is still the head: a replay after an
+        // interrupted capture finishes it, and a replay after any later
+        // commit never reuses this capture's identity for other content. One
+        // operation may publish several paths, so the capture's identity
+        // names the path too.
+        let pending = self.head_is_staged(view, &file).await?;
+        #[cfg(test)]
+        let pending = pending && !tests::REPLAY_SKIPS_CAPTURE.get();
+        if pending {
+            let captured =
+                OperationId::from_bytes(publication_operation(operation, file.path()).into_bytes());
+            self.tools
+                .capture(
+                    (&self.tools.workspace, view),
+                    watcher,
+                    captured,
+                    1,
+                    PublicationPermit::Unrestricted,
+                    None,
+                )
+                .await?;
+        }
+        self.observed(view, file).await
     }
 
     /// Rebinds a published file to the generation that captured its own
@@ -424,9 +443,11 @@ impl ContentPublisher for CheckoutPublisher {
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
         self.supports_stage(io)?;
         BoundedContentFuture::new(None, || async move {
-            serialized(&self.tools.state, async |state| {
-                let view = state
-                    .active
+            serialized(&self.tools.state, async |mut state| {
+                let State {
+                    active, watcher, ..
+                } = &mut *state;
+                let view = active
                     .as_ref()
                     .unwrap_or_else(|| self.tools.workspace.view());
                 for (_, mount) in self.tools.workspace.mounts.mounts() {
@@ -452,10 +473,9 @@ impl ContentPublisher for CheckoutPublisher {
                                 native.advance_to_head().await?;
                             }
                         } else {
-                            self.materialize(view, operation, &file).await?;
                             // A recovered publication names the same
                             // generation the original write returned.
-                            file = self.observed(view, file).await?;
+                            file = self.settle(view, watcher, operation, file).await?;
                         }
                         return Ok((Some(file), None));
                     }

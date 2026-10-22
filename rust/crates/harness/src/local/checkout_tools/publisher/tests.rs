@@ -165,15 +165,14 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
         .await?;
     assert!(!directory.path().join("once.txt").exists());
     // Recovery normally enters through observe_staged_once, before executing
-    // the tool again. It must repair the checkout as well as return its ref.
-    assert_eq!(
-        publisher
-            .observe_staged_once(operation, 1024, None)?
-            .await?
-            .0
-            .as_ref(),
-        Some(&original)
-    );
+    // the tool again. It must repair the checkout as well as return its ref,
+    // finishing the write's pending capture as a replayed write would.
+    let recovered = publisher
+        .observe_staged_once(operation, 1024, None)?
+        .await?
+        .0
+        .ok_or_else(|| Error::Invalid("the committed upload was not recovered".into()))?;
+    let original = assert_republished(&recovered, &original);
     assert_eq!(
         std::fs::read(directory.path().join("once.txt")).map_err(storage)?,
         b"once"
@@ -581,8 +580,12 @@ async fn a_recovered_write_returns_the_written_reference() -> Result<()> {
 
 /// Whether an edit through the reference that a replayed write returns
 /// succeeds, after the first attempt stopped between its physical write and
-/// that write's capture.
-async fn replay_after_an_interrupted_capture_is_editable(skip: bool) -> Result<bool> {
+/// that write's capture. The replay either reruns the write or, as the write
+/// tool does on restart, recovers the operation first.
+async fn replay_after_an_interrupted_capture_is_editable(
+    skip: bool,
+    recover: bool,
+) -> Result<bool> {
     let (directory, _state, _harness, publisher) = fixture().await?;
     let operation = OperationId::new();
     let write = || {
@@ -610,13 +613,20 @@ async fn replay_after_an_interrupted_capture_is_editable(skip: bool) -> Result<b
         b"agent bytes\n"
     );
     REPLAY_SKIPS_CAPTURE.set(skip);
-    let replayed = write();
-    let replayed = match replayed {
-        Ok(staged) => staged.await,
-        Err(error) => Err(error),
+    let replayed = if recover {
+        match publisher.observe_staged_once(operation, 1024, None) {
+            Ok(observed) => observed.await.map(|(file, _)| file),
+            Err(error) => Err(error),
+        }
+    } else {
+        match write() {
+            Ok(staged) => staged.await.map(|(file, _)| Some(file)),
+            Err(error) => Err(error),
+        }
     };
     REPLAY_SKIPS_CAPTURE.set(false);
-    let (replayed, _) = replayed?;
+    let replayed = replayed?
+        .ok_or_else(|| Error::Invalid("the interrupted write was not recovered".into()))?;
     let edited = match publisher.stage_at(OperationId::new(), &replayed, b"edited\n", None) {
         Ok(staged) => staged.await.map(|_| ()),
         Err(error) => Err(error),
@@ -626,9 +636,18 @@ async fn replay_after_an_interrupted_capture_is_editable(skip: bool) -> Result<b
 
 #[tokio::test]
 async fn a_replay_finishes_an_interrupted_capture() -> Result<()> {
-    assert!(replay_after_an_interrupted_capture_is_editable(false).await?);
+    assert!(replay_after_an_interrupted_capture_is_editable(false, false).await?);
     // Negative control: a replay that skips the pending capture returns the
     // staged reference, which the write's own host metadata makes stale.
-    assert!(!replay_after_an_interrupted_capture_is_editable(true).await?);
+    assert!(!replay_after_an_interrupted_capture_is_editable(true, false).await?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn recovery_finishes_an_interrupted_capture() -> Result<()> {
+    assert!(replay_after_an_interrupted_capture_is_editable(false, true).await?);
+    // Negative control: recovery that skips the pending capture returns the
+    // staged reference, which the write's own host metadata makes stale.
+    assert!(!replay_after_an_interrupted_capture_is_editable(true, true).await?);
     Ok(())
 }
