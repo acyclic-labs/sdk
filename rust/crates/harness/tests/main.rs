@@ -1,6 +1,16 @@
 //! Integration behaviour tests.
 acyclic_test_support::counting_allocator!();
 
+#[cfg(all(feature = "test-support", feature = "grpc"))]
+#[path = "support/progress_guard.rs"]
+mod progress_guard;
+#[cfg(all(feature = "test-support", feature = "grpc"))]
+#[path = "support/progress_registry.rs"]
+mod progress_registry;
+#[cfg(all(feature = "test-support", feature = "grpc"))]
+#[path = "e2e/stall.rs"]
+mod stall;
+
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
 #[path = "support/stream/mod.rs"]
 mod stream_fixture;

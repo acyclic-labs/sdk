@@ -33,12 +33,8 @@ mod notifications;
 mod ordered_matcher;
 mod plan_query;
 mod plans;
-#[path = "../support/progress_guard.rs"]
-mod progress_guard;
 #[path = "../support/progress_guard_tests.rs"]
 mod progress_guard_tests;
-#[path = "../support/progress_registry.rs"]
-mod progress_registry;
 #[path = "../support/quiescent.rs"]
 mod quiescent;
 mod remote_swarm;
@@ -49,7 +45,6 @@ mod scenario;
 mod scenario_data;
 #[path = "../support/scenario_matchers.rs"]
 mod scenario_matchers;
-mod stall;
 mod subagents;
 mod swarm;
 mod swarm_case;
@@ -486,3 +481,7 @@ async fn token_accounting_configuration_does_not_change_model_options() -> TestR
     )?)
     .await
 }
+
+#[cfg(all(feature = "grpc", feature = "objects"))]
+#[path = "remote_files.rs"]
+mod remote_files;

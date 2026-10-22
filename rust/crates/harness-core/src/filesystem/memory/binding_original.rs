@@ -6,7 +6,7 @@ pub(super) async fn content(
     maximum_file_bytes: u64,
     filesystem: Fs<MemoryAuthorityBackend, MemoryObjectBackend>,
 ) -> Result<(
-    Arc<MemoryHost>,
+    Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>>,
     VolumeRef,
     Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
 )> {
@@ -16,7 +16,8 @@ pub(super) async fn content(
         ));
     }
     let provider = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host: Arc<MemoryHost> = FilesystemHost::new(filesystem, &provider, None)?;
+    let host: Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>> =
+        FilesystemHost::new(filesystem, &provider, None)?;
     let volume = VolumeRef::new(
         provider,
         key,

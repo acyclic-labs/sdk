@@ -1,8 +1,11 @@
-//! The same scenario data on in-process Streams and on a local cloud's Streams
-//! service. `scripts/local-cloud.mjs` starts the cloud and names its endpoints
-//! in `ACYCLIC_LOCAL_CLOUD`; the default suite runs only the local controls,
-//! including the subagent family over a loopback Session. On the cloud, the
-//! executor families are compared and the subagent family's refusals pinned.
+//! Shared positive contracts over in-process Streams and SDK TLS localhost.
+//! `ACYCLIC_LOCAL_CLOUD` selects a supplied service-endpoints fixture instead.
+//! Both paths require the same executor and subagent outcomes.
+#[path = "cloud5322.rs"]
+mod cloud5322;
+#[cfg(feature = "objects")]
+#[path = "substrate_matrix.rs"]
+mod substrate_matrix;
 use super::{
     TestResult, execution, remote_swarm,
     resume::{self, Remote},
@@ -184,7 +187,7 @@ fn case(cases: &[(PathBuf, Case)], name: &str) -> TestResult<Case> {
 }
 
 /// In-process Streams that refuse, with the given cause, what a cloud's
-/// Streams refuse today (cloud-local finding 15): commits fenced on a head,
+/// Streams refused historically (cloud-local finding 15): commits fenced on a head,
 /// checked follows and live children.
 struct Refusing(MemoryStream, StreamError);
 
@@ -250,10 +253,8 @@ impl StreamProvider for Refusing {
     }
 }
 
-/// What a cloud's Streams refuse today, each as an unsupported capability
-/// (cloud-local finding 15). Pinned, so the live test fails once the cloud
-/// serves any of them, or refuses one for another reason.
-fn cloud_refusals() -> Vec<Refusal> {
+/// Historical Unsupported responses retained as negative controls.
+fn historical_refusals() -> Vec<Refusal> {
     subagents::KINDS
         .into_iter()
         .chain([subagents::LATEST])
@@ -339,7 +340,7 @@ async fn subagent_follows_match_over_a_loopback_session_and_detect_divergence() 
     }
     // A provider refusing as the cloud does matches the pin, and one refusing
     // the same kinds for an unrelated cause does not.
-    let pinned = cloud_refusals();
+    let pinned = historical_refusals();
     for (cause, matches) in [
         (StreamError::Unsupported, true),
         (StreamError::AccessDenied, false),
@@ -356,80 +357,8 @@ async fn subagent_follows_match_over_a_loopback_session_and_detect_divergence() 
 }
 
 #[tokio::test]
-#[ignore = "needs a local cloud: node scripts/local-cloud.mjs"]
 async fn scenario_families_match_between_memory_and_local_cloud_streams() -> TestResult {
-    let file = acyclic_harness::test_support::environment("ACYCLIC_LOCAL_CLOUD")
-        .ok_or("ACYCLIC_LOCAL_CLOUD must name the local cloud endpoints file")?;
-    let endpoints: Endpoints = serde_json::from_slice(&std::fs::read(file)?)?;
-    let remote = endpoints.streams.connect().await?;
-    let cases = scenarios()?;
-    let executor_cases: Vec<_> = cases
-        .iter()
-        .filter(|(_, case)| matches!(case, Case::Executor(_)))
-        .collect();
-    if executor_cases.is_empty() {
-        return Err("no executor scenarios discovered".into());
-    }
-    // Catalog pagination fences the whole account's hierarchy generation, so
-    // conformance needs a stable catalog before the other phases create streams.
-    timed("Streams conformance", async {
-        acyclic_stream::conformance::verify(remote.as_ref()).await?;
-        TestResult::Ok(())
-    })
-    .await?;
-    // The remaining phases use disjoint paths and journal identities. Join all
-    // results before returning so a failure cannot cancel a child mid-cleanup.
-    let probes = timed(
-        "Session refusals",
-        refusals(remote.clone(), &remote, "probe"),
-    );
-    let compared = timed("executor scenarios", async {
-        futures::future::try_join_all(executor_cases.iter().map(|(path, case)| {
-            let relative = path.strip_prefix(root()).unwrap_or(path).to_owned();
-            let remote = remote.clone();
-            async move {
-                let memory = Arc::new(MemoryStream::default());
-                compare(&relative, case, memory, remote, "subagents").await
-            }
-        }))
-        .await?;
-        TestResult::Ok(())
-    });
-    let resumed = timed("kill, resume and completed reopen", async {
-        let loopback = loopback(Arc::new(MemoryStream::default())).await?;
-        let (cloud, local, unjournaled) = futures::join!(
-            resume::kill_and_resume(&endpoints.streams, remote.clone()),
-            resume::kill_and_resume(&loopback.remote, loopback.client.clone()),
-            resume::resume_unjournaled(remote.clone()),
-        );
-        let (cloud, local) = (cloud?, local?);
-        unjournaled?;
-        if cloud != local {
-            return Err(format!(
-                "resumed journals differ: {cloud:?} on the cloud, {local:?} on loopback"
-            )
-            .into());
-        }
-        TestResult::Ok(())
-    });
-    let (refused, compared, resumed) = futures::join!(probes, compared, resumed);
-    let refused = refused?;
-    compared?;
-    resumed?;
-    if refused != cloud_refusals() {
-        return Err(format!("the cloud's Streams now refuse {refused:?}").into());
-    }
-    // A native SwarmClient on the cloud's Session is refused at discovery,
-    // with the pinned cause.
-    let swarm = remote_swarm::refused(remote.clone(), &remote.session_client()?, "swarm").await?;
-    if swarm.to_string() != swarm_refusal().to_string() {
-        return Err(format!("the cloud refused the swarm client with {swarm}").into());
-    }
-    println!(
-        "local cloud: Stream conformance passed; {} executor scenarios matched; a killed turn resumed from the cloud journal; the swarm client is refused ({swarm}); the subagent family is refused: {refused:?}",
-        executor_cases.len()
-    );
-    Ok(())
+    cloud5322::required_pass().await
 }
 
 async fn timed<T>(

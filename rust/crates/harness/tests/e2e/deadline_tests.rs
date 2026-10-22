@@ -3,7 +3,6 @@
 //! replay that ends at an empty page. A wall-clock deadline turns host load into scenario failures, so the
 //! scenario sources must not contain one. The separate shared progress guard observes native I/O; its idle
 //! budget is infrastructure, never an expected scenario outcome or a per-scenario deadline.
-use std::path::Path;
 
 /// Wall-clock deadlines and sleeps, assembled so this file does not match itself.
 fn forbidden() -> Vec<String> {
@@ -32,10 +31,16 @@ fn deadlines(source: &str) -> Vec<String> {
 
 #[test]
 fn scenario_sources_contain_no_wall_clock_deadline() -> crate::TestResult {
-    let tests = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests");
+    let manifest = acyclic_harness::test_support::environment("CARGO_MANIFEST_DIR").map_or_else(
+        || std::path::PathBuf::from(acyclic_harness::build_metadata::MANIFEST_DIR),
+        std::path::PathBuf::from,
+    );
+    let tests = manifest.join("tests");
     let mut sources = Vec::new();
-    for entry in std::fs::read_dir(tests.join("e2e"))? {
-        sources.push(entry?.path());
+    for directory in ["e2e", "local_cloud_actors"] {
+        for entry in std::fs::read_dir(tests.join(directory))? {
+            sources.push(entry?.path());
+        }
     }
     // The shared support modules main.rs includes by path.
     // The single infrastructure guard and its virtual-clock controls live in

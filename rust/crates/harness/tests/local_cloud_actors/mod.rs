@@ -2,11 +2,58 @@
 use acyclic_actors::{grpc, wire};
 use acyclic_objects::v1::{ObjectsProvider as _, grpc::GrpcObjects, wire as objects};
 use acyclic_stream::{AppendOutcome, AppendRequest, StreamPath, StreamProvider as _};
+use futures::StreamExt as _;
+use prost::Message as _;
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use std::path::PathBuf;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+mod paused;
+use crate::stall;
+
+fn observation_path(actor: &str) -> TestResult<StreamPath> {
+    let scope = serde_json::to_vec(&["staging", "00000000-0000-4000-8000-0000000000e1", actor])?;
+    let hash: String = Sha256::digest(scope)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    Ok(StreamPath::new(format!(
+        ".acyclic/actors-observation/{hash}"
+    ))?)
+}
+
+async fn followed_observation(
+    streams: &acyclic_stream::grpc::Client,
+    actor_id: &str,
+    from: u64,
+    accept: impl Fn(&wire::ActorObservation) -> bool,
+) -> TestResult<(wire::ActorObservation, u64)> {
+    let session = streams.session_client()?;
+    let path = observation_path(actor_id)?;
+    let followed = async {
+        let mut follow = session.follow(path, from).await?;
+        let mut next = from;
+        while let Some(record) = stall::waiting("actor observation", follow.next()).await {
+            let record = record?;
+            assert_eq!(
+                record.sequence, next,
+                "observation sequence gap or duplicate"
+            );
+            next += 1;
+            let actor = wire::ActorObservation::decode(record.value.as_ref())?;
+            assert_eq!(actor.actor_id, actor_id);
+            eprintln!("Cloud5326 observation {}: {actor:?}", record.sequence);
+            if accept(&actor) {
+                return TestResult::Ok((actor, next));
+            }
+        }
+        Err("observation Session ended before the required snapshot".into())
+    };
+    stall::guarded(std::path::Path::new(actor_id), followed)
+        .await
+        .map_err(|stalled| format!("observation follow: {stalled}"))?
+}
 const ACTOR: &str = "e2e-actor";
 const EVENTS: &str = "e2e-root/actor-events";
 // Exact code/configuration admitted by the cloud gate's locally minted bearer.
@@ -29,6 +76,8 @@ struct ActorRemote {
     #[serde(flatten)]
     remote: Remote,
     migration_bearer: String,
+    #[serde(default)]
+    paused_bearer: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -129,10 +178,21 @@ fn observation_with_code(
     revision: u64,
     code: &str,
 ) -> TestResult<wire::ActorObservation> {
+    let mut expected = create();
+    expected.code_sha256 = digest(code);
+    actor_configuration(actor, ACTOR, &expected, revision)
+}
+
+fn actor_configuration(
+    actor: Option<wire::ActorObservation>,
+    id: &str,
+    expected: &wire::CreateActorRequest,
+    revision: u64,
+) -> TestResult<wire::ActorObservation> {
     let actor = actor.ok_or("response omitted the actor")?;
-    if actor.actor_id != ACTOR
-        || actor.code_sha256 != digest(code)
-        || actor.home_region != "la"
+    if actor.actor_id != id
+        || actor.code_sha256 != expected.code_sha256
+        || actor.home_region != expected.home_region
         || actor.configuration_revision != revision
     {
         return Err(format!("unexpected actor identity/configuration: {actor:?}").into());
@@ -334,7 +394,9 @@ async fn published_actor(endpoints: &Endpoints) -> TestResult<grpc::Client> {
     let bucket = objects
         .create_bucket(objects::CreateBucketRequest {
             name: "actors-code".into(),
-            mutation: None,
+            mutation: Some(objects::MutationIdentity {
+                idempotency_key: "sdk-actors-code-bucket".into(),
+            }),
         })
         .await?
         .bucket
@@ -383,6 +445,74 @@ async fn event_stream(endpoints: &Endpoints) -> TestResult<(acyclic_stream::grpc
     .await?
     .end;
     Ok((streams, start))
+}
+
+async fn subscription_controls(
+    actors: &mut grpc::Client,
+    start: u64,
+) -> TestResult<[wire::SubscriptionObservation; 1]> {
+    let add = add_subscription("sdk-add");
+    let added = observation(
+        actors
+            .add_subscription(add.clone())
+            .await?
+            .into_inner()
+            .actor,
+        2,
+    )?;
+    let expected_subscriptions = [subscription(start)];
+    subscriptions(&added, &expected_subscriptions)?;
+    assert_eq!(
+        observation(
+            actors
+                .add_subscription(add.clone())
+                .await?
+                .into_inner()
+                .actor,
+            2
+        )?,
+        added
+    );
+    let removed = observation(
+        actors
+            .remove_subscription(wire::RemoveSubscriptionRequest {
+                actor_id: ACTOR.into(),
+                subscription_id: "events".into(),
+                idempotency_key: "sdk-remove".into(),
+            })
+            .await?
+            .into_inner()
+            .actor,
+        3,
+    )?;
+    subscriptions(&removed, &[])?;
+    let mut readd = add;
+    readd.idempotency_key = "sdk-readd".into();
+    let readded = observation(actors.add_subscription(readd).await?.into_inner().actor, 4)?;
+    subscriptions(&readded, &expected_subscriptions)?;
+    Ok(expected_subscriptions)
+}
+
+async fn delete_actor_and_check_absence(actors: &mut grpc::Client) -> TestResult {
+    let mut retrier = actors.clone();
+    let deleted = wire::DeleteActorRequest {
+        actor_id: ACTOR.into(),
+        idempotency_key: "sdk-delete".into(),
+    };
+    actors.delete_actor(deleted.clone()).await?;
+    let (retry, missing) = futures::join!(
+        retrier.delete_actor(deleted),
+        actors.inspect_actor(wire::InspectActorRequest {
+            actor_id: ACTOR.into()
+        })
+    );
+    retry?;
+    let missing = missing.err().ok_or("deleted actor must be absent")?;
+    assert_eq!(
+        grpc::error_detail(&missing).map(|error| error.code),
+        Some(wire::ErrorCode::ActorNotFound as i32)
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -438,45 +568,7 @@ async fn supported_actor_lifecycle_matches_the_counter_oracle() -> TestResult {
     );
     let phase = std::time::Instant::now();
 
-    let add = add_subscription("sdk-add");
-    let added = observation(
-        actors
-            .add_subscription(add.clone())
-            .await?
-            .into_inner()
-            .actor,
-        2,
-    )?;
-    let expected_subscriptions = [subscription(start)];
-    subscriptions(&added, &expected_subscriptions)?;
-    assert_eq!(
-        observation(
-            actors
-                .add_subscription(add.clone())
-                .await?
-                .into_inner()
-                .actor,
-            2
-        )?,
-        added
-    );
-    let removed = observation(
-        actors
-            .remove_subscription(wire::RemoveSubscriptionRequest {
-                actor_id: ACTOR.into(),
-                subscription_id: "events".into(),
-                idempotency_key: "sdk-remove".into(),
-            })
-            .await?
-            .into_inner()
-            .actor,
-        3,
-    )?;
-    subscriptions(&removed, &[])?;
-    let mut readd = add;
-    readd.idempotency_key = "sdk-readd".into();
-    let readded = observation(actors.add_subscription(readd).await?.into_inner().actor, 4)?;
-    subscriptions(&readded, &expected_subscriptions)?;
+    let expected_subscriptions = subscription_controls(&mut actors, start).await?;
     let actor_ca = std::fs::read(&endpoints.actors.remote.ca_file)?;
     actors = grpc::connect(
         &endpoints.actors.remote.endpoint,
@@ -517,32 +609,13 @@ async fn supported_actor_lifecycle_matches_the_counter_oracle() -> TestResult {
         phase.elapsed().as_secs_f64()
     );
     let phase = std::time::Instant::now();
-    let deleted = wire::DeleteActorRequest {
-        actor_id: ACTOR.into(),
-        idempotency_key: "sdk-delete".into(),
-    };
-    actors.delete_actor(deleted.clone()).await?;
-    let (retry, missing) = futures::join!(
-        retrier.delete_actor(deleted),
-        actors.inspect_actor(wire::InspectActorRequest {
-            actor_id: ACTOR.into()
-        })
-    );
-    retry?;
-    let missing = missing.expect_err("deleted actor must be absent");
-    assert_eq!(
-        grpc::error_detail(&missing).map(|error| error.code),
-        Some(wire::ErrorCode::ActorNotFound as i32)
-    );
+    delete_actor_and_check_absence(&mut actors).await?;
     println!("Actors deletion: {:.3}s", phase.elapsed().as_secs_f64());
-    println!(
-        "local cloud: supported Actor lifecycle and exact v2 migration passed; delivery and paused recovery are separate ignored Cloud request 11 checks"
-    );
     Ok(())
 }
 
 #[tokio::test]
-#[ignore = "needs Cloud request 11: delivery signals"]
+#[ignore = "needs node scripts/local-cloud.mjs --topology full (Cloud bf5d555a0e)"]
 async fn subscription_delivery_advances_cursors_and_preserves_event_order() -> TestResult {
     let endpoints = endpoints()?;
     let mut actors = published_actor(&endpoints).await?;
@@ -571,6 +644,7 @@ async fn subscription_delivery_advances_cursors_and_preserves_event_order() -> T
         2,
     )?;
     subscriptions(&added, &[subscription(start)])?;
+    let boundary = streams.tail(observation_path(ACTOR)?).await?;
     let receipt = append_events(
         &streams,
         vec![
@@ -581,18 +655,14 @@ async fn subscription_delivery_advances_cursors_and_preserves_event_order() -> T
     .await?;
     assert_eq!(receipt.start, start);
     assert_eq!(receipt.end.checked_sub(receipt.start), Some(2));
-    // Request 11 must supply the pushed completion boundary before these
-    // snapshots can be enabled. They are assertions, never readiness polling.
-    let delivered = observation(
-        actors
-            .inspect_actor(wire::InspectActorRequest {
-                actor_id: ACTOR.into(),
-            })
-            .await?
-            .into_inner()
-            .actor,
-        2,
-    )?;
+    let (delivered, next) = followed_observation(&streams, ACTOR, boundary, |actor| {
+        actor
+            .subscriptions
+            .iter()
+            .any(|sub| sub.subscription_id == "events" && sub.completed_cursor >= receipt.end)
+    })
+    .await?;
+    let delivered = observation(Some(delivered), 2)?;
     let mut expected = subscription(receipt.end);
     expected.recoverable_cursor = start;
     subscriptions(&delivered, &[expected])?;
@@ -613,62 +683,20 @@ async fn subscription_delivery_advances_cursors_and_preserves_event_order() -> T
         2,
     )?;
     subscriptions(&saved, &[subscription(receipt.end)])?;
+    let (followed, _) =
+        followed_observation(&streams, ACTOR, next, |actor| actor == &saved).await?;
+    assert_eq!(
+        followed, saved,
+        "checkpoint reply differs from the retained observation"
+    );
+    eprintln!(
+        "Cloud5326 PASS remote Session delivery, ordered events, exact checkpoint observation, and resumed cursor"
+    );
     Ok(())
 }
 
 #[tokio::test]
-#[ignore = "needs Cloud request 11: retired Pause / paused recovery"]
+#[ignore = "needs node scripts/local-cloud.mjs --topology full (Cloud bf5d555a0e)"]
 async fn paused_subscription_resumes_with_exact_cursor_preservation() -> TestResult {
-    // Cloud must supply a genuinely failed, paused fixture subscription;
-    // its retired Pause mutation cannot currently construct that precondition.
-    let endpoints = endpoints()?;
-    let remote = &endpoints.actors.remote;
-    let mut actors = grpc::connect(
-        &remote.endpoint,
-        &remote.bearer,
-        Some(&std::fs::read(&remote.ca_file)?),
-    )
-    .await?;
-    let before = actors
-        .inspect_actor(wire::InspectActorRequest {
-            actor_id: ACTOR.into(),
-        })
-        .await?
-        .into_inner()
-        .actor
-        .ok_or("paused fixture actor missing")?;
-    assert_eq!(before.actor_id, ACTOR);
-    assert_eq!(before.subscriptions.len(), 1);
-    let paused = &before.subscriptions[0];
-    assert_eq!(paused.subscription_id, "events");
-    assert_eq!(paused.stream_path, EVENTS);
-    assert_eq!(paused.state, wire::SubscriptionState::Paused as i32);
-    assert_eq!(paused.failed_cursor, Some(paused.completed_cursor));
-    assert!(!paused.failure_code.is_empty());
-    let mut expected = before.subscriptions.clone();
-    expected[0].state = wire::SubscriptionState::Active as i32;
-    expected[0].failed_cursor = None;
-    expected[0].failure_code.clear();
-    expected[0].retry_count = 0;
-    let request = wire::ResumeSubscriptionRequest {
-        actor_id: ACTOR.into(),
-        subscription_id: "events".into(),
-        idempotency_key: "sdk-paused-resume".into(),
-    };
-    let resumed = actors
-        .resume_subscription(request.clone())
-        .await?
-        .into_inner()
-        .actor
-        .ok_or("resume omitted actor")?;
-    subscriptions(&resumed, &expected)?;
-    let retried = actors
-        .resume_subscription(request)
-        .await?
-        .into_inner()
-        .actor
-        .ok_or("resume retry omitted actor")?;
-    assert_eq!(retried, resumed);
-    subscriptions(&retried, &expected)?;
-    Ok(())
+    paused::qualify().await
 }

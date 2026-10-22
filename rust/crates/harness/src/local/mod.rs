@@ -59,10 +59,10 @@ use config::LocalProject;
 pub use workspace::LocalWorkspace;
 
 /// Local durable filesystem host.
-pub type LocalFilesystem = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
+pub type LocalFilesystem<A = LocalAuthorityBackend, O = LocalObjectBackend> = FilesystemHost<A, O>;
 /// Local durable task host and its execution journals.
-pub type LocalTaskRuntime =
-    FilesystemTaskRuntime<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
+pub type LocalTaskRuntime<P = LocalStream, A = LocalAuthorityBackend, O = LocalObjectBackend> =
+    FilesystemTaskRuntime<P, A, O>;
 
 /// A checkout or volume, durable authority, journals and stock executor.
 pub struct LocalHarness {

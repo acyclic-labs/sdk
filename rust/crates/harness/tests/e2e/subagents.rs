@@ -6,11 +6,12 @@
 //! cursor resets.
 use super::TestResult;
 use acyclic_harness::task_volume::{
-    Change, ChangeStream, Channel, Error as VolumeError, FileKey, Query, TaskVolume, Write,
+    Change, ChangeStream, Channel, Error as VolumeError, FileKey, Generation, Query, TaskVolume,
+    Write,
 };
 use acyclic_stream::{
-    AppendRequest, ChildrenRequest, MemoryStream, StreamError, StreamPath, StreamProvider,
-    grpc::Client, wire,
+    AppendRequest, ChildrenRequest, ForkRequest, MemoryStream, StreamError, StreamPath,
+    StreamProvider, grpc::Client, wire,
 };
 use futures::{Stream, StreamExt as _};
 use prost::Message as _;
@@ -164,7 +165,146 @@ pub(super) async fn run_on<P: StreamProvider>(
     stream: Arc<P>,
     root: &str,
 ) -> TestResult<Value> {
-    run_publishing(case, stream, root, |id| id).await
+    run_publishing(case, stream, root, |id| id, true).await
+}
+
+async fn create_volumes<P: StreamProvider>(
+    count: usize,
+    stream: Arc<P>,
+    root: &StreamPath,
+    fork_empty: bool,
+) -> TestResult<Vec<TaskVolume<P>>> {
+    let volumes = if fork_empty {
+        let first = StreamPath::new(format!("{}/{}", root.as_str(), agent(0)))?;
+        let initial = TaskVolume::open(stream.clone(), first.clone()).await?;
+        let mut paths = vec![first.clone()];
+        // Only catalog creation is ordered. Clone the immutable empty prefix, then
+        // reconstruct independent volume indexes concurrently instead of replaying
+        // each header before the next child can be created.
+        for id in 1..count {
+            let path = StreamPath::new(format!("{}/{}", root.as_str(), agent(id)))?;
+            stream
+                .fork(ForkRequest {
+                    source: first.clone(),
+                    destination: path.clone(),
+                    at_tail: Some(1),
+                    idempotency_key: None,
+                })
+                .await
+                .map_err(at(format!("create a{id:05}")))?;
+            paths.push(path);
+        }
+        let mut volumes = vec![initial];
+        volumes.extend(
+            futures::future::join_all(
+                paths
+                    .into_iter()
+                    .skip(1)
+                    .map(|path| TaskVolume::open_existing(stream.clone(), path)),
+            )
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?,
+        );
+        volumes
+    } else {
+        let mut volumes = Vec::with_capacity(count);
+        for id in 0..count {
+            let path = StreamPath::new(format!("{}/{}", root.as_str(), agent(id)))?;
+            volumes.push(TaskVolume::open(stream.clone(), path).await?);
+        }
+        volumes
+    };
+    Ok(volumes)
+}
+
+async fn prepare_follows<P: StreamProvider>(
+    volumes: &[TaskVolume<P>],
+) -> TestResult<(Vec<Generation>, Vec<ChangeStream>)> {
+    // Independent volumes have independent fences. Prepare all follows before
+    // publishing, then retain each successful append's fence instead of reading
+    // it back before the next append.
+    let prepared =
+        futures::future::join_all(volumes.iter().enumerate().map(|(id, volume)| async move {
+            let cut = volume
+                .cut(&Query::Root)
+                .await
+                .map_err(at(format!("cut a{id:05}")))?;
+            let head = Generation {
+                volume: cut.volume,
+                epoch: cut.epoch,
+                position: cut.position,
+                commit: cut.commit,
+            };
+            TestResult::Ok((cut, head))
+        }))
+        .await
+        .into_iter()
+        .collect::<TestResult<Vec<_>>>()?;
+    let (cuts, heads): (Vec<_>, Vec<_>) = prepared.into_iter().unzip();
+    // Pipeline validation reads and Session admission without bursting Cloud's
+    // eight queued preparations. Two per scenario leave admission room for the
+    // other fan-out cases and the concurrent SwarmClient/capability probes.
+    let follows = futures::stream::iter(volumes.iter().zip(cuts).enumerate())
+        .map(|(id, (volume, cut))| async move {
+            TestResult::Ok(
+                volume
+                    .follow(Query::Root, cut)
+                    .await
+                    .map_err(at(format!("follow a{id:05}")))?,
+            )
+        })
+        .buffered(2)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<TestResult<Vec<_>>>()?;
+    Ok((heads, follows))
+}
+
+async fn publish_rounds<P: StreamProvider>(
+    case: &SubagentCase,
+    volumes: &[TaskVolume<P>],
+    mut heads: Vec<Generation>,
+    author: impl Fn(usize) -> usize,
+) -> TestResult {
+    // Keep chunk order within each agent and interleave complete rounds across
+    // agents, without serializing unrelated remote transactions.
+    for (sequence, text) in case.chunks.iter().enumerate() {
+        let writes = (0..case.agents)
+            .map(|id| chunk(sequence + 1, &format!("{}:{text}", agent(author(id)))))
+            .collect::<TestResult<Vec<_>>>()?;
+        heads = futures::future::join_all(
+            volumes
+                .iter()
+                .zip(&heads)
+                .zip(&writes)
+                .map(|((volume, head), write)| volume.append(*head, write)),
+        )
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    }
+    let statuses = (0..case.agents)
+        .map(|id| {
+            TestResult::Ok(Write::new(
+                FileKey::parse(STATUS)?,
+                serde_json::to_vec(&status_of(&agent(author(id)), &case.status))?,
+            ))
+        })
+        .collect::<TestResult<Vec<_>>>()?;
+    for result in futures::future::join_all(
+        volumes
+            .iter()
+            .zip(&heads)
+            .zip(&statuses)
+            .map(|((volume, head), write)| volume.append(*head, write)),
+    )
+    .await
+    {
+        result.map_err(at("append the status"))?;
+    }
+    Ok(())
 }
 
 /// `run_on`, with agent `id` publishing the payloads of agent `author(id)`,
@@ -174,10 +314,20 @@ async fn run_publishing<P: StreamProvider>(
     stream: Arc<P>,
     root: &str,
     author: impl Fn(usize) -> usize,
+    fork_empty: bool,
 ) -> TestResult<Value> {
     if !(1..=64).contains(&case.agents) || case.chunks.is_empty() {
         return Err("a subagent case needs 1..=64 agents and a nonempty reply".into());
     }
+    let started = std::time::Instant::now();
+    let phase = |label| {
+        if case.agents >= 16 {
+            eprintln!(
+                "subagents {root} {label}: {:.3}s",
+                started.elapsed().as_secs_f64()
+            );
+        }
+    };
     let root = StreamPath::new(root)?;
     let mut children = stream
         .children(ChildrenRequest {
@@ -186,43 +336,12 @@ async fn run_publishing<P: StreamProvider>(
         })
         .await
         .map_err(at("open the children subscription"))?;
-    let mut volumes = Vec::with_capacity(case.agents);
-    let mut follows = Vec::with_capacity(case.agents);
-    for id in 0..case.agents {
-        let path = StreamPath::new(&format!("{}/{}", root.as_str(), agent(id)))?;
-        let volume = TaskVolume::open(stream.clone(), path)
-            .await
-            .map_err(at(format!("open a{id:05}")))?;
-        let cut = volume
-            .cut(&Query::Root)
-            .await
-            .map_err(at(format!("cut a{id:05}")))?;
-        let follow = volume
-            .follow(Query::Root, cut)
-            .await
-            .map_err(at(format!("follow a{id:05}")))?;
-        follows.push(follow);
-        volumes.push(volume);
-    }
-    // Interleave the agents' publications, as concurrent subagents would.
-    for (sequence, text) in case.chunks.iter().enumerate() {
-        for (id, volume) in volumes.iter().enumerate() {
-            let tagged = format!("{}:{text}", agent(author(id)));
-            let head = volume.head().await.map_err(at("head"))?;
-            volume
-                .append(head, &chunk(sequence + 1, &tagged)?)
-                .await
-                .map_err(at(format!("append chunk {}", sequence + 1)))?;
-        }
-    }
-    for (id, volume) in volumes.iter().enumerate() {
-        let status = serde_json::to_vec(&status_of(&agent(author(id)), &case.status))?;
-        let head = volume.head().await.map_err(at("head"))?;
-        volume
-            .append(head, &Write::new(FileKey::parse(STATUS)?, status))
-            .await
-            .map_err(at("append the status"))?;
-    }
+    let volumes = create_volumes(case.agents, stream.clone(), &root, fork_empty).await?;
+    phase("initialized");
+    let (heads, mut follows) = prepare_follows(&volumes).await?;
+    phase("admitted");
+    publish_rounds(case, &volumes, heads, author).await?;
+    phase("published");
     let mut discovered = Vec::with_capacity(case.agents);
     for _ in 0..case.agents {
         let what = "children of the subagent root";
@@ -247,6 +366,7 @@ async fn run_publishing<P: StreamProvider>(
         }
         agents.push(trace);
     }
+    phase("observed");
     // Resume the first agent, reopened from its history, after its first chunk.
     let cursor = resume_after.ok_or("no first publication")?;
     let volume = volumes.first().ok_or("no agents")?;
@@ -273,6 +393,7 @@ async fn run_publishing<P: StreamProvider>(
         Err(error) => return Err(format!("a forged cursor failed with {error}").into()),
         Ok(_) => return Err("a forged cursor was followed".into()),
     }
+    phase("resumed and forged cursor rejected");
     Ok(json!({
         "children": discovered,
         "agents": agents,
@@ -301,7 +422,7 @@ pub(super) async fn refused<P: StreamProvider>(
             limit: 1,
         })
         .await;
-    let path = StreamPath::new(&format!("{}/probe", root.as_str()))?;
+    let path = StreamPath::new(format!("{}/probe", root.as_str()))?;
     let volume = TaskVolume::open(stream.clone(), path)
         .await
         .map_err(at("open the probe volume"))?;
@@ -331,7 +452,7 @@ pub(super) async fn refused<P: StreamProvider>(
 /// Follows one record of `root/latest` with LATEST delivery over `client`'s
 /// Session: `None` when it is delivered, else the refusal's typed cause.
 pub(super) async fn latest(client: &Client, root: &str) -> TestResult<Option<Refusal>> {
-    let path = StreamPath::new(&format!("{root}/latest"))?;
+    let path = StreamPath::new(format!("{root}/latest"))?;
     client
         .append(AppendRequest {
             path: path.clone(),
@@ -396,7 +517,7 @@ async fn the_oracle_rejects_a_wrong_status_crossed_deliveries_and_a_resplit_repl
         2 => 1,
         id => id,
     };
-    let crossed = run_publishing(&case("done", "done"), stream(), "control", swapped).await;
+    let crossed = run_publishing(&case("done", "done"), stream(), "control", swapped, true).await;
     if crossed.is_ok() {
         return Err("a00001 and a00002 swapped deliveries and passed".into());
     }
@@ -405,6 +526,42 @@ async fn the_oracle_rejects_a_wrong_status_crossed_deliveries_and_a_resplit_repl
     resplit.chunks = vec!["Plan t".into(), "he work.".into()];
     if run_on(&resplit, stream(), "control").await.is_ok() {
         return Err("a re-split reply passed".into());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn forked_empty_prefix_preserves_the_independent_initialization_trace() -> TestResult {
+    for agents in [1, 3, 16, 64] {
+        let case = SubagentCase {
+            agents,
+            chunks: vec!["one ".into(), "two".into()],
+            status: "done".into(),
+            expect: Expect {
+                children: (0..agents).map(agent).collect(),
+                chunks: vec!["one ".into(), "two".into()],
+                status: "done".into(),
+            },
+        };
+        let baseline = run_publishing(
+            &case,
+            Arc::new(MemoryStream::default()),
+            "agents",
+            |id| id,
+            false,
+        )
+        .await?;
+        let candidate = run_on(&case, Arc::new(MemoryStream::default()), "agents").await?;
+        assert_eq!(baseline, candidate);
+        let mut changed = case.clone();
+        changed.expect.children.reverse();
+        if agents > 1 {
+            assert!(
+                run_on(&changed, Arc::new(MemoryStream::default()), "agents")
+                    .await
+                    .is_err()
+            );
+        }
     }
     Ok(())
 }

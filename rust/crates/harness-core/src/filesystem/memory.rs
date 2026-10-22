@@ -26,7 +26,8 @@ use crate::{
     store::StreamAggregate,
 };
 use acyclic_fs::{
-    DirectoryPage, Fs, MemoryAuthorityBackend, MemoryObjectBackend,
+    AsyncAuthorityStore, AsyncObjectStore, DirectoryPage, Fs, MemoryAuthorityBackend,
+    MemoryObjectBackend, StreamAuthorityStore,
     kernel::{FileKind, LogicalName, NameEncoding},
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
@@ -35,20 +36,17 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 
-type MemoryHost = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;
-type MemoryJournal<P> = FilesystemExecutionJournal<P, MemoryAuthorityBackend, MemoryObjectBackend>;
-
 #[cfg(test)]
 thread_local! {
     static MEMORY_VOLUME_KEY: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
 }
 
-async fn new_memory_content(
+async fn new_memory_content<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     agent: AgentId,
     maximum_file_bytes: u64,
-    filesystem: Fs<MemoryAuthorityBackend, MemoryObjectBackend>,
+    filesystem: Fs<A, O>,
 ) -> Result<(
-    Arc<MemoryHost>,
+    Arc<FilesystemHost<A, O>>,
     VolumeRef,
     Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
 )> {
@@ -58,7 +56,7 @@ async fn new_memory_content(
         ));
     }
     let provider = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host: Arc<MemoryHost> = FilesystemHost::new(filesystem, &provider, None)?;
+    let host = FilesystemHost::new(filesystem, &provider, None)?;
     let key = crate::identity::fresh_uuid().to_string();
     #[cfg(test)]
     let key = MEMORY_VOLUME_KEY.get().map_or(key, str::to_owned);
@@ -88,15 +86,20 @@ async fn new_memory_content(
     Ok((host, volume, memory_store))
 }
 
-/// A fully bound journal and in-process owner-private file volume.
+/// A fully bound journal and owner-private file volume.
 ///
 /// The journal runs on any [`StreamProvider`]: [`MemoryStream`] by default, or a
-/// remote Streams service through [`MemoryHarnessStorage::with_stream`].
-pub struct MemoryHarnessStorage<P = MemoryStream> {
-    journal: Arc<MemoryJournal<P>>,
-    content_verifier: Arc<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>>,
-    publisher: Arc<MemoryContentPublisher>,
-    host: Arc<MemoryHost>,
+/// remote Streams service through [`MemoryHarnessStorage::with_stream`]. Both
+/// filesystem backends are selected through [`MemoryHarnessStorage::from_providers`].
+pub struct MemoryHarnessStorage<
+    P = MemoryStream,
+    A = MemoryAuthorityBackend,
+    O = MemoryObjectBackend,
+> {
+    journal: Arc<FilesystemExecutionJournal<P, A, O>>,
+    content_verifier: Arc<FilesystemContentVerifier<A, O>>,
+    publisher: Arc<MemoryContentPublisher<A, O>>,
+    host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     read_capability: String,
     write_capability: String,
@@ -129,7 +132,11 @@ impl<P: StreamProvider> MemoryHarnessStorage<P> {
     ) -> Result<Self> {
         Self::from_providers(agent, maximum_file_bytes, Fs::memory(), stream).await
     }
+}
 
+impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
+    MemoryHarnessStorage<P, A, O>
+{
     /// Builds an optional directory listing tool for explicit custom registration.
     pub fn list_files_tool(&self, limits: Limits) -> Result<Tool> {
         limits.validate(&mut None)?;
@@ -190,10 +197,11 @@ impl<P: StreamProvider> MemoryHarnessStorage<P> {
         })
     }
 
-    async fn from_providers(
+    /// Binds the canonical journal and files to caller-selected service providers.
+    pub async fn from_providers(
         agent: AgentId,
         maximum_file_bytes: u64,
-        filesystem: Fs<MemoryAuthorityBackend, MemoryObjectBackend>,
+        filesystem: Fs<A, O>,
         stream: Arc<P>,
     ) -> Result<Self> {
         let (host, volume, memory_store) =
@@ -327,14 +335,6 @@ impl<P: StreamProvider> MemoryHarnessStorage<P> {
     #[must_use]
     pub fn content_reader(&self) -> &dyn ContentResidencyVerifier {
         self.content_verifier.as_ref()
-    }
-
-    /// Queries the same private files written by the ordinary tools.
-    pub fn file_query(
-        &self,
-        budget: acyclic_fs::WorkBudget,
-    ) -> Result<super::FilesystemFileQuery<MemoryStream, MemoryObjectBackend>> {
-        self.content_verifier.file_query(&self.volume, budget)
     }
 
     /// Runs the shared canonical loop with this memory-backed journal.
@@ -515,10 +515,7 @@ impl<P: StreamProvider> MemoryHarnessStorage<P> {
         }
     }
 
-    fn delegated_reader(
-        &self,
-        scope: &Scope,
-    ) -> Result<Arc<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>>> {
+    fn delegated_reader(&self, scope: &Scope) -> Result<Arc<FilesystemContentVerifier<A, O>>> {
         FilesystemContentVerifier::new(
             self.host.clone(),
             self.content_verifier.verifier.as_ref(),
@@ -575,6 +572,18 @@ impl<P: StreamProvider> MemoryHarnessStorage<P> {
     #[must_use]
     pub fn verifier(&self) -> crate::core::AuthorityVerifier {
         self.content_verifier.verifier.as_ref().clone()
+    }
+}
+
+impl<P: StreamProvider, S: StreamProvider, O: AsyncObjectStore + 'static>
+    MemoryHarnessStorage<P, StreamAuthorityStore<S>, O>
+{
+    /// Queries the same private files written by the ordinary tools.
+    pub fn file_query(
+        &self,
+        budget: acyclic_fs::WorkBudget,
+    ) -> Result<super::FilesystemFileQuery<S, O>> {
+        self.content_verifier.file_query(&self.volume, budget)
     }
 }
 

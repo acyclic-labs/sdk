@@ -245,6 +245,9 @@ impl Pool {
         if !self.node_interested(&node) {
             self.dials.remove(&node);
             self.links.remove(&node);
+            if node == self.home {
+                self.reset_home();
+            }
         }
         Ok(())
     }
@@ -252,6 +255,9 @@ impl Pool {
         let mut link = self.links.remove(node).ok_or(StreamError::Unavailable)?;
         if let Some(observation) = &mut link.observation {
             observation.finish(Some(&StreamError::Unavailable));
+        }
+        if node == self.home {
+            self.reset_home();
         }
         let registering = self
             .routes
