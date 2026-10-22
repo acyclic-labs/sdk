@@ -2,6 +2,19 @@
 use super::*;
 use acyclic_harness::conversation::{VolumeClass, VolumeOwner, VolumeRef};
 
+/// Requires the exact form the pinned Pi SDK issues for a new session: a canonical,
+/// lowercase RFC 4122 UUIDv7 (`SessionManager` names sessions with `uuidv7()`).
+pub(super) fn sdk_session_id(session: &str) -> Result<uuid::Uuid> {
+    let uuid = uuid::Uuid::parse_str(session).map_err(|error| Error::Invalid(error.to_string()))?;
+    if uuid.get_version() != Some(uuid::Version::SortRand)
+        || uuid.get_variant() != uuid::Variant::RFC4122
+        || uuid.to_string() != session
+    {
+        return Err(invalid("Pi child requires its SDK-issued native session"));
+    }
+    Ok(uuid)
+}
+
 impl PiSession {
     fn spawn_project<'a>(
         &'a self,
@@ -194,11 +207,8 @@ impl PiSession {
             .get("native_session_id")
             .and_then(Value::as_str)
             .ok_or_else(|| invalid("Pi child requires its independent SDK session"))?;
-        let uuid =
-            uuid::Uuid::parse_str(session).map_err(|error| Error::Invalid(error.to_string()))?;
-        if uuid.get_version() != Some(uuid::Version::Random)
-            || uuid.get_variant() != uuid::Variant::RFC4122 || uuid.to_string() != session
-            || session == parent.native_session_id
+        sdk_session_id(session)?;
+        if session == parent.native_session_id
             || std::iter::once(&self.state.task_binding)
                 .chain(self.state.routes.values().map(|entry| &entry.task_binding))
                 .chain(self.state.pending.iter().map(|entry| &entry.task_binding))
@@ -350,3 +360,6 @@ impl PiSession {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests;
