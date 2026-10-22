@@ -209,7 +209,10 @@ impl Opening {
         // This process now holds the state exclusively. Before anything
         // reads the checkout or records an interruption, every tool tree a
         // dead previous owner left is dead; owners in this process share it.
-        let processes = Some(fence_stale_processes(directory.join("processes")).await?);
+        let state = workspace::OwnerState {
+            store,
+            processes: Some(fence_stale_processes(directory.join("processes")).await?),
+        };
         let workspace = match &self.config.project {
             LocalProject::Workspace(path) => Some(
                 workspace::open(
@@ -222,8 +225,7 @@ impl Opening {
                     workspace::attach_operation(owner.task),
                     false,
                     self.native_mounts,
-                    store,
-                    processes,
+                    state,
                 )
                 .await?,
             ),
@@ -235,8 +237,7 @@ impl Opening {
                     directory,
                     workspace::attach_operation(owner.task),
                     self.native_mounts,
-                    store,
-                    processes,
+                    state,
                 )
                 .await?,
             ),

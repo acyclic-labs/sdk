@@ -3,6 +3,7 @@ mod catalog_compaction;
 mod goal_review;
 mod input_review;
 mod instruction_review;
+#[cfg(test)]
 #[cfg(unix)]
 mod killed_tool_tree;
 mod web_outcomes;

@@ -159,9 +159,11 @@ async fn bound_workspace(
                     operation,
                     true,
                     false,
-                    acyclic_fs::LocalCoreStateStore::new(directory.join("workspace"))
-                        .with_ownership_anchor(state_owner),
-                    None,
+                    workspace::OwnerState {
+                        store: acyclic_fs::LocalCoreStateStore::new(directory.join("workspace"))
+                            .with_ownership_anchor(state_owner),
+                        processes: None,
+                    },
                 )
                 .await?,
             ))

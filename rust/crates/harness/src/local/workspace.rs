@@ -247,6 +247,14 @@ impl LocalWorkspace {
     }
 }
 
+/// The durable state an owner opens a workspace with: its core state
+/// store and the custody of its tool process trees, absent in an embedded
+/// binding, whose state directory has no exclusive owner to fence it.
+pub(super) struct OwnerState {
+    pub(super) store: LocalCoreStateStore,
+    pub(super) processes: Option<Arc<acyclic_native_runtime::ProcessCustody>>,
+}
+
 pub(super) async fn open(
     filesystem: &acyclic_fs::Fs<LocalAuthorityBackend, LocalObjectBackend>,
     volume: &VolumeRef,
@@ -257,9 +265,9 @@ pub(super) async fn open(
     operation: acyclic_fs::OperationId,
     existing: bool,
     native_mounts: bool,
-    store: LocalCoreStateStore,
-    processes: Option<Arc<acyclic_native_runtime::ProcessCustody>>,
+    state: OwnerState,
 ) -> Result<LocalWorkspace> {
+    let OwnerState { store, processes } = state;
     let path = std::fs::canonicalize(path).map_err(storage)?;
     #[cfg(target_os = "linux")]
     if native_mounts {
@@ -403,8 +411,7 @@ pub(super) async fn open_volume(
     directory: &Path,
     operation: acyclic_fs::OperationId,
     native_mounts: bool,
-    store: LocalCoreStateStore,
-    processes: Option<Arc<acyclic_native_runtime::ProcessCustody>>,
+    state: OwnerState,
 ) -> Result<LocalWorkspace> {
     let path = directory.join("project");
     if !path.try_exists().map_err(storage)? {
@@ -459,8 +466,7 @@ pub(super) async fn open_volume(
         operation,
         true,
         native_mounts,
-        store,
-        processes,
+        state,
     )
     .await
 }

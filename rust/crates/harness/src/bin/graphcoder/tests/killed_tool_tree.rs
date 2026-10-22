@@ -269,8 +269,9 @@ async fn killed_client_tool_tree_is_dead_before_the_next_turn() {
         String::from_utf8_lossy(&output.stderr)
     );
     let observed = observed.lock().unwrap().clone();
-    assert_eq!(observed.len(), 1, "the next turn made one model request");
-    let (alive_at_next_turn, requested) = observed[0];
+    let [(alive_at_next_turn, requested)]: [_; 1] = observed
+        .try_into()
+        .expect("the next turn made one model request");
     eprintln!(
         "next turn: model request {:?} after reopen, settled {:?} after reopen",
         requested - reopened,
