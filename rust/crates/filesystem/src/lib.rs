@@ -203,8 +203,8 @@ pub use git_compat::{
     blame_git_generations, canonicalize_git_output_json, canonicalize_git_pending_transition_json,
     capture_git_compatible_generation, capture_git_compatible_generation_at,
     capture_git_compatible_generation_incremental, git_compatible_diff_counts,
-    git_generation_with_paths_from, git_merge_resolution, git_tracked_paths_after,
-    grep_git_generation, parse_git_public_command, walk_git_tree,
+    git_generation_with_paths_from, git_merge_resolution, git_restore_paths,
+    git_tracked_paths_after, grep_git_generation, parse_git_public_command, walk_git_tree,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use hosted::{

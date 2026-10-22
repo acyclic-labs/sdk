@@ -91,6 +91,46 @@ where
     })
 }
 
+/// Lists the paths a whole-workspace restore from `to` must rewrite in
+/// `from`: every path whose binding or record differs, except those the
+/// repository policy reserves for the host.
+///
+/// Restoring exactly these paths makes every unreserved path of `from` match
+/// `to`, nested contents included, and leaves the reserved ones as they are.
+/// Each path is listed before its ancestors, so a removed directory is emptied
+/// before it is removed.
+pub async fn git_restore_paths<A, O>(
+    from: &Generation<A, O>,
+    to: &Generation<A, O>,
+    repository: &GitIgnorePolicy,
+    maximum_changes: u32,
+    cancellation: &CancellationToken,
+) -> Result<Vec<String>, GitCaptureError>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+{
+    let changes = from
+        .diff_to(to, maximum_changes, WorkBudget::UNBOUNDED, cancellation)
+        .await
+        .map(|receipt| receipt.value.0)
+        .map_err(|failure| failure.error)?
+        .changed_paths(maximum_changes, WorkBudget::UNBOUNDED, cancellation)
+        .await
+        .map(|receipt| receipt.value.0)
+        .map_err(|failure| failure.error)?;
+    let mut paths = BTreeSet::new();
+    for change in changes {
+        cancellation.check().map_err(WorkspaceError::from)?;
+        let path = portable_changed_path(&change.path)?;
+        if !repository.reserves(&path) {
+            paths.insert(path);
+        }
+    }
+    // A descendant `a/b` always sorts after its ancestor `a`.
+    Ok(paths.into_iter().rev().collect())
+}
+
 /// Returns the Git-visible tracked paths after a workspace transition that
 /// publishes another tree's authored changes, such as a join.
 ///

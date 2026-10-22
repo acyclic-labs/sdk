@@ -238,13 +238,25 @@ where
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)
             .map_err(Error::from)?;
-        // A whole-tree restore covers every root entry of either side
-        // except the host's namespaces, whose state never rewinds.
-        let mut roots = root_names(&source).await?;
-        roots.extend(root_names(&current).await?);
-        roots.retain(|name| !self.ignore.reserves(name));
-        self.restore_paths(operation_id, *tree, &roots.into_iter().collect::<Vec<_>>())
-            .await
+        // A whole-tree restore rewrites every changed path, nested ones
+        // included, except the host's namespaces, whose state never rewinds.
+        let paths = git_restore_paths(
+            &current,
+            &source,
+            &self.ignore,
+            u32::MAX,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(Error::from)?;
+        if paths.is_empty() {
+            // The workspace already matches outside the host's namespaces.
+            return Ok(GitFilesystemResult::Applied {
+                tree: Some(GitTreeRef::exact(self.current.id(), current.id())),
+                tracked_paths: None,
+            });
+        }
+        self.restore_paths(operation_id, *tree, &paths).await
     }
 
     /// Applies a commit's paths to the live workspace.
@@ -554,37 +566,5 @@ where
             .await
             .map_err(Error::from)?,
         )
-    }
-}
-
-/// Names bound directly under a generation's root.
-async fn root_names(generation: &LocalGeneration) -> Result<BTreeSet<String>, Error> {
-    let mut names = BTreeSet::new();
-    let mut after = None;
-    loop {
-        let page = generation
-            .list_directory(
-                "/",
-                after.as_ref(),
-                1_024,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value.0)
-            .map_err(|failure| failure.error)
-            .map_err(Error::from)?;
-        for entry in &page.entries {
-            let name = entry
-                .name
-                .unicode_text(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .map(|receipt| receipt.value)
-                .map_err(|_| Error::Invalid("non-portable Git path".into()))?;
-            names.insert(name.to_string());
-        }
-        if !page.has_more {
-            return Ok(names);
-        }
-        after = page.entries.last().map(|entry| entry.name.clone());
     }
 }
