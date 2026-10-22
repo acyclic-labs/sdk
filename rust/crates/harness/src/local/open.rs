@@ -293,7 +293,7 @@ impl Opening {
             run_limits: self.config.run_limits,
             session_limits: self.config.session_limits,
             concurrency: self.config.concurrency,
-            clock: self.config.clock,
+            clock: Arc::clone(&self.config.clock),
         })
         .await?;
         let local = LocalHarness {
@@ -326,6 +326,12 @@ impl Opening {
             drivers: orphans::Drivers::new(),
             #[cfg(feature = "native-execution")]
             workspace,
+            #[cfg(all(test, feature = "native-execution"))]
+            environment_reads: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(feature = "native-execution")]
+            clock: self.config.clock,
+            #[cfg(feature = "native-execution")]
+            environment_platform: self.config.environment_platform,
         };
         Ok(local)
     }

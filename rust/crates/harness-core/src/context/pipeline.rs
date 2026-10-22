@@ -1,6 +1,76 @@
 use super::*;
 use crate::{executor::stock_boundary, wire::ErrorCode};
 
+/// An optional message placed after the authenticated inherited prefix.
+#[derive(Clone, Debug)]
+pub struct ContextInsertion {
+    /// Insertion position within the local portion of the current context.
+    pub local_index: usize,
+    /// The owned message, allocated on the stage's original preparation ledger.
+    pub message: ModelMessage,
+}
+
+impl ContextInsertion {
+    pub(super) fn insert(
+        self,
+        context: &mut Context,
+        prefix_messages: usize,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        let index = prefix_messages
+            .checked_add(self.local_index)
+            .filter(|index| *index <= context.messages.len())
+            .ok_or_else(|| {
+                stock_boundary(
+                    io,
+                    ErrorCode::Invalid,
+                    "optional context insertion is outside local context",
+                )
+            })?;
+        let current_input_index = context
+            .current_input_index
+            .map(|current| {
+                if current as usize >= index {
+                    current.checked_add(1).ok_or_else(|| {
+                        stock_boundary(
+                            io,
+                            ErrorCode::Invalid,
+                            "optional context input position overflow",
+                        )
+                    })
+                } else {
+                    Ok(current)
+                }
+            })
+            .transpose()?;
+        let wanted = context.messages.len().checked_add(1).ok_or_else(|| {
+            stock_boundary(
+                io,
+                ErrorCode::Invalid,
+                "optional context message count overflow",
+            )
+        })?;
+        crate::executor::with_history_io(io, |work| {
+            compaction::reserve_vector(&mut context.messages, wanted, work)?;
+            let shifted = (context.messages.len() - index)
+                .checked_mul(std::mem::size_of::<ModelMessage>())
+                .ok_or_else(|| {
+                    stock_boundary(io, ErrorCode::Invalid, "optional context shift overflows")
+                })?;
+            if let Some(work) = work.as_deref_mut() {
+                work.admit_copy(shifted as u64)?;
+            }
+            context.messages.insert(index, self.message);
+            if let Some(work) = work.as_deref_mut() {
+                work.copy_bytes(shifted as u64)?;
+            }
+            Ok::<(), crate::Error>(())
+        })?;
+        context.current_input_index = current_input_index;
+        Ok(())
+    }
+}
+
 /// Replaceable ordered context transformation.
 pub trait ContextStage: acyclic_stream::ProviderPlatform {
     /// Stable stage name used for diagnostics and composition.
@@ -50,6 +120,20 @@ pub trait ContextStage: acyclic_stream::ProviderPlatform {
         limits: Limits,
         io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Context>>;
+    /// Whether this stage has optional data to project after required assembly.
+    fn has_optional(&self) -> bool {
+        false
+    }
+    /// Reads the final context and offers one optional message for insertion.
+    /// Required messages, inherited prefixes and input markers stay immutable.
+    fn project_optional(
+        &self,
+        _context: &Context,
+        _limits: Limits,
+        _io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<ContextInsertion>> {
+        Ok(None)
+    }
     /// Reports original-ledger support before constructing a future.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native(&self) -> bool {
@@ -62,6 +146,9 @@ pub trait ContextStage: acyclic_stream::ProviderPlatform {
 pub struct ContextPipeline(Vec<Arc<dyn ContextStage>>);
 
 impl ContextPipeline {
+    pub(crate) fn has_optional(&self) -> bool {
+        self.0.iter().any(|stage| stage.has_optional())
+    }
     /// Borrows pinned configuration inputs without copying their references or
     /// reloading a manifest. Stage order and each file's immutable identity remain intact.
     pub fn configuration_sources(&self) -> impl Iterator<Item = &FileRef> {
@@ -252,6 +339,19 @@ impl ContextPipeline {
     pub async fn transform(
         &self,
         input: &ContextInput,
+        context: Context,
+        limits: Limits,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Context> {
+        let mut context = self.transform_required(input, context, limits, io).await?;
+        self.project_optional(&mut context, 0, limits, 0, io)?;
+        Ok(context)
+    }
+
+    /// Joins required stages before optional metadata consumes any allowance.
+    pub(crate) async fn transform_required(
+        &self,
+        input: &ContextInput,
         mut context: Context,
         limits: Limits,
         io: Option<&crate::executor::PreparationIo>,
@@ -289,6 +389,38 @@ impl ContextPipeline {
             }
         }
         Ok(context)
+    }
+
+    pub(crate) fn project_optional(
+        &self,
+        context: &mut Context,
+        prefix_messages: usize,
+        limits: Limits,
+        request_frame_bytes: u64,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        if !self.has_optional() {
+            return Ok(());
+        }
+        let frame = crate::executor::with_history_io(io, |work| {
+            let context_bytes = crate::executor::json::json_byte_length(context, u64::MAX, work)?;
+            let messages =
+                crate::executor::json::json_byte_length(&context.messages, u64::MAX, work)?;
+            Ok::<_, crate::Error>(context_bytes - messages)
+        })?;
+        let optional_limits = Limits {
+            render_bytes: limits
+                .render_bytes
+                .saturating_sub(request_frame_bytes.saturating_sub(frame)),
+            ..limits
+        };
+        for stage in self.0.iter().filter(|stage| stage.has_optional()) {
+            if let Some(insertion) = stage.project_optional(context, optional_limits, io)? {
+                insertion.insert(context, prefix_messages, io)?;
+            }
+            validate_projected_context(context, limits, io)?;
+        }
+        Ok(())
     }
 
     /// Returns immutable stage contracts on the optional preparation ledger.

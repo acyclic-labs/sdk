@@ -207,3 +207,58 @@ fn malformed_manifests_fail_before_any_binding() {
     repeated.tools[0].input_schema = json!({"type":"invalid"});
     assert!(repeated.validate(limits).is_err());
 }
+
+#[tokio::test]
+async fn optional_environment_joins_after_all_required_stages_on_public_pipeline_routes()
+-> Result<()> {
+    let required = Context {
+        messages: vec![ModelMessage {
+            role: ModelRole::System,
+            content: ModelContent::Text("required".into()),
+        }],
+        ..Default::default()
+    };
+    let pipeline = ContextPipeline::new([
+        Arc::new(ManifestStage {
+            context: Context::default(),
+            sources: Vec::new(),
+            environment: Some(EnvironmentFacts {
+                cwd: "/bound".into(),
+                ..Default::default()
+            }),
+        }) as Arc<dyn ContextStage>,
+        Arc::new(SourceStage::new(
+            "required",
+            "1",
+            Arc::new(required),
+            ContextPlacement::Prepend,
+        )),
+    ]);
+    let input = ContextInput {
+        input: ModelContent::Text("current".into()),
+        selected_context: None,
+        step: 0,
+        prior_messages: Vec::new(),
+    };
+    for message_limit in [2, 3] {
+        let limits = Limits {
+            context_messages: message_limit,
+            ..Limits::default()
+        };
+        let run = pipeline.run(&input, limits, None).await?;
+        let base = ContextPipeline::base_context(&input, limits, None)?;
+        assert_eq!(pipeline.transform(&input, base, limits, None).await?, run);
+        assert_eq!(run.messages.len(), message_limit);
+        assert_eq!(run.current_input_index, Some((message_limit - 1) as u32));
+        assert_eq!(
+            run.messages[message_limit - 2].content,
+            ModelContent::Text("required".into())
+        );
+        if message_limit == 3 {
+            assert!(
+                matches!(&run.messages[0].content, ModelContent::Text(text) if text.starts_with("<environment_context>"))
+            );
+        }
+    }
+    Ok(())
+}

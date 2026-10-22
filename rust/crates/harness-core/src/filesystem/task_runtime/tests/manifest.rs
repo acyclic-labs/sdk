@@ -60,6 +60,7 @@ pub(super) async fn manifest(
     };
     let manifest = ContextManifest {
         conventions: vec![text.into()],
+        environment: None,
         discovery: DiscoveredContext::default(),
         selected_skills: Vec::new(),
         sources: Vec::new(),

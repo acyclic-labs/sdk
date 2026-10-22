@@ -278,6 +278,15 @@ impl Fixture {
             workspace: None,
             #[cfg(feature = "native-execution")]
             checkout_context: false,
+            #[cfg(feature = "native-execution")]
+            clock: Arc::new(Clock),
+            #[cfg(feature = "native-execution")]
+            environment_platform: crate::native_environment::PlatformPolicy::Fixture {
+                os: "fixture".into(),
+                shell: "bash".into(),
+            },
+            #[cfg(feature = "native-execution")]
+            environment_reads: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 

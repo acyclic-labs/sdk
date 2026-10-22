@@ -24,6 +24,15 @@ pub fn local_harness_config(
     let settings = crate::native_settings::SettingsConfig::for_test(&workspace)?;
     // Store opening supplies temporary state only when no explicit root was selected.
     let config = crate::LocalHarnessConfig::new(workspace, model).hermetic();
+    #[cfg(feature = "native-execution")]
+    let config = {
+        let mut config = config;
+        config.environment_platform = crate::native_environment::PlatformPolicy::Fixture {
+            os: std::env::consts::OS.into(),
+            shell: "bash".into(),
+        };
+        config
+    };
     #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     let config = config.settings(settings);
     Ok(config)

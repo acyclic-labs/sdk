@@ -586,3 +586,121 @@ mod prepared_request_reuse_properties {
         }
     }
 }
+
+#[tokio::test]
+async fn inherited_environment_respects_final_message_and_byte_limits() -> Result<()> {
+    use crate::context::{ContextManifest, EnvironmentFacts};
+    for (message_limit, render_bytes, parent_bytes, model_bytes, expect_environment) in [
+        (3, 32_768, 10, 0, false),
+        (4, 32_768, 10, 0, true),
+        (10, 8_000, 6_000, 0, false),
+        (10, 8_000, 10, 5_000, false),
+    ] {
+        let model = Model::new(
+            "example".into(),
+            "model".into(),
+            "1".into(),
+            json!({"padding": "m".repeat(model_bytes)}),
+        )?;
+        let root = crate::model::PreparedModelRequest::prepare(
+            ModelRequest {
+                model: model.clone(),
+                messages: vec![ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("p".repeat(parent_bytes)),
+                }],
+                tools: Vec::new(),
+                max_output_tokens: None,
+            },
+            Limits::default(),
+            None,
+        )?;
+        let journal = Arc::new(Journal::default());
+        let prefix = journal
+            .stage_source(
+                OperationId::from_bytes([81; 16]),
+                "prefix".into(),
+                crate::model::ModelPrefix::select(&root, None)?.canonical_bytes(None)?,
+                crate::model::ModelPrefix::MEDIA_TYPE,
+            )
+            .await?;
+        let manifest = ContextManifest {
+            conventions: vec!["required convention".into()],
+            environment: Some(EnvironmentFacts {
+                cwd: "d".repeat(4_000),
+                os: "fixture".into(),
+                shell: "bash".into(),
+                current_date: "2026-10-22".into(),
+                timezone: "UTC".into(),
+                git_status: None,
+                model: "model".into(),
+            }),
+            ..Default::default()
+        };
+        let manifest_file = journal
+            .stage_source(
+                OperationId::from_bytes([82; 16]),
+                "manifest".into(),
+                manifest.encode(Limits::default())?.into(),
+                "application/json",
+            )
+            .await?;
+        let (provider, _) = counted_model(
+            200_000,
+            None,
+            [ScriptedTurn::Events(vec![ScriptedEvent::Event(
+                ModelEvent::Completed {
+                    metadata: Value::Null,
+                },
+            )])],
+            [],
+        );
+        let limits = Limits {
+            context_messages: message_limit,
+            render_bytes,
+            ..Limits::default()
+        };
+        // Bind the manifest before installing the inherited prefix, as public
+        // callers may. Optional admission must use the final request, not the
+        // incomplete composition that happened to exist at manifest binding.
+        let executor = uncompacted_executor(
+            model,
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        )
+        .with_limits(limits)
+        .with_context_manifest(manifest_file, journal.clone())
+        .await?
+        .with_inherited_prefix(prefix, journal.clone())?;
+        let input = TurnInput {
+            operation_id: OperationId::from_bytes([83; 16]),
+            input: ModelContent::Text("child task".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+        executor.execute(input.clone(), journal.as_ref()).await?;
+        executor.execute(input, journal.as_ref()).await?;
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 1, "replay redispatched the model");
+        let request = &requests[0];
+        assert!(request.messages.starts_with(&root.request().messages));
+        assert_eq!(
+            request.messages[1 + usize::from(expect_environment)].content,
+            ModelContent::Text("required convention".into())
+        );
+        assert_eq!(
+            request.messages.last().unwrap().content,
+            ModelContent::Text("child task".into())
+        );
+        assert!(request.messages.len() <= message_limit);
+        assert!(crate::contract::canonical_json_bytes(request)?.len() as u64 <= render_bytes);
+        assert_eq!(
+            crate::contract::canonical_json_bytes(request)?
+                .windows(b"<environment_context>".len())
+                .any(|part| part == b"<environment_context>"),
+            expect_environment
+        );
+    }
+    Ok(())
+}

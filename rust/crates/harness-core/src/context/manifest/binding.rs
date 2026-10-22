@@ -136,6 +136,7 @@ impl ContextManifest {
         Ok((
             tools,
             Arc::new(ManifestStage {
+                environment: manifest.environment,
                 context,
                 sources: manifest.sources,
             }),

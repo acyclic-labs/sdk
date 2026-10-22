@@ -330,20 +330,6 @@ impl PreparedModelRequest {
     pub(crate) fn into_messages(self) -> Vec<ModelMessage> {
         self.request.messages
     }
-    // The context temporarily borrows ownership of the messages for read-only
-    // validation. Neither a changed request nor an incomplete prepared value
-    // can escape the closure, including on failure.
-    pub(crate) fn with_context<T>(
-        mut self,
-        mut context: crate::context::Context,
-        inspect: impl FnOnce(&crate::context::Context) -> Result<T>,
-    ) -> Result<(Self, crate::context::Context, T)> {
-        debug_assert!(context.messages.is_empty());
-        std::mem::swap(&mut self.request.messages, &mut context.messages);
-        let result = inspect(&context)?;
-        std::mem::swap(&mut self.request.messages, &mut context.messages);
-        Ok((self, context, result))
-    }
     /// Exact canonical provider-neutral bytes.
     #[must_use]
     pub fn bytes(&self) -> &[u8] {

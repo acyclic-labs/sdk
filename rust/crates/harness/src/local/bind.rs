@@ -235,6 +235,12 @@ impl BoundComposition {
             workspace,
             #[cfg(feature = "native-execution")]
             checkout_context,
+            #[cfg(all(test, feature = "native-execution"))]
+            environment_reads: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(feature = "native-execution")]
+            clock: config.clock,
+            #[cfg(feature = "native-execution")]
+            environment_platform: config.environment_platform,
         }
     }
 }

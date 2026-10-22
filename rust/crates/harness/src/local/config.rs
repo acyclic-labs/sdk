@@ -40,6 +40,8 @@ pub struct LocalHarnessConfig {
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     pub(super) mcp_limits: crate::mcp::McpClientLimits,
     pub(super) clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+    #[cfg(feature = "native-execution")]
+    pub(crate) environment_platform: crate::native_environment::PlatformPolicy,
 }
 
 #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
@@ -85,6 +87,8 @@ impl LocalHarnessConfig {
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             mcp_limits: crate::mcp::McpClientLimits::default(),
             clock: Arc::new(acyclic_stream::SystemUnixMillisClock),
+            #[cfg(feature = "native-execution")]
+            environment_platform: crate::native_environment::PlatformPolicy::Native,
         }
     }
     /// Opens an existing volume in the local filesystem directory passed to `new`.

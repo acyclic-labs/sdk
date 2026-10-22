@@ -78,12 +78,27 @@ impl ModelPrefix {
 impl PreparedModelRequest {
     /// Resolves and validates the pinned prefix chain on the optional ledger.
     pub async fn inherit(
-        mut local: ModelRequest,
+        local: ModelRequest,
         prefix: &FileRef,
         verifier: &dyn crate::conversation::ContentResidencyVerifier,
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
+        Self::encode_admitted(
+            Self::inherit_request(local, prefix, verifier, limits, io).await?,
+            limits,
+            io,
+        )
+    }
+
+    /// Resolves the authenticated prefix before optional request metadata renders.
+    pub(crate) async fn inherit_request(
+        mut local: ModelRequest,
+        prefix: &FileRef,
+        verifier: &dyn crate::conversation::ContentResidencyVerifier,
+        limits: Limits,
+        io: Option<&PreparationIo>,
+    ) -> Result<ModelRequest> {
         with_history_io(io, |work| limits.validate(work))?;
         let segments =
             Self::read_prefix_segments(prefix, verifier, limits, local.messages.len(), io).await?;
@@ -127,7 +142,7 @@ impl PreparedModelRequest {
                     .await?;
             }
         }
-        Self::encode_admitted(local, limits, io)
+        Ok(local)
     }
 
     async fn read_prefix_segments(

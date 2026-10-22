@@ -17,6 +17,9 @@ pub struct ContextManifest {
     /// Declarative conventions pinned in this manifest file, before discovered instructions.
     #[serde(default)]
     pub conventions: Vec<String>,
+    /// Environment snapshot gathered from the task binding at admission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<EnvironmentFacts>,
     /// Instructions are ordered from broad to specific scope; later entries take precedence.
     pub discovery: DiscoveredContext,
     /// Names in invocation order, resolving only through this manifest's pinned skill catalog.
@@ -60,6 +63,7 @@ impl ContextManifest {
                 .filter(|(_, enabled)| *enabled)
                 .map(|(text, _)| text.to_owned())
                 .collect(),
+            environment: None,
             discovery,
             selected_skills,
             sources: Vec::new(),
@@ -233,6 +237,7 @@ impl ContextManifest {
 mod tests;
 
 struct ManifestStage {
+    environment: Option<EnvironmentFacts>,
     context: Context,
     sources: Vec<FileRef>,
 }
@@ -266,6 +271,21 @@ impl ContextStage for ManifestStage {
                 io,
             )
         })
+    }
+
+    fn has_optional(&self) -> bool {
+        self.environment.is_some()
+    }
+
+    fn project_optional(
+        &self,
+        context: &Context,
+        limits: Limits,
+        io: Option<&PreparationIo>,
+    ) -> Result<Option<ContextInsertion>> {
+        self.environment
+            .as_ref()
+            .map_or(Ok(None), |facts| facts.project(context, limits, io))
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

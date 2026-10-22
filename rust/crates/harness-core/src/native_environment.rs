@@ -3,6 +3,30 @@ use std::ffi::OsString;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 use std::path::{Path, PathBuf};
 
+/// Platform facts supplied by a native composition or an isolated fixture.
+#[derive(Clone, Debug)]
+pub enum PlatformPolicy {
+    /// Platform of the host executing the bound Bash tool.
+    Native,
+    /// Explicit facts, without process discovery.
+    Fixture {
+        /// Explicit tool platform.
+        os: String,
+        /// Explicit tool shell.
+        shell: String,
+    },
+}
+
+impl PlatformPolicy {
+    /// Resolves platform facts through the native environment seam.
+    pub fn facts(&self) -> (&str, &str) {
+        match self {
+            Self::Native => (std::env::consts::OS, "bash"),
+            Self::Fixture { os, shell } => (os, shell),
+        }
+    }
+}
+
 enum Read<'a> {
     Variable(&'a str),
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
@@ -110,3 +134,9 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+#[path = "native_environment/checkout.rs"]
+mod checkout;
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+pub use checkout::{CheckoutFacts, checkout};
