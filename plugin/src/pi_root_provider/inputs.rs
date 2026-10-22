@@ -255,7 +255,7 @@ pub(super) fn publish_pi_input_with_native_coordinates<'a, T: Serialize + Sync>(
 ) -> impl std::future::Future<Output = Result<(FileRef, NativeAllocation)>> + Send + 'a {
     async move {
         let grant = write_grant(owner, work)?;
-        let encoded = guarded_pi_bytes(value, maximum(owner), work)?;
+        let encoded = canonical_pi_value(value, maximum(owner), work)?;
         let length = encoded.0.len() as u64;
         let io = PreparationIo::from_native_work(work)?;
         let result = filesystem
@@ -322,7 +322,7 @@ pub(super) async fn read_root_artifact_with_native_work<T: DeserializeOwned + Se
         ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES,
         work,
     )?;
-    if guarded_pi_bytes(&decoded.0, maximum(owner), work)?
+    if canonical_pi_value(&decoded.0, maximum(owner), work)?
         .0
         .as_slice()
         != bytes.as_ref()

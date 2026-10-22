@@ -1273,3 +1273,42 @@ async fn output_replay_uses_original_content_after_mutable_path_replacement() {
         result.0.status
     );
 }
+
+#[tokio::test]
+async fn staged_durable_inputs_are_canonical_json() {
+    let fixture = Fixture::new(PiRootIntent::ScratchOnly {}).await;
+    let operation = OperationId::from_bytes([118; 16]);
+    let timer = stage_pi_input(
+        &fixture.owner,
+        &fixture.filesystem,
+        operation,
+        "canonical-timer",
+        &serde_json::json!({"deadline_unix_ms": 0}),
+        &fixture.startup,
+    )
+    .await
+    .unwrap();
+    // Declared field order (operation_id, kind, payload) differs from sorted key order.
+    let control = crate::pi_task::PiControlInput {
+        command: acyclic_harness::workflow::WorkflowCommand {
+            operation_id: operation,
+            kind: "acyclic.timer.v1".into(),
+            payload: timer.0,
+        },
+    };
+    let staged = stage_pi_input(
+        &fixture.owner,
+        &fixture.filesystem,
+        operation,
+        "canonical-control",
+        &control,
+        &fixture.startup,
+    )
+    .await
+    .unwrap();
+    let declared = serde_json::to_vec(&control).unwrap();
+    let canonical = acyclic_harness::contract::canonical_json_bytes(&control).unwrap();
+    assert_ne!(declared, canonical);
+    staged.0.descriptor().verify(&canonical, &mut None).unwrap();
+    assert!(staged.0.descriptor().verify(&declared, &mut None).is_err());
+}

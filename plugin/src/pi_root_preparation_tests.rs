@@ -182,7 +182,7 @@ impl Fixture {
                     .replace(
                         "root",
                         "application/json",
-                        &serde_json::to_vec(&request).unwrap(),
+                        &acyclic_harness::contract::canonical_json_bytes(&request).unwrap(),
                     )
                     .await;
             }
@@ -265,7 +265,7 @@ async fn pi_preparation_reads_original_pins_after_changed_heads_and_cold_reopen(
                 .await
                 .unwrap()
                 .as_ref(),
-            serde_json::to_vec(&request).unwrap()
+            acyclic_harness::contract::canonical_json_bytes(&request).unwrap()
         );
         assert!(
             ContentGrant::verify(
@@ -355,7 +355,7 @@ async fn pi_preparation_reads_original_pins_after_changed_heads_and_cold_reopen(
         .replace(
             "root",
             "application/json",
-            &serde_json::to_vec(&request).unwrap(),
+            &acyclic_harness::contract::canonical_json_bytes(&request).unwrap(),
         )
         .await;
     fixture
