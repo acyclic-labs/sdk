@@ -344,8 +344,13 @@ async fn a_damaged_frame_before_an_intact_one_fails_closed()
 
     let mut file = OpenOptions::new().read(true).write(true).open(&journal)?;
     let body_offset = u64::try_from(HEADER_BYTES + 5).map_err(std::io::Error::other)?;
+    // The byte is part of the first frame's commit time, so any fixed value
+    // may already be there; its complement never is.
+    let mut byte = [0];
     file.seek(SeekFrom::Start(body_offset))?;
-    file.write_all(&[0xff])?;
+    std::io::Read::read_exact(&mut file, &mut byte)?;
+    file.seek(SeekFrom::Start(body_offset))?;
+    file.write_all(&[!byte[0]])?;
     file.sync_all()?;
     drop(file);
     let damaged = std::fs::read(&journal)?;
