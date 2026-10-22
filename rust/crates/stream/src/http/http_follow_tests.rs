@@ -185,7 +185,7 @@ async fn request_path_typed_append_preserves_json_responses_and_validation_trace
         assert!(matches!(server.client.append(request.clone()).await.unwrap(), AppendOutcome::Committed(AppendReceipt { start: 0, end: 1, tail: 1, .. })));
         assert_eq!(server.client.append(request).await.unwrap(), AppendOutcome::TailConflict { actual_tail: 1 });
         let expected = ("/v1/stream/append".into(), json!({
-            "path":"follow/test", "values":["AP8="],
+            "path":"follow/test", "records":[{"value":"AP8=","keys":[],"attributes":[]}],
             "options":{"ifTail":"0","idempotencyKey":"a2V5"},
         }));
         assert_eq!(server.requests(), vec![expected.clone(), expected]);

@@ -8,7 +8,7 @@ use zeroize::Zeroizing;
 mod effective;
 mod signer;
 mod wire;
-pub use effective::{Effective, ScopedFilter};
+pub use effective::{Effective, ScopedFilter, ScopedPin};
 pub use signer::CertifiedSigner;
 
 /// Authentication, structural admission or authority failure.
@@ -328,6 +328,18 @@ impl VerifiedCapability {
     ) -> Result<(), VerifyError> {
         self.check(trust, request.now_unix_seconds)?;
         authority::permits(&self.blocks, request, policy).map_err(VerifyError::Denied)
+    }
+
+    /// Admit only a Streams follow, deferring record filters and pins to the
+    /// provider's mandatory predicate. All other caveats are checked now.
+    pub fn authorize_follow(
+        &self,
+        trust: &(impl Trust + ?Sized),
+        request: &authority::Request<'_>,
+        policy: authority::PolicyDecision,
+    ) -> Result<(), VerifyError> {
+        self.check(trust, request.now_unix_seconds)?;
+        authority::permits_follow(&self.blocks, request, policy).map_err(VerifyError::Denied)
     }
 
     /// Append a conjunctive block. The caller supplies fresh cryptographic entropy;

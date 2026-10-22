@@ -252,6 +252,35 @@ fn filter_allows(f: &Filter, r: &Request<'_>, p: &Principal, blocks: &[Block], i
 /// frozen at the declaring block; later lineage cannot expand an older filter.
 /// All online ancestor certificates and all offline blocks restrict authority.
 pub fn permits(blocks: &[Block], r: &Request<'_>, policy: PolicyDecision) -> Result<(), Deny> {
+    permits_operation(blocks, r, policy, true)
+}
+
+/// Admits a Streams follow before any records exist. The owning provider must
+/// compile every filter and pin into its mandatory subscription predicate.
+/// This cannot admit writes or general operations without their record facts.
+pub(crate) fn permits_follow(
+    blocks: &[Block],
+    r: &Request<'_>,
+    policy: PolicyDecision,
+) -> Result<(), Deny> {
+    if !matches!(
+        r.target,
+        Target::Resource {
+            action: "streams/follow",
+            ..
+        }
+    ) {
+        return Err(Deny::Capability);
+    }
+    permits_operation(blocks, r, policy, false)
+}
+
+fn permits_operation(
+    blocks: &[Block],
+    r: &Request<'_>,
+    policy: PolicyDecision,
+    record_facts: bool,
+) -> Result<(), Deny> {
     if matches!(r.target, Target::Resource { resource, .. } if !crate::valid_resource(resource)) {
         return Err(Deny::NonCanonicalResource);
     }
@@ -261,14 +290,14 @@ pub fn permits(blocks: &[Block], r: &Request<'_>, policy: PolicyDecision) -> Res
     if policy == PolicyDecision::Deny {
         return Err(Deny::OwnerPolicy);
     }
-    if permits_canonical(blocks, r) {
+    if permits_canonical(blocks, r, record_facts) {
         Ok(())
     } else {
         Err(Deny::Capability)
     }
 }
 
-fn permits_canonical(blocks: &[Block], r: &Request<'_>) -> bool {
+fn permits_canonical(blocks: &[Block], r: &Request<'_>, record_facts: bool) -> bool {
     if !valid_chain(blocks) {
         return false;
     }
@@ -296,16 +325,21 @@ fn permits_canonical(blocks: &[Block], r: &Request<'_>) -> bool {
                 .account
                 .as_deref()
                 .is_none_or(|account| r.holder == Some(account)),
-            CaveatKind::Filter(f) => filter_allows(f, r, &leaf.key.principal, blocks, i),
-            CaveatKind::Pin(pin) => r.attributes.as_slice().iter().any(|a| {
-                a.name == pin.name
-                    && match &pin.value {
-                        PinValue::Literal(v) => a.value == *v,
-                        PinValue::SubjectId(_) => {
-                            a.value == acting(&leaf.key.principal, blocks, i).as_bytes()
-                        }
-                    }
-            }),
+            CaveatKind::Filter(f) => {
+                !record_facts || filter_allows(f, r, &leaf.key.principal, blocks, i)
+            }
+            CaveatKind::Pin(pin) => {
+                !record_facts
+                    || r.attributes.as_slice().iter().any(|a| {
+                        a.name == pin.name
+                            && match &pin.value {
+                                PinValue::Literal(v) => a.value == *v,
+                                PinValue::SubjectId(_) => {
+                                    a.value == acting(&leaf.key.principal, blocks, i).as_bytes()
+                                }
+                            }
+                    })
+            }
             CaveatKind::Limits(limits) => limits_allow(limits, r.usage),
             CaveatKind::LineageAppend(_) | CaveatKind::MaxDepth(_) | CaveatKind::Label(_) => true,
         })

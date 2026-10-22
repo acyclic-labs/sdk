@@ -79,6 +79,23 @@ impl FollowFilter {
                 })?,
             });
         }
+        for scoped in capability.effective().pins() {
+            let pin = scoped.pin();
+            let value = match &pin.value {
+                acyclic_auth::contract::PinValue::Literal(value) => value.as_slice(),
+                acyclic_auth::contract::PinValue::SubjectId(_) => scoped.subject_id().as_bytes(),
+            };
+            clauses.push(Clause {
+                all_keys: true,
+                filter: canonical(wire::SessionFilter {
+                    keys: vec![],
+                    attributes: vec![wire::AttributeMatch {
+                        name: pin.name.clone(),
+                        any_of: vec![bytes::Bytes::copy_from_slice(value)],
+                    }],
+                })?,
+            });
+        }
         Ok(Self(Arc::new(clauses)))
     }
 

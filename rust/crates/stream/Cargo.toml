@@ -81,6 +81,7 @@ acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 loom = { version = "0.7.2", features = ["futures"] }
 
 [dev-dependencies]
+ed25519-dalek = { version = "=3.0.0", features = ["zeroize"] }
 proptest.workspace = true
 tokio = { version = "1.48.0", features = ["macros", "rt", "test-util"] }
 
