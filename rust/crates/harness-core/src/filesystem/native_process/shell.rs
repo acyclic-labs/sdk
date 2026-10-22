@@ -69,15 +69,19 @@ pub fn prepare<T>(
     invocation.environment = mounts.environment()?;
     invocation.inherit_environment = true;
     invocation.timeout_ms = input.timeout_ms()?;
+    #[cfg(windows)]
+    let command = format!(
+        "{}& ([ScriptBlock]::Create('{}'))",
+        crate::tools::shell::PLATFORM.command_prefix,
+        input.command.replace('\'', "''"),
+    );
+    #[cfg(not(windows))]
+    let command = input.command;
     invocation.argv = crate::tools::shell::PLATFORM
         .arguments
         .iter()
         .map(|argument| (*argument).into())
-        .chain([format!(
-            "{}{}",
-            crate::tools::shell::PLATFORM.command_prefix,
-            input.command
-        )])
+        .chain([command])
         .collect();
     invocation.standard_input = None;
     invocation.mcp_stdio = None;

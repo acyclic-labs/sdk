@@ -97,7 +97,7 @@ async fn scripted_powershell_reads_writes_runs_and_captures_exit_code() -> Resul
         call(
             "shell",
             "powershell",
-            json!({"command": "[Console]::Write('café 東京'); [Console]::Write((Get-Content -Raw input.txt)); [Console]::Write((Get-Content -Raw ../from-write.txt)); [IO.File]::WriteAllText((Join-Path (Get-Location) 'captured.txt'), 'native write'); [IO.File]::WriteAllText((Join-Path $env:ACYCLIC_VOLUME_SCRATCH 'scratch.txt'), 'volume write'); [Console]::Error.Write('diagnostic café 東京'); exit 7", "cwd":"src"}),
+            json!({"command": "using namespace System.IO; [Console]::Write('café 東京'); [Console]::Write((Get-Content -Raw input.txt)); [Console]::Write((Get-Content -Raw ../from-write.txt)); [File]::WriteAllText((Join-Path (Get-Location) 'captured.txt'), 'native write'); [IO.File]::WriteAllText((Join-Path $env:ACYCLIC_VOLUME_SCRATCH 'scratch.txt'), 'volume write'); [Console]::Error.Write('diagnostic café 東京'); exit 7", "cwd":"src"}),
         ),
         call(
             "scratch",
