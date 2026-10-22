@@ -70,7 +70,9 @@ impl Guard {
                 biased;
                 output = &mut future => return Ok(output),
                 event = self.events.recv() => {
-                    let event = event.expect("native progress driver lost its schedule");
+                    let Some(event) = event else {
+                        return Err("native progress driver lost its schedule".into());
+                    };
                     event.release();
                     idle.as_mut().reset(tokio::time::Instant::now() + quiet);
                 }

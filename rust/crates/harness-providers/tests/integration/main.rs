@@ -21,6 +21,8 @@ mod local_workspace;
 mod matchers;
 mod mcp_identity;
 mod native_hook_http;
+#[path = "../../../harness/tests/support/ordered_matcher.rs"]
+mod ordered_matcher;
 #[path = "../../../harness/tests/support/progress_guard.rs"]
 mod progress_guard;
 #[path = "../../../harness/tests/support/progress_registry.rs"]

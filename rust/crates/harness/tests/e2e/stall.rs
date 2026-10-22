@@ -13,16 +13,18 @@ async fn admitted<F: Future>(registry: Arc<Registry>, path: &Path, scenario: F) 
     let observed = std::future::poll_fn(|cx| {
         CURRENT.with(|registration| {
             // Cache the wrapper while the executor's parent waker is unchanged.
-            if wakers
-                .as_ref()
-                .is_none_or(|(parent, _)| !parent.will_wake(cx.waker()))
-            {
-                wakers = Some((cx.waker().clone(), registration.observed_waker(cx.waker())));
-            }
+            let observed = match &mut wakers {
+                Some((parent, observed)) if parent.will_wake(cx.waker()) => observed,
+                stale => {
+                    &mut stale
+                        .insert((cx.waker().clone(), registration.observed_waker(cx.waker())))
+                        .1
+                }
+            };
             let _polling = registration.polling();
-            scenario.as_mut().poll(&mut std::task::Context::from_waker(
-                &wakers.as_ref().unwrap().1,
-            ))
+            scenario
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(observed))
         })
     });
     CURRENT.scope(registry.register(path), observed).await
@@ -118,12 +120,16 @@ async fn panic_and_abort_retire_the_actual_task_local_registration() {
 #[path = "../support/progress_runnable_tests.rs"]
 mod runnable_tests;
 
+fn label(registry: &Registry) -> Option<&'static str> {
+    registry.snapshot().1.first().map(|(_, label)| *label)
+}
+
 #[tokio::test]
 async fn completed_or_cancelled_waits_restore_the_current_operation() {
     let registry = Arc::new(Registry::default());
     admitted(registry.clone(), Path::new("labels"), async {
         waiting("completed follow", std::future::ready(())).await;
-        assert_eq!(registry.snapshot().1[0].1, "admitted");
+        assert_eq!(label(&registry), Some("admitted"));
         let mut pending = Box::pin(waiting("cancelled follow", std::future::pending::<()>()));
         assert!(
             pending
@@ -131,9 +137,9 @@ async fn completed_or_cancelled_waits_restore_the_current_operation() {
                 .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
                 .is_pending()
         );
-        assert_eq!(registry.snapshot().1[0].1, "cancelled follow");
+        assert_eq!(label(&registry), Some("cancelled follow"));
         drop(pending);
-        assert_eq!(registry.snapshot().1[0].1, "admitted");
+        assert_eq!(label(&registry), Some("admitted"));
     })
     .await;
     assert!(registry.snapshot().1.is_empty());

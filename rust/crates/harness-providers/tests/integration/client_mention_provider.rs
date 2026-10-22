@@ -1,5 +1,5 @@
 //! Composer -> pin -> real Rust provider projection -> scripted model response.
-use super::{CommandCatalog, CommandResolution, Fixture, Result};
+use super::{CommandCatalog, CommandResolution, Fixture, Result, TestResult};
 use acyclic_harness::{
     Error, OperationId,
     context::ModelContextCapacity,
@@ -31,7 +31,9 @@ impl HttpTransport for Script {
     }
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
-            self.0.send(request).expect("request receiver retained");
+            self.0
+                .send(request)
+                .map_err(|_| Error::Invalid("scripted request receiver dropped".into()))?;
             Ok(HttpResponse {
                 retry_after: None,
                 status: 200,
@@ -44,69 +46,16 @@ impl HttpTransport for Script {
     }
 }
 
-async fn scenario(
-    body: &[u8],
-    staged: Option<&str>,
-    text: bool,
-    drop_attachment: bool,
-) -> Result<()> {
-    let fixture = Fixture::new(&[]).await?;
-    if let Some(media) = staged {
-        fixture
-            .put_file("src/lib.rs", body, media, "source")
-            .await?;
-    } else {
-        fixture
-            .put_workspace_file("src/lib.rs", body, "source")
-            .await?;
-    }
-    let page = fixture
-        .reader
-        .list_private_directory(&fixture.root.volume, "", "", None, None, 16, None)?
-        .await?;
-    let resolved = CommandCatalog::builtins()?
-        .resolve_input(
-            "Inspect @src/lib.rs @src/lib.rs",
-            &fixture.root,
-            &page.generation,
-            fixture.reader.as_ref(),
-            4096,
-        )
-        .await?;
-    let CommandResolution::Prompt { mentions, .. } = &resolved else {
-        panic!("prompt");
-    };
-    assert_eq!(mentions.len(), 2);
-    let pinned = mentions[0].file.clone();
-    assert_eq!(mentions[1].file, pinned);
-    assert_eq!(
-        pinned.descriptor().media_type(),
-        if text {
-            "text/plain"
-        } else {
-            "application/octet-stream"
-        }
-    );
-    pinned.descriptor().verify(body, &mut None)?;
-    let mut content = resolved.into_model_input()?;
-    let ModelContent::Parts(parts) = &mut content else {
-        panic!("file parts");
-    };
-    assert_eq!(parts.len(), 2, "duplicate mentions attach once");
-    assert!(matches!(&parts[1], ModelContentPart::File { file, .. } if file == &pinned));
-    if drop_attachment {
-        parts.pop();
-    }
-    // A newer, invalid body at head must never replace the original pinned file.
-    fixture
-        .put_workspace_file("src/lib.rs", b"changed\xff", "later-head")
-        .await?;
-    let (sent, received) = mpsc::channel();
+/// A Responses registry whose transport records each request and answers "ok".
+fn scripted_registry(
+    reader: Arc<dyn acyclic_harness::conversation::ContentResidencyVerifier>,
+    sent: mpsc::Sender<HttpRequest>,
+) -> Result<Registry> {
     let mut registry = Registry::with_transport(
         Credentials::explicit(BTreeMap::new()),
         Arc::new(Script(sent)),
     )
-    .with_content(fixture.reader.clone(), 4096);
+    .with_content(reader, 4096);
     registry.register(
         "scripted".into(),
         ProviderSpec {
@@ -139,7 +88,70 @@ async fn scenario(
             timeouts: acyclic_harness_providers::TimeoutSpec::DEFAULT,
         },
     )?;
-    let provider = registry.resolve("scripted/model")?;
+    Ok(registry)
+}
+
+async fn scenario(
+    body: &[u8],
+    staged: Option<&str>,
+    text: bool,
+    drop_attachment: bool,
+) -> TestResult {
+    let fixture = Fixture::new(&[]).await?;
+    if let Some(media) = staged {
+        fixture
+            .put_file("src/lib.rs", body, media, "source")
+            .await?;
+    } else {
+        fixture
+            .put_workspace_file("src/lib.rs", body, "source")
+            .await?;
+    }
+    let page = fixture
+        .reader
+        .list_private_directory(&fixture.root.volume, "", "", None, None, 16, None)?
+        .await?;
+    let resolved = CommandCatalog::builtins()?
+        .resolve_input(
+            "Inspect @src/lib.rs @src/lib.rs",
+            &fixture.root,
+            &page.generation,
+            fixture.reader.as_ref(),
+            4096,
+        )
+        .await?;
+    let CommandResolution::Prompt { mentions, .. } = &resolved else {
+        return Err("mentions did not resolve to a prompt".into());
+    };
+    let [first, second] = mentions.as_slice() else {
+        return Err(format!("expected two mentions, got {}", mentions.len()).into());
+    };
+    let pinned = first.file.clone();
+    assert_eq!(second.file, pinned);
+    assert_eq!(
+        pinned.descriptor().media_type(),
+        if text {
+            "text/plain"
+        } else {
+            "application/octet-stream"
+        }
+    );
+    pinned.descriptor().verify(body, &mut None)?;
+    let mut content = resolved.into_model_input()?;
+    let ModelContent::Parts(parts) = &mut content else {
+        return Err("mentions did not attach file parts".into());
+    };
+    assert_eq!(parts.len(), 2, "duplicate mentions attach once");
+    assert!(matches!(parts.last(), Some(ModelContentPart::File { file, .. }) if file == &pinned));
+    if drop_attachment {
+        parts.pop();
+    }
+    // A newer, invalid body at head must never replace the original pinned file.
+    fixture
+        .put_workspace_file("src/lib.rs", b"changed\xff", "later-head")
+        .await?;
+    let (sent, received) = mpsc::channel();
+    let provider = scripted_registry(fixture.reader.clone(), sent)?.resolve("scripted/model")?;
     let request = PreparedModelRequest::prepare(
         ModelRequest {
             model: provider.model().clone(),
@@ -162,25 +174,35 @@ async fn scenario(
         .generate(request, dispatch)
         .try_collect::<Vec<_>>()
         .await;
+    check_dispatch(result, &received, body, text)
+}
+
+/// The scripted provider's outcome: pinned text dispatches once as text, binary never dispatches.
+fn check_dispatch(
+    result: Result<Vec<ModelEvent>>,
+    received: &mpsc::Receiver<HttpRequest>,
+    body: &[u8],
+    text: bool,
+) -> TestResult {
     if text {
-        let events = result.expect("verified workspace source must reach the Rust provider");
+        let events = result?;
         assert!(
             events
                 .iter()
                 .any(|event| matches!(event, ModelEvent::Content { delta } if delta == "ok"))
         );
         assert!(matches!(events.last(), Some(ModelEvent::Completed { .. })));
-        let request = received.try_recv().expect("provider dispatched");
-        let wire: Value = serde_json::from_slice(&request.body).unwrap();
-        assert_eq!(
-            wire["input"][1]["content"][0]["type"], "input_text",
-            "provider must receive pinned source as text"
-        );
-        assert_eq!(
-            wire["input"][1]["content"][0]["text"].as_str(),
-            Some(std::str::from_utf8(body).unwrap()),
-            "provider must receive pinned source as text"
-        );
+        let request = received.try_recv()?;
+        let wire: Value = serde_json::from_slice(&request.body)?;
+        let source = wire.pointer("/input/1/content/0");
+        if source.and_then(|part| part.get("type")) != Some(&Value::from("input_text"))
+            || source
+                .and_then(|part| part.get("text"))
+                .and_then(Value::as_str)
+                != Some(std::str::from_utf8(body)?)
+        {
+            return Err(format!("provider must receive pinned source as text: {wire}").into());
+        }
         assert!(received.try_recv().is_err(), "one provider dispatch");
     } else {
         assert!(
@@ -196,7 +218,7 @@ async fn scenario(
 }
 
 #[tokio::test]
-async fn composer_mentions_reach_the_rust_provider_with_pinned_utf8_and_reject_binary() -> Result<()>
+async fn composer_mentions_reach_the_rust_provider_with_pinned_utf8_and_reject_binary() -> TestResult
 {
     for (body, staged, text) in [
         (
@@ -219,11 +241,17 @@ async fn composer_mentions_reach_the_rust_provider_with_pinned_utf8_and_reject_b
 }
 
 #[tokio::test]
-#[should_panic(expected = "provider must receive pinned source as text")]
-async fn negative_control_prompt_only_dispatch_fails_the_same_provider_scenario() {
-    scenario(b"pub fn answer() {}", None, true, true)
-        .await
-        .unwrap();
+async fn negative_control_prompt_only_dispatch_fails_the_same_provider_scenario() -> TestResult {
+    match scenario(b"pub fn answer() {}", None, true, true).await {
+        Err(error)
+            if error
+                .to_string()
+                .contains("provider must receive pinned source as text") =>
+        {
+            Ok(())
+        }
+        other => Err(format!("prompt-only dispatch escaped the provider oracle: {other:?}").into()),
+    }
 }
 
 impl Fixture {

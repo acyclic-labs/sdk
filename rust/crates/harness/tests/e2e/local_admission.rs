@@ -36,8 +36,13 @@ pub(super) async fn submit(
     let result = consume_local_command(&mut client, harness, &request)
         .await?
         .ok_or("request file was not consumed")?;
-    let task = serde_json::from_value(result["task"].clone())?;
-    if result["admission_operation"] != serde_json::to_value(operation)?
+    let task = serde_json::from_value(
+        result
+            .get("task")
+            .ok_or("request result has no task")?
+            .clone(),
+    )?;
+    if result.get("admission_operation") != Some(&serde_json::to_value(operation)?)
         || client.selected_task()? != Some(task)
     {
         return Err("request result lost its admitted operation or task".into());
@@ -84,7 +89,10 @@ pub(super) async fn settled(
     {
         return Err("admitted or settled status file is missing".into());
     }
-    let mut statuses = vec![serde_json::from_slice(&initial.files[0].bytes)?];
+    let (Some(first), Some(last)) = (initial.files.first(), target.files.first()) else {
+        return Err("admitted or settled status file is missing".into());
+    };
+    let mut statuses = vec![serde_json::from_slice(&first.bytes)?];
     let mut cursor = initial.cursor;
     while cursor.position != target.cursor.position {
         let change = super::stall::waiting(
@@ -114,7 +122,7 @@ pub(super) async fn settled(
         }
     }
     if cursor.commit != target.cursor.commit
-        || statuses.last() != Some(&serde_json::from_slice(&target.files[0].bytes)?)
+        || statuses.last() != Some(&serde_json::from_slice(&last.bytes)?)
     {
         return Err("status follow and final snapshot disagree".into());
     }
@@ -124,7 +132,8 @@ pub(super) async fn settled(
     }
     check_statuses(expected, &statuses, task)?;
     // Fault the consumer of real published status files, keeping data unchanged.
-    if check_statuses(expected, &statuses[..statuses.len() - 1], task).is_ok() {
+    let (_, dropped) = statuses.split_last().ok_or("status follow is empty")?;
+    if check_statuses(expected, dropped, task).is_ok() {
         return Err("status oracle accepted a dropped terminal publication".into());
     }
     Ok(())

@@ -1,9 +1,8 @@
-
 #[cfg(test)]
 #[path = "matchers_properties.rs"]
 mod properties;
 
-pub use super::scenario_matchers::{ordered, subset};
+pub use super::{ordered_matcher::ordered, scenario_matchers::subset};
 
 #[test]
 fn recursive_subsets_keep_types_null_and_array_order() {

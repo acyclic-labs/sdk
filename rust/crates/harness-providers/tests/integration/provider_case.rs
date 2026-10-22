@@ -65,12 +65,6 @@ impl ProviderCase {
     pub fn completes(&self, index: usize) -> bool {
         self.status(index) == 200 && !self.stalls.contains(&index)
     }
-    /// Responses that complete a model step; refused or stalled ones fail or are redelivered.
-    pub fn completed_steps(&self) -> usize {
-        (0..self.responses.len())
-            .filter(|&index| self.completes(index))
-            .count()
-    }
 }
 
 impl ProviderCase {

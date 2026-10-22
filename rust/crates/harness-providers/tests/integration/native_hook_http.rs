@@ -23,6 +23,8 @@ const EVENTS: [&str; 5] = [
     "Stop",
 ];
 
+type Failure = Box<dyn std::error::Error>;
+
 // A local HTTP peer, using the provider's actual Reqwest transport. Each reply
 // closes its connection; the recorder channel has no locks or timing waits.
 async fn serve(
@@ -34,40 +36,38 @@ async fn serve(
         let (mut socket, _) = listener.accept().await?;
         let mut bytes = Vec::new();
         let (header, length) = loop {
-            let mut chunk = [0; 4096];
-            let count = socket.read(&mut chunk).await?;
-            if count == 0 {
+            if socket.read_buf(&mut bytes).await? == 0 {
                 return Err(std::io::ErrorKind::UnexpectedEof.into());
             }
-            bytes.extend_from_slice(&chunk[..count]);
             if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
-                let headers = std::str::from_utf8(&bytes[..end]).unwrap();
+                let headers = std::str::from_utf8(bytes.get(..end).unwrap_or_default())
+                    .map_err(std::io::Error::other)?;
                 let length = headers
                     .lines()
                     .find_map(|line| {
                         let (name, value) = line.split_once(':')?;
                         name.eq_ignore_ascii_case("content-length")
-                            .then(|| value.trim().parse::<usize>().unwrap())
+                            .then(|| value.trim().parse::<usize>())
                     })
-                    .unwrap();
+                    .ok_or_else(|| std::io::Error::other("request has no content length"))?
+                    .map_err(std::io::Error::other)?;
                 break (end + 4, length);
             }
         };
         while bytes.len() < header + length {
-            let mut chunk = [0; 4096];
-            let count = socket.read(&mut chunk).await?;
-            if count == 0 {
+            if socket.read_buf(&mut bytes).await? == 0 {
                 return Err(std::io::ErrorKind::UnexpectedEof.into());
             }
-            bytes.extend_from_slice(&chunk[..count]);
         }
-        let body: Value = serde_json::from_slice(&bytes[header..header + length]).unwrap();
+        let body: Value =
+            serde_json::from_slice(bytes.get(header..header + length).unwrap_or_default())?;
         if bytes.starts_with(b"POST /count ") {
             let body = r#"{"input_tokens":1}"#;
             socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await?;
             continue;
         }
-        sent.send(body).unwrap();
+        sent.send(body)
+            .map_err(|_| std::io::Error::other("request recorder closed"))?;
         let event = if step == 0 {
             json!({"type":"response.output_item.done","output_index":0,"item":{
                 "type":"function_call","call_id":"bash-call","name":"bash",
@@ -83,31 +83,22 @@ async fn serve(
     }
 }
 
-/// The same detector is used for the candidate and each omitted-dispatch
-/// control. This proves the shipping-path oracle observes every event, the
-/// effective invocation, continuation context and terminal replay.
-async fn lifecycle(
+// Aborting on every return also keeps failed assertions from leaking a peer.
+struct Server(tokio::task::JoinHandle<std::io::Result<()>>);
+impl Drop for Server {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Installs the recording hook script for every event but `omitted`; returns the script.
+fn install_hooks(
+    root: &std::path::Path,
+    home: &std::path::Path,
     omitted: Option<&str>,
     denied: bool,
-) -> std::result::Result<bool, Box<dyn std::error::Error>> {
-    // Keep the command's original cause visible if the host's existing
-    // dispatch boundary collapses it to Indeterminate (tracked by #1020).
-    let _trace = tracing::subscriber::set_default(
-        tracing_subscriber::registry().with(
-            tracing_subscriber::fmt::layer()
-                .with_test_writer()
-                .with_filter(tracing_subscriber::filter::Targets::new().with_target(
-                    "acyclic_harness::filesystem::task_runtime::dispatch",
-                    tracing::Level::TRACE,
-                )),
-        ),
-    );
-    let root = tempfile::tempdir()?;
-    let workspace = root.path().join("workspace");
-    let home = root.path().join("home");
-    std::fs::create_dir(&workspace)?;
-    std::fs::create_dir_all(home.join(".claude"))?;
-    let script = root.path().join("hook.sh");
+) -> std::io::Result<std::path::PathBuf> {
+    let script = root.join("hook.sh");
     std::fs::write(
         &script,
         r#"set -eu
@@ -137,18 +128,11 @@ esac
         home.join(".claude/settings.json"),
         json!({"hooks":hooks}).to_string(),
     )?;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let endpoint = format!("http://{}", listener.local_addr()?);
-    let (sent, mut requests) = tokio::sync::mpsc::unbounded_channel();
-    let server = tokio::spawn(serve(listener, sent));
-    // Aborting on every return also keeps failed assertions from leaking a peer.
-    struct Server(tokio::task::JoinHandle<std::io::Result<()>>);
-    impl Drop for Server {
-        fn drop(&mut self) {
-            self.0.abort();
-        }
-    }
-    let _server = Server(server);
+    Ok(script)
+}
+
+/// A Responses provider at `endpoint` with a token counter.
+fn fixture_registry(endpoint: String) -> Result<Registry> {
     let mut registry = Registry::new(Credentials::explicit(BTreeMap::new()))?;
     registry.register(
         "fixture".into(),
@@ -182,7 +166,98 @@ esac
             timeouts: Default::default(),
         },
     )?;
-    let provider = Arc::new(registry.resolve("fixture/model")?);
+    Ok(registry)
+}
+
+/// Whether the recorded hook inputs, HTTP bodies and effects show every
+/// dispatch, with the hook events observed.
+fn hook_oracle(
+    workspace: &std::path::Path,
+    bodies: &[Value],
+    denied: bool,
+) -> std::result::Result<(bool, Vec<String>), Failure> {
+    let inputs = std::fs::read_to_string(workspace.join("hook-inputs.jsonl"))?;
+    let inputs = inputs
+        .lines()
+        .map(serde_json::from_str)
+        .collect::<std::result::Result<Vec<Value>, _>>()?;
+    let events = inputs
+        .iter()
+        .map(|input| {
+            input
+                .get("hook_event_name")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or("hook input has no event name")
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut expected = vec![
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "Stop",
+        "Stop",
+    ];
+    if denied {
+        expected.retain(|event| *event != "PostToolUse");
+    }
+    let has = |index: usize, text: &str| {
+        bodies
+            .get(index)
+            .is_some_and(|body| body.to_string().contains(text))
+    };
+    let field = |index: usize, pointer: &str| {
+        inputs
+            .get(index)
+            .and_then(|input| input.pointer(pointer))
+            .cloned()
+    };
+    let passed = bodies.len() == 3
+        && events == expected
+        && field(2, "/tool_input/command") == Some("printf original > executed".into())
+        && if denied {
+            !workspace.join("executed").exists() && has(1, "denied-by-hook")
+        } else {
+            std::fs::read(workspace.join("executed"))? == b"rewritten"
+                && field(3, "/tool_input/command") == Some("printf rewritten > executed".into())
+                && field(3, "/tool_response/success") == Some(true.into())
+                && has(1, "PostToolUse-context")
+        }
+        && has(0, "SessionStart-context")
+        && has(0, "UserPromptSubmit-context")
+        && has(2, "Stop-context")
+        && has(2, "provisional");
+    Ok((passed, events))
+}
+
+/// The same detector is used for the candidate and each omitted-dispatch
+/// control. This proves the shipping-path oracle observes every event, the
+/// effective invocation, continuation context and terminal replay.
+async fn lifecycle(omitted: Option<&str>, denied: bool) -> std::result::Result<bool, Failure> {
+    // Keep the command's original cause visible if the host's existing
+    // dispatch boundary collapses it to Indeterminate (tracked by #1020).
+    let _trace = tracing::subscriber::set_default(
+        tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .with_test_writer()
+                .with_filter(tracing_subscriber::filter::Targets::new().with_target(
+                    "acyclic_harness::filesystem::task_runtime::dispatch",
+                    tracing::Level::TRACE,
+                )),
+        ),
+    );
+    let root = tempfile::tempdir()?;
+    let workspace = root.path().join("workspace");
+    let home = root.path().join("home");
+    std::fs::create_dir(&workspace)?;
+    std::fs::create_dir_all(home.join(".claude"))?;
+    let script = install_hooks(root.path(), &home, omitted, denied)?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("http://{}", listener.local_addr()?);
+    let (sent, mut requests) = tokio::sync::mpsc::unbounded_channel();
+    let _server = Server(tokio::spawn(serve(listener, sent)));
+    let provider = Arc::new(fixture_registry(endpoint)?.resolve("fixture/model")?);
     let config = || -> Result<LocalHarnessConfig> {
         Ok(acyclic_harness::test_support::local_harness_config(
             &workspace,
@@ -222,48 +297,8 @@ esac
     while let Ok(body) = requests.try_recv() {
         bodies.push(body);
     }
-    let inputs = std::fs::read_to_string(workspace.join("hook-inputs.jsonl"))?;
-    let inputs: Vec<Value> = inputs
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    let events: Vec<_> = inputs
-        .iter()
-        .map(|input| input["hook_event_name"].as_str().unwrap())
-        .collect();
-    let mut expected = vec![
-        "SessionStart",
-        "UserPromptSubmit",
-        "PreToolUse",
-        "PostToolUse",
-        "Stop",
-        "Stop",
-    ];
-    if denied {
-        expected.retain(|event| *event != "PostToolUse");
-    }
-    let has = |index: usize, text: &str| {
-        bodies
-            .get(index)
-            .is_some_and(|body| body.to_string().contains(text))
-    };
-    let passed = output == replay
-        && output.text == "done"
-        && bodies.len() == 3
-        && events == expected
-        && inputs[2]["tool_input"]["command"] == "printf original > executed"
-        && if denied {
-            !workspace.join("executed").exists() && has(1, "denied-by-hook")
-        } else {
-            std::fs::read(workspace.join("executed"))? == b"rewritten"
-                && inputs[3]["tool_input"]["command"] == "printf rewritten > executed"
-                && inputs[3]["tool_response"]["success"] == true
-                && has(1, "PostToolUse-context")
-        }
-        && has(0, "SessionStart-context")
-        && has(0, "UserPromptSubmit-context")
-        && has(2, "Stop-context")
-        && has(2, "provisional");
+    let (observed, events) = hook_oracle(&workspace, &bodies, denied)?;
+    let passed = output == replay && output.text == "done" && observed;
     if !passed && omitted.is_none() {
         eprintln!("output={output:?}, replay={replay:?}, events={events:?}, requests={bodies:?}");
     }
@@ -272,7 +307,7 @@ esac
 
 #[tokio::test]
 async fn lifecycle_http_detects_each_missing_dispatch_and_replays_without_effects()
--> std::result::Result<(), Box<dyn std::error::Error>> {
+-> std::result::Result<(), Failure> {
     assert!(
         lifecycle(None, false).await?,
         "healthy lifecycle failed its shipping-path oracle"

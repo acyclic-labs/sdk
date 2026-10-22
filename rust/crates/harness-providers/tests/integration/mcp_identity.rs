@@ -1,4 +1,5 @@
 //! Adapter output must retain one identity through hooks and approval admission.
+use super::TestResult;
 use acyclic_harness::model::{
     ModelContent, ModelDispatch, ModelEvent, ModelMessage, ModelProvider, ModelRequest, ModelRole,
     PreparedModelRequest,
@@ -13,9 +14,33 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 const CANONICAL: &str = "mcp.docs.search";
 const WIRE: &str = "mcp__docs__search";
 
-async fn endpoint(adapter: &str) -> (String, tokio::task::JoinHandle<()>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
+/// Reads one request's headers and declared JSON body.
+async fn read_request(socket: &mut tokio::net::TcpStream) -> TestResult<Value> {
+    let mut input = Vec::new();
+    loop {
+        if socket.read_buf(&mut input).await? == 0 {
+            return Err("request ended before its body".into());
+        }
+        let Some(end) = input.windows(4).position(|bytes| bytes == b"\r\n\r\n") else {
+            continue;
+        };
+        let headers =
+            String::from_utf8_lossy(input.get(..end).unwrap_or_default()).to_ascii_lowercase();
+        let length: usize = headers
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length:"))
+            .ok_or("request has no content length")?
+            .trim()
+            .parse()?;
+        if let Some(body) = input.get(end + 4..end + 4 + length) {
+            return Ok(serde_json::from_slice(body)?);
+        }
+    }
+}
+
+async fn endpoint(adapter: &str) -> TestResult<(String, tokio::task::JoinHandle<TestResult>)> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let url = format!("http://{}", listener.local_addr()?);
     let reply = match adapter {
         "responses" => vec![
             json!({"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","call_id":"call","name":WIRE,"arguments":"{}"}}),
@@ -36,7 +61,7 @@ async fn endpoint(adapter: &str) -> (String, tokio::task::JoinHandle<()>) {
         "gemini" => vec![
             json!({"candidates":[{"content":{"parts":[{"functionCall":{"id":"call","name":WIRE,"args":{}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}),
         ],
-        _ => unreachable!(),
+        _ => return Err(format!("unknown adapter {adapter}").into()),
     };
     let mut body: String = reply
         .iter()
@@ -46,44 +71,26 @@ async fn endpoint(adapter: &str) -> (String, tokio::task::JoinHandle<()>) {
         body.push_str("data: [DONE]\n\n");
     }
     let server = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let mut input = Vec::new();
-        let mut buffer = [0; 1024];
-        let request = loop {
-            let read = socket.read(&mut buffer).await.unwrap();
-            assert!(read != 0);
-            input.extend_from_slice(&buffer[..read]);
-            if let Some(end) = input.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
-                let headers = String::from_utf8_lossy(&input[..end]).to_ascii_lowercase();
-                let length: usize = headers
-                    .lines()
-                    .find_map(|line| line.strip_prefix("content-length:"))
-                    .unwrap()
-                    .trim()
-                    .parse()
-                    .unwrap();
-                if input.len() >= end + 4 + length {
-                    break serde_json::from_slice::<Value>(&input[end + 4..end + 4 + length])
-                        .unwrap();
-                }
-            }
-        };
-        assert!(request.to_string().contains(WIRE));
-        assert!(!request.to_string().contains(CANONICAL));
-        socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        let (mut socket, _) = listener.accept().await?;
+        let request = read_request(&mut socket).await?.to_string();
+        if !request.contains(WIRE) || request.contains(CANONICAL) {
+            return Err(format!("request lost the wire tool name: {request}").into());
+        }
+        socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await?;
+        Ok(())
     });
-    (url, server)
+    Ok((url, server))
 }
 
-async fn canonical_consumers(adapter: &str) {
-    let (url, server) = endpoint(adapter).await;
-    let mut registry = Registry::new(Credentials::explicit(Default::default())).unwrap();
+async fn canonical_consumers(adapter: &str) -> TestResult {
+    let (url, server) = endpoint(adapter).await?;
+    let mut registry = Registry::new(Credentials::explicit(Default::default()))?;
     registry.register("fixture".into(), serde_json::from_value(json!({
         "adapter":adapter,"authentication":"optional","base_url":url,
         "models":{"tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},"max_event_bytes":4096,
         "token_counter":{"path":"count","adapter":adapter,"response_field":"input_tokens","framing_tokens":0}
-    })).unwrap()).unwrap();
-    let provider = registry.resolve("fixture/tiny").unwrap();
+    }))?)?;
+    let provider = registry.resolve("fixture/tiny")?;
     let definition = ToolDefinition {
         name: CANONICAL.into(),
         revision: "1".into(),
@@ -99,26 +106,19 @@ async fn canonical_consumers(adapter: &str) {
                 role: ModelRole::User,
                 content: ModelContent::Text("search".into()),
             }],
-            tools: vec![
-                serde_json::from_value(serde_json::to_value(&definition).unwrap()).unwrap(),
-            ],
+            tools: vec![serde_json::from_value(serde_json::to_value(&definition)?)?],
             max_output_tokens: Some(64),
         },
         acyclic_harness::conversation::Limits::default(),
         None,
-    )
-    .unwrap();
+    )?;
     let dispatch = ModelDispatch {
         operation_id: acyclic_harness::OperationId::from_bytes([1; 16]),
         step: 0,
         request_digest: request.request_digest(),
     };
-    let events: Vec<_> = provider
-        .generate(request, dispatch)
-        .try_collect()
-        .await
-        .unwrap();
-    server.await.unwrap();
+    let events: Vec<_> = provider.generate(request, dispatch).try_collect().await?;
+    server.await??;
     let calls: Vec<_> = events
         .into_iter()
         .filter_map(|event| match event {
@@ -126,16 +126,17 @@ async fn canonical_consumers(adapter: &str) {
             _ => None,
         })
         .collect();
-    assert_eq!(calls.len(), 1);
-    let call = &calls[0];
+    let [call] = calls.as_slice() else {
+        return Err(format!("expected one tool call, got {}", calls.len()).into());
+    };
     assert_eq!(call.name, CANONICAL);
-    acyclic_harness::test_support::assert_canonical_tool_consumers(call)
-        .await
-        .unwrap();
+    acyclic_harness::test_support::assert_canonical_tool_consumers(call).await?;
+    Ok(())
 }
 #[tokio::test]
-async fn all_http_adapters_bind_canonical_hooks_and_approvals() {
+async fn all_http_adapters_bind_canonical_hooks_and_approvals() -> TestResult {
     for adapter in ["responses", "chat", "anthropic", "gemini"] {
-        canonical_consumers(adapter).await;
+        canonical_consumers(adapter).await?;
     }
+    Ok(())
 }

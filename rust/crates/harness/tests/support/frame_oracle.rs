@@ -1,4 +1,4 @@
-use super::{TestResult, expected_outcome::ExpectedOutcome, matchers};
+use super::{TestResult, expected_outcome::ExpectedOutcome, ordered_matcher::ordered};
 use acyclic_harness::OperationId;
 use serde_json::Value;
 
@@ -29,6 +29,13 @@ pub(crate) fn check_frames(
                 outcome: acyclic_harness::Outcome::Succeeded(_),
                 ..
             },
+        )
+        | (
+            ExpectedOutcome::Failed,
+            acyclic_harness::scheduler::SchedulerEvent::Completed {
+                outcome: acyclic_harness::Outcome::Failed { .. },
+                ..
+            },
         ) => {}
         (
             ExpectedOutcome::Indeterminate,
@@ -37,15 +44,8 @@ pub(crate) fn check_frames(
                 ..
             },
         ) if operation_id == identity => {}
-        (
-            ExpectedOutcome::Failed,
-            acyclic_harness::scheduler::SchedulerEvent::Completed {
-                outcome: acyclic_harness::Outcome::Failed { .. },
-                ..
-            },
-        ) => {}
         _ => return Err("local task wire outcome differs".into()),
     }
-    matchers::ordered(expected, frames, "scheduler wire frames")?;
+    ordered(expected, frames, "scheduler wire frames")?;
     Ok(())
 }

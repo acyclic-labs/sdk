@@ -213,7 +213,7 @@ async fn serve(replies: Vec<Reply>) -> Result<String> {
             let (status, declared, sent) = match &reply {
                 Reply::Full(status, body) => (*status, body.len(), body.as_str()),
                 Reply::Cut(body, sent) | Reply::Hold(body, sent) => {
-                    (200, body.len(), &body[..*sent])
+                    (200, body.len(), body.get(..*sent).unwrap_or_default())
                 }
             };
             let bytes = format!(
@@ -241,11 +241,12 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> String {
     let mut buffer = Vec::new();
     let mut chunk = [0; 4096];
     while let Ok(read @ 1..) = socket.read(&mut chunk).await {
-        buffer.extend_from_slice(&chunk[..read]);
+        buffer.extend_from_slice(chunk.get(..read).unwrap_or_default());
         let Some(end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") else {
             continue;
         };
-        let head = String::from_utf8_lossy(&buffer[..end]).to_ascii_lowercase();
+        let head =
+            String::from_utf8_lossy(buffer.get(..end).unwrap_or_default()).to_ascii_lowercase();
         let length = head
             .lines()
             .find_map(|line| line.strip_prefix("content-length:"))

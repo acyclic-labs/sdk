@@ -1,14 +1,22 @@
 //! Runner-owned scenario registrations. This is also the code included by the Loom model.
 #[cfg(acyclic_e2e_progress_loom)]
-use loom::sync::Mutex;
+use loom::sync::{Mutex, MutexGuard};
 #[cfg(not(acyclic_e2e_progress_loom))]
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
     sync::Arc,
     task::{Wake, Waker},
 };
+
+/// The guarded state stays consistent across a panicking holder: each critical
+/// section is a few plain field writes, so a poisoned lock is still current.
+fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
+    state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 #[derive(Default)]
 struct State {
@@ -38,7 +46,7 @@ pub struct Registration {
 
 impl Registry {
     pub fn register(self: &Arc<Self>, path: &Path) -> Registration {
-        let mut state = self.state.lock().unwrap();
+        let mut state = lock(&self.state);
         let id = state.next;
         state.next += 1;
         state.revision += 1;
@@ -63,7 +71,7 @@ impl Registry {
     }
 
     pub fn snapshot(&self) -> (usize, Vec<(PathBuf, &'static str)>) {
-        let state = self.state.lock().unwrap();
+        let state = lock(&self.state);
         (
             state.revision,
             state
@@ -75,7 +83,7 @@ impl Registry {
     }
 
     pub fn blocked_snapshot(&self, revision: usize) -> Option<Vec<(PathBuf, &'static str)>> {
-        let state = self.state.lock().unwrap();
+        let state = lock(&self.state);
         (state.revision == revision
             && state
                 .open
@@ -93,9 +101,12 @@ impl Registry {
 
 impl Registration {
     pub fn waiting(&self, label: &'static str) -> Waiting {
-        let mut state = self.registry.state.lock().unwrap();
-        let entry = state.open.get_mut(&self.id).expect("retired registration");
-        let previous = std::mem::replace(&mut entry.label, label);
+        let mut state = lock(&self.registry.state);
+        // An open entry outlives its sole Registration, which removes it on drop.
+        let previous = state
+            .open
+            .get_mut(&self.id)
+            .map_or(label, |entry| std::mem::replace(&mut entry.label, label));
         state.revision += 1;
         Waiting {
             registry: self.registry.clone(),
@@ -105,11 +116,12 @@ impl Registration {
     }
 
     pub fn polling(&self) -> Polling<'_> {
-        let mut state = self.registry.state.lock().unwrap();
-        let entry = state.open.get_mut(&self.id).expect("retired registration");
-        assert!(!entry.polling);
-        entry.ready = false;
-        entry.polling = true;
+        let mut state = lock(&self.registry.state);
+        if let Some(entry) = state.open.get_mut(&self.id) {
+            assert!(!entry.polling);
+            entry.ready = false;
+            entry.polling = true;
+        }
         // A reporter may cause another poll of an unchanged Pending future.
         // Polling alone is not progress; only observed wakes and lifecycle
         // changes advance the idle revision.
@@ -132,7 +144,7 @@ pub struct Waiting {
 }
 impl Drop for Waiting {
     fn drop(&mut self) {
-        let mut state = self.registry.state.lock().unwrap();
+        let mut state = lock(&self.registry.state);
         if let Some(entry) = state.open.get_mut(&self.id) {
             entry.label = self.previous;
             state.revision += 1;
@@ -143,12 +155,10 @@ impl Drop for Waiting {
 pub struct Polling<'a>(&'a Registration);
 impl Drop for Polling<'_> {
     fn drop(&mut self) {
-        let mut state = self.0.registry.state.lock().unwrap();
-        state
-            .open
-            .get_mut(&self.0.id)
-            .expect("retired registration")
-            .polling = false;
+        let mut state = lock(&self.0.registry.state);
+        if let Some(entry) = state.open.get_mut(&self.0.id) {
+            entry.polling = false;
+        }
         // Preserve readiness and its revision if a wake raced this return.
     }
 }
@@ -164,7 +174,7 @@ impl Wake for Ready {
     }
     fn wake_by_ref(self: &Arc<Self>) {
         {
-            let mut state = self.registry.state.lock().unwrap();
+            let mut state = lock(&self.registry.state);
             if let Some(entry) = state.open.get_mut(&self.id) {
                 entry.ready = true;
                 state.revision += 1;
@@ -176,7 +186,7 @@ impl Wake for Ready {
 
 impl Drop for Registration {
     fn drop(&mut self) {
-        let mut state = self.registry.state.lock().unwrap();
+        let mut state = lock(&self.registry.state);
         assert!(state.open.remove(&self.id).is_some());
         state.revision += 1;
     }

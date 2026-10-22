@@ -30,12 +30,12 @@ pub(super) fn check_events(expected: &[Value], events: &[ModelEvent]) -> TestRes
     }
     for (expected, actual) in expected.iter().zip(events) {
         let actual = serde_json::to_value(actual)?;
-        let reasoning = actual["kind"] == "reasoning_block";
+        let reasoning = at(&actual, "/kind") == "reasoning_block";
         if !matchers::subset(expected, &actual)
             || (reasoning
-                && (expected["block"]["continuity"] != actual["block"]["continuity"]
-                    || expected["block"]["origin"]["credential_scope"]
-                        != actual["block"]["origin"]["credential_scope"]))
+                && ["/block/continuity", "/block/origin/credential_scope"]
+                    .iter()
+                    .any(|pointer| at(expected, pointer) != at(&actual, pointer)))
         {
             return Err(
                 format!("provider events differ: expected {expected}, got {actual}").into(),
@@ -43,6 +43,18 @@ pub(super) fn check_events(expected: &[Value], events: &[ModelEvent]) -> TestRes
         }
     }
     Ok(())
+}
+
+/// The value at `pointer`, or null where it is absent, as JSON indexing reads it.
+fn at<'a>(value: &'a Value, pointer: &str) -> &'a Value {
+    value.pointer(pointer).unwrap_or(&Value::Null)
+}
+
+/// Responses that complete a model step; refused or stalled ones fail or are redelivered.
+fn completed_steps(case: &ProviderCase) -> usize {
+    (0..case.responses.len())
+        .filter(|&index| case.completes(index))
+        .count()
 }
 
 async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> TestResult {
@@ -67,7 +79,7 @@ async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> TestResult {
         )?;
         let dispatch = ModelDispatch {
             operation_id: OperationId::from_bytes([73; 16]),
-            step: step as u32,
+            step: u32::try_from(step)?,
             request_digest: request.request_digest(),
         };
         let events: Vec<_> = provider.generate(request, dispatch).try_collect().await?;
@@ -96,17 +108,16 @@ async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> TestResult {
                 return Err("provider oracle accepted an inserted delta".into());
             }
         }
-        for index in 0..events.len() {
-            if let ModelEvent::ReasoningBlock { .. } = &events[index] {
+        for (index, event) in events.iter().enumerate() {
+            if let ModelEvent::ReasoningBlock { .. } = event {
                 for scope in [false, true] {
                     let mut broken = events.clone();
-                    let ModelEvent::ReasoningBlock { block } = &mut broken[index] else {
-                        unreachable!()
-                    };
-                    if scope {
-                        block.origin.credential_scope = None;
-                    } else {
-                        block.continuity.push(255);
+                    if let Some(ModelEvent::ReasoningBlock { block }) = broken.get_mut(index) {
+                        if scope {
+                            block.origin.credential_scope = None;
+                        } else {
+                            block.continuity.push(255);
+                        }
                     }
                     if check_events(expected, &broken).is_ok() {
                         return Err(
@@ -196,8 +207,9 @@ pub(super) async fn run(case: ProviderCase) -> TestResult {
     // A case with registered tools runs again with a default tool added ahead
     // of them: every request expectation, including wire tool names, holds.
     let added = [None, Some(ADDED_DEFAULT_TOOL)];
-    for (run, added) in added[..if case.tools.is_empty() { 1 } else { 2 }]
+    for (run, added) in added
         .iter()
+        .take(if case.tools.is_empty() { 1 } else { 2 })
         .enumerate()
     {
         if parse || run > 0 {
@@ -237,7 +249,7 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
     match (case.expect.outcome, output) {
         (super::expected_outcome::ExpectedOutcome::Succeeded, Ok(output))
             if output.text == case.expect.text
-                && output.steps as usize == case.completed_steps() => {}
+                && output.steps as usize == completed_steps(case) => {}
         (
             super::expected_outcome::ExpectedOutcome::Failed,
             Err(acyclic_harness::Error::TaskFailed { task, .. }),
@@ -270,6 +282,31 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
     {
         return Err("wire oracle accepted a dropped root completion".into());
     }
+    check_requests(case, transport)?;
+    drop(frames);
+    drop(stream);
+    drop(harness);
+    drop(reader);
+    drop(host);
+    let cold = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&directory)).await?;
+    let cold = acyclic_harness::filesystem::FilesystemHost::new(cold, volume.provider(), None)?;
+    for (path, expected) in &case.expect.files {
+        let actual = cold
+            .read(&workspace, None, &format!("/{path}"), 65_536, None)
+            .await;
+        match (expected, actual) {
+            (Some(expected), Ok(bytes)) if bytes.as_ref() == expected.as_bytes() => {}
+            (None, Err(acyclic_harness::Error::NotFound(_))) => {}
+            (_, actual) => {
+                return Err(format!("provider persisted file differs: {path}: {actual:?}").into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The recorded HTTP script against the case, faulting each asserted request field.
+fn check_requests(case: &ProviderCase, transport: &Recorded) -> TestResult {
     let (requests, remaining) = transport.take_requests();
     if requests.len() != case.responses.len() || remaining != 0 {
         return Err("provider task did not consume the exact HTTP script".into());
@@ -317,25 +354,6 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
                 if check_request(expected, &broken).is_ok() {
                     return Err(format!("request oracle accepted corruption at {pointer}").into());
                 }
-            }
-        }
-    }
-    drop(frames);
-    drop(stream);
-    drop(harness);
-    drop(reader);
-    drop(host);
-    let cold = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&directory)).await?;
-    let cold = acyclic_harness::filesystem::FilesystemHost::new(cold, volume.provider(), None)?;
-    for (path, expected) in &case.expect.files {
-        let actual = cold
-            .read(&workspace, None, &format!("/{path}"), 65_536, None)
-            .await;
-        match (expected, actual) {
-            (Some(expected), Ok(bytes)) if bytes.as_ref() == expected.as_bytes() => {}
-            (None, Err(acyclic_harness::Error::NotFound(_))) => {}
-            (_, actual) => {
-                return Err(format!("provider persisted file differs: {path}: {actual:?}").into());
             }
         }
     }

@@ -46,22 +46,20 @@ impl Fixture {
                 id: "test".into(),
             },
         );
-        let scope = issuer
-            .issue(
-                "owner",
-                &Capabilities::new([
-                    volume.capability(VolumeOperation::Read, &mut None)?,
-                    volume.capability(VolumeOperation::Write, &mut None)?,
-                    volume.directory_read_capability("", &mut None)?,
-                ]),
-                Some(agent),
-                None,
-                &mut None,
-            )
-            .expect("scope proof");
+        let scope = issuer.issue(
+            "owner",
+            &Capabilities::new([
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.capability(VolumeOperation::Write, &mut None)?,
+                volume.directory_read_capability("", &mut None)?,
+            ]),
+            Some(agent),
+            None,
+            &mut None,
+        )?;
         host.create_volume(&volume).await?;
         let writer = ContentGrant::verify(
-            &issuer.verifier(&mut None).expect("verifier"),
+            &issuer.verifier(&mut None)?,
             &scope,
             &volume,
             VolumeOperation::Write,
@@ -70,7 +68,7 @@ impl Fixture {
         )?;
         let reader = FilesystemContentVerifier::new(
             host.clone(),
-            &issuer.verifier(&mut None).expect("verifier"),
+            &issuer.verifier(&mut None)?,
             &scope,
             32_768,
             None,
