@@ -70,11 +70,14 @@ async fn first_request_contains_each_environment_fact_and_resume_never_rediscove
         "<git_status>branch environment-fixture; clean</git_status>".into(),
         "<model>selected-environment</model>".into(),
     ];
+    let assertions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = assertions.clone();
     // The scripted provider asserts on the first request at admission, before generation.
     let provider = Arc::new(
         ScriptedModelProvider::new([ScriptedTurn::Text("done".into())])
             .with_context_capacity(capacity())
             .with_token_counter(move |request| {
+                observed.fetch_add(1, Ordering::SeqCst);
                 assert_eq!(request.request().model.name, "selected-environment");
                 let text = system_text(request.request());
                 for fact in &expected {
@@ -88,6 +91,9 @@ async fn first_request_contains_each_environment_fact_and_resume_never_rediscove
             }),
     );
     let mut config = checkout_config(root, (model()?, provider.clone()))?
+        .compaction(crate::context::CompactionPolicy::Threshold(
+            crate::context::ThresholdCompaction::for_capacity(capacity(), 0)?,
+        ))
         .state_directory(state.path())
         .clock(Arc::new(Clock(NOW)));
     config.environment_platform = crate::native_environment::PlatformPolicy::Fixture {
@@ -112,6 +118,9 @@ async fn first_request_contains_each_environment_fact_and_resume_never_rediscove
     )?;
     std::fs::write(root.join("untracked"), "changed").map_err(super::super::storage)?;
     let mut config = checkout_config(root, (model()?, provider.clone()))?
+        .compaction(crate::context::CompactionPolicy::Threshold(
+            crate::context::ThresholdCompaction::for_capacity(capacity(), 0)?,
+        ))
         .state_directory(state.path())
         .clock(Arc::new(Clock(NOW + 86_400_000)));
     config.environment_platform = crate::native_environment::PlatformPolicy::Fixture {
@@ -120,7 +129,13 @@ async fn first_request_contains_each_environment_fact_and_resume_never_rediscove
     };
     let reopened = LocalHarness::open(config).await?;
     assert_eq!(reopened.resume(task).await?.text, "done");
+    assert!(
+        assertions.load(Ordering::SeqCst) > 0,
+        "provider oracle never ran"
+    );
+    let checked = assertions.load(Ordering::SeqCst);
     assert_eq!(reopened.resume(task).await?.text, "done");
+    assert_eq!(assertions.load(Ordering::SeqCst), checked);
     assert_eq!(reopened.environment_reads.load(Ordering::SeqCst), 0);
     assert_eq!(provider.request_count(), 1);
     assert_eq!(
@@ -164,10 +179,13 @@ async fn volume_binding_does_not_claim_a_native_checkout_environment() -> Result
 async fn child_admission_records_its_inherited_selected_model() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state = tempfile::tempdir().map_err(super::super::storage)?;
+    let assertions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = assertions.clone();
     let provider = Arc::new(
         ScriptedModelProvider::new([ScriptedTurn::Text("child".into())])
             .with_context_capacity(capacity())
-            .with_token_counter(|request| {
+            .with_token_counter(move |request| {
+                observed.fetch_add(1, Ordering::SeqCst);
                 assert_eq!(request.request().model.name, "inherited-environment");
                 assert!(
                     system_text(request.request()).contains("<model>inherited-environment</model>")
@@ -187,6 +205,9 @@ async fn child_admission_records_its_inherited_selected_model() -> Result<()> {
     );
     let harness = LocalHarness::open(
         checkout_config(directory.path(), (model()?, provider.clone()))?
+            .compaction(crate::context::CompactionPolicy::Threshold(
+                crate::context::ThresholdCompaction::for_capacity(capacity(), 0)?,
+            ))
             .state_directory(state.path()),
     )
     .await?;
@@ -203,6 +224,10 @@ async fn child_admission_records_its_inherited_selected_model() -> Result<()> {
             .await?,
     )?;
     assert_eq!(harness.resume(child).await?.text, "child");
+    assert!(
+        assertions.load(Ordering::SeqCst) > 0,
+        "provider oracle never ran"
+    );
     assert_eq!(provider.request_count(), 1);
     harness.runtime.task_host().cancel(parent).await?;
     harness.close().await
