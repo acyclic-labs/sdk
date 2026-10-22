@@ -31,8 +31,6 @@ pub struct ProcessCustody {
     path: PathBuf,
     #[cfg(unix)]
     directory: File,
-    #[cfg(windows)]
-    sequence: std::sync::atomic::AtomicU64,
 }
 
 /// One tree's record, removed by its owner once the tree is gone.
@@ -54,8 +52,6 @@ impl ProcessCustody {
             path: path.to_path_buf(),
             #[cfg(unix)]
             directory: File::open(path)?,
-            #[cfg(windows)]
-            sequence: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -347,7 +343,7 @@ use unix::fence;
 #[cfg(windows)]
 mod windows {
     use super::{Path, ProcessCustody, Record, fs, io};
-    use std::sync::atomic::Ordering;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use windows_sys::Win32::Foundation::{
         CloseHandle, ERROR_FILE_NOT_FOUND, FILETIME, HANDLE, WAIT_FAILED,
     };
@@ -390,7 +386,10 @@ mod windows {
         /// Records a new tree before its Job exists; returns the record and
         /// the Job name the spawn must create.
         pub(in crate::process_tree) fn record(&self) -> io::Result<(Record, Vec<u16>)> {
-            let sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
+            // One sequence for the whole process: Job names share one
+            // namespace across every custody directory this process owns.
+            static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+            let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
             // This process's PID and creation time name it among every
             // process, past or present, that may have shared the directory.
             let name = format!(
@@ -407,10 +406,30 @@ mod windows {
         }
     }
 
+    /// Separates a record's tree from the custodian it names.
+    const CUSTODIAN: &str = "-custodian-";
+
+    impl Record {
+        /// Names the tree's custodian in the record, before any member
+        /// starts. The rename is atomic: a fence sees the record with the
+        /// custodian or without it, and without it no member ever started.
+        pub(in crate::process_tree) fn name_custodian(&mut self, identity: &str) -> io::Result<()> {
+            let mut named = self.path.clone().into_os_string();
+            named.push(CUSTODIAN);
+            named.push(identity);
+            fs::rename(&self.path, &named)?;
+            self.path = named.into();
+            Ok(())
+        }
+    }
+
     pub(super) fn fence(path: &Path, name: &std::ffi::OsStr) -> io::Result<bool> {
         let Some(name) = name.to_str().filter(|name| name.starts_with(PREFIX)) else {
             return Ok(false);
         };
+        let (name, custodian) = name
+            .split_once(CUSTODIAN)
+            .map_or((name, None), |(name, custodian)| (name, Some(custodian)));
         let wide = job_name(name);
         // SAFETY: a NUL-terminated name; the handle is owned on success.
         let job = unsafe { OpenJobObjectW(JOB_ACCESS, 0, wide.as_ptr()) };
@@ -420,7 +439,11 @@ mod windows {
                 return Err(error);
             }
         } else {
-            let fenced = terminate_and_await(job);
+            // A member leaves the Job's list before its process has fully
+            // exited; the custodian exits only once each has, so its exit
+            // ends the fence.
+            let fenced = terminate_and_await(job)
+                .and_then(|()| custodian.map_or(Ok(()), super::super::custodian::await_custodian));
             // SAFETY: the Job handle opened above.
             unsafe { CloseHandle(job) };
             fenced?;
@@ -467,7 +490,7 @@ mod windows {
     }
 
     /// Lists the process IDs still in `job`.
-    fn members(job: HANDLE) -> io::Result<Vec<u32>> {
+    pub(in crate::process_tree) fn members(job: HANDLE) -> io::Result<Vec<u32>> {
         const CAPACITY: usize = 1024;
         let header = std::mem::offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList)
             / std::mem::size_of::<usize>();
@@ -506,3 +529,5 @@ mod windows {
 }
 #[cfg(windows)]
 use windows::fence;
+#[cfg(windows)]
+pub(super) use windows::members;

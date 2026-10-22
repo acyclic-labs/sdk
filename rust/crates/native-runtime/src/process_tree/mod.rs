@@ -9,6 +9,8 @@ use std::process::{Child, Command, ExitStatus, Output};
 use std::time::{Duration, Instant};
 
 mod capture;
+#[cfg(windows)]
+mod custodian;
 mod custody;
 pub use custody::ProcessCustody;
 #[cfg(unix)]
@@ -110,9 +112,9 @@ impl ProcessTree {
         }
         #[cfg(windows)]
         {
-            let (record, name) = custody.record()?;
+            let (mut record, name) = custody.record()?;
             let mut tree = None;
-            if let Err(admission) = platform::spawn_named(command, &mut tree, &name) {
+            if let Err(admission) = platform::spawn_named(command, &mut tree, &name, &mut record) {
                 if let Some(tree) = tree.as_mut() {
                     tree.terminate(None)?;
                 }

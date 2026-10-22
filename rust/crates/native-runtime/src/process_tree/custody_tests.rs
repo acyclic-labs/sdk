@@ -198,6 +198,17 @@ impl Watch {
         assert_eq!(polled, 1, "poll: {}", std::io::Error::last_os_error());
     }
 
+    /// Whether the process exits within `bound`, which only detects a
+    /// process that never exits.
+    #[cfg(windows)]
+    fn exits_within(&self, bound: Duration) -> bool {
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        let bound = u32::try_from(bound.as_millis()).expect("bound");
+        // SAFETY: an owned process handle.
+        unsafe { WaitForSingleObject(self.handle, bound) == WAIT_OBJECT_0 }
+    }
+
     fn kill(&self) {
         #[cfg(unix)]
         // SAFETY: the published, still-watched process.
@@ -240,6 +251,84 @@ fn reopened_owner_fence_returns_only_after_the_killed_owners_tree_is_dead() {
         .expect("fence");
     assert!(watch.exited(), "a killed owner's tree outlived the fence");
     assert_eq!(fs::read_dir(&processes).expect("records").count(), 0);
+}
+
+/// The custodian of the only record in `processes`, which it names.
+#[cfg(windows)]
+fn custodian_of(processes: &Path) -> Watch {
+    let mut records = fs::read_dir(processes).expect("records");
+    let record = records
+        .next()
+        .expect("a record")
+        .expect("record")
+        .file_name();
+    assert!(records.next().is_none(), "one record");
+    let pid = record
+        .to_str()
+        .and_then(|name| name.split_once("-custodian-"))
+        .and_then(|(_, custodian)| custodian.split_once('-'))
+        .and_then(|(pid, _)| pid.parse().ok())
+        .expect("the record names its custodian");
+    Watch::new(pid).expect("the custodian is running")
+}
+
+/// A killed custodian leaves its tree running under its live owner, and the
+/// owner's handle kills the tree when the owner dies; the reopened fence
+/// then clears the custodian's record.
+#[cfg(windows)]
+#[test]
+fn a_killed_custodians_tree_dies_with_its_owner() {
+    let root = tempfile::tempdir().expect("root");
+    let processes = root.path().join("processes");
+    let mut owner = owner("custodied", root.path());
+    let watch = Watch::new(published(root.path(), &mut owner)).expect("running program");
+    let custodian = custodian_of(&processes);
+    custodian.kill();
+    assert!(
+        custodian.exits_within(Duration::from_secs(30)),
+        "killed custodian"
+    );
+    assert!(
+        !watch.exited(),
+        "the custodian's death killed a live owner's tree"
+    );
+    owner.kill().expect("kill owner");
+    owner.wait().expect("reap owner");
+    assert!(
+        watch.exits_within(Duration::from_secs(30)),
+        "the tree outlived its owner and its custodian"
+    );
+    ProcessCustody::open(&processes)
+        .expect("reopen custody")
+        .fence_stale()
+        .expect("fence");
+    assert_eq!(fs::read_dir(&processes).expect("records").count(), 0);
+}
+
+/// Owners of two directories in one process name distinct Jobs, so ending
+/// one tree never ends the other.
+#[cfg(windows)]
+#[test]
+fn trees_of_two_custody_directories_in_one_process_never_share_a_job() {
+    let root = tempfile::tempdir().expect("root");
+    let spawn = |directory: &str| {
+        let custody = ProcessCustody::acquire(&root.path().join(directory)).expect("custody");
+        let mut command = Command::new("ping");
+        command
+            .args(["-n", "30", "127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
+        (custody, tree)
+    };
+    let (_first_custody, mut first) = spawn("first");
+    let (_second_custody, mut second) = spawn("second");
+    let survivor = Watch::new(tree_pid(&second)).expect("running second tree");
+    first.terminate(None).expect("terminate first");
+    let survived = !survivor.exited();
+    second.terminate(None).expect("terminate second");
+    assert!(survived, "ending one directory's tree ended another's");
 }
 
 /// Negative control: the same program outside custody survives its owner.
@@ -462,6 +551,7 @@ fn a_cancelled_uncustodied_tree_leaves_its_escaped_descendant() {
     assert!(survived, "the oracle cannot observe an escaped descendant");
 }
 
+#[cfg(target_os = "linux")]
 const ANCHOR_MODE: &str = "ACYCLIC_CUSTODY_ANCHOR_MODE";
 
 /// A stand-in warden: holds a record lock until exit, forks a child, and

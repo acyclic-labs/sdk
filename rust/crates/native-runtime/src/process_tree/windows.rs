@@ -197,15 +197,16 @@ pub(super) fn spawn_named(
     command: &mut Command,
     custody: &mut Option<super::ProcessTree>,
     name: &[u16],
+    record: &mut super::custody::Record,
 ) -> io::Result<()> {
-    spawn_in_job(command, None, custody, Some(name))
+    spawn_in_job(command, None, custody, Some((name, record)))
 }
 
 fn spawn_in_job(
     command: &mut Command,
     meter: Option<&dyn crate::NativeReadMeter>,
     custody: &mut Option<super::ProcessTree>,
-    name: Option<&[u16]>,
+    mut named: Option<(&[u16], &mut super::custody::Record)>,
 ) -> io::Result<()> {
     *custody = Some(super::ProcessTree {
         child: None,
@@ -218,12 +219,33 @@ fn spawn_in_job(
         .as_mut()
         .ok_or(io::ErrorKind::NotFound)?
         .guard
-        .initialize(meter, name);
+        .initialize(meter, named.as_ref().map(|(name, _)| *name));
     if initialized.is_err() && custody.as_ref().is_some_and(super::ProcessTree::is_reaped) {
         custody.take();
     }
     initialized?;
     let tree = custody.as_mut().ok_or(io::ErrorKind::NotFound)?;
+    // A named tree's custodian holds its Job until every member has exited.
+    let custodian = named
+        .as_mut()
+        .map(|(_, record)| super::custodian::launch(tree.guard.job, record))
+        .transpose()?;
+    let started = start_in_job(command, meter, tree);
+    if started.is_err()
+        && let Some(mut custodian) = custodian
+    {
+        // Never started, the tree has no member for the custodian to await.
+        let _ = custodian.kill();
+        let _ = custodian.wait();
+    }
+    started
+}
+
+fn start_in_job(
+    command: &mut Command,
+    meter: Option<&dyn crate::NativeReadMeter>,
+    tree: &mut super::ProcessTree,
+) -> io::Result<()> {
     command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
     super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
         tree.child = Some(command.spawn()?);
