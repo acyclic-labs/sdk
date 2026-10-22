@@ -172,6 +172,12 @@ async fn child_admission_records_its_inherited_selected_model() -> Result<()> {
                 assert!(
                     system_text(request.request()).contains("<model>inherited-environment</model>")
                 );
+                let text = system_text(request.request());
+                assert!(
+                    !text.contains("<cwd>"),
+                    "parent cwd leaked into child: {text}"
+                );
+                assert!(!text.contains("<git_status>"));
                 Ok(crate::context::ModelTokenCount::from_upper_bounds(
                     request.request_digest(),
                     u32::try_from(request.bytes().len()).unwrap(),
@@ -198,6 +204,7 @@ async fn child_admission_records_its_inherited_selected_model() -> Result<()> {
     )?;
     assert_eq!(harness.resume(child).await?.text, "child");
     assert_eq!(provider.request_count(), 1);
+    harness.runtime.task_host().cancel(parent).await?;
     harness.close().await
 }
 

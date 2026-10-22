@@ -223,7 +223,7 @@ async fn optional_environment_joins_after_all_required_stages_on_public_pipeline
             context: Context::default(),
             sources: Vec::new(),
             environment: Some(EnvironmentFacts {
-                cwd: "/bound".into(),
+                cwd: Some("/bound".into()),
                 ..Default::default()
             }),
         }) as Arc<dyn ContextStage>,

@@ -312,6 +312,16 @@ impl LocalHarness {
         model.validate()?;
         Ok(model)
     }
+    /// The parent already claimed by admission preparation, without requiring
+    /// a runnable task or constructing its ephemeral physical tool mount.
+    #[cfg(feature = "native-execution")]
+    pub(super) async fn admission_parent(&self, task: TaskId) -> Result<Option<TaskId>> {
+        Ok(
+            cached_parent(&self.task_files.inner, task, self.limits.file_bytes)
+                .await?
+                .flatten(),
+        )
+    }
     async fn resolve_summary(&self, value: &Value) -> Result<Option<String>> {
         if value.is_object() {
             let selected = crate::context::SummarySelection::deserialize(value).map_err(storage)?;

@@ -13,13 +13,13 @@ const GIT_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Resolves only physical Git facts that still describe the task's bound view.
 pub(super) async fn gather(
-    cwd: &Path,
+    cwd: Option<&Path>,
     now_unix_millis: u64,
     model: &str,
     platform: &crate::native_environment::PlatformPolicy,
     physical_git: bool,
 ) -> crate::context::EnvironmentFacts {
-    let git = if physical_git {
+    let git = if let Some(cwd) = cwd.filter(|_| physical_git) {
         git_status(cwd).await
     } else {
         None

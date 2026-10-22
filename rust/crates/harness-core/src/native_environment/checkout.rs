@@ -4,8 +4,8 @@ use std::path::Path;
 /// Native values copied into the durable context manifest by the caller.
 #[derive(Clone, Debug)]
 pub struct CheckoutFacts {
-    /// Bound checkout directory.
-    pub cwd: String,
+    /// Stable bound checkout directory, if known at admission.
+    pub cwd: Option<String>,
     /// Host tool platform or explicit fixture value.
     pub os: String,
     /// Bound command tool shell.
@@ -22,7 +22,7 @@ pub struct CheckoutFacts {
 
 /// Gathers from explicit task inputs and platform policy, never process cwd or user locations.
 pub fn checkout(
-    cwd: &Path,
+    cwd: Option<&Path>,
     now_unix_millis: u64,
     model: &str,
     platform: &super::PlatformPolicy,
@@ -30,7 +30,7 @@ pub fn checkout(
 ) -> CheckoutFacts {
     let (os, shell) = platform.facts();
     CheckoutFacts {
-        cwd: display(cwd),
+        cwd: cwd.map(display),
         os: os.into(),
         shell: shell.into(),
         current_date: date(now_unix_millis),

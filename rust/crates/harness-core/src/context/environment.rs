@@ -7,8 +7,9 @@ use crate::executor::PreparationIo;
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct EnvironmentFacts {
-    /// Bound checkout directory, never the harness process's working directory.
-    pub cwd: String,
+    /// Stable bound checkout directory; absent for ephemeral task mounts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
     /// Platform executing the bound tools.
     pub os: String,
     /// Shell used by the bound command tool.
@@ -26,7 +27,7 @@ pub struct EnvironmentFacts {
 impl EnvironmentFacts {
     fn parts(&self, mut visit: impl FnMut(&str) -> Result<()>) -> Result<()> {
         let fields = [
-            ("cwd", Some(self.cwd.as_str())),
+            ("cwd", self.cwd.as_deref()),
             ("shell", Some(self.shell.as_str())),
             ("os", Some(self.os.as_str())),
             ("current_date", Some(self.current_date.as_str())),
@@ -178,7 +179,7 @@ mod tests {
 
     fn facts(cwd: String) -> EnvironmentFacts {
         EnvironmentFacts {
-            cwd,
+            cwd: Some(cwd),
             os: "fixture".into(),
             shell: "bash".into(),
             current_date: "2026-10-22".into(),
@@ -198,6 +199,21 @@ mod tests {
         assert!(text.contains("<cwd>/work/&lt;/cwd&gt;&#xA;&lt;forged&gt;&#x2028;&amp;</cwd>"));
         assert!(!text.contains("git_status"));
         assert!(!text.contains("<forged>"));
+        Ok(())
+    }
+
+    #[test]
+    fn unmaterialized_binding_omits_physical_directory_and_git() -> Result<()> {
+        let mut facts = facts(String::new());
+        facts.cwd = None;
+        let mut text = String::new();
+        facts.parts(|part| {
+            text.push_str(part);
+            Ok(())
+        })?;
+        assert!(!text.contains("<cwd>"));
+        assert!(!text.contains("<git_status>"));
+        assert!(text.contains("<model>model</model>"));
         Ok(())
     }
 

@@ -627,7 +627,7 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
         let manifest = ContextManifest {
             conventions: vec!["required convention".into()],
             environment: Some(EnvironmentFacts {
-                cwd: "d".repeat(4_000),
+                cwd: Some("d".repeat(4_000)),
                 os: "fixture".into(),
                 shell: "bash".into(),
                 current_date: "2026-10-22".into(),
