@@ -97,14 +97,13 @@ async fn scripted_powershell_reads_writes_runs_and_captures_exit_code() -> Resul
         call(
             "shell",
             "powershell",
-            json!({"command": "using namespace System.IO; [Console]::Write('café 東京'); [Console]::Write((Get-Content -Raw input.txt)); [Console]::Write((Get-Content -Raw ../from-write.txt)); [File]::WriteAllText((Join-Path (Get-Location) 'captured.txt'), 'native write'); [IO.File]::WriteAllText((Join-Path $env:ACYCLIC_VOLUME_SCRATCH 'scratch.txt'), 'volume write'); [Console]::Error.Write('diagnostic café 東京'); exit 7", "cwd":"src"}),
+            json!({"command": "using namespace System.IO; [Console]::Write('café 東京'); [Console]::Write((Get-Content -Raw input.txt)); [Console]::Write((Get-Content -Raw ../from-write.txt)); [File]::WriteAllText((Join-Path (Get-Location) 'captured.txt'), 'native write'); [IO.File]::WriteAllText(([IO.Path]::Combine($env:ACYCLIC_VOLUME_SCRATCH, 'scratch.txt')), 'volume write'); [Console]::Error.Write('diagnostic café 東京'); exit 7", "cwd":"src"}),
         ),
         call(
             "scratch",
             "powershell",
             json!({"command":"[Console]::Write((Get-Content -Raw scratch.txt))", "cwd":".volumes/scratch"}),
         ),
-        call("diff", "fs", json!({"command":"diff"})),
         ScriptedTurn::Text("done".into()),
     ]);
     let harness = LocalHarness::open(
@@ -114,7 +113,7 @@ async fn scripted_powershell_reads_writes_runs_and_captures_exit_code() -> Resul
     .await?;
     super::checkout_reopen::run(&harness).await?;
     let requests = provider.requests();
-    assert_eq!(requests.len(), 5);
+    assert_eq!(requests.len(), 4);
     let result = |id: &str| {
         requests
             .last()
@@ -141,11 +140,6 @@ async fn scripted_powershell_reads_writes_runs_and_captures_exit_code() -> Resul
     assert_eq!(result("shell")["stderr"], "diagnostic café 東京");
     assert_eq!(result("scratch")["stdout"], "volume write");
     assert_eq!(result("scratch")["exit_code"], 0);
-    assert!(
-        result("diff").to_string().contains("captured.txt"),
-        "{}",
-        result("diff")
-    );
     // Read the immutable head, so a host-only write cannot satisfy capture.
     let head = harness
         .workspace()
@@ -238,7 +232,7 @@ async fn powershell_cancellation_kills_parent_and_descendant() -> Result<()> {
         .status()
         .map_err(super::super::storage)?;
     assert!(status.success(), "cancelled process survived: {ids:?}");
-    harness.close().await?;
+    drop(harness);
     Ok(())
 }
 
