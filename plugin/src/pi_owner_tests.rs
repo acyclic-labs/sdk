@@ -48,6 +48,7 @@ async fn root_input_fixture(
     Arc<FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
     PiRootRequest,
 ) {
+    acyclic_native_runtime::initialize_native_io_services().unwrap();
     let project = VolumeRef::new(
         policy.journal.provider().clone(),
         "project".into(),

@@ -69,6 +69,7 @@ async fn storage(
     Arc<FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
     Arc<LocalStream>,
 ) {
+    acyclic_native_runtime::initialize_native_io_services().unwrap();
     let raw = acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(path.join("filesystem")))
         .await
         .unwrap();
