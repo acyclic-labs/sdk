@@ -119,7 +119,7 @@
           "call_id": "edit",
           "name": "bash",
           "arguments": {
-            "command": "python3 - <<'PY'\nfrom pathlib import Path\np = Path('calc.py')\np.write_text(p.read_text().replace('return a - b', 'return a + b'))\nPath('child-new.txt').write_text('CHILD_NEW\\n')\nPY"
+            "command": "python3 - <<'PY'\nfrom pathlib import Path\np = Path('calc.py')\np.write_bytes(p.read_bytes().replace(b'return a - b', b'return a + b'))\nPath('child-new.txt').write_bytes(b'CHILD_NEW\\n')\nPY"
           }
         },
         {
