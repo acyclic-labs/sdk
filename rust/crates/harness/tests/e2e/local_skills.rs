@@ -158,6 +158,37 @@ async fn overlapping_user_roots_are_scanned_once_before_the_first_request() -> T
 }
 
 #[tokio::test]
+async fn symlinked_user_root_is_scanned_once_before_the_first_request() -> TestResult {
+    let root = super::local_workspace::temporary()?;
+    let home = super::local_workspace::temporary()?;
+    let state = super::local_workspace::temporary()?;
+    write(
+        home.path(),
+        ".agents/skills/greet2/SKILL.md",
+        "---\nname: greet2\ndescription: Greet formally\n---\nbody",
+    )?;
+    let alias = home.path().join("aliased-agents");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(home.path().join(".agents"), &alias)?;
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(home.path().join(".agents"), &alias)?;
+    let model = provider(1);
+    let harness = LocalHarness::open(
+        config(root.path(), home.path(), state.path(), model.clone())?
+            .settings(SettingsConfig::new(root.path(), home.path()).codex_home(alias)),
+    )
+    .await?;
+    assert_eq!(harness.run("inventory").await?.text, "done");
+    let skills = catalog(&model, 0)?;
+    let [skill] = skills.as_slice() else {
+        return Err("expected one skill from aliased roots".into());
+    };
+    assert_eq!(skill.name, "greet2");
+    assert_eq!(skill.description, "Greet formally");
+    Ok(())
+}
+
+#[tokio::test]
 async fn different_user_roots_still_reject_duplicate_skill_names() -> TestResult {
     let root = super::local_workspace::temporary()?;
     let home = super::local_workspace::temporary()?;

@@ -12,7 +12,6 @@ use acyclic_fs::{
     kernel::NamespacePath,
 };
 use std::{
-    io::Write as _,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -38,6 +37,7 @@ struct Source {
 enum RetainedSource {
     Native(Box<Source>),
     Shadow(Box<ShadowSource>),
+    Batch(std::collections::HashMap<String, RetainedSource>),
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -46,6 +46,9 @@ struct ShadowSource {
     cut: acyclic_fs::LazySnapshotRef,
     file_id: acyclic_fs::FileId,
 }
+
+mod retained;
+use retained::RetainedBatch;
 
 type UserCatalog = Option<(Vec<SkillMetadata>, Bounds)>;
 
@@ -135,11 +138,6 @@ impl NativeSkills {
         user_roots: Vec<PathBuf>,
     ) -> Result<Arc<Self>> {
         std::fs::create_dir_all(&directory).map_err(storage)?;
-        let mut roots = std::collections::HashSet::new();
-        let user_roots = user_roots
-            .into_iter()
-            .filter(|root| roots.insert(root.clone()))
-            .collect();
         let workspace = workspace
             .map(|(view, filesystem, store)| {
                 let cancellation = acyclic_fs::CancellationToken::new();
@@ -167,55 +165,25 @@ impl NativeSkills {
         }))
     }
 
-    async fn retain(
+    fn retain(
         &self,
+        batch: &mut RetainedBatch,
         source: &NativeDemandSource,
         root: &Path,
         path: &str,
         node: SourceNode,
     ) -> Result<PinnedContextPath> {
-        let record = Source {
-            volume: self.journal.clone(),
-            root: root.into(),
-            root_identity: source.root_identity().to_bytes().to_vec(),
-            reference: source.reference(),
-            path: path.into(),
-            node,
-        };
-        self.retain_record(&RetainedSource::Native(Box::new(record)))
-            .await
-    }
-
-    async fn retain_record(&self, record: &RetainedSource) -> Result<PinnedContextPath> {
-        self.retain_record_with(record, write_retained_record).await
-    }
-
-    async fn retain_record_with(
-        &self,
-        record: &RetainedSource,
-        write: impl FnOnce(&Path, &[u8], blake3::Hash) -> Result<()> + Send + 'static,
-    ) -> Result<PinnedContextPath> {
-        let bytes = serde_json::to_vec(record).map_err(storage)?;
-        let digest = blake3::hash(&bytes);
-        let directory = self.directory.clone();
-        acyclic_native_runtime::run_blocking_io(move || write(&directory, &bytes, digest), None)
-            .map_err(Error::process_io)?
-            .await
-            .map_err(Error::process_io)??;
-        Ok(PinnedContextPath {
-            root: ContextRoot {
+        batch.retain(
+            &self.journal,
+            RetainedSource::Native(Box::new(Source {
                 volume: self.journal.clone(),
-                directory: "inputs/skills".into(),
-            },
-            generation: crate::resources::GenerationRef::new(
-                self.journal.provider(),
-                digest.as_bytes(),
-                None,
-                None,
-            )?
-            .0,
-            path: format!("inputs/skills/{digest}/SKILL.md"),
-        })
+                root: root.into(),
+                root_identity: source.root_identity().to_bytes().to_vec(),
+                reference: source.reference(),
+                path: path.into(),
+                node,
+            })),
+        )
     }
 
     /// Only host-retained source records, in this owner's private journal, resolve here.
@@ -254,10 +222,7 @@ impl NativeSkills {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(storage(error)),
         };
-        if blake3::hash(&bytes).to_hex().as_str() != digest {
-            return Err(Error::Conflict("retained skill source changed".into()));
-        }
-        let retained: RetainedSource = serde_json::from_slice(&bytes).map_err(storage)?;
+        let retained = retained::read_record(&bytes, &digest)?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let owned;
         let work = if let Some(io) = io {
@@ -269,6 +234,7 @@ impl NativeSkills {
             &owned
         };
         match retained {
+            RetainedSource::Batch(_) => Err(Error::Invalid("nested retained skill batch".into())),
             RetainedSource::Shadow(record) => {
                 self.read_shadow(volume, &record, maximum, work).await
             }
@@ -421,6 +387,7 @@ impl NativeSkills {
             .as_ref()
             .map(|(_, bounds)| *bounds)
             .unwrap_or_default();
+        let mut records = RetainedBatch::default();
         for directory in [".agents/skills", ".claude/skills"] {
             bounds.directory()?;
             let mut cursor = None;
@@ -453,7 +420,7 @@ impl NativeSkills {
                         .unicode_text(&work, &cancellation)
                         .map_err(storage)?;
                     if let Some(skill) = scan
-                        .skill(directory, &name, &bounds, &mut accounting)
+                        .skill(directory, &name, &bounds, &mut records, &mut accounting)
                         .await?
                     {
                         skills.push(skill);
@@ -466,6 +433,7 @@ impl NativeSkills {
             }
         }
         validate(&skills)?;
+        records.publish(self.directory.clone()).await?;
         *cached = Some((cut.id, skills.clone()));
         Ok(skills)
     }
@@ -484,8 +452,9 @@ impl NativeSkills {
         };
         let mut bounds = Bounds::default();
         let mut skills = Vec::new();
+        let mut roots = std::collections::HashSet::new();
+        let mut records = RetainedBatch::default();
         for root in &self.user_roots {
-            bounds.directory()?;
             let source = match NativeDemandSource::open(
                 std::borrow::Cow::Borrowed(root),
                 config.profile,
@@ -503,6 +472,12 @@ impl NativeSkills {
                 }
                 Err(error) => return Err(storage(error)),
             };
+            // Identity comes from the handle already opened by native I/O,
+            // so aliases collapse before any directory entries are scanned.
+            if !roots.insert(source.root_identity()) {
+                continue;
+            }
+            bounds.directory()?;
             let reference = source.reference();
             let (path, _allocation) = NamespacePath::parse_in_profile(
                 "/",
@@ -535,7 +510,7 @@ impl NativeSkills {
                         .unicode_text(&work, &cancellation)
                         .map_err(storage)?;
                     if let Some(skill) = self
-                        .user_skill(&source, root, &name, &work, bounds.limits.header_bytes)
+                        .user_skill(&source, root, &name, &work, &bounds, &mut records)
                         .await?
                     {
                         skills.push(skill);
@@ -551,6 +526,7 @@ impl NativeSkills {
             }
         }
         validate(&skills)?;
+        records.publish(self.directory.clone()).await?;
         *cached = Some((skills.clone(), bounds));
         Ok(skills)
     }
@@ -561,7 +537,8 @@ impl NativeSkills {
         root: &Path,
         name: &str,
         work: &acyclic_fs::NativeMaterializationWork,
-        header_bytes: u32,
+        bounds: &Bounds,
+        records: &mut RetainedBatch,
     ) -> Result<Option<SkillMetadata>> {
         let reference = source.reference();
         let cancellation = work.cancellation();
@@ -595,7 +572,7 @@ impl NativeSkills {
                 &parsed,
                 node.version,
                 0,
-                length.min(u64::from(header_bytes)),
+                length.min(u64::from(bounds.limits.header_bytes)),
                 work,
                 cancellation,
             )
@@ -603,7 +580,7 @@ impl NativeSkills {
             .map_err(storage)?;
         Ok(Some(parse_skill_metadata(
             prefix.bytes.as_ref(),
-            self.retain(source, root, &path, node).await?,
+            self.retain(records, source, root, &path, node)?,
         )?))
     }
 
@@ -640,6 +617,7 @@ impl ProjectCatalog<'_> {
         directory: &str,
         name: &str,
         bounds: &Bounds,
+        records: &mut RetainedBatch,
         accounting: &mut acyclic_fs::kernel::KernelAccounting<'_>,
     ) -> Result<Option<SkillMetadata>> {
         let relative = format!("{directory}/{name}/SKILL.md");
@@ -662,20 +640,20 @@ impl ProjectCatalog<'_> {
         let pinned = match &lookup {
             acyclic_fs::LazyLookup::Source { node, .. } => {
                 self.sources
-                    .retain(&self.native, self.root, &path, *node)
-                    .await?
+                    .retain(records, &self.native, self.root, &path, *node)?
             }
             acyclic_fs::LazyLookup::Authored { record, .. }
             | acyclic_fs::LazyLookup::Shadow { record, .. } => {
                 // Both records belong to this immutable cut, including a
                 // selected child. Load through the journal with native work.
-                self.sources
-                    .retain_record(&RetainedSource::Shadow(Box::new(ShadowSource {
+                records.retain(
+                    &self.sources.journal,
+                    RetainedSource::Shadow(Box::new(ShadowSource {
                         volume: self.sources.journal.clone(),
                         cut: self.cut,
                         file_id: record.file_id,
-                    })))
-                    .await?
+                    })),
+                )?
             }
         };
         self.view.retire_lookup((lookup, allocation), accounting)?;
@@ -701,28 +679,6 @@ fn validate(skills: &[SkillMetadata]) -> Result<()> {
     for skill in skills {
         if !names.insert(&skill.name) {
             return Err(Error::Conflict("skill name is declared twice".into()));
-        }
-    }
-    Ok(())
-}
-
-fn write_retained_record(directory: &Path, bytes: &[u8], digest: blake3::Hash) -> Result<()> {
-    let destination = directory.join(format!("{digest}.json"));
-    if !destination.exists() {
-        let temporary = directory.join(crate::identity::fresh_uuid().to_string());
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-            .map_err(storage)?;
-        file.write_all(bytes).map_err(storage)?;
-        file.sync_all().map_err(storage)?;
-        drop(file);
-        if let Err(error) = std::fs::rename(&temporary, &destination) {
-            std::fs::remove_file(&temporary).map_err(storage)?;
-            if !destination.exists() {
-                return Err(storage(error));
-            }
         }
     }
     Ok(())
