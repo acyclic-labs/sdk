@@ -124,7 +124,7 @@ mod tests {
         #[test]
         fn windows_display_preserves_drive_and_share_paths(drive in "[A-Z]", suffix in "[a-zA-Z0-9\\\\]{0,60}") {
             let local = format!(r"{drive}:\{suffix}");
-            prop_assert_eq!(display(Path::new(&format!(r"\\?\{local}"))), &local);
+            prop_assert_eq!(display(Path::new(&format!(r"\\?\{local}"))), local.as_str());
             prop_assert_eq!(display(Path::new(&local)), local);
             let share = format!(r"server\share\{suffix}");
             prop_assert_eq!(display(Path::new(&format!(r"\\?\UNC\{share}"))), format!(r"\\{share}"));
