@@ -152,6 +152,60 @@ fn catalog(directory: &Path, address: std::net::SocketAddr) -> std::path::PathBu
     catalog
 }
 
+fn instruction_environment(body: &Value, workspace: &Path, model: &str) -> Result<(), String> {
+    let cwd = workspace
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let cwd = cwd.to_string_lossy();
+    let cwd = cwd.trim_start_matches(r"\\?\");
+    let environment = [
+        format!("<cwd>{cwd}</cwd>"),
+        format!("<os>{}</os>", std::env::consts::OS),
+        "<shell>bash</shell>".to_owned(),
+        "<current_date>".to_owned(),
+        "<timezone>UTC</timezone>".to_owned(),
+        format!("<model>{model}</model>"),
+    ];
+    let input = body
+        .get("input")
+        .and_then(Value::as_array)
+        .ok_or("input array missing")?;
+    let (first, rest) = input.split_first().ok_or("environment message missing")?;
+    assert_eq!(first.get("type"), Some(&json!("message")));
+    assert_eq!(first.get("role"), Some(&json!("system")));
+    let content = first
+        .get("content")
+        .and_then(Value::as_array)
+        .ok_or("environment content missing")?;
+    let [content] = content.as_slice() else {
+        return Err("environment must contain exactly one content item".into());
+    };
+    assert_eq!(content.get("type"), Some(&json!("input_text")));
+    let text = content
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or("environment text missing")?;
+    assert!(text.starts_with("<environment_context>\n"), "{text}");
+    assert!(text.ends_with("</environment_context>"), "{text}");
+    for fact in &environment {
+        assert!(text.contains(fact), "missing {fact}: {text}");
+    }
+    // A one-shot prompt without GOAL.md carries no goal guidance.
+    assert_eq!(
+        Value::Array(rest.to_vec()),
+        json!([
+            {"type":"message","role":"system","content":[{"type":"input_text","text":"Volumes: . (rw), .volumes/scratch (rw)"}]},
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for .\n\n<INSTRUCTIONS>\nReply using the workspace instructions. λ\n\n</INSTRUCTIONS>"}]},
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"# CLAUDE.md instructions for .\n\n<INSTRUCTIONS>\nProject marker: claude-context λ\n</INSTRUCTIONS>"}]},
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}
+        ])
+    );
+    assert_eq!(body.get("store"), Some(&json!(false)));
+    assert_eq!(body.get("stream"), Some(&json!(true)));
+    assert!(body.get("instructions").is_none());
+    Ok(())
+}
+
 async fn scenario(mode: Mode) {
     let instructions = matches!(mode, Mode::Instructions);
     let fs_refusals = matches!(mode, Mode::FsRefusals);
@@ -165,21 +219,11 @@ async fn scenario(mode: Mode) {
     let settings = directory.path().join("settings");
     std::fs::create_dir(&workspace).unwrap();
     std::fs::create_dir(&settings).unwrap();
-    let cwd = workspace.canonicalize().unwrap();
-    let cwd = cwd.to_string_lossy();
-    let cwd = cwd.trim_start_matches(r"\\?\");
-    let environment = [
-        format!("<cwd>{cwd}</cwd>"),
-        format!("<os>{}</os>", std::env::consts::OS),
-        "<shell>bash</shell>".to_owned(),
-        "<current_date>".to_owned(),
-        "<timezone>UTC</timezone>".to_owned(),
-        format!("<model>{model}</model>"),
-    ];
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (requests, mut observed) = tokio::sync::mpsc::unbounded_channel();
     let counter = requests.clone();
+    let request_workspace = workspace.clone();
     let app = Router::new()
         .route(
             "/count",
@@ -196,35 +240,25 @@ async fn scenario(mode: Mode) {
             "/responses",
             post(move |Json(body): Json<Value>| {
                 let requests = requests.clone();
-                let environment = environment.clone();
+                let request_workspace = request_workspace.clone();
                 async move {
-                    assert_eq!(body["model"], model, "generation uses the selected opaque model");
+                    assert_eq!(
+                        body["model"], model,
+                        "generation uses the selected opaque model"
+                    );
                     assert!(body.to_string().contains("hello"));
                     if instructions {
-                        let input = body["input"].as_array().unwrap();
-                        assert_eq!(input[0]["type"], "message");
-                        assert_eq!(input[0]["role"], "system");
-                        assert_eq!(input[0]["content"].as_array().unwrap().len(), 1);
-                        assert_eq!(input[0]["content"][0]["type"], "input_text");
-                        let text = input[0]["content"][0]["text"].as_str().unwrap();
-                        assert!(text.starts_with("<environment_context>\n"), "{text}");
-                        assert!(text.ends_with("</environment_context>"), "{text}");
-                        for fact in &environment {
-                            assert!(text.contains(fact), "missing {fact}: {text}");
-                        }
-                        // A one-shot prompt without GOAL.md carries no goal guidance.
-                        assert_eq!(&input[1..], json!([
-                            {"type":"message","role":"system","content":[{"type":"input_text","text":"Volumes: . (rw), .volumes/scratch (rw)"}]},
-                            {"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for .\n\n<INSTRUCTIONS>\nReply using the workspace instructions. λ\n\n</INSTRUCTIONS>"}]},
-                            {"type":"message","role":"user","content":[{"type":"input_text","text":"# CLAUDE.md instructions for .\n\n<INSTRUCTIONS>\nProject marker: claude-context λ\n</INSTRUCTIONS>"}]},
-                            {"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}
-                        ]).as_array().unwrap());
-                        assert_eq!(body["store"], false);
-                        assert_eq!(body["stream"], true);
-                        assert!(body.get("instructions").is_none());
+                        assert_eq!(
+                            instruction_environment(&body, &request_workspace, model),
+                            Ok(())
+                        );
                     }
                     requests.send("model").unwrap();
-                    let answer = if fs_refusals { fs_answer(&body) } else { ANSWER.to_owned() };
+                    let answer = if fs_refusals {
+                        fs_answer(&body)
+                    } else {
+                        ANSWER.to_owned()
+                    };
                     ([("content-type", "text/event-stream")], answer)
                 }
             }),

@@ -304,7 +304,12 @@ impl LocalHarness {
             Some(name) => Some(name),
             None => read_inheritance(&self.task_files.inner, task, self.limits.file_bytes)
                 .await?
-                .and_then(|value| value["model"].as_str().map(str::to_owned)),
+                .and_then(|value| {
+                    value
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                }),
         };
         if let Some(name) = selected {
             model.name = name;

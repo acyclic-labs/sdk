@@ -240,7 +240,7 @@ async fn optional_environment_joins_after_all_required_stages_on_public_pipeline
         step: 0,
         prior_messages: Vec::new(),
     };
-    for message_limit in [2, 3] {
+    for (message_limit, current_input_index) in [(2, 1), (3, 2)] {
         let limits = Limits {
             context_messages: message_limit,
             ..Limits::default()
@@ -249,7 +249,7 @@ async fn optional_environment_joins_after_all_required_stages_on_public_pipeline
         let base = ContextPipeline::base_context(&input, limits, None)?;
         assert_eq!(pipeline.transform(&input, base, limits, None).await?, run);
         assert_eq!(run.messages.len(), message_limit);
-        assert_eq!(run.current_input_index, Some((message_limit - 1) as u32));
+        assert_eq!(run.current_input_index, Some(current_input_index));
         assert_eq!(
             run.messages[message_limit - 2].content,
             ModelContent::Text("required".into())
