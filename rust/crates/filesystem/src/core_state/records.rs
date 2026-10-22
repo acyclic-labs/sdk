@@ -49,7 +49,6 @@ impl RecordPaths<'_> {
         Ok(crate::native_host::entry_identity(&parent, Path::new(leaf), &mut &*work)?.is_some())
     }
 
-    #[cfg(not(windows))]
     fn rename(&self, from: &Path, to: &Path) -> Result<(), LocalCoreStateStoreError> {
         let Some(allocation) = &self.allocation else {
             return acyclic_native_runtime::rename_file(from, to).map_err(Into::into);
@@ -68,6 +67,7 @@ impl RecordPaths<'_> {
                 "journal destination has no leaf",
             )
         })?;
+        #[cfg(unix)]
         crate::native_host::rename_held(
             &parent,
             Path::new(source),
@@ -77,6 +77,20 @@ impl RecordPaths<'_> {
             None,
             &mut &*work,
         )?;
+        #[cfg(windows)]
+        crate::native_host::with_wide_path(Path::new(source), &mut &*work, |source, work| {
+            crate::native_host::with_wide_path(Path::new(target), work, |target, work| {
+                crate::native_host::rename_held(
+                    &parent,
+                    source,
+                    &parent,
+                    target,
+                    acyclic_native_runtime::RenameMode::NoReplace,
+                    None,
+                    work,
+                )
+            })
+        })?;
         Ok(())
     }
 
@@ -438,22 +452,6 @@ pub(super) fn write_journaled<T: Serialize>(
     }
     drop(temporary);
 
-    #[cfg(windows)]
-    {
-        // Keep a flushed recovery copy until the replacement is durable.
-        paths.remove(&paths.previous)?;
-        if paths.exists(&paths.current)? {
-            paths.copy(&paths.current, &paths.previous)?;
-        } else {
-            paths.copy(&paths.temporary, &paths.previous)?;
-        }
-        paths.copy(&paths.temporary, &paths.current)?;
-        paths.remove(&paths.temporary)?;
-        paths.remove(&paths.previous)?;
-        Ok(())
-    }
-
-    #[cfg(not(windows))]
     {
         paths.remove(&paths.previous)?;
         if paths.exists(&paths.current)? {
@@ -486,3 +484,6 @@ pub(super) fn remove_if_present(path: &Path) -> Result<(), std::io::Error> {
 pub(super) fn sync_directory(path: &Path) -> Result<(), std::io::Error> {
     acyclic_native_runtime::sync_parent(path, acyclic_native_runtime::Durability::Full)
 }
+
+#[cfg(all(test, windows))]
+mod windows_publication_tests;
