@@ -8,4 +8,34 @@
     "diffs":{"plans/a.md":{"kind":"removed","binary":false,"added":0,"removed":1,
       "hunks":[{"old_start":1,"old_lines":1,"new_start":0,"new_lines":0}],
       "patch":"--- original\n+++ modified\n@@ -1 +0,0 @@\n-one\n"}}}
-}
+,
+ "platforms":{
+  "windows": {
+    "turns": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "change",
+          "name": "powershell",
+          "arguments": {
+            "command": "Remove-Item -LiteralPath plans/a.md"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "done"
+    ],
+    "expect": {
+      "results": {
+        "change": {
+          "name": "powershell"
+        }
+      }
+    }
+  }
+}}

@@ -7,4 +7,34 @@
       "value":{"success":true,"exit_code":0,"stdout":"","stderr":"","stop":null}}}},
     "diffs":{"plans/a.md":{"kind":"removed","binary":false,"added":0,"removed":0,
       "hunks":[],"patch":"--- original\n+++ modified\n"}}}
-}
+,
+ "platforms":{
+  "windows": {
+    "turns": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "change",
+          "name": "powershell",
+          "arguments": {
+            "command": "Remove-Item -LiteralPath plans/a.md"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "done"
+    ],
+    "expect": {
+      "results": {
+        "change": {
+          "name": "powershell"
+        }
+      }
+    }
+  }
+}}

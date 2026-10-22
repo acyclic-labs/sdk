@@ -333,7 +333,7 @@ pub(super) async fn run(value: Value) -> TestResult {
                 .iter()
                 .map(|(name, model)| (name.as_str(), model.requests().len()))
                 .collect();
-            return Err(format!("model {name}: expected {expected} requests and no unused turns, got {} requests and {} unused turns; model requests: {requests:?}; unauthorized content readers: {:?}", model.requests().len(), model.remaining(), denied_readers.try_iter().collect::<Vec<_>>()).into());
+            return Err(format!("model {name}: expected {expected} requests and no unused turns, got {} requests and {} unused turns; model requests: {requests:?}; unauthorized content readers: {:?}; dispatched requests: {}", model.requests().len(), model.remaining(), denied_readers.try_iter().collect::<Vec<_>>(), serde_json::to_string(&model.requests())?).into());
         }
     }
     for (name, expected) in case.expect.model_requests {
