@@ -27,34 +27,50 @@ impl RecordPaths<'_> {
     }
 
     pub(super) fn sync(&self) -> Result<(), LocalCoreStateStoreError> {
+        self.sync_in(None)
+    }
+
+    fn sync_in(&self, parent: Option<&cap_std::fs::Dir>) -> Result<(), LocalCoreStateStoreError> {
         if let Some(allocation) = &self.allocation {
             let work = allocation.work();
-            let root = crate::native_host::HostRoot::open(self.directory(), &mut &*work)?;
-            crate::native_host::sync_directory_held(&root.directory, &mut &*work)?;
+            let parent = RecordDirectory::open(&self.current, work, parent)?;
+            crate::native_host::sync_directory_held(parent.get(), &mut &*work)?;
         } else {
             sync_directory(self.directory())?;
         }
         Ok(())
     }
 
-    fn exists(&self, path: &Path) -> Result<bool, LocalCoreStateStoreError> {
+    fn exists(
+        &self,
+        path: &Path,
+        parent: Option<&cap_std::fs::Dir>,
+    ) -> Result<bool, LocalCoreStateStoreError> {
         let Some(allocation) = &self.allocation else {
             return Ok(path.exists());
         };
         let work = allocation.work();
-        let parent = materialization_parent(path, work)?;
+        let parent = RecordDirectory::open(path, work, parent)?;
         let leaf = path.file_name().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidInput, "journal file has no leaf")
         })?;
-        Ok(crate::native_host::entry_identity(&parent, Path::new(leaf), &mut &*work)?.is_some())
+        Ok(
+            crate::native_host::entry_identity(parent.get(), Path::new(leaf), &mut &*work)?
+                .is_some(),
+        )
     }
 
-    fn rename(&self, from: &Path, to: &Path) -> Result<(), LocalCoreStateStoreError> {
+    fn rename(
+        &self,
+        from: &Path,
+        to: &Path,
+        parent: Option<&cap_std::fs::Dir>,
+    ) -> Result<(), LocalCoreStateStoreError> {
         let Some(allocation) = &self.allocation else {
             return acyclic_native_runtime::rename_file(from, to).map_err(Into::into);
         };
         let work = allocation.work();
-        let parent = materialization_parent(from, work)?;
+        let parent = RecordDirectory::open(from, work, parent)?;
         let source = from.file_name().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -69,9 +85,9 @@ impl RecordPaths<'_> {
         })?;
         #[cfg(unix)]
         crate::native_host::rename_held(
-            &parent,
+            parent.get(),
             Path::new(source),
-            &parent,
+            parent.get(),
             Path::new(target),
             acyclic_native_runtime::RenameMode::NoReplace,
             None,
@@ -81,9 +97,9 @@ impl RecordPaths<'_> {
         crate::native_host::with_wide_path(Path::new(source), &mut &*work, |source, work| {
             crate::native_host::with_wide_path(Path::new(target), work, |target, work| {
                 crate::native_host::rename_held(
-                    &parent,
+                    parent.get(),
                     source,
-                    &parent,
+                    parent.get(),
                     target,
                     acyclic_native_runtime::RenameMode::NoReplace,
                     None,
@@ -134,15 +150,23 @@ impl RecordPaths<'_> {
     }
 
     fn remove(&self, path: &Path) -> Result<(), LocalCoreStateStoreError> {
+        self.remove_in(path, None)
+    }
+
+    fn remove_in(
+        &self,
+        path: &Path,
+        parent: Option<&cap_std::fs::Dir>,
+    ) -> Result<(), LocalCoreStateStoreError> {
         let Some(allocation) = &self.allocation else {
             return remove_if_present(path).map_err(Into::into);
         };
         let work = allocation.work();
-        let parent = materialization_parent(path, work)?;
+        let parent = RecordDirectory::open(path, work, parent)?;
         let leaf = path.file_name().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidInput, "journal file has no leaf")
         })?;
-        match crate::native_host::remove_leaf(&parent, Path::new(leaf), false, &mut &*work) {
+        match crate::native_host::remove_leaf(parent.get(), Path::new(leaf), false, &mut &*work) {
             Ok(()) => Ok(()),
             Err(crate::NativeTreeMaterializationError::Io(error))
                 if error.kind() == std::io::ErrorKind::NotFound =>
@@ -150,6 +174,33 @@ impl RecordPaths<'_> {
                 Ok(())
             }
             Err(error) => Err(error.into()),
+        }
+    }
+}
+
+// A publication keeps one directory capability through its namespace barrier.
+// Other record operations can still acquire their own directory as before.
+enum RecordDirectory<'a> {
+    Borrowed(&'a cap_std::fs::Dir),
+    Opened(cap_std::fs::Dir),
+}
+
+impl<'a> RecordDirectory<'a> {
+    fn open(
+        path: &Path,
+        work: &crate::NativeMaterializationWork,
+        parent: Option<&'a cap_std::fs::Dir>,
+    ) -> Result<Self, crate::NativeTreeMaterializationError> {
+        match parent {
+            Some(parent) => Ok(Self::Borrowed(parent)),
+            None => materialization_parent(path, work).map(Self::Opened),
+        }
+    }
+
+    fn get(&self) -> &cap_std::fs::Dir {
+        match self {
+            Self::Borrowed(parent) => parent,
+            Self::Opened(parent) => parent,
         }
     }
 }
@@ -409,13 +460,28 @@ pub(super) fn write_journaled<T: Serialize>(
     paths: &RecordPaths,
     value: &T,
 ) -> Result<(), LocalCoreStateStoreError> {
+    let parent = paths
+        .allocation
+        .as_ref()
+        .map(|allocation| materialization_parent(&paths.temporary, allocation.work()))
+        .transpose()?;
+    write_journaled_in(paths, value, parent.as_ref())
+}
+
+fn write_journaled_in<T: Serialize>(
+    paths: &RecordPaths,
+    value: &T,
+    parent: Option<&cap_std::fs::Dir>,
+) -> Result<(), LocalCoreStateStoreError> {
     let work = paths
         .allocation
         .as_ref()
         .map(|allocation| allocation.work());
     let file = match work {
         Some(work) => {
-            let file = materialization_open_options(
+            let directory = RecordDirectory::open(&paths.temporary, work, parent)?;
+            let file = materialization_open_at(
+                directory.get(),
                 &paths.temporary,
                 &crate::native_host::NativeOpenOptions::ReadWriteCreate,
                 work,
@@ -453,20 +519,20 @@ pub(super) fn write_journaled<T: Serialize>(
     drop(temporary);
 
     {
-        paths.remove(&paths.previous)?;
-        if paths.exists(&paths.current)? {
-            paths.rename(&paths.current, &paths.previous)?;
+        paths.remove_in(&paths.previous, parent)?;
+        if paths.exists(&paths.current, parent)? {
+            paths.rename(&paths.current, &paths.previous, parent)?;
         }
-        if let Err(error) = paths.rename(&paths.temporary, &paths.current) {
-            if paths.exists(&paths.previous).unwrap_or(false)
-                && !paths.exists(&paths.current).unwrap_or(true)
+        if let Err(error) = paths.rename(&paths.temporary, &paths.current, parent) {
+            if paths.exists(&paths.previous, parent).unwrap_or(false)
+                && !paths.exists(&paths.current, parent).unwrap_or(true)
             {
-                let _ = paths.rename(&paths.previous, &paths.current);
+                let _ = paths.rename(&paths.previous, &paths.current, parent);
             }
             return Err(error.into());
         }
-        paths.sync()?;
-        paths.remove(&paths.previous)?;
+        paths.sync_in(parent)?;
+        paths.remove_in(&paths.previous, parent)?;
         Ok(())
     }
 }

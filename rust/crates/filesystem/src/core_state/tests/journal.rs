@@ -204,7 +204,14 @@ async fn accepted_materialization_completion_survives_cancellation_and_restart()
         .write(true)
         .open(&effect)
         .unwrap();
+    let written = work.receipt().object_bytes_written;
+    let durability = work.receipt().durability_operations;
     let completion = measured.prepare_action(original).await.unwrap();
+    assert_eq!(
+        work.receipt().object_bytes_written,
+        written,
+        "preparing an atomic replacement must not copy the durable prior image"
+    );
     acyclic_native_runtime::write_all_at(
         &file,
         0,
@@ -215,6 +222,7 @@ async fn accepted_materialization_completion_survives_cancellation_and_restart()
     cxl.cancel();
     let prefix = work.journal_work().unwrap();
     let completed = completion.await.unwrap();
+    assert_eq!(work.receipt().durability_operations - durability, 2);
     assert_eq!(completed.revision, 2);
     assert_eq!(completed.root_identity, root_identity);
     assert_eq!(completed.work, prefix);

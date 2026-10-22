@@ -476,6 +476,8 @@ pub(super) fn advanced_origin_parent(parent: &LazyWorkspaceState) -> LazyWorkspa
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+mod action_publication;
 mod contexts;
 mod freeze;
 mod journal;

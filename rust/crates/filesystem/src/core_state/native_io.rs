@@ -365,8 +365,17 @@ pub(super) fn materialization_open_options(
     work: &crate::materializer::NativeMaterializationWork,
 ) -> Result<File, crate::materializer::NativeTreeMaterializationError> {
     let parent = materialization_parent(path, work)?;
+    materialization_open_at(&parent, path, options, work)
+}
+
+pub(super) fn materialization_open_at(
+    parent: &cap_std::fs::Dir,
+    path: &Path,
+    options: &crate::native_host::NativeOpenOptions,
+    work: &crate::materializer::NativeMaterializationWork,
+) -> Result<File, crate::materializer::NativeTreeMaterializationError> {
     let leaf = path.file_name().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "journal file has no leaf")
     })?;
-    crate::native_host::open_leaf(&parent, Path::new(leaf), options, &mut &*work)
+    crate::native_host::open_leaf(parent, Path::new(leaf), options, &mut &*work)
 }

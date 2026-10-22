@@ -38,6 +38,66 @@ fn publishes_fresh_and_existing_records_with_one_image_write()
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const CHILD: &str = "core_state::records::windows_publication_tests::record_write_child";
 
+#[test]
+fn publication_retains_one_directory_through_every_namespace_operation() -> TestResult {
+    crate::initialize_test_native_io();
+    for existing in [false, true] {
+        for retain in [false, true] {
+            let directory = tempfile::tempdir()?;
+            let store = LocalCoreStateStore::new(directory.path());
+            if existing {
+                let namespace = store.namespace()?;
+                let mut paths = namespace.record("publication-directory", &[0x98; 16])?;
+                with_lock(&mut paths, |paths| write_journaled(paths, &7_u64))?;
+            }
+            let cancellation = crate::CancellationToken::new();
+            let work = crate::NativeMaterializationWork::new(
+                crate::performance::work_budget(100_000_000, 100_000_000),
+                &cancellation,
+            )
+            .map_err(|(error, _)| error)?;
+            let store = store.materialization(work);
+            let namespace = store.namespace()?;
+            let mut paths = namespace.record("publication-directory", &[0x98; 16])?;
+            with_lock(&mut paths, |paths| {
+                let (result, events) =
+                    acyclic_test_support::differential::observe::<_, _, &'static str>(
+                        || (),
+                        |()| {
+                            let probe = crate::native_host::stat_probe::Probe::rescan(false);
+                            let result = if retain {
+                                write_journaled(paths, &42_u64)
+                            } else {
+                                // Restore the previous physical parent opens while
+                                // executing the same writes, renames and barriers.
+                                write_journaled_in(paths, &42_u64, None)
+                            };
+                            probe.publish();
+                            result
+                        },
+                    );
+                result?;
+                let opens = events
+                    .iter()
+                    .filter(|event| **event == "CreateFileW")
+                    .count();
+                assert_eq!(opens, if retain { 1 } else { 6 + usize::from(existing) });
+                assert_eq!(
+                    opens == 1,
+                    retain,
+                    "reopening each parent escaped the one-directory bound"
+                );
+                assert_eq!(
+                    read_recoverable::<u64>(paths)?.map(|(value, _)| value),
+                    Some(42)
+                );
+                Ok(())
+            })?;
+        }
+    }
+    Ok(())
+}
+
 fn spawn_write(root: &Path, cut: u64) -> std::io::Result<std::process::Child> {
     std::process::Command::new(std::env::current_exe()?)
         .args(["--exact", CHILD, "--nocapture"])

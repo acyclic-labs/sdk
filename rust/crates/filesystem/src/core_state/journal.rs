@@ -72,9 +72,9 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                     .map_err(NativeTreeMaterializationError::from)?;
                 let (encoding, encoding_credit, encoding_allocation) =
                     prepare_materialization_encoding(&mut journal, work)?;
-                // Keep the prior image durable before accepting the action.
-                paths.copy(&paths.current, &paths.previous)?;
-                paths.sync()?;
+                // Completion writes and flushes a separate image before its
+                // atomic replacement. The acknowledged current image remains
+                // durable throughout preparation and every incomplete write.
                 let host = crate::native_host::PreparedMaterializationRecord::prepare(
                     paths.directory(),
                     Path::new(
