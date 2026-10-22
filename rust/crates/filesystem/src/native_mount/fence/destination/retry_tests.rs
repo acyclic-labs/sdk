@@ -73,12 +73,24 @@ impl Fixture {
     }
 
     fn registry_is_unlocked(&self) -> Result<bool, std::io::Error> {
-        let registry = std::fs::OpenOptions::new()
+        self.registry_is_unlocked_with(|_| Ok(()))
+    }
+
+    fn registry_is_unlocked_with(
+        &self,
+        inspect: impl FnOnce(&std::fs::File) -> Result<(), std::io::Error>,
+    ) -> Result<bool, std::io::Error> {
+        let registry: MountLockFile = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .open(&self.registry)?;
-        match fs2::FileExt::try_lock_exclusive(&registry) {
-            Ok(()) => Ok(true),
+            .open(&self.registry)?
+            .into();
+        let registry_file: &std::fs::File = &registry;
+        match fs2::FileExt::try_lock_exclusive(registry_file) {
+            Ok(()) => {
+                inspect(&registry)?;
+                Ok(true)
+            }
             Err(error) if lock_is_contended(&error) => Ok(false),
             Err(error) => Err(error),
         }
@@ -114,6 +126,25 @@ impl Fixture {
             && self.work.receipt() == expected
             && self.work.live_allocation_bytes() == self.live
     }
+}
+
+#[test]
+fn registry_probe_releases_its_lock_with_an_inherited_descriptor()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new(false)?;
+    let mut inherited = None;
+    assert!(fixture.registry_is_unlocked_with(|registry| {
+        // A duplicate retains the same open file description as a child
+        // between fork and exec, without depending on spawn scheduling.
+        inherited = Some(registry.try_clone()?);
+        Ok(())
+    })?);
+    assert!(
+        fixture.registry_is_unlocked()?,
+        "the probe left its lock held by an inherited descriptor"
+    );
+    drop(inherited);
+    Ok(())
 }
 
 // Reverted production operations: the failed remove and the whole registry
