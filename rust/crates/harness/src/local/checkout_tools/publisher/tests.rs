@@ -651,3 +651,105 @@ async fn recovery_finishes_an_interrupted_capture() -> Result<()> {
     assert!(!replay_after_an_interrupted_capture_is_editable(true, true).await?);
     Ok(())
 }
+
+/// The reference that names `file`'s staged generation: the parent of the
+/// capture that `file` names.
+async fn staged_reference(harness: &LocalHarness, file: &FileRef) -> Result<FileRef> {
+    let workspace = harness
+        .workspace
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("checkout".into()))?
+        .view()
+        .workspace()
+        .clone();
+    let digest: [u8; 32] = hex::decode(file.version())
+        .map_err(storage)?
+        .try_into()
+        .map_err(|_| Error::Invalid("file version is not a generation".into()))?;
+    let stop = acyclic_fs::CancellationToken::new();
+    let parents = workspace
+        .generation(
+            acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(digest)),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &stop,
+        )
+        .await
+        .map_err(storage)?
+        .value
+        .parents(acyclic_fs::WorkBudget::UNBOUNDED, &stop)
+        .await
+        .map_err(storage)?
+        .value;
+    let [staged] = parents.as_slice() else {
+        return Err(Error::Invalid("the capture has no unique parent".into()));
+    };
+    FileRef::new(
+        file.volume().clone(),
+        file.path().to_owned(),
+        hex::encode(staged.digest().into_bytes()),
+        file.descriptor().clone(),
+        file.display_name().to_owned(),
+        &mut None,
+    )
+}
+
+// Recovery finds the write's capture by its operation, however many commits
+// have buried it, so a retried edit through the recovered reference replays.
+// Negative control: the staged reference, which recovery returned once the
+// capture lay deeper than a bounded walk from the head, makes that retry fail.
+#[tokio::test]
+async fn a_recovered_write_keeps_its_reference_however_far_the_head_moves() -> Result<()> {
+    let (directory, _state, harness, publisher) = fixture().await?;
+    let operation = OperationId::new();
+    let (written, _) = publisher
+        .stage_once(
+            operation,
+            "result.txt",
+            b"agent bytes\n",
+            "text/plain",
+            "result.txt",
+            None,
+        )?
+        .await?;
+    let edit = OperationId::new();
+    publisher
+        .stage_at(edit, &written, b"edited\n", None)?
+        .await?;
+    // Bury the capture well past any walk bounded at 64 with commits that
+    // leave the head's content, and so the checkout, unchanged.
+    let workspace = harness
+        .workspace
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("checkout".into()))?
+        .view()
+        .workspace()
+        .clone();
+    for _ in 0..33 {
+        workspace
+            .write_text("/buried", "x")
+            .await
+            .map_err(storage)?;
+        workspace.remove("/buried").await.map_err(storage)?;
+    }
+    let (recovered, _) = publisher
+        .observe_staged_once(operation, 1024, None)?
+        .await?;
+    let recovered =
+        recovered.ok_or_else(|| Error::Invalid("the write was not recovered".into()))?;
+    assert_eq!(recovered.version(), written.version());
+    publisher
+        .stage_at(edit, &recovered, b"edited\n", None)?
+        .await?;
+    assert_eq!(
+        std::fs::read(directory.path().join("result.txt")).map_err(storage)?,
+        b"edited\n"
+    );
+    let staged = staged_reference(&harness, &written).await?;
+    assert_ne!(staged.version(), written.version());
+    let retried = match publisher.stage_at(edit, &staged, b"edited\n", None) {
+        Ok(retry) => retry.await.map(|_| ()),
+        Err(error) => Err(error),
+    };
+    assert!(matches!(&retried, Err(Error::Conflict(_))), "{retried:?}");
+    Ok(())
+}

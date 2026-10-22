@@ -15,6 +15,13 @@ fn publication_operation(operation: OperationId, path: &str) -> acyclic_fs::Oper
     acyclic_fs::OperationId::from_bytes(identity)
 }
 
+/// The operation that captures the physical write of `path` under
+/// `operation`. Its committed generation is durably keyed by this identity,
+/// so a replay finds it directly however far the head has moved since.
+fn write_capture(operation: OperationId, path: &str) -> OperationId {
+    OperationId::from_bytes(publication_operation(operation, path).into_bytes())
+}
+
 pub(in crate::local) struct CheckoutPublisher {
     tools: Arc<CheckoutTools>,
     files: Arc<LocalFilesystem>,
@@ -167,68 +174,55 @@ impl CheckoutPublisher {
         #[cfg(test)]
         let pending = pending && !tests::REPLAY_SKIPS_CAPTURE.get();
         if pending {
-            let captured =
-                OperationId::from_bytes(publication_operation(operation, file.path()).into_bytes());
             self.tools
                 .capture(
                     (&self.tools.workspace, view),
                     watcher,
-                    captured,
+                    write_capture(operation, file.path()),
                     1,
                     PublicationPermit::Unrestricted,
                     None,
                 )
                 .await?;
         }
-        self.observed(view, file).await
+        self.observed(view, operation, file).await
     }
 
     /// Rebinds a published file to the generation that captured its own
-    /// physical write: the child of the staged generation on the head's
-    /// first-parent chain, when the file's bytes there are exactly the
-    /// published ones. A first attempt finds it at the head; a replay finds
-    /// the same generation below later commits, so both return one reference.
-    /// Any other change to the file leaves the staged reference, so an edit
-    /// through it still conflicts with that change.
-    async fn observed(&self, view: &workspace::View, file: FileRef) -> Result<FileRef> {
-        /// Bounds the replay walk; a staged generation buried deeper keeps its
-        /// own reference, which is always valid.
-        const DEPTH: usize = 64;
+    /// physical write, when that capture committed directly on the staged
+    /// generation and holds exactly the published bytes. The capture is
+    /// found by its durable operation identity, never by its distance from
+    /// the head, so a first attempt and every later replay return one
+    /// reference. Without such a capture the staged reference stands, and
+    /// any other change to the file still conflicts with an edit through it.
+    async fn observed(
+        &self,
+        view: &workspace::View,
+        operation: OperationId,
+        file: FileRef,
+    ) -> Result<FileRef> {
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::WorkBudget::UNBOUNDED;
-        let workspace = view.workspace();
-        let staged = self.staged_generation(&file)?;
-        let mut current = workspace
-            .head(budget, &cancellation)
+        let key = acyclic_fs::IdempotencyKey::from_bytes(
+            capture::capture_operation(write_capture(operation, file.path()), 1).into_bytes(),
+        );
+        let Some(capture) = view
+            .workspace()
+            .operation_generation(key, budget, &cancellation)
+            .await
+            .map_err(storage)?
+            .value
+        else {
+            return Ok(file);
+        };
+        let parents = capture
+            .parents(budget, &cancellation)
             .await
             .map_err(storage)?
             .value;
-        let mut capture = None;
-        for _ in 0..DEPTH {
-            if current.id() == staged {
-                break;
-            }
-            let parents = current
-                .parents(budget, &cancellation)
-                .await
-                .map_err(storage)?
-                .value;
-            if parents == [staged] {
-                capture = Some(current);
-                break;
-            }
-            let Some(parent) = parents.first() else {
-                break;
-            };
-            current = workspace
-                .generation(*parent, budget, &cancellation)
-                .await
-                .map_err(storage)?
-                .value;
-        }
-        let Some(capture) = capture else {
+        if parents != [self.staged_generation(&file)?] {
             return Ok(file);
-        };
+        }
         let descriptor = file.descriptor();
         let bytes = match capture
             .read(

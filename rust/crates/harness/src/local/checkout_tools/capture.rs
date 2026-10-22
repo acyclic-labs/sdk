@@ -182,7 +182,7 @@ impl CheckoutTools {
     }
 }
 
-fn capture_operation(operation: OperationId, phase: u8) -> acyclic_fs::OperationId {
+pub(super) fn capture_operation(operation: OperationId, phase: u8) -> acyclic_fs::OperationId {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"acyclic.local.checkout-capture/v1\0");
     hasher.update(&operation.into_bytes());
