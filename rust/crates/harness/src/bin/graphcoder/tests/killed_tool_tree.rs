@@ -111,12 +111,13 @@ mod oracle {
             }
         }
 
-        /// Blocks until the last process of the tree exits: a blocking reader
-        /// reaches end-of-file only once every writer has closed.
+        /// Blocks until the last process of the tree exits: the reader held
+        /// since before the tree started polls readable at end-of-file, once
+        /// every writer has closed.
         pub(super) fn wait_exit(&self) {
-            if self.alive() {
-                let mut reader = File::open(&self.alive_path).unwrap();
-                assert_eq!(reader.read(&mut [0; 16]).unwrap(), 0);
+            use rustix::event::{PollFd, PollFlags, poll};
+            while self.alive() {
+                poll(&mut [PollFd::new(&self.alive, PollFlags::IN)], None).unwrap();
             }
         }
 
