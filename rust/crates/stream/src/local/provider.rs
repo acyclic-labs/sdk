@@ -54,7 +54,7 @@ impl StreamProvider for LocalStream {
             bytes = request
                 .records
                 .iter()
-                .map(crate::OwnedBytes::len)
+                .map(crate::AppendRecord::payload_bytes)
                 .sum::<usize>(),
             rev = Empty,
             outcome = Empty,

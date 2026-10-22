@@ -190,11 +190,20 @@ impl MemoryStream {
                     let (digest, hashed) = digest(
                         &recovery_conditions,
                         &append.path,
-                        &append
-                            .records
-                            .first()
-                            .ok_or(StreamError::Unavailable)?
-                            .value,
+                        &crate::AppendRecord {
+                            value: append
+                                .records
+                                .first()
+                                .ok_or(StreamError::Unavailable)?
+                                .value
+                                .clone(),
+                            headers: append
+                                .records
+                                .first()
+                                .ok_or(StreamError::Unavailable)?
+                                .headers
+                                .clone(),
+                        },
                     );
                     observed = observed
                         .take()
@@ -231,7 +240,7 @@ impl MemoryStream {
 impl PreparedCommit {
     pub(crate) async fn settle(
         mut self,
-        body: Bytes,
+        mut body: crate::AppendRecord,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
         let work = Arc::clone(
             self.provider
@@ -239,6 +248,7 @@ impl PreparedCommit {
                 .as_ref()
                 .ok_or(StreamError::Unavailable)?,
         );
+        body.headers = work.record(body.headers.bind_native(&work.meter))?;
         let (digest, hashed) = digest(&self.conditions, &append(&self.plan.result).path, &body);
         let _ = work.record(work.meter.record_codec(0, 0, hashed));
         let mut state = self.provider.state.write().await;
@@ -254,7 +264,7 @@ impl PreparedCommit {
                 let result = copy_outcome(
                     &stored.result,
                     &self.conditions,
-                    body.len(),
+                    body.payload_bytes(),
                     (self.plan.result, self.plan.output_claim),
                     (conflicts, output_claim),
                 )?;
@@ -275,7 +285,11 @@ impl PreparedCommit {
                 }
             }
             drop(self.capacity.take());
-            let bytes = if conflicts.is_empty() { body.len() } else { 0 };
+            let bytes = if conflicts.is_empty() {
+                body.payload_bytes()
+            } else {
+                0
+            };
             self.provider.publish(bytes, || {
                 if conflicts.is_empty() {
                     let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
@@ -325,15 +339,18 @@ impl PreparedCommit {
     }
 }
 
-fn bind_body(plan: &mut CommitPlan, body: Bytes) -> Result<(), StreamError> {
+fn bind_body(plan: &mut CommitPlan, body: crate::AppendRecord) -> Result<(), StreamError> {
     for value in [&mut plan.result, &mut plan.cached] {
-        append_mut(value)
+        let record = append_mut(value)
             .records
             .first_mut()
-            .ok_or(StreamError::Unavailable)?
-            .value = body.clone();
+            .ok_or(StreamError::Unavailable)?;
+        record.value = body.value.clone();
+        record.headers = body.headers.clone();
     }
-    history_record(plan.histories.first_mut().ok_or(StreamError::Unavailable)?)?.value = body;
+    let record = history_record(plan.histories.first_mut().ok_or(StreamError::Unavailable)?)?;
+    record.value = body.value;
+    record.headers = body.headers;
     Ok(())
 }
 
@@ -363,7 +380,11 @@ fn history_record(history: &mut Arc<History>) -> Result<&mut Record, StreamError
         .and_then(|batch| batch.records.first_mut())
         .ok_or(StreamError::Unavailable)
 }
-fn digest(conditions: &[CommitCondition; 2], path: &StreamPath, body: &Bytes) -> ([u8; 32], u64) {
+fn digest(
+    conditions: &[CommitCondition; 2],
+    path: &StreamPath,
+    body: &crate::AppendRecord,
+) -> ([u8; 32], u64) {
     let mut hash = request_hasher(b"commit");
     hash_conditions(&mut hash, conditions);
     hash.update([1]);
@@ -377,7 +398,8 @@ fn digest(conditions: &[CommitCondition; 2], path: &StreamPath, body: &Bytes) ->
             .sum::<u64>()
         + 25
         + path.as_str().len() as u64
-        + body.len() as u64;
+        + body.hash_bytes()
+        - 8;
     (hash.finalize().into(), bytes)
 }
 fn copy_outcome(
@@ -463,7 +485,9 @@ fn prepared_tail(request: &mut CommitRequest, maximum: usize) -> Result<u64, Str
             .iter()
             .any(|condition| !matches!(condition, CommitCondition::Tail { .. }))
         || records.len() != 1
-        || !records.first().is_some_and(Bytes::is_empty)
+        || !records
+            .first()
+            .is_some_and(|record| record.payload_bytes() == 0)
     {
         return Err(StreamError::InvalidArgument);
     }

@@ -32,7 +32,33 @@ fn parse_records(value: &Value) -> Result<Vec<Record>, StreamError> {
         .iter()
         .map(|value| {
             let bytes = parse_bytes(field(value, "value")?)?;
-            if bytes.len() > MAX_RECORD_BYTES {
+            let keys = field(value, "keys")?
+                .as_array()
+                .ok_or(StreamError::Unavailable)?;
+            let attributes = field(value, "attributes")?
+                .as_array()
+                .ok_or(StreamError::Unavailable)?;
+            if keys.len() > crate::MAX_RECORD_KEYS
+                || attributes.len() > crate::MAX_RECORD_ATTRIBUTES
+            {
+                return Err(StreamError::Unavailable);
+            }
+            let headers = crate::RecordHeaders::new(
+                keys.iter()
+                    .map(parse_bytes)
+                    .collect::<Result<Vec<_>, _>>()?,
+                attributes
+                    .iter()
+                    .map(|attribute| {
+                        Ok(crate::Attribute {
+                            name: parse_string(field(attribute, "name")?)?.to_owned(),
+                            value: parse_bytes(field(attribute, "value")?)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, StreamError>>()?,
+            )
+            .map_err(|_| StreamError::Unavailable)?;
+            if bytes.len().saturating_add(headers.payload_bytes()) > MAX_RECORD_BYTES {
                 return Err(StreamError::Unavailable);
             }
             Ok(Record {
@@ -40,6 +66,7 @@ fn parse_records(value: &Value) -> Result<Vec<Record>, StreamError> {
                 value: bytes.into(),
                 commit_id: parse_id(field(value, "commitId")?)?,
                 committed_at_micros: parse_u64(field(value, "committedAtMicros")?)?,
+                headers,
             })
         })
         .collect()

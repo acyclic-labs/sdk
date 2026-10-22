@@ -145,6 +145,8 @@ impl Pool {
                 opaque: opaque.into(),
             }),
             kind: Some(route.kind.clone()),
+            credential: 0,
+            filter: None,
         };
         let value = frame(
             0,
@@ -361,6 +363,7 @@ async fn handshake(
             destination_node: destination.into(),
             receive_bytes: credit.bytes,
             receive_frames: credit.frames,
+            credentials: Vec::new(),
         }),
     );
     let bytes = hello.encoded_len();
