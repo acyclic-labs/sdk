@@ -23,6 +23,17 @@ To use the system C linker instead, override the workspace linker for the comman
 CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=cc cargo build --locked -p acyclic-plugin
 ```
 
+For isolated identity or filesystem protocol changes, validate the owning crate:
+
+```sh
+cargo test --locked -p acyclic-plugin-identity
+cargo test --locked -p acyclic-fs-wire
+```
+
+Identity's unit tests and main-thread entry contract live in the identity crate;
+CLI integration tests exercise its executable. The filesystem wire crate owns
+the protocol descriptor and message tests. Qualification also covers consumers.
+
 ```sh
 bun install --frozen-lockfile
 bun run check   # tsc -b --force, project-wide type-check (also emits build output)
