@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 mod histories;
 mod outbox;
 mod ownership;
+mod replay;
 
 struct Counter {
     manifest: Manifest,

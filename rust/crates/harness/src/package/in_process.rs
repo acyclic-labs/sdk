@@ -150,6 +150,9 @@ impl<P: StreamProvider> InProcessRuntime<P> {
 
     async fn finish_move(&self, journal: &Journal<P>, target: &Placement) -> Result<Snapshot> {
         let current = journal.load().await?;
+        if current.last.moving.is_none() && current.last.snapshot.placement == *target {
+            return Ok(current.last.snapshot);
+        }
         if current.last.moving.as_ref() != Some(target) {
             return Err(Error::Conflict("another actor placement is pending".into()));
         }
@@ -166,6 +169,91 @@ impl<P: StreamProvider> InProcessRuntime<P> {
             .publish(&current.head, current.tail, moved.clone(), None)
             .await?;
         Ok(moved.snapshot)
+    }
+    fn deliver_event(
+        &self,
+        placement: Placement,
+        event: Event,
+        trusted: bool,
+    ) -> BoxProviderFuture<'_, Result<Snapshot>> {
+        Box::pin(async move {
+            let (package, journal) = self
+                .checked(AdmissionAction::Deliver, &placement, Some(&event))
+                .await?;
+            let _claim = journal.claim_handler().await?;
+            let current = journal.load().await?;
+            journal.require_owner(&current)?;
+            if !trusted {
+                journal.reject_result_identity(&event).await?;
+            }
+            if let Some(original) = journal.retry(&event).await? {
+                if original.cancelling {
+                    return Err(Error::Conflict(
+                        "delivery reuses a cancellation event".into(),
+                    ));
+                }
+                return Ok(original.snapshot);
+            }
+            if current.last.cancelling {
+                return Err(Error::Conflict(
+                    "actor cancellation has fenced delivery".into(),
+                ));
+            }
+            if !matches!(current.last.snapshot.status, MachineStatus::Suspended) {
+                return Err(Error::Conflict("actor is terminal".into()));
+            }
+            if let Some(next) = journal.next_input(current.last.snapshot.consumed).await?
+                && (next.event != event || next.cancellation)
+            {
+                return Err(Error::Conflict(
+                    "an earlier admitted input requires recovery".into(),
+                ));
+            }
+            // Admission rejects malformed or undeclared work before accepting
+            // an immutable inbox input. The authoritative step still runs under
+            // the journal CAS and is verified on every recovery.
+            let (_, proposed, _, _) = package.registry.step(
+                &current.last.snapshot.checkpoint,
+                std::borrow::Cow::Borrowed(&event.input),
+                None,
+            )?;
+            package.manifest.validate_transition(&proposed)?;
+            crate::workflow::WorkflowRecord {
+                operation_id: event.operation_id,
+                idempotency_key: event.idempotency_key.clone(),
+                prior: current.last.snapshot.checkpoint.clone(),
+                input: event.input.clone(),
+                transition: proposed.clone(),
+            }
+            .validate(None)?;
+            journal
+                .check_commands(&proposed, event.operation_id)
+                .await?;
+            if !matches!(proposed.status, MachineStatus::Suspended)
+                && current.last.snapshot.pending.iter().any(|command| {
+                    effect_result_operation(command.operation_id) != event.operation_id
+                })
+            {
+                return Err(Error::Conflict(
+                    "terminal actor still has pending effects".into(),
+                ));
+            }
+            let mut host = DurableWorkflowHost::open(
+                package.registry,
+                current.bootstrap.admission.initial,
+                journal.clone(),
+            )
+            .await?;
+            journal.admit_event(event.clone(), false).await?;
+            host.step(
+                event.operation_id,
+                event.idempotency_key,
+                event.input,
+                |transition| package.manifest.validate_transition(transition),
+            )
+            .await?;
+            Ok(journal.load().await?.last.snapshot)
+        })
     }
 }
 
@@ -212,7 +300,7 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
             let (package, journal) = self
                 .checked(AdmissionAction::Place, &placement, None)
                 .await?;
-            let _claim = journal.claim_handler()?;
+            let _claim = journal.claim_handler().await?;
             if let Some(current) = journal.load_optional().await? {
                 if current.bootstrap.input != input
                     || current.bootstrap.manifest != package.manifest
@@ -293,81 +381,8 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
         placement: Placement,
         event: Event,
     ) -> BoxProviderFuture<'_, Result<Snapshot>> {
-        Box::pin(async move {
-            let (package, journal) = self
-                .checked(AdmissionAction::Deliver, &placement, Some(&event))
-                .await?;
-            let _claim = journal.claim_handler()?;
-            let current = journal.load().await?;
-            journal.require_owner(&current)?;
-            if let Some(original) = journal.retry(&event).await? {
-                if original.cancelling {
-                    return Err(Error::Conflict(
-                        "delivery reuses a cancellation event".into(),
-                    ));
-                }
-                return Ok(original.snapshot);
-            }
-            if current.last.cancelling {
-                return Err(Error::Conflict(
-                    "actor cancellation has fenced delivery".into(),
-                ));
-            }
-            if !matches!(current.last.snapshot.status, MachineStatus::Suspended) {
-                return Err(Error::Conflict("actor is terminal".into()));
-            }
-            if let Some(next) = journal.next_input(current.last.snapshot.consumed).await?
-                && (next.event != event || next.cancellation)
-            {
-                return Err(Error::Conflict(
-                    "an earlier admitted input requires recovery".into(),
-                ));
-            }
-            // Admission rejects malformed or undeclared work before accepting
-            // an immutable inbox input. The authoritative step still runs under
-            // the journal CAS and is verified on every recovery.
-            let (_, proposed, _, _) = package.registry.step(
-                &current.last.snapshot.checkpoint,
-                std::borrow::Cow::Borrowed(&event.input),
-                None,
-            )?;
-            package.manifest.validate_transition(&proposed)?;
-            crate::workflow::WorkflowRecord {
-                operation_id: event.operation_id,
-                idempotency_key: event.idempotency_key.clone(),
-                prior: current.last.snapshot.checkpoint.clone(),
-                input: event.input.clone(),
-                transition: proposed.clone(),
-            }
-            .validate(None)?;
-            journal.check_commands(&proposed).await?;
-            if !matches!(proposed.status, MachineStatus::Suspended)
-                && current.last.snapshot.pending.iter().any(|command| {
-                    effect_result_operation(command.operation_id) != event.operation_id
-                })
-            {
-                return Err(Error::Conflict(
-                    "terminal actor still has pending effects".into(),
-                ));
-            }
-            let mut host = DurableWorkflowHost::open(
-                package.registry,
-                current.bootstrap.admission.initial,
-                journal.clone(),
-            )
-            .await?;
-            journal.admit_event(event.clone(), false).await?;
-            host.step(
-                event.operation_id,
-                event.idempotency_key,
-                event.input,
-                |transition| package.manifest.validate_transition(transition),
-            )
-            .await?;
-            Ok(journal.load().await?.last.snapshot)
-        })
+        self.deliver_event(placement, event, false)
     }
-
     fn recover(&self, placement: Placement) -> BoxProviderFuture<'_, Result<Snapshot>> {
         Box::pin(async move {
             let (package, journal) = self
@@ -375,7 +390,7 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
                 .await?;
             let current = journal.load().await?;
             if current.last.moving.as_ref() == Some(&placement) {
-                let _claim = journal.claim_handler()?;
+                let _claim = journal.claim_handler().await?;
                 return self.finish_move(&journal, &placement).await;
             }
             journal.require_owner(&current)?;
@@ -388,29 +403,28 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
             )
             .await?;
             if current.last.cancelling {
+                let _claim = journal.claim_handler().await?;
                 return self.finish_cancel(&journal).await;
             }
             if let Some(admitted) = journal.next_input(current.last.snapshot.consumed).await? {
                 return if admitted.cancellation {
                     self.cancel(placement, admitted.event).await
                 } else {
-                    self.deliver(placement, admitted.event).await
+                    self.deliver_event(placement, admitted.event, true).await
                 };
             }
             let Some(command) = current.last.snapshot.pending.first().cloned() else {
                 return Ok(current.last.snapshot);
             };
             journal.require_durable(current.tail).await?;
-            let _claim = journal.claim_effects()?;
+            let _claim = journal.claim_effects().await?;
             // Cancellation and placement can advance while a dispatch claim is
             // acquired. Recheck before entering the host's permanently fenced
             // epoch; the host closes the final check/start race itself.
             let latest = journal.load().await?;
             journal.require_owner(&latest)?;
             if latest.last.cancelling || latest.head != current.head {
-                return Err(Error::Conflict(
-                    "actor changed before effect dispatch".into(),
-                ));
+                return Ok(latest.last.snapshot);
             }
             let event = self
                 .effects
@@ -421,7 +435,7 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
                     "effect result operation differs from committed command".into(),
                 ));
             }
-            self.deliver(placement, event).await
+            self.deliver_event(placement, event, true).await
         })
     }
 
@@ -434,9 +448,10 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
             let (_, journal) = self
                 .checked(AdmissionAction::Cancel, &placement, Some(&event))
                 .await?;
-            let _claim = journal.claim_handler()?;
+            let _claim = journal.claim_handler().await?;
             let current = journal.load().await?;
             journal.require_owner(&current)?;
+            journal.reject_result_identity(&event).await?;
             if let Some(original) = journal.retry(&event).await? {
                 if !original.cancelling {
                     return Err(Error::Conflict(

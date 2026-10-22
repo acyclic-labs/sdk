@@ -13,6 +13,7 @@ use futures::TryStreamExt;
 
 const PAGE: u32 = 64;
 mod admission;
+mod replay;
 mod subscription;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -167,12 +168,24 @@ impl<P: StreamProvider> Journal<P> {
         Ok(())
     }
 
-    pub fn claim_effects(&self) -> Result<acyclic_stream::OperationClaim<'_, ()>> {
-        self.claim("effects")
+    pub async fn claim_effects(&self) -> Result<acyclic_stream::OperationClaim<'_, ()>> {
+        self.wait_claim("effects").await
     }
 
-    pub fn claim_handler(&self) -> Result<acyclic_stream::OperationClaim<'_, ()>> {
-        self.claim("handler")
+    pub async fn claim_handler(&self) -> Result<acyclic_stream::OperationClaim<'_, ()>> {
+        self.wait_claim("handler").await
+    }
+
+    async fn wait_claim(&self, kind: &str) -> Result<acyclic_stream::OperationClaim<'_, ()>> {
+        loop {
+            if let Some(claim) = self.try_claim(kind)? {
+                return Ok(claim);
+            }
+            self.stream
+                .operation_claims()
+                .wait_until_released(self.claim_key(kind))
+                .await;
+        }
     }
 
     pub fn claim_supervisor(&self) -> Result<acyclic_stream::OperationClaim<'_, ()>> {
@@ -180,16 +193,26 @@ impl<P: StreamProvider> Journal<P> {
     }
 
     fn claim(&self, kind: &str) -> Result<acyclic_stream::OperationClaim<'_, ()>> {
+        self.try_claim(kind)?
+            .ok_or_else(|| Error::Conflict("actor work already has a live runtime owner".into()))
+    }
+
+    fn claim_key(&self, kind: &str) -> [u8; 48] {
         let mut key = [0; 48];
         let (actor, domain) = key.split_at_mut(16);
         actor.copy_from_slice(&self.placement.actor.into_bytes());
         domain.copy_from_slice(
             blake3::hash(format!("{kind}:{}", self.path.as_str()).as_bytes()).as_bytes(),
         );
-        self.stream
-            .operation_claims()
-            .claim(key, || Ok::<_, Error>(()), |_| Ok(()))?
-            .ok_or_else(|| Error::Conflict("actor work already has a live runtime owner".into()))
+        key
+    }
+
+    fn try_claim(&self, kind: &str) -> Result<Option<acyclic_stream::OperationClaim<'_, ()>>> {
+        self.stream.operation_claims().claim(
+            self.claim_key(kind),
+            || Ok::<_, Error>(()),
+            |_| Ok(()),
+        )
     }
 
     pub async fn create(&self, entry: Entry) -> Result<()> {
@@ -219,10 +242,20 @@ impl<P: StreamProvider> Journal<P> {
             expected: tail,
             commit_id: *head,
         }];
-        let mutations = vec![CommitMutation::Append {
+        let mut mutations = vec![CommitMutation::Append {
             path: self.path.clone(),
             records: vec![value],
         }];
+        if let Some(record) = &entry.workflow {
+            let path = self.revision_path(record.prior.revision)?;
+            conditions.push(CommitCondition::Absent { path: path.clone() });
+            mutations.push(CommitMutation::Append {
+                path,
+                records: vec![Bytes::from(
+                    serde_json::to_vec(&tail).map_err(|error| codec_error(&error))?,
+                )],
+            });
+        }
         if let Some(event) = event {
             let consumed = entry
                 .snapshot
@@ -334,9 +367,25 @@ impl<P: StreamProvider> Journal<P> {
         Ok(None)
     }
 
-    pub async fn check_commands(&self, proposed: &MachineTransition) -> Result<()> {
+    pub async fn check_commands(
+        &self,
+        proposed: &MachineTransition,
+        step: OperationId,
+    ) -> Result<()> {
         if proposed.commands.is_empty() {
             return Ok(());
+        }
+        let mut identities = std::collections::BTreeSet::new();
+        for command in &proposed.commands {
+            if command.operation_id == step
+                || effect_result_operation(command.operation_id) == step
+                || !identities.insert(command.operation_id)
+                || !identities.insert(effect_result_operation(command.operation_id))
+            {
+                return Err(Error::Conflict(
+                    "actor command/result identities overlap".into(),
+                ));
+            }
         }
         let tail = self.load().await?.tail;
         let mut from = 1;
@@ -349,13 +398,39 @@ impl<P: StreamProvider> Journal<P> {
             }
             from += page.len() as u64;
             for record in page.into_iter().filter_map(|entry| entry.workflow) {
-                if proposed.commands.iter().any(|command| {
-                    record
-                        .operation_ids()
-                        .any(|operation| operation == command.operation_id)
-                }) {
+                if record
+                    .operation_ids()
+                    .any(|operation| identities.contains(&operation))
+                    || record.transition.commands.iter().any(|command| {
+                        identities.contains(&effect_result_operation(command.operation_id))
+                    })
+                {
                     return Err(Error::Conflict(
                         "actor effect identity was already committed".into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn reject_result_identity(&self, event: &Event) -> Result<()> {
+        let tail = self.load().await?.tail;
+        let mut from = 1;
+        while from < tail {
+            let page = self
+                .page(from, PAGE.min(u32::try_from(tail - from).unwrap_or(PAGE)))
+                .await?;
+            if page.is_empty() {
+                return Err(Error::Storage("actor effect history is incomplete".into()));
+            }
+            from += page.len() as u64;
+            for record in page.into_iter().filter_map(|entry| entry.workflow) {
+                if record.transition.commands.iter().any(|command| {
+                    effect_result_operation(command.operation_id) == event.operation_id
+                }) {
+                    return Err(Error::Unauthorized(
+                        "effect result identities are reserved for runtime delivery".into(),
                     ));
                 }
             }
@@ -408,31 +483,7 @@ impl<P: StreamProvider> WorkflowJournal for Journal<P> {
         }
         Ok(HistoryContentFuture::Ordinary {
             future: Box::pin(async move {
-                if maximum == 0 {
-                    return Err(Error::Invalid("invalid actor replay page size".into()));
-                }
-                let tail = self.load().await?.tail;
-                let mut from = 1;
-                let mut result = Vec::new();
-                while from < tail && result.len() < maximum as usize {
-                    let page = self
-                        .page(from, PAGE.min(u32::try_from(tail - from).unwrap_or(PAGE)))
-                        .await?;
-                    if page.is_empty() {
-                        return Err(Error::Storage("actor replay history is incomplete".into()));
-                    }
-                    from += page.len() as u64;
-                    for entry in page {
-                        if let Some(record) = entry.workflow
-                            && record.prior.revision >= after
-                        {
-                            result.push(record);
-                            if result.len() == maximum as usize {
-                                break;
-                            }
-                        }
-                    }
-                }
+                let result = self.replay_records(after, maximum).await?;
                 Ok((result, None))
             }),
             frame_bytes: 0,

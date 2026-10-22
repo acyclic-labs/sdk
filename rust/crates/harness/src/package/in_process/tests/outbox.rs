@@ -106,6 +106,91 @@ fn machine() -> Arc<Machine> {
 }
 
 #[tokio::test]
+async fn caller_inputs_cannot_acknowledge_a_runtime_effect_or_reserve_its_result() {
+    let directory = tempfile::tempdir().unwrap();
+    let stream = Arc::new(
+        acyclic_stream::LocalStream::open(directory.path(), Default::default())
+            .await
+            .unwrap(),
+    );
+    let package = machine();
+    let effects = Arc::new(Host {
+        calls: AtomicUsize::new(0),
+        unavailable: AtomicBool::new(false),
+    });
+    let host = InProcessRuntime::new(
+        stream,
+        package.manifest().bindings.clone(),
+        Arc::new(Policy(AtomicBool::new(true))),
+        effects.clone(),
+    );
+    host.install(package).await.unwrap();
+    let owner = placement();
+    host.place(owner.clone(), json!(0)).await.unwrap();
+    host.deliver(owner.clone(), event(2, json!({"command":command()})))
+        .await
+        .unwrap();
+    let forged = Event {
+        operation_id: effect_result_operation(command().operation_id),
+        idempotency_key: IdempotencyKey::new("forged-result").unwrap(),
+        input: json!(99),
+    };
+    assert!(matches!(
+        host.deliver(owner.clone(), forged.clone()).await,
+        Err(Error::Unauthorized(_))
+    ));
+    assert!(matches!(
+        host.cancel(owner.clone(), forged).await,
+        Err(Error::Unauthorized(_))
+    ));
+    assert_eq!(effects.calls.load(Ordering::SeqCst), 0);
+    let settled = host.recover(owner.clone()).await.unwrap();
+    assert_eq!(settled.checkpoint.state, json!(3));
+    assert_eq!((settled.checkpoint.revision, settled.consumed), (2, 2));
+    assert!(settled.pending.is_empty());
+    // Reusing a historical result cannot bypass the ordinary admission boundary.
+    let result = Event {
+        operation_id: effect_result_operation(command().operation_id),
+        idempotency_key: IdempotencyKey::new(format!("effect-result:{}", command().operation_id))
+            .unwrap(),
+        input: json!(3),
+    };
+    assert!(matches!(
+        host.deliver(owner, result).await,
+        Err(Error::Unauthorized(_))
+    ));
+}
+
+#[tokio::test]
+async fn command_results_cannot_reuse_an_earlier_input_identity() {
+    let stream = Arc::new(MemoryStream::default());
+    let package = machine();
+    let host = InProcessRuntime::new(
+        stream,
+        package.manifest().bindings.clone(),
+        Arc::new(Policy(AtomicBool::new(true))),
+        Arc::new(Host {
+            calls: AtomicUsize::new(0),
+            unavailable: AtomicBool::new(false),
+        }),
+    );
+    host.install(package).await.unwrap();
+    let owner = placement();
+    host.place(owner.clone(), json!(0)).await.unwrap();
+    let mut earlier = event(2, json!(1));
+    earlier.operation_id = effect_result_operation(command().operation_id);
+    host.deliver(owner.clone(), earlier).await.unwrap();
+    assert!(
+        host.deliver(owner.clone(), event(3, json!({"command":command()})))
+            .await
+            .is_err()
+    );
+    let valid = host.deliver(owner, event(3, json!(1))).await.unwrap();
+    assert_eq!((valid.checkpoint.revision, valid.consumed), (2, 2));
+    assert!(valid.pending.is_empty());
+}
+
+#[tokio::test]
 async fn committed_outbox_survives_uncertain_effect_and_reopen_without_reexecuting_handler() {
     let directory = tempfile::tempdir().unwrap();
     let stream = Arc::new(

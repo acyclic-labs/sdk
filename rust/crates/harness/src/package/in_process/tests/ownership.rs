@@ -105,6 +105,45 @@ async fn runtime_subscription_recovers_an_inbox_after_the_attached_client_is_dro
 }
 
 #[tokio::test]
+async fn subscription_waits_for_a_live_handler_and_recovers_after_it_is_dropped() {
+    let (_, _, _, _, host) = fixture().await;
+    let owner = placement();
+    host.place(owner.clone(), json!(0)).await.unwrap();
+    let host = Arc::new(host);
+    let journal = host.journal(&host.package().unwrap(), &owner).unwrap();
+    let handler = journal.claim_handler().await.unwrap();
+    journal
+        .admit_event(event(2, json!(3)), false)
+        .await
+        .unwrap();
+    let runner = host.clone();
+    let placement = owner.clone();
+    let (ready, blocked) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let mut subscription = runner.run(placement);
+        assert!(futures::poll!(&mut subscription).is_pending());
+        ready.send(()).unwrap();
+        subscription.await
+    });
+    blocked.await.unwrap();
+    // No workflow publication accompanies dropping an interrupted delivery.
+    // A claim-release wake, rather than a checkpoint follow, must resume it.
+    drop(handler);
+    journal
+        .admit_event(event(3, Value::Null), false)
+        .await
+        .unwrap();
+    let settled = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(settled.checkpoint.state, json!(3));
+    assert_eq!((settled.checkpoint.revision, settled.consumed), (2, 2));
+    assert!(matches!(settled.status, MachineStatus::Completed { .. }));
+}
+
+#[tokio::test]
 async fn a_failed_move_is_recoverable_and_fences_all_old_owner_entry_points() {
     let (_, package, policy, effects, _) = fixture().await;
     let directory = tempfile::tempdir().unwrap();
