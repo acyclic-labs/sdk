@@ -36,7 +36,15 @@ test("feature unification cannot hide an individual failure", async () => {
 
 test("qualification gate runs the standalone checks and their scheduling control", () => {
   const source = readFileSync(new URL("./qualify-ci.sh", import.meta.url), "utf8").replaceAll("\r\n", "\n");
-  const gate = source.slice(source.indexOf("  gate)"), source.indexOf("      ;;", source.indexOf("  gate)")));
-  assert.match(gate, /node --test scripts\/check-crate-tests\.test\.mjs/);
-  assert.match(gate, /node scripts\/check-crate-tests\.mjs 2/);
+  const commands = ["node --test scripts/check-crate-tests.test.mjs", "node scripts/check-crate-tests.mjs 2"];
+  const verify = text => {
+    const gate = text.match(/^  gate\)\n([\s\S]*?)^    ;;$/m)?.[1] ?? assert.fail("missing gate branch");
+    for (const command of commands) assert.ok(gate.includes(command), `gate must run ${command}`);
+  };
+  verify(source);
+  // Moving either command to another lane must not satisfy the gate assertion.
+  for (const command of commands) {
+    const moved = source.replace(`    ${command}\n`, "").replace("  docs)\n", `  docs)\n    ${command}\n`);
+    assert.throws(() => verify(moved), /gate must run/);
+  }
 });
