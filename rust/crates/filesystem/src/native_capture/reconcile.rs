@@ -383,8 +383,8 @@ impl CaptureBatch<'_> {
                     &mut canonical_metadata,
                 );
             }
-            // A read advances the access time, and an inode change capture does not represent, such as macOS adding `com.apple.provenance`, advances the status-change time: those stamps alone never make a new version, so a rescan of unchanged content stages nothing.
-            if canonical_metadata.without_derived_stamps() == prior.without_derived_stamps() {
+            // A read advances the access time, and an inode change capture does not represent, such as macOS adding `com.apple.provenance`, advances the status-change time: those stamps alone never make a new version, so a rescan of unchanged content stages nothing. A stamp moved backwards was set explicitly and is captured.
+            if canonical_metadata.only_advanced_derived_stamps(&prior) {
                 canonical_metadata = prior;
             }
         }

@@ -173,6 +173,41 @@ async fn derived_stamps_alone_never_make_a_new_version() -> Result<(), Box<dyn s
     assert_eq!(receipt.value.changed_paths, 0);
     assert_eq!(unchanged.root(), rescan(&initial)?.root());
 
+    // An access time set backwards is never a read: it is an explicit fact and versions.
+    let MetadataField::Value(prior_accessed) = prior.accessed_ns else {
+        return Err("README.md access time was not recorded".into());
+    };
+    let rewound_ns = prior_accessed - 3_600_000_000_000;
+    let rewound =
+        std::time::UNIX_EPOCH + std::time::Duration::from_nanos(u64::try_from(rewound_ns)?);
+    std::fs::File::options()
+        .write(true)
+        .open(&file)?
+        .set_times(std::fs::FileTimes::new().set_accessed(rewound))?;
+    let mut rewound_checkout = rescan(&initial)?;
+    let receipt = capture_subtrees_with_native_work(
+        &mut rewound_checkout,
+        std::slice::from_ref(&root),
+        &options,
+        &CapturePolicy::default(),
+        &cancellation,
+        None,
+        &work,
+    )
+    .await?;
+    assert_eq!(receipt.value.changed_paths, 1);
+    let (lookup, _custody) = rewound_checkout
+        .lookup_batch_no_follow(std::slice::from_ref(&readme), &work, &cancellation)
+        .await?;
+    let record = lookup.entries[0].record.ok_or("README.md vanished")?;
+    let captured_rewound = rewound_checkout
+        .read_metadata(record.file_id, &work, &cancellation)
+        .await?;
+    assert_eq!(
+        captured_rewound.accessed_ns,
+        MetadataField::Value(rewound_ns)
+    );
+
     // Positive control: a recorded stamp with the same content is still a change.
     let modified = captured.modified()? + std::time::Duration::from_secs(7_200);
     std::fs::File::options()

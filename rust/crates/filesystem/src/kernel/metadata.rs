@@ -86,6 +86,23 @@ impl FileMetadata {
         }
     }
 
+    /// Whether this record differs from `prior` only by derived stamps that moved forward.
+    ///
+    /// Reads and unrepresented inode changes only ever advance the access and status-change
+    /// times; an explicit set can move a stamp backwards, and that is a recorded fact.
+    pub(crate) fn only_advanced_derived_stamps(&self, prior: &Self) -> bool {
+        const fn advanced(now: MetadataField<i64>, before: MetadataField<i64>) -> bool {
+            match (now, before) {
+                (MetadataField::Value(now), MetadataField::Value(before)) => now >= before,
+                (MetadataField::Unavailable, MetadataField::Unavailable) => true,
+                _ => false,
+            }
+        }
+        self.without_derived_stamps() == prior.without_derived_stamps()
+            && advanced(self.accessed_ns, prior.accessed_ns)
+            && advanced(self.changed_ns, prior.changed_ns)
+    }
+
     /// Records a content change made at `at_ns`, in signed Unix-epoch nanoseconds: every represented modification and status-change time takes that instant.
     pub fn stamp_content_change(&mut self, at_ns: i64) -> bool {
         let mut stamped = false;
