@@ -10,7 +10,8 @@ inbox subscription, checkpoint/outbox location, and model HTTPS, compute and
 secret bindings. Paths are relative to the declared stream namespace. Each actor
 owns `agents/<id>/inbox` and `agents/<id>/workflow`; the latter contains the
 existing workflow admission and atomic checkpoint/outbox records. Only inbox
-append/follow wakes the actor. Clients append input and follow streams or volume
+append/follow wakes the handler; workflow follows observe ownership and cancellation
+changes. Clients append input and follow streams or volume
 publications. Agent communication uses stream transactions, never actor sockets.
 
 ## Admission and transactions
@@ -28,6 +29,7 @@ status and complete command outbox commit atomically under the placement fence
 and expected revision, using the Streams provider transaction. A rejected commit
 publishes none of them. Immutable volume payloads may be staged first; their
 publication reference joins the transaction. No handler performs external I/O.
+Terminal transitions emit no new effects and settle all earlier outbox commands.
 
 After commit, the runtime dispatches outbox commands through explicit bindings.
 Model HTTPS and compute are long-lived effects, outside the handler. Model chunks
@@ -50,6 +52,8 @@ publication checks it. A portable volume can move; a node-local volume pins the
 actor and compute to its owning node. Loss of that node yields unavailable until
 it recovers, never a silently empty replacement volume. Ownership transfer fences
 the old owner before the new owner resumes effects.
+A durable move intent precedes that irreversible fence, so a failed or interrupted
+transfer can resume without reviving the old epoch.
 
 Recovery restores the pinned machine, checkpoint, consumed inbox cursor and
 pending outbox from provider history. It replays deterministic transitions and
@@ -69,6 +73,20 @@ host shell. Both dispatch and recovery use the same bindings and placement fence
 event history and compare checkpoint/outbox observations, including retry,
 conflicting retry, cancellation, stale placement and recovery cuts. Constructing
 a manifest or implementing a trait alone is not runtime conformance.
+
+`package::in_process::InProcessRuntime` installs one package over a supplied
+Streams provider and reuses `DurableWorkflowHost` for deterministic execution.
+The embedding runtime polls `run` independently of attached clients. Its host
+must supply `AdmissionPolicy` and `EffectHost`; these hooks do not themselves
+implement capability verification, secret resolution or native effect custody.
+The memory provider reports a zero durable watermark, so this host rejects
+effect dispatch, cancellation fencing and ownership transfer there. Disk-backed
+qualification uses `LocalStream` and its confirmed durable watermark.
+
+The runtime's package tests exercise a shared history on memory and local-disk
+providers, plus interrupted inbox, outbox, cancellation and placement recovery.
+GraphCoder and `LocalHarness` still use their existing native composition;
+migrating those entry points through the package remains required.
 
 SDK inventory (2026-10-22): `rust/crates/actors` contains the client and guest ABI,
 but no server binary; no local-cloud server binary exists under `rust/crates`.

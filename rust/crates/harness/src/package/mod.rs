@@ -16,6 +16,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 pub mod conformance;
+pub mod in_process;
 
 /// Whether the volume can follow an actor to another node.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -103,6 +104,12 @@ impl Manifest {
 
     /// Rejects undeclared effects before committing a checkpoint or dispatching.
     pub fn validate_transition(&self, transition: &MachineTransition) -> Result<()> {
+        if !matches!(transition.status, MachineStatus::Suspended) && !transition.commands.is_empty()
+        {
+            return Err(crate::Error::Invalid(
+                "terminal actor cannot emit new effects".into(),
+            ));
+        }
         for command in &transition.commands {
             command.validate(&mut None)?;
             if !self.effects.contains(&command.kind) {
@@ -168,7 +175,8 @@ pub struct Event {
     pub input: Value,
 }
 
-/// Durable observation used by both clients and the conformance driver.
+/// Atomic workflow observation used by clients and the conformance driver.
+/// Provider watermarks distinguish accepted state from confirmed persistence.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     /// Current placement fence.
@@ -213,6 +221,7 @@ pub trait EffectHost: ProviderPlatform {
         placement: Placement,
         command: WorkflowCommand,
     ) -> BoxProviderFuture<'_, Result<Event>>;
-    /// Stops and drains all effects of this epoch before returning.
+    /// Permanently closes this epoch to new dispatch, then stops and drains all
+    /// its effects before returning. Dispatch and closure must be synchronized.
     fn fence(&self, placement: Placement) -> BoxProviderFuture<'_, Result<()>>;
 }
