@@ -13,6 +13,21 @@ mod journal;
 mod tests;
 use journal::{Bootstrap, Entry, Journal};
 
+/// Host operation being authorized, independent of caller-controlled input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdmissionAction {
+    /// Install the pinned package and resolve its resources.
+    Install,
+    /// Create or transfer an actor placement.
+    Place,
+    /// Admit an ordinary input.
+    Deliver,
+    /// Read retained state and reconcile its pending work.
+    Recover,
+    /// Stop and drain an actor's effects.
+    Cancel,
+}
+
 /// Runtime-supplied authorization and binding resolution. Implementations own
 /// the workload identity; input JSON never supplies authority.
 pub trait AdmissionPolicy: ProviderPlatform {
@@ -20,6 +35,7 @@ pub trait AdmissionPolicy: ProviderPlatform {
     /// `None` identifies deployment, placement or recovery rather than delivery.
     fn authorize<'a>(
         &'a self,
+        action: AdmissionAction,
         manifest: &'a Manifest,
         placement: Option<&'a Placement>,
         event: Option<&'a Event>,
@@ -91,12 +107,13 @@ impl<P: StreamProvider> InProcessRuntime<P> {
 
     async fn checked(
         &self,
+        action: AdmissionAction,
         placement: &Placement,
         event: Option<&Event>,
     ) -> Result<(Installed, Arc<Journal<P>>)> {
         let package = self.package()?;
         self.authority
-            .authorize(&package.manifest, Some(placement), event)
+            .authorize(action, &package.manifest, Some(placement), event)
             .await?;
         let journal = self.journal(&package, placement)?;
         Ok((package, journal))
@@ -164,7 +181,9 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
             }
             StreamPath::new(&manifest.bindings.streams)
                 .map_err(|error| journal::stream_error(&error))?;
-            self.authority.authorize(&manifest, None, None).await?;
+            self.authority
+                .authorize(AdmissionAction::Install, &manifest, None, None)
+                .await?;
             let mut registry = MachineRegistry::default();
             registry.register(machine.clone(), &mut None)?;
             let mut installed = self
@@ -190,7 +209,9 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
 
     fn place(&self, placement: Placement, input: Value) -> BoxProviderFuture<'_, Result<Snapshot>> {
         Box::pin(async move {
-            let (package, journal) = self.checked(&placement, None).await?;
+            let (package, journal) = self
+                .checked(AdmissionAction::Place, &placement, None)
+                .await?;
             let _claim = journal.claim_handler()?;
             if let Some(current) = journal.load_optional().await? {
                 if current.bootstrap.input != input
@@ -273,7 +294,9 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
         event: Event,
     ) -> BoxProviderFuture<'_, Result<Snapshot>> {
         Box::pin(async move {
-            let (package, journal) = self.checked(&placement, Some(&event)).await?;
+            let (package, journal) = self
+                .checked(AdmissionAction::Deliver, &placement, Some(&event))
+                .await?;
             let _claim = journal.claim_handler()?;
             let current = journal.load().await?;
             journal.require_owner(&current)?;
@@ -347,7 +370,9 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
 
     fn recover(&self, placement: Placement) -> BoxProviderFuture<'_, Result<Snapshot>> {
         Box::pin(async move {
-            let (package, journal) = self.checked(&placement, None).await?;
+            let (package, journal) = self
+                .checked(AdmissionAction::Recover, &placement, None)
+                .await?;
             let current = journal.load().await?;
             if current.last.moving.as_ref() == Some(&placement) {
                 let _claim = journal.claim_handler()?;
@@ -406,7 +431,9 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
         event: Event,
     ) -> BoxProviderFuture<'_, Result<Snapshot>> {
         Box::pin(async move {
-            let (_, journal) = self.checked(&placement, Some(&event)).await?;
+            let (_, journal) = self
+                .checked(AdmissionAction::Cancel, &placement, Some(&event))
+                .await?;
             let _claim = journal.claim_handler()?;
             let current = journal.load().await?;
             journal.require_owner(&current)?;

@@ -54,6 +54,7 @@ struct Policy(AtomicBool);
 impl AdmissionPolicy for Policy {
     fn authorize<'a>(
         &'a self,
+        _: AdmissionAction,
         _: &'a Manifest,
         _: Option<&'a Placement>,
         _: Option<&'a Event>,

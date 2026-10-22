@@ -1,5 +1,74 @@
 use super::*;
 
+struct SelectivePolicy(Mutex<Option<AdmissionAction>>);
+impl AdmissionPolicy for SelectivePolicy {
+    fn authorize<'a>(
+        &'a self,
+        action: AdmissionAction,
+        _: &'a Manifest,
+        _: Option<&'a Placement>,
+        _: Option<&'a Event>,
+    ) -> BoxProviderFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if *self.0.lock().unwrap() == Some(action) {
+                Err(Error::Unauthorized(format!("fixture denied {action:?}")))
+            } else {
+                Ok(())
+            }
+        })
+    }
+}
+
+#[tokio::test]
+async fn every_entry_point_authorizes_its_own_runtime_supplied_action() {
+    let package = package();
+    let policy = Arc::new(SelectivePolicy(Mutex::new(None)));
+    let effects = Arc::new(Effects::default());
+    let host = InProcessRuntime::new(
+        Arc::new(MemoryStream::default()),
+        package.manifest.bindings.clone(),
+        policy.clone(),
+        effects.clone(),
+    );
+    host.install(package.clone()).await.unwrap();
+    let owner = placement();
+    host.place(owner.clone(), json!(0)).await.unwrap();
+    for action in [
+        AdmissionAction::Install,
+        AdmissionAction::Place,
+        AdmissionAction::Deliver,
+        AdmissionAction::Recover,
+        AdmissionAction::Cancel,
+    ] {
+        *policy.0.lock().unwrap() = Some(action);
+        let result = match action {
+            AdmissionAction::Install => host.install(package.clone()).await,
+            AdmissionAction::Place => host.place(owner.clone(), json!(0)).await.map(|_| ()),
+            AdmissionAction::Deliver => host
+                .deliver(owner.clone(), event(2, json!(1)))
+                .await
+                .map(|_| ()),
+            AdmissionAction::Recover => {
+                assert!(matches!(
+                    host.run(owner.clone()).await,
+                    Err(Error::Unauthorized(_))
+                ));
+                host.recover(owner.clone()).await.map(|_| ())
+            }
+            AdmissionAction::Cancel => host
+                .cancel(owner.clone(), event(3, Value::Null))
+                .await
+                .map(|_| ()),
+        };
+        assert!(matches!(result, Err(Error::Unauthorized(_))), "{action:?}");
+    }
+    *policy.0.lock().unwrap() = None;
+    let untouched = host.recover(owner).await.unwrap();
+    assert_eq!((untouched.checkpoint.revision, untouched.consumed), (0, 0));
+    assert!(!untouched.cancelled);
+    assert_eq!(effects.fences.load(Ordering::SeqCst), 0);
+}
+
 #[tokio::test]
 async fn runtime_subscription_recovers_an_inbox_after_the_attached_client_is_dropped() {
     let (_, _, _, _, host) = fixture().await;

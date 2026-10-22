@@ -8,7 +8,9 @@ impl<P: StreamProvider> InProcessRuntime<P> {
     /// Idle actors wait on provider follows; no timer or request polling is used.
     pub fn run(&self, placement: Placement) -> BoxProviderFuture<'_, Result<Snapshot>> {
         Box::pin(async move {
-            let (_, journal) = self.checked(&placement, None).await?;
+            let (_, journal) = self
+                .checked(AdmissionAction::Recover, &placement, None)
+                .await?;
             let _owner = journal.claim_supervisor()?;
             loop {
                 let snapshot = self.recover(placement.clone()).await?;
