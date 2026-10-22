@@ -1,6 +1,13 @@
 //! Immutable bytes and permissions only; provider/host caches are never copied.
 use super::*;
 
+#[cfg(all(windows, not(acyclic_harness_loom)))]
+mod tests;
+
+#[cfg(windows)]
+#[derive(Debug, PartialEq)]
+struct PermissionWrite;
+
 #[derive(Debug, PartialEq)]
 pub(in crate::local) struct Snapshot(Vec<(PathBuf, Option<Vec<u8>>, std::fs::Permissions)>);
 
@@ -37,6 +44,15 @@ impl Snapshot {
                 Some(bytes) => std::fs::write(&path, bytes).map_err(storage)?,
                 None => std::fs::create_dir(&path).map_err(storage)?,
             }
+            // Windows creates these independent entries writable. Only the
+            // readonly bit needs restoring; avoid opening every writable entry
+            // again just to set the attribute it already has.
+            #[cfg(windows)]
+            if !permissions.readonly() {
+                continue;
+            }
+            #[cfg(windows)]
+            acyclic_test_support::differential::record(PermissionWrite);
             std::fs::set_permissions(path, permissions.clone()).map_err(storage)?;
         }
         assert_eq!(&Self::capture(root)?, self, "snapshot bytes changed");
