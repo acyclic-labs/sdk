@@ -51,7 +51,7 @@ mod tests {
         fn paths_round_trip_inside_the_workspace(
             names in prop::collection::vec("[a-zA-Z0-9_-]{1,20}", 1..8),
         ) {
-            let mount = Path::new(env!("CARGO_MANIFEST_DIR"));
+            let mount = Path::new(crate::build_metadata::MANIFEST_DIR);
             let path = names.join("/");
             let canonical = workspace_path_argument(mount, &path).unwrap();
             prop_assert_eq!(&canonical, &format!("/{path}"));

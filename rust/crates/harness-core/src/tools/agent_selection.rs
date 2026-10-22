@@ -111,7 +111,7 @@ mod tests {
     // seeds replay here so the selector's boundary cases run in every test pass.
     #[test]
     fn checked_in_command_corpus_matches_the_reference() {
-        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        let corpus = std::path::Path::new(crate::build_metadata::MANIFEST_DIR)
             .join("../harness-fuzz/corpus/command");
         let mut seeds = 0;
         for entry in std::fs::read_dir(corpus).unwrap() {

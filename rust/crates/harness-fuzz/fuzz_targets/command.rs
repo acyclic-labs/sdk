@@ -1,5 +1,7 @@
 #![no_main]
 #[cfg(test)]
+use acyclic_harness::build_metadata;
+#[cfg(test)]
 acyclic_test_support::counting_allocator!();
 
 use acyclic_harness::{Error, Result};

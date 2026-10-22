@@ -1,5 +1,7 @@
 //! Checks normalized facade paths stay contained and round-trip without traversal.
 #![no_main]
+#[cfg(test)]
+use acyclic_harness::build_metadata;
 
 use acyclic_harness::Error;
 use libfuzzer_sys::fuzz_target;
