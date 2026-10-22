@@ -309,6 +309,13 @@ fn check_chunks(source: &str, cuts: &[usize]) {
 }
 
 #[test]
+fn closing_html_tag_completed_by_a_later_chunk_interrupts_the_paragraph() {
+    // `</div` at a line start opens a kind-6 HTML block, which interrupts the
+    // paragraph even when its final name byte arrives in a later chunk.
+    check_chunks("[x](url)<div>\nhello\n</div>\n", &[8, 16, 1]);
+}
+
+#[test]
 fn review_regressions_match_every_chunk_boundary() {
     check_chunks(LAZY_LIST, &[2, 2, 1, 1]);
     for source in [
