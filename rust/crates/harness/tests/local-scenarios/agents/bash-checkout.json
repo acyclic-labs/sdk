@@ -324,7 +324,7 @@
             "call_id": "child-shell",
             "name": "powershell",
             "arguments": {
-              "command": "if (Test-Path -LiteralPath .volumes/scratch/parent-secret) { exit 1 }; [IO.File]::WriteAllText('.volumes/scratch/parent-secret', 'child-private', [Text.UTF8Encoding]::new($false)); [IO.File]::WriteAllText('child.txt', 'shell-result', [Text.UTF8Encoding]::new($false)); [Console]::Write('child-shell-ok')"
+              "command": "& ([scriptblock]::Create((Get-Content -Raw checkout-child-shell.ps1)))"
             }
           },
           {
@@ -356,7 +356,7 @@
             "call_id": "side-shell",
             "name": "powershell",
             "arguments": {
-              "command": "[IO.File]::WriteAllText('side.txt', 'side-result', [Text.UTF8Encoding]::new($false)); [Console]::Write([IO.File]::ReadAllText('side.txt'))"
+              "command": "& ([scriptblock]::Create((Get-Content -Raw checkout-side-shell.ps1)))"
             }
           },
           {
@@ -388,7 +388,7 @@
             "call_id": "main-shell",
             "name": "powershell",
             "arguments": {
-              "command": "if (Test-Path -LiteralPath side.txt) { exit 1 }; [Console]::Write([IO.File]::ReadAllText('child.txt'))"
+              "command": "& ([scriptblock]::Create((Get-Content -Raw checkout-main-shell.ps1)))"
             }
           },
           {
@@ -464,7 +464,18 @@
             ]
           }
         ]
+      },
+      "files": {
+        "checkout-child-shell.ps1": "if (Test-Path -LiteralPath .volumes/scratch/parent-secret) { exit 1 }; [IO.File]::WriteAllText('.volumes/scratch/parent-secret', 'child-private', [Text.UTF8Encoding]::new($false)); [IO.File]::WriteAllText('child.txt', 'shell-result', [Text.UTF8Encoding]::new($false)); [Console]::Write('child-shell-ok')",
+        "checkout-side-shell.ps1": "[IO.File]::WriteAllText('side.txt', 'side-result', [Text.UTF8Encoding]::new($false)); [Console]::Write([IO.File]::ReadAllText('side.txt'))",
+        "checkout-main-shell.ps1": "if (Test-Path -LiteralPath side.txt) { exit 1 }; [Console]::Write([IO.File]::ReadAllText('child.txt'))"
       }
+    },
+    "seed": {
+      "checkout-child-shell.ps1": "if (Test-Path -LiteralPath .volumes/scratch/parent-secret) { exit 1 }; [IO.File]::WriteAllText('.volumes/scratch/parent-secret', 'child-private', [Text.UTF8Encoding]::new($false)); [IO.File]::WriteAllText('child.txt', 'shell-result', [Text.UTF8Encoding]::new($false)); [Console]::Write('child-shell-ok')",
+      "checkout-side-shell.ps1": "[IO.File]::WriteAllText('side.txt', 'side-result', [Text.UTF8Encoding]::new($false)); [Console]::Write([IO.File]::ReadAllText('side.txt'))",
+      "checkout-main-shell.ps1": "if (Test-Path -LiteralPath side.txt) { exit 1 }; [Console]::Write([IO.File]::ReadAllText('child.txt'))"
     }
   }
-}}
+}
+}
