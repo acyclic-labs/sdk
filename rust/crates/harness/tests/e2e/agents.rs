@@ -262,95 +262,22 @@ async fn control(harness: &LocalHarness, action: &Action) -> Result<()> {
 
 pub(super) async fn run(value: Value) -> TestResult {
     let case: Case = serde_json::from_value(value)?;
-    if case.expect.indeterminate != case.expect.text.is_none() {
-        return Err("scenario must select either an answer or an indeterminate outcome".into());
-    }
-    if case.models.keys().ne(case.expect.requests.keys()) {
-        return Err("every scripted model needs an exact request count".into());
-    }
-    for (name, turns) in &case.models {
-        if turns.len() != case.expect.requests[name] {
-            return Err(
-                format!("model {name}: script must contain exactly the expected work").into(),
-            );
-        }
-    }
+    case.validate()?;
     let (events, mut actions) = tokio::sync::mpsc::unbounded_channel();
     let (denied_reads, denied_readers) = std::sync::mpsc::channel();
     let expected_actions = case.actions.len();
-    let provider = Arc::new(Models {
-        scripts: Arc::new(
-            case.models
-                .into_iter()
-                .map(|(name, turns)| {
-                    (
-                        name,
-                        Arc::new(ScriptedModelProvider::new(turns).with_context_capacity(
-                            ModelContextCapacity {
-                                context_tokens: 32_768,
-                                output_tokens: Some(4096),
-                            },
-                        )),
-                    )
-                })
-                .collect(),
-        ),
-        routes: Arc::new(
-            case.routes
-                .into_iter()
-                .map(|(body, name)| {
-                    let hash: [u8; 32] = Sha256::digest(body.as_bytes()).into();
-                    (hash, name)
-                })
-                .collect(),
-        ),
-        actions: Arc::new(
-            case.actions
-                .into_iter()
-                .map(|action| ((action.model.clone(), action.request), action))
-                .collect(),
-        ),
+    let provider = Arc::new(Models::new(
+        case.models,
+        case.routes,
+        case.actions,
         events,
         denied_reads,
-        content: None,
-        pinned: matches!(case.reader, Reader::Composition).then(Default::default),
-    });
+        case.reader,
+    ));
     if provider.actions.len() != expected_actions {
         return Err("scenario actions must use distinct model request events".into());
     }
-    let directory = tempfile::tempdir()?;
-    for (path, text) in case.seed {
-        let path = file_path(directory.path(), &path)?;
-        std::fs::create_dir_all(path.parent().ok_or("missing seed parent")?)?;
-        std::fs::write(path, text)?;
-    }
-    if case.repository {
-        for args in [
-            &["init", "-q"][..],
-            &["add", "-A"],
-            &[
-                "-c",
-                "user.name=Scenario",
-                "-c",
-                "user.email=scenario@example.invalid",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "-qm",
-                "seed",
-            ],
-        ] {
-            let status = std::process::Command::new("git")
-                .args(args)
-                .current_dir(directory.path())
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .status()?;
-            if !status.success() {
-                return Err(format!("seed repository git {args:?} failed: {status}").into());
-            }
-        }
-    }
+    let directory = seed_workspace(case.seed, case.repository)?;
     let model = Model::new("scripted".into(), "parent".into(), "1".into(), Value::Null)?;
     // The test composition owns its state and settings; nothing reaches the per-user store.
     let harness = LocalHarness::open(local_harness_config(
@@ -378,33 +305,9 @@ pub(super) async fn run(value: Value) -> TestResult {
             None
         }
         Err(error) => {
-            let requests: BTreeMap<_, _> = provider
-                .scripts
-                .iter()
-                .map(|(name, model)| (name.as_str(), model.requests().len()))
-                .collect();
-            let children = harness
-                .task_files()
-                .observe(Query::Children, None, 64)
+            return Err(failure_report(&harness, &provider, &denied_readers, error)
                 .await?
-                .snapshot
-                .ok_or("missing child failure snapshot")?;
-            let statuses: BTreeMap<_, _> = children
-                .files
-                .iter()
-                .filter(|file| file.key.path().ends_with("/status.json"))
-                .map(|file| {
-                    (
-                        file.key.path(),
-                        String::from_utf8_lossy(&file.bytes).into_owned(),
-                    )
-                })
-                .collect();
-            return Err(format!(
-                "{error}; model requests: {requests:?}; child statuses: {statuses:?}; unauthorized content readers: {:?}",
-                denied_readers.try_iter().collect::<Vec<_>>()
-            )
-            .into());
+                .into());
         }
     };
     if applied != expected_actions {
@@ -412,46 +315,9 @@ pub(super) async fn run(value: Value) -> TestResult {
             format!("expected {expected_actions} accepted client actions, got {applied}").into(),
         );
     }
-    for (name, expected) in &case.expect.toolsets {
-        let mut expected = expected.clone();
-        expected.sort();
-        for request in provider.get(name)?.requests() {
-            let mut actual: Vec<_> = request.tools.iter().map(|tool| tool.name.clone()).collect();
-            actual.sort();
-            if actual != expected {
-                return Err(
-                    format!("model {name}: expected tools {expected:?}, got {actual:?}").into(),
-                );
-            }
-        }
-    }
-    if let Some(mut expected) = case.expect.active {
-        let snapshot = harness
-            .task_files()
-            .observe(Query::Children, None, 64)
-            .await?
-            .snapshot
-            .ok_or("missing active child snapshot")?;
-        let mut actual = Vec::new();
-        for file in snapshot.files {
-            if let FileKey::Child {
-                reference,
-                file: ChildFile::Status,
-            } = file.key
-            {
-                let status = ChildStatus::parse(&file.bytes)?;
-                if !status.settled
-                    || !matches!(status.state, ChildState::Cancelled | ChildState::Archived)
-                {
-                    actual.push(reference.as_str().to_owned());
-                }
-            }
-        }
-        actual.sort();
-        expected.sort();
-        if actual != expected {
-            return Err(format!("active children: expected {expected:?}, got {actual:?}").into());
-        }
+    check_toolsets(&provider, &case.expect.toolsets)?;
+    if let Some(expected) = case.expect.active {
+        check_active(&harness, expected).await?;
     }
     let text = output.map(|output| output.text);
     if text != case.expect.text {
@@ -479,9 +345,211 @@ pub(super) async fn run(value: Value) -> TestResult {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         matchers::ordered(&expected, &actual, &name)?;
     }
-    for (path, expected) in case.expect.files {
+    check_files(&harness, directory.path(), case.expect.files).await?;
+    check_task_files(&harness, case.expect.task_files).await
+}
+
+impl Case {
+    fn validate(&self) -> TestResult {
+        if self.expect.indeterminate != self.expect.text.is_none() {
+            return Err("scenario must select either an answer or an indeterminate outcome".into());
+        }
+        if self.models.keys().ne(self.expect.requests.keys()) {
+            return Err("every scripted model needs an exact request count".into());
+        }
+        for (name, turns) in &self.models {
+            if turns.len() != self.expect.requests[name] {
+                return Err(
+                    format!("model {name}: script must contain exactly the expected work").into(),
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Models {
+    fn new(
+        models: BTreeMap<String, Vec<ScriptedTurn>>,
+        routes: BTreeMap<String, String>,
+        actions: Vec<Action>,
+        events: tokio::sync::mpsc::UnboundedSender<(Action, tokio::sync::oneshot::Sender<()>)>,
+        denied_reads: std::sync::mpsc::Sender<String>,
+        reader: Reader,
+    ) -> Self {
+        Self {
+            scripts: Arc::new(
+                models
+                    .into_iter()
+                    .map(|(name, turns)| {
+                        (
+                            name,
+                            Arc::new(ScriptedModelProvider::new(turns).with_context_capacity(
+                                ModelContextCapacity {
+                                    context_tokens: 32_768,
+                                    output_tokens: Some(4096),
+                                },
+                            )),
+                        )
+                    })
+                    .collect(),
+            ),
+            routes: Arc::new(
+                routes
+                    .into_iter()
+                    .map(|(body, name)| {
+                        let hash: [u8; 32] = Sha256::digest(body.as_bytes()).into();
+                        (hash, name)
+                    })
+                    .collect(),
+            ),
+            actions: Arc::new(
+                actions
+                    .into_iter()
+                    .map(|action| ((action.model.clone(), action.request), action))
+                    .collect(),
+            ),
+            events,
+            denied_reads,
+            content: None,
+            pinned: matches!(reader, Reader::Composition).then(Default::default),
+        }
+    }
+}
+
+/// A workspace holding `seed`, committed into a host Git repository when
+/// `repository` asks for one.
+fn seed_workspace(
+    seed: BTreeMap<String, String>,
+    repository: bool,
+) -> TestResult<tempfile::TempDir> {
+    let directory = tempfile::tempdir()?;
+    for (path, text) in seed {
+        let path = file_path(directory.path(), &path)?;
+        std::fs::create_dir_all(path.parent().ok_or("missing seed parent")?)?;
+        std::fs::write(path, text)?;
+    }
+    if repository {
+        for args in [
+            &["init", "-q"][..],
+            &["add", "-A"],
+            &[
+                "-c",
+                "user.name=Scenario",
+                "-c",
+                "user.email=scenario@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "seed",
+            ],
+        ] {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(directory.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .status()?;
+            if !status.success() {
+                return Err(format!("seed repository git {args:?} failed: {status}").into());
+            }
+        }
+    }
+    Ok(directory)
+}
+
+/// The evidence a failed parent run leaves: each model's request count, every
+/// child status, and any reader refused file content.
+async fn failure_report(
+    harness: &LocalHarness,
+    provider: &Models,
+    denied_readers: &std::sync::mpsc::Receiver<String>,
+    error: Error,
+) -> TestResult<String> {
+    let requests: BTreeMap<_, _> = provider
+        .scripts
+        .iter()
+        .map(|(name, model)| (name.as_str(), model.requests().len()))
+        .collect();
+    let children = harness
+        .task_files()
+        .observe(Query::Children, None, 64)
+        .await?
+        .snapshot
+        .ok_or("missing child failure snapshot")?;
+    let statuses: BTreeMap<_, _> = children
+        .files
+        .iter()
+        .filter(|file| file.key.path().ends_with("/status.json"))
+        .map(|file| {
+            (
+                file.key.path(),
+                String::from_utf8_lossy(&file.bytes).into_owned(),
+            )
+        })
+        .collect();
+    Ok(format!(
+        "{error}; model requests: {requests:?}; child statuses: {statuses:?}; unauthorized content readers: {:?}",
+        denied_readers.try_iter().collect::<Vec<_>>()
+    ))
+}
+
+fn check_toolsets(provider: &Models, toolsets: &BTreeMap<String, Vec<String>>) -> TestResult {
+    for (name, expected) in toolsets {
+        let mut expected = expected.clone();
+        expected.sort();
+        for request in provider.get(name)?.requests() {
+            let mut actual: Vec<_> = request.tools.iter().map(|tool| tool.name.clone()).collect();
+            actual.sort();
+            if actual != expected {
+                return Err(
+                    format!("model {name}: expected tools {expected:?}, got {actual:?}").into(),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn check_active(harness: &LocalHarness, mut expected: Vec<String>) -> TestResult {
+    let snapshot = harness
+        .task_files()
+        .observe(Query::Children, None, 64)
+        .await?
+        .snapshot
+        .ok_or("missing active child snapshot")?;
+    let mut actual = Vec::new();
+    for file in snapshot.files {
+        if let FileKey::Child {
+            reference,
+            file: ChildFile::Status,
+        } = file.key
+        {
+            let status = ChildStatus::parse(&file.bytes)?;
+            if !status.settled
+                || !matches!(status.state, ChildState::Cancelled | ChildState::Archived)
+            {
+                actual.push(reference.as_str().to_owned());
+            }
+        }
+    }
+    actual.sort();
+    expected.sort();
+    if actual != expected {
+        return Err(format!("active children: expected {expected:?}, got {actual:?}").into());
+    }
+    Ok(())
+}
+
+async fn check_files(
+    harness: &LocalHarness,
+    root: &std::path::Path,
+    files: BTreeMap<String, Option<String>>,
+) -> TestResult {
+    for (path, expected) in files {
         let actual = if let Some(relative) = path.strip_prefix(".volumes/scratch/") {
-            file_path(directory.path(), &path)?;
+            file_path(root, &path)?;
             // Command projections retire between invocations. Observe the
             // owner's durable private bytes through its authenticated reader.
             match harness
@@ -494,7 +562,7 @@ pub(super) async fn run(value: Value) -> TestResult {
                 Err(error) => return Err(error.into()),
             }
         } else {
-            match std::fs::read_to_string(file_path(directory.path(), &path)?) {
+            match std::fs::read_to_string(file_path(root, &path)?) {
                 Ok(text) => Some(text),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                 Err(error) => return Err(error.into()),
@@ -504,7 +572,14 @@ pub(super) async fn run(value: Value) -> TestResult {
             return Err(format!("workspace {path}: expected {expected:?}, got {actual:?}").into());
         }
     }
-    for (path, expected) in case.expect.task_files {
+    Ok(())
+}
+
+async fn check_task_files(
+    harness: &LocalHarness,
+    task_files: BTreeMap<String, Value>,
+) -> TestResult {
+    for (path, expected) in task_files {
         let key = FileKey::parse(&path)?;
         let snapshot = harness
             .task_files()

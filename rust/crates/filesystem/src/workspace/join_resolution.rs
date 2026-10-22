@@ -66,6 +66,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             }
             return Ok(view);
         };
+        self.file_conflict_view(file_id).await
+    }
+
+    /// The driver-ready view of a conflict on one file identity's record.
+    async fn file_conflict_view(
+        &self,
+        file_id: FileId,
+    ) -> Result<crate::ConflictView, WorkspaceError> {
         let path = self.conflict_path(file_id).await?;
         let fs = &self.target_head.workspace.volume.fs;
         let base = fs
@@ -138,22 +146,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         if base_record.metadata != ours_record.metadata
             || base_record.metadata != theirs_record.metadata
         {
-            let values = [base_record, ours_record, theirs_record];
-            let mut metadata = Vec::with_capacity(3);
-            for record in values {
-                metadata.push(ConflictValue::Metadata(
-                    fs.workspace_conflict_metadata(&self.target_head.workspace.volume, record)
-                        .await?,
-                ));
-            }
-            return Ok(crate::ConflictView {
-                key: ConflictKey::Metadata(file_id),
-                path,
-                kind: ConflictKind::Metadata,
-                base: metadata.remove(0),
-                ours: metadata.remove(0),
-                theirs: metadata.remove(0),
-            });
+            return self
+                .metadata_conflict_view(file_id, path, [base_record, ours_record, theirs_record])
+                .await;
         }
         if let Some(view) = self
             .regular_conflict_view(
@@ -171,6 +166,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             _ => ConflictKind::Special,
         };
         Ok(record_conflict_view(self, file_id, path, kind))
+    }
+
+    /// The view of a conflict on one file identity's metadata.
+    async fn metadata_conflict_view(
+        &self,
+        file_id: FileId,
+        path: Option<String>,
+        records: [crate::kernel::FileRecord; 3],
+    ) -> Result<crate::ConflictView, WorkspaceError> {
+        let volume = &self.target_head.workspace.volume;
+        let [base, ours, theirs] = records;
+        Ok(crate::ConflictView {
+            key: ConflictKey::Metadata(file_id),
+            path,
+            kind: ConflictKind::Metadata,
+            base: ConflictValue::Metadata(
+                volume.fs.workspace_conflict_metadata(volume, base).await?,
+            ),
+            ours: ConflictValue::Metadata(
+                volume.fs.workspace_conflict_metadata(volume, ours).await?,
+            ),
+            theirs: ConflictValue::Metadata(
+                volume
+                    .fs
+                    .workspace_conflict_metadata(volume, theirs)
+                    .await?,
+            ),
+        })
     }
 
     pub(super) async fn conflict_path(

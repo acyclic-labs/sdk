@@ -16,170 +16,53 @@ where
     ) -> crate::Result<GitFilesystemResult> {
         let source = self.workspace(source).await?;
         let plan = self.plan_join(&source, rebase).await?;
-        // A mounted child projection authors its host-owned volume aliases.
-        // Join from a fork that holds the target's own entries there, so a
-        // merge never publishes them into the target's tree.
-        let reserved = self.reserved_in(&plan).await?;
-        let plan = if reserved.is_empty() {
-            plan
-        } else {
-            let filtered = acyclic_fs::git_generation_with_paths_from(
-                &self
-                    .join_generation(plan.source(), plan.source_head())
-                    .await?,
-                &self
-                    .join_generation(&self.current, plan.target_head())
-                    .await?,
-                &reserved,
-                reserved_source_operation(operation),
-            )
-            .await
-            .map_err(Error::from)?;
-            let filtered = self.plan_join(&filtered.workspace(), rebase).await?;
-            if filtered.target_head() != plan.target_head() {
-                return Err(Self::error("Git join raced with another workspace writer"));
-            }
-            filtered
-        };
+        let plan = self.without_reserved(plan, operation, rebase).await?;
         let options = ApplyOptions {
             if_target: plan.target_head(),
             idempotency_key: IdempotencyKey::from_bytes(operation.into_bytes()),
         };
-        let initial = plan.apply(options, BTreeMap::new(), self.permit).await?;
-        let (plan, initial) = match initial {
-            JoinOutcome::Conflicted {
-                conflicts,
-                truncated,
-            } => match self
-                .exact_base(&plan, &source, conflicts.clone(), truncated)
-                .await?
-            {
-                Some(base) => {
-                    let plan = plan.refine_base(&base).await.map_err(Error::from)?;
-                    let initial = plan.apply(options, BTreeMap::new(), self.permit).await?;
-                    (plan, initial)
-                }
-                None => (
-                    plan,
-                    JoinOutcome::Conflicted {
-                        conflicts,
-                        truncated,
-                    },
-                ),
-            },
-            initial => (plan, initial),
-        };
+        let (plan, initial) = self.apply_on_exact_base(plan, &source, options).await?;
         let mut unresolved = false;
-        let outcome =
-            if let JoinOutcome::Conflicted {
-                conflicts,
-                truncated,
-            } = initial
-            {
-                let typed = plan.describe_conflicts(conflicts, truncated).await?;
-                if typed.truncated {
-                    return Err(Self::error("Git join conflict frontier is incomplete"));
-                }
-                let paths = typed
-                    .conflicts
-                    .iter()
-                    .map(|conflict| {
-                        let path = conflict.path.clone().ok_or_else(|| {
-                            Self::error("Git join conflict has no resolvable path")
-                        })?;
-                        use acyclic_fs::ConflictKey;
-                        let identity = match &conflict.key {
-                            ConflictKey::File(id)
-                            | ConflictKey::Metadata(id)
-                            | ConflictKey::HardLinks(id)
-                            | ConflictKey::Directory(id)
-                            | ConflictKey::SpecialPayload(id)
-                            | ConflictKey::ContentRange { file_id: id, .. }
-                            | ConflictKey::Rename { file_id: id, .. } => Some(*id),
-                            ConflictKey::Binding { .. } => None,
-                        };
-                        Ok((path, identity))
-                    })
-                    .collect::<crate::Result<BTreeMap<_, _>>>()?;
-                let candidate = super::materialize::prepared(
+        let outcome = if let JoinOutcome::Conflicted {
+            conflicts,
+            truncated,
+        } = initial
+        {
+            let typed = plan.describe_conflicts(conflicts, truncated).await?;
+            if typed.truncated {
+                return Err(Self::error("Git join conflict frontier is incomplete"));
+            }
+            let paths = conflict_paths(&typed)?;
+            let (candidate, unresolved_here) = self.merge_candidate(typed).await?;
+            unresolved |= unresolved_here;
+            let resolutions = super::materialize::prepared(
                 async {
-                    let mut cache = self.merge_cache.lock().await;
-                    let mut resolutions = BTreeMap::new();
-                    for conflict in &typed.conflicts {
-                        let resolution = match acyclic_fs::resolve_merge_conflict(
-                            &typed,
-                            conflict,
-                            &self.merge_drivers,
-                            &mut *cache,
-                            false,
-                        ) {
-                            Ok(resolution)
-                                if !matches!(
-                                    resolution,
-                                    acyclic_fs::MergeResolution::Unresolved
-                                ) =>
-                            {
-                                resolution
-                            }
-                            Ok(_)
-                            | Err(
-                                acyclic_fs::MergePlanResolutionError::MissingDriver(_)
-                                | acyclic_fs::MergePlanResolutionError::Driver(
-                                    acyclic_fs::DriverError::Unsupported,
-                                ),
-                            ) => {
-                                unresolved = true;
-                                acyclic_fs::MergeResolution::Select(
-                                    if matches!(conflict.ours, acyclic_fs::ConflictValue::Absent) {
-                                        acyclic_fs::ConflictSide::Theirs
-                                    } else { acyclic_fs::ConflictSide::Ours })
-                            }
-                            Err(error) => {
-                                return Err(Error::from(acyclic_fs::DrivenJoinError::Resolution(
-                                    error,
-                                )));
-                            }
-                        };
-                        unresolved |= matches!(&resolution, acyclic_fs::MergeResolution::Text(text)
-                        if acyclic_fs::text_merge::has_conflict_markers(text));
-                        resolutions.insert(conflict.key.clone(), resolution);
-                    }
-                    Ok(acyclic_fs::UnpublishedMergeCandidate {
-                        plan: typed,
-                        resolutions,
-                    })
+                    plan.prepare_candidate(&candidate)
+                        .await
+                        .map_err(Error::from)
                 },
                 &|| self.validate(),
             )
             .await?;
-                let resolutions = super::materialize::prepared(
-                    async {
-                        plan.prepare_candidate(&candidate)
-                            .await
-                            .map_err(Error::from)
-                    },
-                    &|| self.validate(),
-                )
-                .await?;
-                let outcome = plan.apply(options, resolutions, self.permit).await?;
-                if matches!(
-                    &outcome,
-                    JoinOutcome::Applied(_)
-                        | JoinOutcome::AlreadyApplied(_)
-                        | JoinOutcome::NoChanges(_)
-                ) {
-                    // Only an applied projection can authorize continuation.
-                    // An interruption before this durable write leaves the
-                    // existing transition uninspected and continuation refuses.
-                    GitCompatRepository::new(self.repository_id, self.store.clone())
-                        .record_merge_conflicts(operation, &paths)
-                        .await
-                        .map_err(super::errors::compat_error)?;
-                }
-                outcome
-            } else {
-                initial
-            };
+            let outcome = plan.apply(options, resolutions, self.permit).await?;
+            if matches!(
+                &outcome,
+                JoinOutcome::Applied(_)
+                    | JoinOutcome::AlreadyApplied(_)
+                    | JoinOutcome::NoChanges(_)
+            ) {
+                // Only an applied projection can authorize continuation.
+                // An interruption before this durable write leaves the
+                // existing transition uninspected and continuation refuses.
+                GitCompatRepository::new(self.repository_id, self.store.clone())
+                    .record_merge_conflicts(operation, &paths)
+                    .await
+                    .map_err(super::errors::compat_error)?;
+            }
+            outcome
+        } else {
+            initial
+        };
         let generation = match outcome {
             JoinOutcome::Applied(application) | JoinOutcome::AlreadyApplied(application) => {
                 application.generation
@@ -201,6 +84,158 @@ where
                 "Git join has unresolved conflicts. Edit the conflicted paths, then run `fs merge --continue`, or `fs merge --abort`",
             ));
         }
+        let tracked_paths = self
+            .joined_tracked_paths(operation, target_tree, &generation, tracked)
+            .await?;
+        Ok(GitFilesystemResult::Applied {
+            tree: Some(GitTreeRef::exact(self.current.id(), generation.id())),
+            tracked_paths: Some(tracked_paths),
+        })
+    }
+
+    /// Resolves every described conflict with the configured drivers, the
+    /// way Git would leave each one in the worktree. Returns the candidate and
+    /// whether any conflict still needs the user.
+    async fn merge_candidate(
+        &self,
+        typed: acyclic_fs::MergePlan,
+    ) -> crate::Result<(acyclic_fs::UnpublishedMergeCandidate, bool)> {
+        let mut unresolved = false;
+        let candidate = super::materialize::prepared(
+            async {
+                let mut cache = self.merge_cache.lock().await;
+                let mut resolutions = BTreeMap::new();
+                for conflict in &typed.conflicts {
+                    let resolution = match acyclic_fs::resolve_merge_conflict(
+                        &typed,
+                        conflict,
+                        &self.merge_drivers,
+                        &mut *cache,
+                        false,
+                    ) {
+                        Ok(resolution)
+                            if !matches!(resolution, acyclic_fs::MergeResolution::Unresolved) =>
+                        {
+                            resolution
+                        }
+                        Ok(_)
+                        | Err(
+                            acyclic_fs::MergePlanResolutionError::MissingDriver(_)
+                            | acyclic_fs::MergePlanResolutionError::Driver(
+                                acyclic_fs::DriverError::Unsupported,
+                            ),
+                        ) => {
+                            unresolved = true;
+                            acyclic_fs::MergeResolution::Select(
+                                if matches!(conflict.ours, acyclic_fs::ConflictValue::Absent) {
+                                    acyclic_fs::ConflictSide::Theirs
+                                } else {
+                                    acyclic_fs::ConflictSide::Ours
+                                },
+                            )
+                        }
+                        Err(error) => {
+                            return Err(Error::from(acyclic_fs::DrivenJoinError::Resolution(
+                                error,
+                            )));
+                        }
+                    };
+                    unresolved |= matches!(&resolution, acyclic_fs::MergeResolution::Text(text)
+                        if acyclic_fs::text_merge::has_conflict_markers(text));
+                    resolutions.insert(conflict.key.clone(), resolution);
+                }
+                Ok(acyclic_fs::UnpublishedMergeCandidate {
+                    plan: typed,
+                    resolutions,
+                })
+            },
+            &|| self.validate(),
+        )
+        .await?;
+        Ok((candidate, unresolved))
+    }
+
+    /// `plan` re-planned from a fork without any reserved host path that
+    /// either side holds.
+    async fn without_reserved(
+        &self,
+        plan: acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>,
+        operation: OperationId,
+        rebase: bool,
+    ) -> crate::Result<acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>> {
+        // A mounted child projection authors its host-owned volume aliases.
+        // Join from a fork that holds the target's own entries there, so a
+        // merge never publishes them into the target's tree.
+        let reserved = self.reserved_in(&plan).await?;
+        if reserved.is_empty() {
+            return Ok(plan);
+        }
+        let filtered = acyclic_fs::git_generation_with_paths_from(
+            &self
+                .join_generation(plan.source(), plan.source_head())
+                .await?,
+            &self
+                .join_generation(&self.current, plan.target_head())
+                .await?,
+            &reserved,
+            reserved_source_operation(operation),
+        )
+        .await
+        .map_err(Error::from)?;
+        let filtered = self.plan_join(&filtered.workspace(), rebase).await?;
+        if filtered.target_head() != plan.target_head() {
+            return Err(Self::error("Git join raced with another workspace writer"));
+        }
+        Ok(filtered)
+    }
+
+    /// Applies `plan`, re-applying once against the exact fork cut when the
+    /// lazy cut misread both sides' materializations as additions. Returns
+    /// the plan that applied with its outcome.
+    async fn apply_on_exact_base(
+        &self,
+        plan: acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>,
+        source: &LocalWorkspace,
+        options: ApplyOptions,
+    ) -> crate::Result<(
+        acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>,
+        acyclic_fs::JoinOutcome<LocalAuthorityBackend, LocalObjectBackend>,
+    )> {
+        let initial = plan.apply(options, BTreeMap::new(), self.permit).await?;
+        Ok(match initial {
+            JoinOutcome::Conflicted {
+                conflicts,
+                truncated,
+            } => match self
+                .exact_base(&plan, source, conflicts.clone(), truncated)
+                .await?
+            {
+                Some(base) => {
+                    let plan = plan.refine_base(&base).await.map_err(Error::from)?;
+                    let initial = plan.apply(options, BTreeMap::new(), self.permit).await?;
+                    (plan, initial)
+                }
+                None => (
+                    plan,
+                    JoinOutcome::Conflicted {
+                        conflicts,
+                        truncated,
+                    },
+                ),
+            },
+            initial => (plan, initial),
+        })
+    }
+
+    /// The paths the joined history tracks after `operation` published
+    /// `generation` onto the target `target_tree` named.
+    async fn joined_tracked_paths(
+        &self,
+        operation: OperationId,
+        target_tree: GitTreeRef,
+        generation: &LocalGeneration,
+        tracked: &BTreeSet<String>,
+    ) -> crate::Result<BTreeSet<String>> {
         // Tracking is a function of the recorded transition, not of this
         // attempt: the target as the transition found it and the generation
         // this operation published under its key. A resumed transition whose
@@ -220,21 +255,17 @@ where
         // The joined source's authored files enter history like any capture:
         // newly published eligible paths become tracked, not only the union of
         // the two branches' previously committed paths.
-        let tracked_paths = acyclic_fs::git_tracked_paths_after(
+        acyclic_fs::git_tracked_paths_after(
             &before,
-            joined.as_ref().unwrap_or(&generation),
-            &generation,
+            joined.as_ref().unwrap_or(generation),
+            generation,
             &self.repository,
             tracked,
             u32::MAX,
             &CancellationToken::new(),
         )
         .await
-        .map_err(Error::from)?;
-        Ok(GitFilesystemResult::Applied {
-            tree: Some(GitTreeRef::exact(self.current.id(), generation.id())),
-            tracked_paths: Some(tracked_paths),
-        })
+        .map_err(Error::from)
     }
 
     async fn plan_join(
@@ -385,6 +416,34 @@ where
         }
         Ok(present)
     }
+}
+
+/// The path and identity of every described conflict, which a continued
+/// merge checks its resolution against.
+fn conflict_paths(
+    typed: &acyclic_fs::MergePlan,
+) -> crate::Result<BTreeMap<String, Option<acyclic_fs::FileId>>> {
+    typed
+        .conflicts
+        .iter()
+        .map(|conflict| {
+            let path = conflict.path.clone().ok_or_else(|| {
+                Error::Conflict("Git join conflict has no resolvable path".into())
+            })?;
+            use acyclic_fs::ConflictKey;
+            let identity = match &conflict.key {
+                ConflictKey::File(id)
+                | ConflictKey::Metadata(id)
+                | ConflictKey::HardLinks(id)
+                | ConflictKey::Directory(id)
+                | ConflictKey::SpecialPayload(id)
+                | ConflictKey::ContentRange { file_id: id, .. }
+                | ConflictKey::Rename { file_id: id, .. } => Some(*id),
+                ConflictKey::Binding { .. } => None,
+            };
+            Ok((path, identity))
+        })
+        .collect()
 }
 
 /// The fork that drops reserved source entries has its own retry identity.

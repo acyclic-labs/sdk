@@ -144,8 +144,7 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
         PublicationPermit::Unrestricted,
         &mut work,
     )
-    .await
-    .unwrap();
+    .await?;
     acyclic_fs::WorkspaceGraph::new(store.clone())
         .register_root(main.workspace())
         .await?;
@@ -462,6 +461,47 @@ async fn merge_child_with_alias(reserved: &[String]) -> Result<AliasMerge> {
             )
             .await?;
     }
+    author_volume_alias(&child).await?;
+    run_reserving(&fs, &store, &child, repo, reserved, &["checkout", "main"]).await?;
+    let GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data { value, .. }) =
+        run_reserving(&fs, &store, &main, repo, reserved, &["diff", "agents/kid"])
+            .await?
+            .0
+    else {
+        return Err("expected an agent diff".into());
+    };
+    run_reserving(&fs, &store, &main, repo, reserved, &["merge", "agents/kid"]).await?;
+    let GitCommandOutput::Commits(log) =
+        run_reserving(&fs, &store, &main, repo, reserved, &["log"])
+            .await?
+            .0
+    else {
+        return Err("expected the merged log".into());
+    };
+    let merge = log.first().ok_or("empty log")?.clone();
+    let alias_merged = main
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value
+        .stat("/.volumes/scratch", WorkBudget::UNBOUNDED, &stop)
+        .await
+        .is_ok();
+    Ok(AliasMerge {
+        base: base.id,
+        file_changes: value
+            .get("fileChanges")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or("missing file count")?,
+        merge,
+        alias_merged,
+    })
+}
+
+/// Authors a volume alias in `child` the way a mounted child projection
+/// does: a symbolic link to the host volume, published by the child itself.
+async fn author_volume_alias(child: &Lazy) -> Result<()> {
+    let stop = CancellationToken::new();
     let mut alias = child
         .workspace()
         .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop)
@@ -497,37 +537,7 @@ async fn merge_child_with_alias(reserved: &[String]) -> Result<AliasMerge> {
         committed,
         acyclic_fs::TransactionCommit::Committed(_)
     ));
-    run_reserving(&fs, &store, &child, repo, reserved, &["checkout", "main"]).await?;
-    let GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data { value, .. }) =
-        run_reserving(&fs, &store, &main, repo, reserved, &["diff", "agents/kid"])
-            .await?
-            .0
-    else {
-        return Err("expected an agent diff".into());
-    };
-    run_reserving(&fs, &store, &main, repo, reserved, &["merge", "agents/kid"]).await?;
-    let GitCommandOutput::Commits(log) =
-        run_reserving(&fs, &store, &main, repo, reserved, &["log"])
-            .await?
-            .0
-    else {
-        return Err("expected the merged log".into());
-    };
-    let merge = log.first().ok_or("empty log")?.clone();
-    let alias_merged = main
-        .workspace()
-        .head(WorkBudget::UNBOUNDED, &stop)
-        .await?
-        .value
-        .stat("/.volumes/scratch", WorkBudget::UNBOUNDED, &stop)
-        .await
-        .is_ok();
-    Ok(AliasMerge {
-        base: base.id,
-        file_changes: value["fileChanges"].as_u64().ok_or("missing file count")?,
-        merge,
-        alias_merged,
-    })
+    Ok(())
 }
 
 struct AliasMerge {

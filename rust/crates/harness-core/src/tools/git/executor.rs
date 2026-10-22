@@ -367,20 +367,13 @@ where
             }
             GitFilesystemAction::Join {
                 target_tree,
-                source_workspace,
+                source_workspace: source,
                 rebase,
-                tracked_paths,
+                tracked_paths: tracked,
             } => {
                 // The join is the deepest facade action; its state lives on
                 // the heap so it never sizes every other command's future.
-                Box::pin(self.join(
-                    operation_id,
-                    *target_tree,
-                    *source_workspace,
-                    *rebase,
-                    tracked_paths,
-                ))
-                .await
+                Box::pin(self.join(operation_id, *target_tree, *source, *rebase, tracked)).await
             }
             GitFilesystemAction::ApplyCommit {
                 base,

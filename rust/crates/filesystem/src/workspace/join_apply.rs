@@ -123,12 +123,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 return Err(DrivenJoinError::UnsupportedResolution(conflict.key.clone()));
             }
             if let ConflictKey::File(file_id) = conflict.key
-                && let Some(path) = conflict.path.as_deref()
-                && let Some(replaced) = self.replaced_file(file_id, path).await?
+                && let Some(resolution) = self
+                    .replaced_conflict_resolution(file_id, conflict.path.as_deref(), resolution)
+                    .await?
             {
-                let resolution = self
-                    .replaced_file_resolution(file_id, replaced, resolution)
-                    .await?;
                 resolutions.insert(MergeConflict::File(file_id), resolution);
                 continue;
             }

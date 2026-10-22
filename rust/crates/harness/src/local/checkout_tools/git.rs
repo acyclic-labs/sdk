@@ -12,6 +12,24 @@ impl CheckoutTools {
         Ok(parsed)
     }
 
+    /// The volume an fs command targets with the root-relative paths its
+    /// history reserves. Volume paths are relative to the project root; a
+    /// volume repository owns no aliases of its own.
+    fn fs_target_with_reserved_paths(
+        &self,
+        workspace: &LocalWorkspace,
+        parsed: &crate::tools::FsCommand,
+        scope: &RuntimeScope,
+    ) -> Result<(Option<Arc<workspace::MountedVolume>>, Vec<String>)> {
+        let source = self.fs_source(workspace, parsed, scope)?.clone();
+        let reserved = if source.is_none() {
+            workspace.volume_owned_paths()?
+        } else {
+            Vec::new()
+        };
+        Ok((source, reserved))
+    }
+
     fn fs_source<'a>(
         &self,
         workspace: &'a LocalWorkspace,
@@ -55,9 +73,8 @@ impl CheckoutTools {
         state: &mut State,
         workspace: &Arc<LocalWorkspace>,
     ) -> Result<ToolResult> {
-        let source = self
-            .fs_source(workspace, &parsed, context.effective_scope())?
-            .clone();
+        let (source, reserved) =
+            self.fs_target_with_reserved_paths(workspace, &parsed, context.effective_scope())?;
         let native = match &source {
             Some(source) => Some(source.native().await),
             None => None,
@@ -111,13 +128,6 @@ impl CheckoutTools {
             native.advance_to_head().await?;
             owner.verify_owner(None)?.await?;
         }
-        // Volume paths are relative to the project root; a volume repository
-        // owns no aliases of its own.
-        let reserved = if source.is_none() {
-            workspace.volume_owned_paths()?
-        } else {
-            Vec::new()
-        };
         const GIT_PUBLICATION_LEASE_MILLIS: u64 = 60_000;
         let lease = coordinator
             .begin_with_lease_id(

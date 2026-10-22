@@ -109,9 +109,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 .workspace_conflict_record(volume, generation, file_id)
                 .await?;
         }
-        let (side, editing, replaced) = match records {
-            [Some(_), None, Some(_)] => (&self.target_head, &self.source_head, 1),
-            [Some(_), Some(_), None] => (&self.source_head, &self.target_head, 2),
+        // `ours_replaced`: the target head deleted the base identity.
+        let (side, editing, ours_replaced) = match records {
+            [Some(_), None, Some(_)] => (&self.target_head, &self.source_head, true),
+            [Some(_), Some(_), None] => (&self.source_head, &self.target_head, false),
             _ => return Ok(None),
         };
         let base = Generation {
@@ -151,9 +152,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         {
             return Ok(None);
         }
-        records[replaced] = fs
+        let replacement = fs
             .workspace_conflict_record(volume, side.id, replacement.file_id)
             .await?;
+        let [base, ours, theirs] = records;
+        let records = if ours_replaced {
+            [base, replacement, theirs]
+        } else {
+            [base, ours, replacement]
+        };
         let [Some(base), Some(ours), Some(theirs)] = records else {
             return Ok(None);
         };
@@ -167,6 +174,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         Ok(Some(ReplacedFile { records }))
     }
 
+    /// The resolution of a conflict on `file_id` at `path` when it is a
+    /// replaced file, which the kernel merges under the base identity.
+    pub(super) async fn replaced_conflict_resolution(
+        &self,
+        file_id: FileId,
+        path: Option<&str>,
+        resolution: &MergeResolution,
+    ) -> Result<Option<MergeConflictResolution>, DrivenJoinError> {
+        let Some(path) = path else {
+            return Ok(None);
+        };
+        let Some(replaced) = self.replaced_file(file_id, path).await? else {
+            return Ok(None);
+        };
+        self.replaced_file_resolution(file_id, replaced, resolution)
+            .await
+            .map(Some)
+    }
+
     /// Resolves a replaced file to the selected content under the base
     /// identity; the kernel binds the path back to it and drops the replacement.
     pub(super) async fn replaced_file_resolution(
@@ -177,18 +203,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
     ) -> Result<MergeConflictResolution, DrivenJoinError> {
         let volume = &self.target_head.workspace.volume;
         let records = replaced.records;
-        let template = FileRecord {
-            file_id,
-            ..records[1]
-        };
+        let [base, ours, theirs] = records;
+        let template = FileRecord { file_id, ..ours };
         let mut record = match resolution {
             MergeResolution::Select(side) => FileRecord {
                 file_id,
-                ..records[match side {
-                    ConflictSide::Base => 0,
-                    ConflictSide::Ours => 1,
-                    ConflictSide::Theirs => 2,
-                }]
+                ..match side {
+                    ConflictSide::Base => base,
+                    ConflictSide::Ours => ours,
+                    ConflictSide::Theirs => theirs,
+                }
             },
             MergeResolution::Text(text) => {
                 volume

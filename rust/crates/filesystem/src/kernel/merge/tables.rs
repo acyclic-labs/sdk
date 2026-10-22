@@ -221,7 +221,7 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
                             state.records.value.push((file, (ours_value, ours_value)));
                             continue;
                         }
-                        let after = match settle_record(
+                        let settled = settle_record(
                             store,
                             file,
                             [base, ours_value, theirs_value],
@@ -232,17 +232,16 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
                             accounting,
                             cancellation,
                         )
-                        .await?
-                        {
-                            Some(after) => after,
-                            None => {
-                                state.conflict(
-                                    MergeConflict::File(file),
-                                    request.maximum_conflicts,
-                                    accounting,
-                                )?;
-                                ours_value
-                            }
+                        .await?;
+                        let after = if let Some(after) = settled {
+                            after
+                        } else {
+                            state.conflict(
+                                MergeConflict::File(file),
+                                request.maximum_conflicts,
+                                accounting,
+                            )?;
+                            ours_value
                         };
                         state.records.ensure_for_push(usize::MAX, accounting)?;
                         state.records.value.push((file, (ours_value, after)));

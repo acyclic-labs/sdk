@@ -123,7 +123,7 @@ async fn replacement_index<S: AsyncObjectStore>(
         .replacements
         .value
         .iter()
-        .any(|(_, values)| usize::from(values[1].is_some()) == side)
+        .any(|(_, values)| deleting_side(values) == side)
     {
         return Ok(index);
     }
@@ -163,57 +163,20 @@ async fn replacement_index<S: AsyncObjectStore>(
                 }
                 state.consume(diff.value.changes.len())?;
                 for entry in &diff.value.changes {
-                    let (Some(old), Some(new)) = (&entry.before, &entry.after) else {
+                    let Some((replaced, record)) =
+                        rebound_record(entry, changes, side, &state.replacements.value, accounting)?
+                    else {
                         continue;
                     };
-                    if old.file_id == new.file_id || new.kind != super::FileKind::Regular {
-                        continue;
-                    }
-                    // Only identities deferred with this side as the deleter.
-                    let deferred = super::search::binary_search_with_accounting(
-                        &state.replacements.value,
-                        accounting,
-                        |(file, _)| file.cmp(&old.file_id),
-                    )?
-                    .ok()
-                    .and_then(|position| state.replacements.value.get(position))
-                    .is_some_and(|(_, values)| usize::from(values[1].is_some()) == side);
-                    if !deferred {
-                        continue;
-                    }
-                    // The new identity must be one this side created.
-                    let Some(record) = super::search::binary_search_with_accounting(
-                        changes,
-                        accounting,
-                        |change| change.key.cmp(&new.file_id),
-                    )?
-                    .ok()
-                    .and_then(|position| changes.get(position))
-                    .filter(|change| change.before.is_none())
-                    .and_then(|change| change.after)
-                    .filter(|record| single_regular(Some(*record))) else {
-                        continue;
-                    };
-                    let (name, mut allocation) = super::persistent_io::clone_key::<TreeFormat>(
+                    push_replacement(
+                        &mut index,
+                        replaced,
+                        change.key,
                         &entry.key,
+                        record,
                         limits.maximum_name_bytes,
                         accounting,
-                        None,
-                        0,
                     )?;
-                    let bytes = TreeFormat::key_owned_bytes(&name);
-                    if let Err(error) = index.ensure_for_push(usize::MAX, accounting) {
-                        Owned::new(name, allocation, bytes).retire(accounting)?;
-                        return Err(error);
-                    }
-                    index.allocation.absorb(&mut allocation)?;
-                    index.bytes = index.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
-                    index.value.push(Replacement {
-                        replaced: old.file_id,
-                        directory: change.key,
-                        name,
-                        record,
-                    });
                 }
                 Ok(())
             })();
@@ -233,6 +196,78 @@ async fn replacement_index<S: AsyncObjectStore>(
             Err(error)
         }
     }
+}
+
+/// The base identity `entry` rebinds and the record `side` rebound its name
+/// to, when `side` deleted that deferred identity and created, as a
+/// single-link regular file, the identity now under the name.
+fn rebound_record(
+    entry: &super::persistent_diff::ValueChange<LogicalName, super::TreeEntry>,
+    changes: &[super::persistent_diff::ValueChange<FileId, FileRecord>],
+    side: usize,
+    deferred: &[(FileId, [Option<FileRecord>; 3])],
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<Option<(FileId, FileRecord)>, FsError> {
+    let (Some(old), Some(new)) = (&entry.before, &entry.after) else {
+        return Ok(None);
+    };
+    if old.file_id == new.file_id || new.kind != super::FileKind::Regular {
+        return Ok(None);
+    }
+    // Only identities deferred with this side as the deleter.
+    let deleted_here =
+        super::search::binary_search_with_accounting(deferred, accounting, |(file, _)| {
+            file.cmp(&old.file_id)
+        })?
+        .ok()
+        .and_then(|position| deferred.get(position))
+        .is_some_and(|(_, values)| deleting_side(values) == side);
+    if !deleted_here {
+        return Ok(None);
+    }
+    // The new identity must be one this side created.
+    let record = super::search::binary_search_with_accounting(changes, accounting, |change| {
+        change.key.cmp(&new.file_id)
+    })?
+    .ok()
+    .and_then(|position| changes.get(position))
+    .filter(|change| change.before.is_none())
+    .and_then(|change| change.after)
+    .filter(|record| single_regular(Some(*record)));
+    Ok(record.map(|record| (old.file_id, record)))
+}
+
+/// Appends one replacement to `index`, owning a charged copy of its name.
+fn push_replacement(
+    index: &mut Owned<Vec<Replacement>>,
+    replaced: FileId,
+    directory: FileId,
+    key: &LogicalName,
+    record: FileRecord,
+    maximum_name_bytes: u32,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), FsError> {
+    let (name, mut allocation) =
+        super::persistent_io::clone_key::<TreeFormat>(key, maximum_name_bytes, accounting, None, 0)?;
+    let bytes = TreeFormat::key_owned_bytes(&name);
+    if let Err(error) = index.ensure_for_push(usize::MAX, accounting) {
+        Owned::new(name, allocation, bytes).retire(accounting)?;
+        return Err(error);
+    }
+    index.allocation.absorb(&mut allocation)?;
+    index.bytes = index.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
+    index.value.push(Replacement {
+        replaced,
+        directory,
+        name,
+        record,
+    });
+    Ok(())
+}
+
+/// The side that deleted a deferred base identity: 0 is ours, 1 is theirs.
+fn deleting_side([_, ours, _]: &[Option<FileRecord>; 3]) -> usize {
+    usize::from(ours.is_some())
 }
 
 /// The replacement `index` records for `file`, with an owned copy of its name.
@@ -459,12 +494,17 @@ async fn settle_indexed<S: AsyncObjectStore>(
     let mut index = 0;
     while let Some(&(file, values)) = state.replacements.value.get(index) {
         index += 1;
-        let ours = values[1];
-        // The side that deleted the base identity: 0 is ours, 1 is theirs.
-        let replaced = usize::from(ours.is_some());
-        let mut replacement = find_replacement(&indexes[replaced].value, file, limits, accounting)?;
-        if let Some((directory, name, record)) = &replacement
-            && !merged_binding(
+        let [base, ours, theirs] = values;
+        let [ours_index, theirs_index] = indexes;
+        let theirs_deleted = deleting_side(&values) == 1;
+        let side_index = if theirs_deleted {
+            theirs_index
+        } else {
+            ours_index
+        };
+        let mut replacement = find_replacement(&side_index.value, file, limits, accounting)?;
+        let unbound = if let Some((directory, name, record)) = &replacement {
+            !merged_binding(
                 store,
                 *directory,
                 &name.value,
@@ -475,19 +515,25 @@ async fn settle_indexed<S: AsyncObjectStore>(
                 cancellation,
             )
             .await?
-        {
-            if let Some((_, name, _)) = replacement.take() {
-                name.retire(accounting)?;
-            }
+        } else {
+            false
+        };
+        if unbound && let Some((_, name, _)) = replacement.take() {
+            name.retire(accounting)?;
         }
-        let mut paired = values;
-        if let Some((_, _, record)) = &replacement {
-            paired[replaced + 1] = Some(FileRecord {
-                file_id: file,
-                ..*record
-            });
-        }
-        let resolved = resolve_optional(paired[0], paired[1], paired[2]);
+        // The replacement stands in as the deleting side's value of the base
+        // identity.
+        let standin = replacement.as_ref().map(|(_, _, record)| FileRecord {
+            file_id: file,
+            ..*record
+        });
+        let paired = match standin {
+            Some(record) if theirs_deleted => [base, ours, Some(record)],
+            Some(record) => [base, Some(record), theirs],
+            None => values,
+        };
+        let [paired_base, paired_ours, paired_theirs] = paired;
+        let resolved = resolve_optional(paired_base, paired_ours, paired_theirs);
         let settled = settle_record(
             store,
             file,
@@ -522,12 +568,11 @@ async fn settle_indexed<S: AsyncObjectStore>(
                 if let Some((_, name, _)) = replacement {
                     name.retire(accounting)?;
                 }
-                let after = match settled {
-                    Some(after) => after,
-                    None => {
-                        state.conflict(MergeConflict::File(file), maximum_conflicts, accounting)?;
-                        ours
-                    }
+                let after = if let Some(after) = settled {
+                    after
+                } else {
+                    state.conflict(MergeConflict::File(file), maximum_conflicts, accounting)?;
+                    ours
                 };
                 state.replace(file, (ours, after), accounting)?;
             }

@@ -147,89 +147,22 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
     let (bytes, allocation) = volume.fs.path_index().load(cache_key, accounting)?;
     let bytes = (bytes, allocation);
     if let Some(payload) = bytes.0.as_ref() {
-        let mut cached = crate::path_index::decode(payload, generation, ids, limits, accounting)?;
-        // A complete traversal that reached none of the identities is cached
-        // as an empty answer; there is no path left to revalidate.
-        if cached.value.as_ref().is_some_and(Vec::is_empty) {
-            cached.retire(accounting)?;
-            matches.0.complete = true;
+        let cached = crate::path_index::decode(payload, generation, ids, limits, accounting)?;
+        if answer_from_cache(
+            volume,
+            root,
+            maximum_entries,
+            cached,
+            &mut matches,
+            accounting,
+            cancellation,
+        )
+        .await?
+        {
             let bytes_count = bytes.0.as_ref().map_or(0, workspace_vec_bytes);
             reverse_drop(bytes, bytes_count, accounting)?;
             return Ok(matches);
         }
-        if let Some(paths) = cached
-            .value
-            .as_ref()
-            .filter(|paths| paths.len() <= maximum_entries as usize)
-        {
-            let allocation = accounting.claim_owned(0, 0)?;
-            let mut copied = (Vec::new(), allocation);
-            for (_, path) in paths {
-                reverse_grow(&mut copied.0, &mut copied.1, accounting)?;
-                let (path, allocation) = path.clone_with_accounting(accounting, cancellation)?;
-                let mut path = (path, allocation);
-                copied.1.absorb(&mut path.1)?;
-                copied.0.push(path.0);
-            }
-            let (lookup, allocation) = crate::kernel::lookup_paths_with_accounting(
-                volume.fs.objects(),
-                root,
-                crate::kernel::PathQueries::Owned(&copied.0),
-                volume.config(),
-                accounting,
-                cancellation,
-                None,
-                crate::kernel::PathBatchMode::NoFollow,
-            )
-            .await?;
-            let lookup = (lookup, allocation);
-            let mut valid = paths.len() == lookup.0.entries.len();
-            for ((expected, _), entry) in paths.iter().zip(&lookup.0.entries) {
-                accounting.charge_items(1)?;
-                if entry
-                    .record
-                    .is_none_or(|record| record.file_id != *expected)
-                {
-                    valid = false;
-                    break;
-                }
-            }
-            let copied_bytes = workspace_vec_bytes(&copied.0)
-                + copied
-                    .0
-                    .iter()
-                    .map(NamespacePath::retained_bytes)
-                    .sum::<u64>();
-            reverse_drop(copied, copied_bytes, accounting)?;
-            let lookup_bytes = lookup.0.retained_allocation_bytes;
-            if valid {
-                let paths = cached.value.take().ok_or(FsError::InvalidDiff)?;
-                let vector_bytes = workspace_vec_bytes(&paths);
-                for ((_, path), entry) in paths.into_iter().zip(&lookup.0.entries) {
-                    let allocation = crate::kernel::split_allocation(
-                        &mut cached.allocation,
-                        path.retained_bytes(),
-                    )?;
-                    let path = (path, allocation);
-                    let record = entry.record.ok_or(FsError::NotFound)?;
-                    reverse_insert(
-                        &mut matches.0.records,
-                        &mut matches.1,
-                        path,
-                        record,
-                        accounting,
-                    )?;
-                }
-                accounting.release_owned(&mut cached.allocation, vector_bytes)?;
-                reverse_drop(lookup, lookup_bytes, accounting)?;
-                matches.0.complete = true;
-                let bytes_count = bytes.0.as_ref().map_or(0, workspace_vec_bytes);
-                reverse_drop(bytes, bytes_count, accounting)?;
-                return Ok(matches);
-            }
-            reverse_drop(lookup, lookup_bytes, accounting)?;
-        }
-        cached.retire(accounting)?;
     }
     let bytes_count = bytes.0.as_ref().map_or(0, workspace_vec_bytes);
     reverse_drop(bytes, bytes_count, accounting)?;
@@ -259,6 +192,140 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
             accounting,
         )?;
     }
+    if !walk_namespace(
+        volume,
+        root,
+        ids,
+        maximum_entries,
+        &mut matches,
+        accounting,
+        cancellation,
+    )
+    .await?
+    {
+        return Ok(matches);
+    }
+    reverse_sort(&mut matches.0.records, accounting)?;
+    let (bytes, allocation) =
+        crate::path_index::encode_records(generation, ids, &matches.0.records, accounting)?;
+    let bytes = (bytes, allocation);
+    if let Some(payload) = &bytes.0 {
+        volume
+            .fs
+            .path_index()
+            .store(cache_key, payload, accounting)?;
+    }
+    let bytes_count = bytes.0.as_ref().map_or(0, workspace_vec_bytes);
+    reverse_drop(bytes, bytes_count, accounting)?;
+    matches.0.complete = true;
+    Ok(matches)
+}
+
+/// Answers from a decoded path index entry when every cached path still
+/// binds the identity it recorded, inserting those paths into `matches`.
+/// Returns whether `matches` now holds the complete answer.
+async fn answer_from_cache<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    volume: &Volume<A, O>,
+    root: &crate::kernel::GenerationRoot,
+    maximum_entries: u32,
+    mut cached: crate::kernel::Owned<Option<Vec<(FileId, NamespacePath)>>>,
+    matches: &mut (NamespaceRecordSearch, KernelOwnedAllocation),
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &crate::CancellationToken,
+) -> Result<bool, FsError> {
+    // A complete traversal that reached none of the identities is cached
+    // as an empty answer; there is no path left to revalidate.
+    if cached.value.as_ref().is_some_and(Vec::is_empty) {
+        cached.retire(accounting)?;
+        matches.0.complete = true;
+        return Ok(true);
+    }
+    if let Some(paths) = cached
+        .value
+        .as_ref()
+        .filter(|paths| paths.len() <= maximum_entries as usize)
+    {
+        let allocation = accounting.claim_owned(0, 0)?;
+        let mut copied = (Vec::new(), allocation);
+        for (_, path) in paths {
+            reverse_grow(&mut copied.0, &mut copied.1, accounting)?;
+            let (path, allocation) = path.clone_with_accounting(accounting, cancellation)?;
+            let mut path = (path, allocation);
+            copied.1.absorb(&mut path.1)?;
+            copied.0.push(path.0);
+        }
+        let (lookup, allocation) = crate::kernel::lookup_paths_with_accounting(
+            volume.fs.objects(),
+            root,
+            crate::kernel::PathQueries::Owned(&copied.0),
+            volume.config(),
+            accounting,
+            cancellation,
+            None,
+            crate::kernel::PathBatchMode::NoFollow,
+        )
+        .await?;
+        let lookup = (lookup, allocation);
+        let mut valid = paths.len() == lookup.0.entries.len();
+        for ((expected, _), entry) in paths.iter().zip(&lookup.0.entries) {
+            accounting.charge_items(1)?;
+            if entry
+                .record
+                .is_none_or(|record| record.file_id != *expected)
+            {
+                valid = false;
+                break;
+            }
+        }
+        let copied_bytes = workspace_vec_bytes(&copied.0)
+            + copied
+                .0
+                .iter()
+                .map(NamespacePath::retained_bytes)
+                .sum::<u64>();
+        reverse_drop(copied, copied_bytes, accounting)?;
+        let lookup_bytes = lookup.0.retained_allocation_bytes;
+        if valid {
+            let paths = cached.value.take().ok_or(FsError::InvalidDiff)?;
+            let vector_bytes = workspace_vec_bytes(&paths);
+            for ((_, path), entry) in paths.into_iter().zip(&lookup.0.entries) {
+                let allocation =
+                    crate::kernel::split_allocation(&mut cached.allocation, path.retained_bytes())?;
+                let path = (path, allocation);
+                let record = entry.record.ok_or(FsError::NotFound)?;
+                reverse_insert(
+                    &mut matches.0.records,
+                    &mut matches.1,
+                    path,
+                    record,
+                    accounting,
+                )?;
+            }
+            accounting.release_owned(&mut cached.allocation, vector_bytes)?;
+            reverse_drop(lookup, lookup_bytes, accounting)?;
+            matches.0.complete = true;
+            return Ok(true);
+        }
+        reverse_drop(lookup, lookup_bytes, accounting)?;
+    }
+    cached.retire(accounting)?;
+    Ok(false)
+}
+
+/// Walks the namespace from its root, inserting every path that binds one of
+/// `ids` into `matches`. Returns false when the walk stopped at
+/// `maximum_entries` before examining every entry.
+async fn walk_namespace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    volume: &Volume<A, O>,
+    root: &crate::kernel::GenerationRoot,
+    ids: &[FileId],
+    maximum_entries: u32,
+    matches: &mut (NamespaceRecordSearch, KernelOwnedAllocation),
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &crate::CancellationToken,
+) -> Result<bool, FsError> {
+    let limits = volume.config.limits;
+    let namespace_root = NamespacePath::new(Vec::new(), limits).map_err(FsError::from)?;
     let allocation = accounting.claim_owned(0, 0)?;
     let mut pending = (Vec::new(), allocation);
     reverse_grow(&mut pending.0, &mut pending.1, accounting)?;
@@ -287,27 +354,9 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
                 accounting.charge_items(1)?;
                 if examined == maximum_entries {
                     reverse_sort(&mut matches.0.records, accounting)?;
-                    let page_bytes = workspace_vec_bytes(&page.0.entries)
-                        + page
-                            .0
-                            .entries
-                            .iter()
-                            .map(|entry| entry.name.retained_bytes() as u64)
-                            .sum::<u64>();
-                    reverse_drop(page, page_bytes, accounting)?;
-                    if let Some(name) = after.take() {
-                        let bytes = name.0.retained_bytes() as u64;
-                        reverse_drop(name, bytes, accounting)?;
-                    }
-                    let bytes = directory.0.retained_bytes();
-                    reverse_drop(directory, bytes, accounting)?;
-                    while let Some(path) = pending.0.pop() {
-                        let bytes = path.0.retained_bytes();
-                        reverse_drop(path, bytes, accounting)?;
-                    }
-                    let bytes = workspace_vec_bytes(&pending.0);
-                    reverse_drop(pending, bytes, accounting)?;
-                    return Ok(matches);
+                    drop_page(page, accounting)?;
+                    abandon_walk(after, directory, pending, accounting)?;
+                    return Ok(false);
                 }
                 examined += 1;
                 let found = binary_search_with_accounting(ids, accounting, |id| {
@@ -356,14 +405,7 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
             } else {
                 None
             };
-            let page_bytes = workspace_vec_bytes(&page.0.entries)
-                + page
-                    .0
-                    .entries
-                    .iter()
-                    .map(|entry| entry.name.retained_bytes() as u64)
-                    .sum::<u64>();
-            reverse_drop(page, page_bytes, accounting)?;
+            drop_page(page, accounting)?;
             if let Some(old) = after.take() {
                 let bytes = old.0.retained_bytes() as u64;
                 reverse_drop(old, bytes, accounting)?;
@@ -378,20 +420,47 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
     }
     let pending_bytes = workspace_vec_bytes(&pending.0);
     reverse_drop(pending, pending_bytes, accounting)?;
-    reverse_sort(&mut matches.0.records, accounting)?;
-    let (bytes, allocation) =
-        crate::path_index::encode_records(generation, ids, &matches.0.records, accounting)?;
-    let bytes = (bytes, allocation);
-    if let Some(payload) = &bytes.0 {
-        volume
-            .fs
-            .path_index()
-            .store(cache_key, payload, accounting)?;
+    Ok(true)
+}
+
+/// Releases one listed directory page.
+fn drop_page(
+    page: (crate::DirectoryRecordPage, KernelOwnedAllocation),
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), FsError> {
+    let page_bytes = workspace_vec_bytes(&page.0.entries)
+        + page
+            .0
+            .entries
+            .iter()
+            .map(|entry| entry.name.retained_bytes() as u64)
+            .sum::<u64>();
+    reverse_drop(page, page_bytes, accounting)
+}
+
+/// Releases a walk stopped before it finished: the listing cursor, the
+/// directory being listed, and every directory still pending.
+fn abandon_walk(
+    after: Option<(LogicalName, KernelOwnedAllocation)>,
+    directory: (NamespacePath, KernelOwnedAllocation),
+    mut pending: (
+        Vec<(NamespacePath, KernelOwnedAllocation)>,
+        KernelOwnedAllocation,
+    ),
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), FsError> {
+    if let Some(name) = after {
+        let bytes = name.0.retained_bytes() as u64;
+        reverse_drop(name, bytes, accounting)?;
     }
-    let bytes_count = bytes.0.as_ref().map_or(0, workspace_vec_bytes);
-    reverse_drop(bytes, bytes_count, accounting)?;
-    matches.0.complete = true;
-    Ok(matches)
+    let bytes = directory.0.retained_bytes();
+    reverse_drop(directory, bytes, accounting)?;
+    while let Some(path) = pending.0.pop() {
+        let bytes = path.0.retained_bytes();
+        reverse_drop(path, bytes, accounting)?;
+    }
+    let bytes = workspace_vec_bytes(&pending.0);
+    reverse_drop(pending, bytes, accounting)
 }
 
 pub(crate) struct NamespaceRecordSearch {
