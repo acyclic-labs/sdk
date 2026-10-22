@@ -29,15 +29,20 @@ clippy) exit 0 ;;
 esac
 `);
     chmodSync(cargo, 0o755);
+    writeFileSync(join(cwd, "scripts/check-browser-targets.sh"), '#!/bin/bash\necho "browser target check: fixture"\necho "$CARGO_TARGET_DIR" > browser-target\necho "browser" >> calls\nif [ "$BROWSER_RC" != 0 ]; then echo "error: browser diagnostic on stderr" >&2; fi\nexit "$BROWSER_RC"\n');
     writeFileSync(join(cwd, "scripts/gate-feature-matrix.sh"), "#!/bin/bash\necho 'feature matrix: 104/104 sets ok in 1.0s'\nexit \"$FEATURE_RC\"\n");
-    for (const [target, doc, features, expected, early = false] of [[0, 0, 0, 0], [101, 0, 0, 101], [0, 101, 0, 101], [0, 0, 1, 1], [101, 0, 0, 101, true]]) {
+    for (const [target, doc, features, browser, expected, early = false] of [[0, 0, 0, 0, 0], [101, 0, 0, 0, 101], [0, 101, 0, 0, 101], [0, 0, 1, 0, 1], [0, 0, 0, 101, 101], [101, 0, 0, 0, 101, true]]) {
       writeFileSync(join(cwd, "calls"), "");
       const result = spawnSync("bash", [runner, "--each-feature", "--locked", "-p", "harness", "--all-features", "--no-fail-fast", "--", "--skip", "known-hang"], {
-        cwd, encoding: "utf8", env: { ...process.env, PATH: `${join(cwd, "bin")}:${process.env.PATH}`, GATE_MAIN_TARGET_DIR: join(cwd, "cache"), EARLY_FAIL: early ? "1" : "0", TARGET_RC: String(target), DOC_RC: String(doc), FEATURE_RC: String(features) },
+        cwd, encoding: "utf8", env: { ...process.env, PATH: `${join(cwd, "bin")}:${process.env.PATH}`, GATE_MAIN_TARGET_DIR: join(cwd, "cache"), EARLY_FAIL: early ? "1" : "0", TARGET_RC: String(target), DOC_RC: String(doc), FEATURE_RC: String(features), BROWSER_RC: String(browser) },
       });
       assert.equal(result.status, expected, result.stdout + result.stderr);
       const tests = readFileSync(join(cwd, "calls"), "utf8").trim().split("\n").filter(line => line.startsWith("test "));
       assert.equal(tests.length, 2, "one attempt per phase, including after failure");
+      assert.equal(readFileSync(join(cwd, "calls"), "utf8").trim().split("\n").filter(line => line === "browser").length, 1, "browser runs once, including after earlier failures");
+      assert.equal(readFileSync(join(cwd, "browser-target"), "utf8").trim(), join(cwd, "cache/browser"));
+      if (browser) assert.match(result.stdout, /error: browser diagnostic on stderr/u);
+      assert.match(result.stdout, new RegExp(`GATE_BROWSER_WALL seconds=\\d+ rc=${browser}`));
       assert.match(tests[0], /--workspace .*--all-targets -- --skip known-hang/u);
       assert.match(tests[1], /--workspace .*--doc -- --skip known-hang/u);
       assert.ok(tests.every(line => !line.includes("-p harness")), "legacy roots cannot narrow main");
