@@ -65,15 +65,8 @@ impl StreamProvider for Owners {
             .and_then(|name| name.parse::<usize>().ok())
             .ok_or(StreamError::InvalidPath)?;
         match &self.nodes[index % NODES] {
-            Some(node) => {
-                node.follow(path, from, crate::FollowFilter::default())
-                    .await
-            }
-            None => {
-                self.memory
-                    .follow(path, from, crate::FollowFilter::default())
-                    .await
-            }
+            Some(node) => node.follow(path, from, filter).await,
+            None => self.memory.follow(path, from, filter).await,
         }
     }
 }

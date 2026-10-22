@@ -139,6 +139,8 @@ fn open(
     boundary(pool, model, wakes & 2 != 0)?;
     let (ready, _opened) = oneshot::channel();
     let command = Command::Open {
+        filter: None,
+        credential: 0,
         id,
         attempt_epoch: 0,
         acknowledge: false,

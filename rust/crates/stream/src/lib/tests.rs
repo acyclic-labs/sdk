@@ -125,9 +125,7 @@ mod replay_tests {
             from: u64,
             filter: crate::FollowFilter,
         ) -> Result<RecordStream, StreamError> {
-            self.inner
-                .follow(path, from, crate::FollowFilter::default())
-                .await
+            self.inner.follow(path, from, filter).await
         }
         async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
             self.inner.children(request).await

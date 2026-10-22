@@ -8,12 +8,13 @@ impl HttpStream {
         &self,
         follow: wire::SessionFollow,
         from: u64,
+        filter: crate::FollowFilter,
     ) -> Result<
         futures::stream::BoxStream<'static, Result<wire::SessionData, StreamError>>,
         StreamError,
     > {
         self.session_client()?
-            .follow_data(follow, from, crate::FollowFilter::default())
+            .follow_data(follow, from, filter)
             .await
     }
     pub(super) fn session_client(&self) -> Result<crate::grpc::Client, StreamError> {

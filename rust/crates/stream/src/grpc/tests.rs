@@ -128,9 +128,7 @@ impl StreamProvider for EndingFollow {
         if self.deny {
             return Err(StreamError::AccessDenied);
         }
-        self.inner
-            .follow(path, from, crate::FollowFilter::default())
-            .await
+        self.inner.follow(path, from, filter).await
     }
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
         if self.deny {

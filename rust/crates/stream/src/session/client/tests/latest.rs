@@ -99,7 +99,7 @@ impl StreamProvider for Arc<Counted> {
         let counted = Arc::clone(self);
         Ok(self
             .memory
-            .follow(path, from, crate::FollowFilter::default())
+            .follow(path, from, filter)
             .await?
             .inspect(move |_| {
                 if status {

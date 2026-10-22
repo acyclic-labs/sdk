@@ -97,6 +97,8 @@ pub(in crate::session::client) fn route(
     records: mpsc::Sender<Result<Delivery, StreamError>>,
 ) -> Route {
     Route {
+        filter: None,
+        credential: 0,
         raw: false,
         watermark: None,
         node: node.into(),

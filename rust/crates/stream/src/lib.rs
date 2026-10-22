@@ -11,6 +11,8 @@ use std::future::Future;
 use thiserror::Error;
 
 pub mod conformance;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod filtered_follow_tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod follow_tests;
