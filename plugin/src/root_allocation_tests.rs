@@ -190,7 +190,11 @@ fn a_host_spelling_of_an_admitted_root_selects_it() {
     let state = preparing_state(root.canonicalize().unwrap());
     // Roots are recorded canonical; hosts report their own spelling, such as Windows'
     // `Q:\...` for a verbatim `\?\Q:\...` root or any path with a `..` component.
-    for spelling in [root.clone(), root.join("nested").join("..")] {
+    assert!(state.selects_root(&root).unwrap());
+    for spelling in [
+        root.join("nested").join(".."),
+        root.join(".").join("nested").join(".."),
+    ] {
         assert_ne!(state.roots.values().next().unwrap().path, spelling);
         assert!(state.selects_root(&spelling).unwrap(), "{spelling:?}");
     }
