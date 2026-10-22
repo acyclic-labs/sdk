@@ -503,6 +503,7 @@ async fn device_login_pending_slowdown_then_approval() {
 
 #[tokio::test]
 async fn device_denial_and_local_expiry_are_terminal() {
+    let _clock = poll_clock::Clock::start();
     let mut denied = Expected::token(
         vec![
             ("grant_type", DEVICE_GRANT),
@@ -751,7 +752,10 @@ fn dropping_store_releases_lock_while_a_forked_child_waits_to_exec() {
             return if byte == [1] {
                 Ok(())
             } else {
-                Err(io::Error::new(io::ErrorKind::InvalidData, "pre_exec signal"))
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "pre_exec signal",
+                ))
             };
         }
     }
@@ -821,52 +825,53 @@ fn dropping_store_releases_lock_while_a_forked_child_waits_to_exec() {
     let unused_ready_fd = control.ready.as_raw_fd();
     let unused_release_fd = control.release.as_raw_fd();
     // Command::spawn waits for exec, so it cannot run on the barrier controller.
-    control.spawning = Some(std::thread::Builder::new()
-        .name("identity-store-fork-control".to_owned())
-        .spawn(move || {
-            let ready_fd = child_ready.as_raw_fd();
-            let release_fd = child_release.as_raw_fd();
-            let mut command = Command::new("/bin/true");
-            // SAFETY: both pipe ends remain owned until spawn returns. The
-            // child only uses stack bytes and async-signal-safe libc calls:
-            // no allocation, Rust locks, destructors, or runtime interaction.
-            unsafe {
-                command.pre_exec(move || {
-                    // CLOEXEC does not act until exec. Close the unused ends
-                    // now so parent death gives this reader EOF rather than
-                    // leaving the child holding its own release writer.
-                    if libc::close(unused_ready_fd) != 0
-                        || libc::close(unused_release_fd) != 0
-                    {
-                        libc::_exit(124);
-                    }
-                    let mut byte = 1_u8;
-                    loop {
-                        let count = libc::write(ready_fd, (&raw const byte).cast(), 1);
-                        if count == 1 {
-                            break;
+    control.spawning = Some(
+        std::thread::Builder::new()
+            .name("identity-store-fork-control".to_owned())
+            .spawn(move || {
+                let ready_fd = child_ready.as_raw_fd();
+                let release_fd = child_release.as_raw_fd();
+                let mut command = Command::new("/bin/true");
+                // SAFETY: both pipe ends remain owned until spawn returns. The
+                // child only uses stack bytes and async-signal-safe libc calls:
+                // no allocation, Rust locks, destructors, or runtime interaction.
+                unsafe {
+                    command.pre_exec(move || {
+                        // CLOEXEC does not act until exec. Close the unused ends
+                        // now so parent death gives this reader EOF rather than
+                        // leaving the child holding its own release writer.
+                        if libc::close(unused_ready_fd) != 0 || libc::close(unused_release_fd) != 0
+                        {
+                            libc::_exit(124);
                         }
-                        if count >= 0 || *libc::__errno_location() != libc::EINTR {
-                            libc::_exit(125);
+                        let mut byte = 1_u8;
+                        loop {
+                            let count = libc::write(ready_fd, (&raw const byte).cast(), 1);
+                            if count == 1 {
+                                break;
+                            }
+                            if count >= 0 || *libc::__errno_location() != libc::EINTR {
+                                libc::_exit(125);
+                            }
                         }
-                    }
-                    loop {
-                        let count = libc::read(release_fd, (&raw mut byte).cast(), 1);
-                        if count == 1 && byte == 1 {
-                            return Ok(());
+                        loop {
+                            let count = libc::read(release_fd, (&raw mut byte).cast(), 1);
+                            if count == 1 && byte == 1 {
+                                return Ok(());
+                            }
+                            if count >= 0 || *libc::__errno_location() != libc::EINTR {
+                                libc::_exit(126);
+                            }
                         }
-                        if count >= 0 || *libc::__errno_location() != libc::EINTR {
-                            libc::_exit(126);
-                        }
-                    }
-                });
-            }
-            let child = command.spawn();
-            drop(child_ready);
-            drop(child_release);
-            child
-        })
-        .expect("spawn barrier controller"));
+                    });
+                }
+                let child = command.spawn();
+                drop(child_ready);
+                drop(child_release);
+                child
+            })
+            .expect("spawn barrier controller"),
+    );
 
     // Record assertion failures while blocked; the guard also releases, joins,
     // and reaps if an unexpected panic unwinds through either Store operation.
@@ -887,7 +892,9 @@ fn dropping_store_releases_lock_while_a_forked_child_waits_to_exec() {
     drop(control);
     assert!(status.success(), "true status: {status}");
     assert_eq!(
-        live_owner_error.expect("live Store must exclude another owner").code,
+        live_owner_error
+            .expect("live Store must exclude another owner")
+            .code,
         "credentials_busy"
     );
     Store::open(&path).expect("exec closed the child's inherited lock descriptor");
