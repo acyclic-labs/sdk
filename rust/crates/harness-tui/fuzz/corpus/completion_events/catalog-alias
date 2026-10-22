@@ -1,1 +1,1 @@
-[{"name":"shell","aliases":["sh"],"action":{"kind":"tool","tool":"bash"}}]
+[{"name":"shell","aliases":["sh"],"action":{"kind":"tool","tool":"shell"}}]

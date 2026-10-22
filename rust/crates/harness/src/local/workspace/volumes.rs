@@ -155,7 +155,7 @@ fn ordered_mounts(mounts: &Mounts) -> Result<Vec<(&str, &BoundMount)>> {
     Ok(ordered.into_values().collect())
 }
 
-/// The single native execution scope shared by bash and hooks. Entry projects
+/// The single native execution scope shared by the shell and hooks. Entry projects
 /// every bound volume, so a command sees persisted volume data. A successful
 /// exit publishes and detaches each projection and removes its SDK-owned
 /// residue, so the checkout holds no mount between executions. The body owns

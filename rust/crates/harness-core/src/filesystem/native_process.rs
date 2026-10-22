@@ -84,12 +84,12 @@ pub struct NativeProcessAuthority {
     pub approvals: Arc<dyn ToolApprovalVerifier>,
 }
 
-#[cfg(any(feature = "filesystem-local", all(test, unix)))]
-#[doc(hidden)]
-pub mod bash;
 #[doc(hidden)]
 pub mod capture;
 mod invocation;
+#[cfg(any(feature = "filesystem-local", all(test, unix)))]
+#[doc(hidden)]
+pub mod shell;
 pub use capture::NativeProcessObserver;
 use capture::capture;
 #[doc(hidden)]

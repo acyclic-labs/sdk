@@ -1,14 +1,14 @@
 //! Exercises the production file-tool and protected file-metadata codecs.
 #![no_main]
 
-use acyclic_harness::{conversation::FileRef, tool::files::ReadFileInput, tools::BashInput};
+use acyclic_harness::{conversation::FileRef, tool::files::ReadFileInput, tools::ShellInput};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|bytes: &[u8]| {
-    if let Ok(input) = serde_json::from_slice::<BashInput>(bytes) {
+    if let Ok(input) = serde_json::from_slice::<ShellInput>(bytes) {
         let restored = serde_json::to_vec(&input)
             .ok()
-            .and_then(|wire| serde_json::from_slice::<BashInput>(&wire).ok());
+            .and_then(|wire| serde_json::from_slice::<ShellInput>(&wire).ok());
         assert_eq!(restored.as_ref(), Some(&input));
         let _ = input.validate();
     }

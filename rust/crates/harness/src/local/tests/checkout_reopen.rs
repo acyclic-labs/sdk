@@ -295,9 +295,9 @@ async fn echo_reuses_the_lazy_checkout_without_reading_untouched_files() -> Resu
             .map_err(super::super::storage)?
     };
     let provider = commands(&[
-        ("bash", "echo first"),
-        ("bash", "echo second"),
-        ("bash", "echo third"),
+        (crate::tools::shell::PLATFORM.name, "echo first"),
+        (crate::tools::shell::PLATFORM.name, "echo second"),
+        (crate::tools::shell::PLATFORM.name, "echo third"),
     ]);
     let harness = LocalHarness::open(
         super::checkout_config(directory.path(), (model()?, provider.clone()))?
@@ -351,7 +351,14 @@ async fn echo_reuses_the_lazy_checkout_without_reading_untouched_files() -> Resu
 async fn auxiliary_parent_binding_keeps_authored_sibling_changes_visible() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state = tempfile::tempdir().map_err(super::super::storage)?;
-    let provider = commands(&[("bash", "printf authored > .volumes/user-owned")]);
+    let provider = commands(&[(
+        crate::tools::shell::PLATFORM.name,
+        if cfg!(windows) {
+            "[IO.File]::WriteAllText('.volumes/user-owned', 'authored')"
+        } else {
+            "printf authored > .volumes/user-owned"
+        },
+    )]);
     let harness = LocalHarness::open(
         super::checkout_config(directory.path(), (model()?, provider))?
             .state_directory(state.path()),

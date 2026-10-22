@@ -293,7 +293,7 @@ async fn actual_registry_keeps_shared_file_tools_and_refuses_contextless_recursi
         recursive_tools::<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>(None, 65536)?;
     registry.extend(crate::tools::defaults()?)?;
     for expected in [
-        "bash",
+        crate::tools::shell::PLATFORM.name,
         "fs",
         "read",
         "write",
@@ -309,7 +309,12 @@ async fn actual_registry_keeps_shared_file_tools_and_refuses_contextless_recursi
             );
         }
     }
-    for name in ["bash", "fs", "acyclic.fork", "acyclic.merge"] {
+    for name in [
+        crate::tools::shell::PLATFORM.name,
+        "fs",
+        "acyclic.fork",
+        "acyclic.merge",
+    ] {
         let tool = registry
             .get(name, None, None)?
             .ok_or_else(|| Error::NotFound(name.into()))?;

@@ -177,7 +177,7 @@ fn assert_on_graphemes(editor: &Editor) {
 /// Shared by shrinking properties and the instrumented completion fuzz target.
 pub fn catalog_round_trip(name: &str, alias: &str, theme: &str) -> Result<(), std::io::Error> {
     let mut menu = CompletionMenu::default();
-    let definition = serde_json::json!([{"name":name,"aliases":[alias],"action":{"kind":"tool","tool":"bash"}}, {"name":"palette","aliases":["t"],"action":{"kind":"theme"}}]);
+    let definition = serde_json::json!([{"name":name,"aliases":[alias],"action":{"kind":"tool","tool":"shell"}}, {"name":"palette","aliases":["t"],"action":{"kind":"theme"}}]);
     menu.set_file(
         "commands/catalog.json",
         Some(&serde_json::to_vec(&definition)?),

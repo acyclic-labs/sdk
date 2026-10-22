@@ -15,8 +15,8 @@ async fn model_text_and_shell_output_share_the_same_turn_after_reopen() -> Resul
             }),
             ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
                 "shell-call".into(),
-                "bash".into(),
-                json!({"command":"printf shell-output"}),
+                crate::tools::shell::PLATFORM.name.into(),
+                json!({"command": if cfg!(windows) { "[Console]::Write('shell-output')" } else { "printf shell-output" }}),
             ))),
             ScriptedEvent::Event(ModelEvent::Completed {
                 metadata: Value::Null,

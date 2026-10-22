@@ -8,7 +8,6 @@ use crate::{
 use acyclic_fs::{NativeWatch, PublicationPermit};
 use acyclic_stream::BoxProviderFuture;
 
-mod bash;
 mod capture;
 mod children;
 mod git;
@@ -18,7 +17,7 @@ mod hooks;
 mod output;
 pub(super) mod publisher;
 pub(super) mod reconciliation;
-mod task_views;
+pub(super) mod shell;
 #[cfg(all(
     test,
     feature = "filesystem-local",
@@ -26,6 +25,7 @@ mod task_views;
     not(acyclic_harness_loom)
 ))]
 mod task_view_volumes_tests;
+mod task_views;
 #[cfg(all(test, acyclic_harness_loom))]
 mod tests;
 
@@ -170,17 +170,15 @@ impl ToolExecutor for CheckoutTools {
         let context = context
             .ok_or_else(|| Error::Unauthorized("checkout command requires a task".into()))?;
         let scope = context.effective_scope();
-        if !matches!(invocation.name.as_str(), "bash" | "fs")
+        if (invocation.name != crate::tools::shell::PLATFORM.name && invocation.name != "fs")
             || context.operation_id() != invocation.operation_id
             || context.call_id() != invocation.call_id
             || (!(scope.grants().contains(&self.read_grant)
                 && scope.grants().contains(&self.write_grant))
                 && self.child_project(context)?.is_none())
-            || !scope.grants().contains(if invocation.name == "bash" {
-                "tool:call:bash"
-            } else {
-                "tool:call:fs"
-            })
+            || !scope
+                .grants()
+                .contains(&crate::contract::capability::tool_call(&invocation.name))
         {
             return Err(Error::Unauthorized(
                 "checkout command differs from its task authority".into(),
@@ -214,13 +212,13 @@ impl ToolExecutor for CheckoutTools {
             {
                 return selected.execute(invocation, context).await;
             }
-            let request = if invocation.name == "bash" {
+            let request = if invocation.name == crate::tools::shell::PLATFORM.name {
                 serde_json::to_vec(&invocation).map_err(storage)?
             } else {
                 Vec::new()
             };
-            let bash = if invocation.name == "bash" {
-                let input: crate::tools::BashInput =
+            let shell = if invocation.name == crate::tools::shell::PLATFORM.name {
+                let input: crate::tools::ShellInput =
                     serde_json::from_value(std::mem::take(&mut invocation.arguments))
                         .map_err(|cause| Error::Invalid(cause.to_string()))?;
                 input.validate()?;
@@ -228,7 +226,7 @@ impl ToolExecutor for CheckoutTools {
             } else {
                 None
             };
-            let command = if bash.is_none() {
+            let command = if shell.is_none() {
                 let command = invocation
                     .arguments
                     .as_object_mut()
@@ -291,7 +289,7 @@ impl ToolExecutor for CheckoutTools {
                     )
                     .await?;
                     let input =
-                        bash.ok_or_else(|| Error::Invalid("bash input is absent".into()))?;
+                        shell.ok_or_else(|| Error::Invalid("shell input is absent".into()))?;
                     let files =
                         output::Output::open(context, Arc::clone(&self.task_files), request)
                             .await?;
@@ -300,7 +298,7 @@ impl ToolExecutor for CheckoutTools {
                     let (result, mut state, mut files) =
                         workspace::volumes::native_scope(&mounts, async |claims| {
                             let (result, state, files, claims) =
-                                self.bash(input, maximum, state, files, claims).await?;
+                                self.shell(input, maximum, state, files, claims).await?;
                             if !result.as_ref().is_ok_and(|result| {
                                 result.value.get("stop").is_none_or(|stop| {
                                     stop.is_null() || stop["cleanup_completed"] == true

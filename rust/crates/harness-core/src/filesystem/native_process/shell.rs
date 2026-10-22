@@ -1,7 +1,7 @@
 use super::Invocation;
 #[cfg(all(test, unix))]
 use super::{NativeProcessObserver, NativeProcessResult, capture};
-use crate::{Error, Result, tools::BashInput, workspace::MountTable};
+use crate::{Error, Result, tools::ShellInput, workspace::MountTable};
 use acyclic_fs::access::Action;
 use std::path::Path;
 #[cfg(all(test, unix))]
@@ -11,7 +11,7 @@ use std::sync::Arc;
 /// capture path. Its caller retains the view and publishes each writable mount.
 #[cfg(all(test, unix))]
 pub(crate) async fn run<T>(
-    input: BashInput,
+    input: ShellInput,
     mounts: &MountTable<T>,
     invocation: Invocation,
     now: u64,
@@ -36,7 +36,7 @@ pub(crate) async fn run<T>(
 
 #[doc(hidden)]
 pub fn prepare<T>(
-    input: BashInput,
+    input: ShellInput,
     mounts: &MountTable<T>,
     mut invocation: Invocation,
     now: u64,
@@ -55,11 +55,11 @@ pub fn prepare<T>(
         .map_err(|cause| Error::from(acyclic_fs::NativeTreeMaterializationError::Io(cause)))?;
     let selected = cwd
         .strip_prefix(root)
-        .map_err(|_| Error::Invalid("bash cwd escapes the task view".into()))?;
+        .map_err(|_| Error::Invalid("shell cwd escapes the task view".into()))?;
     if mount.native_root.is_some() {
         let selected = selected
             .to_str()
-            .ok_or_else(|| Error::Invalid("bash cwd is not UTF-8".into()))?;
+            .ok_or_else(|| Error::Invalid("shell cwd is not UTF-8".into()))?;
         mount.check(Action::List, &selected.replace('\\', "/"), now)?;
     } else if selected != relative {
         let (mount, path) = mounts.resolve(selected)?;
@@ -69,12 +69,12 @@ pub fn prepare<T>(
     invocation.environment = mounts.environment()?;
     invocation.inherit_environment = true;
     invocation.timeout_ms = input.timeout_ms()?;
-    invocation.argv = vec![
-        "--noprofile".into(),
-        "--norc".into(),
-        "-c".into(),
-        input.command,
-    ];
+    invocation.argv = crate::tools::shell::PLATFORM
+        .arguments
+        .iter()
+        .map(|argument| (*argument).into())
+        .chain([input.command])
+        .collect();
     invocation.standard_input = None;
     invocation.mcp_stdio = None;
     super::invocation::validate(

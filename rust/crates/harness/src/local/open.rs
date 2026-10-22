@@ -84,7 +84,13 @@ impl Opening {
         )
         .await?;
         #[cfg(feature = "native-execution")]
-        let native_mounts = tools.get("bash", None, None)?.is_some();
+        let native_mounts = tools
+            .get(crate::tools::shell::PLATFORM.name, None, None)?
+            .is_some();
+        #[cfg(feature = "native-execution")]
+        if native_mounts {
+            checkout_tools::shell::executable()?;
+        }
         Ok(Self {
             config,
             state_directory,

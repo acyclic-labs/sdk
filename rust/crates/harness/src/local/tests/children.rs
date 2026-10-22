@@ -340,7 +340,7 @@ async fn child_request_prepares_a_replayable_lazy_fork_and_runs_under_its_origin
             ..ProptestConfig::with_cases(32)
         })
         .run(&(any::<[u8; 16]>(), "[a-z]{1,16}"), |(bytes, call)| {
-            for name in ["fs", "bash"] {
+            for name in ["fs", crate::tools::shell::PLATFORM.name] {
                 let tool = harness.tools().get(name, None, None).unwrap().unwrap();
                 let tool_grant = format!("tool:call:{name}");
                 for mask in 0u8..32 {

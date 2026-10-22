@@ -3,15 +3,15 @@ use super::*;
 use crate::runtime::RuntimeTask;
 use serde_json::json;
 
-async fn bash(
+async fn shell(
     tools: &CheckoutTools,
     task: &Arc<crate::runtime::TaskContext>,
     arguments: serde_json::Value,
 ) -> Result<serde_json::Value> {
     let invocation = ToolInvocation {
         operation_id: OperationId::new(),
-        call_id: "bash".into(),
-        name: "bash".into(),
+        call_id: "shell".into(),
+        name: crate::tools::shell::PLATFORM.name.into(),
         arguments,
     };
     let context = ToolContext::new(
@@ -95,23 +95,23 @@ async fn child_view_projects_volumes_outside_itself() -> Result<()> {
     let tools = root.select(&context).await?.unwrap();
 
     // Every command enters the volume projections first.
-    bash(&tools, &task, json!({"command": "printf kid > marker"})).await?;
-    bash(
+    shell(&tools, &task, json!({"command": if cfg!(windows) { "[IO.File]::WriteAllText('marker', 'kid')" } else { "printf kid > marker" }})).await?;
+    shell(
         &tools,
         &task,
-        json!({"command": "printf scratch > note", "cwd": ".volumes/scratch"}),
+        json!({"command": if cfg!(windows) { "[IO.File]::WriteAllText((Join-Path (Get-Location) 'note'), 'scratch')" } else { "printf scratch > note" }, "cwd": ".volumes/scratch"}),
     )
     .await?;
-    let read = bash(
+    let read = shell(
         &tools,
         &task,
-        json!({"command": "cat note", "cwd": ".volumes/scratch"}),
+        json!({"command": if cfg!(windows) { "[Console]::Write((Get-Content -Raw note))" } else { "cat note" }, "cwd": ".volumes/scratch"}),
     )
     .await?;
     assert_eq!(read["stdout"], "scratch");
     // The shared binding lives in the parent's checkout while it is
     // projected. Its provider-owned siblings never enter the child's view.
-    let listed = bash(&tools, &task, json!({"command": "ls -A .volumes"})).await?;
+    let listed = shell(&tools, &task, json!({"command": if cfg!(windows) { "Get-ChildItem -Force .volumes | Select-Object -ExpandProperty Name" } else { "ls -A .volumes" }})).await?;
     let listed = listed["stdout"].as_str().unwrap();
     assert!(!listed.contains("acyclic"), "{listed}");
 

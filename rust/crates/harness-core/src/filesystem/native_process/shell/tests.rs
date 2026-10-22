@@ -119,7 +119,7 @@ proptest::proptest! {
             }
         }
         let suffix = if escape { ".escape" } else { &component };
-        let result = prepare(BashInput {
+        let result = prepare(ShellInput {
             command: "pwd".into(), cwd: Some(format!(".volumes/data/{suffix}")), timeout: None,
         }, &mounts, invocation(&mounts.root), 1);
         if escape {
@@ -209,7 +209,7 @@ async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> 
             .canonicalize()
             .map_err(|error| Error::Storage(error.to_string()))?,
     )?;
-    let input = BashInput {
+    let input = ShellInput {
         command:
             r#"test -n "$HOME" && test "$ACYCLIC_VOLUME_DATA_MODE" = rw && acyclic-host-path-only"#
                 .into(),
@@ -280,7 +280,7 @@ async fn command_uses_the_composed_cwd_and_streams_before_returning_its_exit_cod
             .open(path)?
             .write_all(bytes)
     });
-    let output = run(BashInput { command: r#"test "$ACYCLIC_VOLUME_DATA_MODE" = rw; IFS= read -r line < "$ACYCLIC_VOLUME_DATA/input"; printf '%s' "$line" > result; printf streamed; printf diagnostic >&2; exit 7"#.into(), cwd: Some("src".into()), timeout: Some(5) },
+    let output = run(ShellInput { command: r#"test "$ACYCLIC_VOLUME_DATA_MODE" = rw; IFS= read -r line < "$ACYCLIC_VOLUME_DATA/input"; printf '%s' "$line" > result; printf streamed; printf diagnostic >&2; exit 7"#.into(), cwd: Some("src".into()), timeout: Some(5) },
         &mounts, invocation(&mounts.root), 1, Some(observer), || Ok(())).await?
         .ok_or_else(|| Error::Storage("process capture was indeterminate".into()))?;
     assert_eq!(output.exit_code, Some(7));
@@ -317,7 +317,7 @@ async fn symlink_cwd_cannot_escape_the_task_view() -> Result<()> {
             .map_err(|error| Error::Storage(error.to_string()))?,
     )?;
     let result = run(
-        BashInput {
+        ShellInput {
             command: "printf escaped > should-not-exist".into(),
             cwd: Some("escape".into()),
             timeout: None,

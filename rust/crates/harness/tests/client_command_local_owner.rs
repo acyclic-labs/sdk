@@ -597,7 +597,12 @@ async fn clear_all_pages_an_archive_larger_than_its_enumeration_bound() -> Resul
     let root = TaskId::parse(root["task"].as_str().unwrap())?;
     let child = send(&local, &mut client, "child").await?;
     let child = TaskId::parse(child["task"].as_str().unwrap())?;
-    assert!(local.tools().get("bash", None, None)?.is_some());
+    assert!(
+        local
+            .tools()
+            .get(acyclic_harness::tools::shell::PLATFORM.name, None, None)?
+            .is_some()
+    );
     // Rejected tool calls retain owner input records but are not conversations.
     // These force multiple admission-directory pages without launching a shell.
     for _ in 0..12 {
@@ -607,7 +612,7 @@ async fn clear_all_pages_an_archive_larger_than_its_enumeration_bound() -> Resul
                     OperationId::new(),
                     None,
                     CommandResolution::Tool {
-                        tool: acyclic_harness::client::CommandTool::Bash,
+                        tool: acyclic_harness::client::CommandTool::Shell,
                         input: json!({"command":42}),
                     }
                 )

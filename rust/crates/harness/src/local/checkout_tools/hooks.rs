@@ -188,7 +188,7 @@ impl CheckoutTools {
                     .map_err(std::io::Error::other)
                 })
             };
-            // Hooks share bash's native execution scope: bound volumes are
+            // Hooks share the shell's native execution scope: bound volumes are
             // projected for the run and retired, with their writes published,
             // before the checkout is captured.
             let mounts = Arc::clone(&state.mounts);

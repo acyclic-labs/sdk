@@ -83,18 +83,18 @@ impl ToolSpec {
 /// The stock coding catalog, in model registration order. No mutable global state.
 pub fn catalog() -> impl ExactSizeIterator<Item = &'static ToolSpec> {
     [
-        &BASH, &FS, &READ, &WRITE, &EDIT, &SPAWN, &SEND, &WAIT, &ARCHIVE,
+        &SHELL, &FS, &READ, &WRITE, &EDIT, &SPAWN, &SEND, &WAIT, &ARCHIVE,
     ]
     .into_iter()
 }
 
-static BASH: ToolSpec = ToolSpec {
-    name: "bash",
+static SHELL: ToolSpec = ToolSpec {
+    name: super::shell::PLATFORM.name,
     revision: "1",
-    description: "Run a bash command in the calling task's composed workspace view. No OS sandbox in release 1; writes outside the task view are not captured",
-    hook_names: &["Bash"],
+    description: super::shell::PLATFORM.description,
+    hook_names: super::shell::PLATFORM.hook_names,
     binding: ToolBinding::Workspace,
-    input: schema::input::<super::BashInput>,
+    input: schema::input::<super::ShellInput>,
     output: object,
     projection_schema: command_projection,
     executor: super::workspace_executor::executor,

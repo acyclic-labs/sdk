@@ -3,9 +3,9 @@ use super::*;
 use crate::filesystem::native_process::{self, Invocation};
 
 impl CheckoutTools {
-    pub(super) async fn bash(
+    pub(super) async fn shell(
         &self,
-        input: crate::tools::BashInput,
+        input: crate::tools::ShellInput,
         maximum_output: usize,
         state: OwnedMutexGuard<State>,
         files: output::Output,
@@ -22,7 +22,7 @@ impl CheckoutTools {
             .map(|(_, workspace)| workspace.clone())
             .unwrap_or_else(|| Arc::clone(&self.workspace));
         let invocation = Invocation {
-            executable: which::which("bash").map_err(|cause| Error::Invalid(cause.to_string()))?,
+            executable: executable()?.to_path_buf(),
             argv: Vec::new(),
             cwd: workspace.path.clone(),
             environment: Default::default(),
@@ -34,7 +34,7 @@ impl CheckoutTools {
             standard_input: None,
             mcp_stdio: None,
         };
-        let invocation = native_process::bash::prepare(
+        let invocation = native_process::shell::prepare(
             input,
             &state.mounts,
             invocation,
@@ -84,5 +84,51 @@ impl CheckoutTools {
                 }),
             });
         Ok((result, state, files, claims))
+    }
+}
+
+// Pin the native executable at startup; later PATH changes cannot retarget calls.
+static EXECUTABLE: std::sync::OnceLock<std::result::Result<std::path::PathBuf, String>> =
+    std::sync::OnceLock::new();
+
+pub(in crate::local) fn executable() -> Result<&'static std::path::Path> {
+    EXECUTABLE
+        .get_or_init(|| resolve(|name| which::which(name).ok()))
+        .as_deref()
+        .map_err(|cause| Error::Invalid(cause.clone()))
+}
+
+fn resolve(
+    mut lookup: impl FnMut(&str) -> Option<std::path::PathBuf>,
+) -> std::result::Result<std::path::PathBuf, String> {
+    crate::tools::shell::PLATFORM
+        .executables
+        .iter()
+        .find_map(|name| lookup(name))
+        .ok_or_else(|| {
+            format!(
+                "native {} executable is unavailable",
+                crate::tools::shell::PLATFORM.name
+            )
+        })
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selection_prefers_pwsh_then_windows_powershell_and_never_bash() {
+        for (available, expected) in [
+            (
+                vec!["pwsh.exe", "powershell.exe", "bash.exe"],
+                Some("pwsh.exe"),
+            ),
+            (vec!["powershell.exe", "bash.exe"], Some("powershell.exe")),
+            (vec!["bash.exe"], None),
+        ] {
+            let selected = resolve(|name| available.contains(&name).then(|| name.into()));
+            assert_eq!(selected.ok(), expected.map(std::path::PathBuf::from));
+        }
     }
 }

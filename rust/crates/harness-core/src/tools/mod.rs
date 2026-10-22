@@ -3,8 +3,8 @@ pub(crate) mod children;
 pub use children::{ArchiveInput, SendInput, SpawnInput, WaitInput, WaitMode};
 mod agent_files;
 mod agent_selection;
-mod bash;
-pub use bash::BashInput;
+pub mod shell;
+pub use shell::ShellInput;
 mod defaults;
 pub use defaults::defaults;
 pub(crate) mod catalog;
@@ -30,7 +30,7 @@ pub mod git;
 #[doc(hidden)]
 pub use defaults::bind_defaults;
 
-/// The one conversion of a rejected fs/bash operand into a model-visible
+/// The one conversion of a rejected fs/shell operand into a model-visible
 /// result. Input the model must correct never becomes an executor error.
 #[doc(hidden)]
 pub fn rejected_input(error: crate::Error) -> crate::tool::ToolResult {

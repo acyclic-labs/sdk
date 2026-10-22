@@ -367,7 +367,7 @@ impl LocalHarness {
         input: Value,
     ) -> Result<Value> {
         let name = match tool {
-            CommandTool::Bash => "bash",
+            CommandTool::Shell => crate::tools::shell::PLATFORM.name,
             CommandTool::Spawn => "spawn",
             CommandTool::WebSearch => "web_search",
             CommandTool::UrlFetch => "url_fetch",
