@@ -114,31 +114,33 @@ pub(crate) fn shared_file_health(
         meter.admit_read(0)?;
     }
     let identity = file_identity(file)?;
-    let health = lock
+    let mut registry = lock
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .admit(identity, meter)?;
-    Ok(HealthOwner { health, identity })
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let health = registry.admit(identity, meter)?;
+    // Counted while the lock is held, so a last owner's cleanup cannot
+    // remove the row this owner was made from.
+    let owner = HealthOwner::owning(health, identity);
+    drop(registry);
+    Ok(owner)
 }
 
-/// Unregisters `health` when the dropping [`HealthOwner`] is its last owner,
-/// so that owner frees it on its own thread. A healthy row's `Weak` would
-/// otherwise keep the allocation until a later admission or sweep, on any
-/// thread, replaced the row. Owners are created and upgraded from rows only
-/// under the registry lock, so the last owner stays last while it is held; a
-/// retired job's fence may still upgrade its `Weak` to read `uncertain`,
-/// which a healthy row never sets. Poisoned rows own their health and stay.
+/// Unregisters `health` once the [`HealthOwner`] that took its owner count
+/// to zero gets here, so that owner frees it on its own thread. A healthy
+/// row's `Weak` would otherwise keep the allocation until a later admission
+/// or sweep, on any thread, replaced the row. Owners are made from rows only
+/// under the registry lock, so a count still zero under it means no owner
+/// was made since; a retired job's fence may still upgrade its `Weak` to read
+/// `uncertain`, which a healthy row never sets. Poisoned rows own their
+/// health and stay.
 pub(super) fn release_file_health(identity: FileIdentity, health: &Arc<FileHealth>) {
-    if Arc::strong_count(health) != 1 {
-        return;
-    }
     let Some(lock) = FILE_HEALTH.get() else {
         return;
     };
     let mut registry = lock
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if Arc::strong_count(health) != 1 {
+    if !health.owners.idle() {
         return;
     }
     if let Ok(Ok(index)) = registry.find(identity, None)

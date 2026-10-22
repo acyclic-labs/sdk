@@ -7,6 +7,13 @@ pub(crate) use std::sync::{Mutex, mpsc};
 #[cfg(acyclic_native_runtime_loom)]
 pub(crate) mod mpsc;
 
+pub(crate) mod atomic {
+    #[cfg(acyclic_native_runtime_loom)]
+    pub(crate) use loom::sync::atomic::{AtomicUsize, Ordering};
+    #[cfg(not(acyclic_native_runtime_loom))]
+    pub(crate) use std::sync::atomic::{AtomicUsize, Ordering};
+}
+
 /// Drops a shared reference after its holder has published through it. The
 /// thread can be preempted before the release, so Loom explores another
 /// thread running first.

@@ -178,29 +178,50 @@ fn pending_job_that_outlives_its_file_unregisters_health() -> io::Result<()> {
     Ok(())
 }
 
-// Negative control: an owner that is a bare `Arc<FileHealth>`, not a
-// `HealthOwner`, drops last without unregistering, and the check above sees
-// its row left behind. The registry lock is held across the drop and the
-// check, so no other thread's sweep can remove the row in between.
+// The final two owners dropping at once on different threads: exactly one of
+// them takes the owner count to zero and unregisters. Reading the `Arc`'s
+// strong count instead let both see the other and both skip cleanup.
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 #[test]
-fn bare_health_owner_dropped_last_leaves_its_row() -> io::Result<()> {
+fn concurrent_final_owner_drops_unregister_health() -> io::Result<()> {
     initialize_native_io_services()?;
     let temporary = tempfile::NamedTempFile::new()?;
     let file = temporary.reopen()?;
-    let identity = file_identity(&file)?;
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    for _ in 0..200 {
+        let native =
+            NativeFile::from_file(temporary.reopen()?, None).map_err(|(error, _)| error)?;
+        let read = native.read_batch_async(vec![OwnedRead {
+            offset: 0,
+            length: 1,
+        }]);
+        let other = Arc::clone(&barrier);
+        let worker = std::thread::spawn(move || {
+            other.wait();
+            drop(read);
+        });
+        barrier.wait();
+        drop(native);
+        worker
+            .join()
+            .map_err(|_| io::Error::other("drop thread panicked"))?;
+        assert!(!registered(&file)?, "concurrent final owners left the row");
+    }
+    Ok(())
+}
+
+// Negative control: an owner whose release never runs (leaked here, as a
+// bare `Arc` owner would be uncounted) keeps the row, and the check used
+// above sees it.
+#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+#[test]
+fn owner_that_never_releases_leaves_its_row() -> io::Result<()> {
+    initialize_native_io_services()?;
+    let temporary = tempfile::NamedTempFile::new()?;
+    let file = temporary.reopen()?;
     let native = NativeFile::from_file(temporary.reopen()?, None).map_err(|(error, _)| error)?;
-    let bare = Arc::clone(&native.health);
+    std::mem::forget(native.health.clone());
     drop(native);
-    let registry = FILE_HEALTH
-        .get()
-        .ok_or(io::ErrorKind::NotConnected)?
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    drop(bare);
-    assert!(
-        registry.find(identity, None)?.is_ok(),
-        "a bare owner unregistered its health"
-    );
+    assert!(registered(&file)?, "a leaked owner's row was removed");
     Ok(())
 }
