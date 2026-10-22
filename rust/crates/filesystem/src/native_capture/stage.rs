@@ -10,16 +10,11 @@ pub(super) struct StagedRegularBody {
 
 type NativeSourceStorage = (Vec<u8>, (KernelOwnedAllocation, ReadAllocationReservation));
 
-pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    stager: &Checkout<A, O>,
+fn open_capture_file(
     source_root: &HostRoot,
     host_path: &CaptureHostPath,
-    snapshot: &HostStat,
-    maximum_extent_spans: u32,
     meter: &NativeMaterializationWork,
-    staged_file_bytes: &mut u64,
-) -> Result<StagedRegularBody, CaptureError> {
-    meter.cancellation().check()?;
+) -> Result<std::fs::File, CaptureError> {
     #[cfg(unix)]
     let file = source_root
         .open_file(host_path, &mut meter.clone())
@@ -32,7 +27,20 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
             &mut meter.clone(),
         )
         .map_err(capture_demand_error)?;
-    let file = file.into_std();
+    Ok(file.into_std())
+}
+
+pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    stager: &Checkout<A, O>,
+    source_root: &HostRoot,
+    host_path: &CaptureHostPath,
+    snapshot: &HostStat,
+    maximum_extent_spans: u32,
+    meter: &NativeMaterializationWork,
+    staged_file_bytes: &mut u64,
+) -> Result<StagedRegularBody, CaptureError> {
+    meter.cancellation().check()?;
+    let file = open_capture_file(source_root, host_path, meter)?;
     let metadata = source_root
         .stat_file_metadata(&file, &mut meter.clone())
         .map_err(capture_demand_error)?;
