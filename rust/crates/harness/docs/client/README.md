@@ -55,7 +55,7 @@ overlays are explicitly ambiguous; there is no universal last-writer-wins rule.
 operation, exact basis, assumptions, edges, prediction, expiry and both outcomes.
 Export authorization and storage are host policy. Exporting or sharing never
 creates a fact. There is intentionally no automatic import, replay, journal or
-promotion: a future adapter must restore authoritative demand, validate current
+promotion: an importing adapter must restore authoritative demand, validate current
 pins, recover original operation identity and revalidate hypotheses. Namespace
 uniqueness and atomic durable sequence checkpointing are host obligations. The
 kernel never allocates operation identities or submits retries. Idempotent

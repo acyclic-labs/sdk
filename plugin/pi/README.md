@@ -20,7 +20,7 @@ uninstall. Immutable extension assets remain cached after uninstall. No resource
 starts during extension registration. The diagnostics command bounds process
 time and output and invokes the selected binary without a shell.
 
-This slice does **not** implement or qualify recursive agents. Pi continues owning
+This slice implements but does **not** qualify recursive agents. Pi continues owning
 context, compaction and model retries. No Harness context/accounting parity or
 process confinement claim follows from installation or diagnostics.
 
@@ -42,7 +42,7 @@ extension-side authoritative registry, merge implementation or effect journal.
 
 ## Composition proposal against landed main
 
-This is a source proposal; none of these additional paths is implemented or
+This is a source proposal; these additional paths are implemented but not
 qualified. Keep the Pi model loop outside Harness stock execution.
 
 | Datum | Existing authoritative object | Pi adapter responsibility |
@@ -64,8 +64,7 @@ that composition if it fits the Pi-only task machine; otherwise compose those
 same public objects directly. Neither choice selects a Harness model/context
 loop. Ordinary mail requires admitted durable tasks, not just a plugin route ID.
 
-Main's native provider accepts no interactive stdin and captures a one-shot
-process. Avoid expanding that shared provider for Pi RPC unless a demonstrated
+The native provider accepts bounded stdin and captures process output. Avoid expanding that shared provider for Pi RPC unless a demonstrated
 acceptance requirement cannot be met by one-shot workers and extension message
 delivery at safe Pi boundaries. Active steering, session reopening, provider
 environment, session file publication and cleanup correspondence need actual
@@ -77,9 +76,9 @@ types/schemas through repository generation mechanisms. No independently
 maintained TypeScript authority schema. Pi host-native transcript access,
 workspace reads/imports, messaging and lifecycle control remain separate grants.
 
-### Native volume binding proposal (not implemented)
+### Native volume binding proposal
 
-The plugin and `NativeVolumeView` currently name workspaces differently. The
+Pi and `NativeVolumeView` use canonical volume names. The
 native view opens the canonical `VolumeRef::storage_name()`; a plugin route's
 mount path or workspace ID cannot substitute for that typed identity.
 
@@ -93,9 +92,9 @@ Do not rename existing workspaces, copy their contents, or add an alias registry
 The bounded source audit found these consumers that must change together:
 
 - Initial root attach and later root adoption select the workspace name.
-- Pending root registration recovery currently derives that name from session
+- Pending root registration recovery previously derived that name from session
   and physical path; it must instead recover the original typed binding.
-- Child fork and pending-child discard currently derive names from fork/root
+- Child fork and pending-child discard previously derived names from fork/root
   identities. Both must resolve the same prepared typed child, including recovery
   before the fork has published a workspace ID.
 - Normal root reopen already resolves the core context's workspace ID. Retain

@@ -1,6 +1,6 @@
 # acyclic-stream
 
-Hierarchical append-only streams with exact sequence cursors, conditional appends, forks, and coordinated commits. A `StreamClient` wraps any `StreamProvider` without changing provider semantics.
+Hierarchical append-only streams with exact sequence cursors, conditional appends, forks, and coordinated commits.
 
 ```sh
 cargo add acyclic-stream

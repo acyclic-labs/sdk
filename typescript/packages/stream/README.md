@@ -9,7 +9,7 @@ canonical Stream v1 RPC, including streaming reads/follow and atomic multi-path
 
 Typed, hierarchical append-only streams with explicit cursors, conditional appends, forks, and coordinated commits. Committed records remain readable from the beginning of a stream; paths and committed history are permanent.
 
-`childrenPage({ parent, limit })` returns direct children with an immutable 32-byte hierarchy version and an optional `nextAfter` cursor. Pass both `after` and `hierarchyVersion` for the next page; a path creation between pages fails with `hierarchy_changed` instead of silently skipping or duplicating agents. `childrenAll(parent, limit)` and its `children(parent, limit)` convenience alias use that same continuation loop, including hierarchies larger than 1,024 children. Ancestor paths are materialized when a nested stream is created.
+`childrenPage({ parent, limit })` returns direct children with an immutable 32-byte hierarchy version and an optional `nextAfter` cursor. Pass both `after` and `hierarchyVersion` for the next page; a path creation between pages fails with `hierarchy_changed` instead of silently skipping or duplicating agents. `children(parent, limit)` uses that same continuation loop, including hierarchies larger than 1,024 children. Ancestor paths are materialized when a nested stream is created.
 
 ```sh
 npm install @acyclic-labs/stream

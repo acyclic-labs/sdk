@@ -18,9 +18,9 @@ into that same domain and encode responses only after fallible semantic
 conversion. The package descriptor is generated from the maintained Rust
 contract declarations and is used to generate TypeScript bindings.
 
-`grpc::connect(endpoint, token)` exposes every generated Actors service RPC.
+`grpc::connect(endpoint, token, None)` exposes every generated Actors service RPC.
 It trusts the platform's roots (on Linux, those `SSL_CERT_FILE` and
-`SSL_CERT_DIR` select). Use `grpc::connect_with_ca_certificate` for a
+`SSL_CERT_DIR` select). Pass `Some(ca)` to `grpc::connect` for a
 caller-supplied private CA; that CA is then the whole trust.
 `http::Client::new(endpoint, token, maximum_response_bytes)` exposes the same
 nine operations using canonical Protobuf JSON. Invocation carries request and
