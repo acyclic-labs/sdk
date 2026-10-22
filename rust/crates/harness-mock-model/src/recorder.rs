@@ -16,7 +16,7 @@ impl Recorder {
         let (sender, receiver) = mpsc::channel();
         std::thread::Builder::new()
             .name("mock-records".into())
-            .spawn(move || run(receiver, file, io::stdout()))?;
+            .spawn(move || run(&receiver, file, io::stdout()))?;
         Ok(Self(sender))
     }
 
@@ -37,7 +37,7 @@ impl Recorder {
     }
 }
 
-fn run(receiver: mpsc::Receiver<Pending>, mut file: impl Write, mut events: impl Write) {
+fn run(receiver: &mpsc::Receiver<Pending>, mut file: impl Write, mut events: impl Write) {
     let mut failure: Option<io::Error> = None;
     while let Ok(first) = receiver.recv() {
         // Drain work already ready, without a timer or a batching delay.
@@ -89,13 +89,19 @@ mod tests {
             if self.fail {
                 return Err(io::Error::other("injected append failure"));
             }
-            self.bytes.lock().unwrap().extend_from_slice(bytes);
+            self.bytes
+                .lock()
+                .map_err(|_| io::Error::other("recorder trace lock poisoned"))?
+                .extend_from_slice(bytes);
             Ok(bytes.len())
         }
         fn flush(&mut self) -> io::Result<()> {
             // The same trace records the file fence before any event bytes.
             if self.record {
-                self.bytes.lock().unwrap().push(b'|');
+                self.bytes
+                    .lock()
+                    .map_err(|_| io::Error::other("recorder trace lock poisoned"))?
+                    .push(b'|');
             }
             Ok(())
         }
@@ -121,7 +127,7 @@ mod tests {
             let second = recorder.enqueue(b"2\n".to_vec(), b"b\n".to_vec()).unwrap();
             // Queue both before starting the writer: no scheduler dependence.
             drop(recorder);
-            run(receiver, file, events);
+            run(&receiver, file, events);
             assert_eq!(first.blocking_recv().unwrap().is_err(), fail);
             assert_eq!(second.blocking_recv().unwrap().is_err(), fail);
             assert_eq!(
