@@ -52,6 +52,15 @@ impl AdapterState {
         }
         Ok(())
     }
+
+    /// Whether a host's `cwd` selects one of the admitted roots. Roots are recorded
+    /// canonical, so the host's own spelling is canonicalized first: a Windows host
+    /// reports `Q:\...` for the verbatim `\?\Q:\...` root, and a macOS host may
+    /// report a path through a symlink.
+    pub(crate) fn selects_root(&self, cwd: &std::path::Path) -> std::io::Result<bool> {
+        let selected = cwd.canonicalize()?;
+        Ok(self.roots.values().any(|root| root.path == selected))
+    }
 }
 
 impl ControlPlane {

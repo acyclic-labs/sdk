@@ -181,3 +181,21 @@ async fn preparing_roots_reopen_as_intents_and_cannot_route_or_mutate() {
         b"preserve concurrent user content"
     );
 }
+#[test]
+fn a_host_spelling_of_an_admitted_root_selects_it() {
+    let parent = tempfile::tempdir().unwrap();
+    let (root, other) = (parent.path().join("root"), parent.path().join("other"));
+    std::fs::create_dir_all(root.join("nested")).unwrap();
+    std::fs::create_dir(&other).unwrap();
+    let state = preparing_state(root.canonicalize().unwrap());
+    // Roots are recorded canonical; hosts report their own spelling, such as Windows'
+    // `Q:\...` for a verbatim `\?\Q:\...` root or any path with a `..` component.
+    for spelling in [root.clone(), root.join("nested").join("..")] {
+        assert_ne!(state.roots.values().next().unwrap().path, spelling);
+        assert!(state.selects_root(&spelling).unwrap(), "{spelling:?}");
+    }
+    // Negative controls: another directory never selects, and a missing one fails.
+    assert!(!state.selects_root(&other).unwrap());
+    assert!(!state.selects_root(&root.join("nested")).unwrap());
+    assert!(state.selects_root(&parent.path().join("missing")).is_err());
+}

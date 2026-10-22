@@ -77,13 +77,13 @@ impl PiSession {
                     match event {
                         "SessionStart" => {
                             if session == self.state.root_session_id {
-                                let selected = PathBuf::from(
-                                    string(&request.arguments, "cwd")
-                                        .map_err(RootError::Invalid)?,
-                                )
-                                .canonicalize()
-                                .map_err(|error| RootError::Storage(error.to_string()))?;
-                                if !self.state.roots.values().any(|root| root.path == selected) {
+                                let cwd = string(&request.arguments, "cwd")
+                                    .map_err(RootError::Invalid)?;
+                                if !self
+                                    .state
+                                    .selects_root(Path::new(&cwd))
+                                    .map_err(|error| RootError::Storage(error.to_string()))?
+                                {
                                     return Err(invalid(
                                         "Pi root selection changed after original admission",
                                     ));

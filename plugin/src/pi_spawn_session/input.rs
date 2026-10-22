@@ -249,9 +249,8 @@ impl PiSession {
             || (caller == owner.policy().root_task
                 && !self
                     .state
-                    .roots
-                    .values()
-                    .any(|root| root.path == Path::new(cwd)))
+                    .selects_root(Path::new(cwd))
+                    .map_err(|error| Error::Invalid(error.to_string()))?)
         {
             return Err(invalid(
                 "Pi native context differs from its original caller",
