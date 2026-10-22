@@ -26,7 +26,7 @@ fn append(provider: &MemoryStream) -> crate::AppendReceipt {
     let AppendOutcome::Committed(receipt) =
         futures::executor::block_on(provider.append(AppendRequest {
             path: StreamPath::new("watched").unwrap(),
-            records: vec![Bytes::from_static(b"x")],
+            records: vec![(Bytes::from_static(b"x")).into()],
             if_tail: None,
             idempotency_key: None,
         }))

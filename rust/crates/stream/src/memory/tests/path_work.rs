@@ -24,7 +24,7 @@ fn provider(known: &[StreamPath]) -> MemoryStream {
     for path in known {
         futures::executor::block_on(provider.append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"x")],
+            records: vec![(Bytes::from_static(b"x")).into()],
             if_tail: None,
             idempotency_key: None,
         }))

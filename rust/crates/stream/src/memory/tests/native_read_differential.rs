@@ -108,7 +108,7 @@ async fn seed(batches: usize) -> MemoryStream {
         provider
             .append(AppendRequest {
                 path: path.clone(),
-                records: vec![Bytes::from(vec![i.to_le_bytes()[0], 0, 255])],
+                records: vec![(Bytes::from(vec![i.to_le_bytes()[0], 0, 255])).into()],
                 if_tail: None,
                 idempotency_key: None,
             })

@@ -54,7 +54,7 @@ pub(super) fn assert_original_denial(error: &std::io::Error, expected: &'static 
 pub(super) fn keyed_append(path: &str, tail: u64) -> Result<AppendRequest, StreamError> {
     Ok(AppendRequest {
         path: StreamPath::new(path)?,
-        records: vec![OwnedBytes::from_static(b"native-append-record")],
+        records: vec![(OwnedBytes::from_static(b"native-append-record")).into()],
         if_tail: Some(tail),
         idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from(format!(
             "{path}@{tail}"
@@ -83,7 +83,7 @@ pub(super) async fn prepared_fixture(provider: &LocalStream) -> Result<CommitReq
         provider
             .append(AppendRequest {
                 path: StreamPath::new(path)?,
-                records: vec![OwnedBytes::from_static(b"seed")],
+                records: vec![(OwnedBytes::from_static(b"seed")).into()],
                 if_tail: Some(0),
                 idempotency_key: None,
             })
@@ -102,7 +102,7 @@ pub(super) async fn prepared_fixture(provider: &LocalStream) -> Result<CommitReq
         ],
         mutations: vec![crate::CommitMutation::Append {
             path: StreamPath::new("prepared/target")?,
-            records: vec![OwnedBytes::new()],
+            records: vec![(OwnedBytes::new()).into()],
         }],
         idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"original-prepared-key"))?,
     })

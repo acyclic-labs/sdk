@@ -46,7 +46,7 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
         let provider = LocalStream::open(directory.path(), limits).await?;
         let path = StreamPath::new("agents/a")?;
         let AppendOutcome::Committed(seed) = provider.append(AppendRequest {
-            path: path.clone(), records: vec![Bytes::from_static(b"seed")],
+            path: path.clone(), records: vec![(Bytes::from_static(b"seed")).into()],
             if_tail: None, idempotency_key: None,
         }).await? else { return Err("seed conflict".into()) };
         assert_eq!(provider.watermarks(path.clone()).await?.durable, 1);
@@ -72,7 +72,7 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
                         crate::CommitCondition::Absent { path: StreamPath::new("agents/b")? },
                     ],
                     mutations: ["agents/a", "agents/b"].into_iter().map(|path| Ok(CommitMutation::Append {
-                        path: StreamPath::new(path)?, records: vec![Bytes::from_static(b"accepted")],
+                        path: StreamPath::new(path)?, records: vec![(Bytes::from_static(b"accepted")).into()],
                     })).collect::<std::result::Result<Vec<_>, StreamError>>()?,
                     idempotency_key: IdempotencyKey::new(Bytes::from_static(b"compacting"))?,
                 }).await
@@ -151,7 +151,7 @@ fn append_to_follow_latency_with_frequent_compaction() -> Result {
                 journal_operations: 4, ..LocalStreamLimits::default()
             }).await?;
             let path = StreamPath::new("latency")?;
-            provider.append(AppendRequest { path: path.clone(), records: vec![Bytes::from_static(b"seed")],
+            provider.append(AppendRequest { path: path.clone(), records: vec![(Bytes::from_static(b"seed")).into()],
                 if_tail: None, idempotency_key: None }).await?;
             let reader: Box<dyn StreamProvider> = if transport == "grpc" {
                 Box::new(crate::grpc::tests::client(provider.clone())?)
@@ -163,7 +163,7 @@ fn append_to_follow_latency_with_frequent_compaction() -> Result {
                 let writing = tokio::spawn({
                     let provider = provider.clone(); let path = path.clone();
                     async move { provider.append(AppendRequest {
-                        path, records: vec![Bytes::from_static(b"delta")],
+                        path, records: vec![(Bytes::from_static(b"delta")).into()],
                         if_tail: Some(sequence), idempotency_key: None,
                     }).await }
                 });

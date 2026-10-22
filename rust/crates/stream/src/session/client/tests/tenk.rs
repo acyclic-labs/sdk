@@ -97,11 +97,11 @@ async fn agent(
         mutations: vec![
             CommitMutation::Append {
                 path: own.clone(),
-                records: vec![OwnedBytes::from(value.clone())],
+                records: vec![(OwnedBytes::from(value.clone())).into()],
             },
             CommitMutation::Append {
                 path: peer,
-                records: vec![OwnedBytes::from(value)],
+                records: vec![(OwnedBytes::from(value)).into()],
             },
         ],
         idempotency_key: IdempotencyKey::new(format!("agent-{id}").into_bytes())?,

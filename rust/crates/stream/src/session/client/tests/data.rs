@@ -2,6 +2,8 @@ use super::*;
 
 fn subscription(path: &str, delivery: wire::SessionDelivery) -> wire::SessionSubscription {
     wire::SessionSubscription {
+        credential: 0,
+        filter: None,
         resume: Some(wire::SessionCursor::default()),
         kind: Some(Kind::Follow(wire::SessionFollow {
             path: path.into(),
@@ -34,6 +36,8 @@ async fn raw_follow_keeps_checked_anchors_and_standalone_watermarks() -> TestRes
         return Err("expected record".into());
     };
     let checked = wire::SessionSubscription {
+        credential: 0,
+        filter: None,
         resume: data.after,
         kind: Some(Kind::Follow(wire::SessionFollow {
             path: "events".into(),

@@ -158,7 +158,7 @@ async fn checked_delivery_reports_history_replacement_after_registration() -> Te
     replacement
         .append(AppendRequest {
             path: StreamPath::new("events")?,
-            records: vec![OwnedBytes::from_static(b"replacement")],
+            records: vec![(OwnedBytes::from_static(b"replacement")).into()],
             if_tail: None,
             idempotency_key: None,
         })

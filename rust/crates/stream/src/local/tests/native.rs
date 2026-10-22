@@ -97,7 +97,7 @@ async fn native_append_keeps_keyed_conflict_and_does_not_journal_unkeyed_conflic
     provider
         .append(AppendRequest {
             path: path.clone(),
-            records: vec![OwnedBytes::from_static(b"seed")],
+            records: vec![(OwnedBytes::from_static(b"seed")).into()],
             if_tail: Some(0),
             idempotency_key: None,
         })
@@ -243,7 +243,7 @@ async fn prepared_late_cancel_drains_original_frame_and_recovery_without_fresh_a
     let allocations = meter.allocations.load(Ordering::SeqCst);
     meter.cancelled.store(true, Ordering::SeqCst);
     let error = packet
-        .finish(OwnedBytes::from_static(b"actual-completion"))
+        .finish((OwnedBytes::from_static(b"actual-completion")).into())
         .await
         .err()
         .ok_or("cancelled completion invented an acknowledgement")?;
@@ -263,7 +263,7 @@ async fn prepared_late_cancel_drains_original_frame_and_recovery_without_fresh_a
         return Err("fixture changed family".into());
     };
     *records.first_mut().ok_or(StreamError::InvalidArgument)? =
-        OwnedBytes::from_static(b"actual-completion");
+        (OwnedBytes::from_static(b"actual-completion")).into();
     let observed = reopened
         .inspect_idempotency(request.idempotency_key.clone())
         .await?
@@ -372,7 +372,7 @@ fn prepared_reply_drop_keeps_accepted_durability_and_input_custody()
             started_send,
             release_receive,
         ));
-        let future = packet.finish(OwnedBytes::from_static(b"accepted-without-reply"));
+        let future = packet.finish((OwnedBytes::from_static(b"accepted-without-reply")).into());
         drop(future);
         drop(packet_guard);
         tokio::task::spawn_blocking(move || started_receive.recv()).await??;

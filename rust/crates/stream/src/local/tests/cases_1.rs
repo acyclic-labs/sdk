@@ -58,7 +58,10 @@ async fn local_append_emits_its_span() -> Result<(), Box<dyn std::error::Error>>
     provider
         .append(AppendRequest {
             path: StreamPath::new("traced/path")?,
-            records: vec![Bytes::from_static(b"body"), Bytes::from_static(b"more")],
+            records: vec![
+                (Bytes::from_static(b"body")).into(),
+                Bytes::from_static(b"more"),
+            ],
             if_tail: None,
             idempotency_key: None,
         })
@@ -133,7 +136,7 @@ async fn deadline_is_evaluated_once_and_only_accepted_commands_are_replayed()
         }],
         mutations: vec![crate::CommitMutation::Append {
             path: StreamPath::new("deadline/accepted")?,
-            records: vec![Bytes::from_static(b"accepted")],
+            records: vec![(Bytes::from_static(b"accepted")).into()],
         }],
         idempotency_key: IdempotencyKey::new(Bytes::from_static(b"accepted"))?,
     };
@@ -147,7 +150,7 @@ async fn deadline_is_evaluated_once_and_only_accepted_commands_are_replayed()
         }],
         mutations: vec![crate::CommitMutation::Append {
             path: StreamPath::new("deadline/expired")?,
-            records: vec![Bytes::from_static(b"expired")],
+            records: vec![(Bytes::from_static(b"expired")).into()],
         }],
         idempotency_key: IdempotencyKey::new(Bytes::from_static(b"expired"))?,
     };
@@ -183,7 +186,7 @@ async fn local_provider_excludes_a_second_process_owner_and_repairs_a_torn_tail(
     provider
         .append(AppendRequest {
             path: StreamPath::new("durable")?,
-            records: vec![Bytes::from_static(b"one")],
+            records: vec![(Bytes::from_static(b"one")).into()],
             if_tail: Some(0),
             idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"append"))?),
         })
@@ -213,7 +216,7 @@ async fn reopen_streams_more_commands_than_the_pipeline_window()
         provider
             .append(AppendRequest {
                 path: path.clone(),
-                records: vec![Bytes::copy_from_slice(&index.to_le_bytes())],
+                records: vec![(Bytes::copy_from_slice(&index.to_le_bytes())).into()],
                 if_tail: Some(index),
                 idempotency_key: None,
             })
@@ -248,7 +251,7 @@ async fn replay_failure_drains_the_bounded_pipeline_and_releases_the_root()
     let valid = PreparedFrame::encode(
         &Command::Append(AppendRequest {
             path,
-            records: vec![Bytes::from_static(b"later")],
+            records: vec![(Bytes::from_static(b"later")).into()],
             if_tail: Some(0),
             idempotency_key: None,
         }),
@@ -294,7 +297,7 @@ async fn journal_capacity_rejects_before_mutating_visible_state()
         provider
             .append(AppendRequest {
                 path: StreamPath::new("capacity")?,
-                records: vec![Bytes::from_static(b"must-not-appear")],
+                records: vec![(Bytes::from_static(b"must-not-appear")).into()],
                 if_tail: Some(0),
                 idempotency_key: None,
             })
@@ -317,7 +320,7 @@ async fn append_one(
     provider
         .append(AppendRequest {
             path: StreamPath::new(path)?,
-            records: vec![Bytes::from_static(b"body")],
+            records: vec![(Bytes::from_static(b"body")).into()],
             if_tail: Some(0),
             idempotency_key: None,
         })
@@ -414,7 +417,7 @@ async fn append_keyed(
     Ok(provider
         .append(AppendRequest {
             path: StreamPath::new("compacted")?,
-            records: vec![Bytes::copy_from_slice(&index.to_le_bytes())],
+            records: vec![(Bytes::copy_from_slice(&index.to_le_bytes())).into()],
             if_tail: Some(index),
             idempotency_key: Some(IdempotencyKey::new(Bytes::copy_from_slice(
                 &index.to_le_bytes(),

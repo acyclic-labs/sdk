@@ -9,7 +9,7 @@ async fn unpolled_streams_do_not_block_appends() {
         let AppendOutcome::Committed(seed) = provider
             .append(AppendRequest {
                 path: path.clone(),
-                records: vec![Bytes::from_static(b"seed")],
+                records: vec![(Bytes::from_static(b"seed")).into()],
                 if_tail: None,
                 idempotency_key: None,
             })
@@ -51,7 +51,7 @@ async fn unpolled_streams_do_not_block_appends() {
             provider
                 .append(AppendRequest {
                     path,
-                    records: vec![Bytes::from_static(b"next")],
+                    records: vec![(Bytes::from_static(b"next")).into()],
                     if_tail: Some(1),
                     idempotency_key: None,
                 })
@@ -75,7 +75,7 @@ async fn dropped_consumers_leave_no_queued_snapshot_reservation() {
         provider
             .append(AppendRequest {
                 path: path.clone(),
-                records: vec![Bytes::from_static(b"seed")],
+                records: vec![(Bytes::from_static(b"seed")).into()],
                 if_tail: None,
                 idempotency_key: None,
             })

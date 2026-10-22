@@ -4,6 +4,7 @@ use std::time::Instant;
 
 fn record(sequence: u64) -> Event {
     Event::Record(crate::Record {
+        headers: Default::default(),
         sequence,
         value: wire::SessionLatestValue {
             key: Bytes::from_static(b"status"),

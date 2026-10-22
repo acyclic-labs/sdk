@@ -13,6 +13,7 @@ fn hello(bytes: u64, frames: u32) -> wire::SessionFrame {
         0,
         0,
         Body::Hello(wire::SessionHello {
+            credentials: Vec::new(),
             version: 1,
             client_id: Bytes::from_static(b"client"),
             destination_node: "node".into(),
@@ -23,6 +24,8 @@ fn hello(bytes: u64, frames: u32) -> wire::SessionFrame {
 }
 fn subscribe(id: u64, path: &str, from: u64, latest: bool) -> wire::SessionSubscription {
     wire::SessionSubscription {
+        credential: 0,
+        filter: None,
         channel: Some(wire::SessionChannel {
             channel_id: id,
             generation: 1,
@@ -64,7 +67,7 @@ async fn append(provider: &MemoryStream, path: &str, value: Bytes) -> Result<(),
     provider
         .append(AppendRequest {
             path: StreamPath::new(path)?,
-            records: vec![OwnedBytes::from(value)],
+            records: vec![(OwnedBytes::from(value)).into()],
             if_tail: None,
             idempotency_key: None,
         })

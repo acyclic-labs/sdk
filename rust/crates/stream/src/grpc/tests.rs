@@ -150,7 +150,7 @@ async fn grpc_transport_passes_the_public_suite() -> TestResult {
     transport
         .append(AppendRequest {
             path: path.clone(),
-            records: values.clone(),
+            records: values.iter().cloned().map(Into::into).collect(),
             if_tail: None,
             idempotency_key: None,
         })
@@ -181,7 +181,14 @@ async fn service_rejects_oversized_commands_before_provider_dispatch() {
     let service = Service::new(Arc::new(MemoryStream::default()));
     let request = wire::AppendRequest {
         path: "x".repeat(crate::MAX_PATH_BYTES),
-        records: vec![Bytes::from(vec![0_u8; crate::MAX_RECORD_BYTES]); 16],
+        records: vec![
+            wire::AppendRecord {
+                value: Bytes::from(vec![0_u8; crate::MAX_RECORD_BYTES]),
+                keys: vec![],
+                attributes: vec![]
+            };
+            16
+        ],
         if_tail: None,
         idempotency_key: None,
     };
@@ -232,7 +239,7 @@ async fn follow_resumes_after_a_clean_end_of_stream() -> TestResult {
         .inner
         .append(AppendRequest {
             path: path.clone(),
-            records: vec![OwnedBytes::from_static(b"resumed")],
+            records: vec![(OwnedBytes::from_static(b"resumed")).into()],
             if_tail: Some(0),
             idempotency_key: None,
         })
@@ -443,7 +450,7 @@ async fn translating_client_does_not_ack_before_downstream_delivery() -> TestRes
     provider
         .append(AppendRequest {
             path: StreamPath::new("accounts/events")?,
-            records: vec![OwnedBytes::from(b"delivered".to_vec())],
+            records: vec![(OwnedBytes::from(b"delivered".to_vec())).into()],
             if_tail: Some(0),
             idempotency_key: None,
         })
@@ -500,7 +507,7 @@ async fn source_eof_never_discards_records_queued_before_terminal_close() -> Tes
         .inner
         .append(AppendRequest {
             path: path.clone(),
-            records: vec![OwnedBytes::from_static(b"record"); 20],
+            records: vec![(OwnedBytes::from_static(b"record")).into(); 20],
             if_tail: None,
             idempotency_key: None,
         })

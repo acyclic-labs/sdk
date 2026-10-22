@@ -4,6 +4,8 @@ use super::{read_response_records, read_response_wire, wire};
 fn records(from: u64, count: u64) -> Vec<wire::Record> {
     (from..from + count)
         .map(|sequence| wire::Record {
+            keys: Vec::new(),
+            attributes: Vec::new(),
             sequence,
             value: vec![u8::try_from(sequence % 251).unwrap_or(0); 100].into(),
             commit_id: vec![1; 32].into(),

@@ -12,7 +12,7 @@ async fn public_guarded_commit_binds_current_clock_and_keeps_exact_cached_replay
         provider
             .append(AppendRequest {
                 path: path(name)?,
-                records: vec![OwnedBytes::from_static(b"seed")],
+                records: vec![(OwnedBytes::from_static(b"seed")).into()],
                 if_tail: Some(0),
                 idempotency_key: None,
             })
@@ -31,7 +31,7 @@ async fn public_guarded_commit_binds_current_clock_and_keeps_exact_cached_replay
         ],
         mutations: vec![CommitMutation::Append {
             path: path("completion/target")?,
-            records: vec![OwnedBytes::from_static(b"real-guarded-body")],
+            records: vec![(OwnedBytes::from_static(b"real-guarded-body")).into()],
         }],
         idempotency_key: key(b"guarded-clock")?,
     };

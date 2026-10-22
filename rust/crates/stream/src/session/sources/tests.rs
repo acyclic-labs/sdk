@@ -9,6 +9,7 @@ fn source(identity: wire::SessionChannel) -> Source {
             .into_iter()
             .chain((0..2).map(|sequence| {
                 Ok(Event::Record(crate::Record {
+                    headers: Default::default(),
                     sequence,
                     value: vec![sequence.to_le_bytes()[0]].into(),
                     commit_id: crate::CommitId::from_bytes([1; 32]),

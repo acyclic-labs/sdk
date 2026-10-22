@@ -17,7 +17,7 @@ proptest! {
             let path = StreamPath::new("hint/read").unwrap();
             let append = |count| AppendRequest {
                 path: path.clone(),
-                records: vec![Bytes::from_static(b"record"); count],
+                records: vec![(Bytes::from_static(b"record")).into(); count],
                 if_tail: None,
                 idempotency_key: None,
             };

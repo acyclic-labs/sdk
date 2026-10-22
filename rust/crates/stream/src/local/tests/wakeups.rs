@@ -15,7 +15,7 @@ impl Wake for Push {
 async fn append(provider: &LocalStream, path: StreamPath) -> Result<(), StreamError> {
     deferring_durability(provider.append(AppendRequest {
         path,
-        records: vec![Bytes::from_static(b"accepted")],
+        records: vec![(Bytes::from_static(b"accepted")).into()],
         if_tail: None,
         idempotency_key: None,
     }))

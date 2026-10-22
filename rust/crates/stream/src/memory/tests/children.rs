@@ -129,7 +129,7 @@ async fn append(provider: &MemoryStream, path: &str) -> Result<(), StreamError> 
     provider
         .append(AppendRequest {
             path: StreamPath::new(path)?,
-            records: vec![Bytes::from_static(b"value")],
+            records: vec![(Bytes::from_static(b"value")).into()],
             if_tail: None,
             idempotency_key: None,
         })

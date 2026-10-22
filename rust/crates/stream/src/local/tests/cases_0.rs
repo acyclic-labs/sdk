@@ -136,7 +136,7 @@ fn cancelled_persist_retains_ownership_until_the_journal_task_stops()
                     provider
                         .append(AppendRequest {
                             path: StreamPath::new("cancelled-persist")?,
-                            records: vec![Bytes::from_static(b"record")],
+                            records: vec![(Bytes::from_static(b"record")).into()],
                             if_tail: Some(0),
                             idempotency_key: None,
                         })
@@ -203,7 +203,7 @@ fn a_cancelled_mutation_is_invisible_until_its_frame_is_durable()
                 provider
                     .append(AppendRequest {
                         path,
-                        records: vec![Bytes::from_static(b"record")],
+                        records: vec![(Bytes::from_static(b"record")).into()],
                         if_tail: Some(0),
                         idempotency_key: None,
                     })
@@ -240,7 +240,7 @@ fn keyed_commit(path: &str, tail: u64) -> Result<CommitRequest, StreamError> {
         }],
         mutations: vec![crate::CommitMutation::Append {
             path: path.clone(),
-            records: vec![Bytes::from(format!("{path}-{tail}"))],
+            records: vec![(Bytes::from(format!("{path}-{tail}"))).into()],
         }],
         idempotency_key: IdempotencyKey::new(Bytes::from(format!("{path}@{tail}")))?,
     })
@@ -368,7 +368,7 @@ async fn concurrent_commits_on_distinct_paths_replay_after_reopen()
                             .into_iter()
                             .map(|path| crate::CommitMutation::Append {
                                 path: path.clone(),
-                                records: vec![Bytes::from(tail.to_le_bytes().to_vec())],
+                                records: vec![(Bytes::from(tail.to_le_bytes().to_vec())).into()],
                             })
                             .collect(),
                         idempotency_key: IdempotencyKey::new(Bytes::from(format!("joint@{tail}")))?,
@@ -442,7 +442,7 @@ async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
     let path = directory.path().join(JOURNAL_FILE);
     let command = Command::Append(AppendRequest {
         path: StreamPath::new("partial")?,
-        records: vec![Bytes::from_static(b"record")],
+        records: vec![(Bytes::from_static(b"record")).into()],
         if_tail: Some(0),
         idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"partial"))?),
     });
@@ -570,7 +570,7 @@ async fn recovery_rejects_receipt_overcapacity_without_rewriting_the_prefix()
     let provider = LocalStream::open(directory.path(), limits).await?;
     let first = AppendRequest {
         path: StreamPath::new("capacity/replay")?,
-        records: vec![Bytes::from_static(b"first")],
+        records: vec![(Bytes::from_static(b"first")).into()],
         if_tail: Some(0),
         idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"first"))?),
     };
@@ -621,7 +621,7 @@ async fn retry_outcomes_survive_clock_exhaustion_and_reopen()
     .await?;
     let request = AppendRequest {
         path: StreamPath::new("retained/local")?,
-        records: vec![Bytes::from_static(b"once")],
+        records: vec![(Bytes::from_static(b"once")).into()],
         if_tail: None,
         idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"local-once"))?),
     };
@@ -658,7 +658,7 @@ async fn journal_replay_preserves_monotonic_commit_times() -> Result<(), Box<dyn
         provider
             .append(AppendRequest {
                 path: path.clone(),
-                records: vec![Bytes::copy_from_slice(body)],
+                records: vec![(Bytes::copy_from_slice(body)).into()],
                 if_tail: None,
                 idempotency_key: None,
             })
@@ -671,7 +671,7 @@ async fn journal_replay_preserves_monotonic_commit_times() -> Result<(), Box<dyn
     reopened
         .append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"after-restart")],
+            records: vec![(Bytes::from_static(b"after-restart")).into()],
             if_tail: None,
             idempotency_key: None,
         })
@@ -756,7 +756,7 @@ async fn deferred_mutations_wait_for_the_next_flush() -> Result<(), Box<dyn std:
         provider
             .append(AppendRequest {
                 path: StreamPath::new("deferred")?,
-                records: vec![Bytes::from_static(b"record")],
+                records: vec![(Bytes::from_static(b"record")).into()],
                 if_tail: None,
                 idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(key))?),
             })
@@ -805,7 +805,7 @@ async fn filtered_local_operations_preserve_caller() -> Result<(), Box<dyn std::
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         let request = AppendRequest {
             path: StreamPath::new("traced")?,
-            records: vec![Bytes::from_static(b"record")],
+            records: vec![(Bytes::from_static(b"record")).into()],
             if_tail: None,
             idempotency_key: None,
         };
@@ -853,7 +853,7 @@ async fn local_follow_observes_lifetime_drop_and_late_error()
         provider
             .append(AppendRequest {
                 path: path.clone(),
-                records: vec![Bytes::from_static(b"record")],
+                records: vec![(Bytes::from_static(b"record")).into()],
                 if_tail: None,
                 idempotency_key: None,
             })
@@ -921,7 +921,7 @@ async fn follow_out_of_range_is_rejected_at_registration() -> Result<(), Box<dyn
     provider
         .append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"record")],
+            records: vec![(Bytes::from_static(b"record")).into()],
             if_tail: None,
             idempotency_key: None,
         })

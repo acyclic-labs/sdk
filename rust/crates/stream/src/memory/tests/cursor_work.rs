@@ -118,7 +118,7 @@ async fn seed(
             provider
                 .append(AppendRequest {
                     path: source.clone(),
-                    records: vec![Bytes::from(vec![i.to_le_bytes()[0], 0, 255])],
+                    records: vec![(Bytes::from(vec![i.to_le_bytes()[0], 0, 255])).into()],
                     if_tail: None,
                     idempotency_key: None,
                 })
@@ -172,7 +172,7 @@ proptest! {
                 let first: Vec<_> = std::iter::from_fn(|| read(old, &mut old_cursor, &mut cursor)).map(record_bytes).take(cut).collect();
                 drop(state);
                 let appended = provider.append(AppendRequest {
-                    path: path.clone(), records: vec![Bytes::from_static(b"new\0bytes")],
+                    path: path.clone(), records: vec![(Bytes::from_static(b"new\0bytes")).into()],
                     if_tail: None, idempotency_key: None,
                 }).await;
                 let state = provider.state.read().await;
@@ -252,7 +252,7 @@ fn appended_follow_reuses_the_cursor_queue_without_scratch_allocations() {
         }
         futures::executor::block_on(provider.append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"next")],
+            records: vec![(Bytes::from_static(b"next")).into()],
             if_tail: None,
             idempotency_key: None,
         }))
@@ -302,6 +302,7 @@ fn record_bytes(record: Record) -> (u64, Vec<u8>, CommitId, u64) {
         value,
         commit_id,
         committed_at_micros,
+        headers: _,
     } = record;
     (sequence, value.to_vec(), commit_id, committed_at_micros)
 }

@@ -16,7 +16,7 @@ async fn descending_replay_keys_keep_copy_work_and_lookup_depth_bounded() -> Mem
             .native_append(
                 AppendRequest {
                     path: path("replay/growth")?,
-                    records: vec![OwnedBytes::from_static(b"value")],
+                    records: vec![(OwnedBytes::from_static(b"value")).into()],
                     if_tail: Some(index),
                     idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from(
                         (255 - index).to_be_bytes().to_vec(),
@@ -37,7 +37,7 @@ async fn descending_replay_keys_keep_copy_work_and_lookup_depth_bounded() -> Mem
     assert!(examined <= 256 * (6 * u64::from(257_u16.ilog2()) + 2));
     let retry = AppendRequest {
         path: path("replay/growth")?,
-        records: vec![OwnedBytes::from_static(b"value")],
+        records: vec![(OwnedBytes::from_static(b"value")).into()],
         if_tail: Some(0),
         idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from(
             255_u64.to_be_bytes().to_vec(),
@@ -64,7 +64,7 @@ async fn descending_replay_keys_keep_copy_work_and_lookup_depth_bounded() -> Mem
         .native_append(
             AppendRequest {
                 path: path("replay/growth")?,
-                records: vec![OwnedBytes::from_static(b"value")],
+                records: vec![(OwnedBytes::from_static(b"value")).into()],
                 if_tail: Some(0),
                 idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from(
                     256_u64.to_be_bytes().to_vec(),
@@ -120,7 +120,7 @@ async fn prepared_replays_share_reserved_inventory_through_interleaved_growth() 
             .native_append(
                 AppendRequest {
                     path: path("other")?,
-                    records: vec![OwnedBytes::from_static(b"other")],
+                    records: vec![(OwnedBytes::from_static(b"other")).into()],
                     if_tail: Some(index),
                     idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from(format!(
                         "other/{index}"
@@ -141,7 +141,9 @@ async fn prepared_replays_share_reserved_inventory_through_interleaved_growth() 
     meter.deny_allocation.store(true, Ordering::SeqCst);
     meter.cancelled.store(true, Ordering::SeqCst);
     for (index, (key, issued, _guard)) in pending.into_iter().enumerate() {
-        let output = issued.finish(OwnedBytes::from_static(b"body")).await??;
+        let output = issued
+            .finish((OwnedBytes::from_static(b"body")).into())
+            .await??;
         assert_eq!(
             matches!(output.value(), CommitOutcome::Committed(_)),
             index == 0
@@ -187,7 +189,7 @@ async fn prepared_fixture(limits: MemoryLimits) -> MemoryResult<(MemoryStream, C
         provider
             .append(AppendRequest {
                 path: path(name)?,
-                records: vec![OwnedBytes::from_static(b"seed")],
+                records: vec![(OwnedBytes::from_static(b"seed")).into()],
                 if_tail: Some(0),
                 idempotency_key: None,
             })
@@ -206,7 +208,7 @@ async fn prepared_fixture(limits: MemoryLimits) -> MemoryResult<(MemoryStream, C
         ],
         mutations: vec![CommitMutation::Append {
             path: path("completion/target")?,
-            records: vec![OwnedBytes::new()],
+            records: vec![(OwnedBytes::new()).into()],
         }],
         idempotency_key: key(b"prepared-completion")?,
     };
@@ -270,7 +272,7 @@ async fn public_prepared_future_keeps_original_payload_through_the_last_empty_al
         .freeze(9)
         .map_err(|_| StreamError::InvalidArgument)?;
     let last_empty_alias = body.slice(..0);
-    let output = issued.finish(body).await??;
+    let output = issued.finish((body).into()).await??;
     let CommitOutcome::Committed(envelope) = output.value() else {
         panic!("canonical Commit result")
     };
@@ -346,11 +348,11 @@ async fn prebuilt_recovery_rejects_actual_foreign_family_and_larger_commit_witho
                     mutations: vec![
                         CommitMutation::Append {
                             path: path("completion/owner")?,
-                            records: vec![OwnedBytes::from_static(b"foreign-owner")],
+                            records: vec![(OwnedBytes::from_static(b"foreign-owner")).into()],
                         },
                         CommitMutation::Append {
                             path: path("completion/target")?,
-                            records: vec![OwnedBytes::from_static(b"foreign-target")],
+                            records: vec![(OwnedBytes::from_static(b"foreign-target")).into()],
                         },
                     ],
                     idempotency_key: foreign_key.clone(),
@@ -366,7 +368,7 @@ async fn prebuilt_recovery_rejects_actual_foreign_family_and_larger_commit_witho
             let outcome = provider
                 .append(AppendRequest {
                     path: path("completion/target")?,
-                    records: vec![OwnedBytes::from_static(b"foreign-append")],
+                    records: vec![(OwnedBytes::from_static(b"foreign-append")).into()],
                     if_tail: Some(1),
                     idempotency_key: Some(foreign_key.clone()),
                 })
@@ -430,7 +432,7 @@ async fn preaccepted_completion_survives_cancellation_and_lost_ack_with_exact_re
     let failed = issued
         .into_parts()
         .0
-        .finish(OwnedBytes::from_static(b"actual-scalars"))
+        .finish((OwnedBytes::from_static(b"actual-scalars")).into())
         .await;
     assert!(matches!(failed, Err(error) if error.kind() == std::io::ErrorKind::Interrupted));
     let accepted = provider
@@ -457,7 +459,7 @@ async fn preaccepted_completion_survives_cancellation_and_lost_ack_with_exact_re
     let repeated = replay
         .into_parts()
         .0
-        .finish(OwnedBytes::from_static(b"actual-scalars"))
+        .finish((OwnedBytes::from_static(b"actual-scalars")).into())
         .await??;
     assert_eq!(
         IdempotencyOutcome::Commit(repeated.value().clone()),
@@ -468,7 +470,7 @@ async fn preaccepted_completion_survives_cancellation_and_lost_ack_with_exact_re
         .take_recovery_future()
         .ok_or(StreamError::Unavailable)?;
     let failed = mismatch
-        .finish(OwnedBytes::from_static(b"different-scalars"))
+        .finish((OwnedBytes::from_static(b"different-scalars")).into())
         .await?
         .err();
     assert_eq!(failed, Some(StreamError::IdempotencyMismatch));
@@ -502,7 +504,7 @@ async fn competing_tail_keeps_canonical_conflict_and_target_unchanged() -> Memor
     provider
         .append(AppendRequest {
             path: path("completion/owner")?,
-            records: vec![OwnedBytes::from_static(b"competing")],
+            records: vec![(OwnedBytes::from_static(b"competing")).into()],
             if_tail: Some(1),
             idempotency_key: None,
         })
@@ -512,7 +514,7 @@ async fn competing_tail_keeps_canonical_conflict_and_target_unchanged() -> Memor
     let completion = issued
         .into_parts()
         .0
-        .finish(OwnedBytes::from_static(b"settled-prefix"))
+        .finish((OwnedBytes::from_static(b"settled-prefix")).into())
         .await??;
     let CommitOutcome::Conflict(conflicts) = completion.value() else {
         panic!("canonical conflict");
@@ -560,7 +562,7 @@ async fn stock_mutations_cannot_consume_promised_capacity_and_drop_releases_it()
             .await??;
         let append = AppendRequest {
             path: path("unrelated")?,
-            records: vec![OwnedBytes::new()],
+            records: vec![(OwnedBytes::new()).into()],
             if_tail: Some(0),
             idempotency_key: None,
         };
@@ -576,7 +578,7 @@ async fn stock_mutations_cannot_consume_promised_capacity_and_drop_releases_it()
             }],
             mutations: vec![CommitMutation::Append {
                 path: path("unrelated")?,
-                records: vec![OwnedBytes::new()],
+                records: vec![(OwnedBytes::new()).into()],
             }],
             idempotency_key: key(b"unrelated")?,
         };
@@ -597,7 +599,7 @@ async fn stock_mutations_cannot_consume_promised_capacity_and_drop_releases_it()
             let completion = issued
                 .into_parts()
                 .0
-                .finish(OwnedBytes::from_static(b"settled"))
+                .finish((OwnedBytes::from_static(b"settled")).into())
                 .await??;
             assert!(matches!(completion.value(), CommitOutcome::Committed(_)));
             assert_eq!(provider.append(append).await, Err(StreamError::Capacity));

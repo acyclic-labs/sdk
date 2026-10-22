@@ -45,14 +45,14 @@ fn parse_records(value: &Value) -> Result<Vec<Record>, StreamError> {
             }
             let headers = crate::RecordHeaders::new(
                 keys.iter()
-                    .map(parse_bytes)
+                    .map(|key| parse_bytes(key).map(Into::into))
                     .collect::<Result<Vec<_>, _>>()?,
                 attributes
                     .iter()
                     .map(|attribute| {
                         Ok(crate::Attribute {
                             name: parse_string(field(attribute, "name")?)?.to_owned(),
-                            value: parse_bytes(field(attribute, "value")?)?,
+                            value: parse_bytes(field(attribute, "value")?)?.into(),
                         })
                     })
                     .collect::<Result<Vec<_>, StreamError>>()?,

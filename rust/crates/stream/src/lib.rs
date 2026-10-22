@@ -51,6 +51,7 @@ mod local;
 mod memory;
 mod operation_claim;
 pub use operation_claim::{OperationClaim, OperationClaims};
+mod follow_filter;
 #[cfg(all(
     not(target_arch = "wasm32"),
     any(feature = "grpc", feature = "http", feature = "local")
@@ -61,6 +62,7 @@ pub mod query_sync;
 mod snapshot;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use browser::{BrowserStream, BrowserStreamLimits};
+pub use follow_filter::FollowFilter;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
@@ -153,7 +155,9 @@ pub use path::StreamPath;
 include!("lib/domain.rs");
 
 mod record_headers;
-pub use record_headers::{MAX_RECORD_ATTRIBUTES, MAX_RECORD_KEY_BYTES, MAX_RECORD_KEYS, RecordHeaders};
+pub use record_headers::{
+    MAX_RECORD_ATTRIBUTES, MAX_RECORD_KEY_BYTES, MAX_RECORD_KEYS, RecordHeaders,
+};
 
 include!("lib/provider.rs");
 

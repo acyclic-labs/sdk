@@ -309,7 +309,7 @@ mod tests {
             }],
             mutations: vec![crate::CommitMutation::Append {
                 path: crate::StreamPath::new("deadline/events")?,
-                records: vec![crate::OwnedBytes::from_static(b"record")],
+                records: vec![(crate::OwnedBytes::from_static(b"record")).into()],
             }],
             idempotency_key: crate::IdempotencyKey::new(bytes::Bytes::from_static(b"identity"))?,
         };

@@ -19,7 +19,7 @@ async fn an_open_stream_holds_one_journal_descriptor() -> Result<(), Box<dyn std
     provider
         .append(AppendRequest {
             path: StreamPath::new("agents")?,
-            records: vec![Bytes::from_static(b"one")],
+            records: vec![(Bytes::from_static(b"one")).into()],
             if_tail: None,
             idempotency_key: None,
         })

@@ -8,7 +8,7 @@ async fn local_children_reports_failure_on_an_unrelated_stream()
     provider
         .append(AppendRequest {
             path: StreamPath::new("agents")?,
-            records: vec![Bytes::from_static(b"parent")],
+            records: vec![(Bytes::from_static(b"parent")).into()],
             if_tail: None,
             idempotency_key: None,
         })
@@ -27,7 +27,7 @@ async fn local_children_reports_failure_on_an_unrelated_stream()
         provider
             .append(AppendRequest {
                 path: StreamPath::new("unrelated")?,
-                records: vec![Bytes::from_static(b"failure")],
+                records: vec![(Bytes::from_static(b"failure")).into()],
                 if_tail: None,
                 idempotency_key: None,
             })
@@ -76,7 +76,7 @@ fn local_children_observes_acceptance_during_a_device_flush()
                     provider
                         .append(AppendRequest {
                             path: StreamPath::new("agents/new")?,
-                            records: vec![Bytes::from_static(b"accepted")],
+                            records: vec![(Bytes::from_static(b"accepted")).into()],
                             if_tail: None,
                             idempotency_key: None,
                         })
@@ -146,6 +146,7 @@ async fn resumed_children_session<P: StreamProvider>(
     };
     for body in [
         Body::Hello(wire::SessionHello {
+            credentials: Vec::new(),
             version: 1,
             client_id: bytes::Bytes::from_static(b"held-flush-client"),
             destination_node: String::new(),
@@ -155,6 +156,8 @@ async fn resumed_children_session<P: StreamProvider>(
         Body::Interest(wire::SessionInterest {
             revision: 1,
             upsert: vec![wire::SessionSubscription {
+                credential: 0,
+                filter: None,
                 channel: Some(wire::SessionChannel {
                     channel_id: 1,
                     generation: 1,
@@ -214,7 +217,7 @@ async fn local_children_releases_visibility_while_waiting() -> Result<(), Box<dy
         provider
             .append(AppendRequest {
                 path: path.clone(),
-                records: vec![Bytes::from_static(b"status")],
+                records: vec![(Bytes::from_static(b"status")).into()],
                 if_tail: None,
                 idempotency_key: None,
             })

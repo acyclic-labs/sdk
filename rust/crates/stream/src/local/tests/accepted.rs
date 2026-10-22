@@ -30,7 +30,7 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
                     provider
                         .append(AppendRequest {
                             path,
-                            records: vec![Bytes::from_static(b"delta")],
+                            records: vec![(Bytes::from_static(b"delta")).into()],
                             if_tail: Some(n),
                             idempotency_key: None,
                         })

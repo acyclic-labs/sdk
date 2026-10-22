@@ -30,7 +30,7 @@ async fn append(provider: &MemoryStream, path: &str) -> Result<(), StreamError> 
     provider
         .append(AppendRequest {
             path: StreamPath::new(path)?,
-            records: vec![OwnedBytes::from_static(b"delta")],
+            records: vec![(OwnedBytes::from_static(b"delta")).into()],
             if_tail: None,
             idempotency_key: None,
         })

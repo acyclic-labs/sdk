@@ -172,6 +172,8 @@ async fn canonical_all_data_preserves_the_exact_cursor_and_both_watermarks() -> 
         accepted: 7,
         durable: 6,
         item: Some(Item::Record(wire::Record {
+            keys: Vec::new(),
+            attributes: Vec::new(),
             sequence: 1,
             value: Bytes::from_static(b"accepted"),
             commit_id: vec![7; 32].into(),

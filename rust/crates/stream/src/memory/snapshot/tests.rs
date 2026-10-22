@@ -22,7 +22,7 @@ async fn snapshots_retain_retry_identity_at_capacity() -> Result<(), StreamError
     let stream = MemoryStream::new(limits);
     let request = AppendRequest {
         path: StreamPath::new("snapshot/retained")?,
-        records: vec![Bytes::from_static(b"once")],
+        records: vec![(Bytes::from_static(b"once")).into()],
         if_tail: None,
         idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"snapshot-once"))?),
     };
@@ -32,7 +32,7 @@ async fn snapshots_retain_retry_identity_at_capacity() -> Result<(), StreamError
     assert_eq!(restored.append(request.clone()).await?, first);
     assert_eq!(restored.tail(request.path.clone()).await?, 1);
     let mut changed = request.clone();
-    changed.records = vec![Bytes::from_static(b"different")];
+    changed.records = vec![(Bytes::from_static(b"different")).into()];
     assert_eq!(
         restored.append(changed).await,
         Err(StreamError::IdempotencyMismatch)
@@ -51,7 +51,10 @@ async fn real_append_fork_and_commit_snapshots_preserve_exclusive_tails_and_retr
     let destination = StreamPath::new("roundtrip/fork")?;
     let appended = AppendRequest {
         path: source.clone(),
-        records: vec![Bytes::from_static(b"first"), Bytes::from_static(b"second")],
+        records: vec![
+            (Bytes::from_static(b"first")).into(),
+            Bytes::from_static(b"second"),
+        ],
         if_tail: Some(0),
         idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"append"))?),
     };
@@ -70,7 +73,7 @@ async fn real_append_fork_and_commit_snapshots_preserve_exclusive_tails_and_retr
         }],
         mutations: vec![crate::CommitMutation::Append {
             path: destination.clone(),
-            records: vec![Bytes::from_static(b"third")],
+            records: vec![(Bytes::from_static(b"third")).into()],
         }],
         idempotency_key: IdempotencyKey::new(Bytes::from_static(b"commit"))?,
     };
@@ -119,7 +122,7 @@ async fn current_writer_empty_forks_and_atomic_source_changes_roundtrip() -> Res
     let destination = StreamPath::new("writer/destination")?;
     let append = |path: StreamPath, value: &'static [u8]| AppendRequest {
         path,
-        records: vec![Bytes::from_static(value)],
+        records: vec![(Bytes::from_static(value)).into()],
         if_tail: None,
         idempotency_key: None,
     };
@@ -165,13 +168,13 @@ async fn current_writer_empty_forks_and_atomic_source_changes_roundtrip() -> Res
         mutations: vec![
             crate::CommitMutation::Append {
                 path: source.clone(),
-                records: vec![Bytes::from_static(b"after")],
+                records: vec![(Bytes::from_static(b"after")).into()],
             },
             crate::CommitMutation::Fork {
                 source: source.clone(),
                 destination: destination.clone(),
                 at_tail: 1,
-                records: vec![Bytes::from_static(b"forked")],
+                records: vec![(Bytes::from_static(b"forked")).into()],
             },
         ],
         idempotency_key: IdempotencyKey::new(Bytes::from_static(b"atomic-fork"))?,
@@ -219,7 +222,7 @@ async fn malformed_and_over_capacity_snapshots_leave_live_state_unchanged()
     stream
         .append(AppendRequest {
             path: StreamPath::new("snapshot/atomic")?,
-            records: vec![Bytes::from_static(b"kept")],
+            records: vec![(Bytes::from_static(b"kept")).into()],
             if_tail: None,
             idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"kept"))?),
         })
@@ -381,7 +384,7 @@ async fn retained_facts_reject_impossible_receipts_records_and_phantom_payloads(
     stream
         .append(AppendRequest {
             path: StreamPath::new("inventory/path")?,
-            records: vec![Bytes::from_static(b"real")],
+            records: vec![(Bytes::from_static(b"real")).into()],
             if_tail: Some(0),
             idempotency_key: Some(key.clone()),
         })
@@ -468,7 +471,7 @@ async fn retained_empty_forks_cannot_reference_future_destinations() -> Result<(
     stream
         .append(AppendRequest {
             path: StreamPath::new("chronology/seed")?,
-            records: vec![Bytes::from_static(b"seed")],
+            records: vec![(Bytes::from_static(b"seed")).into()],
             if_tail: None,
             idempotency_key: None,
         })
@@ -520,7 +523,7 @@ async fn retained_fork_cannot_capture_a_future_source_head() -> Result<(), Strea
     let destination = StreamPath::new("chronology/destination")?;
     let append = |value: &'static [u8]| AppendRequest {
         path: source.clone(),
-        records: vec![Bytes::from_static(value)],
+        records: vec![(Bytes::from_static(value)).into()],
         if_tail: None,
         idempotency_key: None,
     };
@@ -581,7 +584,7 @@ async fn snapshots_preserve_committed_timestamps() -> Result<(), StreamError> {
     stream
         .append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"one")],
+            records: vec![(Bytes::from_static(b"one")).into()],
             if_tail: None,
             idempotency_key: None,
         })
@@ -605,7 +608,7 @@ async fn snapshots_preserve_committed_timestamps() -> Result<(), StreamError> {
     restored
         .append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"two")],
+            records: vec![(Bytes::from_static(b"two")).into()],
             if_tail: None,
             idempotency_key: None,
         })

@@ -1,5 +1,5 @@
 //! Canonical request validation and retry identity.
-use crate::AppendRecord;
+use crate::OwnedBytes as Bytes;
 use crate::{
     AppendRequest, CommitCondition, CommitMutation, CommitRequest, ForkRequest, MAX_COMMAND_BYTES,
     MAX_ITEMS, MAX_RECORD_BYTES, StreamError, StreamPath,
@@ -229,7 +229,7 @@ pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), Strea
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::AppendRecord;
+    use crate::OwnedBytes as Bytes;
     use crate::{IdempotencyKey, IdempotencyObservation, MemoryStream, StreamPath, StreamProvider};
 
     #[tokio::test]
@@ -237,7 +237,7 @@ mod tests {
         let key = IdempotencyKey::new(Bytes::from_static(b"provider-digest"))?;
         let request = AppendRequest {
             path: StreamPath::new("digest/events")?,
-            records: vec![Bytes::from_static(b"record")],
+            records: vec![Bytes::from_static(b"record").into()],
             if_tail: Some(0),
             idempotency_key: Some(key.clone()),
         };

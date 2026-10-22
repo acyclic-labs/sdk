@@ -26,7 +26,7 @@ async fn seed(provider: &impl StreamProvider, children: bool) {
         .append(AppendRequest {
             path: StreamPath::new("root").unwrap(),
             records: (0..COUNT)
-                .map(|_| OwnedBytes::from_static(b"record"))
+                .map(|_| OwnedBytes::from_static(b"record").into())
                 .collect(),
             if_tail: None,
             idempotency_key: None,
@@ -38,7 +38,7 @@ async fn seed(provider: &impl StreamProvider, children: bool) {
             provider
                 .append(AppendRequest {
                     path: StreamPath::new(format!("root/c{i:03}")).unwrap(),
-                    records: vec![OwnedBytes::from_static(b"child")],
+                    records: vec![(OwnedBytes::from_static(b"child")).into()],
                     if_tail: None,
                     idempotency_key: None,
                 })

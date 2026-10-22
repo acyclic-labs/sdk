@@ -15,7 +15,7 @@ fn request(
         }],
         mutations: vec![CommitMutation::Append {
             path: path.clone(),
-            records: vec![OwnedBytes::from_static(b"next")],
+            records: vec![(OwnedBytes::from_static(b"next")).into()],
         }],
         idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(key))?,
     })
@@ -25,7 +25,7 @@ async fn seed<P: StreamProvider>(provider: &P, path: &StreamPath) -> Result<Comm
     let result = provider
         .append(AppendRequest {
             path: path.clone(),
-            records: vec![OwnedBytes::from_static(b"seed")],
+            records: vec![(OwnedBytes::from_static(b"seed")).into()],
             if_tail: Some(0),
             idempotency_key: None,
         })

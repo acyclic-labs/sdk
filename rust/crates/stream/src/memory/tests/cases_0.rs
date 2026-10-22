@@ -19,7 +19,7 @@ async fn committed_record_times_never_regress_with_the_clock() -> Result<(), Str
                     }],
                     mutations: vec![CommitMutation::Append {
                         path: path.clone(),
-                        records: vec![Bytes::from_static(b"rollback")],
+                        records: vec![(Bytes::from_static(b"rollback")).into()],
                     }],
                     idempotency_key: key(b"rollback-commit")?,
                 })
@@ -30,7 +30,7 @@ async fn committed_record_times_never_regress_with_the_clock() -> Result<(), Str
         stream
             .append(AppendRequest {
                 path: path.clone(),
-                records: vec![Bytes::copy_from_slice(body)],
+                records: vec![(Bytes::copy_from_slice(body)).into()],
                 if_tail: None,
                 idempotency_key: None,
             })
@@ -76,7 +76,7 @@ fn key(value: &'static [u8]) -> Result<crate::IdempotencyKey, StreamError> {
 
 #[test]
 fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
-    let records = vec![Bytes::from(vec![0_u8; MAX_RECORD_BYTES]); 16];
+    let records = vec![crate::AppendRecord::from(vec![0_u8; MAX_RECORD_BYTES]); 16];
     let mut low = 1_usize;
     let mut high = crate::MAX_PATH_BYTES;
     while low < high {
@@ -86,7 +86,8 @@ fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
             path: path.to_string(),
             records: records
                 .iter()
-                .map(|record| bytes::Bytes::copy_from_slice(record))
+                .cloned()
+                .map(crate::wire_codec::append_record_wire)
                 .collect(),
             if_tail: None,
             idempotency_key: None,
@@ -110,7 +111,8 @@ fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
         records: request
             .records
             .iter()
-            .map(|record| bytes::Bytes::copy_from_slice(record))
+            .cloned()
+            .map(crate::wire_codec::append_record_wire)
             .collect(),
         if_tail: None,
         idempotency_key: None,
@@ -126,7 +128,7 @@ async fn paginates_more_children_than_one_wire_page_without_gaps() -> Result<(),
         provider
             .append(AppendRequest {
                 path: path(&format!("agents/agent-{index:04}"))?,
-                records: vec![Bytes::from_static(b"bound")],
+                records: vec![(Bytes::from_static(b"bound")).into()],
                 if_tail: Some(0),
                 idempotency_key: None,
             })
@@ -167,7 +169,7 @@ async fn deep_fork_history_is_dropped_without_recursive_stack_growth() -> Result
     provider
         .append(AppendRequest {
             path: source.clone(),
-            records: vec![Bytes::from_static(b"root")],
+            records: vec![(Bytes::from_static(b"root")).into()],
             if_tail: Some(0),
             idempotency_key: None,
         })
@@ -199,7 +201,7 @@ async fn provider_deadline_is_exclusive_and_replay_precedes_time() -> Result<(),
         }],
         mutations: vec![CommitMutation::Append {
             path: path("deadline/accepted")?,
-            records: vec![Bytes::from_static(b"accepted")],
+            records: vec![(Bytes::from_static(b"accepted")).into()],
         }],
         idempotency_key: key(b"deadline-accepted")?,
     };
@@ -222,7 +224,7 @@ async fn provider_deadline_is_exclusive_and_replay_precedes_time() -> Result<(),
         }],
         mutations: vec![CommitMutation::Append {
             path: path("deadline/retry")?,
-            records: vec![Bytes::from_static(b"retry")],
+            records: vec![(Bytes::from_static(b"retry")).into()],
         }],
         idempotency_key: key(b"deadline-retry")?,
     };
@@ -245,7 +247,7 @@ async fn single_record_reads_seek_deep_history_and_prefixes() -> Result<(), Stre
         provider
             .append(AppendRequest {
                 path: source.clone(),
-                records: vec![Bytes::from(index.to_string())],
+                records: vec![(Bytes::from(index.to_string())).into()],
                 if_tail: Some(index),
                 idempotency_key: None,
             })
@@ -290,7 +292,7 @@ async fn single_record_reads_seek_deep_history_and_prefixes() -> Result<(), Stre
     provider
         .append(AppendRequest {
             path: child.clone(),
-            records: vec![Bytes::from_static(b"child")],
+            records: vec![(Bytes::from_static(b"child")).into()],
             if_tail: Some(1),
             idempotency_key: None,
         })
@@ -321,7 +323,7 @@ async fn follow_scales_with_history_depth() -> Result<(), StreamError> {
             provider
                 .append(AppendRequest {
                     path: stream.clone(),
-                    records: vec![Bytes::from_static(b"x")],
+                    records: vec![(Bytes::from_static(b"x")).into()],
                     if_tail: Some(index),
                     idempotency_key: None,
                 })
@@ -351,7 +353,7 @@ async fn exact_replay_precedes_capacity_and_changed_arguments_never_reclassify()
     });
     let request = AppendRequest {
         path: path("a/b")?,
-        records: vec![Bytes::from_static(b"one")],
+        records: vec![(Bytes::from_static(b"one")).into()],
         if_tail: Some(0),
         idempotency_key: Some(key(b"only-key")?),
     };
@@ -369,7 +371,7 @@ async fn exact_replay_precedes_capacity_and_changed_arguments_never_reclassify()
     assert_eq!(
         provider
             .append(AppendRequest {
-                records: vec![Bytes::from_static(b"two")],
+                records: vec![(Bytes::from_static(b"two")).into()],
                 ..request
             })
             .await,
@@ -389,7 +391,7 @@ async fn every_fork_cut_reads_the_exact_prefix_and_never_aliases_suffixes()
     provider
         .append(AppendRequest {
             path: source.clone(),
-            records: bodies,
+            records: bodies.into_iter().map(Into::into).collect(),
             if_tail: Some(0),
             idempotency_key: None,
         })
@@ -421,7 +423,7 @@ async fn every_fork_cut_reads_the_exact_prefix_and_never_aliases_suffixes()
         provider
             .append(AppendRequest {
                 path: destination.clone(),
-                records: vec![Bytes::from_static(b"own"); 2],
+                records: vec![(Bytes::from_static(b"own")).into(); 2],
                 if_tail: Some(cut),
                 idempotency_key: None,
             })
@@ -494,7 +496,7 @@ async fn results_and_envelopes_never_expire_or_execute_again() -> Result<(), Str
     let provider = MemoryStream::new_with_clock(limits, clock.clone());
     let append = |name: &'static [u8]| AppendRequest {
         path: StreamPath::new("retained").unwrap_or_else(|_| unreachable!()),
-        records: vec![Bytes::from_static(name)],
+        records: vec![(Bytes::from_static(name)).into()],
         if_tail: None,
         idempotency_key: Some(
             crate::IdempotencyKey::new(Bytes::from_static(name)).unwrap_or_else(|_| unreachable!()),
@@ -566,7 +568,7 @@ proptest::proptest! {
                 provider
                     .append(AppendRequest {
                         path: path(&format!("root/{name}"))?,
-                        records: vec![Bytes::from_static(b"x")],
+                        records: vec![(Bytes::from_static(b"x")).into()],
                         if_tail: None,
                         idempotency_key: None,
                     })
@@ -578,7 +580,7 @@ proptest::proptest! {
                 provider
                     .append(AppendRequest {
                         path: log.clone(),
-                        records: chunk.to_vec(),
+                        records: chunk.iter().cloned().map(Into::into).collect(),
                         if_tail: None,
                         idempotency_key: None,
                     })
@@ -644,7 +646,7 @@ async fn hierarchy_page_starts_after_prefix_siblings() -> Result<(), StreamError
         provider
             .append(AppendRequest {
                 path: path(name)?,
-                records: vec![Bytes::new()],
+                records: vec![(Bytes::new()).into()],
                 if_tail: None,
                 idempotency_key: None,
             })
@@ -687,7 +689,7 @@ async fn commit_counts_an_explicit_parent_once_across_prefix_siblings() -> Resul
             .map(|name| {
                 Ok(CommitMutation::Append {
                     path: path(name)?,
-                    records: vec![Bytes::new()],
+                    records: vec![(Bytes::new()).into()],
                 })
             })
             .collect::<Result<_, StreamError>>()?,

@@ -181,7 +181,7 @@ async fn request_path_typed_append_preserves_json_responses_and_validation_trace
         };
         assert_eq!(server.client.append(request.clone()).await, Err(StreamError::LimitExceeded));
         assert!(server.requests().is_empty());
-        request.records.push(OwnedBytes::from_static(b"\x00\xff"));
+        request.records.push((OwnedBytes::from_static(b"\x00\xff")).into());
         assert!(matches!(server.client.append(request.clone()).await.unwrap(), AppendOutcome::Committed(AppendReceipt { start: 0, end: 1, tail: 1, .. })));
         assert_eq!(server.client.append(request).await.unwrap(), AppendOutcome::TailConflict { actual_tail: 1 });
         let expected = ("/v1/stream/append".into(), json!({

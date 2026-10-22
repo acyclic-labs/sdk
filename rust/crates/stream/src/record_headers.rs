@@ -177,7 +177,9 @@ impl crate::AppendRecord {
 impl crate::Record {
     /// Shared value and indexed-header payload bound used by every reader.
     pub fn payload_bytes(&self) -> usize {
-        self.value.len().saturating_add(self.headers.payload_bytes())
+        self.value
+            .len()
+            .saturating_add(self.headers.payload_bytes())
     }
 }
 

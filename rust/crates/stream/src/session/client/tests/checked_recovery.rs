@@ -74,7 +74,7 @@ async fn append_one(provider: &MemoryStream, ledger: &mut Vec<CommitId>) -> Test
     provider
         .append(AppendRequest {
             path: StreamPath::new("events")?,
-            records: vec![OwnedBytes::from(vec![sequence.to_le_bytes()[0]])],
+            records: vec![(OwnedBytes::from(vec![sequence.to_le_bytes()[0]])).into()],
             if_tail: Some(sequence as u64),
             idempotency_key: None,
         })

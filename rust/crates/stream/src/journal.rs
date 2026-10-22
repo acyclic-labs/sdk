@@ -104,7 +104,7 @@ mod tests {
     fn current_writer_roundtrips_and_rejects_noncanonical_payloads() -> Result<(), StreamError> {
         let append = Command::Append(AppendRequest {
             path: crate::StreamPath::new("codec/events")?,
-            records: vec![Bytes::from_static(b"one"), Bytes::new()],
+            records: vec![(Bytes::from_static(b"one")).into(), Bytes::new()],
             if_tail: Some(0),
             idempotency_key: Some(crate::IdempotencyKey::new(Bytes::from_static(b"key"))?),
         });
@@ -121,7 +121,7 @@ mod tests {
             }],
             mutations: vec![crate::CommitMutation::Append {
                 path: crate::StreamPath::new("codec/events")?,
-                records: vec![Bytes::from_static(b"two")],
+                records: vec![(Bytes::from_static(b"two")).into()],
             }],
             idempotency_key: crate::IdempotencyKey::new(Bytes::from_static(b"commit"))?,
         });
@@ -147,7 +147,7 @@ mod tests {
         let provider = MemoryStream::default();
         let request = AppendRequest {
             path: crate::StreamPath::new("events")?,
-            records: vec![Bytes::from_static(&[1])],
+            records: vec![(Bytes::from_static(&[1])).into()],
             if_tail: None,
             idempotency_key: Some(crate::IdempotencyKey::new(Bytes::from_static(b"first"))?),
         };

@@ -76,7 +76,7 @@ proptest! {
             let value = wire::SessionLatestValue {
                 key: Bytes::copy_from_slice(&[*key]), value: Bytes::copy_from_slice(&[*value]), attention: *attention,
             }.encode_to_vec();
-            let record = Record {
+            let record = Record { headers: Default::default(),
                 sequence: index as u64, value: OwnedBytes::from(value),
                 commit_id: CommitId::from_bytes([1; 32]), committed_at_micros: 0,
             };
@@ -151,6 +151,7 @@ fn exercise_admission(operations: &[u8], broken: bool) {
                             generation: 1,
                         },
                         Ok(Event::Record(Record {
+                            headers: Default::default(),
                             sequence,
                             value: vec![0].into(),
                             commit_id: CommitId::from_bytes([1; 32]),

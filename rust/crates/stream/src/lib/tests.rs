@@ -138,7 +138,7 @@ mod replay_tests {
         let mut next = 0;
         while next < records {
             let batch = (next..records.min(next + 500))
-                .map(|sequence| Bytes::from(sequence.to_be_bytes().to_vec()))
+                .map(|sequence| crate::AppendRecord::from(sequence.to_be_bytes().to_vec()))
                 .collect::<Vec<_>>();
             next += batch.len() as u64;
             stream.append_batch(batch, None, None).await.unwrap();

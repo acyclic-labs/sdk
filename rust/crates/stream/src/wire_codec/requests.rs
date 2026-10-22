@@ -254,6 +254,7 @@ pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
 #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use crate::OwnedBytes;
     use prost::Message;
 
     #[test]
@@ -269,8 +270,8 @@ mod tests {
                 let request = AppendRequest {
                     path: crate::StreamPath::new("request/events")?,
                     records: vec![
-                        OwnedBytes::from_static(b""),
-                        OwnedBytes::from(vec![7; 65_536]),
+                        OwnedBytes::from_static(b"").into(),
+                        OwnedBytes::from(vec![7; 65_536]).into(),
                     ],
                     if_tail: tail,
                     idempotency_key: key,
@@ -280,7 +281,8 @@ mod tests {
                     records: request
                         .records
                         .iter()
-                        .map(|record| bytes::Bytes::copy_from_slice(record))
+                        .cloned()
+                        .map(crate::wire_codec::append_record_wire)
                         .collect(),
                     if_tail: tail,
                     idempotency_key: request
@@ -321,7 +323,7 @@ mod tests {
                 crate::MAX_COMMAND_BYTES / crate::MAX_RECORD_BYTES + 1
             ],
         ] {
-            request.records = records;
+            request.records = records.into_iter().map(Into::into).collect();
             let mut bytes = Vec::with_capacity(append_len(&request));
             append(&mut bytes, &request);
             assert_eq!(
@@ -341,7 +343,7 @@ mod tests {
     fn request_path_measure_append_encoding() -> Result<(), Box<dyn std::error::Error>> {
         let request = AppendRequest {
             path: crate::StreamPath::new("request/events")?,
-            records: vec![OwnedBytes::from(vec![7; 65_536])],
+            records: vec![OwnedBytes::from(vec![7; 65_536]).into()],
             if_tail: Some(0),
             idempotency_key: None,
         };

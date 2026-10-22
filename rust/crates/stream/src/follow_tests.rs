@@ -9,7 +9,7 @@ async fn seed(
     let result = provider
         .append(AppendRequest {
             path: path.clone(),
-            records: vec![OwnedBytes::from_static(body)],
+            records: vec![(OwnedBytes::from_static(body)).into()],
             if_tail: Some(0),
             idempotency_key: None,
         })
@@ -47,7 +47,7 @@ async fn checked_registration_never_waits_for_a_missing_or_reused_anchor()
     provider
         .append(AppendRequest {
             path,
-            records: vec![OwnedBytes::from_static(b"two")],
+            records: vec![(OwnedBytes::from_static(b"two")).into()],
             if_tail: Some(1),
             idempotency_key: None,
         })
@@ -77,7 +77,7 @@ async fn checked_delivery_rejects_history_loss_after_registration_or_while_waiti
         provider
             .append(AppendRequest {
                 path: path.clone(),
-                records: vec![OwnedBytes::from_static(b"two")],
+                records: vec![(OwnedBytes::from_static(b"two")).into()],
                 if_tail: Some(1),
                 idempotency_key: None,
             })
@@ -106,7 +106,7 @@ async fn checked_delivery_rejects_history_loss_after_registration_or_while_waiti
                 replacement
                     .append(AppendRequest {
                         path: path.clone(),
-                        records: vec![OwnedBytes::from_static(b"different")],
+                        records: vec![(OwnedBytes::from_static(b"different")).into()],
                         if_tail: Some(1),
                         idempotency_key: None,
                     })

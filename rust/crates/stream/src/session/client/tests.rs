@@ -71,7 +71,7 @@ async fn append(provider: &MemoryStream, path: &str, count: usize) -> Result<(),
     provider
         .append(AppendRequest {
             path: StreamPath::new(path)?,
-            records: vec![OwnedBytes::from_static(b"delta"); count],
+            records: vec![(OwnedBytes::from_static(b"delta")).into(); count],
             if_tail: None,
             idempotency_key: None,
         })
@@ -260,7 +260,7 @@ async fn measure<P: StreamProvider>(provider: &P, label: &str) -> TestResult {
     provider
         .append(AppendRequest {
             path: path.clone(),
-            records: vec![OwnedBytes::from_static(b"seed")],
+            records: vec![(OwnedBytes::from_static(b"seed")).into()],
             if_tail: None,
             idempotency_key: None,
         })
@@ -275,7 +275,7 @@ async fn measure<P: StreamProvider>(provider: &P, label: &str) -> TestResult {
                     provider
                         .append(AppendRequest {
                             path: path.clone(),
-                            records: vec![OwnedBytes::from_static(b"delta")],
+                            records: vec![(OwnedBytes::from_static(b"delta")).into()],
                             if_tail: None,
                             idempotency_key: None,
                         })
