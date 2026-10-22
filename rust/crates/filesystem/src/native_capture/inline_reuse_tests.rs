@@ -86,6 +86,43 @@ async fn check(body: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
             .await?;
         assert_eq!(read.bytes.as_ref(), edited);
     }
+    // A previously inline file can grow beyond the inline representation.
+    // No byte comparison takes place when the lengths differ, so its new body
+    // must not consume the finite item allowance as if every byte was compared.
+    let grown = vec![b'g'; 8_193];
+    std::fs::write(&file, &grown)?;
+    let (growth_work, _) = work
+        .native_volume_work(WorkBudget {
+            items_examined: 4_096,
+            ..WorkBudget::UNBOUNDED
+        })
+        .unwrap()
+        .invocation_view()
+        .unwrap();
+    let receipt = capture(
+        &mut checkout,
+        &options,
+        &path,
+        &growth_work,
+        Some(&baseline),
+    )
+    .await;
+    assert_eq!(
+        receipt.changed_paths, 1,
+        "inline file grew beyond inline capacity"
+    );
+    let read = checkout
+        .read_file_range(
+            &path,
+            crate::ByteRange {
+                offset: 0,
+                length: grown.len() as u64,
+            },
+            &work,
+            &cancellation,
+        )
+        .await?;
+    assert_eq!(read.bytes.as_ref(), grown);
     Ok(())
 }
 

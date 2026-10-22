@@ -73,7 +73,7 @@ fn empty_staging_preserves_bytes_and_retires_custody() -> Result<(), Box<dyn std
             if cancelled {
                 prop_assert!(result.is_err());
             } else {
-                let ranges = result.unwrap();
+                let ranges = result.unwrap().ranges;
                 empty_stage_matches(
                     &ranges,
                     staged,

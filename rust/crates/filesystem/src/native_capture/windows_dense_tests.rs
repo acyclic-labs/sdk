@@ -278,7 +278,11 @@ fn dense_capture_equals_queried_capture_with_bounded_admission()
                                         receipt.work
                                     }
                                     Err(failure) => {
-                                        prop_assert!(limit < reads);
+                                        prop_assert!(
+                                            limit < reads,
+                                            "limit={limit} measured={reads} query={query}: {:?}",
+                                            failure.error
+                                        );
                                         prop_assert_eq!(checkout.root(), baseline.root());
                                         *failure.work
                                     }

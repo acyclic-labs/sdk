@@ -322,7 +322,7 @@ fn production_staging_preserves_bytes_errors_charges_and_final_path_checks()
                 let success = !cancelled && edit == 0 && limit >= needed;
                 prop_assert_eq!(result.is_ok(), success);
                 if let Ok(ranges) = &result {
-                    prop_assert!(ranges.is_empty());
+                    prop_assert!(ranges.ranges.is_empty());
                 }
                 prop_assert_eq!(staged_bytes, 17);
                 let path_check =

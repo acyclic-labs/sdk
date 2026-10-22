@@ -110,7 +110,7 @@ fn production_capture_has_no_outer_file_owner_allocation() -> Result<(), Box<dyn
             result = Some((staged, bytes));
         });
         let (staged, bytes) = result.unwrap();
-        let staged = staged.unwrap();
+        let staged = staged.unwrap().ranges;
         assert_eq!(bytes, 1);
         assert_eq!(staged.len(), 1);
         assert_eq!(staged[0].1.logical_bytes(), 1);
