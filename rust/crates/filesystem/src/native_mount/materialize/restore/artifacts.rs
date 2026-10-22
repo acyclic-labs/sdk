@@ -80,27 +80,18 @@ pub(in crate::native_mount::materialize) fn acquire_restore_lock(
             work,
         )
         .map_err(MaterializeError::from)?;
-        lock_restore_file(file, blocking, work, fs2::FileExt::try_lock_exclusive)
-    })
-}
-
-pub(in crate::native_mount::materialize) fn lock_restore_file(
-    file: File,
-    blocking: bool,
-    work: &mut impl crate::demand::SourceDemandReadWork,
-    mut try_lock: impl FnMut(&File) -> std::io::Result<()>,
-) -> Result<File, MaterializeError> {
-    loop {
-        work.started_io(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))
-            .map_err(MaterializeError::from)?;
-        match try_lock(&file) {
-            Ok(()) => return Ok(file),
-            Err(error) if blocking && crate::native_mount::lock_is_contended(&error) => {
-                std::thread::sleep(std::time::Duration::from_millis(1));
+        loop {
+            work.started_io(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))
+                .map_err(MaterializeError::from)?;
+            match fs2::FileExt::try_lock_exclusive(&file) {
+                Ok(()) => return Ok(file),
+                Err(error) if blocking && error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(error) => return Err(error.into()),
             }
-            Err(error) => return Err(error.into()),
         }
-    }
+    })
 }
 
 pub(in crate::native_mount::materialize) const REMOVE_RESTORE_WITNESS: &[u8] =
