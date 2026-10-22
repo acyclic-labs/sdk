@@ -20,6 +20,7 @@ fuzzing = []
 acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false }
 acyclic-stream = { path = "../stream", version = "=0.2.0", default-features = false }
 async-stream = "0.3.6"
+base64 = "=0.22.1"
 bytes.workspace = true
 blake3.workspace = true
 futures.workspace = true
@@ -33,7 +34,6 @@ serde_path_to_error = "0.1.20"
 acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false, features = ["filesystem"] }
 acyclic-fs = { path = "../filesystem", version = "=0.2.0", default-features = false }
 blake3.workspace = true
-base64 = "=0.22.1"
 reqwest.workspace = true
 rustls.workspace = true
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
