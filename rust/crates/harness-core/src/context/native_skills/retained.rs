@@ -3,6 +3,68 @@
 use super::*;
 use std::{collections::HashMap, io::Write as _};
 
+/// Scoped to the catalog owner. A first load decodes all sibling metadata once;
+/// subsequent body loads share the decoded records, including concurrent loads.
+#[derive(Default)]
+pub(super) struct RecordCache {
+    records: Arc<std::sync::Mutex<HashMap<String, Arc<RetainedSource>>>>,
+}
+
+impl RecordCache {
+    pub(super) async fn read(
+        &self,
+        directory: PathBuf,
+        digest: String,
+    ) -> Result<Option<Arc<RetainedSource>>> {
+        self.read_with(directory, digest, || {}).await
+    }
+
+    pub(super) async fn read_with(
+        &self,
+        directory: PathBuf,
+        digest: String,
+        decoded: impl FnOnce() + Send + 'static,
+    ) -> Result<Option<Arc<RetainedSource>>> {
+        let records = Arc::clone(&self.records);
+        acyclic_native_runtime::run_blocking_io(
+            move || {
+                // Only I/O workers take this lock. Holding it through decoding
+                // makes concurrent first loads of siblings share one result.
+                let mut records = records.lock().map_err(storage)?;
+                if let Some(record) = records.get(&digest) {
+                    return Ok(Some(Arc::clone(record)));
+                }
+                let bytes = match std::fs::read(directory.join(format!("{digest}.json"))) {
+                    Ok(bytes) => bytes,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                    Err(error) => return Err(storage(error)),
+                };
+                decoded();
+                let batch = match serde_json::from_slice(&bytes).map_err(storage)? {
+                    RetainedSource::Batch(batch) => batch,
+                    record => HashMap::from([(digest.clone(), record)]),
+                };
+                if !batch.contains_key(&digest) {
+                    return Err(Error::Conflict("retained skill source is absent".into()));
+                }
+                for (key, record) in &batch {
+                    validate_record(record, key)?;
+                }
+                records.extend(
+                    batch
+                        .into_iter()
+                        .map(|(key, record)| (key, Arc::new(record))),
+                );
+                Ok(records.get(&digest).map(Arc::clone))
+            },
+            None,
+        )
+        .map_err(Error::process_io)?
+        .await
+        .map_err(Error::process_io)?
+    }
+}
+
 #[derive(Default)]
 pub(super) struct RetainedBatch {
     records: HashMap<String, RetainedSource>,
@@ -84,6 +146,7 @@ impl RetainedBatch {
     }
 }
 
+#[cfg(test)]
 pub(super) fn read_record(bytes: &[u8], digest: &str) -> Result<RetainedSource> {
     let record = match serde_json::from_slice(bytes).map_err(storage)? {
         RetainedSource::Batch(mut records) => records
@@ -91,12 +154,20 @@ pub(super) fn read_record(bytes: &[u8], digest: &str) -> Result<RetainedSource> 
             .ok_or_else(|| Error::Conflict("retained skill source is absent".into()))?,
         record => record,
     };
-    if blake3::hash(&serde_json::to_vec(&record).map_err(storage)?)
+    validate_record(&record, digest)?;
+    Ok(record)
+}
+
+fn validate_record(record: &RetainedSource, digest: &str) -> Result<()> {
+    if matches!(record, RetainedSource::Batch(_)) {
+        return Err(Error::Invalid("nested retained skill batch".into()));
+    }
+    if blake3::hash(&serde_json::to_vec(record).map_err(storage)?)
         .to_hex()
         .as_str()
         != digest
     {
         return Err(Error::Conflict("retained skill source changed".into()));
     }
-    Ok(record)
+    Ok(())
 }

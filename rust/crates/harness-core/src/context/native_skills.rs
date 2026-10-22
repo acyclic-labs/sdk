@@ -69,6 +69,7 @@ pub struct NativeSkills {
     user_roots: Vec<PathBuf>,
     cache: crate::sync::owned::Arc<crate::sync::owned::Mutex<Catalog>>,
     users: crate::sync::owned::Arc<crate::sync::owned::Mutex<UserCatalog>>,
+    records: retained::RecordCache,
 }
 
 impl NativeSkills {
@@ -162,6 +163,7 @@ impl NativeSkills {
             user_roots,
             cache: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(None)),
             users: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(None)),
+            records: retained::RecordCache::default(),
         }))
     }
 
@@ -217,12 +219,9 @@ impl NativeSkills {
         if path != format!("inputs/skills/{digest}/SKILL.md") {
             return Ok(None);
         }
-        let bytes = match std::fs::read(self.directory.join(format!("{digest}.json"))) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(storage(error)),
+        let Some(retained) = self.records.read(self.directory.clone(), digest).await? else {
+            return Ok(None);
         };
-        let retained = retained::read_record(&bytes, &digest)?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let owned;
         let work = if let Some(io) = io {
@@ -233,7 +232,7 @@ impl NativeSkills {
             owned = native_work(&cancellation)?;
             &owned
         };
-        match retained {
+        match retained.as_ref() {
             RetainedSource::Batch(_) => Err(Error::Invalid("nested retained skill batch".into())),
             RetainedSource::Shadow(record) => {
                 self.read_shadow(volume, &record, maximum, work).await

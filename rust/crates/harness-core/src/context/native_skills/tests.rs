@@ -84,11 +84,30 @@ async fn retained_records_share_one_sync_on_the_native_io_service() -> Result<()
         first, second,
         "retained records must share the synced inode"
     );
-    for skill in &skills {
-        let digest = hex::encode(skill.source.generation.as_resource().key());
-        let bytes =
-            std::fs::read(sources.directory.join(format!("{digest}.json"))).map_err(storage)?;
-        retained::read_record(&bytes, &digest)?;
-    }
+    let decodes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let read = |skill: &SkillMetadata| {
+        let decodes = Arc::clone(&decodes);
+        sources.records.read_with(
+            sources.directory.clone(),
+            hex::encode(skill.source.generation.as_resource().key()),
+            move || {
+                assert_ne!(std::thread::current().id(), runtime_thread);
+                assert!(
+                    std::thread::current()
+                        .name()
+                        .is_some_and(|name| name.starts_with("acyclic-host-io-"))
+                );
+                decodes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            },
+        )
+    };
+    let (first, second) = tokio::join!(read(&skills[0]), read(&skills[1]));
+    assert!(first?.is_some());
+    assert!(second?.is_some());
+    assert_eq!(
+        decodes.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "sibling skill loads must decode their shared bundle only once"
+    );
     Ok(())
 }
