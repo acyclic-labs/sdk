@@ -189,6 +189,111 @@ async fn successful_home_recovery_rebinds_discovery_but_moved_nodes_do_not() -> 
 }
 
 #[tokio::test]
+async fn reconnect_rediscovers_only_the_authenticated_home_endpoint() -> TestResult {
+    let channel = Endpoint::from_static("http://unused.invalid").connect_lazy();
+    for home_endpoint in [true, false] {
+        let (mut pool, _healthy) = pool::fixture::fixture(&channel);
+        if home_endpoint {
+            pool.links.get_mut("good").unwrap().channel = pool.home_channel.clone();
+        } else {
+            pool.home = "bad".into();
+            pool.admissions.bind_home("bad")?;
+        }
+        pool.admissions.insert(5, Arc::new(Progress::new(0)))?;
+        pool.reconnect("good")?;
+        let destination = if home_endpoint { "" } else { "good" };
+        let home = if home_endpoint { "" } else { "bad" };
+        assert_eq!(pool.home, home);
+        assert!(pool.admissions.interested(home));
+        assert_eq!(pool.routes.get(&3).unwrap().node, destination);
+        assert_eq!(pool.routes.get(&3).unwrap().generation, 2);
+        assert!(!pool.routes.get(&3).unwrap().opened);
+        assert_eq!(
+            pool.dials.keys().map(String::as_str).collect::<Vec<_>>(),
+            [destination]
+        );
+        assert_eq!(pool.links.get("bad").unwrap().epoch, 1);
+        assert!(pool.routes.get(&1).unwrap().opened);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn active_home_replacement_rediscovers_and_resumes_over_tls() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    provider
+        .append(AppendRequest {
+            path: StreamPath::new("events")?,
+            records: (0..6).map(|index| OwnedBytes::from(vec![index])).collect(),
+            if_tail: None,
+            idempotency_key: None,
+        })
+        .await?;
+    let mut expected = provider
+        .read(crate::ReadRequest {
+            path: StreamPath::new("events")?,
+            from: 0,
+            limit: 6,
+        })
+        .await?;
+    let fixture = Fixture::with_options(
+        provider.clone(),
+        "old",
+        fixture::Options {
+            tls: true,
+            ..Default::default()
+        },
+    )
+    .await?;
+    let client = fixture.client()?;
+    let mut records = client.follow(StreamPath::new("events")?, 0).await?;
+    for _ in 0..2 {
+        assert_eq!(next(&mut records).await?, next(&mut expected).await?);
+    }
+    *fixture
+        .counts
+        .node
+        .lock()
+        .map_err(|_| "fixture node poisoned")? = "replacement".into();
+    fixture.reset()?;
+    for _ in 2..6 {
+        assert_eq!(next(&mut records).await?, next(&mut expected).await?);
+    }
+    let mut later = client.follow(StreamPath::new("events")?, 6).await?;
+    append(&provider, "events", 1).await?;
+    let mut tail = provider
+        .read(crate::ReadRequest {
+            path: StreamPath::new("events")?,
+            from: 6,
+            limit: 1,
+        })
+        .await?;
+    let tail = next(&mut tail).await?;
+    assert_eq!(next(&mut records).await?, tail);
+    assert_eq!(next(&mut later).await?, tail);
+    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 2);
+    assert_eq!(fixture.counts.connections.load(Ordering::Relaxed), 1);
+    assert_eq!(fixture.counts.actors.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        *fixture
+            .counts
+            .destinations
+            .lock()
+            .map_err(|_| "fixture destinations poisoned")?,
+        ["", ""]
+    );
+    assert_eq!(
+        *fixture
+            .counts
+            .resumes
+            .lock()
+            .map_err(|_| "fixture resumes poisoned")?,
+        [(1, 1, 0), (1, 2, 2), (3, 1, 6)]
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn reconnect_pushes_a_generation_without_new_records() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     append(&provider, "idle", 1).await?;

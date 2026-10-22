@@ -259,6 +259,14 @@ impl Pool {
         if node == self.home {
             self.reset_home();
         }
+        // The authenticated discovery endpoint may now host a replacement
+        // node. Rediscover there without retaining the previous destination;
+        // moved-node endpoints must still prove their exact node identity.
+        let destination = if Arc::ptr_eq(&link.channel, &self.home_channel) {
+            ""
+        } else {
+            node
+        };
         let registering = self
             .routes
             .values()
@@ -273,21 +281,22 @@ impl Pool {
                 tracing::debug!(event = "reconnect", generation = route.generation);
             });
             route.opened = false;
+            route.node = destination.into();
         }
         self.dial(
             wire::SessionNode {
-                node_id: node.into(),
+                node_id: destination.into(),
                 endpoint: String::new(),
                 placement_epoch: 0,
             },
             Some(link.channel.clone()),
         );
-        if registering && let Some(dial) = self.dials.remove(node) {
+        if registering && let Some(dial) = self.dials.remove(destination) {
             let executor = self.executor.clone();
             // An immediate Welcome/EOF peer can otherwise monopolize the
             // browser microtask queue and prevent registration deadlines.
             self.dials.insert(
-                node.into(),
+                destination.into(),
                 Box::pin(async move {
                     executor.sleep(10).await;
                     dial.await

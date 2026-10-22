@@ -59,6 +59,7 @@ async fn publication_observes_share_one_streams_session_and_resume_at_the_snapsh
             if index == 20 {
                 assert_eq!(counts.sessions.load(Ordering::Relaxed), 1);
                 assert_eq!(verify_sharing(counts, 1), Ok(()));
+                *counts.node.lock().map_err(|_| "fixture node poisoned")? = "replacement".into();
                 fixture.reset()?;
             }
             let content = format!("goal-{index}");

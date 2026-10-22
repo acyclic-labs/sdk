@@ -46,6 +46,8 @@ pub(super) struct Traffic {
 
 #[derive(Default)]
 pub(super) struct Counts {
+    pub(super) node: Mutex<String>,
+    pub(super) destinations: Mutex<Vec<String>>,
     pub(super) connections: AtomicUsize,
     pub(super) sessions: AtomicUsize,
     pub(super) closed_sessions: AtomicUsize,
@@ -72,6 +74,12 @@ impl Counts {
         self.received_bytes
             .fetch_add(5 + frame.encoded_len(), Ordering::Relaxed);
         match &frame.body {
+            Some(Body::Hello(hello)) => {
+                self.destinations
+                    .lock()
+                    .map_err(|_| StreamError::Unavailable)?
+                    .push(hello.destination_node.clone());
+            }
             Some(Body::Interest(interest)) => self.observe_interest(interest)?,
             Some(Body::Ack(_)) => {
                 self.acknowledgements.fetch_add(1, Ordering::Relaxed);
@@ -159,7 +167,6 @@ impl Drop for CountSessionDrop {
 struct Host<P> {
     provider: Arc<P>,
     counts: Arc<Counts>,
-    node: String,
     controls: tokio::sync::broadcast::Sender<Result<wire::SessionFrame, Status>>,
     withhold_welcome: bool,
     confirm_checked: bool,
@@ -205,7 +212,11 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
             .boxed();
         let output = session::serve(
             Arc::clone(&self.provider),
-            self.node.clone(),
+            self.counts
+                .node
+                .lock()
+                .map_err(|_| Status::internal("fixture node poisoned"))?
+                .clone(),
             Limits::default(),
             input,
         )
@@ -275,6 +286,7 @@ impl Fixture {
             format!("http://{}", listener.local_addr()?)
         };
         let counts = Arc::new(Counts::default());
+        *counts.node.lock().map_err(|_| "fixture node poisoned")? = node.into();
         let accepted = Arc::clone(&counts);
         let incoming = stream::try_unfold(listener, move |listener| {
             let counts = Arc::clone(&accepted);
@@ -290,7 +302,6 @@ impl Fixture {
         let host = Host {
             provider,
             counts: Arc::clone(&counts),
-            node: node.into(),
             controls: controls.clone(),
             withhold_welcome: options.withhold_welcome,
             confirm_checked: options.confirm_checked,
