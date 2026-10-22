@@ -50,17 +50,22 @@ proptest! {
 #[cfg(unix)]
 #[test]
 fn symlinked_launchers_preserve_invocation_path_and_binding() -> Result<()> {
-    use std::os::unix::fs::{PermissionsExt as _, symlink};
+    use std::os::unix::fs::symlink;
     let root = tempfile::tempdir().map_err(Error::process_io)?;
     let target = root.path().join("launcher");
-    std::fs::write(&target, b"#!/bin/sh\nprintf '%s\\n' \"$0\"\n").map_err(Error::process_io)?;
-    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))
-        .map_err(Error::process_io)?;
+    // Use an existing executable: a concurrent fork can retain a freshly written
+    // script's write descriptor until exec, making its execution fail with ETXTBSY.
+    symlink("/bin/sh", &target).map_err(Error::process_io)?;
     let bin = root.path().join(".venv/bin");
     std::fs::create_dir_all(&bin).map_err(Error::process_io)?;
     let launcher = bin.join("python");
     symlink(&target, &launcher).map_err(Error::process_io)?;
-    let selected = |program| server(json!({"command":program}), Dialect::Claude);
+    let selected = |program| {
+        server(
+            json!({"command":program, "args":["-c", "printf '%s\\n' \"$0\""]}),
+            Dialect::Claude,
+        )
+    };
     let mut command = native::command_for(&selected(".venv/bin/python")?, root.path(), |_| None)?;
     assert_eq!(Path::new(command.get_program()), launcher);
     let output = command.output().map_err(Error::process_io)?;
