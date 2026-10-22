@@ -344,7 +344,7 @@ fn bind_unix_socket_in<W: SourceDemandReadWork>(
     Ok(())
 }
 
-pub(super) fn require_leaf(path: &Path) -> io::Result<()> {
+pub(crate) fn require_leaf(path: &Path) -> io::Result<()> {
     let mut components = path.components();
     if !matches!(components.next(), Some(std::path::Component::Normal(_)))
         || components.next().is_some()

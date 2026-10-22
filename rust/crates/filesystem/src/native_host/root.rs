@@ -343,6 +343,7 @@ impl HostRoot {
     }
 }
 
+/// Opens one no-follow directory capability on the caller's original native work.
 pub(crate) fn open_root_directory<W: NativeHostWork>(
     path: &Path,
     work: &mut W,

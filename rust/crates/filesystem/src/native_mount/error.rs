@@ -19,6 +19,15 @@ pub enum NativeMountError {
     /// Another process owns this exact native destination.
     #[error("mount destination is already owned by another process")]
     DestinationBusy,
+    /// Durable custody does not identify this physical root and its issuer.
+    #[error("native recovery root has unknown or copied ownership")]
+    RecoveryOwnershipUnknown,
+    /// The recorded logical volume differs from the volume being opened.
+    #[error("native recovery root belongs to another volume")]
+    RecoveryVolumeMismatch,
+    /// The process incarnation could not be conclusively observed.
+    #[error("native recovery owner liveness is unknown")]
+    RecoveryOwnerUnknown,
     /// Requested writable semantics cannot be captured exactly.
     #[error("writable native mount is unavailable: {0}")]
     WritableUnavailable(String),

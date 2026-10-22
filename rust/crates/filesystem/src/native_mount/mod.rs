@@ -28,6 +28,8 @@ macro_rules! callback_span {
 }
 
 mod clock;
+#[cfg(any(windows, test))]
+mod custody;
 #[cfg(all(
     feature = "test-support",
     any(target_os = "linux", target_os = "macos")

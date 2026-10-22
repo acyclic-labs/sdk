@@ -1,6 +1,38 @@
 use super::*;
 use crate::native_host::{self, NativeHostWork};
 
+pub(in crate::native_mount) fn open_recovery_leaf(
+    parent: &cap_std::fs::Dir,
+    name: &std::path::Path,
+    work: &crate::NativeMaterializationWork,
+) -> Result<Option<(std::fs::File, crate::NativeRootIdentity)>, NativeMountError> {
+    use windows::Wdk::Storage::FileSystem as nt;
+    use windows::Win32::Storage::FileSystem as fs;
+    native_host::require_leaf(name)?;
+    let opened = native_host::with_wide_path(name, &mut &*work, |name, work| {
+        native_host::open_windows_at(
+            parent,
+            name,
+            fs::FILE_READ_ATTRIBUTES | fs::SYNCHRONIZE,
+            nt::FILE_OPEN,
+            nt::FILE_DIRECTORY_FILE | nt::FILE_SYNCHRONOUS_IO_NONALERT,
+            work,
+        )
+    });
+    match opened {
+        Ok(file) => {
+            let identity = native_host::file_identity_and_length(&file, &mut &*work)?.0;
+            Ok(Some((file, identity)))
+        }
+        Err(crate::NativeTreeMaterializationError::Io(error))
+            if error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 #[derive(Default)]
 pub(in crate::native_mount) struct ProjFsRecoveryControl {
     directory: Option<cap_std::fs::Dir>,

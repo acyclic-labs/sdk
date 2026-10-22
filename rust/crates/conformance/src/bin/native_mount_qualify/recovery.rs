@@ -61,29 +61,46 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
     eprintln!("qualification phase: crash child terminated; recovery starting");
     #[cfg(windows)]
     {
-        // Generic disposable recovery must still reject a stale writable
-        // ProjFS cache. The explicit preserving operation moves it aside.
-        let mut recovery = NativeMountRecoveryOwner::acquire(mount)?;
-        if recovery.recover().is_ok() {
-            return Err("generic recovery discarded a stale ProjFS root".into());
-        }
-        // The same owner first detaches without deleting the authored cache,
-        // then releases its actual fence for the explicit preserving operation.
+        let engine = Fs::local(LocalOptions::new(crash_root.join("store")));
+        let runtime = tokio::runtime::Runtime::new()?;
+        let volume = runtime.block_on(async {
+            let engine = engine.await?;
+            let workspace = engine
+                .open_workspace(
+                    "crash-owner",
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map_err(|failure| failure.error)?;
+            Ok::<_, Failure>(workspace.value.id().volume_id())
+        })?;
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(error, _)| error)?;
-        recovery.detach(&work)?;
-        let preserved = recover_native_mount_destination_preserving_residue(mount)?
-            .ok_or("crash recovery failed to preserve the stale ProjFS root")?;
+        let parent_path = mount.parent().ok_or("crash mount has no parent")?;
+        let (parent, _) = work.open_root_directory(parent_path)?;
+        let preserved = parent_path.join("preserved");
+        // Generic disposable recovery must still reject a stale writable
+        // ProjFS cache. Retain that same actual owner through preservation,
+        // rather than racing its asynchronous retirement with reacquisition.
+        let mut owner = NativeMountRecoveryOwner::acquire_in_directory(mount, &parent, &work)?;
+        if owner.recover().is_ok() {
+            return Err("generic recovery discarded a stale ProjFS root".into());
+        }
+        if !owner.preserve_crashed_in_directory(&parent, Path::new("preserved"), volume, &work)? {
+            return Err("crash recovery failed to preserve the stale ProjFS root".into());
+        }
         if !preserved.is_dir() || mount.exists() {
             return Err("crash recovery did not move the stale root aside".into());
         }
         if fs::read(preserved.join("unpublished.txt"))? != b"unpublished" {
             return Err("crash recovery lost unpublished authored residue".into());
         }
-        if recover_native_mount_destination_preserving_residue(mount)?.is_some() {
+        let mut retry = NativeMountRecoveryOwner::acquire_in_directory(mount, &parent, &work)?;
+        if retry.preserve_crashed_in_directory(&parent, Path::new("preserved"), volume, &work)? {
             return Err("crash recovery was not idempotent".into());
         }
         fs::create_dir(mount)?;

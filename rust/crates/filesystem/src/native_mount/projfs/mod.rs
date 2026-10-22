@@ -114,7 +114,11 @@ mod session;
 pub(super) use session::*;
 mod lifecycle;
 mod recovery;
-pub(super) use recovery::*;
+use recovery::*;
+mod process_owner;
+pub(in crate::native_mount) use process_owner::{
+    current_process_owner, require_dead_process_owner,
+};
 mod cleanup;
 #[cfg(test)]
 pub(super) use cleanup::detach_projection;

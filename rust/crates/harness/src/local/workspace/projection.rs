@@ -97,6 +97,12 @@ impl MountedVolume {
         read_only: bool,
     ) -> Result<Entered> {
         enter(&self.native, &self.users, async || {
+            #[cfg(windows)]
+            volumes::recover_volume_after_crash(
+                root,
+                Path::new(relative),
+                self.workspace.workspace().id().volume_id(),
+            )?;
             volumes::prepare_mount_directory(root, Path::new(relative))?;
             let options = if read_only {
                 acyclic_fs::MountOptions::read_only()

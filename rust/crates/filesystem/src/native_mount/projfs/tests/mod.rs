@@ -6,6 +6,7 @@ use std::sync::Barrier;
 mod common;
 use common::*;
 mod command_retirement;
+mod crash_recovery;
 mod empty_callbacks;
 mod metadata;
 mod metadata_errors;

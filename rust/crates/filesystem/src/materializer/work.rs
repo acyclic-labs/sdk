@@ -29,6 +29,14 @@ macro_rules! demand_calls {
     )*};
 }
 impl NativeMaterializationWork {
+    /// Opens a no-follow directory capability on this original native ledger.
+    pub fn open_root_directory(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<(cap_std::fs::Dir, crate::NativeRootIdentity), NativeTreeMaterializationError> {
+        crate::native_host::open_root_directory(path, &mut &*self)
+    }
+
     /// Registers a cancellation waiter funded by this original ledger.
     pub fn cancellation_wait(
         &self,

@@ -276,13 +276,40 @@ impl ControlPlane {
                 #[cfg(windows)]
                 for root in route.roots.values() {
                     let path = route.mount_path.join(root.mount_name());
-                    if let Some(preserved) =
-                        acyclic_fs::recover_native_mount_destination_preserving_residue(&path)
-                            .map_err(display)?
+                    let [fence, ..] =
+                        acyclic_fs::native_mount_control_paths(&path).map_err(display)?;
+                    if !fence.try_exists().map_err(display)? {
+                        continue;
+                    }
+                    let volume = self
+                        .workspace_root(&route, root.id())
+                        .await?
+                        .id()
+                        .volume_id();
+                    let work = acyclic_fs::NativeMaterializationWork::new(
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                    )
+                    .map_err(|(error, _)| display(error))?;
+                    let (parent, _) = work
+                        .open_root_directory(&route.mount_path)
+                        .map_err(display)?;
+                    let mut owner = acyclic_fs::NativeMountRecoveryOwner::acquire_in_directory(
+                        &path, &parent, &work,
+                    )
+                    .map_err(display)?;
+                    let recovery_path = self.config_root.join("recovery").join(volume.to_string());
+                    fs::create_dir_all(&recovery_path).map_err(display)?;
+                    let (recovery, _) =
+                        work.open_root_directory(&recovery_path).map_err(display)?;
+                    let name = acyclic_fs::OperationId::new().to_string();
+                    if owner
+                        .preserve_crashed_in_directory(&recovery, Path::new(&name), volume, &work)
+                        .map_err(display)?
                     {
                         eprintln!(
                             "Acyclic preserved unpublished crash residue at {}; the workspace resumes from its last durable generation",
-                            preserved.display()
+                            recovery_path.join(name).display()
                         );
                     }
                 }

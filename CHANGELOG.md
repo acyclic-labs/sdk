@@ -40,6 +40,8 @@ release commit.
 
 ### Added
 
+- Automatically preserve crashed Windows volume projections under `.volumes/recovery` using durable physical-root, volume, and process-incarnation custody before remounting. Refuse live and unknown owners and mismatched roots.
+
 - A unified 0.1.1 release of the Rust and TypeScript SDK families and the
   `acyclic` coding-agent plugin, with one qualified source commit and
   platform-specific binaries.

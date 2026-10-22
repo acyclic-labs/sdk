@@ -309,8 +309,6 @@ pub use native_exchange::{
 pub use native_identity::NativeRootIdentity;
 #[cfg(all(feature = "native-mount", target_os = "linux"))]
 pub use native_mount::recover_disconnected_native_mount_destination;
-#[cfg(all(feature = "native-mount", windows))]
-pub use native_mount::recover_native_mount_destination_preserving_residue;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub use native_mount::{
     CheckoutMountSource, ContentSink, HostPathReplacement, HostPathRestore, LazyMount,

@@ -45,6 +45,7 @@ pub(in crate::local) fn require_available(
 pub(in crate::local) fn owned(root: &Path, relative: &str) -> Result<Vec<String>> {
     let destination = root.join(relative);
     std::iter::once(destination.clone())
+        .chain(std::iter::once(root.join(".volumes/recovery")))
         .chain(acyclic_fs::native_mount_control_paths(&destination).map_err(Error::from)?)
         .filter(|path| path.starts_with(root))
         .map(|path| {
@@ -103,6 +104,8 @@ pub(super) async fn attach(
         if let Some(parent) = Path::new(relative).parent() {
             create_mount_directory(root, parent)?;
         }
+        #[cfg(windows)]
+        recover_volume_after_crash(root, Path::new(relative), source.id().volume_id())?;
         acyclic_fs::WorkspaceGraph::new(store.clone())
             .register_root(&source)
             .await?;
@@ -421,7 +424,7 @@ fn link_directory(target: &Path, path: &Path) -> std::io::Result<()> {
 pub(super) fn prepare_mount_directory(root: &Path, relative: &Path) -> Result<()> {
     let destination = root.join(relative);
     let controls = acyclic_fs::native_mount_control_paths(&destination)?;
-    let mut excluded = vec![destination.clone()];
+    let mut excluded = vec![destination.clone(), root.join(".volumes/recovery")];
     excluded.extend(
         controls
             .iter()
@@ -439,6 +442,38 @@ pub(super) fn prepare_mount_directory(root: &Path, relative: &Path) -> Result<()
         Err(error) => return Err(mount_io(error)),
     }
     create_mount_directory(root, relative)
+}
+
+/// Each binding supplies its durable logical volume identity. The destination
+/// fence and physical receipt must agree before any authored file is moved.
+#[cfg(windows)]
+pub(super) fn recover_volume_after_crash(
+    root: &Path,
+    relative: &Path,
+    volume: acyclic_fs::VolumeId,
+) -> Result<()> {
+    let destination = root.join(relative);
+    let [fence, ..] = acyclic_fs::native_mount_control_paths(&destination)?;
+    match std::fs::symlink_metadata(&fence) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(mount_io(error)),
+        Ok(_) => {}
+    }
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let parent = destination
+        .parent()
+        .ok_or_else(|| Error::Invalid("volume projection has no parent".into()))?;
+    let (parent, _) = work.open_root_directory(parent)?;
+    let mut owner =
+        acyclic_fs::NativeMountRecoveryOwner::acquire_in_directory(&destination, &parent, &work)?;
+    let recovery = Path::new(".volumes/recovery").join(volume.to_string());
+    create_mount_directory(root, &recovery)?;
+    let (recovery, _) = work.open_root_directory(&root.join(recovery))?;
+    let name = acyclic_fs::OperationId::new().to_string();
+    owner.preserve_crashed_in_directory(&recovery, Path::new(&name), volume, &work)?;
+    Ok(())
 }
 
 pub(super) fn create_mount_directory(root: &Path, relative: &Path) -> Result<()> {

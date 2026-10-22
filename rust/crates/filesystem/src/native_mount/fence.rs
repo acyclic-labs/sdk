@@ -1,6 +1,8 @@
 use super::fence_io::MountLockFile;
 use super::*;
 mod destination;
+#[cfg(windows)]
+mod ownership;
 
 pub(super) const NATIVE_FENCE_PREFIX: &str = ".acyclic-fs-mount-";
 pub(super) const NATIVE_FENCE_SUFFIX: &str = ".lock";
@@ -435,20 +437,7 @@ impl MountDestinationGuard {
         Ok(())
     }
 
-    #[cfg(windows)]
-    pub(super) fn acquire_for_recovery(destination: &Path) -> Result<Self, NativeMountError> {
-        let name = destination
-            .file_name()
-            .ok_or(NativeMountError::InvalidDestination)?;
-        let parent = destination
-            .parent()
-            .ok_or(NativeMountError::InvalidDestination)?
-            .canonicalize()
-            .map_err(|_| NativeMountError::InvalidDestination)?;
-        Self::acquire_canonical(&parent.join(name))
-    }
-
-    #[cfg(any(windows, test))]
+    #[cfg(test)]
     pub(super) fn acquire_canonical(canonical: &Path) -> Result<Self, NativeMountError> {
         let (lock_path, registry_path) = Self::paths_for_canonical(canonical)?;
         let registry = acquire_mount_lock(&registry_path, true)?;

@@ -215,28 +215,6 @@ pub fn recover_native_mount_destination(destination: &Path) -> Result<(), Native
     }
 }
 
-/// Reclaims a Windows provider's dead mount path without deleting authored residue.
-#[cfg(windows)]
-pub fn recover_native_mount_destination_preserving_residue(
-    destination: &Path,
-) -> Result<Option<PathBuf>, NativeMountError> {
-    let name = destination
-        .file_name()
-        .ok_or(NativeMountError::InvalidDestination)?;
-    let parent = destination
-        .parent()
-        .ok_or(NativeMountError::InvalidDestination)?
-        .canonicalize()
-        .map_err(|_| NativeMountError::InvalidDestination)?;
-    let destination = parent.join(name);
-    let mut guard = MountDestinationGuard::acquire_for_recovery(&destination)?;
-    let preserved = projfs::quarantine_crashed_destination(&destination)?;
-    let cancellation = crate::CancellationToken::new();
-    let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
-    guard.release(&mut work)?;
-    Ok(preserved)
-}
-
 /// Detaches and unfences one crash-left native destination while retaining its underlying directory and authored host residue for an explicit caller decision.
 pub fn detach_native_mount_destination_after_crash(
     destination: &Path,

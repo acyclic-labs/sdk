@@ -11,8 +11,6 @@ use std::time::{Duration, Instant};
 
 use acyclic_fs::kernel::FileMetadata;
 use acyclic_fs::model::{Lifecycle, VolumeConfig};
-#[cfg(windows)]
-use acyclic_fs::recover_native_mount_destination_preserving_residue;
 use acyclic_fs::{
     Fs, LocalOptions, MountOptions, NativeMountKind, TransactionCommit,
     native_mount::NativeMountRecoveryOwner, probe_native_mount,
