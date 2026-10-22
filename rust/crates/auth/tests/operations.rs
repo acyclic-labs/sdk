@@ -90,7 +90,7 @@ fn every_product_rpc_declares_authorization() -> Result<(), Box<dyn std::error::
     let mut command = Command::new(protoc_bin_vendored::protoc_bin_path()?);
     for family in [
         "actors",
-        "filesystem",
+        "filesystem-wire",
         "objects",
         "machines",
         "inference",
