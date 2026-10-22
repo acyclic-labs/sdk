@@ -278,7 +278,6 @@ struct SharedState {
     /// Host subtrees whose events are never hints, in fence preference order.
     excluded: Vec<PathBuf>,
     excluded_allocation: Option<crate::NativeAllocation>,
-    _queue_allocation: Option<crate::NativeAllocation>,
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -305,7 +304,6 @@ impl SharedState {
             fence: None,
             excluded: Vec::new(),
             excluded_allocation: None,
-            _queue_allocation: None,
         }
     }
 
@@ -1500,11 +1498,9 @@ impl NativeWatch {
             .checked_mul(size_of::<WatchChange>() as u64)
             .ok_or(WorkError::Overflow)?;
         let queue_allocation = if let Some(original) = original {
-            Some(original.claim(
-                queue_bytes,
-                u64::from((queue_bytes) != 0),
-                crate::WorkCounters::UNCHARGED,
-            )?)
+            // Queue capacity is an admission bound. Its backing grows with
+            // occupancy and carries its own original-ledger allocation guard.
+            Some(original.claim(0, 0, crate::WorkCounters::UNCHARGED)?)
         } else {
             work.claim_allocation(
                 queue_bytes,
@@ -1515,12 +1511,11 @@ impl NativeWatch {
             None
         };
         Self::startup_control(work)?;
-        let (sender, receiver) = crate::watch_queue::bounded(capacity);
+        let (sender, receiver) = crate::watch_queue::bounded(capacity, queue_allocation);
         Self::startup_control(work)?;
         let queued = Arc::new(AtomicU32::new(0));
         Self::startup_control(work)?;
-        let mut state = SharedState::new(Some(WatchInvalidationReason::InitialSnapshotRequired));
-        state._queue_allocation = queue_allocation;
+        let state = SharedState::new(Some(WatchInvalidationReason::InitialSnapshotRequired));
         let shared = Arc::new(Mutex::new(state));
         Self::startup_control(work)?;
         let fenced = Arc::new(Condvar::new());

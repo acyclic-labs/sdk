@@ -247,3 +247,49 @@ fn native_shutdown_retires_birth_resources_with_a_fresh_invocation()
     }
     Ok(())
 }
+
+#[test]
+fn overlapping_native_watches_charge_only_occupied_queue_storage()
+-> Result<(), Box<dyn std::error::Error>> {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    crate::watch::initialize_native_watch_services()?;
+    let first = tempfile::tempdir()?;
+    let second = tempfile::tempdir()?;
+    let cancellation = crate::CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(
+        crate::WorkBudget {
+            peak_allocation_bytes: 4 * 1024 * 1024,
+            ..crate::WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    )
+    .unwrap();
+    let baseline = work.live_allocation_bytes();
+    let options = crate::watch::NativeWatchOptions {
+        maximum_queued_changes: 65_536,
+        recursive: false,
+        ..crate::watch::NativeWatchOptions::new(crate::VolumeLimits::default())
+    };
+    let mut first = crate::watch::NativeWatch::open_with_profile_with_native_work(
+        first.path(),
+        crate::FilesystemProfile::Portable,
+        options,
+        &work,
+    )?;
+    let mut second = crate::watch::NativeWatch::open_with_profile_with_native_work(
+        second.path(),
+        crate::FilesystemProfile::Portable,
+        options,
+        &work,
+    )?;
+    let occupied = work.live_allocation_bytes();
+    assert!(occupied > baseline, "live producer resources remain charged");
+    // Settle both producers before checking their released payload. A platform
+    // delivery task may still own its small control block after terminal stop.
+    assert!(first.shutdown_with_native_work(&work)?);
+    assert!(second.shutdown_with_native_work(&work)?);
+    drop(first);
+    drop(second);
+    assert!(work.live_allocation_bytes() < occupied);
+    Ok(())
+}
