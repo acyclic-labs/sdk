@@ -2,7 +2,7 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 type Sleeps = Arc<Mutex<VecDeque<Duration>>>;
 thread_local! {
@@ -49,13 +49,22 @@ impl Clock {
         });
         tokio::time::pause();
         let task = tokio::spawn(async move {
+            let mut observed_wall = Instant::now();
             loop {
+                // Real socket and persistence deadlines must still expire even
+                // if a peer stalls or the awaiting task stays runnable.
+                let now = Instant::now();
+                let elapsed = now.duration_since(observed_wall);
+                if elapsed >= Duration::from_millis(1) {
+                    observed_wall = now;
+                    tokio::time::advance(elapsed).await;
+                }
                 let duration = sleeps.lock().expect("clock waits").pop_front();
                 if let Some(duration) = duration {
                     // This timer returned Pending before registration. Advance
                     // its actual requested delay, preserving polling intervals.
                     // Tokio rounds timer deadlines up to the next millisecond.
-                    // Cross that timer-wheel tick while HTTP time stays frozen.
+                    // Cross that timer-wheel tick without waiting out the polling delay.
                     tokio::time::advance(duration.saturating_add(Duration::from_millis(1))).await;
                 }
                 // Remain runnable so Tokio cannot auto-advance unrelated HTTP
@@ -75,4 +84,29 @@ impl Drop for Clock {
         });
         tokio::time::resume();
     }
+}
+
+#[tokio::test]
+async fn stalled_io_timeout_expires_while_poll_clock_is_active() {
+    use std::future::Future as _;
+    use std::task::Poll;
+    let _clock = Clock::start();
+    let deadline = tokio::time::timeout(Duration::from_millis(20), std::future::pending::<()>());
+    tokio::pin!(deadline);
+    let wall = Instant::now();
+    let expired = std::future::poll_fn(|cx| {
+        if let Poll::Ready(result) = deadline.as_mut().poll(cx) {
+            assert!(result.is_err());
+            return Poll::Ready(true);
+        }
+        // Independent real time makes the old frozen-clock negative control
+        // terminate promptly even though its Tokio timeout never expires.
+        if wall.elapsed() >= Duration::from_millis(200) {
+            return Poll::Ready(false);
+        }
+        cx.waker().wake_by_ref();
+        Poll::Pending
+    })
+    .await;
+    assert!(expired, "real I/O deadline was frozen by the polling clock");
 }
