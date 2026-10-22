@@ -85,7 +85,7 @@ qualification uses `LocalStream` and its confirmed durable watermark.
 
 The runtime's package tests exercise a shared history on memory and local-disk
 providers, plus interrupted inbox, outbox, cancellation and placement recovery.
-GraphCoder and `LocalHarness` still use their existing native composition;
+`GraphCoder` and `LocalHarness` still use their existing native composition;
 migrating those entry points through the package remains required.
 
 SDK inventory (2026-10-22): `rust/crates/actors` contains the client and guest ABI,
