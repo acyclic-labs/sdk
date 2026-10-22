@@ -220,15 +220,7 @@ fn name_query_reads_reparse_leaves_without_following_ancestors()
     let outside = tempfile::tempdir()?;
     std::fs::write(outside.path().join("outside"), b"must not follow")?;
     let junction = temporary.path().join("junction");
-    let mut command = std::process::Command::new("cmd.exe");
-    command
-        .args(["/D", "/C", "mklink", "/J"])
-        .arg(&junction)
-        .arg(outside.path());
-    assert!(
-        acyclic_native_runtime::process_status(&mut command, std::time::Duration::from_secs(30))?
-            .success()
-    );
+    crate::windows_test_filesystems::junction(&junction, outside.path())?;
     let root = HostRoot::open(temporary.path(), &mut &work)?;
     let projected = temporary.path().join("projected");
     std::fs::create_dir(&projected)?;

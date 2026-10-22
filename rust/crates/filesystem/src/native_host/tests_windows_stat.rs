@@ -275,18 +275,7 @@ fn source_stat_observes_a_reparse_leaf_and_rejects_traversal()
     std::fs::create_dir(&outside)?;
     std::fs::write(outside.join("leaf"), b"outside")?;
     let junction = inside.join("junction");
-    let output = acyclic_native_runtime::process_output(
-        std::process::Command::new("cmd.exe")
-            .args(["/c", "mklink", "/J"])
-            .arg(&junction)
-            .arg(&outside),
-        std::time::Duration::from_secs(5),
-        64 * 1024,
-    )?;
-    assert!(
-        output.status.success(),
-        "junction creation failed: {output:?}"
-    );
+    crate::windows_test_filesystems::junction(&junction, &outside)?;
     let root = test_root(&inside)?;
     let leaf: Vec<_> = "junction".encode_utf16().collect();
     let nested: Vec<_> = "junction\\leaf".encode_utf16().collect();

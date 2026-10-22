@@ -78,17 +78,5 @@ fn junction_to_an_ordinary_directory_remains_allowed() -> Result<(), Box<dyn std
 }
 
 fn create_junction(alias: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
-    let mut command = std::process::Command::new("cmd.exe");
-    command
-        .args(["/D", "/C", "mklink", "/J"])
-        .arg(alias)
-        .arg(target);
-    let status =
-        acyclic_native_runtime::process_status(&mut command, std::time::Duration::from_secs(5))?;
-    if !status.success() {
-        return Err(std::io::Error::other(format!(
-            "junction creation failed: {status}"
-        )));
-    }
-    Ok(())
+    crate::windows_test_filesystems::junction(alias, target)
 }
