@@ -1,5 +1,5 @@
 use super::*;
-use crate::{WorkBudget, WorkError};
+use crate::WorkBudget;
 
 const APPENDS: u64 = 10;
 const COPIED: u64 = 100;
@@ -25,19 +25,10 @@ fn appends(count: u64) -> WorkCounters {
     }
 }
 
-fn exceeded(error: NativeTreeMaterializationError, counter: &str) {
+fn exceeded(error: &NativeTreeMaterializationError, counter: &str) {
     let shown = format!("{error:?}");
     assert!(
-        shown.contains(
-            &format!(
-                "{:?}",
-                WorkError::BudgetExceeded {
-                    counter: "",
-                    observed: 0,
-                    maximum: 0
-                }
-            )[..16]
-        ) && shown.contains(&format!("counter: {counter:?}")),
+        shown.contains("BudgetExceeded {") && shown.contains(&format!("counter: {counter:?}")),
         "expected {counter} to exceed its window, got {shown}"
     );
 }
@@ -75,7 +66,7 @@ fn every_run_of_a_long_session_gets_its_own_full_window() {
     // Unwindowed work on the session keeps its own full budget.
     session.record_admitted(appends(APPENDS)).unwrap();
     exceeded(
-        session.record_admitted(appends(1)).unwrap_err(),
+        &session.record_admitted(appends(1)).unwrap_err(),
         "authority_records_appended",
     );
 }
@@ -86,7 +77,7 @@ fn the_same_session_without_windows_exceeds_the_shared_budget() {
     let session = root();
     session.record_admitted(appends(APPENDS)).unwrap();
     exceeded(
-        session.record_admitted(appends(APPENDS)).unwrap_err(),
+        &session.record_admitted(appends(APPENDS)).unwrap_err(),
         "authority_records_appended",
     );
 }
@@ -98,14 +89,14 @@ fn one_run_over_its_own_window_still_fails() {
     let over = session.invocation_window().unwrap();
     over.record_admitted(appends(APPENDS)).unwrap();
     exceeded(
-        over.record_admitted(appends(1)).unwrap_err(),
+        &over.record_admitted(appends(1)).unwrap_err(),
         "authority_records_appended",
     );
     let copied = session.invocation_window().unwrap();
     let meter = copied.runtime_meter();
     meter.examine(0, COPIED).unwrap();
     exceeded(
-        copied.runtime_error(meter.examine(0, 1).unwrap_err()),
+        &copied.runtime_error(meter.examine(0, 1).unwrap_err()),
         "bytes_copied",
     );
 }
@@ -118,7 +109,7 @@ fn an_enclosing_window_is_never_charged_for_a_nested_one() {
     let inner = outer.invocation_window().unwrap();
     inner.record_admitted(appends(APPENDS)).unwrap();
     exceeded(
-        inner.record_admitted(appends(1)).unwrap_err(),
+        &inner.record_admitted(appends(1)).unwrap_err(),
         "authority_records_appended",
     );
     // A clone keeps its window, and the outer window still has exactly its own remainder.
@@ -126,7 +117,7 @@ fn an_enclosing_window_is_never_charged_for_a_nested_one() {
     alias.record_admitted(appends(4)).unwrap();
     assert_eq!(outer.remaining().unwrap().authority_records_appended, 0);
     exceeded(
-        outer.record_admitted(appends(1)).unwrap_err(),
+        &outer.record_admitted(appends(1)).unwrap_err(),
         "authority_records_appended",
     );
 }
@@ -191,7 +182,7 @@ fn a_window_holding_its_full_reservation_cannot_charge() {
     let window = session.invocation_window().unwrap();
     let _held = window.reserve_work(appends(APPENDS)).unwrap();
     exceeded(
-        window.record_admitted(appends(1)).unwrap_err(),
+        &window.record_admitted(appends(1)).unwrap_err(),
         "authority_records_appended",
     );
 }
@@ -348,4 +339,35 @@ proptest::proptest! {
             proptest::prop_assert_eq!(left(&windows[w]), APPENDS - consumed[w]);
         }
     }
+}
+
+#[test]
+fn unbounded_windows_reserve_complete_and_refund_exactly() {
+    let session =
+        NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .unwrap();
+    let window = session.invocation_window().unwrap();
+    let completed = window.reserve_work(appends(3)).unwrap();
+    let refunded = window.reserve_work(appends(4)).unwrap();
+    let unbounded = || window.remaining().unwrap().authority_records_appended;
+    assert_eq!(unbounded(), u64::MAX - 7);
+    completed.record_completed(appends(2)).unwrap();
+    drop(completed);
+    drop(refunded);
+    window.record_admitted(appends(1)).unwrap();
+    assert_eq!(
+        session.receipt().authority_records_appended,
+        3,
+        "every completed and admitted append is recorded once"
+    );
+    // Nothing poisoned the shared ledger: every context still charges.
+    session.record_admitted(appends(1)).unwrap();
+    session
+        .invocation_window()
+        .unwrap()
+        .reserve_work(appends(5))
+        .unwrap()
+        .record_completed(appends(5))
+        .unwrap();
+    assert!(window.remaining().is_ok());
 }

@@ -29,6 +29,8 @@ struct WindowLedger {
 impl WindowLedger {
     /// The ledger budget that leaves this window exactly `limit - held - consumed`
     /// against the shared `work`, which already includes everything this window charged.
+    /// An unbounded counter stays unbounded less exactly what this window holds, so a
+    /// held reservation always has room to be refunded or completed.
     fn view(&self, limit: &WorkBudget, work: &WorkCounters) -> Result<WorkBudget, WorkError> {
         limit
             .checked_add_cumulative(&work.checked_sub_cumulative(&self.consumed)?)?
@@ -148,7 +150,12 @@ impl crate::demand::DemandWork {
                 (&work, &self.work),
                 (&pending, &self.pending_reservations()),
             )
-            .and_then(|(ledger, charged)| Ok((ledger, stored.checked_add_cumulative(&charged)?)));
+            .and_then(|(ledger, charged)| {
+                Ok((
+                    ledger,
+                    stored.checked_add_bounded(&charged, &self.original_budget())?,
+                ))
+            });
         self.budget = match settled {
             Ok((settled, budget)) => {
                 *window.ledger() = settled;
