@@ -262,6 +262,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
                 )?;
             }
         }
+        // Whatever order the caller lists paths in, a directory is removed
+        // only after everything beneath it.
+        removals
+            .value
+            .sort_unstable_by_key(|removal| match removal {
+                crate::kernel::Mutation::Remove { path, .. } => {
+                    std::cmp::Reverse(path.components().len())
+                }
+                _ => std::cmp::Reverse(0),
+            });
         if removals.value.is_empty() {
             removals.retire(accounting)?;
         } else {

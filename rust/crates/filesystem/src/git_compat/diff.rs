@@ -97,8 +97,9 @@ where
 ///
 /// Restoring exactly these paths makes every unreserved path of `from` match
 /// `to`, nested contents included, and leaves the reserved ones as they are.
-/// Each path is listed before its ancestors, so a removed directory is emptied
-/// before it is removed.
+/// Each path is listed after its ancestors, so a directory that replaces a
+/// file is restored before its children; the restore removes paths deepest
+/// first on its own.
 pub async fn git_restore_paths<A, O>(
     from: &Generation<A, O>,
     to: &Generation<A, O>,
@@ -128,7 +129,7 @@ where
         }
     }
     // A descendant `a/b` always sorts after its ancestor `a`.
-    Ok(paths.into_iter().rev().collect())
+    Ok(paths.into_iter().collect())
 }
 
 /// Returns the Git-visible tracked paths after a workspace transition that
