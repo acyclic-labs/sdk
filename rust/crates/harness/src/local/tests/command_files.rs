@@ -196,19 +196,29 @@ async fn retaining_a_mount_without_close_prevents_reopen_negative_control() -> R
     let retained = Arc::clone(&harness.workspace.as_ref().unwrap().mounts);
     crate::local::workspace::volumes::project_unscoped(&retained).await?;
     drop(harness);
-    let reopened = LocalHarness::open(make()?).await?;
-    let failure = crate::local::workspace::volumes::project_unscoped(
-        &reopened.workspace.as_ref().unwrap().mounts,
-    )
-    .await
-    .expect_err("negative control lost its retained native owner");
+    // Recovery may reject the live owner during open, before projection. Either
+    // entry point must preserve that ownership until it is explicitly retired.
+    let failure = match LocalHarness::open(make()?).await {
+        Ok(reopened) => {
+            let failure = crate::local::workspace::volumes::project_unscoped(
+                &reopened.workspace.as_ref().unwrap().mounts,
+            )
+            .await
+            .expect_err("negative control lost its retained native owner");
+            reopened.close().await?;
+            failure
+        }
+        Err(failure) => failure,
+    };
     assert!(
-        failure
-            .to_string()
-            .contains("mount destination is already owned"),
+        matches!(&failure, Error::NativeView { cause, .. }
+        if matches!(cause.as_ref(), acyclic_fs::native_mount::MountLifecycleError::Native(
+            acyclic_fs::NativeMountError::DestinationBusy
+        ))),
         "{failure:?}"
     );
     crate::local::workspace::volumes::retire(&retained).await?;
+    let reopened = LocalHarness::open(make()?).await?;
     reopened.close().await?;
     Ok(())
 }

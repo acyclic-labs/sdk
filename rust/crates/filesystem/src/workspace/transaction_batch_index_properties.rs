@@ -126,14 +126,8 @@ fn measurement(
 
 fn exact(count: usize, repeat_scans: bool) -> TestCaseResult {
     let (output, work, allocations) = measurement(count, repeat_scans);
-    let expected: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("src/workspace/transaction_batch_expected.json"),
-        )
-        .unwrap(),
-    )
-    .unwrap();
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("transaction_batch_expected.json")).unwrap();
     let actual = serde_json::json!({
         "work": work, "allocations": differential::allocation_counts(allocations),
     });

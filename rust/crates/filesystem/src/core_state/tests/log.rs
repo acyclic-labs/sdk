@@ -248,12 +248,12 @@ fn checkpoint_reuses_each_native_family_parent_for_all_records() {
     }
     let one = checkpoint(1);
     let two = checkpoint(2);
-    // A creating leaf open is a backend write; its regular-file metadata
-    // check is one backend read on both Windows and Unix. Parent traversal,
+    // A creating leaf open is a backend write. Windows enforces its file kind
+    // during the open; Unix needs one metadata read. Parent traversal,
     // creation, validation and flushing are per family.
     assert_eq!(
         two.backend_read_operations - one.backend_read_operations,
-        1,
+        u64::from(!cfg!(windows)),
         "checkpoint reopened the same native family parent per record"
     );
     assert_eq!(two.durability_operations - one.durability_operations, 1);

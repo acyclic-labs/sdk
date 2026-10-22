@@ -2,14 +2,8 @@ use super::*;
 
 fn check(invalid: bool, fault: Fault) -> TestCaseResult {
     let [(old, old_trace), (new, new_trace)] = pair(&[], invalid, fault);
-    let expected: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("src/workspace/transaction_batch_expected.json"),
-        )
-        .unwrap(),
-    )
-    .unwrap();
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("transaction_batch_expected.json")).unwrap();
     let expected = &expected[format!("staging.{invalid}")];
     let actual =
         serde_json::json!({ "work": new.2, "allocations": differential::allocation_counts(new.3) });
