@@ -189,12 +189,19 @@ semicolon_if_nothing_returned = "warn"
 uninlined_format_args = "warn"
 undocumented_unsafe_blocks = "deny"
 
-# Development wall time is dominated by compiling the filesystem and harness.
-# Test inherits this profile; retain targeted optimization for executable hashing.
+# Unoptimized async state machines exceed default stacks in filesystem, harness,
+# Git and provider paths. Keep the established optimization for those consumers;
+# independently compiled wire and identity leaves do not need it.
 [profile.dev]
-opt-level = 0
+opt-level = 1
 # Keep panic/backtrace file:line information without full type/variable debuginfo.
 debug = "line-tables-only"
+
+[profile.dev.package.acyclic-fs-wire]
+opt-level = 0
+
+[profile.dev.package.acyclic-plugin-identity]
+opt-level = 0
 
 # The CLI hashes its own executable to name its service. Unoptimized, that
 # takes ~20 s for a Linux debug binary and outlasts the client's readiness wait.

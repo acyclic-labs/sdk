@@ -45,9 +45,11 @@ service metadata. Full TypeScript generation subsequently projects the metadata
 into `actors-service.ts`. Rust qualification generates these files before its
 workspace tests; drift checks only compare and never rewrite their inputs.
 
-The `dev` and `test` profiles build at `opt-level = 0` with LLVM, panic unwinding
-and line tables for backtraces. SHA-2 and BLAKE3 retain targeted optimization for
-executable readiness. `--release` stays a
+The `dev` and `test` profiles use LLVM, panic unwinding and line tables for
+backtraces. The independent `acyclic-fs-wire` and `acyclic-plugin-identity` crates
+build at `opt-level = 0`; other crates retain `opt-level = 1` because their
+unoptimized async state machines exceed default thread stacks. SHA-2 and BLAKE3
+retain targeted optimization for executable readiness. `--release` stays a
 fast incremental build for development; the shipped `acyclic` executable comes
 from `node scripts/build-product.mjs`, which uses the `dist` profile (fat LTO,
 one codegen unit, stripped) and writes `target/[<triple>/]dist/acyclic`.
