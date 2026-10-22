@@ -79,3 +79,33 @@ fn a_quiet_fence_confirms_delivery_without_a_rescan() -> Result<(), Box<dyn std:
     ));
     Ok(())
 }
+
+#[test]
+fn a_watch_without_exclusions_fences_by_requiring_a_rescan()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let work =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| error)?;
+    let mut watch = NativeWatch::open_with_profile_with_native_work(
+        directory.path(),
+        native_filesystem_profile(),
+        NativeWatchOptions::new(VolumeLimits::default()),
+        &work,
+    )?;
+    let _ = watch.begin_rescan()?;
+    let _ = watch.finish_rescan()?;
+    // There is no excluded subtree for a cookie, and the captured tree is
+    // never written, so the fence cannot confirm delivery: it succeeds and
+    // the consumer rescans.
+    assert!(matches!(
+        fenced_batch(&mut watch)?,
+        WatchBatch::RescanRequired {
+            reason: WatchInvalidationReason::NativeRescanRequired,
+            ..
+        }
+    ));
+    let entries = std::fs::read_dir(directory.path())?.count();
+    assert_eq!(entries, 0, "the fence wrote nothing into the captured tree");
+    Ok(())
+}

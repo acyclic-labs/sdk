@@ -3068,7 +3068,9 @@ impl NativeWatch {
 
     /// FSEvents cannot report that it delivered everything up to now. A
     /// cookie in an excluded subtree can, because one stream delivers in
-    /// event order.
+    /// event order. A watch that excludes nothing has no place for a cookie
+    /// outside the captured tree, so its fence reports nothing delivered and
+    /// the consumer rescans.
     #[cfg(target_os = "macos")]
     fn fence_fsevents<W: crate::demand::SourceDemandReadWork>(
         &mut self,
@@ -3080,7 +3082,9 @@ impl NativeWatch {
                 .take_failure_with_work(work)
                 .map_err(demand_watch_error)?;
         }
-        let cookie = self.fence_cookie_path()?;
+        let Some(cookie) = self.fence_cookie_path()? else {
+            return Ok(false);
+        };
         work.started_io(WorkCounters {
             backend_write_operations: 2,
             ..WorkCounters::UNCHARGED
@@ -3135,8 +3139,10 @@ impl NativeWatch {
             return self.fence_with_work(timeout, &mut work);
         }
         let delivered = self.fence_cookie().is_ok_and(|cookie| {
-            self.await_cookie(&cookie, timeout)
-                .is_ok_and(|delivered| delivered)
+            cookie.is_some_and(|cookie| {
+                self.await_cookie(&cookie, timeout)
+                    .is_ok_and(|delivered| delivered)
+            })
         });
         let mut state = self
             .shared
@@ -3149,8 +3155,10 @@ impl NativeWatch {
         Ok(())
     }
 
-    fn fence_cookie(&mut self) -> Result<PathBuf, NativeWatchError> {
-        let host_directory = self.fence_directory()?;
+    fn fence_cookie(&mut self) -> Result<Option<PathBuf>, NativeWatchError> {
+        let Some(host_directory) = self.fence_directory()? else {
+            return Ok(None);
+        };
         let relative = host_directory
             .strip_prefix(&self.root)
             .map_err(|_| NativeWatchError::UnrepresentablePath)?;
@@ -3161,15 +3169,18 @@ impl NativeWatch {
         self.fence_cookie_path()
     }
 
-    /// Names a fresh cookie in the preferred excluded subtree.
-    fn fence_cookie_path(&mut self) -> Result<PathBuf, NativeWatchError> {
-        let host_directory = self.fence_directory()?;
+    /// Names a fresh cookie in the preferred excluded subtree, if the watch
+    /// excludes any.
+    fn fence_cookie_path(&mut self) -> Result<Option<PathBuf>, NativeWatchError> {
+        let Some(host_directory) = self.fence_directory()? else {
+            return Ok(None);
+        };
         self.fences = self.fences.wrapping_add(1);
-        Ok(host_directory.join(format!(
+        Ok(Some(host_directory.join(format!(
             ".acyclic-fence-{}-{}",
             std::process::id(),
             self.fences
-        )))
+        ))))
     }
 
     /// Writes `cookie` and reports whether its notification arrived in time.
@@ -3205,27 +3216,27 @@ impl NativeWatch {
         Ok(state.invalidation.is_none())
     }
 
-    fn fence_directory(&self) -> Result<PathBuf, NativeWatchError> {
+    /// The preferred excluded subtree for fence cookies, created if needed,
+    /// or `None` when the watch excludes nothing.
+    fn fence_directory(&self) -> Result<Option<PathBuf>, NativeWatchError> {
         let state = self
             .shared
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
         for host in &state.excluded {
             match host.symlink_metadata() {
-                Ok(metadata) if metadata.is_dir() => return Ok(host.clone()),
+                Ok(metadata) if metadata.is_dir() => return Ok(Some(host.clone())),
                 Ok(_) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(NativeWatchError::Io(error)),
             }
         }
-        let host = state
-            .excluded
-            .first()
-            .cloned()
-            .ok_or(NativeWatchError::InvalidOptions)?;
+        let Some(host) = state.excluded.first().cloned() else {
+            return Ok(None);
+        };
         drop(state);
         std::fs::create_dir(&host).map_err(NativeWatchError::Io)?;
-        Ok(host)
+        Ok(Some(host))
     }
 
     /// Moves at most `maximum_changes` contiguous hints from the native queue.
