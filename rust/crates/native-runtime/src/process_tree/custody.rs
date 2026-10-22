@@ -348,18 +348,35 @@ use unix::fence;
 mod windows {
     use super::{Path, ProcessCustody, Record, fs, io};
     use std::sync::atomic::Ordering;
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND, HANDLE, WAIT_FAILED};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_FILE_NOT_FOUND, FILETIME, HANDLE, WAIT_FAILED,
+    };
     use windows_sys::Win32::System::JobObjects::{
         JOBOBJECT_BASIC_PROCESS_ID_LIST, JobObjectBasicProcessIdList, OpenJobObjectW,
         QueryInformationJobObject, TerminateJobObject,
     };
     use windows_sys::Win32::System::Threading::{
-        OpenProcess, PROCESS_SYNCHRONIZE, WaitForMultipleObjects,
+        GetCurrentProcess, GetProcessTimes, OpenProcess, PROCESS_SYNCHRONIZE,
+        WaitForMultipleObjects,
     };
 
     const PREFIX: &str = "acyclic-process-tree-";
     // JOB_OBJECT_QUERY | JOB_OBJECT_TERMINATE.
     const JOB_ACCESS: u32 = 0x0004 | 0x0008;
+
+    /// This process's creation time, in 100 ns intervals since 1601.
+    fn creation_time() -> io::Result<u64> {
+        let mut times = [FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        }; 4];
+        let [creation, exit, kernel, user] = &mut times;
+        // SAFETY: the current-process pseudo-handle and four writable times.
+        if unsafe { GetProcessTimes(GetCurrentProcess(), creation, exit, kernel, user) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(u64::from(creation.dwHighDateTime) << 32 | u64::from(creation.dwLowDateTime))
+    }
 
     /// The Job name a record names, NUL-terminated.
     pub(in crate::process_tree) fn job_name(record: &str) -> Vec<u16> {
@@ -374,11 +391,13 @@ mod windows {
         /// the Job name the spawn must create.
         pub(in crate::process_tree) fn record(&self) -> io::Result<(Record, Vec<u16>)> {
             let sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(io::Error::other)?
-                .as_nanos();
-            let name = format!("{PREFIX}{}-{nanos}-{sequence}", std::process::id());
+            // This process's PID and creation time name it among every
+            // process, past or present, that may have shared the directory.
+            let name = format!(
+                "{PREFIX}{}-{}-{sequence}",
+                std::process::id(),
+                creation_time()?
+            );
             let path = self.path.join(&name);
             fs::OpenOptions::new()
                 .write(true)
