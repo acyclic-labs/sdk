@@ -176,9 +176,10 @@ impl ToolExecutor for CheckoutTools {
             || (!(scope.grants().contains(&self.read_grant)
                 && scope.grants().contains(&self.write_grant))
                 && self.child_project(context)?.is_none())
-            || !scope
-                .grants()
-                .contains(&crate::contract::capability::tool_call(&invocation.name))
+            || crate::tools::catalog()
+                .iter()
+                .find(|spec| spec.name == invocation.name)
+                .is_none_or(|spec| !scope.grants().contains(&spec.capability()))
         {
             return Err(Error::Unauthorized(
                 "checkout command differs from its task authority".into(),
