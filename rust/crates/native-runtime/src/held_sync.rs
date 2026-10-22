@@ -26,7 +26,8 @@ pub fn sync_descriptor_once(descriptor: BorrowedFd<'_>) -> io::Result<()> {
     }
 }
 
-#[cfg(all(test, target_vendor = "apple"))]
+#[cfg(test)]
+#[cfg(target_vendor = "apple")]
 mod tests {
     use super::*;
     use std::{fs::File, io::Write as _, os::fd::AsFd as _};

@@ -23,7 +23,8 @@ pub(crate) fn require_leaf(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 thread_local! { static ACCEPT_NORMALIZED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use std::{ffi::OsStr, os::unix::ffi::OsStrExt};

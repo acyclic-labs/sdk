@@ -6,7 +6,8 @@ use std::io::Write as _;
 #[cfg(any(test, feature = "native-mount"))]
 use std::path::PathBuf;
 
-#[cfg(all(test, target_os = "linux", acyclic_fs_native_loom))]
+#[cfg(test)]
+#[cfg(all(target_os = "linux", acyclic_fs_native_loom))]
 pub(crate) mod models;
 #[cfg(any(test, feature = "native-mount"))]
 mod record;

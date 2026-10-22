@@ -92,9 +92,11 @@ mod held_files;
 mod search;
 #[cfg(feature = "native-watch")]
 pub(crate) use search::file_identity;
-#[cfg(all(test, target_os = "linux", acyclic_fs_native_loom))]
+#[cfg(test)]
+#[cfg(all(target_os = "linux", acyclic_fs_native_loom))]
 pub(crate) use held_files::models as held_record_models;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 pub(crate) use held_files::publish_probe;
 #[cfg(all(unix, any(test, feature = "native-mount")))]
 mod unix_metadata;
