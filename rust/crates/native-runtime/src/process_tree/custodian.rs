@@ -13,10 +13,13 @@
 //! on the Job, so a killed custodian leaves the owner's handle to kill the
 //! tree when the owner exits.
 
+use std::collections::BTreeMap;
+use std::ffi::c_void;
 use std::io::{self, BufRead as _, BufReader, Read as _, Write as _};
 use std::os::windows::io::AsRawHandle as _;
 use std::os::windows::process::CommandExt as _;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use windows_sys::Win32::Foundation::{
     CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE,
     WAIT_FAILED,
@@ -31,20 +34,21 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Threading::{
     CREATE_NO_WINDOW, ExitProcess, GetCurrentProcess, GetProcessId, GetProcessTimes, INFINITE,
-    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, WaitForMultipleObjects,
-    WaitForSingleObject,
+    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    RegisterWaitForSingleObject, UnregisterWaitEx, WT_EXECUTEONLYONCE, WaitForSingleObject,
 };
 
 /// The environment variable that makes a process a custodian.
 const SWITCH: &str = "ACYCLIC_PROCESS_CUSTODIAN";
 /// The line a custodian writes once it watches the Job.
 const READY: &str = "ready";
-/// The Job message that its last active process has exited (winnt.h).
-const JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO: u32 = 4;
 /// The Job message that a process joined it; its value is the PID.
 const JOB_OBJECT_MSG_NEW_PROCESS: u32 = 6;
 /// The completion key the owner watch posts once the owner has exited.
 const OWNER_EXITED: usize = usize::MAX;
+/// The completion key a member's wait posts once it has exited; the
+/// message carries its PID.
+const MEMBER_EXITED: usize = usize::MAX - 1;
 
 #[used]
 #[unsafe(link_section = ".CRT$XCU")]
@@ -250,8 +254,8 @@ fn serve() -> io::Result<()> {
             PostQueuedCompletionStatus(port, 0, OWNER_EXITED, std::ptr::null());
         }
     });
+    PORT.store(port.expose_provenance(), Ordering::Relaxed);
     let mut members = Members::default();
-    let mut owner_exited = false;
     loop {
         let mut message = 0;
         let mut key = 0;
@@ -271,43 +275,55 @@ fn serve() -> io::Result<()> {
         }
         if key == job.addr() && message == JOB_OBJECT_MSG_NEW_PROCESS {
             // The message carries the new member's PID.
-            members.admit(job, u32::try_from(overlapped.addr()).unwrap_or(0));
+            members.admit(job, u32::try_from(overlapped.addr()).unwrap_or(0))?;
         }
-        if key == job.addr() && message == JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO {
+        if key == MEMBER_EXITED {
+            members.release(message);
+        }
+        // Job messages are notifications whose delivery is not guaranteed:
+        // once the owner has exited, every listed member is admitted too.
+        if key == OWNER_EXITED {
+            for pid in super::custody::members(job)? {
+                members.admit(job, pid)?;
+            }
+        }
+        // A member stops counting as active before its process has fully
+        // exited, so the Job goes only once no member is active and every
+        // admitted one has signaled its exit.
+        if members.is_empty() && active_processes(job)? == 0 {
             break;
         }
-        if key == OWNER_EXITED {
-            owner_exited = true;
-        }
-        // Job messages are notifications whose delivery is not guaranteed,
-        // and a Job that never gained a member posts none: once the owner
-        // has exited, each listed member is awaited, until none is active.
-        if owner_exited {
-            for pid in super::custody::members(job)? {
-                members.admit(job, pid);
-            }
-            members.await_exits()?;
-            if active_processes(job)? == 0 {
-                break;
-            }
-        }
     }
-    // A member stops counting as active before its process has fully
-    // exited; the Job goes only once each known member has.
-    members.await_exits()?;
     // SAFETY: the Job handle; closing it lets the name go only now.
     unsafe { CloseHandle(job) };
     Ok(())
 }
 
-/// Handles to the Job's members, held so their exits can be awaited.
+/// The completion port that member exit waits post to; one per custodian.
+static PORT: AtomicUsize = AtomicUsize::new(0);
+
+/// Posts the exit of the member whose PID is `context`.
+unsafe extern "system" fn member_exited(context: *mut c_void, _timed_out: bool) {
+    let port: HANDLE = std::ptr::with_exposed_provenance_mut(PORT.load(Ordering::Relaxed));
+    let pid = u32::try_from(context.addr()).unwrap_or(0);
+    // SAFETY: the custodian's port, which lives as long as the process.
+    unsafe { PostQueuedCompletionStatus(port, pid, MEMBER_EXITED, std::ptr::null()) };
+}
+
+/// The Job's live members: each holds its process handle and a thread pool
+/// wait that reports its exit, and is released on that report, so the
+/// custodian's cost tracks live members, never every member there was.
 #[derive(Default)]
-struct Members(Vec<HANDLE>);
+struct Members(BTreeMap<u32, (HANDLE, HANDLE)>);
 
 impl Members {
-    /// Holds process `pid` if it is a member of `job`. A PID whose process
-    /// already exited is either gone or reused by a process outside `job`.
-    fn admit(&mut self, job: HANDLE, pid: u32) {
+    /// Watches process `pid` if it is a member of `job`. A PID whose
+    /// process already exited is either gone or reused outside `job`; a
+    /// held handle keeps a watched member's PID from being reused.
+    fn admit(&mut self, job: HANDLE, pid: u32) -> io::Result<()> {
+        if self.0.contains_key(&pid) {
+            return Ok(());
+        }
         // SAFETY: opening a handle to a PID; owned below.
         let process = unsafe {
             OpenProcess(
@@ -317,33 +333,50 @@ impl Members {
             )
         };
         if process.is_null() {
-            return;
+            return Ok(());
         }
         let mut member = 0;
-        // SAFETY: owned process and Job handles and a writable result.
-        if unsafe { IsProcessInJob(process, job, &raw mut member) } != 0 && member != 0 {
-            self.0.push(process);
-        } else {
-            // SAFETY: the handle opened above.
-            unsafe { CloseHandle(process) };
+        let mut wait: HANDLE = std::ptr::null_mut();
+        // SAFETY: owned process and Job handles and a writable result; the
+        // wait reports once, with the PID as its context.
+        let watched = unsafe {
+            IsProcessInJob(process, job, &raw mut member) != 0
+                && member != 0
+                && RegisterWaitForSingleObject(
+                    &raw mut wait,
+                    process,
+                    Some(member_exited),
+                    std::ptr::with_exposed_provenance(pid as usize),
+                    INFINITE,
+                    WT_EXECUTEONLYONCE,
+                ) != 0
+        };
+        if watched {
+            self.0.insert(pid, (process, wait));
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        // SAFETY: the handle opened above.
+        unsafe { CloseHandle(process) };
+        // Only a failed registration of a member is an error.
+        if member != 0 { Err(error) } else { Ok(()) }
+    }
+
+    /// Releases the member `pid`, whose exit its wait reported.
+    fn release(&mut self, pid: u32) {
+        if let Some((process, wait)) = self.0.remove(&pid) {
+            // SAFETY: the reported wait, which never runs again, and the
+            // handle it watched. A null event returns without waiting for
+            // the reporting callback, which no longer uses either.
+            unsafe {
+                UnregisterWaitEx(wait, std::ptr::null_mut());
+                CloseHandle(process);
+            }
         }
     }
 
-    /// Waits until every held member has exited.
-    fn await_exits(&mut self) -> io::Result<()> {
-        for chunk in self.0.chunks(64) {
-            let count = u32::try_from(chunk.len()).map_err(|_| io::ErrorKind::InvalidInput)?;
-            // SAFETY: up to 64 owned process handles; waits for all.
-            if unsafe { WaitForMultipleObjects(count, chunk.as_ptr(), 1, INFINITE) } == WAIT_FAILED
-            {
-                return Err(io::Error::last_os_error());
-            }
-        }
-        for process in self.0.drain(..) {
-            // SAFETY: each handle admitted above.
-            unsafe { CloseHandle(process) };
-        }
-        Ok(())
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 

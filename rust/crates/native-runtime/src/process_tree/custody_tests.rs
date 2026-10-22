@@ -253,9 +253,9 @@ fn reopened_owner_fence_returns_only_after_the_killed_owners_tree_is_dead() {
     assert_eq!(fs::read_dir(&processes).expect("records").count(), 0);
 }
 
-/// The custodian of the only record in `processes`, which it names.
+/// The PID of the custodian the only record in `processes` names.
 #[cfg(windows)]
-fn custodian_of(processes: &Path) -> Watch {
+fn custodian_of(processes: &Path) -> u32 {
     let mut records = fs::read_dir(processes).expect("records");
     let record = records
         .next()
@@ -263,13 +263,70 @@ fn custodian_of(processes: &Path) -> Watch {
         .expect("record")
         .file_name();
     assert!(records.next().is_none(), "one record");
-    let pid = record
+    record
         .to_str()
         .and_then(|name| name.split_once("-custodian-"))
         .and_then(|(_, custodian)| custodian.split_once('-'))
         .and_then(|(pid, _)| pid.parse().ok())
-        .expect("the record names its custodian");
-    Watch::new(pid).expect("the custodian is running")
+        .expect("the record names its custodian")
+}
+
+/// How many handles process `pid` holds.
+#[cfg(windows)]
+fn handle_count(pid: u32) -> u32 {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        GetProcessHandleCount, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    // SAFETY: opening a query handle to a running PID; closed below.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    assert!(!process.is_null(), "{}", std::io::Error::last_os_error());
+    let mut count = 0;
+    // SAFETY: the handle opened above and a writable count.
+    let counted = unsafe { GetProcessHandleCount(process, &raw mut count) };
+    // SAFETY: the handle opened above.
+    unsafe { CloseHandle(process) };
+    assert_ne!(counted, 0, "{}", std::io::Error::last_os_error());
+    count
+}
+
+/// A custodian holds state for live members only: a tree that starts and
+/// ends many short commands leaves its custodian's handles bounded.
+#[cfg(windows)]
+#[test]
+fn a_custodians_handles_track_live_members_not_every_member() {
+    use std::os::windows::process::CommandExt as _;
+    const CHILDREN: u32 = 500;
+    let root = tempfile::tempdir().expect("root");
+    let processes = root.path().join("processes");
+    let custody = ProcessCustody::acquire(&processes).expect("custody");
+    let churned = root.path().join("churned");
+    let mut command = Command::new("cmd");
+    command
+        .raw_arg(format!(
+            "/d /c (for /l %i in (1,1,{CHILDREN}) do @cmd /d /c exit) & echo done>{} & ping -n 60 127.0.0.1>nul",
+            churned.display()
+        ))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
+    let custodian = custodian_of(&processes);
+    let before = handle_count(custodian);
+    while !churned.exists() {
+        assert!(
+            tree.try_wait(None).expect("tree").is_none(),
+            "tree exited early"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    let after = handle_count(custodian);
+    eprintln!("custodian handles: {before} before, {after} after {CHILDREN} members");
+    tree.terminate(None).expect("terminate");
+    assert!(
+        after < before + CHILDREN / 10,
+        "{CHILDREN} exited members left the custodian holding {after} handles, from {before}"
+    );
 }
 
 /// A killed custodian leaves its tree running under its live owner, and the
@@ -282,7 +339,7 @@ fn a_killed_custodians_tree_dies_with_its_owner() {
     let processes = root.path().join("processes");
     let mut owner = owner("custodied", root.path());
     let watch = Watch::new(published(root.path(), &mut owner)).expect("running program");
-    let custodian = custodian_of(&processes);
+    let custodian = Watch::new(custodian_of(&processes)).expect("the custodian is running");
     custodian.kill();
     assert!(
         custodian.exits_within(Duration::from_secs(30)),
