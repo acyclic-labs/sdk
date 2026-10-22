@@ -97,7 +97,7 @@ async fn scripted_powershell_reads_writes_runs_and_captures_exit_code() -> Resul
         call(
             "shell",
             "powershell",
-            json!({"command": "using namespace System.IO; [Console]::Write('café 東京'); [Console]::Write((Get-Content -Raw input.txt)); [Console]::Write((Get-Content -Raw ../from-write.txt)); [File]::WriteAllText((Join-Path (Get-Location) 'captured.txt'), 'native write'); [IO.File]::WriteAllText(([IO.Path]::Combine($env:ACYCLIC_VOLUME_SCRATCH, 'scratch.txt')), 'volume write'); [Console]::Error.Write('diagnostic café 東京'); exit 7", "cwd":"src"}),
+            json!({"command": "using namespace System.IO; [Console]::Write('café 東京'); [Console]::Write(\"it’s ‘ready’\"); [Console]::Write((Get-Content -Raw input.txt)); [Console]::Write((Get-Content -Raw ../from-write.txt)); [File]::WriteAllText((Join-Path (Get-Location) 'captured.txt'), 'native write'); [IO.File]::WriteAllText(([IO.Path]::Combine($env:ACYCLIC_VOLUME_SCRATCH, 'scratch.txt')), 'volume write'); [Console]::Error.Write('diagnostic café 東京'); exit 7", "cwd":"src"}),
         ),
         call(
             "scratch",
@@ -135,7 +135,7 @@ async fn scripted_powershell_reads_writes_runs_and_captures_exit_code() -> Resul
     assert_eq!(result("shell")["exit_code"], 7);
     assert_eq!(
         result("shell")["stdout"],
-        "café 東京projected inputfile tool input"
+        "café 東京it’s ‘ready’projected inputfile tool input"
     );
     assert_eq!(result("shell")["stderr"], "diagnostic café 東京");
     assert_eq!(result("scratch")["stdout"], "volume write");

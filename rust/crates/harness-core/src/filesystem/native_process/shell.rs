@@ -70,11 +70,14 @@ pub fn prepare<T>(
     invocation.inherit_environment = true;
     invocation.timeout_ms = input.timeout_ms()?;
     #[cfg(windows)]
-    let command = format!(
-        "{}& ([ScriptBlock]::Create('{}'))",
-        crate::tools::shell::PLATFORM.command_prefix,
-        input.command.replace('\'', "''"),
-    );
+    let command = {
+        use base64::Engine as _;
+        let source = base64::engine::general_purpose::STANDARD.encode(input.command.as_bytes());
+        format!(
+            "{}& ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{source}'))))",
+            crate::tools::shell::PLATFORM.command_prefix,
+        )
+    };
     #[cfg(not(windows))]
     let command = input.command;
     invocation.argv = crate::tools::shell::PLATFORM
