@@ -468,10 +468,11 @@ pub(super) fn recover_volume_after_crash(
     let (parent, _) = work.open_root_directory(parent)?;
     let mut owner =
         acyclic_fs::NativeMountRecoveryOwner::acquire_in_directory(&destination, &parent, &work)?;
-    let recovery = Path::new(".volumes/recovery").join(volume.to_string());
+    let recovery = Path::new(".volumes/recovery")
+        .join(uuid::Uuid::from_bytes(volume.into_bytes()).to_string());
     create_mount_directory(root, &recovery)?;
     let (recovery, _) = work.open_root_directory(&root.join(recovery))?;
-    let name = acyclic_fs::OperationId::new().to_string();
+    let name = uuid::Uuid::from_bytes(acyclic_fs::OperationId::new().into_bytes()).to_string();
     owner.preserve_crashed_in_directory(&recovery, Path::new(&name), volume, &work)?;
     Ok(())
 }

@@ -411,30 +411,37 @@ fn a_volume_mismatched_receipt_cannot_authorize_an_unchanged_root()
 #[test]
 fn live_process_is_refused_even_without_a_provider_lock() -> Result<(), Box<dyn std::error::Error>>
 {
-    custody_control(false, false, false)
+    custody_control(false, false, false, false)
 }
 
 #[test]
 fn reused_pid_does_not_keep_a_dead_incarnation_alive() -> Result<(), Box<dyn std::error::Error>> {
-    custody_control(true, false, false)
+    custody_control(true, false, false, false)
 }
 
 #[test]
 fn another_logical_volume_is_refused_before_owner_retirement()
 -> Result<(), Box<dyn std::error::Error>> {
-    custody_control(true, true, false)
+    custody_control(true, true, false, false)
 }
 
 #[test]
 fn a_failed_preservation_flush_retains_custody_and_retries()
 -> Result<(), Box<dyn std::error::Error>> {
-    custody_control(true, false, true)
+    custody_control(true, false, true, false)
+}
+
+#[test]
+fn caller_drop_settles_preservation_before_releasing_the_fence()
+-> Result<(), Box<dyn std::error::Error>> {
+    custody_control(true, false, true, true)
 }
 
 fn custody_control(
     reused_pid: bool,
     different_volume: bool,
     fail_flush: bool,
+    drop_owner: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::windows::fs::FileExt as _;
     let volume = crate::VolumeId::new();
@@ -528,6 +535,34 @@ fn custody_control(
     } else {
         recovery_path.clone()
     };
+    if drop_owner {
+        let before = work.receipt();
+        let shared = crate::sync::native::Arc::clone(&owner.shared);
+        drop(owner);
+        crate::native_mount::recovery::wait_for_retirement(&shared);
+        assert_eq!(
+            work.receipt().durability_operations - before.durability_operations,
+            2,
+            "LastDrop flushes both held directories on the original acquisition ledger"
+        );
+        assert_eq!(
+            std::fs::read(recovered_path.join("saved/authored"))?,
+            b"unpublished bytes"
+        );
+        assert!(
+            !recovery_path.join("saved").exists(),
+            "replacement directory is never used"
+        );
+        let mut next =
+            crate::NativeMountRecoveryOwner::acquire_in_directory(&destination, &parent, &work)?;
+        assert!(!next.preserve_crashed_in_directory(
+            &parent,
+            std::path::Path::new("unused"),
+            volume,
+            &work
+        )?);
+        return Ok(());
+    }
     let (retry_target, _) = work.open_root_directory(&recovery_path)?;
     let result = owner.preserve_crashed_in_directory(
         &retry_target,

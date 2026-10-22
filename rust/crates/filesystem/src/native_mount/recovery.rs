@@ -89,6 +89,31 @@ struct PendingPreservation {
     name: PathBuf,
     _custody: crate::NativeAllocation,
     close: crate::NativeWorkReservation,
+    flush: crate::NativeWorkReservation,
+}
+
+#[cfg(windows)]
+impl PendingPreservation {
+    fn flush_work() -> crate::WorkCounters {
+        crate::WorkCounters {
+            backend_read_operations: 2,
+            durability_operations: 2,
+            items_examined: 2,
+            ..crate::WorkCounters::UNCHARGED
+        }
+    }
+
+    fn settle(&mut self, origin: &cap_std::fs::Dir) -> Result<(), NativeMountError> {
+        self.flush.refill_cleanup(Self::flush_work())?;
+        let mut work = super::fence::NativeFenceReleaseWork {
+            credit: &self.flush,
+            wait: None,
+            pending: None,
+        };
+        crate::native_host::sync_directory_held(&self.parent, &mut work)?;
+        crate::native_host::sync_directory_held(origin, &mut work)?;
+        Ok(())
+    }
 }
 
 #[cfg(windows)]
@@ -522,6 +547,30 @@ impl NativeRecoveryState {
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
+        #[cfg(windows)]
+        while self.destination_removed && self.preservation.is_some() {
+            let result = self
+                .preservation
+                .as_mut()
+                .zip(self.guard.as_ref())
+                .and_then(|(pending, guard)| {
+                    guard
+                        .parent_directory
+                        .as_ref()
+                        .map(|parent| (pending, parent))
+                })
+                .ok_or(NativeMountError::ControlPending)
+                .and_then(|(pending, origin)| pending.settle(origin));
+            match result {
+                Ok(()) => {
+                    self.preservation.take();
+                }
+                Err(_) => {
+                    self.measured_cleanup_failed = true;
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        }
         if let Some(guard) = self.guard.as_mut() {
             guard.close_administrative_fence(&mut self.final_close);
         }
@@ -596,6 +645,12 @@ impl NativeRecoveryState {
             let close = work.reserve_work(
                 crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
             )?;
+            // Pre-fund physical completion on the acquisition's original ledger.
+            // Losing this action's caller or budget cannot revoke the flushes.
+            let flush = self
+                .final_close
+                .work()
+                .reserve_work(PendingPreservation::flush_work())?;
             let parent = (&mut &*work).attempt_io(
                 crate::materializer::NativeResourceCredit::ReadOperations.delta(1),
                 || residue_parent.try_clone(),
@@ -605,6 +660,7 @@ impl NativeRecoveryState {
                 name,
                 _custody: custody,
                 close,
+                flush,
             });
         }
         let pending = self
@@ -778,4 +834,18 @@ fn retire_recovery(
     drop(state);
     drop((receiver, shared));
     drop(_closure);
+}
+
+#[cfg(all(test, windows))]
+pub(super) fn wait_for_retirement(shared: &NativeRecoveryShared) {
+    let mut state = shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    while state.is_some() {
+        state = shared
+            .wake
+            .wait(state)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
 }

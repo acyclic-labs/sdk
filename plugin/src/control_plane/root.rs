@@ -298,11 +298,15 @@ impl ControlPlane {
                         &path, &parent, &work,
                     )
                     .map_err(display)?;
-                    let recovery_path = self.config_root.join("recovery").join(volume.to_string());
+                    let recovery_path = self
+                        .config_root
+                        .join("recovery")
+                        .join(uuid::Uuid::from_bytes(volume.into_bytes()).to_string());
                     fs::create_dir_all(&recovery_path).map_err(display)?;
                     let (recovery, _) =
                         work.open_root_directory(&recovery_path).map_err(display)?;
-                    let name = acyclic_fs::OperationId::new().to_string();
+                    let name = uuid::Uuid::from_bytes(acyclic_fs::OperationId::new().into_bytes())
+                        .to_string();
                     if owner
                         .preserve_crashed_in_directory(&recovery, Path::new(&name), volume, &work)
                         .map_err(display)?
