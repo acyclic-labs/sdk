@@ -825,5 +825,47 @@ fn list_reference_title_remains_provisional_under_every_cut() {
         "- [r]: /url\n  (word)",
         "> * [r]: /url\n>   (word)",
         "1. * [r]: /url\n     (word)",
+        QUOTED_LIST_TITLE,
     ]);
+    check_chunks(QUOTED_LIST_TITLE, &[1, 2, 1]);
 }
+
+// A list item's paragraph range begins after a leading escape's backslash,
+// and after a stripped definition. Its reference template must keep the
+// escape, or `\* [r]` reparses as a nested list and `\[word][r]` as a link.
+#[test]
+fn escaped_item_paragraphs_keep_their_backslash_in_reference_templates() {
+    for source in [
+        "* [r]: /url\n\\* [r]",
+        "* \\[word][r]: /url\n* [r]: /",
+        "paragraph [r]: /url\n* [r]: /url\n\\*word*word[r]",
+        "> * [r]: /url\n>   \\# [r]",
+    ] {
+        check_chunks(source, &[1]);
+        block_checkpoints::check_inline_cuts(&[source]);
+    }
+}
+
+// An escaped character's text event starts after its backslash. An inline
+// checkpoint there would resume with `` ` `` unescaped and open a code span
+// with the next backtick.
+#[test]
+fn inline_checkpoints_never_split_an_escape() {
+    for (source, cuts) in [
+        ("\\`\\b`0a", &[1, 3][..]),
+        ("a \\`\\b`0a", &[1, 5]),
+        (
+            "\u{a1} \\`\\\u{a1}`0aA0A0 \u{a1}00 \0\u{a1}",
+            &[4, 7, 7, 2, 1],
+        ),
+    ] {
+        check_chunks(source, cuts);
+    }
+}
+
+// A definition cannot interrupt a paragraph, so the item's `[r]: /url`
+// defines `r`. Its lazy next line is a title while it ends at `'word'`, and
+// the item renders empty; the trailing ` : ` makes it paragraph text again.
+// The plain-paragraph fast path must not commit that line while the title is
+// pending.
+const QUOTED_LIST_TITLE: &str = "paragraph &copy[r]: /url\n[r]: /url\n* [r]: /url\n'word' : ";

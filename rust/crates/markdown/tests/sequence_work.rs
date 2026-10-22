@@ -431,7 +431,7 @@ fn push_grammar_regressions_scale_linearly() {
 // line.
 #[test]
 fn reopened_spans_match_the_full_parser() {
-    let cases: [&[&str]; 15] = [
+    let cases: [&[&str]; 18] = [
         &["*em*", "[a][]"],
         &["*em*", "*em*", "*"],
         &["_a **b_", "*", "*c**"],
@@ -449,6 +449,11 @@ fn reopened_spans_match_the_full_parser() {
         &["`a\\`", "`b`", "x"],
         &["*em*", "*em*", "*em*", "*em*", "*em*"],
         &["`c`", "_em_", "x", "`c`", "_em_", "x"],
+        // Once the reopened span closes, a later closer matches an earlier
+        // opener in the class of the span's opener or of one of its children.
+        &["*", "a *b*", "c*d"],
+        &["_", "x *a _b*", "c_ d"],
+        &["~", "~x *a ~~b*", "c~~ d"],
     ];
     for deltas in cases {
         let mut markdown = Markdown::default();

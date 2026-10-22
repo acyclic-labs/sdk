@@ -1057,8 +1057,12 @@ fn select_boundary(
                 && let Event::Text(text) = event
                 && source.get(range.clone()) == Some(text.as_ref())
             {
+                // An escaped character's text event starts after its
+                // backslash; a reparse from there would read it unescaped.
                 let cut = delimiters::text_frontier(text, range.start).max(sentinel);
-                if cut >= range.start && delimiters::safe_boundary(source, cut) {
+                let escaped = cut == range.start
+                    && source.as_bytes().get(cut.wrapping_sub(1)) == Some(&b'\\');
+                if cut >= range.start && !escaped && delimiters::safe_boundary(source, cut) {
                     provisional = Some(Cut::at(cut));
                 }
             }

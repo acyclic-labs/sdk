@@ -57,8 +57,9 @@ impl Clone for State {
 }
 
 impl State {
-    // `marked` indexes a reopened span's opener among the candidates. Also
-    // returns the index of the candidate behind each kept opener.
+    // `marked` indexes a reopened span's opener among the candidates: the
+    // openers before it and the span's own openers each keep one per class.
+    // Also returns the index of the candidate behind each kept opener.
     pub(super) fn compile(
         candidates: &[Candidate],
         end: usize,
@@ -67,7 +68,8 @@ impl State {
         let mut state = Vec::<Opener>::new();
         let mut kept = Vec::new();
         let mut reopen = None;
-        let mut seen = 0u32;
+        // Classes seen before and inside the reopened span.
+        let mut seen = [0u32; 2];
         for (index, candidate) in candidates
             .iter()
             .enumerate()
@@ -77,9 +79,15 @@ impl State {
             let opener = &candidate.opener;
             #[cfg(test)]
             work::scan(1);
+            // The reopened span closes inside the reparse without a crossing
+            // match, which removes its opener and children. Later closers then
+            // match the latest earlier opener in their class, so it stays.
+            let group = usize::from(marked.is_some_and(|marked| index >= marked));
             let bit = opener.class();
-            if seen & bit == 0 {
-                seen |= bit;
+            if let Some(seen) = seen.get_mut(group)
+                && *seen & bit == 0
+            {
+                *seen |= bit;
                 #[cfg(test)]
                 {
                     work::copy(std::mem::size_of::<Opener>());

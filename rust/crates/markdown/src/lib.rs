@@ -103,6 +103,15 @@ impl Cached {
                 range.start = range.start.min(marker.start);
             }
         }
+        // A paragraph after a stripped definition begins at its first inline
+        // event, which excludes the backslash of a leading escape. Without it
+        // the template reads `\* x` as a list.
+        if matches!(events.first(), Some((Event::Start(Tag::Paragraph), _)))
+            && range.start > 0
+            && source.as_bytes().get(range.start - 1) == Some(&b'\\')
+        {
+            range.start -= 1;
+        }
         let quotes = source
             .get(line_start(source, range.start)..range.start)
             .unwrap_or_default()
