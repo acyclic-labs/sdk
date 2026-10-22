@@ -75,7 +75,7 @@ fn reuse_matches_full_recapture_for_metadata_links_and_empty_representations()
     // pre-edit checkout. Unconditional reuse must fail on owners and sparse empties.
     runner.run(
         &(
-            prop_oneof![Just(Vec::new()), prop::collection::vec(1_u8..=255, 70..96)],
+            prop_oneof![Just(Vec::new()), prop::collection::vec(1_u8..=255, 1..96)],
             prop::collection::vec(any::<u8>(), 0..17),
             1_u32..256,
             any::<bool>(),

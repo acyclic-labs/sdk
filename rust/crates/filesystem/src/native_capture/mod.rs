@@ -44,6 +44,9 @@ mod leaf_path_tests;
 use host_walk::*;
 #[cfg(test)]
 mod host_observation_tests;
+mod inline_reuse;
+#[cfg(all(test, feature = "memory", any(windows, target_os = "linux")))]
+mod inline_reuse_tests;
 mod reconcile;
 use reconcile::*;
 mod checkout_walk;

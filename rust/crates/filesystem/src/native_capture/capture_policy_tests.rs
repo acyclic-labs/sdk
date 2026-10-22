@@ -108,7 +108,7 @@ mod unchanged_properties {
         // content change with restored timestamps, while exact repeats write no paths.
         #[test]
         fn repeated_regular_capture_avoids_unchanged_writes(
-            body in prop::collection::vec(1_u8..=255, 70..96),
+            body in prop::collection::vec(1_u8..=255, 1..96),
             empty in any::<bool>(),
             truncate in any::<bool>(),
             change_body in any::<bool>(), change_mode in any::<bool>(),

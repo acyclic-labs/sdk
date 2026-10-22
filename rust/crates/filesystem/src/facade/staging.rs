@@ -429,6 +429,41 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         .await
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn staged_content_matches_inline(
+        &self,
+        content: StagedContent,
+        expected: &[u8],
+        meter: &NativeMaterializationWork,
+    ) -> Result<bool, FsError> {
+        if expected.len() > crate::kernel::MAXIMUM_INLINE_FILE_BYTES
+            || content.logical_bytes() != expected.len() as u64
+        {
+            return Ok(false);
+        }
+        let cancellation = meter.cancellation();
+        let mut accounting = KernelAccounting::native(meter, cancellation);
+        let read = crate::kernel::read_blob_range_with_accounting(
+            &self.volume.fs.inner.objects,
+            content.root(),
+            crate::ByteRange {
+                offset: 0,
+                length: content.logical_bytes(),
+            },
+            crate::kernel::DecodeLimits::for_volume(self.volume.config),
+            &mut accounting,
+            cancellation,
+            false,
+        )
+        .await?;
+        let result = accounting
+            .charge_items(expected.len() as u64)
+            .map(|()| read.bytes.as_ref() == expected);
+        // Native blob aliases own and retire their original allocation guards.
+        drop(read);
+        Ok(result?)
+    }
+
     pub(crate) async fn stage_content_with_accounting<R: AsyncBlobSource>(
         &self,
         source: &mut R,
