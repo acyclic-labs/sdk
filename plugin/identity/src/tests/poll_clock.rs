@@ -18,7 +18,7 @@ fn sleeping(duration: Duration) {
 }
 
 /// Register a timer only once its actual Sleep has first returned Pending.
-pub(in crate::identity) async fn observe(delay: tokio::time::Sleep, duration: Duration) {
+pub(crate) async fn observe(delay: tokio::time::Sleep, duration: Duration) {
     use std::future::Future as _;
     use std::task::Poll;
     tokio::pin!(delay);
@@ -36,12 +36,12 @@ pub(in crate::identity) async fn observe(delay: tokio::time::Sleep, duration: Du
     .await;
 }
 
-pub(in crate::identity) struct Clock {
+pub(crate) struct Clock {
     task: tokio::task::JoinHandle<()>,
 }
 
 impl Clock {
-    pub(in crate::identity) fn start() -> Self {
+    pub(crate) fn start() -> Self {
         let sleeps: Sleeps = Arc::default();
         SLEEPS.with_borrow_mut(|current| {
             assert!(current.is_none(), "one polling clock per test runtime");

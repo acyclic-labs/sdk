@@ -18,6 +18,7 @@ name = "acyclic"
 path = "src/main.rs"
 
 [dependencies]
+acyclic-plugin-identity = { path = "identity", version = "=0.2.0" }
 acyclic-harness = { path = "../rust/crates/harness", version = "=0.2.0", default-features = false, features = ["filesystem-local", "native-execution"] }
 acyclic-stream = { path = "../rust/crates/stream", version = "=0.2.0", default-features = false, features = ["local"] }
 acyclic-fs = { path = "../rust/crates/filesystem", version = "=0.2.0", features = ["local", "native-watch", "native-mount"] }
@@ -28,7 +29,6 @@ hex.workspace = true
 libc = "0.2.177"
 notify.workspace = true
 reqwest.workspace = true
-ring = "0.17.14"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

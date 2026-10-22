@@ -1,3 +1,4 @@
+#![deny(unsafe_code)]
 //! Customer identity commands, independent of the local workspace service.
 
 mod agent;
@@ -16,7 +17,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
-pub(crate) fn is_command(command: &str) -> bool {
+/// Whether a command is handled by the customer identity service.
+#[must_use]
+pub fn is_command(command: &str) -> bool {
     matches!(
         command,
         "login" | "logout" | "signup" | "whoami" | "orgs" | "refresh" | "bearer" | "identity-mcp"
@@ -303,7 +306,12 @@ impl Store {
         file.write_all(&bytes)?;
         file.sync_all()?;
         drop(file);
-        crate::durable_rename(&temporary, &self.path, crate::RenameMode::Replace, None)?;
+        acyclic_native_runtime::durable_rename(
+            &temporary,
+            &self.path,
+            acyclic_native_runtime::RenameMode::Replace,
+            None,
+        )?;
         Ok(())
     }
 
@@ -318,11 +326,11 @@ impl Store {
             }
         }
         match fs::remove_file(&self.path) {
-            Ok(()) => crate::sync_parent(
+            Ok(()) => acyclic_native_runtime::sync_parent(
                 self.path
                     .parent()
                     .ok_or_else(|| Error::new("credential_error", "missing parent"))?,
-                crate::Durability::Full,
+                acyclic_native_runtime::Durability::Full,
             )
             .map_err(Into::into),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -389,7 +397,7 @@ fn reject_alias(path: &Path) -> io::Result<()> {
             .access_mode(0)
             .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT)
             .open(path)?;
-        let links = crate::service_process::link_count(&file).map_err(io::Error::other)?;
+        let links = link_count(&file)?;
         if links != 1 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -967,7 +975,11 @@ impl Options {
     }
 }
 
-pub(crate) async fn run(arguments: &[String]) -> Result<(), io::Error> {
+/// Execute an identity command using its explicit command-line arguments.
+///
+/// # Errors
+/// Returns command, credential-store, transport and output errors.
+pub async fn run(arguments: &[String]) -> Result<(), io::Error> {
     if arguments
         .first()
         .is_some_and(|command| command == "identity-mcp")
@@ -1060,3 +1072,33 @@ async fn execute(arguments: &[String]) -> Result<Value, Error> {
 
 #[cfg(test)]
 mod tests;
+
+/// Query the link count from the open handle, including alias rejection on Windows.
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "GetFileInformationByHandleEx initializes its matching fixed-size structure for a live handle"
+)]
+fn link_count(file: &File) -> io::Result<u32> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_STANDARD_INFO, FileStandardInfo, GetFileInformationByHandleEx,
+    };
+    let mut information = std::mem::MaybeUninit::<FILE_STANDARD_INFO>::zeroed();
+    let size =
+        u32::try_from(std::mem::size_of::<FILE_STANDARD_INFO>()).map_err(io::Error::other)?;
+    // SAFETY: the live handle, class, writable buffer and buffer size match FILE_STANDARD_INFO.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileStandardInfo,
+            information.as_mut_ptr().cast(),
+            size,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the successful call initialized the structure.
+    Ok(unsafe { information.assume_init() }.NumberOfLinks)
+}

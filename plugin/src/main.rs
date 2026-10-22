@@ -18,7 +18,6 @@ mod control_protocol;
 mod control_status;
 mod control_transport;
 mod guidance;
-mod identity;
 mod install;
 mod native_root_source;
 mod obs;
@@ -188,14 +187,14 @@ fn main() -> std::process::ExitCode {
 fn main_result() -> Result<(), CliFailure> {
     let mut arguments = env::args().skip(1);
     match arguments.next().as_deref() {
-        Some(command) if identity::is_command(command) => {
+        Some(command) if acyclic_plugin_identity::is_command(command) => {
             let arguments = std::iter::once(command.to_owned())
                 .chain(arguments)
                 .collect::<Vec<_>>();
             return tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?
-                .block_on(identity::run(&arguments))
+                .block_on(acyclic_plugin_identity::run(&arguments))
                 .map_err(Into::into);
         }
         Some("__hook") => {

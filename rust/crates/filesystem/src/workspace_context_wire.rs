@@ -1,6 +1,6 @@
 //! One typed, bounded wire boundary for native and browser context adapters.
 
-use crate::wire::filesystem::v2 as wire;
+use acyclic_fs_wire::wire::filesystem::v2 as wire;
 use crate::workspace_context::{is_canonical, record_is_valid};
 use crate::{
     WorkspaceContext, WorkspaceContextId, WorkspaceContextRoot, WorkspaceContextState, WorkspaceId,

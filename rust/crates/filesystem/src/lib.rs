@@ -13,32 +13,6 @@
 #[cfg(all(test, not(target_arch = "wasm32")))]
 acyclic_test_support::counting_allocator!();
 
-/// Generated public gRPC schema and client/server bindings.
-#[allow(
-    missing_docs,
-    clippy::all,
-    clippy::pedantic,
-    clippy::allow_attributes_without_reason,
-    reason = "tonic-build generated code"
-)]
-pub mod wire {
-    /// Protocol negotiation shared by every Acyclic service family.
-    pub mod protocol {
-        /// Version 1 of the shared handshake.
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/acyclic.protocol.v1.rs"));
-        }
-    }
-
-    /// Filesystem messages and service definitions.
-    pub mod filesystem {
-        /// Version 2 of the public Filesystem contract.
-        pub mod v2 {
-            include!(concat!(env!("OUT_DIR"), "/acyclic.filesystem.v2.rs"));
-        }
-    }
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 mod wire_service;
 #[cfg(not(target_arch = "wasm32"))]
@@ -50,13 +24,10 @@ pub use wire_service::{
     HostedSourceState,
 };
 
-/// Canonical public descriptor set used by compatibility and conformance gates.
-pub const FILE_DESCRIPTOR_SET: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-filesystem-v2.bin"));
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn descriptor_digest() -> String {
-    blake3::hash(FILE_DESCRIPTOR_SET).to_hex().to_string()
+    blake3::hash(acyclic_fs_wire::FILE_DESCRIPTOR_SET).to_hex().to_string()
 }
 
 #[cfg(test)]

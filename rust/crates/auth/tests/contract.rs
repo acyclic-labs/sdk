@@ -118,7 +118,7 @@ fn packaged_options_are_identical() {
             .unwrap();
     for copy in [
         "rust/crates/actors/proto/validation/v1/options.proto",
-        "rust/crates/filesystem/proto/validation/v1/options.proto",
+        "rust/crates/filesystem-wire/proto/validation/v1/options.proto",
         "rust/crates/inference/proto/validation/v1/options.proto",
         "rust/crates/machines/proto/validation/v1/options.proto",
         "rust/crates/objects/proto/validation/v1/options.proto",

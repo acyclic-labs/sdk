@@ -2,7 +2,7 @@
 #[cfg(all(feature = "memory", feature = "distributed"))]
 mod tests {
     use super::*;
-    use crate::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer;
+    use acyclic_fs_wire::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer;
     use crate::{
         EmbeddedCapabilities, FilesystemSourceProvider, FilesystemWireLimits,
         FilesystemWireService, HostedSourceOperation, HostedSourceScope,

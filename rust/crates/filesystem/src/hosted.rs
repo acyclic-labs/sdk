@@ -5,8 +5,8 @@
 //! service implemented by the same canonical engine used by embedded profiles.
 
 use crate::model::FilesystemProfile as EmbeddedProfile;
-use crate::wire::filesystem::v2 as wire;
-use crate::wire::protocol::v1 as protocol;
+use acyclic_fs_wire::wire::filesystem::v2 as wire;
+use acyclic_fs_wire::wire::protocol::v1 as protocol;
 use crate::{
     DEFAULT_HOSTED_MAXIMUM_RESPONSE_BYTES, Digest, FILESYSTEM_PROTOCOL_VERSION, GenerationId,
     HostedSourceInvalidation, HostedSourceResult, HostedSourceState, IdempotencyKey,

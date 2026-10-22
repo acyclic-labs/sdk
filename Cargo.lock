@@ -169,10 +169,10 @@ version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-fs-base",
+ "acyclic-fs-wire",
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
  "acyclic-objects",
- "acyclic-proto-build",
  "acyclic-stream",
  "acyclic-test-support",
  "async-trait",
@@ -295,6 +295,17 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "web-sys",
+]
+
+[[package]]
+name = "acyclic-fs-wire"
+version = "0.2.0"
+dependencies = [
+ "acyclic-proto-build",
+ "prost",
+ "prost-types",
+ "tonic",
+ "tonic-prost",
 ]
 
 [[package]]
@@ -818,6 +829,7 @@ dependencies = [
  "acyclic-fs",
  "acyclic-harness",
  "acyclic-native-runtime",
+ "acyclic-plugin-identity",
  "acyclic-stream",
  "async-trait",
  "axum",
@@ -829,7 +841,6 @@ dependencies = [
  "libc",
  "notify",
  "reqwest 0.12.28",
- "ring",
  "rustix 1.1.5",
  "serde",
  "serde_json",
@@ -841,6 +852,24 @@ dependencies = [
  "tracing-chrome",
  "tracing-subscriber",
  "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "acyclic-plugin-identity"
+version = "0.2.0"
+dependencies = [
+ "acyclic-native-runtime",
+ "axum",
+ "base64 0.23.1",
+ "libc",
+ "reqwest 0.12.28",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
  "windows-sys 0.61.2",
 ]
 

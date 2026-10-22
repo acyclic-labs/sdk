@@ -1,7 +1,7 @@
 //! Session filesystem conformance.
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::session::{Cursor, Provider, Publication, Subscription};
-use acyclic_fs::wire::filesystem::v2 as wire;
+use acyclic_fs_wire::wire::filesystem::v2 as wire;
 use acyclic_fs::{CancellationToken, Fs, WorkBudget};
 use acyclic_stream::session::{self as engine, PublicationProvider};
 use acyclic_stream::{StreamError, wire as session};

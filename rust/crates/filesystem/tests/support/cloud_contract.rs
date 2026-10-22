@@ -1,4 +1,4 @@
-use acyclic_fs::FILE_DESCRIPTOR_SET;
+use acyclic_fs_wire::FILE_DESCRIPTOR_SET;
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use serde_json::Value;

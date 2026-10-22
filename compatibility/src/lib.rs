@@ -12,7 +12,7 @@ pub const FAMILIES: &[(&str, &str, &[&str])] = &[
     ("auth", "auth-v1.bin", &["proto/auth/v1/auth.proto"]),
     ("actors", "actors-v1.bin", &["proto/actors/v1/actors.proto"]),
     (
-        "filesystem",
+        "filesystem-wire",
         "filesystem-v2.bin",
         &["proto/filesystem/v2/filesystem.proto"],
     ),

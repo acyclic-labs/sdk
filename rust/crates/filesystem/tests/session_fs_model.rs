@@ -47,7 +47,7 @@ fn input(texts: &[&str]) -> (Subscription, Vec<Bytes>) {
         .unwrap()
         .value,
         path_prefix: acyclic_fs::path::PortablePath::parse("/", Default::default()).unwrap(),
-        delivery: acyclic_fs::wire::filesystem::v2::SessionFsDelivery::All,
+        delivery: acyclic_fs_wire::wire::filesystem::v2::SessionFsDelivery::All,
         start_next: 0,
     };
     let root = |text: &[u8]| acyclic_fs::ObjectId {

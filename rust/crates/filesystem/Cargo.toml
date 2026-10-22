@@ -1,5 +1,5 @@
 [package]
-include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "build/**", "vendor/**", "examples/**", "tests/**", "benches/**", "conformance/**", "fixtures/**", "fuzz/corpus/**"]
+include = ["Cargo.toml", "build.rs", "README.md", "src/**", "build/**", "vendor/**", "examples/**", "tests/**", "benches/**", "conformance/**", "fixtures/**", "fuzz/corpus/**"]
 autotests = false
 name = "acyclic-fs"
 version = "0.2.0"
@@ -53,6 +53,7 @@ harness = false
 required-features = ["memory", "native-watch", "native-mount"]
 
 [dependencies]
+acyclic-fs-wire = { version = "=0.2.0", path = "../filesystem-wire" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 acyclic-fs-base = { version = "=0.2.0", path = "../filesystem-base" }
 async-trait.workspace = true
@@ -89,7 +90,6 @@ proptest.workspace = true
 loom = { version = "=0.7.2", features = ["checkpoint"] }
 
 [build-dependencies]
-acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 icu_casemap.workspace = true
 cc = "1.2.56"
 

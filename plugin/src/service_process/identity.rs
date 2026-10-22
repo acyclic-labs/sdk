@@ -178,13 +178,6 @@ fn query<T>(file: &fs::File, class: i32) -> Result<T, String> {
     Ok(unsafe { information.assume_init() })
 }
 
-/// Number of hard links to the open file.
-#[cfg(windows)]
-pub(crate) fn link_count(file: &fs::File) -> Result<u32, String> {
-    use windows_sys::Win32::Storage::FileSystem::{FILE_STANDARD_INFO, FileStandardInfo};
-    Ok(query::<FILE_STANDARD_INFO>(file, FileStandardInfo)?.NumberOfLinks)
-}
-
 /// Digest of the file's volume and identity, size, and write and change
 /// times, with the change time. The change time cannot be set by callers, so
 /// no write can preserve it.

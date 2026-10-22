@@ -203,6 +203,7 @@ harness_tests() {
 case "$lane" in
   gate)
     node scripts/check-dev-build.mjs
+    node scripts/check-build-boundaries.mjs
     node --test scripts/check-crate-tests.test.mjs
     node scripts/check-crate-tests.mjs 2
     node scripts/check-hermetic-clippy.mjs

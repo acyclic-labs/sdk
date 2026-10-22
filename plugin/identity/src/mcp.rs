@@ -260,9 +260,19 @@ async fn write_response(
 }
 
 async fn transport(
+    server: Server,
+    mut input: impl tokio::io::AsyncRead + Unpin + Send,
+    mut output: impl tokio::io::AsyncWrite + Unpin + Send,
+) -> Result<(), io::Error> {
+    transport_inner(server, &mut input, &mut output).await
+}
+
+// Keep the state machine and its select futures in one codegen instance across
+// stdin/stdout and the test transports.
+async fn transport_inner(
     mut server: Server,
-    input: impl tokio::io::AsyncRead + Unpin,
-    mut output: impl tokio::io::AsyncWrite + Unpin,
+    input: &mut (dyn tokio::io::AsyncRead + Unpin + Send),
+    mut output: &mut (dyn tokio::io::AsyncWrite + Unpin + Send),
 ) -> Result<(), io::Error> {
     let mut input = tokio::io::BufReader::new(input);
     let mut line = Vec::new();
@@ -327,34 +337,9 @@ async fn transport(
                     let Some(frame) = frame? else {
                         return Ok(true);
                     };
-                    let Ok(incoming) = serde_json::from_slice::<Value>(&frame) else {
-                            queue_response(&mut responses, &rpc_error(&Value::Null, -32700, "Parse error"))?;
-                            continue;
-                    };
-                    let method = incoming.get("method").and_then(Value::as_str);
-                    let id = incoming.get("id");
-                    if incoming.get("jsonrpc").and_then(Value::as_str) != Some("2.0") || method.is_none() {
-                        queue_response(&mut responses, &rpc_error(id.unwrap_or(&Value::Null), -32600, "Invalid Request"))?;
-                    } else if id.is_none() {
-                        if method == Some("notifications/cancelled")
-                            && incoming.pointer("/params/requestId").is_some()
-                            && incoming.pointer("/params/requestId") == request.get("id") {
-                            if !cancelled {
-                                if let Some(sender) = cancellation.take() { let _ = sender.send(()); }
-                                cancelled = true;
-                                queue_response(&mut responses, &rpc_error(request.get("id").unwrap_or(&Value::Null), -32800, "Request cancelled"))?;
-                            }
-                            if !finish_on_cancel { break; }
-                        }
-                    } else if let Some(id) = id {
-                        let response = if !id.is_string() && !id.is_number() {
-                            rpc_error(&Value::Null, -32600, "Invalid request ID")
-                        } else if method == Some("ping") {
-                            json!({"jsonrpc": "2.0", "id": id, "result": {}})
-                        } else {
-                            rpc_error(id, -32000, "Identity operation in progress")
-                        };
-                        queue_response(&mut responses, &response)?;
+                    if active_frame(&request, &frame, &mut responses, &mut cancelled)? {
+                        if let Some(sender) = cancellation.take() { let _ = sender.send(()); }
+                        if !finish_on_cancel { break; }
                     }
                 }
             }
@@ -375,6 +360,54 @@ async fn transport(
             Err(error) => return Err(error),
         }
     }
+}
+
+fn active_frame(
+    request: &Value,
+    frame: &[u8],
+    responses: &mut std::collections::VecDeque<Vec<u8>>,
+    cancelled: &mut bool,
+) -> io::Result<bool> {
+    let Ok(incoming) = serde_json::from_slice::<Value>(frame) else {
+        queue_response(responses, &rpc_error(&Value::Null, -32700, "Parse error"))?;
+        return Ok(false);
+    };
+    let method = incoming.get("method").and_then(Value::as_str);
+    let id = incoming.get("id");
+    if incoming.get("jsonrpc").and_then(Value::as_str) != Some("2.0") || method.is_none() {
+        queue_response(
+            responses,
+            &rpc_error(id.unwrap_or(&Value::Null), -32600, "Invalid Request"),
+        )?;
+    } else if id.is_none() {
+        if method == Some("notifications/cancelled")
+            && incoming.pointer("/params/requestId").is_some()
+            && incoming.pointer("/params/requestId") == request.get("id")
+        {
+            if !*cancelled {
+                *cancelled = true;
+                queue_response(
+                    responses,
+                    &rpc_error(
+                        request.get("id").unwrap_or(&Value::Null),
+                        -32800,
+                        "Request cancelled",
+                    ),
+                )?;
+            }
+            return Ok(true);
+        }
+    } else if let Some(id) = id {
+        let response = if !id.is_string() && !id.is_number() {
+            rpc_error(&Value::Null, -32600, "Invalid request ID")
+        } else if method == Some("ping") {
+            json!({"jsonrpc": "2.0", "id": id, "result": {}})
+        } else {
+            rpc_error(id, -32000, "Identity operation in progress")
+        };
+        queue_response(responses, &response)?;
+    }
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -586,7 +619,7 @@ mod tests {
 
     #[tokio::test]
     async fn non_json_gateway_failures_retain_approval_until_success() {
-        let _clock = crate::identity::tests::poll_clock::Clock::start();
+        let _clock = crate::tests::poll_clock::Clock::start();
         use axum::response::IntoResponse as _;
         use std::sync::atomic::{AtomicUsize, Ordering};
         let count = std::sync::Arc::new(AtomicUsize::new(0));
@@ -641,7 +674,7 @@ mod tests {
 
     #[tokio::test]
     async fn slowdown_survives_cancelled_completion_and_retry() {
-        let _clock = crate::identity::tests::poll_clock::Clock::start();
+        let _clock = crate::tests::poll_clock::Clock::start();
         use std::sync::atomic::{AtomicUsize, Ordering};
         let count = std::sync::Arc::new(AtomicUsize::new(0));
         let second_poll = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -848,54 +881,134 @@ mod tests {
         }
     }
 
+    struct ConsumedExchange {
+        server: Server,
+        path: PathBuf,
+        endpoint: String,
+        http: tokio::task::JoinHandle<()>,
+        consumed: std::sync::Arc<tokio::sync::Notify>,
+        released: std::sync::Arc<tokio::sync::Notify>,
+        _directory: tempfile::TempDir,
+    }
+
+    async fn consumed_exchange(login: bool) -> ConsumedExchange {
+        use std::sync::Arc;
+        let consumed = Arc::new(tokio::sync::Notify::new());
+        let released = Arc::new(tokio::sync::Notify::new());
+        let notify = consumed.clone();
+        let release = released.clone();
+        let router = axum::Router::new().fallback(move || {
+            let notify = notify.clone();
+            let release = release.clone();
+            async move {
+                notify.notify_one();
+                release.notified().await;
+                axum::Json(json!({"access_token": "issued", "refresh_token": "rotated",
+                "token_type": "Bearer", "expires_in": 900}))
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let endpoint = format!("http://{}", listener.local_addr().expect("address"));
+        let http = tokio::spawn(async move {
+            axum::serve(listener, router).await.expect("serve");
+        });
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("identity.json");
+        let mut server = server(path.clone());
+        server.identity = Identity::new(&endpoint).expect("identity");
+        pending(&mut server);
+        if !login {
+            Store::open(&path)
+                .expect("store")
+                .write(
+                    &endpoint,
+                    Session {
+                        access_token: "expired".to_owned(),
+                        refresh_token: "original".to_owned(),
+                        expires_at: 0,
+                    },
+                )
+                .expect("seed");
+        }
+
+        ConsumedExchange {
+            server,
+            path,
+            endpoint,
+            http,
+            consumed,
+            released,
+            _directory: directory,
+        }
+    }
+
+    async fn wait_for_rotated_credentials(path: &Path) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if fs::read(path)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                    .and_then(|value| {
+                        value
+                            .pointer("/session/refresh_token")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .as_deref()
+                    == Some("rotated")
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("credentials saved while stdout remains pending");
+    }
+
+    async fn begin_exchange(
+        client: &mut (dyn tokio::io::AsyncWrite + Unpin + Send),
+        login: bool,
+    ) -> &'static str {
+        let name = if login {
+            "identity_login_complete"
+        } else {
+            "identity_refresh"
+        };
+        client
+            .write_all(
+                format!(
+                    "{}\n",
+                    json!({"jsonrpc": "2.0", "id": 1,
+            "method": "tools/call", "params": {"name": name}})
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("request");
+        name
+    }
+
     #[tokio::test]
     async fn blocked_output_keeps_consumed_device_and_refresh_exchanges_progressing() {
-        let _clock = crate::identity::tests::poll_clock::Clock::start();
+        let _clock = crate::tests::poll_clock::Clock::start();
         use std::sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
         };
         use tokio::io::AsyncReadExt as _;
         for (login, eof) in [(false, false), (true, false), (false, true)] {
-            let consumed = Arc::new(tokio::sync::Notify::new());
-            let released = Arc::new(tokio::sync::Notify::new());
-            let notify = consumed.clone();
-            let release = released.clone();
-            let router = axum::Router::new().fallback(move || {
-                let notify = notify.clone();
-                let release = release.clone();
-                async move {
-                    notify.notify_one();
-                    release.notified().await;
-                    axum::Json(json!({"access_token": "issued", "refresh_token": "rotated",
-                        "token_type": "Bearer", "expires_in": 900}))
-                }
-            });
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-                .await
-                .expect("bind");
-            let endpoint = format!("http://{}", listener.local_addr().expect("address"));
-            let http = tokio::spawn(async move {
-                axum::serve(listener, router).await.expect("serve");
-            });
-            let directory = tempfile::tempdir().expect("directory");
-            let path = directory.path().join("identity.json");
-            let mut server = server(path.clone());
-            server.identity = Identity::new(&endpoint).expect("identity");
-            pending(&mut server);
-            if !login {
-                Store::open(&path)
-                    .expect("store")
-                    .write(
-                        &endpoint,
-                        Session {
-                            access_token: "expired".to_owned(),
-                            refresh_token: "original".to_owned(),
-                            expires_at: 0,
-                        },
-                    )
-                    .expect("seed");
-            }
+            let ConsumedExchange {
+                server,
+                path,
+                endpoint: _endpoint,
+                http,
+                consumed,
+                released,
+                _directory,
+            } = consumed_exchange(login).await;
             let (mut client, connection) = tokio::io::duplex(64 * 1024);
             let (input, output) = tokio::io::split(connection);
             let paused = Arc::new(AtomicBool::new(true));
@@ -911,22 +1024,7 @@ mod tests {
                     waker: waker.clone(),
                 },
             ));
-            let name = if login {
-                "identity_login_complete"
-            } else {
-                "identity_refresh"
-            };
-            client
-                .write_all(
-                    format!(
-                        "{}\n",
-                        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                "params": {"name": name}})
-                    )
-                    .as_bytes(),
-                )
-                .await
-                .expect("request");
+            begin_exchange(&mut client, login).await;
             tokio::time::timeout(Duration::from_secs(3), consumed.notified())
                 .await
                 .expect("consumed");
@@ -944,27 +1042,7 @@ mod tests {
                     .expect("EOF while writer is pending");
             }
             released.notify_one();
-            tokio::time::timeout(Duration::from_secs(3), async {
-                loop {
-                    if fs::read(&path)
-                        .ok()
-                        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-                        .and_then(|value| {
-                            value
-                                .pointer("/session/refresh_token")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned)
-                        })
-                        .as_deref()
-                        == Some("rotated")
-                    {
-                        break;
-                    }
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .expect("credentials saved while stdout remains pending");
+            wait_for_rotated_credentials(&path).await;
             assert!(paused.load(Ordering::Relaxed));
             if eof {
                 paused.store(false, Ordering::Relaxed);
@@ -1011,52 +1089,22 @@ mod tests {
 
     #[tokio::test]
     async fn transport_errors_drain_consumed_device_and_refresh_exchanges() {
-        let _clock = crate::identity::tests::poll_clock::Clock::start();
+        let _clock = crate::tests::poll_clock::Clock::start();
         use std::sync::{
             Arc,
             atomic::{AtomicBool, AtomicUsize, Ordering},
         };
         for login in [false, true] {
             for fault in ["oversized", "ping", "cancel"] {
-                let consumed = Arc::new(tokio::sync::Notify::new());
-                let released = Arc::new(tokio::sync::Notify::new());
-                let notify = consumed.clone();
-                let release = released.clone();
-                let router = axum::Router::new().fallback(move || {
-                    let notify = notify.clone();
-                    let release = release.clone();
-                    async move {
-                        notify.notify_one();
-                        release.notified().await;
-                        axum::Json(json!({"access_token": "issued", "refresh_token": "rotated",
-                            "token_type": "Bearer", "expires_in": 900}))
-                    }
-                });
-                let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-                    .await
-                    .expect("bind");
-                let endpoint = format!("http://{}", listener.local_addr().expect("address"));
-                let http = tokio::spawn(async move {
-                    axum::serve(listener, router).await.expect("serve");
-                });
-                let directory = tempfile::tempdir().expect("directory");
-                let path = directory.path().join("identity.json");
-                let mut server = server(path.clone());
-                server.identity = Identity::new(&endpoint).expect("identity");
-                pending(&mut server);
-                if !login {
-                    Store::open(&path)
-                        .expect("store")
-                        .write(
-                            &endpoint,
-                            Session {
-                                access_token: "expired".to_owned(),
-                                refresh_token: "original".to_owned(),
-                                expires_at: 0,
-                            },
-                        )
-                        .expect("seed");
-                }
+                let ConsumedExchange {
+                    server,
+                    path,
+                    endpoint,
+                    http,
+                    consumed,
+                    released,
+                    _directory,
+                } = consumed_exchange(login).await;
                 let (mut client, connection) = tokio::io::duplex(64 * 1024);
                 let (input, output) = tokio::io::split(connection);
                 let count = Arc::new(AtomicUsize::new(0));
@@ -1075,22 +1123,7 @@ mod tests {
                         failed: failed.clone(),
                     },
                 ));
-                let name = if login {
-                    "identity_login_complete"
-                } else {
-                    "identity_refresh"
-                };
-                client
-                    .write_all(
-                        format!(
-                            "{}\n",
-                            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                    "params": {"name": name}})
-                        )
-                        .as_bytes(),
-                    )
-                    .await
-                    .expect("request");
+                let name = begin_exchange(&mut client, login).await;
                 tokio::time::timeout(Duration::from_secs(3), consumed.notified())
                     .await
                     .expect("consumed");
@@ -1147,7 +1180,7 @@ mod tests {
     }
     #[tokio::test]
     async fn interrupted_pending_response_keeps_approval_for_retry() {
-        let _clock = crate::identity::tests::poll_clock::Clock::start();
+        let _clock = crate::tests::poll_clock::Clock::start();
         use tokio::io::AsyncReadExt as _;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await

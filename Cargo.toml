@@ -13,6 +13,7 @@ members = [
   "rust/crates/differential",
   "rust/crates/filesystem",
   "rust/crates/filesystem-base",
+  "rust/crates/filesystem-wire",
   "rust/crates/filesystem/fuzz",
   "rust/crates/filesystem-napi",
   "rust/crates/filesystem-wasm",
@@ -44,6 +45,7 @@ members = [
   "rust/fuzz",
   "rust/crates/manifest",
   "plugin",
+  "plugin/identity",
 ]
 exclude = ["rust/vendor/tonic-web-wasm-client-0.9.2"]
 resolver = "2"

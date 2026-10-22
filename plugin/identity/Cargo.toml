@@ -1,0 +1,32 @@
+[package]
+name = "acyclic-plugin-identity"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Customer identity commands and MCP transport for the Acyclic CLI"
+
+[dependencies]
+acyclic-native-runtime = { path = "../../rust/crates/native-runtime", version = "=0.2.0" }
+base64 = "0.23.1"
+reqwest.workspace = true
+ring = "0.17.14"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["io-std"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.177"
+
+[dev-dependencies]
+axum.workspace = true
+tempfile = "3"
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

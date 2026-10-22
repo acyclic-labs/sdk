@@ -14,6 +14,7 @@
   "acyclic-manifest",
   "acyclic-workers",
   "acyclic-fs-base",
+  "acyclic-fs-wire",
   "acyclic-fs",
   "acyclic-markdown",
   "acyclic-harness-tui",
@@ -21,5 +22,6 @@
   "acyclic-harness-search",
   "acyclic-harness",
   "acyclic-harness-providers",
+  "acyclic-plugin-identity",
   "acyclic-plugin"
 ]

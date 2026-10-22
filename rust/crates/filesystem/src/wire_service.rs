@@ -5,7 +5,7 @@ use crate::kernel::{
     FileKind as EngineFileKind, FileMetadata, FilePayload, LogicalName, MetadataField, TreeEntry,
 };
 use crate::model::{FilesystemProfile as EngineProfile, Lifecycle, VolumeConfig};
-use crate::wire::{filesystem::v2 as wire, protocol::v1 as protocol};
+use acyclic_fs_wire::wire::{filesystem::v2 as wire, protocol::v1 as protocol};
 use crate::{
     ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken,
     DependencyRegion, DependencyState, Digest, DurableCommit, ForkOptions, Fs, Generation,
@@ -2752,7 +2752,7 @@ fn status(error: &WorkspaceError) -> Status {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::filesystem::v2::filesystem_service_server::FilesystemService as _;
+    use acyclic_fs_wire::wire::filesystem::v2::filesystem_service_server::FilesystemService as _;
 
     struct TestIssuer;
 

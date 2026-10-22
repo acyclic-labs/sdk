@@ -10,10 +10,10 @@ modules:
   - path: rust/crates/actors/proto
     excludes:
       - rust/crates/actors/proto/validation
-  - path: rust/crates/filesystem/proto
+  - path: rust/crates/filesystem-wire/proto
     excludes:
-      - rust/crates/filesystem/proto/validation
-      - rust/crates/filesystem/proto/protocol
+      - rust/crates/filesystem-wire/proto/validation
+      - rust/crates/filesystem-wire/proto/protocol
   - path: rust/crates/inference/proto
     excludes:
       - rust/crates/inference/proto/validation

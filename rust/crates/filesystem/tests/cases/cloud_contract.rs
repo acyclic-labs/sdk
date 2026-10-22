@@ -4,7 +4,7 @@
 mod contract;
 
 use acyclic_fs::model::FilesystemProfile;
-use acyclic_fs::wire::filesystem::v2::{
+use acyclic_fs_wire::wire::filesystem::v2::{
     self as wire, filesystem_service_client::FilesystemServiceClient,
 };
 use acyclic_fs::{HostedFs, HostedFsOptions, IdempotencyKey};
@@ -28,7 +28,7 @@ use tonic::{
 
 fn message<M: Message + Default>(name: &str, value: &Value) -> Result<M, Status> {
     let decode = || -> Result<M, Box<dyn std::error::Error>> {
-        let descriptor = DescriptorPool::decode(acyclic_fs::FILE_DESCRIPTOR_SET)?
+        let descriptor = DescriptorPool::decode(acyclic_fs_wire::FILE_DESCRIPTOR_SET)?
             .get_message_by_name(&format!("acyclic.filesystem.v2.{name}"))
             .ok_or("missing descriptor")?;
         let text = serde_json::to_string(value)?;
@@ -232,7 +232,7 @@ fn golden() -> TestResult<Vec<Value>> {
         .first_mut()
         .and_then(|handshake| handshake.pointer_mut("/response/protocol/protocol/descriptorDigest"))
         .ok_or("missing handshake golden")? = Value::String(
-        blake3::hash(acyclic_fs::FILE_DESCRIPTOR_SET)
+        blake3::hash(acyclic_fs_wire::FILE_DESCRIPTOR_SET)
             .to_hex()
             .to_string(),
     );

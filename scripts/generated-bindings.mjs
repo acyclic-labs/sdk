@@ -33,7 +33,7 @@ export const compatibilityArtifacts = {
     conformanceDigest: "conformance/vectors/core.json",
   },
   filesystem: {
-    schemaDigest: "rust/crates/filesystem/proto/filesystem/v2/filesystem.proto",
+    schemaDigest: "rust/crates/filesystem-wire/proto/filesystem/v2/filesystem.proto",
     descriptorDigest: "compatibility/descriptors/filesystem-v2.bin",
     conformanceDigest: "conformance/vectors/filesystem/dependency-content-range-v1.json",
   },
@@ -66,7 +66,7 @@ export const compatibilityArtifacts = {
 export const nativeWasmVector = "conformance/vectors/harness/native-wasm-event-v2.json";
 export const packagedSourceCopies = [
   ...["actors-v1.bin", "actors-buf-v1.bin"].map(name => [compatibilityArtifacts.actors.descriptorDigest, `rust/crates/actors/tests/fixtures/actors/v1/${name}`]),
-  ...["actors", "filesystem", "inference", "machines", "objects", "stream"].map(crate => [
+  ...["actors", "filesystem-wire", "inference", "machines", "objects", "stream"].map(crate => [
     "rust/crates/contract-derive/proto/validation/v1/options.proto", `rust/crates/${crate}/proto/validation/v1/options.proto`,
   ]),
   ...[
@@ -74,7 +74,7 @@ export const packagedSourceCopies = [
     "extension-record", "extension-state-migration", "extension-dependency", "extension-configuration", "extension-admission", "resource-revision", "fork-request", "fork-seed", "reference-grant", "execution-placement", "task-admission", "workflow-admission",
     "interaction-resolution", "resolution-receipt", "project-merge-receipt",
   ].map(name => [`fixtures/harness/v2/${name}.json`, `rust/crates/harness/fixtures/v2/${name}.json`]),
-  ["rust/crates/harness-core/proto/protocol/v1/protocol.proto", "rust/crates/filesystem/proto/protocol/v1/protocol.proto"],
+  ["rust/crates/harness-core/proto/protocol/v1/protocol.proto", "rust/crates/filesystem-wire/proto/protocol/v1/protocol.proto"],
   [compatibilityArtifacts.harness.conformanceDigest, "rust/crates/conformance/vectors/harness.json"],
   [nativeWasmVector, "rust/crates/harness/conformance/native-wasm-event-v2.json"],
   ["conformance/vectors/stream.json", "rust/crates/stream/conformance/stream.json"],
