@@ -201,9 +201,7 @@ impl Markdown {
         let mut cursor = first_line;
         let mut lines = std::mem::take(&mut self.lines);
         #[cfg(test)]
-        if length > lines.capacity() {
-            work::copy(lines.len() * std::mem::size_of::<Line>());
-        }
+        work::grow(length.saturating_sub(previous_length) * std::mem::size_of::<Line>());
         lines.reserve(length.saturating_sub(lines.len()));
         // Caches are appended in source order. Walk them once while consuming
         // each old line once; neither splice a suffix nor rescan cache ranges.

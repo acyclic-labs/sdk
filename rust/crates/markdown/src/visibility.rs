@@ -30,7 +30,7 @@ impl Visibility {
             let position = bit / 64;
             if words.len() <= position {
                 #[cfg(test)]
-                crate::work::copy((position + 1 - words.len()) * std::mem::size_of::<u64>());
+                crate::work::grow((position + 1 - words.len()) * std::mem::size_of::<u64>());
                 words.resize(position + 1, 0);
             }
             if let Some(word) = words.get_mut(position) {

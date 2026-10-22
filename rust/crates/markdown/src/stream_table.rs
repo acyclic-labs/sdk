@@ -151,9 +151,7 @@ impl Markdown {
         #[cfg(test)]
         {
             work::copy((rows.len() + 2) * std::mem::size_of::<Line>());
-            if self.lines.len() + rows.len() + 2 > self.lines.capacity() {
-                work::copy(self.lines.len() * std::mem::size_of::<Line>());
-            }
+            work::grow((rows.len() + 2) * std::mem::size_of::<Line>());
         }
         self.lines.extend(rows);
         self.lines.push(border('└', '┴', '┘', &widths));
@@ -193,9 +191,7 @@ impl Stream {
         for row in rows {
             update_widths(&self.table, &mut self.widths, &row);
             #[cfg(test)]
-            if self.table.rows.len() == self.table.rows.capacity() {
-                work::copy(self.table.rows.len() * std::mem::size_of::<Vec<Line>>());
-            }
+            work::grow(std::mem::size_of::<Vec<Line>>());
             self.table.rows.push(row);
         }
     }

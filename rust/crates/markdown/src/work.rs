@@ -55,3 +55,12 @@ pub(crate) fn grow_source(bytes: usize) {
 pub(crate) fn scan(bytes: usize) {
     SCAN.set(SCAN.get() + bytes);
 }
+
+/// Bytes appended to a geometrically growing buffer. Reallocation at least
+/// doubles capacity, so by the time `n` bytes have been appended the moves
+/// total less than `2n`. Prepaying that on append keeps measured work a
+/// smooth upper bound instead of a step at each reallocation, whose size
+/// depends on where a length falls between powers of two.
+pub(crate) fn grow(bytes: usize) {
+    copy(2 * bytes);
+}

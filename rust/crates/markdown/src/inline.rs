@@ -1,4 +1,6 @@
 use super::*;
+use delimiters::Candidate;
+use std::rc::Rc;
 
 #[derive(Default, Clone, Copy)]
 struct Mark {
@@ -8,124 +10,84 @@ struct Mark {
     bytes: usize,
 }
 
-impl Mark {
-    fn take_line(self, lines: &mut Vec<Line>, first: usize) -> Line {
-        let mut line = lines.get_mut(first).map(std::mem::take).unwrap_or_default();
-        lines.truncate(first);
-        line.spans.truncate(self.spans);
-        if let Some(span) = line.spans.last_mut() {
-            span.text.truncate(self.bytes);
-        }
-        line
-    }
-}
-
-// Content before this mark is retained only while the same span still crosses
-// its synthetic opener. Reclassification rewinds to the real span opener;
-// delimiter runs inside styled text remain before the mark.
-struct Carry {
-    prefix: String,
-    opener: usize,
-    kind: Option<TagEnd>,
-}
-
-impl Clone for Carry {
-    fn clone(&self) -> Self {
-        #[cfg(test)]
-        work::copy(self.prefix.len());
-        Self {
-            prefix: self.prefix.clone(),
-            opener: self.opener,
-            kind: self.kind,
-        }
-    }
-}
-
-impl Carry {
-    fn styled(source: &str, start: usize, opening: &str, text: &str, kind: TagEnd) -> Option<Self> {
-        // Flanking and the rule of three depend on the byte before the real
-        // opener. Keep that bounded context separately from the opener offset.
-        let context = if start == 0 {
-            String::new()
-        } else {
-            left_context(source.get(..start)?)
-        };
-        let right = source.get(start + opening.len()..)?.chars().next()?;
-        let right = if right.is_ascii_punctuation() {
-            '.'
-        } else if right.is_ascii() {
-            if right.is_ascii_whitespace() {
-                ' '
-            } else {
-                'x'
-            }
-        } else {
-            right
-        };
-        let prefix = format!("{context}{opening}{right}{}", left_context(text));
-        #[cfg(test)]
-        work::copy(prefix.len());
-        Some(Self {
-            prefix,
-            opener: context.len(),
-            kind: Some(kind),
-        })
-    }
-}
-
-#[derive(Default, Clone)]
+#[derive(Default)]
 pub(super) struct Checkpoint {
     offset: usize,
     mark: Mark,
     cost: usize,
     pub(super) valid: Range<usize>,
     openers: delimiters::State,
-    carry: Option<Carry>,
+    reopen: Reopen,
+    // Parallel to `openers`: where each opener's run starts in the source, and
+    // a checkpoint there to resume from when a later closer matches it.
+    fallbacks: Vec<Fallback>,
+    // The reopened span's start, to resume from when it no longer closes.
+    restart: Option<Rc<Checkpoint>>,
 }
 
-impl Checkpoint {
-    fn prefix(&self, source: &str, start: usize, previous: usize) -> String {
-        let tail = source.get(self.offset..).unwrap_or_default();
-        let context = if let Some(carry) = &self.carry {
-            carry.prefix.clone()
-        } else if self.offset == start {
-            String::new()
-        } else if source.get(previous..).unwrap_or_default().contains('\n') || tail.contains('\n') {
-            row_prefix(source.get(..self.offset).unwrap_or_default())
-        } else {
-            left_context(source.get(..self.offset).unwrap_or_default())
-        };
-        self.openers.prefix(&context)
+// Checkpoints held only as fallbacks keep the run starts but no checkpoints of
+// their own, so the retained set stays bounded by the opener classes.
+#[derive(Clone, Default)]
+struct Fallback {
+    start: Option<usize>,
+    checkpoint: Option<Rc<Checkpoint>>,
+}
+
+// A span closed at the input edge whose checkpoint sits inside it, at the
+// start of the run that currently closes it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Reopen {
+    #[default]
+    None,
+    // The opening backtick run length.
+    Code(usize),
+    // An emphasis-like span; its opener is the state's reopened opener.
+    Emphasis,
+    Strong,
+    Strikethrough,
+}
+
+impl Reopen {
+    fn span(tag: &Tag<'_>) -> Self {
+        match tag {
+            Tag::Emphasis => Self::Emphasis,
+            Tag::Strong => Self::Strong,
+            Tag::Strikethrough => Self::Strikethrough,
+            _ => Self::None,
+        }
     }
 }
 
 #[derive(Default)]
 pub(super) struct Inline {
-    pub(super) checkpoint: Checkpoint,
-    provisional: Option<Checkpoint>,
-    rollback: Option<Checkpoint>,
+    pub(super) checkpoint: Rc<Checkpoint>,
+    provisional: Option<Rc<Checkpoint>>,
     start: usize,
 }
 
 impl Inline {
-    pub(super) fn rewind(&mut self) {
-        if let Some(rollback) = self.rollback.clone() {
-            self.checkpoint = rollback;
-        }
-        self.provisional = None;
-    }
     #[cfg(test)]
     pub(super) fn retained(&self) -> usize {
-        let retained = |checkpoint: &Checkpoint| {
-            checkpoint.openers.retained()
-                + checkpoint
-                    .carry
-                    .as_ref()
-                    .map_or(0, |carry| carry.prefix.capacity())
-        };
-        retained(&self.checkpoint)
-            + self.provisional.as_ref().map_or(0, retained)
-            + self.rollback.as_ref().map_or(0, retained)
+        let mut seen = HashSet::new();
+        let mut pending: Vec<&Rc<Checkpoint>> = vec![&self.checkpoint];
+        pending.extend(&self.provisional);
+        let mut total = 0;
+        while let Some(checkpoint) = pending.pop() {
+            if !seen.insert(Rc::as_ptr(checkpoint)) {
+                continue;
+            }
+            total += std::mem::size_of::<Checkpoint>()
+                + checkpoint.openers.retained()
+                + checkpoint.fallbacks.capacity() * std::mem::size_of::<Fallback>();
+            pending.extend(
+                checkpoint
+                    .fallbacks
+                    .iter()
+                    .filter_map(|fallback| fallback.checkpoint.as_ref()),
+            );
+            pending.extend(&checkpoint.restart);
+        }
+        total
     }
     pub(super) fn visible_frontier(&self, stable: usize, fallback: usize) -> (usize, usize) {
         let mark = self.checkpoint.mark;
@@ -140,102 +102,221 @@ impl Inline {
     }
 }
 
+// One reparse of the open paragraph from a checkpoint.
+struct Parse<'a> {
+    source: &'a str,
+    events: &'a [(Event<'static>, Range<usize>)],
+    calls: &'a [(usize, usize)],
+    sentinel: usize,
+    runs: &'a [Range<usize>],
+}
+
+// Why a reparse does not continue its checkpoint's prefix.
+enum Failure {
+    // A later closer matched this synthetic opener.
+    Opener(usize),
+    // The reopened span no longer closes where it resumed.
+    Restart,
+    Block,
+}
+
 impl Markdown {
     pub(super) fn advance_inline(&mut self, previous: usize) -> Option<usize> {
         let inline = self.inline.as_ref()?;
+        let resumed = Rc::clone(inline.provisional.as_ref().unwrap_or(&inline.checkpoint));
         let start = inline.start;
-        let saved_rollback = inline.rollback.clone();
-        let checkpoint = inline.provisional.as_ref().unwrap_or(&inline.checkpoint);
-        let base = checkpoint.offset;
-        let mark = checkpoint.mark;
-        let tail = self.source.get(base..).unwrap_or_default();
-        let prefix = checkpoint.prefix(&self.source, start, previous);
-        let sentinel = prefix.len();
-        let source = format!("{prefix}{tail}");
-        #[cfg(test)]
-        work::copy(source.len() + prefix.len());
-        let (events, calls) = events::scoped(
-            &source,
-            &self.references,
-            options(),
-            self.source
-                .len()
-                .max(100_000)
-                .saturating_sub(self.reference_cost)
-                .saturating_sub(checkpoint.cost),
-        );
-        let continues = |event: &Event<'_>, range: &Range<usize>| {
-            range.start < sentinel
-                && range.end > sentinel
-                && checkpoint.carry.as_ref().is_some_and(|carry| {
-                    range.start == sentinel - carry.prefix.len() + carry.opener
-                        && match (carry.kind, event) {
-                            (None, Event::Code(_)) => true,
-                            (Some(kind), Event::Start(tag)) => tag.to_end() == kind,
-                            _ => false,
-                        }
-                })
-        };
-        if checkpoint.carry.is_some()
-            && !events.iter().any(|(event, range)| continues(event, range))
-        {
-            let inline = self.inline.as_mut()?;
-            inline.checkpoint = inline.rollback.clone()?;
-            inline.provisional = None;
-            return self.advance_inline(previous);
-        }
-        if !paragraph(&source, &events) {
-            return None;
-        }
-        if events.iter().any(|(event, range)| {
-            matches!(event, Event::Start(tag) if !matches!(tag, Tag::Paragraph))
-                && range.start < sentinel
-                && range.end > sentinel
-                && !continues(event, range)
-        }) {
-            let inline = self.inline.as_mut()?;
-            let rollback = inline.rollback.clone()?;
-            if rollback.offset >= base {
+        let budget = self
+            .source
+            .len()
+            .max(100_000)
+            .saturating_sub(self.reference_cost);
+        let mut attempt = Rc::clone(&resumed);
+        loop {
+            let context = self.reparse_context(attempt.offset, start, previous);
+            let (prefix, runs, reopened) = resume_prefix(&attempt, &context);
+            let sentinel = prefix.len();
+            let tail = self.source.get(attempt.offset..).unwrap_or_default();
+            let source = format!("{prefix}{tail}");
+            #[cfg(test)]
+            work::copy(source.len() + prefix.len());
+            let (events, calls) = events::scoped(
+                &source,
+                &self.references,
+                options(),
+                budget.saturating_sub(attempt.cost),
+            );
+            if !paragraph(&source, &events) {
                 return None;
             }
-            inline.checkpoint = rollback;
-            inline.provisional = None;
-            return self.advance_inline(previous);
+            let failure = match resumes(&events, sentinel, attempt.reopen, reopened, &runs) {
+                Ok(()) => {
+                    let parse = Parse {
+                        source: &source,
+                        events: &events,
+                        calls: &calls,
+                        sentinel,
+                        runs: &runs,
+                    };
+                    return Some(self.commit_inline(&parse, &attempt, &resumed, start));
+                }
+                Err(failure) => failure,
+            };
+            // A later closer reinterprets source after the checkpoint before
+            // what it matched; reparse once from there. That source is restyled.
+            if !Rc::ptr_eq(&attempt, &resumed) {
+                return None;
+            }
+            attempt = match failure {
+                Failure::Opener(index) => resumed
+                    .fallbacks
+                    .get(index)
+                    .and_then(|fallback| fallback.checkpoint.clone()),
+                Failure::Restart => resumed.restart.clone(),
+                Failure::Block => None,
+            }
+            .filter(|checkpoint| checkpoint.valid.contains(&budget))?;
         }
-        let (boundary, mut provisional, openers, limit) = boundary(&source, &events, sentinel);
-        let carry = carry(&source, &events, sentinel)
-            .filter(|(end, _)| *end > provisional.unwrap_or(sentinel) && *end <= limit);
-        if let Some((end, _)) = &carry {
-            provisional = Some(*end);
-        }
-        let first = self.stable_lines + mark.line;
-        let line = mark.take_line(&mut self.lines, first);
-        let frame = InlineFrame {
-            source: &source,
-            events: &events,
-            calls: &calls,
+    }
+
+    fn commit_inline(
+        &mut self,
+        parse: &Parse<'_>,
+        attempt: &Rc<Checkpoint>,
+        resumed: &Checkpoint,
+        start: usize,
+    ) -> usize {
+        let Parse {
+            source,
+            events,
             sentinel,
-            base,
-            boundary,
-            provisional,
-            carry: &carry,
-            openers: &openers,
+            ..
+        } = *parse;
+        let (boundary, cut, top) = boundary(source, events, sentinel);
+        let builder = Builder {
+            parse,
+            attempt,
+            resumed,
         };
-        let Paint { renderer, marks } = frame.paint(checkpoint, line, &self.references);
-        let inline = frame.checkpoints(checkpoint, marks, saved_rollback, start);
-        frame.commit_lines(self, renderer);
-        self.inline = Some(inline);
+        // A checkpoint at the sentinel is the one it resumed from: a reopened
+        // span consumes its synthetic opener, so no scan rebuilds it.
+        let provisional = cut
+            .as_ref()
+            .filter(|cut| cut.offset != sentinel || cut.reopen != Reopen::None)
+            .map(|cut| {
+                let (candidates, marked) = cut.candidates(&top);
+                Pending::new(cut.offset, candidates, marked, cut.reopen)
+            });
+        let committed =
+            (boundary != sentinel).then(|| Pending::new(boundary, top, None, Reopen::None));
+        let mut cuts = vec![boundary];
+        cuts.extend(cut.as_ref().map(|cut| cut.offset));
+        cuts.extend(cut.as_ref().and_then(|cut| cut.restart(sentinel)));
+        for pending in committed.iter().chain(&provisional) {
+            cuts.extend(pending.fresh(source, sentinel));
+        }
+        cuts.sort_unstable();
+        let mark = attempt.mark;
+        let first = self.stable_lines + mark.line;
+        let mut renderer = render::Renderer::inline(self.reopen_line(first, mark));
+        let marks = replay(
+            &mut renderer,
+            (source, events),
+            &self.references,
+            sentinel,
+            (&cuts, mark),
+        );
+        #[cfg(test)]
+        {
+            let count = renderer.lines.len() + 1;
+            work::copy(count * std::mem::size_of::<Line>());
+            work::grow(count * std::mem::size_of::<Line>());
+        }
+        self.lines.reserve(renderer.lines.len() + 1);
+        self.lines.append(&mut renderer.lines);
+        self.lines.push(renderer.into_inline());
+        let marks = Marks {
+            cuts: &cuts,
+            marks: &marks,
+        };
+        let checkpoint = committed.map_or_else(
+            || Rc::clone(attempt),
+            |pending| Rc::new(builder.build(pending, &marks, None)),
+        );
+        let provisional = cut.map(|cut| match provisional {
+            Some(pending) => {
+                let restart = builder.restart(&cut, &pending, &marks);
+                Rc::new(builder.build(pending, &marks, restart))
+            }
+            None => Rc::clone(attempt),
+        });
+        self.inline = Some(Inline {
+            checkpoint,
+            provisional,
+            start,
+        });
         let fallback = if mark.visible == 0 {
             self.visibility.end
         } else {
             self.stable_lines + mark.visible
         };
         self.visible_lines = self.visible_end(first, self.lines.len(), fallback);
-        frame.plain(self);
-        if sentinel == 0 && base == start {
-            self.flanking = flanking::Flanking::new(&source, &events, base);
+        self.settle_plain(source, events, sentinel);
+        first
+    }
+
+    // Left context standing in for source before `base`. After a line break
+    // only the row's column structure matters for a table interrupt.
+    fn reparse_context(&self, base: usize, start: usize, previous: usize) -> String {
+        let before = self.source.get(..base).unwrap_or_default();
+        if base == start {
+            String::new()
+        } else if self
+            .source
+            .get(previous..)
+            .unwrap_or_default()
+            .contains('\n')
+            || self.source.get(base..).unwrap_or_default().contains('\n')
+        {
+            row_prefix(before)
+        } else {
+            left_context(before)
         }
-        Some(first)
+    }
+
+    // Take the display line at `first` back to the checkpoint's span and byte.
+    fn reopen_line(&mut self, first: usize, mark: Mark) -> Line {
+        let mut line = self
+            .lines
+            .get_mut(first)
+            .map(std::mem::take)
+            .unwrap_or_default();
+        self.lines.truncate(first);
+        line.spans.truncate(mark.spans);
+        if let Some(span) = line.spans.last_mut() {
+            span.text.truncate(mark.bytes);
+        }
+        line
+    }
+
+    // Decide whether the next plain delta can extend the last span directly.
+    fn settle_plain(
+        &mut self,
+        source: &str,
+        events: &[(Event<'_>, Range<usize>)],
+        sentinel: usize,
+    ) {
+        let tail = source.get(sentinel..).unwrap_or_default();
+        self.plain_links = tail.contains('[')
+            && tail
+                .rsplit_once(']')
+                .is_none_or(|(_, rest)| rest.starts_with('('));
+        self.plain_entity = tail
+            .rsplit_once('&')
+            .is_some_and(|(_, rest)| rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '#'));
+        self.plain_spaces = tail.bytes().rev().take_while(|byte| *byte == b' ').count();
+        self.plain = tail.len() >= 8 && !tail.rsplit('\n').next().unwrap_or_default().trim_start_matches([' ', '\t']).starts_with('<') && !table_candidate(source) && !block_pending(tail.rsplit('\n').next().unwrap_or_default()) && events.iter().rev().find(|(event, _)| !matches!(event, Event::End(_)))
+            .is_some_and(|(event, range)| matches!(event, Event::Text(text) if text.chars().next_back().is_some_and(plain_character))
+                && range.end > sentinel && range.end == source.trim_end_matches(' ').len());
     }
 
     pub(super) fn begin_inline(
@@ -253,18 +334,15 @@ impl Markdown {
         {
             return;
         }
+        let start = base + source.len() - content.len();
         self.inline = Some(Inline {
-            checkpoint: Checkpoint {
-                offset: base + source.len() - source.trim_start_matches([' ', '\t']).len(),
-                mark: Mark::default(),
-                cost: 0,
+            checkpoint: Rc::new(Checkpoint {
+                offset: start,
                 valid: 0..usize::MAX,
-                openers: delimiters::State::default(),
-                carry: None,
-            },
+                ..Checkpoint::default()
+            }),
             provisional: None,
-            rollback: None,
-            start: base + source.len() - source.trim_start_matches([' ', '\t']).len(),
+            start,
         });
         // Replay only this initial open tail; subsequent pushes retain its prefix.
         let plain = self.plain;
@@ -273,134 +351,365 @@ impl Markdown {
     }
 }
 
-fn carry(
-    source: &str,
+// The synthetic prefix resuming at a checkpoint, each synthetic opener's run
+// in it, and where the reopened span's opener starts.
+fn resume_prefix(
+    checkpoint: &Checkpoint,
+    context: &str,
+) -> (String, Vec<Range<usize>>, Option<usize>) {
+    let (mut prefix, runs) = checkpoint.openers.prefix(context);
+    let mut reopened = checkpoint
+        .openers
+        .reopen()
+        .and_then(|index| runs.get(index))
+        .map(|run| run.start);
+    if let Reopen::Code(run) = checkpoint.reopen {
+        // Reopen the code span: its opener and a stand-in for the committed
+        // content byte keep the old closing run a separate run.
+        reopened = Some(prefix.len());
+        prefix.extend(std::iter::repeat_n('`', run));
+        prefix.push('x');
+    }
+    (prefix, runs, reopened)
+}
+
+// A checkpoint to build once the replay has marked its display position: the
+// openers among `candidates` before `end`, inside a span reopened at `marked`.
+struct Pending {
+    end: usize,
+    candidates: Vec<Candidate>,
+    marked: Option<usize>,
+    reopen: Reopen,
+    state: delimiters::State,
+    kept: Vec<usize>,
+}
+
+impl Pending {
+    fn new(end: usize, candidates: Vec<Candidate>, marked: Option<usize>, reopen: Reopen) -> Self {
+        let (state, kept) = delimiters::State::compile(&candidates, end, marked);
+        Self {
+            end,
+            candidates,
+            marked,
+            reopen,
+            state,
+            kept,
+        }
+    }
+
+    // Run starts of kept openers parsed in this reparse, where fallbacks go.
+    fn fresh<'a>(&'a self, source: &'a str, sentinel: usize) -> impl Iterator<Item = usize> + 'a {
+        self.kept
+            .iter()
+            .filter_map(|index| self.candidates.get(*index)?.start)
+            .filter(move |start| *start >= sentinel && delimiters::safe_boundary(source, *start))
+    }
+}
+
+struct Marks<'a> {
+    cuts: &'a [usize],
+    marks: &'a [Mark],
+}
+
+impl Marks<'_> {
+    fn at(&self, cut: usize) -> Mark {
+        let index = self.cuts.partition_point(|position| *position < cut);
+        self.marks.get(index).copied().unwrap_or_default()
+    }
+}
+
+struct Builder<'a> {
+    parse: &'a Parse<'a>,
+    attempt: &'a Checkpoint,
+    resumed: &'a Checkpoint,
+}
+
+impl Builder<'_> {
+    fn build(
+        &self,
+        pending: Pending,
+        marks: &Marks<'_>,
+        restart: Option<Rc<Checkpoint>>,
+    ) -> Checkpoint {
+        let fallbacks = pending
+            .kept
+            .iter()
+            .filter_map(|index| {
+                let candidate = pending.candidates.get(*index)?;
+                Some(if Some(*index) == pending.marked {
+                    Fallback {
+                        start: self.absolute(candidate.start),
+                        checkpoint: restart.clone(),
+                    }
+                } else {
+                    self.fallback(candidate, &pending, marks)
+                })
+            })
+            .collect();
+        let mark = marks.at(pending.end);
+        self.checkpoint(
+            pending.end,
+            (pending.state, pending.reopen),
+            mark,
+            fallbacks,
+            restart,
+        )
+    }
+
+    fn checkpoint(
+        &self,
+        end: usize,
+        (openers, reopen): (delimiters::State, Reopen),
+        mark: Mark,
+        fallbacks: Vec<Fallback>,
+        restart: Option<Rc<Checkpoint>>,
+    ) -> Checkpoint {
+        let (cost, valid) = references::extend_expansion(
+            self.attempt.cost,
+            &self.attempt.valid,
+            self.parse
+                .calls
+                .iter()
+                .filter(|(position, _)| *position <= end),
+        );
+        #[cfg(test)]
+        work::grow(fallbacks.len() * std::mem::size_of::<Fallback>());
+        Checkpoint {
+            offset: self.attempt.offset + end - self.parse.sentinel,
+            mark,
+            cost,
+            valid,
+            openers,
+            reopen,
+            fallbacks,
+            restart,
+        }
+    }
+
+    // A fallback checkpoint resuming at `end` with the openers among
+    // `candidates` before it. It records its openers' run starts only.
+    fn shallow(
+        &self,
+        end: usize,
+        (candidates, marked): (&[Candidate], Option<usize>),
+        reopen: Reopen,
+        mark: Mark,
+    ) -> Rc<Checkpoint> {
+        let (state, kept) = delimiters::State::compile(candidates, end, marked);
+        let reopen = if state.reopen().is_some() {
+            reopen
+        } else {
+            Reopen::None
+        };
+        let fallbacks = kept
+            .iter()
+            .filter_map(|index| candidates.get(*index))
+            .map(|candidate| Fallback {
+                start: self.absolute(candidate.start),
+                checkpoint: None,
+            })
+            .collect();
+        Rc::new(self.checkpoint(end, (state, reopen), mark, fallbacks, None))
+    }
+
+    // The source position of a reparse position: a synthetic run stands for
+    // the opener its checkpoint recorded.
+    fn absolute(&self, position: Option<usize>) -> Option<usize> {
+        let position = position?;
+        if position >= self.parse.sentinel {
+            return Some(self.attempt.offset + position - self.parse.sentinel);
+        }
+        let index = self
+            .parse
+            .runs
+            .iter()
+            .position(|run| run.start == position)?;
+        self.attempt.fallbacks.get(index)?.start
+    }
+
+    fn fallback(&self, candidate: &Candidate, pending: &Pending, marks: &Marks<'_>) -> Fallback {
+        let start = self.absolute(candidate.start);
+        let checkpoint = match candidate.start {
+            Some(position) if position < self.parse.sentinel => self.inherited(position, start),
+            Some(position) if delimiters::safe_boundary(self.parse.source, position) => {
+                Some(self.shallow(
+                    position,
+                    (&pending.candidates, pending.marked),
+                    pending.reopen,
+                    marks.at(position),
+                ))
+            }
+            _ => None,
+        };
+        Fallback { start, checkpoint }
+    }
+
+    // A synthetic opener keeps its fallback. After a retry the attempt is a
+    // fallback itself, so look the opener up in the checkpoint it came from.
+    fn inherited(&self, position: usize, start: Option<usize>) -> Option<Rc<Checkpoint>> {
+        self.parse
+            .runs
+            .iter()
+            .position(|run| run.start == position)
+            .and_then(|index| self.attempt.fallbacks.get(index))
+            .and_then(|fallback| fallback.checkpoint.clone())
+            .or_else(|| {
+                self.resumed
+                    .fallbacks
+                    .iter()
+                    .find(|fallback| start.is_some() && fallback.start == start)
+                    .and_then(|fallback| fallback.checkpoint.clone())
+            })
+    }
+
+    // The checkpoint at the start of the span a cut reopens.
+    fn restart(&self, cut: &Cut, pending: &Pending, marks: &Marks<'_>) -> Option<Rc<Checkpoint>> {
+        let start = cut.start?;
+        if start < self.parse.sentinel {
+            return self
+                .attempt
+                .restart
+                .clone()
+                .or_else(|| self.resumed.restart.clone());
+        }
+        if !delimiters::safe_boundary(self.parse.source, start) {
+            return None;
+        }
+        let top = pending
+            .candidates
+            .get(..pending.marked.unwrap_or(pending.candidates.len()))?;
+        Some(self.shallow(start, (top, None), Reopen::None, marks.at(start)))
+    }
+}
+
+// Whether the reparse continues the checkpoint's prefix. Only the reopened
+// span may cross the sentinel, and it must still close: a later run that
+// leaves it unclosed makes its opener literal.
+fn resumes(
     events: &[(Event<'_>, Range<usize>)],
     sentinel: usize,
-) -> Option<(usize, Carry)> {
-    let mut style = None;
-    let mut depth = 0usize;
-    let mut candidate = None;
-    let mut blocked = false;
+    reopen: Reopen,
+    reopened: Option<usize>,
+    runs: &[Range<usize>],
+) -> Result<(), Failure> {
+    let mut found = false;
     for (event, range) in events {
-        match event {
-            Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph) => {}
-            Event::Start(tag) => {
-                depth += 1;
-                if depth == 1 {
-                    blocked = false;
-                    let marker = source.as_bytes().get(range.start);
-                    let whole_run =
-                        range.start == 0 || source.as_bytes().get(range.start - 1) != marker;
-                    style = if whole_run {
-                        match tag {
-                            Tag::Emphasis => Some((
-                                tag.to_end(),
-                                source.get(range.start..range.start + 1)?,
-                                range.start,
-                            )),
-                            Tag::Strong => Some((
-                                tag.to_end(),
-                                source.get(range.start..range.start + 2)?,
-                                range.start,
-                            )),
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    };
-                    if whole_run && matches!(tag, Tag::Strikethrough) {
-                        let count = source
-                            .get(range.start..)?
-                            .bytes()
-                            .take_while(|byte| *byte == b'~')
-                            .count();
-                        style = Some((
-                            tag.to_end(),
-                            source.get(range.start..range.start + count)?,
-                            range.start,
-                        ));
+        let crossing = range.start < sentinel && range.end > sentinel;
+        let span = match event {
+            Event::Start(Tag::Paragraph) => continue,
+            Event::Start(tag) => Reopen::span(tag),
+            Event::Code(_) if crossing => Reopen::Code(range.end - range.start),
+            _ => continue,
+        };
+        let expected = Some(range.start) == reopened
+            && match (span, reopen) {
+                (Reopen::Code(_), Reopen::Code(_)) => true,
+                (span, reopen) => span == reopen && span != Reopen::None,
+            };
+        if expected && crossing {
+            found = true;
+        } else if expected {
+            return Err(Failure::Restart);
+        } else if crossing {
+            return Err(
+                match runs.iter().position(|run| run.contains(&range.start)) {
+                    Some(index) if runs.get(index).map(|run| run.start) == reopened => {
+                        Failure::Restart
                     }
-                    // A nested style can consume only part of its opening run.
-                    // Its full delimiter geometry remains provisional.
-                    style = style.filter(|(_, opening, start)| {
-                        source.as_bytes().get(*start + opening.len()) != marker
-                    });
-                }
-            }
-            Event::End(_) => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    style = None;
-                }
-            }
-            Event::Text(text)
-                if depth == 1
-                    && range.end > sentinel
-                    && source.get(range.clone()) == Some(text.as_ref()) =>
-            {
-                blocked |= unstable_text(source, range.clone());
-                if !blocked && let Some((kind, opening, start)) = style {
-                    candidate = Some((
-                        range.end,
-                        Carry::styled(source, start, opening, text, kind)?,
-                    ));
-                }
-            }
-            Event::Code(text) if depth == 0 => {
-                let raw = source.get(range.clone())?;
-                let count = raw.bytes().take_while(|byte| *byte == b'`').count();
-                let end = range.end.checked_sub(count)?;
-                let body = source.get(range.start + count..end)?;
-                if count > 0
-                    && end > sentinel
-                    && body == text.as_ref()
-                    && !body.starts_with(' ')
-                    && !body.contains('\n')
-                {
-                    candidate = Some((
-                        end,
-                        Carry {
-                            prefix: format!("{}x", raw.get(..count)?),
-                            opener: 0,
-                            kind: None,
-                        },
-                    ));
-                }
-            }
-            _ => {}
+                    Some(index) => Failure::Opener(index),
+                    None => Failure::Block,
+                },
+            );
         }
     }
-    candidate
+    if found || reopen == Reopen::None {
+        Ok(())
+    } else {
+        Err(Failure::Restart)
+    }
 }
 
-pub(super) fn unstable_text(source: &str, range: Range<usize>) -> bool {
-    #[cfg(test)]
-    work::scan(range.len());
-    let mut cursor = range.start;
-    for (index, byte) in source
-        .get(range.clone())
-        .unwrap_or_default()
-        .bytes()
-        .enumerate()
-    {
-        let position = range.start + index;
-        if position < cursor {
+// Mark every remaining cut before `until`.
+fn mark_before(
+    renderer: &render::Renderer,
+    (cuts, base): (&[usize], Mark),
+    marks: &mut Vec<Mark>,
+    until: usize,
+) {
+    if cuts.get(marks.len()).is_some_and(|cut| *cut < until) {
+        let mark = renderer.inline_mark(base);
+        while cuts.get(marks.len()).is_some_and(|cut| *cut < until) {
+            marks.push(mark);
+        }
+    }
+}
+
+// Render the reparsed suffix after `sentinel` and mark each sorted cut in
+// display coordinates: where the output covers exactly the source before it.
+fn replay(
+    renderer: &mut render::Renderer,
+    (source, events): (&str, &[(Event<'_>, Range<usize>)]),
+    references: &References,
+    sentinel: usize,
+    (cuts, base): (&[usize], Mark),
+) -> Vec<Mark> {
+    let mut marks = Vec::with_capacity(cuts.len());
+    for (event, range) in events {
+        // The left context, such as a line break, was rendered before.
+        if matches!(
+            event,
+            Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph)
+        ) || !matches!(event, Event::Start(_) | Event::End(_)) && range.end <= sentinel
+        {
             continue;
         }
-        match byte {
-            b'*' | b'_' | b'~' => match delimiters::scan(source, position, 0) {
-                Some((end, None)) if end < source.len() => cursor = end,
-                _ => return true,
-            },
-            b'[' | b'`' | b'<' | b'&' | b'\\' => return true,
-            _ => {}
+        match event {
+            // A cut in a span's closing run follows all of its content, before
+            // the style its end restores.
+            Event::End(_) => mark_before(renderer, (cuts, base), &mut marks, range.end),
+            _ => mark_before(renderer, (cuts, base), &mut marks, range.start + 1),
+        }
+        match event {
+            Event::Text(text) if source.get(range.clone()) == Some(text.as_ref()) => {
+                let mut from = sentinel.saturating_sub(range.start).min(text.len());
+                while let Some(cut) = cuts
+                    .get(marks.len())
+                    .map(|cut| cut.saturating_sub(range.start).max(from))
+                    .filter(|cut| *cut < text.len())
+                {
+                    if let Some(piece) = text.get(from..cut).filter(|piece| !piece.is_empty()) {
+                        renderer.event_in(&Event::Text(piece.into()), Some(references));
+                    }
+                    marks.push(renderer.inline_mark(base));
+                    from = cut;
+                }
+                if let Some(piece) = text.get(from..).filter(|piece| !piece.is_empty()) {
+                    renderer.event_in(&Event::Text(piece.into()), Some(references));
+                }
+            }
+            Event::Text(text) if range.start < sentinel => {
+                let text = text.get(sentinel - range.start..).unwrap_or_default();
+                renderer.event_in(&Event::Text(text.into()), Some(references));
+            }
+            // A reopened code span: its first content byte stands in for
+            // content already rendered before the checkpoint.
+            Event::Code(text) if range.start < sentinel => {
+                if let Some(text) = text.get(1..).filter(|text| !text.is_empty()) {
+                    renderer.event_in(&Event::Code(text.into()), Some(references));
+                }
+            }
+            _ => renderer.event_in(event, Some(references)),
+        }
+        // A cut inside a code span follows the whole span.
+        if matches!(event, Event::Code(_)) {
+            mark_before(renderer, (cuts, base), &mut marks, range.end);
         }
     }
-    false
+    mark_before(renderer, (cuts, base), &mut marks, usize::MAX);
+    marks
 }
 
-pub(super) fn left_context(source: &str) -> String {
+fn left_context(source: &str) -> String {
     let trimmed = source.trim_end_matches([' ', '\t']);
     if trimmed.ends_with('\n') {
         return format!("x\n{}", source.get(trimmed.len()..).unwrap_or_default());
@@ -506,32 +815,229 @@ fn possible_definition(source: &str) -> bool {
             .is_none_or(|(_, rest)| rest.starts_with(':') || rest.chars().all(char::is_whitespace))
 }
 
-fn block_limit(source: &str) -> usize {
-    let (prefix, row) = source.rsplit_once('\n').unwrap_or(("", source));
-    let mut limit = if block_pending(row) {
-        prefix.len()
-    } else {
-        source.len()
-    };
-    if table_candidate(source) {
-        limit = limit.min(source.rfind('\n').unwrap_or(source.len()));
-    }
-    limit
-}
-
-fn event_frontier(
+fn boundary(
     source: &str,
     events: &[(Event<'_>, Range<usize>)],
     sentinel: usize,
+) -> (usize, Option<Cut>, Vec<Candidate>) {
+    let mut scan = LimitScan::new(source);
+    #[cfg(test)]
+    work::scan(source.len() * 2);
+    for (event, range) in events {
+        scan.event(event, range);
+    }
+    let (boundary, provisional) = select_boundary(source, events, sentinel, &scan);
+    (boundary, provisional, scan.openers)
+}
+
+// The earliest source offset a later delta can still reinterpret: an open
+// bracket, a recent label, an unfinished delimiter run or a pending opener.
+struct LimitScan<'a> {
+    source: &'a str,
     limit: usize,
+    brackets: Vec<usize>,
+    labels: Vec<usize>,
+    opaque_until: usize,
+    closed_until: usize,
+    cursor: usize,
+    escaped: bool,
     quoted_end: usize,
-) -> (usize, Option<usize>) {
+    style_until: usize,
+    openers: Vec<Candidate>,
+    depth: usize,
+    // The start of the last top-level span, and the opener runs among its
+    // direct children; none when one could not be classified.
+    inner: Option<(usize, Vec<Candidate>)>,
+    // The end of the last span nested in a top-level span.
+    inner_closed: usize,
+}
+
+impl<'a> LimitScan<'a> {
+    fn new(source: &'a str) -> Self {
+        let (prefix, row) = source.rsplit_once('\n').unwrap_or(("", source));
+        let mut limit = if block_pending(row) {
+            prefix.len()
+        } else {
+            source.len()
+        };
+        if table_candidate(source) {
+            limit = limit.min(source.rfind('\n').unwrap_or(source.len()));
+        }
+        Self {
+            source,
+            limit,
+            brackets: Vec::new(),
+            labels: Vec::new(),
+            opaque_until: 0,
+            closed_until: 0,
+            cursor: 0,
+            escaped: false,
+            quoted_end: 0,
+            style_until: 0,
+            openers: Vec::new(),
+            depth: 0,
+            inner: None,
+            inner_closed: 0,
+        }
+    }
+
+    fn event(&mut self, event: &Event<'_>, range: &Range<usize>) {
+        match event {
+            Event::Start(tag) if !matches!(tag, Tag::Paragraph) => {
+                self.closed_until = self.closed_until.max(range.end);
+                if self.depth == 0 {
+                    self.inner = Some((range.start, Vec::new()));
+                } else {
+                    self.inner_closed = self.inner_closed.max(range.end);
+                }
+                self.depth += 1;
+            }
+            Event::End(tag) if *tag != TagEnd::Paragraph => {
+                self.depth = self.depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+        match event {
+            Event::Text(text) => self.text(text, range),
+            Event::Start(Tag::Link { link_type, .. } | Tag::Image { link_type, .. }) => {
+                if matches!(event, Event::Start(Tag::Link { .. })) {
+                    // A successful inner link deactivates enclosing link brackets.
+                    // Image brackets remain active: image labels can contain links.
+                    let source = self.source;
+                    self.brackets.retain(|start: &usize| {
+                        source.as_bytes().get(start.saturating_sub(1)) == Some(&b'!')
+                    });
+                }
+                if matches!(
+                    link_type,
+                    pulldown_cmark::LinkType::Inline
+                        | pulldown_cmark::LinkType::Autolink
+                        | pulldown_cmark::LinkType::Email
+                ) {
+                    self.opaque_until = range.end;
+                } else {
+                    self.labels.push(range.start);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn text(&mut self, text: &str, range: &Range<usize>) {
+        let opaque = range.end <= self.opaque_until;
+        let raw = self.source.get(range.clone()).unwrap_or_default();
+        if raw != text {
+            return;
+        }
+        for byte in self
+            .source
+            .as_bytes()
+            .get(self.cursor..range.start)
+            .unwrap_or_default()
+        {
+            self.escaped = *byte == b'\\' && !self.escaped;
+        }
+        for (index, byte) in raw.bytes().enumerate() {
+            let offset = range.start + index;
+            let quoted = self.escaped;
+            self.escaped = byte == b'\\' && !self.escaped;
+            self.cursor = offset + 1;
+            if quoted {
+                self.quoted_end = offset + 1;
+                continue;
+            }
+            if matches!(byte, b'`' | b'<') {
+                // These higher-precedence openers can consume a closing
+                // delimiter or link bracket when a later chunk closes them.
+                self.limit = self.limit.min(offset);
+            }
+            if !opaque {
+                self.byte(byte, offset, range.end);
+            }
+        }
+    }
+
+    fn byte(&mut self, byte: u8, offset: usize, text_end: usize) {
+        match byte {
+            b'[' => self.brackets.push(offset),
+            b']' => {
+                if let Some(start) = self.brackets.pop()
+                    && self.brackets.is_empty()
+                {
+                    self.labels.push(start);
+                }
+            }
+            b'*' | b'_' | b'~' if offset >= self.closed_until && offset >= self.style_until => {
+                if let Some((end, opener)) = delimiters::scan(self.source, offset, self.quoted_end)
+                {
+                    self.style_until = end;
+                    if let Some(opener) = opener {
+                        let start = end - opener.count();
+                        self.openers.push(Candidate {
+                            end: end.min(text_end),
+                            start: (start >= self.closed_until).then_some(start),
+                            opener,
+                        });
+                    }
+                } else {
+                    self.limit = self.limit.min(offset);
+                }
+            }
+            b'*' | b'_' | b'~' if self.depth == 1 && offset >= self.style_until => {
+                match delimiters::scan(self.source, offset, self.quoted_end) {
+                    Some((end, opener)) => {
+                        self.style_until = end;
+                        if let (Some(opener), Some((_, inner))) = (opener, self.inner.as_mut()) {
+                            let start = end - opener.count();
+                            inner.push(Candidate {
+                                end: end.min(text_end),
+                                start: (start >= self.inner_closed).then_some(start),
+                                opener,
+                            });
+                        }
+                    }
+                    None => self.inner = None,
+                }
+            }
+            b'`' | b'&' | b'<' | b'\\' if offset >= self.closed_until => {
+                self.limit = self.limit.min(offset);
+            }
+            _ => {}
+        }
+    }
+
+    fn limit(&self) -> usize {
+        let mut limit = self.limit;
+        if let Some(start) = self.brackets.first() {
+            limit = limit.min(*start);
+        }
+        if let Some(start) = self.labels.get(self.labels.len().saturating_sub(2)) {
+            limit = limit.min(*start);
+        }
+        limit
+    }
+}
+
+// The last complete top-level event before `limit` commits; at the input edge
+// its predecessor (or a safe text frontier) remains a provisional checkpoint.
+fn select_boundary(
+    source: &str,
+    events: &[(Event<'_>, Range<usize>)],
+    sentinel: usize,
+    scan: &LimitScan<'_>,
+) -> (usize, Option<Cut>) {
+    let (limit, quoted_end) = (scan.limit(), scan.quoted_end);
     let mut depth = 0usize;
     let mut boundary = sentinel;
     let mut provisional = None;
     for (event, range) in events {
         match event {
-            Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph) | Event::SoftBreak => {
+            // A line break ends at the next line's start, where a resumed
+            // reparse would keep the indentation the paragraph strips.
+            Event::Start(Tag::Paragraph)
+            | Event::End(TagEnd::Paragraph)
+            | Event::SoftBreak
+            | Event::HardBreak => {
                 continue;
             }
             Event::Start(_) => depth += 1,
@@ -546,15 +1052,24 @@ fn event_frontier(
             // Every complete top-level event closes a checkpoint. At the input
             // edge retain its predecessor too: another byte can change delimiter
             // flanking or extend the closing run, regardless of the construct.
-            provisional = (range.end == limit).then_some(boundary);
+            provisional = (range.end == limit).then_some(Cut::at(boundary));
             if range.end == limit
                 && let Event::Text(text) = event
                 && source.get(range.clone()) == Some(text.as_ref())
             {
                 let cut = delimiters::text_frontier(text, range.start).max(sentinel);
                 if cut >= range.start && delimiters::safe_boundary(source, cut) {
-                    provisional = Some(cut);
+                    provisional = Some(Cut::at(cut));
                 }
+            }
+            if range.end == limit
+                && let Some(cut) = match event {
+                    Event::Code(_) => code_frontier(source, range, sentinel),
+                    Event::End(tag) => span_frontier(source, *tag, range, scan),
+                    _ => None,
+                }
+            {
+                provisional = Some(cut);
             }
             // An escaped character is complete; never split its escape pair.
             if range.end == quoted_end {
@@ -566,131 +1081,109 @@ fn event_frontier(
     (boundary, provisional)
 }
 
-// A still-open bracket or either of the last two labels can be rewritten by
-// a later destination/reference suffix. Earlier labels cannot capture it.
-fn reference_limit(brackets: &[usize], labels: &[usize]) -> usize {
-    brackets
-        .first()
-        .into_iter()
-        .chain(labels.get(labels.len().saturating_sub(2)))
-        .copied()
-        .min()
-        .unwrap_or(usize::MAX)
+// A provisional resume offset. Inside a reopened span (starting at `start`)
+// it also carries the span's opener and the unmatched openers among its
+// children.
+struct Cut {
+    offset: usize,
+    start: Option<usize>,
+    reopen: Reopen,
+    openers: Vec<Candidate>,
 }
 
-fn boundary(
-    source: &str,
-    events: &[(Event<'_>, Range<usize>)],
-    sentinel: usize,
-) -> (
-    usize,
-    Option<usize>,
-    Vec<(usize, delimiters::Opener)>,
-    usize,
-) {
-    let mut limit = block_limit(source);
-    let mut brackets = Vec::new();
-    let mut labels = Vec::new();
-    let mut opaque_until = 0;
-    let mut closed_until = 0;
-    let (mut cursor, mut escaped) = (0, false);
-    let mut quoted_end = 0;
-    let mut style_until = 0;
-    let mut openers = Vec::new();
-    #[cfg(test)]
-    work::scan(source.len() * 2);
-    for (event, range) in events {
-        if matches!(event, Event::Start(tag) if !matches!(tag, Tag::Paragraph)) {
-            closed_until = closed_until.max(range.end);
-        }
-        match event {
-            Event::Text(text) => {
-                let opaque = range.end <= opaque_until;
-                if source.get(range.clone()).unwrap_or_default() != text.as_ref() {
-                    continue;
-                }
-                for byte in source
-                    .as_bytes()
-                    .get(cursor..range.start)
-                    .unwrap_or_default()
-                {
-                    escaped = *byte == b'\\' && !escaped;
-                }
-                for (index, byte) in source
-                    .get(range.clone())
-                    .unwrap_or_default()
-                    .bytes()
-                    .enumerate()
-                {
-                    let offset = range.start + index;
-                    let quoted = escaped;
-                    escaped = byte == b'\\' && !escaped;
-                    cursor = offset + 1;
-                    if quoted {
-                        quoted_end = offset + 1;
-                        continue;
-                    }
-                    if matches!(byte, b'`' | b'<') {
-                        // These higher-precedence openers can consume a closing
-                        // delimiter or link bracket when a later chunk closes them.
-                        limit = limit.min(offset);
-                    }
-                    if opaque {
-                        continue;
-                    }
-                    match byte {
-                        b'[' => brackets.push(offset),
-                        b']' => {
-                            if let Some(start) = brackets.pop()
-                                && brackets.is_empty()
-                            {
-                                labels.push(start);
-                            }
-                        }
-                        b'*' | b'_' | b'~' if offset >= closed_until && offset >= style_until => {
-                            if let Some((end, opener)) =
-                                delimiters::scan(source, offset, quoted_end)
-                            {
-                                style_until = end;
-                                if let Some(opener) = opener {
-                                    openers.push((end.min(range.end), opener));
-                                }
-                            } else {
-                                limit = limit.min(offset);
-                            }
-                        }
-                        b'`' | b'&' | b'<' | b'\\' if offset >= closed_until => {
-                            limit = limit.min(offset);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            Event::Start(Tag::Link { link_type, .. } | Tag::Image { link_type, .. }) => {
-                if matches!(event, Event::Start(Tag::Link { .. })) {
-                    // A successful inner link deactivates enclosing link brackets.
-                    // Image brackets remain active: image labels can contain links.
-                    brackets.retain(|start: &usize| {
-                        source.as_bytes().get(start.saturating_sub(1)) == Some(&b'!')
-                    });
-                }
-                if matches!(
-                    link_type,
-                    pulldown_cmark::LinkType::Inline
-                        | pulldown_cmark::LinkType::Autolink
-                        | pulldown_cmark::LinkType::Email
-                ) {
-                    opaque_until = range.end;
-                } else {
-                    labels.push(range.start);
-                }
-            }
-            _ => {}
+impl Cut {
+    fn at(offset: usize) -> Self {
+        Self {
+            offset,
+            start: None,
+            reopen: Reopen::None,
+            openers: Vec::new(),
         }
     }
-    limit = limit.min(reference_limit(&brackets, &labels));
-    let (boundary, provisional) = event_frontier(source, events, sentinel, limit, quoted_end);
-    (boundary, provisional, openers, limit)
+
+    // Top-level openers all precede a reopened span, so they come first. The
+    // span's own opener follows them.
+    fn candidates(&self, top: &[Candidate]) -> (Vec<Candidate>, Option<usize>) {
+        #[cfg(test)]
+        work::copy((top.len() + self.openers.len()) * std::mem::size_of::<Candidate>());
+        let marked = (!self.openers.is_empty()).then_some(top.len());
+        ([top, &self.openers].concat(), marked)
+    }
+
+    // A reopened span's start parsed in this reparse, where its restart goes.
+    fn restart(&self, sentinel: usize) -> Option<usize> {
+        self.start.filter(|start| *start >= sentinel)
+    }
+}
+
+// An emphasis-like span closed at the input edge resumes inside it too. A
+// later run can only extend its closer or match it elsewhere, so its opener
+// and its children's unmatched openers stand in for its committed content.
+// Delimiter runs longer than the span consumes leave ambiguous run lengths;
+// an inner opener in the opener's class would replace it in the state.
+fn span_frontier(
+    source: &str,
+    tag: TagEnd,
+    range: &Range<usize>,
+    scan: &LimitScan<'_>,
+) -> Option<Cut> {
+    let (reopen, counts) = match tag {
+        TagEnd::Emphasis => (Reopen::Emphasis, 1..2),
+        TagEnd::Strong => (Reopen::Strong, 2..3),
+        TagEnd::Strikethrough => (Reopen::Strikethrough, 1..3),
+        _ => return None,
+    };
+    let (start, inner) = scan.inner.as_ref()?;
+    let (end, opener) = delimiters::scan(source, range.start, scan.quoted_end)?;
+    let opener = opener?;
+    let count = opener.count();
+    let close = range.end.checked_sub(count)?;
+    let byte = opener.byte();
+    let exact = *start == range.start
+        && end == range.start + count
+        && counts.contains(&count)
+        && close > end
+        && source
+            .as_bytes()
+            .get(close..range.end)?
+            .iter()
+            .all(|next| *next == byte)
+        && source.as_bytes().get(close - 1) != Some(&byte);
+    if !exact
+        || inner
+            .iter()
+            .any(|inner| inner.opener.class() == opener.class())
+    {
+        return None;
+    }
+    let mut openers = Vec::with_capacity(inner.len() + 1);
+    openers.push(Candidate {
+        end,
+        start: Some(range.start),
+        opener,
+    });
+    openers.extend(inner.iter().copied());
+    Some(Cut {
+        offset: close,
+        start: Some(range.start),
+        reopen,
+        openers,
+    })
+}
+
+// A code span closed at the input edge stays open to its content: a later
+// backtick only lengthens the closing run. Resume at that run's start unless
+// one space could be stripped from both content ends once the span grows.
+fn code_frontier(source: &str, range: &Range<usize>, sentinel: usize) -> Option<Cut> {
+    let raw = source.get(range.clone())?;
+    let run = raw.bytes().take_while(|byte| *byte == b'`').count();
+    let first = raw.as_bytes().get(run)?;
+    (range.start < sentinel || !matches!(first, b' ' | b'\n' | b'\r')).then_some(Cut {
+        offset: range.end.checked_sub(run)?,
+        start: Some(range.start),
+        reopen: Reopen::Code(run),
+        openers: Vec::new(),
+    })
 }
 
 impl render::Renderer {
@@ -715,255 +1208,5 @@ impl render::Renderer {
             spans: line.spans.len(),
             bytes: line.spans.last().map_or(0, |span| span.text.len()),
         }
-    }
-}
-
-// The parsed suffix and its dependency boundaries are shared by painting,
-// checkpoint construction and plain-text admission.
-#[derive(Clone, Copy)]
-struct InlineFrame<'a> {
-    source: &'a str,
-    events: &'a [(Event<'static>, Range<usize>)],
-    calls: &'a [(usize, usize)],
-    sentinel: usize,
-    base: usize,
-    boundary: usize,
-    provisional: Option<usize>,
-    carry: &'a Option<(usize, Carry)>,
-    openers: &'a [(usize, delimiters::Opener)],
-}
-
-struct Marks {
-    committed: Mark,
-    provisional: Mark,
-    rollback: Option<Checkpoint>,
-}
-
-struct Paint {
-    renderer: render::Renderer,
-    marks: Marks,
-}
-
-impl InlineFrame<'_> {
-    fn paint(&self, checkpoint: &Checkpoint, line: Line, references: &References) -> Paint {
-        let Self {
-            events,
-            calls,
-            sentinel,
-            base,
-            boundary,
-            provisional,
-            carry,
-            openers,
-            ..
-        } = *self;
-        let mark = checkpoint.mark;
-        let mut renderer = render::Renderer::inline(line);
-        let mut committed = mark;
-        let mut previous_mark = mark;
-        let mut depth = 0usize;
-        let mut rollback = None;
-        for (event, range) in events {
-            if range.end <= sentinel && !matches!(event, Event::Start(_) | Event::End(_)) {
-                continue;
-            }
-            if depth == 0
-                && range.start >= sentinel
-                && (matches!(event, Event::Start(tag) if !matches!(tag, Tag::Paragraph))
-                    || matches!(event, Event::Code(_)))
-            {
-                let (cost, valid) = references::extend_expansion(
-                    checkpoint.cost,
-                    &checkpoint.valid,
-                    calls
-                        .iter()
-                        .filter(|(position, _)| *position <= range.start),
-                );
-                rollback = Some(Checkpoint {
-                    offset: base + range.start - sentinel,
-                    mark: renderer.inline_mark(mark),
-                    cost,
-                    valid,
-                    openers: delimiters::State::compile(openers, range.start),
-                    carry: None,
-                });
-            }
-            if matches!(
-                event,
-                Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph)
-            ) {
-                continue;
-            }
-            if let Some(previous) =
-                self.paint_event(&mut renderer, (event, range), mark, references)
-            {
-                previous_mark = previous;
-            }
-            match event {
-                Event::Start(_) => depth += 1,
-                Event::End(_) => depth = depth.saturating_sub(1),
-                _ => {}
-            }
-            if depth == 0 && range.end == boundary {
-                committed = renderer.inline_mark(mark);
-            }
-            if carry.as_ref().is_some_and(|(end, _)| match event {
-                Event::Code(_) => range.start < *end && *end < range.end,
-                Event::Text(_) => range.end == *end,
-                _ => false,
-            }) {
-                previous_mark = renderer.inline_mark(mark);
-            }
-            if depth == 0 && Some(range.end) == provisional {
-                previous_mark = renderer.inline_mark(mark);
-            }
-        }
-        Paint {
-            renderer,
-            marks: Marks {
-                committed,
-                provisional: previous_mark,
-                rollback,
-            },
-        }
-    }
-
-    fn commit_lines(&self, markdown: &mut Markdown, mut renderer: render::Renderer) {
-        #[cfg(test)]
-        {
-            let count = renderer.lines.len() + 1;
-            work::copy(count * std::mem::size_of::<Line>());
-            if markdown.lines.capacity() - markdown.lines.len() < count {
-                work::copy(markdown.lines.len() * std::mem::size_of::<Line>());
-            }
-        }
-        markdown.lines.reserve(renderer.lines.len() + 1);
-        markdown.lines.append(&mut renderer.lines);
-        markdown.lines.push(renderer.into_inline());
-    }
-
-    fn paint_event(
-        &self,
-        renderer: &mut render::Renderer,
-        (event, range): (&Event<'_>, &Range<usize>),
-        mark: Mark,
-        references: &References,
-    ) -> Option<Mark> {
-        let source = self.source;
-        let sentinel = self.sentinel;
-        let provisional = self.provisional;
-        match event {
-            Event::Code(text) if range.start < sentinel => {
-                // The retained code prefix contains one synthetic content byte.
-                renderer.event_in(
-                    &Event::Code(text.get(1..).unwrap_or_default().into()),
-                    Some(references),
-                );
-            }
-            Event::Text(text) if source.get(range.clone()) == Some(text.as_ref()) => {
-                let start = sentinel.saturating_sub(range.start).min(text.len());
-                if let Some(cut) =
-                    provisional.filter(|cut| *cut >= range.start + start && *cut < range.end)
-                {
-                    let cut = cut - range.start;
-                    renderer.event_in(
-                        &Event::Text(text.get(start..cut).unwrap_or_default().into()),
-                        Some(references),
-                    );
-                    let previous_mark = renderer.inline_mark(mark);
-                    renderer.event_in(
-                        &Event::Text(text.get(cut..).unwrap_or_default().into()),
-                        Some(references),
-                    );
-                    return Some(previous_mark);
-                } else {
-                    renderer.event_in(
-                        &Event::Text(text.get(start..).unwrap_or_default().into()),
-                        Some(references),
-                    );
-                }
-            }
-            Event::Text(text) if range.start < sentinel => {
-                let text = text.get(sentinel - range.start..).unwrap_or_default();
-                renderer.event_in(&Event::Text(text.into()), Some(references));
-            }
-            _ => renderer.event_in(event, Some(references)),
-        }
-        None
-    }
-
-    fn checkpoints(
-        &self,
-        checkpoint: &Checkpoint,
-        marks: Marks,
-        saved_rollback: Option<Checkpoint>,
-        start: usize,
-    ) -> Inline {
-        let Self {
-            calls,
-            sentinel,
-            base,
-            boundary,
-            provisional,
-            carry,
-            openers,
-            ..
-        } = *self;
-        let (cost, valid) = references::extend_expansion(
-            checkpoint.cost,
-            &checkpoint.valid,
-            calls.iter().filter(|(end, _)| *end <= boundary),
-        );
-        Inline {
-            checkpoint: Checkpoint {
-                offset: base + boundary.saturating_sub(sentinel),
-                mark: marks.committed,
-                cost,
-                valid,
-                openers: delimiters::State::compile(openers, boundary),
-                carry: (boundary == sentinel)
-                    .then(|| checkpoint.carry.clone())
-                    .flatten(),
-            },
-            provisional: provisional.map(|end| {
-                let (cost, valid) = references::extend_expansion(
-                    checkpoint.cost,
-                    &checkpoint.valid,
-                    calls.iter().filter(|(position, _)| *position <= end),
-                );
-                Checkpoint {
-                    offset: base + end.saturating_sub(sentinel),
-                    mark: marks.provisional,
-                    cost,
-                    valid,
-                    openers: delimiters::State::compile(openers, end),
-                    carry: carry.as_ref().map(|(_, carry)| carry.clone()).or_else(|| {
-                        (end == sentinel)
-                            .then(|| checkpoint.carry.clone())
-                            .flatten()
-                    }),
-                }
-            }),
-            rollback: marks.rollback.or(saved_rollback),
-            start,
-        }
-    }
-
-    fn plain(&self, markdown: &mut Markdown) {
-        let source = self.source;
-        let sentinel = self.sentinel;
-        let events = self.events;
-        let tail = source.get(sentinel..).unwrap_or_default();
-        markdown.plain_links = tail.contains('[')
-            && tail
-                .rsplit_once(']')
-                .is_none_or(|(_, rest)| rest.starts_with('('));
-        markdown.plain_entity = tail
-            .rsplit_once('&')
-            .is_some_and(|(_, rest)| rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '#'));
-        markdown.plain_spaces = tail.bytes().rev().take_while(|byte| *byte == b' ').count();
-        markdown.plain = tail.len() >= 8 && !tail.rsplit('\n').next().unwrap_or_default().trim_start_matches([' ', '\t']).starts_with('<') && !table_candidate(source) && !block_pending(tail.rsplit('\n').next().unwrap_or_default()) && events.iter().rev().find(|(event, _)| !matches!(event, Event::End(_)))
-            .is_some_and(|(event, range)| matches!(event, Event::Text(text) if text.chars().next_back().is_some_and(plain_character))
-                && range.end > sentinel && range.end == source.trim_end_matches(' ').len());
     }
 }

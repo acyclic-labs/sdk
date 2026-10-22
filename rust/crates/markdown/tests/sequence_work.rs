@@ -1,5 +1,5 @@
 use super::*;
-use std::{collections::HashSet, sync::Arc};
+use std::{cell::Cell, collections::HashSet, sync::Arc};
 
 fn retained(markdown: &Markdown) -> (usize, usize) {
     let mut targets = HashSet::new();
@@ -41,18 +41,12 @@ fn retained(markdown: &Markdown) -> (usize, usize) {
             }
         }
     }
-    let (flanking_payload, flanking_metadata) = markdown
-        .flanking
-        .as_ref()
-        .map_or((0, 0), flanking::Flanking::retained);
-    bytes += flanking_payload;
     let (table_payload, table_metadata) = markdown
         .table
         .as_ref()
         .map_or((0, 0), |table| table.retained(&mut targets));
     bytes += table_payload;
     let metadata = table_metadata
-        + flanking_metadata
         + markdown.inline.as_ref().map_or(0, inline::Inline::retained)
         + markdown.context.capacity() * std::mem::size_of::<Container>()
         + markdown.lines.capacity() * std::mem::size_of::<Line>()
@@ -94,19 +88,59 @@ fn backslash_checkpoint_context_has_linear_work() {
     assert!(large <= 2 * small + 1024, "work {small} -> {large}");
 }
 
+// Cumulative totals after a block of production indices.
+#[derive(Clone, Copy)]
+struct Block {
+    work: usize,
+    churn: usize,
+    peak: usize,
+}
+
+// Visible bytes a push restyles, rewrites or removes, beyond the unchanged
+// span prefix of each line from `changed`. A consumer must receive at least
+// these, so they bound the work any incremental parser can avoid.
+fn churn(old: &[Line], new: &[Line]) -> usize {
+    let bytes = |line: &Line| line.spans.iter().map(|span| span.text.len()).sum::<usize>();
+    let mut total = old.iter().skip(new.len()).map(bytes).sum();
+    for (index, line) in new.iter().enumerate() {
+        let mut kept = 0;
+        if let Some(previous) = old.get(index) {
+            for (before, after) in previous.spans.iter().zip(&line.spans) {
+                if before == after {
+                    kept += after.text.len();
+                    continue;
+                }
+                if before.style == after.style && before.link == after.link {
+                    kept += before
+                        .text
+                        .bytes()
+                        .zip(after.text.bytes())
+                        .take_while(|(left, right)| left == right)
+                        .count();
+                }
+                break;
+            }
+        }
+        total += bytes(line) - kept;
+    }
+    total
+}
+
+// Push runs of the given numbers of production indices, then close the
+// document.
 fn measure(
     actions: &[u8],
-    count: usize,
+    runs: &[usize],
     destination: &str,
     padding: usize,
     separators: &[u8],
-    copies: usize,
-) -> (usize, usize) {
+) -> Vec<Block> {
     let mut markdown = Markdown::default();
-    let mut total = 0;
+    let total = Cell::new(0);
+    let churned = Cell::new(0);
     let mut source = String::new();
     let mut consumer = Vec::new();
-    let mut peak = 0;
+    let peak = Cell::new(0);
     let mut growth_total = 0;
     let mut push = |delta: &str| {
         let growth_before = work::source_growth();
@@ -125,6 +159,13 @@ fn measure(
             .sum();
         let changed = markdown.push(delta);
         assert!(changed <= markdown.lines().len());
+        churned.set(
+            churned.get()
+                + churn(
+                    consumer.get(changed..).unwrap_or_default(),
+                    markdown.lines().get(changed..).unwrap_or_default(),
+                ),
+        );
         consumer.truncate(changed);
         consumer.extend_from_slice(markdown.lines().get(changed..).unwrap_or_default());
         let used = work::current()
@@ -148,10 +189,10 @@ fn measure(
             "push work {used} for {} chunk bytes and {open} open bytes",
             delta.len()
         );
-        total += used;
+        total.set(total.get() + amortized);
         let (payload, bytes) = retained(&markdown);
         assert!(payload <= markdown.source.len() * 8 + 1024);
-        peak = peak.max(bytes);
+        peak.set(peak.get().max(bytes));
         source.push_str(delta);
         assert!(
             consumer == full_parse(&source),
@@ -159,20 +200,26 @@ fn measure(
             source.chars().take(256).collect::<String>()
         );
     };
-    for index in 0..count * copies {
-        for (position, action) in actions.iter().enumerate() {
-            production(*action, index, padding, &mut push);
-            let separator = separators
-                .get(position % separators.len())
-                .copied()
-                .unwrap();
-            push(
-                ["", " ", "\n", "!", "x"]
-                    .get(usize::from(separator))
+    let mut totals = Vec::with_capacity(runs.len());
+    let mut start = 0;
+    for run in runs {
+        for index in start..start + run {
+            for (position, action) in actions.iter().enumerate() {
+                production(*action, index, padding, &mut push);
+                let separator = separators
+                    .get(position % separators.len())
+                    .and_then(|index| ["", " ", "\n", "!", "x"].get(usize::from(*index)))
                     .copied()
-                    .unwrap(),
-            );
+                    .unwrap_or_default();
+                push(separator);
+            }
         }
+        totals.push(Block {
+            work: total.get(),
+            churn: churned.get(),
+            peak: peak.get(),
+        });
+        start += run;
     }
     if actions.iter().any(|action| matches!(action, 3 | 15)) {
         push(&format!("\n\n[r]: /{destination}\n\n"));
@@ -185,7 +232,7 @@ fn measure(
         "{bytes} retained for {} source bytes",
         source.len()
     );
-    (total, peak.max(bytes))
+    totals
 }
 
 fn production(action: u8, index: usize, padding: usize, push: &mut impl FnMut(&str)) {
@@ -244,40 +291,209 @@ fn production(action: u8, index: usize, padding: usize, push: &mut impl FnMut(&s
     }
 }
 
+// Each push is checked against a full parse, so a case takes time quadratic
+// in its length. The production families run as separate tests in parallel.
+fn grammar(
+    actions: impl Strategy<Value = Vec<u8>>,
+) -> impl Strategy<Value = (Vec<u8>, usize, String, usize, Vec<u8>)> {
+    (
+        actions,
+        1usize..65,
+        "[a-z]{64,1024}",
+        1usize..5,
+        prop::collection::vec(0u8..5, 1..5),
+    )
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::Direct(
             concat!(env!("CARGO_MANIFEST_DIR"), "/tests/sequence_work.txt")
         ))),
         rng_seed: proptest::test_runner::RngSeed::Fixed(0x6d61_726b_0000_0004),
-        ..ProptestConfig::with_cases(24)
+        ..ProptestConfig::with_cases(8)
     })]
     #[test]
-    fn push_grammar_has_linear_work_and_storage(
-        actions in prop_oneof![
+    fn push_grammar_spans_have_linear_work_and_storage(
+        (actions, count, destination, padding, separators) in grammar(prop_oneof![
             prop::collection::vec(0u8..4, 1..5),
             prop::collection::vec(prop::sample::select(vec![4u8, 5, 8]), 1..5),
+        ]),
+    ) {
+        work_and_storage_scale_linearly(&actions, count, &destination, padding, &separators)?;
+    }
+
+    #[test]
+    fn push_grammar_links_have_linear_work_and_storage(
+        (actions, count, destination, padding, separators) in grammar(prop_oneof![
             prop::collection::vec(0u8..16, 1..5),
             prop::collection::vec(12u8..16, 1..5),
             prop::sample::select(vec![vec![12u8], vec![13], vec![14]]),
+        ]),
+    ) {
+        work_and_storage_scale_linearly(&actions, count, &destination, padding, &separators)?;
+    }
+
+    #[test]
+    fn push_grammar_has_linear_work_and_storage(
+        (actions, count, destination, padding, separators) in grammar(prop_oneof![
             prop::collection::vec(0u8..34, 1..5),
             prop::collection::vec(16u8..34, 1..5),
-        ],
-        count in 1usize..65,
-        destination in "[a-z]{64,1024}",
-        padding in 1usize..5,
-        separators in prop::collection::vec(0u8..5, 1..5),
+        ]),
     ) {
-        let small = measure(&actions, count, &destination, padding, &separators, 1);
-        let large = measure(&actions, count, &destination, padding, &separators, 2);
-        prop_assert!(large.0 <= 2 * small.0 + 1024, "work {} -> {}", small.0, large.0);
-        prop_assert!(large.1 <= 2 * small.1 + 1024, "storage {} -> {}", small.1, large.1);
+        work_and_storage_scale_linearly(&actions, count, &destination, padding, &separators)?;
     }
 }
 
+fn work_and_storage_scale_linearly(
+    actions: &[u8],
+    count: usize,
+    destination: &str,
+    padding: usize,
+    separators: &[u8],
+) -> Result<(), TestCaseError> {
+    // Productions can flip binary block state each index: `![alt](u)```rust`
+    // is paragraph text but the later "```" line opens a fence. The index
+    // sequence then has period two, and an odd count would compare a document
+    // ending inside a fence (its final definition is code) with a balanced one.
+    let count = count.next_multiple_of(2);
+    // Each push is checked against a full parse, so the measurement costs
+    // time quadratic in its length. A two-index warm-up (one period) pays the
+    // start-up difference instead of a third full block.
+    let blocks = measure(
+        actions,
+        &[2, count, count],
+        destination,
+        padding,
+        separators,
+    );
+    let [first, second, third] = blocks[..] else {
+        unreachable!("three blocks");
+    };
+    let (work, churn) = (
+        [second.work - first.work, third.work - second.work],
+        [second.churn - first.churn, third.churn - second.churn],
+    );
+    // Linear work is a·n + b. The warm-up also pays the start-up
+    // difference b (no left context, label history or openers yet), which
+    // can exceed any fixed slack; equal later blocks must cost the same.
+    // Output churn is excepted: `_em_x_em_` restyles the whole paragraph on
+    // every push, so any parser does work quadratic in such input.
+    prop_assert!(
+        work[1] + 128 * churn[0] <= work[0] + 128 * churn[1] + 1024,
+        "work per block {} -> {} with churn {} -> {}",
+        work[0],
+        work[1],
+        churn[0],
+        churn[1]
+    );
+    prop_assert!(
+        third.peak <= 2 * second.peak + 1024,
+        "storage {} -> {}",
+        second.peak,
+        third.peak
+    );
+    Ok(())
+}
+
+// Shrunk failures from the merge gate and a 1000-case run. The first charged
+// buffer growth as a step at each reallocation; the second reparsed a whole
+// paragraph-long code span (`code``code`...) on every push; the third had an
+// odd index count; the fourth is exactly linear (3624n - 1056) but its first
+// index costs less, which a ratio against the whole first run rejected; the
+// fifth indents its table header, which never started a streamed table; the
+// sixth restyles its whole paragraph per push (churn, not parser work); the
+// seventh reparsed a paragraph-long emphasis (`*em**em*...`) on every push
+// once a lengthened closing run matched an inner opener; the eighth did once
+// `_em_x` left a reopened span unclosed. Both now reparse from that opener.
+// The ninth failed the merge gate under the old ratio check.
+#[test]
+fn push_grammar_regressions_scale_linearly() {
+    let check = |actions: &[u8], count, destination: &str, padding, separators: &[u8]| {
+        work_and_storage_scale_linearly(actions, count, destination, padding, separators)
+            .unwrap_or_else(|error| panic!("{actions:?} x {count}: {error}"));
+    };
+    let destination = "aaaaaaaaaaaaaamaznnkhpmrbztxxgmjlnxsqgysqooulfxomualkduubszvducl";
+    check(&[2, 2], 11, destination, 4, &[3, 2, 4, 2]);
+    check(&[16], 6, &"a".repeat(64), 3, &[0, 2, 1]);
+    check(&[15, 9, 7], 31, &"a".repeat(64), 1, &[0]);
+    check(&[25, 16, 16, 17], 1, &"a".repeat(64), 3, &[1, 0]);
+    check(&[13, 14], 1, &"a".repeat(64), 1, &[1]);
+    check(&[26], 3, &"a".repeat(64), 1, &[4]);
+    check(&[17], 3, &"a".repeat(64), 2, &[0, 1, 3, 1]);
+    check(&[16, 26], 8, &"a".repeat(64), 1, &[0, 4]);
+    check(&[26, 17], 2, &"a".repeat(64), 1, &[4, 4]);
+}
+
+// A span closed at the input edge resumes inside its content. Each push must
+// still match the full parse when a later run lengthens the closing run,
+// matches an inner opener, reopens the span, strips edge spaces or crosses a
+// line.
+#[test]
+fn reopened_spans_match_the_full_parser() {
+    let cases: [&[&str]; 15] = [
+        &["*em*", "[a][]"],
+        &["*em*", "*em*", "*"],
+        &["_a **b_", "*", "*c**"],
+        &["[a][]", " ", "`code`", "`code`", " ", "*em*", "[a][]"],
+        &[
+            "__bold__", "`code`", "x", "*em*", "_em_", "__bold__", "`code`",
+        ],
+        &["`a`", "`b`", "`c`"],
+        &["`a`", "`", "b`"],
+        &["`a`", "` b"],
+        &["*x `a`", "b`*"],
+        &["` a `", "` b `"],
+        &["``a``", "`b``", "c``"],
+        &["`a`", "`\nb`", "\n`c`"],
+        &["`a\\`", "`b`", "x"],
+        &["*em*", "*em*", "*em*", "*em*", "*em*"],
+        &["`c`", "_em_", "x", "`c`", "_em_", "x"],
+    ];
+    for deltas in cases {
+        let mut markdown = Markdown::default();
+        let mut source = String::new();
+        for delta in deltas {
+            markdown.push(delta);
+            source.push_str(delta);
+            assert_eq!(markdown.lines(), full_parse(&source), "{source:?}");
+        }
+    }
+}
+
+// A checkpoint after a hard break would resume at the next line's start,
+// keeping indentation the paragraph strips from a continuation line.
+#[test]
+fn hard_break_continuation_strips_indentation() {
+    for deltas in [
+        &["&amp;", "  \n", " ", "&amp;", "  \n", " "][..],
+        &[
+            "<https://example.org>",
+            " ",
+            "  \n",
+            " ",
+            "<https://example.org>",
+            " ",
+            "  \n",
+            " ",
+        ][..],
+    ] {
+        let mut markdown = Markdown::default();
+        let mut source = String::new();
+        let mut consumer = Vec::new();
+        for delta in deltas {
+            let changed = markdown.push(delta);
+            consumer.truncate(changed);
+            consumer.extend_from_slice(markdown.lines().get(changed..).unwrap_or_default());
+            source.push_str(delta);
+            assert_eq!(markdown.lines(), full_parse(&source), "lines {source:?}");
+            assert_eq!(consumer, full_parse(&source), "consumer {source:?}");
+        }
+    }
+}
 #[test]
 fn hard_break_checkpoint_preserves_following_indentation() {
-    measure(&[16, 16, 33], 1, "unused", 4, &[1, 3], 2);
+    measure(&[16, 16, 33], &[1, 1], "unused", 4, &[1, 3]);
 }
 
 #[test]
@@ -292,14 +508,8 @@ fn repeated_inline_spans_have_linear_work() {
         (&[19][..], 5, &[0][..]),
         (&[13, 14][..], 1, &[1, 0, 0][..]),
     ] {
-        let small = measure(actions, count, "unused", 3, separators, 1);
-        let large = measure(actions, count, "unused", 3, separators, 2);
-        assert!(
-            large.0 <= 2 * small.0 + 1024,
-            "actions {actions:?}: work {} -> {}",
-            small.0,
-            large.0
-        );
+        work_and_storage_scale_linearly(actions, count, "unused", 3, separators)
+            .unwrap_or_else(|error| panic!("actions {actions:?}: {error}"));
     }
 }
 
@@ -387,14 +597,8 @@ fn short_inline_spans_preserve_all_partitions() {
 #[test]
 fn intraword_underscore_sequences_have_linear_work() {
     for count in [4, 16, 64, 128] {
-        let small = measure(&[26], count, &"u".repeat(1024), 2, &[4, 3, 4, 1], 1);
-        let large = measure(&[26], count, &"u".repeat(1024), 2, &[4, 3, 4, 1], 2);
-        assert!(
-            large.0 <= 2 * small.0 + 1024,
-            "count {count}: work {} -> {}",
-            small.0,
-            large.0
-        );
+        work_and_storage_scale_linearly(&[26], count, &"u".repeat(1024), 2, &[4, 3, 4, 1])
+            .unwrap_or_else(|error| panic!("count {count}: {error}"));
     }
 }
 
@@ -412,20 +616,8 @@ fn flanking_rewrites_preserve_every_cut() {
 fn fence_reference_visibility_has_linear_storage() {
     let destination = "a".repeat(547);
     for count in [20, 21, 22, 42] {
-        let small = measure(&[7, 15, 9], count, &destination, 2, &[1, 0, 0], 1);
-        let large = measure(&[7, 15, 9], count, &destination, 2, &[1, 0, 0], 2);
-        assert!(
-            large.0 <= 2 * small.0 + 1024,
-            "work {} -> {}",
-            small.0,
-            large.0
-        );
-        assert!(
-            large.1 <= 2 * small.1 + 1024,
-            "storage {} -> {}",
-            small.1,
-            large.1
-        );
+        work_and_storage_scale_linearly(&[7, 15, 9], count, &destination, 2, &[1, 0, 0])
+            .unwrap_or_else(|error| panic!("count {count}: {error}"));
     }
 }
 

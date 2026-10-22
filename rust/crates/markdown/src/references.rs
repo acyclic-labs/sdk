@@ -37,6 +37,12 @@ impl References {
     }
 
     pub(crate) fn update(&mut self, source: &str, offset: usize, prefix: usize) -> HashSet<Key> {
+        // Every definition opens with a `[` label: without one the tail has none.
+        if !source.contains('[') {
+            #[cfg(test)]
+            crate::work::scan(source.len());
+            return self.replace_pending(HashMap::new());
+        }
         #[cfg(test)]
         PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
         let parser = Parser::new_ext(source, crate::options());
@@ -58,6 +64,10 @@ impl References {
                 )
             })
             .collect();
+        self.replace_pending(pending)
+    }
+
+    fn replace_pending(&mut self, pending: HashMap<Key, Definition>) -> HashSet<Key> {
         #[cfg(test)]
         {
             self.work += self.pending.len() + pending.len();

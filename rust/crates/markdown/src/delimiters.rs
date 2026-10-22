@@ -1,5 +1,6 @@
 #[cfg(test)]
 use crate::work;
+use std::ops::Range;
 
 #[derive(Clone, Copy)]
 pub(super) struct Opener {
@@ -8,72 +9,131 @@ pub(super) struct Opener {
     both: bool,
 }
 
+impl Opener {
+    pub(super) const fn byte(self) -> u8 {
+        self.byte
+    }
+
+    pub(super) const fn count(self) -> usize {
+        self.count
+    }
+
+    // Openers in one class match the same later closers.
+    pub(super) const fn class(self) -> u32 {
+        let family = match self.byte {
+            b'*' => 0,
+            b'_' => 1,
+            _ => 2,
+        };
+        1 << (family * 6 + self.count % 3 * 2 + self.both as usize)
+    }
+}
+
+// An opener run ending at `end` (bounded by its text event). `start` is its
+// run start when a reparse can resume there: no part of the run closes a span.
+#[derive(Clone, Copy)]
+pub(super) struct Candidate {
+    pub(super) end: usize,
+    pub(super) start: Option<usize>,
+    pub(super) opener: Opener,
+}
+
 #[derive(Default)]
-pub(super) struct State(Vec<Opener>);
+pub(super) struct State {
+    openers: Vec<Opener>,
+    // Index of the opener whose span a checkpoint resumes inside.
+    reopen: Option<usize>,
+}
 
 impl Clone for State {
     fn clone(&self) -> Self {
         #[cfg(test)]
-        work::copy(self.0.len() * std::mem::size_of::<Opener>());
-        Self(self.0.clone())
+        work::copy(self.openers.len() * std::mem::size_of::<Opener>());
+        Self {
+            openers: self.openers.clone(),
+            reopen: self.reopen,
+        }
     }
 }
 
 impl State {
-    pub(super) fn compile(candidates: &[(usize, Opener)], end: usize) -> Self {
+    // `marked` indexes a reopened span's opener among the candidates. Also
+    // returns the index of the candidate behind each kept opener.
+    pub(super) fn compile(
+        candidates: &[Candidate],
+        end: usize,
+        marked: Option<usize>,
+    ) -> (Self, Vec<usize>) {
         let mut state = Vec::<Opener>::new();
+        let mut kept = Vec::new();
+        let mut reopen = None;
         let mut seen = 0u32;
-        for (_, opener) in candidates
+        for (index, candidate) in candidates
             .iter()
+            .enumerate()
             .rev()
-            .filter(|(position, _)| *position <= end)
+            .filter(|(_, candidate)| candidate.end <= end)
         {
+            let opener = &candidate.opener;
             #[cfg(test)]
             work::scan(1);
-            let family = match opener.byte {
-                b'*' => 0,
-                b'_' => 1,
-                _ => 2,
-            };
-            let bit = 1 << (family * 6 + opener.count % 3 * 2 + usize::from(opener.both));
+            let bit = opener.class();
             if seen & bit == 0 {
                 seen |= bit;
                 #[cfg(test)]
-                work::copy(
-                    (1 + if state.len() == state.capacity() {
-                        state.len()
-                    } else {
-                        0
-                    }) * std::mem::size_of::<Opener>(),
-                );
+                {
+                    work::copy(std::mem::size_of::<Opener>());
+                    work::grow(std::mem::size_of::<Opener>());
+                }
+                if Some(index) == marked {
+                    reopen = Some(state.len());
+                }
                 state.push(*opener);
+                kept.push(index);
             }
         }
         state.reverse();
+        kept.reverse();
         #[cfg(test)]
         work::copy(3 * (state.len() / 2) * std::mem::size_of::<Opener>());
-        Self(state)
+        (
+            Self {
+                reopen: reopen.map(|index| state.len() - 1 - index),
+                openers: state,
+            },
+            kept,
+        )
     }
 
-    pub(super) fn prefix(&self, context: &str) -> String {
-        if self.0.is_empty() {
-            return context.to_owned();
+    // The opener whose span a checkpoint resumes inside.
+    pub(super) const fn reopen(&self) -> Option<usize> {
+        self.reopen
+    }
+
+    // Synthetic left context, and each opener's run in it.
+    pub(super) fn prefix(&self, context: &str) -> (String, Vec<Range<usize>>) {
+        if self.openers.is_empty() {
+            return (context.to_owned(), Vec::new());
         }
         let leading = context.starts_with('|');
         let mut prefix = String::from(if leading { "|x " } else { "x " });
-        for opener in &self.0 {
+        let mut runs = Vec::with_capacity(self.openers.len());
+        for opener in &self.openers {
             prefix.push_str(if opener.both { "." } else { " " });
             let count = (opener.count - 1) % 3 + 1;
+            runs.push(prefix.len()..prefix.len() + count);
             prefix.extend(std::iter::repeat_n(char::from(opener.byte), count));
             prefix.push_str(if opener.both { ". " } else { "a " });
         }
         prefix.push_str(context.get(usize::from(leading)..).unwrap_or_default());
-        prefix
+        #[cfg(test)]
+        work::grow(runs.len() * std::mem::size_of::<Range<usize>>());
+        (prefix, runs)
     }
 
     #[cfg(test)]
     pub(super) fn retained(&self) -> usize {
-        self.0.capacity() * std::mem::size_of::<Opener>()
+        self.openers.capacity() * std::mem::size_of::<Opener>()
     }
 }
 

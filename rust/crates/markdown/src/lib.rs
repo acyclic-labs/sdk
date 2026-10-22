@@ -5,7 +5,6 @@ mod code;
 mod context;
 mod delimiters;
 mod events;
-mod flanking;
 mod inline;
 mod reference_render;
 mod references;
@@ -48,7 +47,6 @@ pub struct Markdown {
     table: Option<stream_table::Stream>,
     reference_cost: usize,
     reference_limit: usize,
-    flanking: Option<flanking::Flanking>,
     plain: bool,
     plain_links: bool,
     plain_entity: bool,
@@ -163,12 +161,6 @@ impl Markdown {
             return old_len;
         }
         let budget_line = self.advance_budget();
-        if let Some(changed) = self.advance_flanking() {
-            return changed
-                .min(old_len)
-                .min(self.visible_lines)
-                .min(budget_line);
-        }
         let appended = self.source.get(previous..).unwrap_or_default();
         if self.plain
             && plain_text(appended)
@@ -188,16 +180,10 @@ impl Markdown {
                         #[cfg(test)]
                         {
                             work::copy(self.plain_spaces + visible.len());
-                            if self.plain_spaces > span.text.capacity() - span.text.len() {
-                                work::copy(span.text.len());
-                            }
+                            work::grow(self.plain_spaces + visible.len());
                         }
                         span.text
                             .extend(std::iter::repeat_n(' ', self.plain_spaces));
-                        #[cfg(test)]
-                        if visible.len() > span.text.capacity() - span.text.len() {
-                            work::copy(span.text.len());
-                        }
                         span.text.push_str(visible);
                     }
                     self.plain_spaces = appended.len() - visible.len();

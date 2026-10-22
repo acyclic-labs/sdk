@@ -57,9 +57,7 @@ impl Line {
             }
         {
             #[cfg(test)]
-            if last.text.capacity() - last.text.len() < text.len() {
-                crate::work::copy(last.text.len());
-            }
+            crate::work::grow(text.len());
             last.text.push_str(text);
         } else {
             self.push_new(text, style, link);
@@ -68,9 +66,9 @@ impl Line {
 
     pub(crate) fn push_new(&mut self, text: &str, style: Style, link: Option<&Arc<str>>) {
         if !text.is_empty() {
+            #[cfg(test)]
+            crate::work::grow(std::mem::size_of::<Span>());
             if self.spans.len() == self.spans.capacity() {
-                #[cfg(test)]
-                crate::work::copy(self.spans.len() * std::mem::size_of::<Span>());
                 // Most display rows contain one or two spans. Keep geometric
                 // growth without Vec's four-element minimum allocation.
                 self.spans.reserve_exact(self.spans.capacity().max(1));
