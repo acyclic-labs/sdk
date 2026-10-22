@@ -100,7 +100,7 @@ pub(crate) fn directory_path<W: NativeHostWork>(
             return clone_directory(parent, work);
         };
         work.started_io(ITEM)?;
-        open_windows_directory(parent, name, create, work)?.0
+        open_windows_directory_handle(parent, name, create, work)?
     };
     for component in components {
         work.started_io(ITEM)?;
@@ -116,7 +116,7 @@ pub(crate) fn directory_path<W: NativeHostWork>(
         }
         #[cfg(windows)]
         {
-            current = open_windows_directory(&current, name, create, work)?.0;
+            current = open_windows_directory_handle(&current, name, create, work)?;
         }
     }
     Ok(current)

@@ -596,8 +596,8 @@ fn directory_read_admission(
     charged: u64,
 ) -> proptest::test_runner::TestCaseResult {
     // Returning the root itself needs one owned duplicate. Every nonempty
-    // component needs its open and existing reparse/identity validation.
-    let required = if depth == 0 { 1 } else { 2 * depth as u64 };
+    // component's open rejects reparses itself; its unused identity needs no query.
+    let required = if depth == 0 { 1 } else { depth as u64 };
     prop_assert_eq!(succeeded, limit >= required);
     prop_assert_eq!(charged, limit.min(required));
     Ok(())

@@ -128,6 +128,26 @@ pub(super) fn open_windows_named<W: NativeHostWork>(
     options: nt::NTCREATEFILE_CREATE_OPTIONS,
     work: &mut W,
 ) -> Result<File, W::Error> {
+    open_windows_named_with_options(
+        parent,
+        name,
+        access,
+        disposition,
+        options | nt::FILE_OPEN_REPARSE_POINT,
+        win::OBJ_CASE_INSENSITIVE,
+        work,
+    )
+}
+
+fn open_windows_named_with_options<W: NativeHostWork>(
+    parent: &Dir,
+    name: &win::UNICODE_STRING,
+    access: fs::FILE_ACCESS_RIGHTS,
+    disposition: nt::NTCREATEFILE_CREATE_DISPOSITION,
+    options: nt::NTCREATEFILE_CREATE_OPTIONS,
+    attributes: u32,
+    work: &mut W,
+) -> Result<File, W::Error> {
     let attributes = windows::Wdk::Foundation::OBJECT_ATTRIBUTES {
         Length: u32::try_from(std::mem::size_of::<
             windows::Wdk::Foundation::OBJECT_ATTRIBUTES,
@@ -135,7 +155,7 @@ pub(super) fn open_windows_named<W: NativeHostWork>(
         .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
         RootDirectory: win::HANDLE(parent.as_raw_handle()),
         ObjectName: name,
-        Attributes: win::OBJ_CASE_INSENSITIVE,
+        Attributes: attributes,
         ..Default::default()
     };
     work.attempt_io(
@@ -160,11 +180,19 @@ pub(super) fn open_windows_named<W: NativeHostWork>(
                     fs::FILE_ATTRIBUTE_NORMAL,
                     fs::FILE_SHARE_READ | fs::FILE_SHARE_WRITE | fs::FILE_SHARE_DELETE,
                     disposition,
-                    options | nt::FILE_OPEN_REPARSE_POINT,
+                    options,
                     None,
                     0,
                 )
             };
+            if attributes.Attributes & win::OBJ_DONT_REPARSE != 0
+                && status.0 == 0xC000_050B_u32.cast_signed()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "host root is not a real directory",
+                ));
+            }
             if status.is_err() {
                 return Err(status_error(status));
             }
@@ -289,6 +317,7 @@ pub(crate) fn stat_windows_leaf<W: NativeHostWork>(
     stat_windows_file(&file, volume, work)
 }
 
+#[cfg(any(test, feature = "native-watch"))]
 pub(crate) fn open_windows_directory<W: NativeHostWork>(
     parent: &Dir,
     name: &[u16],
@@ -310,6 +339,32 @@ pub(crate) fn open_windows_directory<W: NativeHostWork>(
     )?);
     let identity = directory_identity(&directory, work)?;
     Ok((directory, identity))
+}
+
+/// Opens one real directory component, retaining the original read access check.
+/// The NT open rejects reparse points itself, so a caller that does not need an
+/// identity need not query one merely to reject the same reparse point again.
+pub(crate) fn open_windows_directory_handle<W: NativeHostWork>(
+    parent: &Dir,
+    name: &[u16],
+    create: bool,
+    work: &mut W,
+) -> Result<Dir, W::Error> {
+    let name = windows_open_name(name, work)?;
+    open_windows_named_with_options(
+        parent,
+        &name,
+        fs::FILE_GENERIC_READ,
+        if create {
+            nt::FILE_OPEN_IF
+        } else {
+            nt::FILE_OPEN
+        },
+        nt::FILE_DIRECTORY_FILE | nt::FILE_SYNCHRONOUS_IO_NONALERT,
+        win::OBJ_CASE_INSENSITIVE | win::OBJ_DONT_REPARSE,
+        work,
+    )
+    .map(Dir::from_std_file)
 }
 
 pub(super) fn windows_set_information<T: ?Sized>(

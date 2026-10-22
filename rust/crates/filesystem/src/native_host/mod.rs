@@ -159,6 +159,9 @@ mod tests;
 #[cfg(windows)]
 #[path = "tests_windows_clone.rs"]
 mod windows_clone_tests;
+#[cfg(all(test, windows))]
+#[path = "tests_windows_directory.rs"]
+mod windows_directory_tests;
 #[cfg(test)]
 #[cfg(windows)]
 #[path = "tests_yielding.rs"]
