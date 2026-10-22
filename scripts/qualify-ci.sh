@@ -202,6 +202,8 @@ harness_tests() {
 
 case "$lane" in
   gate)
+    node --test scripts/check-crate-tests.test.mjs
+    node scripts/check-crate-tests.mjs 2
     node scripts/check-hermetic-clippy.mjs
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
       cargo check --locked -p acyclic-harness-fuzz --bins

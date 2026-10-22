@@ -458,18 +458,32 @@ pub(crate) mod tests {
     fn resident_reads_do_not_carry_disk_future_storage() {
         let body = StoredBody::memory(vec![1, 2, 3].into());
         let fast = body.read_inner_async(0, 3, BodyReadMode::Ordinary);
-        // The unchanged disk/composite implementation is the inline negative control.
+        let traced = body.read(0, 3, BodyReadMode::Ordinary);
+        // Compare against the actual disk/composite frame in this feature set:
+        // without `local`, it contains no disk I/O and can itself fit in 512 bytes.
         let inline = body.read_nonresident(0, 3, BodyReadMode::Ordinary);
+        let traced_inline = crate::obs::traced(
+            crate::obs::span!(TRACE, "acyclic.objects.body.read"),
+            body.read_nonresident(0, 3, BodyReadMode::Ordinary),
+        );
         let fast = std::mem::size_of_val(&fast);
+        let traced = std::mem::size_of_val(&traced);
         let inline = std::mem::size_of_val(&inline);
-        eprintln!("body read frames: resident={fast}, inline-disk={inline}");
-        assert!(
-            compact_read(fast),
-            "resident frame retains disk state: {fast}"
+        let traced_inline = std::mem::size_of_val(&traced_inline);
+        eprintln!(
+            "body read frames: resident={fast}, inline-disk={inline}, traced={traced}, traced-inline={traced_inline}"
         );
         assert!(
-            !compact_read(inline),
-            "inline control no longer exceeds the bound: {inline}"
+            compact_read(fast),
+            "resident frame exceeds its budget: {fast}"
+        );
+        assert!(
+            fast < inline,
+            "resident frame retains disk/composite state: {fast} >= {inline}"
+        );
+        assert!(
+            traced < traced_inline,
+            "traced resident frame retains disk/composite state: {traced} >= {traced_inline}"
         );
     }
 
