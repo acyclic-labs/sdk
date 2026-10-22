@@ -36,6 +36,16 @@ fn component_opens_respect_creation_read_and_cancellation_bounds()
             );
             assert_eq!(work.receipt(), before);
         }
+        // Cancellation must also stop a fresh ledger with room to do the IO.
+        let cancellation = crate::CancellationToken::new();
+        let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        cancellation.cancel();
+        assert!(
+            directory_path(&root.directory, &test_path("existing"), create, &mut &work).is_err()
+        );
+        assert_eq!(work.receipt().backend_read_operations, 0);
+        assert_eq!(work.receipt().backend_write_operations, 0);
     }
     Ok(())
 }

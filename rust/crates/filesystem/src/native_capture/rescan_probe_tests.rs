@@ -128,22 +128,17 @@ const RESCAN_CALLS: &[&str] = &[
     "GetFileInformationByHandleEx",
     "NtCreateFile",
     "GetFileInformationByHandle",
-    "GetFileInformationByHandle",
     "NtCreateFile",
     "GetFileInformationByHandleEx",
     "NtQueryInformationByName",
     "GetFileInformationByHandleEx",
     "NtCreateFile",
     "NtQueryInformationFile",
-    "NtQueryInformationFile",
     "NtQueryInformationByName",
     "NtCreateFile",
-    "GetFileInformationByHandle",
     "NtCreateFile",
     "NtQueryInformationFile",
-    "NtQueryInformationFile",
     "NtCreateFile",
-    "GetFileInformationByHandle",
     "NtQueryInformationByName",
 ];
 
@@ -328,7 +323,10 @@ fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
             assert_eq!(before_heap, after_heap);
             #[cfg(windows)]
             if limit == u64::MAX && !cancelled {
-                assert!(minimal_rescan(after_heap, &trace, fallback));
+                assert!(
+                    minimal_rescan(after_heap, &trace, fallback),
+                    "heap={after_heap:?}; trace={trace:?}"
+                );
                 assert!(minimal_rescan(before_heap, &old_trace, fallback));
             }
             #[cfg(target_os = "linux")]

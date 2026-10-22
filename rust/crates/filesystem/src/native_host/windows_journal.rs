@@ -139,6 +139,27 @@ pub(super) fn open_windows_named<W: NativeHostWork>(
     )
 }
 
+/// Rejects a reparse point during the open, without a discarded metadata query.
+pub(crate) fn open_windows_at_without_reparse<W: NativeHostWork>(
+    parent: &Dir,
+    path: &[u16],
+    access: fs::FILE_ACCESS_RIGHTS,
+    disposition: nt::NTCREATEFILE_CREATE_DISPOSITION,
+    options: nt::NTCREATEFILE_CREATE_OPTIONS,
+    work: &mut W,
+) -> Result<File, W::Error> {
+    let name = windows_open_name(path, work)?;
+    open_windows_named_with_options(
+        parent,
+        &name,
+        access,
+        disposition,
+        options,
+        win::OBJ_CASE_INSENSITIVE | win::OBJ_DONT_REPARSE,
+        work,
+    )
+}
+
 fn open_windows_named_with_options<W: NativeHostWork>(
     parent: &Dir,
     name: &win::UNICODE_STRING,
@@ -158,7 +179,7 @@ fn open_windows_named_with_options<W: NativeHostWork>(
         Attributes: attributes,
         ..Default::default()
     };
-    work.attempt_io(
+    let file = work.attempt_io(
         if disposition == nt::FILE_OPEN {
             READ
         } else {
@@ -188,18 +209,25 @@ fn open_windows_named_with_options<W: NativeHostWork>(
             if (attributes.Attributes & win::OBJ_DONT_REPARSE).0 != 0
                 && status.0 == 0xC000_050B_u32.cast_signed()
             {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "host root is not a real directory",
-                ));
+                return Ok(None);
             }
             if status.is_err() {
                 return Err(status_error(status));
             }
             // SAFETY: successful NtCreateFile transfers a fresh owned handle.
-            Ok(unsafe { File::from_raw_handle(handle.0) })
+            Ok(Some(unsafe { File::from_raw_handle(handle.0) }))
         },
-    )
+    )?;
+    match file {
+        Some(file) => Ok(file),
+        None if (options & nt::FILE_DIRECTORY_FILE).0 != 0 => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "host root is not a real directory",
+        )
+        .into()),
+        None if disposition == nt::FILE_CREATE => Err(io::ErrorKind::AlreadyExists.into()),
+        None => Err(W::invalid_request()),
+    }
 }
 
 pub(super) fn windows_stat_information<W: NativeHostWork>(
@@ -350,10 +378,9 @@ pub(crate) fn open_windows_directory_handle<W: NativeHostWork>(
     create: bool,
     work: &mut W,
 ) -> Result<Dir, W::Error> {
-    let name = windows_open_name(name, work)?;
-    open_windows_named_with_options(
+    open_windows_at_without_reparse(
         parent,
-        &name,
+        name,
         fs::FILE_GENERIC_READ,
         if create {
             nt::FILE_OPEN_IF
@@ -361,7 +388,6 @@ pub(crate) fn open_windows_directory_handle<W: NativeHostWork>(
             nt::FILE_OPEN
         },
         nt::FILE_DIRECTORY_FILE | nt::FILE_SYNCHRONOUS_IO_NONALERT,
-        win::OBJ_CASE_INSENSITIVE | win::OBJ_DONT_REPARSE,
         work,
     )
     .map(Dir::from_std_file)

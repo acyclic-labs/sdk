@@ -145,21 +145,14 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
         } else {
             fs::FILE_GENERIC_READ | fs::FILE_GENERIC_WRITE
         };
-        let file = open_windows_at(
+        open_windows_at_without_reparse(
             parent,
             name,
             access,
             disposition,
             nt::FILE_NON_DIRECTORY_FILE | nt::FILE_SYNCHRONOUS_IO_NONALERT,
             work,
-        )?;
-        if windows_stat_information(&file, work)?.FileAttributes
-            & fs::FILE_ATTRIBUTE_REPARSE_POINT.0
-            != 0
-        {
-            return Err(W::invalid_request());
-        }
-        Ok(file)
+        )
     });
     #[cfg(unix)]
     unix_name(name.as_os_str(), work, |name, work| {

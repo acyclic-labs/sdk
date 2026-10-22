@@ -162,6 +162,9 @@ mod windows_clone_tests;
 #[cfg(all(test, windows))]
 #[path = "tests_windows_directory.rs"]
 mod windows_directory_tests;
+#[cfg(all(test, windows))]
+#[path = "tests_windows_file_opens.rs"]
+mod windows_file_open_tests;
 #[cfg(test)]
 #[cfg(windows)]
 #[path = "tests_yielding.rs"]
