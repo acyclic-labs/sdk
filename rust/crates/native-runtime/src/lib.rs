@@ -100,9 +100,8 @@ pub use workers::initialize_native_io_services;
 #[cfg(test)]
 pub(crate) use workers::{AdmissionState, notify_capacity_released, poll_submission_with};
 pub(crate) use workers::{
-    BLOCKING_WORKERS, CapacityWaiter, NATIVE_WORKERS, NativeJob, NativeWorkers,
-    allocate_capacity_waiter, poll_submission, remove_capacity_waiter, wake_capacity_waiter,
-    workers,
+    BLOCKING_WORKERS, CapacityWaiter, NATIVE_WORKERS, NativeJob, NativeWorkers, capacity_waiter,
+    poll_submission, prepay_capacity_waiter, remove_capacity_waiter, wake_capacity_waiter, workers,
 };
 
 mod health;

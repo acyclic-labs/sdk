@@ -1071,3 +1071,73 @@ fn a_held_cursor_never_stalls_delivery_to_other_watches() -> Result<(), Box<dyn 
     })?;
     Ok(())
 }
+
+std::thread_local! {
+    /// Runs once at the controller's unsubscribe, after its credit check.
+    static BEFORE_UNSUBSCRIBE_RECORD: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn before_unsubscribe_record() {
+    if let Some(hook) = BEFORE_UNSUBSCRIBE_RECORD.with(|hook| hook.borrow_mut().take()) {
+        hook();
+    }
+}
+
+// A service pass that passed its stopping check before the controller began
+// to stop fails on the cancelled root and retires the watch. Forced order: it
+// retires between the controller's unsubscribe credit check and its record,
+// unless the controller excludes it there. Both withdraw the same registration,
+// so exactly one may spend that write.
+#[cfg(feature = "native-mount")]
+#[test]
+fn original_stop_and_a_failed_service_retirement_spend_the_unsubscribe_write_once()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let host =
+        crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work())
+            .map_err(crate::native_host::ordinary_error)?;
+    let cancellation = CancellationToken::new();
+    let original = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+        ORIGINAL_BUDGET,
+        &cancellation,
+    )));
+    let mut work = crate::NativeMaterializationWork::from_meter(original.clone());
+    let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut work)?);
+    let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
+    cancellation.cancel();
+
+    let shared = Arc::clone(&watch.shared);
+    let (late_tx, late_rx) = std::sync::mpsc::channel();
+    BEFORE_UNSUBSCRIBE_RECORD.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            let free = shared.retired.try_lock().is_ok();
+            let retire = move || {
+                let mut callback = shared.delivery.callback_work();
+                shared
+                    .delivery
+                    .failed_with_work(DemandError::Cancelled, &mut callback);
+                shared.retire();
+            };
+            if free {
+                retire();
+            } else {
+                // The controller holds retirement: the pass retires after it.
+                late_tx.send(std::thread::spawn(retire)).unwrap();
+            }
+        }));
+    });
+    let stopped = watch.stop_accepted_cleanup();
+    BEFORE_UNSUBSCRIBE_RECORD.with(|hook| assert!(hook.borrow().is_none(), "hook not reached"));
+    if let Ok(late) = late_rx.try_recv() {
+        late.join().map_err(|_| "late retirement panicked")?;
+    }
+    stopped?;
+    assert!(watch.is_stopped());
+    assert!(watch.shared.physically_cleared());
+    let terminal = original.lock().receipt();
+    watch.stop_accepted_cleanup()?;
+    assert_eq!(original.lock().receipt(), terminal);
+    drop(watch);
+    Ok(())
+}

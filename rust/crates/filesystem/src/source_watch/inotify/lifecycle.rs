@@ -449,12 +449,24 @@ impl NativeSourceWatch {
         self.shared.reading_changed.notify_all();
         let mut result = Ok(());
         if worker.is_some() {
-            if self.shared.inotify.load(Ordering::Acquire) >= 0 {
+            // A failed service pass may retire this watch concurrently, and
+            // its withdrawal also unsubscribes and settles the cleanup
+            // credits. Unsubscribe under the same retirement lock, so exactly
+            // one of the two spends this write.
+            let retired = self
+                .shared
+                .retired
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if !*retired && self.shared.inotify.load(Ordering::Acquire) >= 0 {
                 // Queue overflow records stop scheduling this watch.
                 self.shared.ensure_cleanup_covered(WRITE, work)?;
+                #[cfg(test)]
+                super::admission_tests::before_unsubscribe_record();
                 let unsubscribed = hub::hub().map(|hub| hub.unsubscribe(self.shared.subscriber));
                 self.shared.record_cleanup(WRITE, work).and(unsubscribed)?;
             }
+            drop(retired);
             let joined = self.join_worker(worker, work);
             result = result.and(joined);
             if worker.is_some() {

@@ -28,6 +28,10 @@ pub(crate) enum NativeJob {
         meter: Option<Arc<dyn NativeReadMeter>>,
         terminal: Arc<dyn TaskTerminal>,
         _allocation: Option<ReadAllocation>,
+        /// A metered task's prepaid admission waiter charge: the node it
+        /// needs if the queue is full is paid at creation, so whether the
+        /// queue is full never changes the task's receipt.
+        admission: Option<ReadAllocation>,
         health: Option<Arc<FileHealth>>,
         completion: Option<Arc<OperationFence>>,
     },
@@ -48,6 +52,15 @@ impl NativeJob {
             Self::Read { state, .. } => state.clone(),
             Self::Write { state, .. } => state.clone(),
             Self::Task { terminal, .. } => terminal.clone(),
+        }
+    }
+
+    /// Takes the prepaid admission waiter charge, which either moves into a
+    /// waiter node or retires once the job is admitted.
+    pub(crate) fn take_admission(&mut self) -> Option<ReadAllocation> {
+        match self {
+            Self::Task { admission, .. } => admission.take(),
+            _ => None,
         }
     }
 
@@ -163,22 +176,16 @@ impl NativeJob {
                 meter,
                 terminal,
                 _allocation,
+                admission,
                 health,
                 completion,
             } => {
-                let work = || {
-                    run_task(
-                        operation,
-                        terminal,
-                        completion,
-                        (_allocation, meter, health),
-                    )
-                };
+                let charges = (_allocation, admission, meter, health);
                 #[cfg(feature = "test-support")]
                 if let Some(scope) = scope {
-                    return scope.run(work);
+                    return scope.run(|| run_task(operation, terminal, completion, charges));
                 }
-                work()
+                run_task(operation, terminal, completion, charges)
             }
         }
     }

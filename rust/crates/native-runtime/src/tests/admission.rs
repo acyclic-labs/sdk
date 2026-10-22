@@ -487,3 +487,57 @@ fn skipped_fence_chain_completes_iteratively() -> io::Result<()> {
         .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
     Ok(())
 }
+
+#[test]
+fn metered_task_receipts_do_not_depend_on_queue_capacity() -> io::Result<()> {
+    initialize_native_io_services()?;
+    let file = tempfile::tempfile()?;
+    let native = NativeFile::from_file(file, None).map_err(|(error, _)| error)?;
+    type Submit = fn(&NativeFile, Arc<dyn NativeReadMeter>) -> io::Result<NativeCompletion<()>>;
+    let submissions: [Submit; 3] = [
+        |_, meter| run_blocking_io(|| (), Some((meter, false))),
+        |_, meter| run_blocking_io(|| (), Some((meter, true))),
+        |native, meter| native.control_async(|_, _| Ok(()), Some(meter)),
+    ];
+    for submit in submissions {
+        let meter = Arc::new(ReadBudgetMeter::new(1, 0));
+        let mut task = submit(&native, meter.clone())?;
+        let allocations = meter.used_allocations.load(Ordering::Acquire);
+        let memory = meter.memory.load(Ordering::Acquire);
+        // Waiting for capacity is host load, not request work: it may not
+        // allocate, so a full queue cannot change or refuse the receipt.
+        meter.deny_allocations.store(true, Ordering::Release);
+        let (sender, receiver) = crate::sync::mpsc::sync_channel(1);
+        let workers = NativeWorkers::single(sender, AdmissionState::new());
+        workers
+            .sender
+            .try_send(run_blocking_io(|| (), None)?.pending.take().unwrap())
+            .map_err(|_| io::Error::other("failed to saturate the test queue"))?;
+        workers
+            .admission
+            .lock()
+            .map_err(|_| io::ErrorKind::Other)?
+            .queued_jobs = 1;
+        let context = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            poll_submission_with(&workers, &mut task.pending, &mut task.waiter, &context),
+            Poll::Pending
+        ));
+        assert_eq!(meter.used_allocations.load(Ordering::Acquire), allocations);
+        assert_eq!(meter.memory.load(Ordering::Acquire), memory);
+        let filler = receiver.recv().map_err(io::Error::other)?;
+        notify_capacity_released(&workers.admission);
+        let _ = filler.run();
+        assert!(matches!(
+            poll_submission_with(&workers, &mut task.pending, &mut task.waiter, &context),
+            Poll::Ready(Ok(()))
+        ));
+        let admitted = receiver.recv().map_err(io::Error::other)?;
+        notify_capacity_released(&workers.admission);
+        let _ = admitted.run();
+        complete(task)?;
+        assert_eq!(meter.used_allocations.load(Ordering::Acquire), allocations);
+        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+    }
+    Ok(())
+}

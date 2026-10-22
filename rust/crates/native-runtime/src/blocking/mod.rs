@@ -59,7 +59,9 @@ pub fn run_blocking_io<T: Send + 'static>(
         &BLOCKING_WORKERS,
     )?;
     if let Some(meter) = allocation_meter {
-        task.waiter = Some(allocate_capacity_waiter(Some(&meter))?);
+        // Prepared tasks also materialize the node their admission prepaid.
+        let charge = task.pending.as_mut().and_then(NativeJob::take_admission);
+        task.waiter = Some(capacity_waiter(charge));
         task.prepared_wake = Some(allocate_blocking_wait_wake(&meter)?);
     }
     Ok(task)
@@ -128,6 +130,7 @@ pub(crate) fn task_completion<T: Send + 'static>(
     let allocation = allocation_meter
         .map(|meter| ReadAllocation::new(meter, std::mem::size_of_val(&operation)))
         .transpose()?;
+    let admission = allocation_meter.map(prepay_capacity_waiter).transpose()?;
     Ok(NativeCompletion::pending(
         NativeJob::Task {
             #[cfg(feature = "test-support")]
@@ -136,6 +139,7 @@ pub(crate) fn task_completion<T: Send + 'static>(
             meter,
             terminal: Arc::clone(&state) as Arc<dyn TaskTerminal>,
             _allocation: allocation,
+            admission,
             health,
             completion: None,
         },

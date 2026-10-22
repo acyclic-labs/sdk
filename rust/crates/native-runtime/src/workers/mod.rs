@@ -3,8 +3,8 @@ use crate::*;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use admission::poll_submission_with;
 pub(crate) use admission::{
-    AdmissionState, CapacityWaiter, allocate_capacity_waiter, notify_capacity_released,
-    poll_submission, remove_capacity_waiter, wake_capacity_waiter,
+    AdmissionState, CapacityWaiter, capacity_waiter, notify_capacity_released, poll_submission,
+    prepay_capacity_waiter, remove_capacity_waiter, wake_capacity_waiter,
 };
 pub(crate) use job::NativeJob;
 

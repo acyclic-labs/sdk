@@ -52,14 +52,15 @@ impl AdmissionState {
         }
     }
 
+    /// Queues a new node carrying the job's prepaid charge, if metered.
     pub(crate) fn register(
         &mut self,
         waker: &Waker,
-        meter: Option<&Arc<dyn NativeReadMeter>>,
-    ) -> io::Result<Arc<CapacityWaiter>> {
-        let node = allocate_capacity_waiter(meter)?;
+        charge: Option<ReadAllocation>,
+    ) -> Arc<CapacityWaiter> {
+        let node = capacity_waiter(charge);
         self.register_existing(&node, waker);
-        Ok(node)
+        node
     }
 
     pub(crate) fn register_existing(&mut self, node: &Arc<CapacityWaiter>, waker: &Waker) {
@@ -148,13 +149,17 @@ impl AdmissionState {
     }
 }
 
-pub(crate) fn allocate_capacity_waiter(
-    meter: Option<&Arc<dyn NativeReadMeter>>,
-) -> io::Result<Arc<CapacityWaiter>> {
-    let allocation = meter
-        .map(|meter| ReadAllocation::new(meter, std::mem::size_of::<CapacityWaiter>()))
-        .transpose()?;
-    Ok(Arc::new(CapacityWaiter {
+/// Pays for the waiter node a metered task needs if it must wait for queue
+/// capacity. Waiting is host load, not request work, so every metered task
+/// pays exactly this once, whether or not it ever waits.
+pub(crate) fn prepay_capacity_waiter(
+    meter: &Arc<dyn NativeReadMeter>,
+) -> io::Result<ReadAllocation> {
+    ReadAllocation::new(meter, std::mem::size_of::<CapacityWaiter>())
+}
+
+pub(crate) fn capacity_waiter(allocation: Option<ReadAllocation>) -> Arc<CapacityWaiter> {
+    Arc::new(CapacityWaiter {
         state: Mutex::new(CapacityWaiterState {
             previous: Weak::new(),
             next: None,
@@ -162,7 +167,7 @@ pub(crate) fn allocate_capacity_waiter(
             queued: false,
             charge: allocation,
         }),
-    }))
+    })
 }
 
 pub(crate) fn poll_submission(
@@ -192,7 +197,7 @@ pub(crate) fn poll_submission_with(
     waiter: &mut Option<Arc<CapacityWaiter>>,
     context: &Context<'_>,
 ) -> Poll<io::Result<()>> {
-    let Some(job) = pending.take() else {
+    let Some(mut job) = pending.take() else {
         return Poll::Ready(Ok(()));
     };
     let meter = job.meter().cloned();
@@ -230,13 +235,12 @@ pub(crate) fn poll_submission_with(
             return Poll::Pending;
         }
     } else if admission.queued_jobs != 0 && admission.head.is_some() {
-        match admission.register(context.waker(), meter.as_ref()) {
-            Ok(node) => *waiter = Some(node),
-            Err(error) => return Poll::Ready(Err(error)),
-        }
+        *waiter = Some(admission.register(context.waker(), job.take_admission()));
         *pending = Some(job);
         return Poll::Pending;
     }
+    // A job that never waits retires its prepaid waiter charge on admission.
+    let prepaid = job.take_admission();
     match workers.sender.try_send(job) {
         Ok(()) => {
             admission.queued_jobs += 1;
@@ -244,24 +248,24 @@ pub(crate) fn poll_submission_with(
                 .take()
                 .map_or((None, None), |node| admission.retire_owner(node));
             drop(admission);
-            drop(charge);
+            drop((charge, prepaid));
             wake_capacity_waiter(next);
             Poll::Ready(Ok(()))
         }
         Err(mpsc::TrySendError::Full(job)) => {
-            if waiter.is_none() {
-                match admission.register(context.waker(), meter.as_ref()) {
-                    Ok(node) => *waiter = Some(node),
-                    Err(error) => return Poll::Ready(Err(error)),
-                }
-            } else if let Some(node) = waiter.as_ref()
-                && !node
+            if let Some(node) = waiter.as_ref() {
+                // The existing node already carries the job's charge.
+                debug_assert!(prepaid.is_none(), "admission waiter paid twice");
+                let queued = node
                     .state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .queued
-            {
-                admission.register_existing(node, context.waker());
+                    .queued;
+                if !queued {
+                    admission.register_existing(node, context.waker());
+                }
+            } else {
+                *waiter = Some(admission.register(context.waker(), prepaid));
             }
             *pending = Some(job);
             Poll::Pending
@@ -271,7 +275,7 @@ pub(crate) fn poll_submission_with(
                 .take()
                 .map_or((None, None), |node| admission.retire_owner(node));
             drop(admission);
-            drop(charge);
+            drop((charge, prepaid));
             wake_capacity_waiter(next);
             Poll::Ready(Err(io::Error::from(io::ErrorKind::BrokenPipe)))
         }

@@ -214,9 +214,9 @@ impl Wake for HeldWake {
 }
 
 #[test]
-fn a_range_read_that_waits_for_admission_charges_exactly_its_waiter() -> io::Result<()> {
+fn a_range_read_that_waits_for_admission_charges_exactly_an_uncontended_read() -> io::Result<()> {
     if passed_in_exclusive_process(
-        "tests::range::a_range_read_that_waits_for_admission_charges_exactly_its_waiter",
+        "tests::range::a_range_read_that_waits_for_admission_charges_exactly_an_uncontended_read",
     )? {
         return Ok(());
     }
@@ -242,10 +242,10 @@ fn a_range_read_that_waits_for_admission_charges_exactly_its_waiter() -> io::Res
                 completed,
             );
             // Forced order: the pool is full at the first poll, so the read
-            // registers an admission waiter. Freed capacity then makes a
-            // worker wake it, and that worker is held inside the wake, still
-            // holding the waiter node, while the reader is admitted, runs to
-            // completion and has its charges inspected.
+            // queues the admission waiter it paid for at creation. Freed
+            // capacity then makes a worker wake it, and that worker is held
+            // inside the wake, still holding the waiter node, while the reader
+            // is admitted, runs to completion and has its charges inspected.
             let saturation = Saturation::new(&NATIVE_WORKERS)?;
             let mut retained_while_held = None;
             let waited = read_range(
@@ -285,10 +285,10 @@ fn a_range_read_that_waits_for_admission_charges_exactly_its_waiter() -> io::Res
             );
             assert_eq!(waited, uncontended);
             assert_eq!(retained_while_held, Some(0), "api {api} offset {offset}");
-            let [free_read, free_operations, free_bytes, free_allocations] = counters(&free);
+            // Waiting is host load, not request work: the receipt is the same.
             assert_eq!(
                 counters(&contended),
-                [free_read, free_operations, free_bytes, free_allocations + 1],
+                counters(&free),
                 "api {api} offset {offset}"
             );
         }
