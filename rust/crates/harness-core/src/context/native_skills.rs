@@ -101,7 +101,9 @@ impl NativeSkills {
             "{}.body.json",
             hex::encode(source.as_resource().key())
         ));
-        let temporary = self.directory.join(uuid::Uuid::new_v4().to_string());
+        let temporary = self
+            .directory
+            .join(crate::identity::fresh_uuid().to_string());
         std::fs::write(&temporary, serde_json::to_vec(generation).map_err(storage)?)
             .map_err(storage)?;
         if let Err(error) = std::fs::rename(&temporary, &path) {
@@ -183,7 +185,9 @@ impl NativeSkills {
         let digest = blake3::hash(&bytes);
         let destination = self.directory.join(format!("{digest}.json"));
         if !destination.exists() {
-            let temporary = self.directory.join(uuid::Uuid::new_v4().to_string());
+            let temporary = self
+                .directory
+                .join(crate::identity::fresh_uuid().to_string());
             let mut file = std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
