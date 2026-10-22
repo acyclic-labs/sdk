@@ -256,6 +256,16 @@ async fn active_home_replacement_rediscovers_and_resumes_over_tls() -> TestResul
         .lock()
         .map_err(|_| "fixture node poisoned")? = "replacement".into();
     fixture.reset()?;
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        fixture.until(|counts| {
+            counts
+                .resumes
+                .lock()
+                .is_ok_and(|resumes| resumes.contains(&(1, 2, 2)))
+        }),
+    )
+    .await?;
     for _ in 2..6 {
         assert_eq!(next(&mut records).await?, next(&mut expected).await?);
     }
