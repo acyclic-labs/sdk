@@ -177,7 +177,6 @@ impl ToolExecutor for CheckoutTools {
                 && scope.grants().contains(&self.write_grant))
                 && self.child_project(context)?.is_none())
             || crate::tools::catalog()
-                .iter()
                 .find(|spec| spec.name == invocation.name)
                 .is_none_or(|spec| !scope.grants().contains(&spec.capability()))
         {
