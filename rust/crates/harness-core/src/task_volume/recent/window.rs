@@ -103,8 +103,8 @@ impl Window {
             }
             return;
         }
-        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
-        acyclic_native_runtime::differential::record(("insert", order));
+        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+        acyclic_differential::record(("insert", order));
         let slot = super::file_kind(file).map_or(UNCLASSIFIED, usize::from);
         let (key, generation) = previous.unwrap_or_else(|| (file.key.clone(), self.generation));
         self.ordered[slot].insert((order, file.key.clone()));
@@ -132,8 +132,8 @@ impl Window {
     /// Detaches an entry, returning its stored key and insertion generation.
     fn take(&mut self, key: &FileKey) -> Option<(FileKey, u64)> {
         let (key, entry) = self.entries.remove_entry(key)?;
-        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
-        acyclic_native_runtime::differential::record(("remove", entry.order));
+        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+        acyclic_differential::record(("remove", entry.order));
         let position = (entry.order, key);
         self.ordered[entry.slot].remove(&position);
         self.bytes -= entry.bytes;

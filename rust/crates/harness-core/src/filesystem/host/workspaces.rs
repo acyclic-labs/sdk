@@ -29,8 +29,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
         io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
-        acyclic_native_runtime::differential::record(("read", maximum_bytes));
+        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+        acyclic_differential::record(("read", maximum_bytes));
         let owned;
         let io = if let Some(io) = io {
             io
@@ -145,8 +145,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         workspace: &WorkspaceRef,
         reference: &GenerationRef,
     ) -> Result<()> {
-        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
-        acyclic_native_runtime::differential::record(("retain", 0u64));
+        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+        acyclic_differential::record(("retain", 0u64));
         let workspace = self.open(workspace, None).await?;
         let generation = self.generation(&workspace, reference, None).await?;
         let identity = format!(
@@ -422,8 +422,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         let name = std::str::from_utf8(reference.as_resource().key())
             .map_err(|_| io.invalid("workspace reference key must be UTF-8"))?;
-        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
-        acyclic_native_runtime::differential::record(("open workspace", 1u64));
+        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+        acyclic_differential::record(("open workspace", 1u64));
         io.sdk(
             self.filesystem
                 .open_workspace(name, io, io.cancellation())

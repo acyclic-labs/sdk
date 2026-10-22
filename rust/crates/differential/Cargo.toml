@@ -1,0 +1,12 @@
+[package]
+name = "acyclic-differential"
+description = "Thread-local operation traces that test captures in any SDK crate can observe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

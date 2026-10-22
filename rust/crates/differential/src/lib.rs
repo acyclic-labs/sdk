@@ -17,9 +17,13 @@
 //! The test-only crate `acyclic-test-support` is `publish = false`, so a
 //! published crate may name it only as a dev-dependency; even an optional
 //! normal dependency breaks `cargo package`. Trace storage lives here, in a
-//! published crate behind the effect-free `differential` feature, for that
-//! reason. `scripts/publish-cargo-crates.mjs check` enforces the dependency
-//! half of this rule in CI.
+//! published leaf crate with no dependencies, for that reason: production
+//! crates name it as an optional dependency of their `test-support` feature,
+//! and `acyclic-test-support` names it without depending on any crate whose
+//! tests use it, so no dev-dependency cycle forms.
+//! `scripts/publish-cargo-crates.mjs check` enforces the dependency half of
+//! this rule in CI, and `scripts/check-dev-dependency-cycles.mjs` the cycle
+//! half.
 
 use std::{any::Any, cell::RefCell};
 

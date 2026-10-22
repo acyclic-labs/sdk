@@ -1,5 +1,6 @@
 [
   "acyclic-proto-build",
+  "acyclic-differential",
   "acyclic-native-runtime",
   "acyclic-contract-derive",
   "acyclic-auth",

@@ -51,8 +51,8 @@ pub(crate) fn seed_digest(
             .map(|history| history as &mut dyn crate::store::history::HistoryIo),
     )?;
     let digest = record_digest(seed, maximum_bytes, io)?;
-    #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
-    acyclic_native_runtime::differential::record(("fork seed digest", 1u64));
+    #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+    acyclic_differential::record(("fork seed digest", 1u64));
     Ok(digest)
 }
 

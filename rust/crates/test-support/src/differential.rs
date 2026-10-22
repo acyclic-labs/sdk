@@ -1,13 +1,7 @@
 //! Independent current-thread runs with an ordered, caller-defined operation trace.
 pub mod oracle;
 
-#[cfg(not(target_arch = "wasm32"))]
-use acyclic_native_runtime::differential as storage;
-/// The native runtime does not build for wasm32, where no production hook records; captures
-/// there compile the same storage into this test-only crate.
-#[cfg(target_arch = "wasm32")]
-#[path = "../../native-runtime/src/differential.rs"]
-mod storage;
+use acyclic_differential as storage;
 
 pub use storage::record;
 use storage::{begin, capturing, end};

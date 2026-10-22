@@ -23,7 +23,7 @@ mod task_volume_work;
 /// capture observes it: the authority hashes `Hash` bytes, and a cut workflow
 /// reports each storage operation it performs.
 #[cfg(all(
-    feature = "test-support",
+    any(test, feature = "test-support"),
     feature = "filesystem",
     not(target_arch = "wasm32")
 ))]

@@ -160,6 +160,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-differential"
+version = "0.2.0"
+
+[[package]]
 name = "acyclic-fs"
 version = "0.2.0"
 dependencies = [
@@ -401,6 +405,7 @@ name = "acyclic-harness-core"
 version = "0.2.0"
 dependencies = [
  "acyclic-actors",
+ "acyclic-differential",
  "acyclic-fs",
  "acyclic-machines",
  "acyclic-native-runtime",
@@ -943,7 +948,7 @@ dependencies = [
 name = "acyclic-test-support"
 version = "0.2.0"
 dependencies = [
- "acyclic-native-runtime",
+ "acyclic-differential",
  "proptest",
 ]
 

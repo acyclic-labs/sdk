@@ -38,7 +38,7 @@ required-features = ["filesystem"]
 
 [features]
 tui = []
-test-support = ["dep:tempfile", "acyclic-stream/test-support", "acyclic-native-runtime/differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support"]
+test-support = ["dep:tempfile", "acyclic-stream/test-support", "dep:acyclic-differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support"]
 model-checking = ["dep:loom", "dep:same-file", "dep:tempfile", "acyclic-fs/model-checking"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
 # Native presentation only; this does not select providers or grant authority.
@@ -63,6 +63,7 @@ grpc = ["acyclic-stream/grpc", "dep:tonic", "dep:tonic-prost", "dep:tonic-prost-
 
 [dependencies]
 once_cell = "1.21.3"
+acyclic-differential = { version = "=0.2.0", path = "../differential", optional = true }
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 arrayvec = { version = "0.7.8", default-features = false }
 async-trait.workspace = true
@@ -121,6 +122,8 @@ tokio = { version = "1.48.0", default-features = false, features = ["signal", "i
 
 [dev-dependencies]
 acyclic-test-support = { path = "../test-support" }
+# Hooks record under cfg(test) too, so lib tests observe them without test-support.
+acyclic-differential = { version = "=0.2.0", path = "../differential" }
 proc-macro2 = "=1.0.107"
 syn = { version = "=3.0.6", features = ["full", "visit"] }
 proptest.workspace = true

@@ -149,8 +149,8 @@ impl PreparationIo {
     #[cfg(not(target_arch = "wasm32"))]
     #[doc(hidden)]
     pub fn into_native_custody(self, retained: u64) -> Result<acyclic_fs::NativeAllocation> {
-        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
-        acyclic_native_runtime::differential::record(("custody-transfer", retained));
+        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+        acyclic_differential::record(("custody-transfer", retained));
         let Self::Native { custody, .. } = self else {
             return Err(self.invalid("native custody requires the original native ledger"));
         };
@@ -177,8 +177,8 @@ impl PreparationIo {
         &self,
         mut incoming: acyclic_fs::NativeAllocation,
     ) -> Result<()> {
-        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
-        acyclic_native_runtime::differential::record(("custody-absorb", incoming.bytes()));
+        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+        acyclic_differential::record(("custody-absorb", incoming.bytes()));
         let Self::Native { custody, .. } = self else {
             return Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
@@ -197,8 +197,8 @@ impl PreparationIo {
     #[cfg(not(target_arch = "wasm32"))]
     /// Transfers retained output storage to its caller.
     pub fn take_native_custody(&self, bytes: u64) -> Result<acyclic_fs::NativeAllocation> {
-        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
-        acyclic_native_runtime::differential::record(("custody-take", bytes));
+        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+        acyclic_differential::record(("custody-take", bytes));
         let Self::Native { custody, .. } = self else {
             return Err(self.invalid("native custody requires the original native ledger"));
         };
