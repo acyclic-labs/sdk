@@ -493,6 +493,46 @@ async fn incarnation_controls_never_enter_initial_or_watched_capture() -> Result
     harness.close().await
 }
 
+/// Rewrites the owner record at `state` in the format written before checkout
+/// incarnations: the witness is the root's device and object id, and no
+/// incarnation is named.
+fn write_legacy_owner(state: &std::path::Path, identity: [u8; 16]) -> Result<Vec<u8>> {
+    let path = state.join("owner.json");
+    let mut record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).map_err(super::super::storage)?)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+    let fields = record
+        .as_object_mut()
+        .ok_or_else(|| Error::Invalid("owner record is not an object".into()))?;
+    fields.remove("workspace_incarnation");
+    fields.insert("workspace_identity".into(), serde_json::json!(identity));
+    let bytes = serde_json::to_vec(&record).map_err(|error| Error::Invalid(error.to_string()))?;
+    std::fs::write(&path, &bytes).map_err(super::super::storage)?;
+    Ok(bytes)
+}
+
+/// A record written before checkout incarnations names no incarnation, so
+/// it cannot prove its checkout: reopening fails closed and leaves it as is.
+#[tokio::test]
+async fn a_pre_incarnation_owner_record_is_refused_and_left_untouched() -> Result<()> {
+    let workspace = tempfile::tempdir().map_err(super::super::storage)?;
+    let explicit = tempfile::tempdir().map_err(super::super::storage)?;
+    let project = LocalProject::Workspace(workspace.path().to_path_buf());
+    let state = directory(&explicit.path().join("state"))?;
+    let checkout = Checkout::capture(workspace.path())?;
+    Owner::open(&state, &project, Some(&checkout))?;
+    let old = write_legacy_owner(&state, [7; 16])?;
+    assert!(matches!(
+        Owner::open(&state, &project, Some(&checkout)),
+        Err(Error::Invalid(_))
+    ));
+    assert_eq!(
+        std::fs::read(state.join("owner.json")).map_err(super::super::storage)?,
+        old
+    );
+    Ok(())
+}
+
 fn git_output(root: &std::path::Path, arguments: &[&str]) -> String {
     let output = std::process::Command::new("git")
         .args(arguments)
