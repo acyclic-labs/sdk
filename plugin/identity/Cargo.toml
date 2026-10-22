@@ -30,3 +30,8 @@ tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "command-entry"
+path = "tests/command_entry.rs"
+harness = false

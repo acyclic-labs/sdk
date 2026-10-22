@@ -977,29 +977,36 @@ impl Options {
 
 /// Execute an identity command using its explicit command-line arguments.
 ///
+/// The returned future keeps the command state machine inside this crate, so
+/// callers compile only the shared future interface.
+///
 /// # Errors
 /// Returns command, credential-store, transport and output errors.
-pub async fn run(arguments: &[String]) -> Result<(), io::Error> {
-    if arguments
-        .first()
-        .is_some_and(|command| command == "identity-mcp")
-    {
-        return mcp::serve(arguments).await;
-    }
-    let json_output = arguments.iter().any(|argument| argument == "--json");
-    let result = execute(arguments).await;
-    match result {
-        Ok(value) => {
-            println!("{}", serde_json::to_string_pretty(&value)?);
-            Ok(())
+pub fn run(
+    arguments: &[String],
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<()>> + Send + '_>> {
+    Box::pin(async move {
+        if arguments
+            .first()
+            .is_some_and(|command| command == "identity-mcp")
+        {
+            return mcp::serve(arguments).await;
         }
-        Err(error) => {
-            if json_output {
-                println!("{}", error.json());
+        let json_output = arguments.iter().any(|argument| argument == "--json");
+        let result = execute(arguments).await;
+        match result {
+            Ok(value) => {
+                println!("{}", serde_json::to_string_pretty(&value)?);
+                Ok(())
             }
-            Err(io::Error::other(error))
+            Err(error) => {
+                if json_output {
+                    println!("{}", error.json());
+                }
+                Err(io::Error::other(error))
+            }
         }
-    }
+    })
 }
 
 async fn execute(arguments: &[String]) -> Result<Value, Error> {
