@@ -186,7 +186,7 @@ tower = { workspace = true, features = ["util"] }
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "=0.3.67"
 tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time"] }
-getrandom = { version = "0.3", default-features = false, features = ["wasm_js"] }
+getrandom = { version = "0.4", default-features = false, features = ["wasm_js"] }
 
 [lints]
 workspace = true

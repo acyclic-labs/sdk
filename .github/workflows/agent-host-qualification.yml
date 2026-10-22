@@ -59,13 +59,13 @@ jobs:
           echo "TOOLS_DIR=$RUNNER_TEMP/tools" >> "$GITHUB_ENV"
           echo "SCCACHE_DIR=$RUNNER_TEMP/sccache" >> "$GITHUB_ENV"
       - name: Enable compiler cache
-        uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a # v0.0.9
+        uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
         with:
           version: v0.18.0
 
       - name: Restore Cargo downloads
         id: downloads
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index
@@ -211,7 +211,7 @@ jobs:
 
       - name: Save Cargo downloads
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && steps.downloads.outputs.cache-hit != 'true'
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index

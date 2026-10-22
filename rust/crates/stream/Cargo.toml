@@ -88,7 +88,7 @@ tokio = { version = "1.48.0", features = ["macros", "rt", "test-util"] }
 acyclic-test-support = { path = "../test-support" }
 axum = { workspace = true, features = ["ws"] }
 tonic-web.workspace = true
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.7", features = ["cors"] }
 hyper = { version = "1.11.0", default-features = false, features = ["client", "http2"] }
 hyper-util.workspace = true
 rcgen = "0.14.10"
@@ -101,7 +101,7 @@ tracing-subscriber.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "=0.3.67"
-getrandom = { version = "0.3", default-features = false, features = ["wasm_js"] }
+getrandom = { version = "0.4", default-features = false, features = ["wasm_js"] }
 web-sys = { workspace = true, features = ["Performance"] }
 
 [target.'cfg(acyclic_loom)'.dependencies]
