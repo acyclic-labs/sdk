@@ -87,6 +87,9 @@ impl Pool {
         }
         match result {
             Ok(ready) => {
+                // Recovery through the home endpoint must serve later Opens
+                // without rediscovery. A moved-node endpoint cannot bind home.
+                let home_endpoint = std::sync::Arc::ptr_eq(&ready.1.channel, &self.home_channel);
                 // Discovery can race recovery of the previous home. Reuse its
                 // installed link if both handshakes found the same live node.
                 let reused = self.links.contains_key(&ready.0);
@@ -96,7 +99,7 @@ impl Pool {
                     self.install(ready)?
                 };
                 let mut bound = Vec::new();
-                if node.is_empty() && self.home.is_empty() {
+                if (node.is_empty() || home_endpoint) && self.home.is_empty() {
                     self.admissions.bind_home(&installed)?;
                     self.home = installed.clone();
                     for (id, route) in self

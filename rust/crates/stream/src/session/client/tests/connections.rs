@@ -153,6 +153,42 @@ async fn discovery_and_home_recovery_reuse_the_first_installed_link() -> TestRes
 }
 
 #[tokio::test]
+async fn successful_home_recovery_rebinds_discovery_but_moved_nodes_do_not() -> TestResult {
+    let channel = Endpoint::from_static("http://unused.invalid").connect_lazy();
+    for home_endpoint in [true, false] {
+        let (mut pool, _healthy) = pool::fixture::fixture(&channel);
+        pool.reset_home();
+        pool.admissions.insert(5, Arc::new(Progress::new(0)))?;
+        let (records, _pending) = mpsc::channel(2);
+        let route = pool.routes.get_mut(&1).unwrap();
+        route.node.clear();
+        route.records = records;
+        route.opened = false;
+        let mut recovered = pool.links.remove("bad").unwrap();
+        if home_endpoint {
+            recovered.channel = pool.home_channel.clone();
+        }
+        pool.dial_ready(
+            "good",
+            0,
+            Ok(("good".into(), recovered, Box::pin(stream::empty()))),
+        )?;
+        assert_eq!(pool.home, if home_endpoint { "good" } else { "" });
+        assert_eq!(pool.admissions.interested("good"), home_endpoint);
+        assert_eq!(pool.admissions.interested(""), !home_endpoint);
+        assert_eq!(
+            pool.routes.get(&1).unwrap().node,
+            if home_endpoint { "good" } else { "" }
+        );
+        assert_eq!(
+            pool.pending.iter().copied().collect::<Vec<_>>(),
+            if home_endpoint { vec![(1, 1)] } else { vec![] }
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn reconnect_pushes_a_generation_without_new_records() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     append(&provider, "idle", 1).await?;
