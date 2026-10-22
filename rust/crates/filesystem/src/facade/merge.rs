@@ -230,6 +230,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 retain_theirs_parent: history == crate::workspace::JoinHistory::Merge,
                 maximum_changes,
                 maximum_conflicts,
+                content: crate::kernel::ContentMerge::Extents,
             };
             let (merged, allocation) = match &resolutions {
                 WorkspaceJoinResolutions::Map(map) => {

@@ -57,6 +57,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 theirs: &candidate.root,
                 maximum_changes,
                 maximum_conflicts: 1,
+                content: crate::kernel::ContentMerge::Extents,
             },
             DecodeLimits::for_volume(self.volume.config),
             accounting,

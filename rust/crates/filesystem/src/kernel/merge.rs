@@ -90,6 +90,20 @@ pub struct MergeGenerationRequest {
     pub resolutions: BTreeMap<MergeConflict, MergeConflictResolution>,
 }
 
+/// How regular-file content merges where all three sides map a byte range
+/// to different extents.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ContentMerge {
+    /// Different extents conflict, so whole-file rewrites reach the
+    /// caller's resolutions (a join's merge drivers merge text by line).
+    Extents,
+    /// The bytes decide: a byte only one side changed merges, and a byte
+    /// both changed differently conflicts. A checkout rebase uses this: its
+    /// dependencies are exact byte regions, so its merge is byte-granular
+    /// however a side stored its bytes.
+    Bytes,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct MergeGenerationBorrowedRequest<'a> {
     pub base_generation: ObjectId,
@@ -101,6 +115,21 @@ pub(crate) struct MergeGenerationBorrowedRequest<'a> {
     pub retain_theirs_parent: bool,
     pub maximum_changes: u32,
     pub maximum_conflicts: u32,
+    pub content: ContentMerge,
+}
+
+impl<'a> MergeGenerationBorrowedRequest<'a> {
+    /// The file-table merge this generation merge runs.
+    fn tables(&self) -> MergeFileTableRequest<'a> {
+        MergeFileTableRequest {
+            base: self.base,
+            ours: self.ours,
+            theirs: self.theirs,
+            maximum_changes: self.maximum_changes,
+            maximum_conflicts: self.maximum_conflicts,
+            content: self.content,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -286,9 +315,15 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
     );
     let result = crate::obs::in_span(&span, async {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
-        let result =
-            merge_generation_with_accounting(store, request, limits, &mut accounting, cancellation)
-                .await;
+        let result = merge_generation_with_accounting(
+            store,
+            request,
+            ContentMerge::Extents,
+            limits,
+            &mut accounting,
+            cancellation,
+        )
+        .await;
         let work = accounting.spent();
         result
             .map(|(value, _)| OperationReceipt { value, work })
@@ -310,6 +345,7 @@ struct MergeState {
     replacements: Owned<Vec<(FileId, [Option<FileRecord>; 3])>>,
     truncated: bool,
     remaining_changes: u32,
+    content: ContentMerge,
 }
 
 impl MergeState {
@@ -322,6 +358,7 @@ impl MergeState {
             replacements: Owned::allocate(0, accounting)?,
             truncated: false,
             remaining_changes: maximum_changes,
+            content: ContentMerge::Extents,
         })
     }
     fn record(
@@ -383,6 +420,7 @@ impl MergeState {
 pub(crate) async fn merge_generation_with_accounting<S: AsyncObjectStore>(
     store: &S,
     request: MergeGenerationRequest,
+    content: ContentMerge,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -397,6 +435,7 @@ pub(crate) async fn merge_generation_with_accounting<S: AsyncObjectStore>(
         retain_theirs_parent: request.retain_theirs_parent,
         maximum_changes: request.maximum_changes,
         maximum_conflicts: request.maximum_conflicts,
+        content,
     };
     merge_generation_core(
         store,

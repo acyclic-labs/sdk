@@ -233,8 +233,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let probe = (probe, probe_allocation);
         // The proof snapshot is an Arc share, not a copied map or name graph.
         let dependencies = self.dependencies.proof().dependencies.clone();
-        let classified = crate::kernel::classify_rebase_with_accounting(
-            &probe.0,
+        let working = crate::kernel::WorkingRebaseProbe {
+            probe: &probe.0,
+            working: self.root.file_table,
+        };
+        let classified = crate::kernel::classify_rebase_settling_with_accounting(
+            &working,
             GenerationId::new(self.root.base.digest),
             GenerationId::new(candidate_object.digest),
             &dependencies,
@@ -254,11 +258,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             let (probe, _allocation) = probe;
             probe.retire_with_accounting(accounting)
         };
-        retired?;
-        let classified = classified?;
+        let (decision, allocation, settled) = match (retired, classified) {
+            (Ok(()), classified) => classified?,
+            (Err(error), Ok((_, _, Some(settled)))) => {
+                settled.retire(accounting)?;
+                return Err(error);
+            }
+            (Err(error), _) => return Err(error),
+        };
+        let classified = (decision, allocation);
         if matches!(classified.0, RebaseDecision::Conflicted { .. }) {
             return Ok(classified);
         }
+        // The classifier settles only against a candidate that moved.
         if candidate_object == self.root.base {
             cancellation.check()?;
             self.authority_head = Some(candidate_head);
@@ -278,7 +290,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             if candidate.value.volume_id != self.volume.id {
                 return Err(FsError::VolumeMismatch);
             }
-            let (root, allocation) = self
+            let Some((root, allocation)) = self
                 .rebase_private_candidate_with_accounting(
                     candidate_object,
                     &candidate.value,
@@ -286,7 +298,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     accounting,
                     cancellation,
                 )
-                .await?;
+                .await?
+            else {
+                return Ok(None);
+            };
             let bytes = root_parent_bytes(&root)?;
             let rebased = Owned::new(root, allocation, bytes);
             let staged = self.prepare_root_replacement(
@@ -303,17 +318,39 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     return Err(error);
                 }
             };
-            Ok::<_, FsError>((rebased, prepared))
+            Ok::<_, FsError>(Some((rebased, prepared)))
         }
         .await;
-        candidate.retire(accounting)?;
-        let (rebased, prepared) = outcome?;
+        let outcome = candidate.retire(accounting).and(outcome);
+        let merged = match (outcome, settled) {
+            (Ok(Some(merged)), settled) => (merged, settled),
+            // A merge that did not merge what a replacement settled reports
+            // those regions; without a settlement it breaks classification.
+            (Ok(None), Some(settled)) => {
+                crate::kernel::retire_allocation(classified.1, 0, accounting)?;
+                return settled.into_conflicts(accounting);
+            }
+            (Ok(None), None) => return Err(FsError::InvalidDiff),
+            (Err(error), settled) => {
+                if let Some(settled) = settled {
+                    settled.retire(accounting)?;
+                }
+                return Err(error);
+            }
+        };
+        let ((rebased, prepared), settled) = merged;
         #[cfg(not(target_arch = "wasm32"))]
         let (mut rebased, mut prepared) = (rebased, prepared);
-        if let Err(error) = cancellation.check() {
-            rebased.retire(accounting)?;
-            return Err(error.into());
-        }
+        let settled = match cancellation.check() {
+            Ok(()) => settled,
+            Err(error) => {
+                if let Some(settled) = settled {
+                    settled.retire(accounting)?;
+                }
+                rebased.retire(accounting)?;
+                return Err(error.into());
+            }
+        };
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
             let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(guard) =
@@ -328,12 +365,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 original,
                 cancellation,
             ) {
+                if let Some(settled) = settled {
+                    settled.retire(accounting)?;
+                }
                 rebased.retire(accounting)?;
                 return Err(error);
             }
         }
+        let settled = match settled.map(|settled| settled.release(accounting)).transpose() {
+            Ok(settled) => settled,
+            Err(error) => {
+                rebased.retire(accounting)?;
+                return Err(error);
+            }
+        };
         // Working-root transfer is the final fallible step. No operation
         self.install_root_replacement(candidate_object, rebased.value, prepared);
+        if let Some(settled) = settled {
+            self.dependencies.proof().follow_settlements(&settled);
+        }
         self.generation_root = candidate_object;
         self.authority_head = Some(candidate_head);
         Ok(classified)
@@ -347,15 +397,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<
-        (
+        Option<(
             GenerationRoot,
             crate::kernel::allocation::KernelOwnedAllocation,
-        ),
+        )>,
         FsError,
     > {
         use crate::kernel::{clone_generation_root_with_accounting, retire_allocation};
         if self.root.file_table == self.base_root.file_table {
-            return clone_generation_root_with_accounting(candidate_root, accounting);
+            return clone_generation_root_with_accounting(candidate_root, accounting).map(Some);
         }
         let checkpoint = crate::kernel::build_checkpoint_with_accounting(
             &self.volume.fs.inner.objects,
@@ -410,6 +460,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 maximum_conflicts,
                 resolutions: BTreeMap::new(),
             },
+            // The checkout's dependencies are byte regions; so is its merge.
+            crate::kernel::ContentMerge::Bytes,
             DecodeLimits::for_volume(self.volume.config),
             accounting,
             cancellation,
@@ -420,7 +472,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         retire_allocation(theirs.1, input_bytes[2], accounting)?;
         let (outcome, allocation) = merged?;
         match outcome {
-            MergeGenerationOutcome::Prepared { root, .. } => Ok((root, allocation)),
+            MergeGenerationOutcome::Prepared { root, .. } => Ok(Some((root, allocation))),
             MergeGenerationOutcome::Conflicted { conflicts, .. } => {
                 let bytes = conflicts.iter().try_fold(
                     crate::foundation::usize_to_u64(
@@ -440,7 +492,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 )?;
                 drop(conflicts);
                 retire_allocation(allocation, bytes, accounting)?;
-                Err(FsError::InvalidDiff)
+                Ok(None)
             }
         }
     }

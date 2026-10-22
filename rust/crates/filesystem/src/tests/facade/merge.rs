@@ -384,20 +384,89 @@ async fn three_way_merge_pairs_a_replaced_file_with_the_identity_it_replaced() -
     Ok(())
 }
 
-/// Checkout reconciliation: a tracking checkout's uncommitted work meets a
-/// head that changed the same file, one side having replaced the file under
-/// its name and the other having edited it. `rebase_head` classifies the
-/// checkout's exact dependencies before any candidate merge runs, and both
-/// orientations stop there: the checkout's own remove depends on the whole
-/// record the head edited, or its write depends on content of the identity
-/// the head deleted. This pins that classification reports the original
-/// identity and leaves the checkout untouched, so nothing reaches the merge
-/// and nothing is silently dropped.
+/// Replaces `doc.txt` the way an editor's atomic save does: the old identity
+/// is removed and a new file is created under the same name.
+async fn atomic_save(
+    checkout: &mut TestCheckout,
+    original: FileId,
+    bytes: OwnedBytes,
+    cancel: &CancellationToken,
+) -> TestResult<FileId> {
+    checkout
+        .mutate(
+            vec![Mutation::Remove {
+                path: path("doc.txt")?,
+                expected_file_id: MetadataField::Value(original),
+            }],
+            B,
+            cancel,
+        )
+        .await?;
+    create(checkout, "doc.txt", bytes, cancel).await
+}
+
+async fn write_doc(
+    checkout: &mut TestCheckout,
+    offset: u64,
+    bytes: impl Into<OwnedBytes>,
+    cancel: &CancellationToken,
+) -> TestResult {
+    checkout
+        .change_content(
+            path("doc.txt")?,
+            ContentChange::Write {
+                offset,
+                bytes: bytes.into(),
+            },
+            ContentTimes::Preserve,
+            B,
+            cancel,
+        )
+        .await?;
+    Ok(())
+}
+
+/// Reads the first `length` bytes of `doc.txt`.
+async fn read_doc(
+    checkout: &mut TestCheckout,
+    length: u64,
+    cancel: &CancellationToken,
+) -> TestResult<Vec<u8>> {
+    Ok(checkout
+        .read_file_range(
+            &path("doc.txt")?,
+            ByteRange { offset: 0, length },
+            B,
+            cancel,
+        )
+        .await?
+        .value
+        .bytes
+        .as_ref()
+        .to_vec())
+}
+
+fn conflicts_on(decision: &RebaseDecision, original: FileId) -> bool {
+    matches!(decision, RebaseDecision::Conflicted { conflicts, .. }
+        if conflicts.iter().any(|conflict| match conflict.region {
+            DependencyRegion::FileRecord(file_id)
+            | DependencyRegion::ContentRange { file_id, .. } => file_id == original,
+            _ => false,
+        }))
+}
+
+/// Checkout reconciliation, head side: the head replaced `doc.txt` by an
+/// atomic save while the tracking checkout edited it in place. `rebase_head`
+/// pairs the replacement with the identity it replaced, so the checkout's
+/// edit merges onto the new file instead of conflicting with a deletion; an
+/// edit that overlaps the save still conflicts and leaves the checkout
+/// untouched. A second head edit then rebases cleanly, which proves the
+/// checkout's dependencies followed the replacement rather than staying on
+/// the removed identity.
 #[tokio::test]
-async fn checkout_rebase_classifies_a_replaced_file_against_the_identity_it_replaced() -> TestResult
-{
+async fn checkout_rebase_merges_an_edit_onto_the_file_the_head_saved_over_it() -> TestResult {
     let cancel = CancellationToken::new();
-    for local_replaces in [false, true] {
+    for overlapping in [false, true] {
         let (volume, mut seed) = fixture(config(), &cancel).await?;
         let original = create(
             &mut seed,
@@ -409,55 +478,204 @@ async fn checkout_rebase_classifies_a_replaced_file_against_the_identity_it_repl
         commit(&mut seed, &cancel).await?;
         let mut local = open_checkout(&volume, writable_tracking(), &cancel).await?;
         let mut remote = open_checkout(&volume, writable_pinned(), &cancel).await?;
-        let (replacing, editing) = if local_replaces {
-            (&mut local, &mut remote)
+        let saved: &'static [u8] = if overlapping {
+            b"uno two three"
         } else {
-            (&mut remote, &mut local)
+            b"one two THREE"
         };
-        replacing
-            .mutate(
-                vec![Mutation::Remove {
-                    path: path("doc.txt")?,
-                    expected_file_id: MetadataField::Value(original),
-                }],
-                B,
-                &cancel,
-            )
-            .await?;
-        create(
-            replacing,
+        atomic_save(&mut remote, original, OwnedBytes::from_static(saved), &cancel).await?;
+        write_doc(&mut local, 0, b"ONE".as_slice(), &cancel).await?;
+        commit(&mut remote, &cancel).await?;
+        let before = checkout_state(&local);
+        let decision = local.rebase_head(8, B, &cancel).await?.value;
+        if overlapping {
+            assert!(conflicts_on(&decision, original), "{decision:?}");
+            assert_eq!(checkout_state(&local), before);
+            continue;
+        }
+        assert!(matches!(decision, RebaseDecision::Safe { .. }), "{decision:?}");
+        assert_eq!(read_doc(&mut local, 13, &cancel).await?, b"ONE two THREE");
+        write_doc(&mut remote, 4, b"TWO".as_slice(), &cancel).await?;
+        commit(&mut remote, &cancel).await?;
+        let decision = local.rebase_head(8, B, &cancel).await?.value;
+        assert!(matches!(decision, RebaseDecision::Safe { .. }), "{decision:?}");
+        assert_eq!(read_doc(&mut local, 13, &cancel).await?, b"ONE TWO THREE");
+    }
+    Ok(())
+}
+
+/// Checkout reconciliation, checkout side: the tracking checkout replaced
+/// `doc.txt` by an atomic save while the head edited it in place. The
+/// checkout's remove depends on the record the head edited, and the kernel
+/// merge's replacement rule settles it: a disjoint head edit merges into the
+/// saved file, an overlapping one conflicts with the checkout untouched
+/// rather than failing the rebase. The save stays a whole-file write, as an
+/// in-place rewrite of every byte would: its dependency follows the head it
+/// settled against, so an unrelated head change rebases while a second edit
+/// of the same file conflicts.
+#[tokio::test]
+async fn checkout_rebase_merges_a_head_edit_into_the_file_the_checkout_saved_over_it()
+-> TestResult {
+    let cancel = CancellationToken::new();
+    for overlapping in [false, true] {
+        let (volume, mut seed) = fixture(config(), &cancel).await?;
+        let original = create(
+            &mut seed,
             "doc.txt",
             OwnedBytes::from_static(b"one two three"),
             &cancel,
         )
         .await?;
-        editing
-            .change_content(
-                path("doc.txt")?,
-                ContentChange::Write {
-                    offset: 0,
-                    bytes: OwnedBytes::from_static(b"ONE"),
-                },
-                ContentTimes::Preserve,
-                B,
-                &cancel,
-            )
-            .await?;
+        commit(&mut seed, &cancel).await?;
+        let mut local = open_checkout(&volume, writable_tracking(), &cancel).await?;
+        let mut remote = open_checkout(&volume, writable_pinned(), &cancel).await?;
+        let saved: &'static [u8] = if overlapping {
+            b"uno two three"
+        } else {
+            b"one two THREE"
+        };
+        atomic_save(&mut local, original, OwnedBytes::from_static(saved), &cancel).await?;
+        write_doc(&mut remote, 0, b"ONE".as_slice(), &cancel).await?;
         commit(&mut remote, &cancel).await?;
         let before = checkout_state(&local);
         let decision = local.rebase_head(8, B, &cancel).await?.value;
-        assert!(
-            matches!(&decision, RebaseDecision::Conflicted { conflicts, .. }
-            if conflicts.iter().any(|conflict| match conflict.region {
-                DependencyRegion::FileRecord(file_id) => local_replaces && file_id == original,
-                DependencyRegion::ContentRange { file_id, .. } => {
-                    !local_replaces && file_id == original
-                }
-                _ => false,
-            })),
-            "local_replaces={local_replaces}: {decision:?}"
-        );
+        if overlapping {
+            assert!(conflicts_on(&decision, original), "{decision:?}");
+            assert_eq!(checkout_state(&local), before);
+            continue;
+        }
+        assert!(matches!(decision, RebaseDecision::Safe { .. }), "{decision:?}");
+        assert_eq!(read_doc(&mut local, 13, &cancel).await?, b"ONE two THREE");
+        create(
+            &mut remote,
+            "other.txt",
+            OwnedBytes::from_static(b"other"),
+            &cancel,
+        )
+        .await?;
+        commit(&mut remote, &cancel).await?;
+        let decision = local.rebase_head(8, B, &cancel).await?.value;
+        assert!(matches!(decision, RebaseDecision::Safe { .. }), "{decision:?}");
+        assert_eq!(read_doc(&mut local, 13, &cancel).await?, b"ONE two THREE");
+        write_doc(&mut remote, 4, b"TWO".as_slice(), &cancel).await?;
+        commit(&mut remote, &cancel).await?;
+        let before = checkout_state(&local);
+        let decision = local.rebase_head(8, B, &cancel).await?.value;
+        assert!(conflicts_on(&decision, original), "{decision:?}");
         assert_eq!(checkout_state(&local), before);
+    }
+    Ok(())
+}
+
+/// A rebase merges bytes, not extents: one side saved a rewrite of every
+/// byte (sharing no extent with the base) while the other edited both ends
+/// in place. Bytes only one side changed merge, for a tiny inline file and
+/// for an extent-backed file whose changes straddle the comparison window;
+/// a byte both sides changed differently conflicts with the checkout
+/// untouched. Checked with the save on either side.
+#[tokio::test]
+async fn checkout_rebase_merges_the_bytes_of_a_saved_rewrite() -> TestResult {
+    let cancel = CancellationToken::new();
+    for (length, middle) in [(13_usize, 6_usize), (70_000, 65_540)] {
+        for (local_saves, overlapping) in [(false, false), (true, false), (false, true), (true, true)] {
+            let (volume, mut seed) = fixture(config(), &cancel).await?;
+            let base: Vec<u8> = (b'a'..=b'z').cycle().take(length).collect();
+            let original = create(&mut seed, "doc.txt", base.clone().into(), &cancel).await?;
+            commit(&mut seed, &cancel).await?;
+            let mut local = open_checkout(&volume, writable_tracking(), &cancel).await?;
+            let mut remote = open_checkout(&volume, writable_pinned(), &cancel).await?;
+            let saved: Vec<u8> = (base.iter().enumerate())
+                .map(|(at, byte)| {
+                    if at == middle || (overlapping && at == 1) {
+                        b'#'
+                    } else {
+                        *byte
+                    }
+                })
+                .collect();
+            let merged: Vec<u8> = (saved.iter().enumerate())
+                .map(|(at, byte)| if at < 3 || at >= length - 3 { b'X' } else { *byte })
+                .collect();
+            let (saving, editing) = if local_saves {
+                (&mut local, &mut remote)
+            } else {
+                (&mut remote, &mut local)
+            };
+            atomic_save(saving, original, saved.into(), &cancel).await?;
+            write_doc(editing, 0, b"XXX".to_vec(), &cancel).await?;
+            write_doc(editing, (length - 3) as u64, b"XXX".to_vec(), &cancel).await?;
+            commit(&mut remote, &cancel).await?;
+            let before = checkout_state(&local);
+            let decision = local.rebase_head(8, B, &cancel).await?.value;
+            let case = format!("length={length} local_saves={local_saves}");
+            if overlapping {
+                assert!(conflicts_on(&decision, original), "{case}: {decision:?}");
+                assert_eq!(checkout_state(&local), before, "{case}");
+                continue;
+            }
+            assert!(matches!(decision, RebaseDecision::Safe { .. }), "{case}: {decision:?}");
+            let read = read_doc(&mut local, length as u64, &cancel).await?;
+            assert!(read == merged, "{case}");
+        }
+    }
+    Ok(())
+}
+
+/// A read stays exact across a replacement: the checkout's observation of
+/// `doc.txt` is checked against the file that replaced it, so a save that
+/// kept the bytes read rebases and one that changed them conflicts.
+#[tokio::test]
+async fn checkout_rebase_checks_a_read_against_the_file_the_head_saved_over_it() -> TestResult {
+    let cancel = CancellationToken::new();
+    for changed in [false, true] {
+        let (volume, mut seed) = fixture(config(), &cancel).await?;
+        let original = create(
+            &mut seed,
+            "doc.txt",
+            OwnedBytes::from_static(b"one two three"),
+            &cancel,
+        )
+        .await?;
+        commit(&mut seed, &cancel).await?;
+        let mut local = open_checkout(&volume, writable_tracking(), &cancel).await?;
+        let mut remote = open_checkout(&volume, writable_pinned(), &cancel).await?;
+        let read = local
+            .read_file_range(
+                &path("doc.txt")?,
+                ByteRange {
+                    offset: 0,
+                    length: 3,
+                },
+                B,
+                &cancel,
+            )
+            .await?
+            .value
+            .bytes;
+        assert_eq!(read.as_ref(), b"one");
+        create(
+            &mut local,
+            "notes.txt",
+            OwnedBytes::from_static(b"one"),
+            &cancel,
+        )
+        .await?;
+        let saved: &'static [u8] = if changed {
+            b"uno two three"
+        } else {
+            b"one two THREE"
+        };
+        atomic_save(&mut remote, original, OwnedBytes::from_static(saved), &cancel).await?;
+        commit(&mut remote, &cancel).await?;
+        let before = checkout_state(&local);
+        let decision = local.rebase_head(8, B, &cancel).await?.value;
+        if changed {
+            assert!(conflicts_on(&decision, original), "{decision:?}");
+            assert_eq!(checkout_state(&local), before);
+        } else {
+            assert!(matches!(decision, RebaseDecision::Safe { .. }), "{decision:?}");
+            assert_eq!(read_doc(&mut local, 13, &cancel).await?, saved);
+        }
     }
     Ok(())
 }

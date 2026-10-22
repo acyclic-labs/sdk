@@ -137,13 +137,13 @@ impl CheckoutDependencies {
         })
     }
 
+    /// The captured regions, unshared for mutation. Unsharing starts a new
+    /// allocation generation, since the copy is a new ownership identity.
     #[allow(
         clippy::expect_used,
         reason = "Exhausting the generation counter must fail rather than reuse an ownership identity."
     )]
-    pub(crate) fn clear_mutations(&mut self) {
-        let mut retained_bytes = 0_u64;
-        let mut cloned_bytes = 0_u64;
+    fn captured_mut(&mut self) -> &mut CapturedMap {
         if Arc::strong_count(&self.captured) > 1 || Arc::weak_count(&self.captured) != 0 {
             self.data_generation = self
                 .data_generation
@@ -151,6 +151,12 @@ impl CheckoutDependencies {
                 .expect("proof allocation generation exhausted");
         }
         Arc::make_mut(&mut self.captured)
+    }
+
+    pub(crate) fn clear_mutations(&mut self) {
+        let mut retained_bytes = 0_u64;
+        let mut cloned_bytes = 0_u64;
+        self.captured_mut()
             .entries
             .retain(|region, state| {
                 let keep = match state.usage {
@@ -169,6 +175,34 @@ impl CheckoutDependencies {
             });
         self.name_data_bytes = retained_bytes;
         self.cloned_name_data_bytes = cloned_bytes;
+    }
+
+    /// Carries the regions a replacement settled during a rebase onto the
+    /// rebased base: a settled name expects the candidate's binding, and a
+    /// read of the replaced identity names its replacement. File regions
+    /// carry no name data, so retained name bytes are unchanged.
+    pub(crate) fn follow_settlements(&mut self, settled: &[(&DependencyRegion, Settlement)]) {
+        if settled.is_empty() {
+            return;
+        }
+        let captured = self.captured_mut();
+        for &(region, settlement) in settled {
+            match settlement {
+                Settlement::Expect(state) => {
+                    if let Some(entry) = captured.entries.get_mut(region) {
+                        entry.expected = state;
+                    }
+                }
+                Settlement::Follow(file) => {
+                    if let Some(entry) = captured.entries.remove(region) {
+                        captured
+                            .entries
+                            .entry(region.of_file(file))
+                            .or_insert(entry);
+                    }
+                }
+            }
+        }
     }
 
     pub(crate) fn prepare_observations(

@@ -615,6 +615,7 @@ async fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage
     let (outcome, allocation) = (merge_generation_with_accounting(
         &store,
         request,
+        ContentMerge::Extents,
         DecodeLimits::default(),
         &mut accounting,
         &cancellation,
@@ -765,6 +766,7 @@ async fn native_merge_original_allocation_denial_precedes_backend_work()
     let result = (merge_generation_with_accounting(
         &store,
         request,
+        ContentMerge::Extents,
         DecodeLimits::default(),
         &mut accounting,
         &cancellation,

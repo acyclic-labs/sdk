@@ -48,7 +48,7 @@ async fn settle_record<S: AsyncObjectStore>(
             base.ok_or(FsError::InvalidDiff)?,
             ours.ok_or(FsError::InvalidDiff)?,
             theirs.ok_or(FsError::InvalidDiff)?,
-            state.remaining_changes,
+            (state.remaining_changes, state.content),
             limits,
             accounting,
             cancellation,
@@ -56,6 +56,20 @@ async fn settle_record<S: AsyncObjectStore>(
         .await?
     {
         state.consume(examined as usize)?;
+        resolved = OptionalResolution::Resolved(Some(record));
+    }
+    if matches!(resolved, OptionalResolution::Conflict)
+        && state.content == ContentMerge::Bytes
+        && let (Some(base), Some(ours), Some(theirs)) = (base, ours, theirs)
+        && let Some(record) = merge_inline_record_async(
+            store,
+            [base, ours, theirs],
+            limits,
+            accounting,
+            cancellation,
+        )
+        .await?
+    {
         resolved = OptionalResolution::Resolved(Some(record));
     }
     if matches!(resolved, OptionalResolution::Conflict) {

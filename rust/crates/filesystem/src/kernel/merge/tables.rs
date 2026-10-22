@@ -5,6 +5,7 @@ pub(crate) struct MergeFileTableRequest<'a> {
     pub(crate) theirs: &'a GenerationRoot,
     pub(crate) maximum_changes: u32,
     pub(crate) maximum_conflicts: u32,
+    pub(crate) content: ContentMerge,
 }
 
 enum MergeFileTableOutcome {
@@ -80,6 +81,7 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
             return Err(FsError::InvalidDiff);
         }
         let mut state = MergeState::new(request.maximum_changes, accounting)?;
+        state.content = request.content;
         let result = async {
             let (ours, custody) = diff_file_records_with_accounting(
                 store,

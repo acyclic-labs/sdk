@@ -76,7 +76,7 @@ pub(crate) use merge::merge_generation_with_borrowed_resolutions_with_accounting
 #[cfg(feature = "native-mount")]
 pub(crate) use merge::{MergeFileTableRequest, merge_file_tables_with_accounting, resolve_three};
 pub(crate) use merge::{
-    MergeGenerationBorrowedRequest, merge_generation_with_accounting,
+    ContentMerge, MergeGenerationBorrowedRequest, merge_generation_with_accounting,
     merge_generation_with_borrowed_map_resolutions_with_accounting,
 };
 #[cfg(not(target_arch = "wasm32"))]
@@ -88,7 +88,8 @@ pub(crate) use persistent_point::split_allocation;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use publication::publish_generation_async_guarded_with_native_work;
 pub(crate) use range::plan_extent_range_with_accounting;
-pub(crate) use rebase::{ClassifyRebaseFailure, classify_rebase_with_accounting};
+pub(crate) use probe::WorkingRebaseProbe;
+pub(crate) use rebase::{ClassifyRebaseFailure, classify_rebase_settling_with_accounting};
 pub(crate) use regular_mutation::apply_regular_mutation_with_accounting;
 pub(crate) use search::binary_search_with_accounting;
 
