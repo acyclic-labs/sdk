@@ -241,7 +241,7 @@ async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> 
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let mut expected = format!("host tool: {}\nnative: ", home).into_bytes();
+    let mut expected = format!("host tool: {home}\nnative: ").into_bytes();
     expected.extend(
         crate::native_environment::variable("ACYCLIC_TEST_NATIVE_BYTES")
             .unwrap()

@@ -113,7 +113,9 @@ async fn saved_shell_catalog_and_request_reopen_with_their_original_identity() -
     let request = reopened.next_request().await?;
     reopened
         .consume(&request, |_, _, intent| async move {
-            assert_eq!(serde_json::to_value(&intent).unwrap()["tool"], "bash");
+            let encoded =
+                serde_json::to_value(&intent).map_err(|error| Error::Invalid(error.to_string()))?;
+            assert_eq!(encoded.get("tool"), Some(&json!("bash")));
             assert_eq!(
                 intent,
                 CommandResolution::Tool {

@@ -16,11 +16,10 @@ impl CheckoutTools {
         output::Output,
         workspace::volumes::Claims,
     )> {
-        let workspace = state
-            .workspace
-            .as_ref()
-            .map(|(_, workspace)| workspace.clone())
-            .unwrap_or_else(|| Arc::clone(&self.workspace));
+        let workspace = state.workspace.as_ref().map_or_else(
+            || Arc::clone(&self.workspace),
+            |(_, workspace)| workspace.clone(),
+        );
         let invocation = Invocation {
             executable: executable()?.to_path_buf(),
             argv: Vec::new(),
