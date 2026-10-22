@@ -856,13 +856,28 @@ fn native_reply_validation_borrows_body_and_rejects_tampering() {
         for mutation in 0..5 {
             let mut forged = expected.clone();
             match mutation {
-                0 => forged.state["reply"]["value"] = json!("r".repeat(128 * 1024)),
+                0 => {
+                    *forged
+                        .state
+                        .get_mut("reply")
+                        .unwrap()
+                        .get_mut("value")
+                        .unwrap() = json!("r".repeat(128 * 1024));
+                }
                 1 => {
-                    forged.state["reply"]["operation_id"] =
-                        json!(OperationId::from_bytes([179; 16]))
+                    *forged
+                        .state
+                        .get_mut("reply")
+                        .unwrap()
+                        .get_mut("operation_id")
+                        .unwrap() = json!(OperationId::from_bytes([179; 16]));
                 }
                 2 => {
-                    forged.state["extra"] = Value::Null;
+                    forged
+                        .state
+                        .as_object_mut()
+                        .unwrap()
+                        .insert("extra".into(), Value::Null);
                 }
                 3 => forged.status = MachineStatus::Completed { value: Value::Null },
                 _ => forged.commands.push(preparation()),

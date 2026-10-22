@@ -350,7 +350,6 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
         };
         let expected_opens = match (entry, mode) {
             (Entry::Create, _) => 2,
-            (Entry::Retry, None) => 1,
             _ => 1,
         };
         assert_eq!(opens(&after.1), expected_opens, "{entry:?} {mode:?}");

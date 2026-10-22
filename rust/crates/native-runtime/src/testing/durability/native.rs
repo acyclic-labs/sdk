@@ -23,7 +23,11 @@ fn retains_cut(
         match std::fs::remove_file(path) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => panic!("reset cut fixture: {error}"),
+            Err(error) => assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::NotFound,
+                "reset cut fixture: {error}"
+            ),
         }
     }
     std::fs::write(&from, b"original").unwrap();

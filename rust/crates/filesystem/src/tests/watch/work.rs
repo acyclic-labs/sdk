@@ -263,7 +263,7 @@ fn overlapping_native_watches_charge_only_occupied_queue_storage()
         },
         &cancellation,
     )
-    .unwrap();
+    .map_err(|(error, _)| error)?;
     let baseline = work.live_allocation_bytes();
     let options = crate::watch::NativeWatchOptions {
         maximum_queued_changes: 65_536,
@@ -283,7 +283,10 @@ fn overlapping_native_watches_charge_only_occupied_queue_storage()
         &work,
     )?;
     let occupied = work.live_allocation_bytes();
-    assert!(occupied > baseline, "live producer resources remain charged");
+    assert!(
+        occupied > baseline,
+        "live producer resources remain charged"
+    );
     // Settle both producers before checking their released payload. A platform
     // delivery task may still own its small control block after terminal stop.
     assert!(first.shutdown_with_native_work(&work)?);
