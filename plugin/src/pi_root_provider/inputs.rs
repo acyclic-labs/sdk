@@ -309,12 +309,25 @@ pub(super) async fn read_root_artifact_with_native_work<T: DeserializeOwned + Se
     let io = PreparationIo::from_native_work(work)?;
     let bytes = context.read_file(reference, Some(&io)).await?;
     let schema = if reference.descriptor().media_type() == "application/schema+json" {
-        JsonValueSchema::Root
+        &JsonValueSchema::Root
     } else {
-        JsonValueSchema::None
+        &JsonValueSchema::None
     };
+    decode_root_artifact(owner, bytes.as_ref(), schema, work)
+}
+
+/// Decodes a root artifact only from its one first-party encoding, canonical JSON.
+///
+/// Any other spelling of the same value, including the unreleased declared-field-order
+/// encoding, is a typed `Invalid` boundary error: there is no second accepted form.
+pub(super) fn decode_root_artifact<T: DeserializeOwned + Serialize>(
+    owner: &PiOwnerConfig,
+    bytes: &[u8],
+    schema: &'static JsonValueSchema,
+    work: &NativeMaterializationWork,
+) -> Result<(T, NativeAllocation)> {
     let decoded = guarded_pi_decode(
-        bytes.as_ref(),
+        bytes,
         maximum(owner),
         std::mem::size_of::<T>() as u64,
         ErrorCode::Invalid,
@@ -325,7 +338,7 @@ pub(super) async fn read_root_artifact_with_native_work<T: DeserializeOwned + Se
     if canonical_pi_value(&decoded.0, maximum(owner), work)?
         .0
         .as_slice()
-        != bytes.as_ref()
+        != bytes
     {
         return Err(Error::NativeBoundary {
             code: ErrorCode::Invalid,

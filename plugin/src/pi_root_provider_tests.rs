@@ -1311,4 +1311,27 @@ async fn staged_durable_inputs_are_canonical_json() {
     assert_ne!(declared, canonical);
     staged.0.descriptor().verify(&canonical, &mut None).unwrap();
     assert!(staged.0.descriptor().verify(&declared, &mut None).is_err());
+
+    // The unreleased declared-order encoding has no read path: it is a typed boundary
+    // error, never a panic or a silently re-encoded value.
+    let reopened = super::inputs::decode_root_artifact::<crate::pi_task::PiControlInput>(
+        &fixture.owner,
+        &canonical,
+        &JsonValueSchema::None,
+        &fixture.startup,
+    )
+    .unwrap();
+    assert_eq!(reopened.0.command.operation_id, operation);
+    assert!(matches!(
+        super::inputs::decode_root_artifact::<crate::pi_task::PiControlInput>(
+            &fixture.owner,
+            &declared,
+            &JsonValueSchema::None,
+            &fixture.startup,
+        ),
+        Err(Error::NativeBoundary {
+            code: ErrorCode::Invalid,
+            reason: "root artifact is not its immutable first-party encoding",
+        })
+    ));
 }

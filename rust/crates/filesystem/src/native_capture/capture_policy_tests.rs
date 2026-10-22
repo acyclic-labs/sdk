@@ -98,7 +98,7 @@ async fn fragmented_prior_capture_falls_back_with_a_smaller_host_span_bound()
 }
 
 /// A rescan of unchanged content stages nothing when the host only advanced the
-/// stamps it derives from reads and unrepresented inode changes, as macOS FSEvents
+/// stamps it derives from reads and unrepresented inode changes, as macOS `FSEvents`
 /// full rescans observe after a lazy mount reads its source; a recorded fact still
 /// makes a new version.
 #[tokio::test]

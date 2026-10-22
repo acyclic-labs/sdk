@@ -3,7 +3,7 @@ use super::*;
 use acyclic_harness::conversation::{VolumeClass, VolumeOwner, VolumeRef};
 
 /// Requires the exact form the pinned Pi SDK issues for a new session: a canonical,
-/// lowercase RFC 4122 UUIDv7 (`SessionManager` names sessions with `uuidv7()`).
+/// lowercase RFC 4122 `UUIDv7` (`SessionManager` names sessions with `uuidv7()`).
 pub(super) fn sdk_session_id(session: &str) -> Result<uuid::Uuid> {
     let uuid = uuid::Uuid::parse_str(session).map_err(|error| Error::Invalid(error.to_string()))?;
     if uuid.get_version() != Some(uuid::Version::SortRand)

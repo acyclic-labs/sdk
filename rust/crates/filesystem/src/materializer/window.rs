@@ -13,6 +13,9 @@ use std::sync::Arc;
 pub(crate) struct NativeWorkWindow {
     // Locked only under the original leaf, which serializes every window of the ledger.
     consumed: Mutex<WorkCounters>,
+    // Reservations this window still holds. Every other window sees them as free, so one
+    // window's reservation never blocks a fresh window. Only live allocation stays shared.
+    pending: Mutex<WorkCounters>,
     // Claimed outside every window, so charging through it never stacks two windows.
     metadata: NativeAllocation,
 }
@@ -40,6 +43,21 @@ impl NativeWorkWindow {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *consumed = consumed.saturating_add_cumulative(delta);
     }
+    fn pending(&self) -> WorkCounters {
+        *self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+    fn hold(&self, before: &WorkCounters, after: &WorkCounters) {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *pending = pending
+            .saturating_add_cumulative(&after.saturating_sub_cumulative(before))
+            .saturating_sub_cumulative(&before.saturating_sub_cumulative(after));
+    }
 }
 
 impl NativeMaterializationWork {
@@ -63,6 +81,7 @@ impl NativeMaterializationWork {
         let mut work = self.allocation_work();
         work.window = Some(Arc::new(NativeWorkWindow {
             consumed: Mutex::new(WorkCounters::UNCHARGED),
+            pending: Mutex::new(WorkCounters::UNCHARGED),
             metadata,
         }));
         Ok(work)
@@ -83,9 +102,10 @@ impl NativeMaterializationWork {
 impl crate::demand::DemandWork {
     /// Runs `operation` with the budget seen from `window`.
     ///
-    /// Inside a window the cumulative limit is `budget + unwindowed - consumed`: work
-    /// charged outside this window is excluded, and this window's own work counts in
-    /// full. Work charged inside a window is excluded from every other view by raising
+    /// Inside a window the cumulative limit is
+    /// `budget + unwindowed + pending - held - consumed`: work charged and reservations
+    /// held outside this window are excluded, and this window's own work and
+    /// reservations count in full. Work charged inside a window is excluded from every other view by raising
     /// the stored budget by the same amount. Any budget change the operation makes
     /// itself, such as a reservation or refund, is carried back exactly.
     pub(crate) fn within_window<R>(
@@ -98,10 +118,13 @@ impl crate::demand::DemandWork {
         };
         let consumed = window.consumed();
         let before = self.work;
+        let pending = self.pending_reservations();
         let unwindowed = before.saturating_sub_cumulative(&self.windowed);
+        let elsewhere = pending.saturating_sub_cumulative(&window.pending());
         let stored = self.budget;
         let viewed = stored
             .saturating_add_cumulative(&unwindowed)
+            .saturating_add_cumulative(&elsewhere)
             .saturating_sub_cumulative(&consumed);
         self.budget = viewed;
         let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(self)));
@@ -112,6 +135,7 @@ impl crate::demand::DemandWork {
             .saturating_add_cumulative(&charged);
         self.windowed = self.windowed.saturating_add_cumulative(&charged);
         window.consume(&charged);
+        window.hold(&pending, &self.pending_reservations());
         answer.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     }
 }

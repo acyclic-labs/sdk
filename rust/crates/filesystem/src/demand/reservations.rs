@@ -3,6 +3,10 @@ use crate::materializer::NativeResourceCredit;
 use acyclic_native_runtime::NativeOperationKind;
 
 impl DemandWork {
+    /// Work reserved under this leaf and not yet started or refunded.
+    pub(crate) const fn pending_reservations(&self) -> WorkCounters {
+        self.roots.pending
+    }
     pub(crate) fn reserve(&mut self, maximum: WorkCounters) -> Result<(), DemandError> {
         if maximum.peak_allocation_bytes != 0 || maximum.allocation_operations != 0 {
             return Err(DemandError::InvalidRequest);

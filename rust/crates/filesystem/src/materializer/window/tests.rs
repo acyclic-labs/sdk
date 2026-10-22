@@ -158,6 +158,45 @@ fn reservations_and_refunds_stay_exact_across_windows() {
 }
 
 #[test]
+fn a_reservation_held_by_one_window_never_blocks_a_fresh_window() {
+    let session = root();
+    let first = session.invocation_window().unwrap();
+    let held = first.reserve_work(appends(APPENDS)).unwrap();
+    assert_eq!(first.remaining().unwrap().authority_records_appended, 0);
+    let second = session.invocation_window().unwrap();
+    assert_eq!(
+        second.remaining().unwrap().authority_records_appended,
+        APPENDS
+    );
+    second.record_admitted(appends(APPENDS)).unwrap();
+    assert_eq!(second.remaining().unwrap().authority_records_appended, 0);
+    let third = session.invocation_window().unwrap();
+    third.record_admitted(appends(1)).unwrap();
+    assert_eq!(first.remaining().unwrap().authority_records_appended, 0);
+    drop(held);
+    assert_eq!(
+        first.remaining().unwrap().authority_records_appended,
+        APPENDS
+    );
+    assert_eq!(second.remaining().unwrap().authority_records_appended, 0);
+    assert_eq!(
+        third.remaining().unwrap().authority_records_appended,
+        APPENDS - 1
+    );
+}
+
+#[test]
+fn a_window_holding_its_full_reservation_cannot_charge() {
+    let session = root();
+    let window = session.invocation_window().unwrap();
+    let _held = window.reserve_work(appends(APPENDS)).unwrap();
+    exceeded(
+        window.record_admitted(appends(1)).unwrap_err(),
+        "authority_records_appended",
+    );
+}
+
+#[test]
 fn live_allocation_is_never_forgotten_by_a_new_window() {
     let session = root();
     let first = session.invocation_window().unwrap();

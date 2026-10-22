@@ -75,7 +75,7 @@ impl Drop for RuntimeAllocation<'_> {
 /// Initializes callback services outside a bounded invocation.
 ///
 /// A lazy mount watches its host source, so the mount services include the
-/// native watch services: macOS loads FSEvents' framework here, where no
+/// native watch services: macOS loads the `FSEvents` framework here, where no
 /// finite source invocation has to fund it.
 pub fn initialize_native_mount_services() -> Result<(), NativeMountError> {
     #[cfg(target_os = "macos")]

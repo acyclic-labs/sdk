@@ -2,12 +2,9 @@
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
 
-fn work(cancellation: &CancellationToken) -> NativeMaterializationWork {
-    NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
-        cancellation,
-    )
-    .expect("original ledger")
+fn work(cancellation: &CancellationToken) -> Result<NativeMaterializationWork> {
+    NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
 }
 
 #[tokio::test]
@@ -20,7 +17,7 @@ async fn an_unprepared_task_opens_readonly_from_its_retained_or_released_fence()
     f.host.admit(f.admission(1, json!(0))).await?;
     let unstarted = f
         .host
-        .readonly_journal_owner(task, &work(&cancellation))
+        .readonly_journal_owner(task, &work(&cancellation)?)
         .await;
     assert!(
         unstarted.is_err(),
@@ -31,7 +28,7 @@ async fn an_unprepared_task_opens_readonly_from_its_retained_or_released_fence()
     let original = crate::scheduler::LeaseFence::from(&lease.reservation);
     let running = f
         .host
-        .readonly_journal_owner(task, &work(&cancellation))
+        .readonly_journal_owner(task, &work(&cancellation)?)
         .await?;
     assert_eq!(running.task_binding(), (task, &original));
     drop(running);
@@ -41,14 +38,14 @@ async fn an_unprepared_task_opens_readonly_from_its_retained_or_released_fence()
         .await?;
     let suspended = f
         .host
-        .readonly_journal_owner(task, &work(&cancellation))
+        .readonly_journal_owner(task, &work(&cancellation)?)
         .await?;
     assert_eq!(suspended.task_binding(), (task, &original));
 
     // A task the coordinator never declared has neither journal nor fence.
     let unknown = f
         .host
-        .readonly_journal_owner(TaskId::from_bytes([2; 16]), &work(&cancellation))
+        .readonly_journal_owner(TaskId::from_bytes([2; 16]), &work(&cancellation)?)
         .await;
     assert!(unknown.is_err());
     Ok(())
