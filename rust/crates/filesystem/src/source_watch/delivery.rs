@@ -100,6 +100,8 @@ impl Delivery {
         if failed.is_none() {
             *failed = Some((error, prior));
         }
+        drop(failed);
+        self.sink.delivery_lost();
     }
 
     pub(super) fn take_failure<W: SourceDemandReadWork>(

@@ -134,6 +134,12 @@ pub(crate) trait HostChangeSink: Send + Sync {
         Err(DemandError::NativeWorkUnavailable)
     }
 
+    /// A delivery batch failed, so the changes it carried are lost. Called
+    /// from the failing callback, before any later batch is delivered, so a
+    /// sink can hold the loss as state instead of waiting for the one-shot
+    /// failure report.
+    fn delivery_lost(&self) {}
+
     #[cfg(windows)]
     fn host_changed_wide(
         &self,

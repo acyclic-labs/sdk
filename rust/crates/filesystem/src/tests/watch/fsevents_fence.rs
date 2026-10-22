@@ -109,3 +109,48 @@ fn a_watch_without_exclusions_fences_by_requiring_a_rescan()
     assert_eq!(entries, 0, "the fence wrote nothing into the captured tree");
     Ok(())
 }
+
+/// A read-only `.git` sorts before the harness's own excluded directory, but
+/// cannot hold a cookie: the fence places it in the next one and still
+/// confirms a quiet tree without a rescan.
+#[test]
+fn a_read_only_git_directory_does_not_block_a_quiet_fence() -> Result<(), Box<dyn std::error::Error>>
+{
+    use std::os::unix::fs::PermissionsExt as _;
+    let directory = tempfile::tempdir()?;
+    let git = directory.path().join(".git");
+    let volumes = directory.path().join(".volumes");
+    std::fs::create_dir(&git)?;
+    std::fs::create_dir(&volumes)?;
+    let work =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| error)?;
+    let mut watch = NativeWatch::open_with_profile_with_native_work(
+        directory.path(),
+        native_filesystem_profile(),
+        NativeWatchOptions::new(VolumeLimits::default()),
+        &work,
+    )?;
+    let excluded = [&git, &volumes]
+        .into_iter()
+        .map(|host| {
+            relative_namespace_path(
+                directory.path(),
+                host,
+                native_filesystem_profile(),
+                VolumeLimits::default(),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    watch.exclude_subtrees(&excluded)?;
+    std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o555))?;
+    let quiet = quiet(&mut watch);
+    std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755))?;
+    quiet?;
+    assert_eq!(
+        std::fs::read_dir(&git)?.count(),
+        0,
+        "no cookie reached .git"
+    );
+    Ok(())
+}

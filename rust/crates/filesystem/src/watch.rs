@@ -385,7 +385,7 @@ fn invalidate_root_hints<W: crate::demand::SourceDemandReadWork>(
 /// the fence cookie written there confirms that every earlier change was
 /// delivered: a quiet command never rescans, so it never reads files it did
 /// not touch.
-#[cfg(target_os = "macos")]
+#[cfg(any(test, target_os = "macos"))]
 struct RootHints {
     root: PathBuf,
     shared: Arc<Mutex<SharedState>>,
@@ -393,8 +393,11 @@ struct RootHints {
     _root_allocation: Option<crate::NativeAllocation>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(test, target_os = "macos"))]
 impl RootHints {
+    /// Accepts one delivered batch. The fence cookie confirms delivery only
+    /// once its whole batch is accepted: a batch that fails after the cookie
+    /// lost the changes behind it, so it must not confirm.
     fn accept<W: crate::demand::SourceDemandReadWork>(
         &self,
         changes: &[crate::source_watch::HostChange],
@@ -406,6 +409,7 @@ impl RootHints {
             .shared
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
+        let mut cookie = false;
         for change in changes {
             work.started_io(WorkCounters {
                 items_examined: 1,
@@ -415,7 +419,11 @@ impl RootHints {
                 HostChange::Rebound(relative) | HostChange::Altered(relative) => {
                     Some(relative.as_path())
                 }
-                HostChange::Everything | HostChange::Unconfirmed => None,
+                HostChange::Everything => None,
+                #[cfg(any(target_os = "macos", windows))]
+                HostChange::Unconfirmed => None,
+                #[cfg(windows)]
+                HostChange::File(_) => None,
             };
             let beneath = |host: &Path| {
                 relative.is_some_and(|relative| {
@@ -425,18 +433,21 @@ impl RootHints {
                 })
             };
             if state.fence.as_deref().is_some_and(beneath) {
-                state.fence = None;
-                self.fenced.notify_all();
+                cookie = true;
             } else if !state.excluded.iter().any(|excluded| beneath(excluded)) {
                 state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
                 self.fenced.notify_all();
             }
         }
+        if cookie {
+            state.fence = None;
+            self.fenced.notify_all();
+        }
         Ok(())
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(test, target_os = "macos"))]
 impl crate::source_watch::HostChangeSink for RootHints {
     fn logical_owned_bytes(&self) -> u64 {
         size_of::<Self>() as u64 + self.root.capacity() as u64
@@ -457,6 +468,22 @@ impl crate::source_watch::HostChangeSink for RootHints {
     ) -> Result<(), crate::demand::DemandError> {
         self.accept(changes, work)
     }
+
+    fn delivery_lost(&self) {
+        lose_delivery(&self.shared, &self.fenced);
+    }
+}
+
+/// Holds a lost delivery batch as the watch's state: it stays invalidated,
+/// and every fence waiting on it wakes to refuse, until a rescan begins.
+#[cfg(any(test, target_os = "macos"))]
+fn lose_delivery(shared: &Mutex<SharedState>, fenced: &Condvar) {
+    if let Ok(mut state) = shared.lock() {
+        state
+            .invalidation
+            .get_or_insert(WatchInvalidationReason::BackendError);
+    }
+    fenced.notify_all();
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -3068,30 +3095,42 @@ impl NativeWatch {
 
     /// FSEvents cannot report that it delivered everything up to now. A
     /// cookie in an excluded subtree can, because one stream delivers in
-    /// event order. A watch that excludes nothing has no place for a cookie
-    /// outside the captured tree, so its fence reports nothing delivered and
-    /// the consumer rescans.
+    /// event order. A watch with no excluded directory that takes a cookie
+    /// has no place for one outside the captured tree, so its fence reports
+    /// nothing delivered and the consumer rescans.
     #[cfg(target_os = "macos")]
     fn fence_fsevents<W: crate::demand::SourceDemandReadWork>(
         &mut self,
         timeout: Duration,
         work: &mut W,
     ) -> Result<bool, NativeWatchError> {
-        if let NativeWatchDriver::Source(watcher) = &self.watcher {
-            self.lost_delivery(watcher.take_failure_with_work(work))?;
-        }
+        self.take_lost_delivery(work)?;
         if !self.confirmable()? {
             return Ok(false);
         }
-        let Some(cookie) = self.fence_cookie_path()? else {
-            return Ok(false);
-        };
         work.started_io(WorkCounters {
             backend_write_operations: 2,
             ..WorkCounters::UNCHARGED
         })
         .map_err(demand_watch_error)?;
-        self.await_cookie(&cookie, timeout)
+        let delivered =
+            self.place_cookie(|_, _| Ok(()))?.is_some() && self.await_cookie(timeout)?;
+        // Every batch before the cookie has now arrived or failed, and a
+        // failure is already held as state; this reports it once.
+        self.take_lost_delivery(work)?;
+        Ok(delivered && self.confirmable()?)
+    }
+
+    /// Reports the source's pending delivery failure, if any, once.
+    #[cfg(target_os = "macos")]
+    fn take_lost_delivery<W: crate::demand::SourceDemandReadWork>(
+        &self,
+        work: &mut W,
+    ) -> Result<(), NativeWatchError> {
+        if let NativeWatchDriver::Source(watcher) = &self.watcher {
+            self.lost_delivery(watcher.take_failure_with_work(work))?;
+        }
+        Ok(())
     }
 
     /// Records a failed delivery batch in the watch's invalidation state. A
@@ -3104,11 +3143,7 @@ impl NativeWatch {
         result: Result<T, crate::demand::DemandError>,
     ) -> Result<T, NativeWatchError> {
         result.map_err(|error| {
-            if let Ok(mut shared) = self.shared.lock() {
-                shared
-                    .invalidation
-                    .get_or_insert(WatchInvalidationReason::BackendError);
-            }
+            lose_delivery(&self.shared, &self.fenced);
             demand_watch_error(error)
         })
     }
@@ -3169,12 +3204,10 @@ impl NativeWatch {
                 crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
             return self.fence_with_work(timeout, &mut work);
         }
-        let delivered = self.fence_cookie().is_ok_and(|cookie| {
-            cookie.is_some_and(|cookie| {
-                self.await_cookie(&cookie, timeout)
-                    .is_ok_and(|delivered| delivered)
-            })
-        });
+        let delivered = self
+            .place_cookie(Self::watch_fence_home)
+            .is_ok_and(|placed| placed.is_some())
+            && self.await_cookie(timeout).is_ok_and(|delivered| delivered);
         let mut state = self
             .shared
             .lock()
@@ -3186,36 +3219,45 @@ impl NativeWatch {
         Ok(())
     }
 
-    fn fence_cookie(&mut self) -> Result<Option<PathBuf>, NativeWatchError> {
-        let Some(host_directory) = self.fence_directory()? else {
-            return Ok(None);
-        };
-        let relative = host_directory
+    /// Registers an adapter watch on a fence home before a cookie is written
+    /// there, so the cookie's notification can arrive.
+    fn watch_fence_home(&mut self, home: &Path) -> Result<(), NativeWatchError> {
+        let relative = home
             .strip_prefix(&self.root)
             .map_err(|_| NativeWatchError::UnrepresentablePath)?;
         let directory =
             crate::native_capture::host_path_to_namespace(relative, self.profile, self.limits)
                 .map_err(|_| NativeWatchError::UnrepresentablePath)?;
-        self.watch_directory(&directory)?;
-        self.fence_cookie_path()
+        self.watch_directory(&directory)
     }
 
-    /// Names a fresh cookie in the preferred excluded subtree, if the watch
-    /// excludes any.
-    fn fence_cookie_path(&mut self) -> Result<Option<PathBuf>, NativeWatchError> {
-        let Some(host_directory) = self.fence_directory()? else {
-            return Ok(None);
-        };
-        self.fences = self.fences.wrapping_add(1);
-        Ok(Some(host_directory.join(format!(
-            ".acyclic-fence-{}-{}",
-            std::process::id(),
-            self.fences
-        ))))
+    /// Arms the fence on a fresh cookie in the first excluded directory that
+    /// takes one, and returns the cookie. An excluded directory the process
+    /// cannot write, such as a read-only `.git`, cannot hold a cookie, so the
+    /// next one is tried; when none can, nothing is armed and the fence
+    /// confirms nothing, so the consumer rescans instead of failing.
+    pub(crate) fn place_cookie(
+        &mut self,
+        mut prepare: impl FnMut(&mut Self, &Path) -> Result<(), NativeWatchError>,
+    ) -> Result<Option<PathBuf>, NativeWatchError> {
+        for home in self.fence_homes()? {
+            prepare(self, &home)?;
+            self.fences = self.fences.wrapping_add(1);
+            let cookie = home.join(format!(
+                ".acyclic-fence-{}-{}",
+                std::process::id(),
+                self.fences
+            ));
+            if self.write_cookie(&cookie)? {
+                return Ok(Some(cookie));
+            }
+        }
+        Ok(None)
     }
 
-    /// Writes `cookie` and reports whether its notification arrived in time.
-    fn await_cookie(&self, cookie: &Path, timeout: Duration) -> Result<bool, NativeWatchError> {
+    /// Arms the fence on `cookie` and writes it. A cookie the host refuses
+    /// arms nothing.
+    fn write_cookie(&self, cookie: &Path) -> Result<bool, NativeWatchError> {
         let mut state = self
             .shared
             .lock()
@@ -3225,9 +3267,20 @@ impl NativeWatch {
         }
         state.fence = Some(cookie.to_path_buf());
         drop(state);
-        std::fs::File::create_new(cookie)
-            .and_then(|_| std::fs::remove_file(cookie))
-            .map_err(NativeWatchError::Io)?;
+        if std::fs::File::create_new(cookie).is_err() {
+            self.shared
+                .lock()
+                .map_err(|_| NativeWatchError::StatePoisoned)?
+                .fence = None;
+            return Ok(false);
+        }
+        std::fs::remove_file(cookie).map_err(NativeWatchError::Io)?;
+        Ok(true)
+    }
+
+    /// Reports whether the armed cookie's notification arrived in time, with
+    /// no delivery lost before it.
+    pub(crate) fn await_cookie(&self, timeout: Duration) -> Result<bool, NativeWatchError> {
         let deadline = Instant::now() + timeout;
         let mut state = self
             .shared
@@ -3247,27 +3300,35 @@ impl NativeWatch {
         Ok(state.invalidation.is_none())
     }
 
-    /// The preferred excluded subtree for fence cookies, created if needed,
-    /// or `None` when the watch excludes nothing.
-    fn fence_directory(&self) -> Result<Option<PathBuf>, NativeWatchError> {
+    /// The excluded directories that may hold fence cookies, in order. When
+    /// none exists yet, the first is created; one the host refuses to create
+    /// holds nothing.
+    fn fence_homes(&self) -> Result<Vec<PathBuf>, NativeWatchError> {
         let state = self
             .shared
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
-        for host in &state.excluded {
-            match host.symlink_metadata() {
-                Ok(metadata) if metadata.is_dir() => return Ok(Some(host.clone())),
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(NativeWatchError::Io(error)),
-            }
+        let homes = state
+            .excluded
+            .iter()
+            .filter(|host| {
+                host.symlink_metadata()
+                    .is_ok_and(|metadata| metadata.is_dir())
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !homes.is_empty() {
+            return Ok(homes);
         }
         let Some(host) = state.excluded.first().cloned() else {
-            return Ok(None);
+            return Ok(Vec::new());
         };
         drop(state);
-        std::fs::create_dir(&host).map_err(NativeWatchError::Io)?;
-        Ok(Some(host))
+        Ok(std::fs::create_dir(&host)
+            .is_ok()
+            .then_some(host)
+            .into_iter()
+            .collect())
     }
 
     /// Moves at most `maximum_changes` contiguous hints from the native queue.
