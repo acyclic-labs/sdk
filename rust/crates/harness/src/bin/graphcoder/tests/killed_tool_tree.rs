@@ -25,6 +25,11 @@ mod oracle {
         alive_path: PathBuf,
     }
 
+    /// `path` as one shell word, whatever characters it holds.
+    fn quoted(path: &Path) -> String {
+        format!("'{}'", path.display().to_string().replace('\'', r"'\''"))
+    }
+
     fn fifo(path: &Path) {
         let status = std::process::Command::new("mkfifo")
             .arg(path)
@@ -76,11 +81,11 @@ mod oracle {
         /// ends its descendant, so a released tree exits on its own.
         pub(super) fn script(&self) -> String {
             format!(
-                "exec 3>'{}'; sleep 3600 & printf started > '{}'; read -r _ < '{}'; printf SLEPT > '{}'; kill $!",
-                self.alive_path.display(),
-                self.started.display(),
-                self.gate.display(),
-                self.effect.display()
+                "exec 3>{}; sleep 3600 & printf started > {}; read -r _ < {}; printf SLEPT > {}; kill $!",
+                quoted(&self.alive_path),
+                quoted(&self.started),
+                quoted(&self.gate),
+                quoted(&self.effect)
             )
         }
 

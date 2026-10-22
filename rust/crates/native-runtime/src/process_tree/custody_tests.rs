@@ -13,20 +13,21 @@ use std::time::Duration;
 const MODE: &str = "ACYCLIC_CUSTODY_TEST_MODE";
 const ROOT: &str = "ACYCLIC_CUSTODY_TEST_ROOT";
 
+/// A shell program that publishes its descendant's PID at the path given as
+/// its first argument, then waits; paths are arguments, never script text.
+#[cfg(unix)]
+const PUBLISHING_PROGRAM: &str = r#"sleep 3600 & echo $! > "$1.tmp"; mv "$1.tmp" "$1"; wait"#;
+
 /// A long-lived program whose PID the owner publishes. On Unix it is a
 /// background grandchild, so only whole-tree custody reaches it.
 fn program(root: &Path) -> Command {
     #[cfg(unix)]
     {
         let pid = root.join("pid");
-        let mut command = crate::shell_command(
-            &format!(
-                "sleep 3600 & echo $! > '{0}.tmp'; mv '{0}.tmp' '{0}'; wait",
-                pid.display()
-            ),
-            Some("sh"),
-        );
+        let mut command = crate::shell_command(PUBLISHING_PROGRAM, Some("sh"));
         command
+            .arg("sh")
+            .arg(pid)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -52,6 +53,10 @@ fn custody_owner_helper() {
         return;
     };
     let root = PathBuf::from(std::env::var_os(ROOT).expect("owner root"));
+    #[cfg(windows)]
+    if mode == "churn" {
+        return churn(&root);
+    }
     let mut command = program(&root);
     let tree = if mode == "custodied" {
         let custody = ProcessCustody::open(&root.join("processes")).expect("custody");
@@ -290,23 +295,48 @@ fn handle_count(pid: u32) -> u32 {
     count
 }
 
+/// How many members a churning tree starts and ends.
+#[cfg(windows)]
+const CHURNED: u32 = 100;
+
+/// A tree member that starts and ends [`CHURNED`] members one at a time,
+/// marks that it has, and then lives until killed. Each is this executable
+/// started as a custodian with no owner to read, which exits before `main`.
+#[cfg(windows)]
+fn churn(root: &Path) {
+    for _ in 0..CHURNED {
+        let status = Command::new(std::env::current_exe().expect("test executable"))
+            .env("ACYCLIC_PROCESS_CUSTODIAN", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("member");
+        assert!(!status.success(), "an ownerless custodian ran");
+    }
+    fs::write(root.join("churned"), b"churned").expect("churned");
+    loop {
+        thread::park();
+    }
+}
+
 /// A custodian holds state for live members only: a tree that starts and
-/// ends many short commands leaves its custodian's handles bounded.
+/// ends many short members leaves its custodian's handles bounded.
 #[cfg(windows)]
 #[test]
 fn a_custodians_handles_track_live_members_not_every_member() {
-    use std::os::windows::process::CommandExt as _;
-    const CHILDREN: u32 = 500;
     let root = tempfile::tempdir().expect("root");
     let processes = root.path().join("processes");
     let custody = ProcessCustody::acquire(&processes).expect("custody");
     let churned = root.path().join("churned");
-    let mut command = Command::new("cmd");
+    let mut command = Command::new(std::env::current_exe().expect("test executable"));
     command
-        .raw_arg(format!(
-            "/d /c (for /l %i in (1,1,{CHILDREN}) do @cmd /d /c exit) & echo done>{} & ping -n 60 127.0.0.1>nul",
-            churned.display()
-        ))
+        .args([
+            "--exact",
+            "process_tree::custody_tests::custody_owner_helper",
+        ])
+        .env(MODE, "churn")
+        .env(ROOT, root.path())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -321,11 +351,11 @@ fn a_custodians_handles_track_live_members_not_every_member() {
         thread::sleep(Duration::from_millis(5));
     }
     let after = handle_count(custodian);
-    eprintln!("custodian handles: {before} before, {after} after {CHILDREN} members");
+    eprintln!("custodian handles: {before} before, {after} after {CHURNED} members");
     tree.terminate(None).expect("terminate");
     assert!(
-        after < before + CHILDREN / 10,
-        "{CHILDREN} exited members left the custodian holding {after} handles, from {before}"
+        after < before + CHURNED / 10,
+        "{CHURNED} exited members left the custodian holding {after} handles, from {before}"
     );
 }
 
@@ -409,10 +439,12 @@ fn custodied_tree_reports_the_programs_outcome_and_leaves_no_descendant() {
         ("kill -TERM $$", None, Some(libc::SIGTERM)),
     ] {
         let mut command = crate::shell_command(
-            &format!("sleep 3600 & echo $! > '{}'; {script}", pid.display()),
+            &format!(r#"sleep 3600 & echo $! > "$1"; {script}"#),
             Some("sh"),
         );
         command
+            .arg("sh")
+            .arg(&pid)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -496,13 +528,8 @@ fn fence_kills_the_tree_of_a_zombie_warden() {
     let processes = root.path().join("processes");
     let custody = ProcessCustody::open(&processes).expect("custody");
     let pid = root.path().join("pid");
-    let mut command = crate::shell_command(
-        &format!(
-            "sleep 3600 & echo $! > '{0}.tmp'; mv '{0}.tmp' '{0}'; wait",
-            pid.display()
-        ),
-        Some("sh"),
-    );
+    let mut command = crate::shell_command(PUBLISHING_PROGRAM, Some("sh"));
+    command.arg("sh").arg(&pid);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -540,12 +567,10 @@ fn fence_kills_the_tree_of_a_zombie_warden() {
 #[cfg(target_os = "linux")]
 fn escaping_program(pid: &Path) -> Command {
     let mut command = crate::shell_command(
-        &format!(
-            "setsid sh -c 'echo $$ > \"{0}.tmp\"; mv \"{0}.tmp\" \"{0}\"; exec sleep 3600' & wait",
-            pid.display()
-        ),
+        r#"setsid sh -c 'echo $$ > "$1.tmp"; mv "$1.tmp" "$1"; exec sleep 3600' sh "$1" & wait"#,
         Some("sh"),
     );
+    command.arg("sh").arg(pid);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
