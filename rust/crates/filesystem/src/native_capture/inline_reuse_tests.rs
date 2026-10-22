@@ -6,8 +6,8 @@ async fn capture(
     path: &NamespacePath,
     work: &NativeMaterializationWork,
     baseline: Option<&NativeViewBaseline>,
-) -> CaptureReceipt {
-    capture_subtrees_with_native_work(
+) -> Result<CaptureReceipt, crate::OperationFailure<CaptureError>> {
+    Ok(capture_subtrees_with_native_work(
         checkout,
         std::slice::from_ref(path),
         options,
@@ -16,9 +16,8 @@ async fn capture(
         baseline,
         work,
     )
-    .await
-    .unwrap()
-    .value
+    .await?
+    .value)
 }
 
 async fn check(body: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
@@ -42,7 +41,8 @@ async fn check(body: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         .set_accessed(before.accessed()?)
         .set_modified(before.modified()?);
     let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
     let mut checkout = capture_policy_tests::native_checkout(&work).await?;
     let limits = checkout.volume_config().limits;
     let path =
@@ -53,10 +53,10 @@ async fn check(body: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         maximum_paths: 8,
         maximum_extent_spans: 8,
     };
-    capture(&mut checkout, &options, &path, &work, None).await;
+    capture(&mut checkout, &options, &path, &work, None).await?;
     let baseline = NativeViewBaseline::new(options.expected_root_identity, true);
     let prior = checkout.root().clone();
-    let receipt = capture(&mut checkout, &options, &path, &work, Some(&baseline)).await;
+    let receipt = capture(&mut checkout, &options, &path, &work, Some(&baseline)).await?;
     assert_eq!(receipt.changed_paths, 0, "unchanged body {body:?}");
     assert_eq!(checkout.root(), &prior);
     if !body.is_empty() {
@@ -68,7 +68,7 @@ async fn check(body: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
             .write(true)
             .open(&file)?
             .set_times(times)?;
-        let receipt = capture(&mut checkout, &options, &path, &work, Some(&baseline)).await;
+        let receipt = capture(&mut checkout, &options, &path, &work, Some(&baseline)).await?;
         assert_eq!(
             receipt.changed_paths, 1,
             "same length edit with restored timestamps"
@@ -95,10 +95,8 @@ async fn check(body: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         .native_volume_work(WorkBudget {
             items_examined: 4_096,
             ..WorkBudget::UNBOUNDED
-        })
-        .unwrap()
-        .invocation_view()
-        .unwrap();
+        })?
+        .invocation_view()?;
     let receipt = capture(
         &mut checkout,
         &options,
@@ -106,7 +104,7 @@ async fn check(body: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         &growth_work,
         Some(&baseline),
     )
-    .await;
+    .await?;
     assert_eq!(
         receipt.changed_paths, 1,
         "inline file grew beyond inline capacity"

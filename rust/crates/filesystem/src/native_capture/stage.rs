@@ -86,21 +86,11 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     let data_ranges = ranges.as_deref().unwrap_or(&full);
     let mut staged = capture_vec(data_ranges.len(), meter)?;
     for range in data_ranges {
-        let bounded = acyclic_native_runtime::AsyncRangeReader::new(
+        let mut bounded = super::inline_reuse::observed_range(
             std::borrow::Borrow::<acyclic_native_runtime::NativeFile>::borrow(&native),
-            range.offset,
-            range.length,
-        );
-        let observed = inline
-            .as_mut()
-            .map(|bytes| {
-                let start = usize::try_from(range.offset).map_err(|_| WorkError::Overflow)?;
-                let length = usize::try_from(range.length).map_err(|_| WorkError::Overflow)?;
-                let end = start.checked_add(length).ok_or(WorkError::Overflow)?;
-                bytes.get_mut(start..end).ok_or(WorkError::Overflow)
-            })
-            .transpose()?;
-        let mut bounded = super::inline_reuse::ObservedSource::new(bounded, observed);
+            range,
+            &mut inline,
+        )?;
         let mut accounting = crate::kernel::KernelAccounting::native(meter, meter.cancellation());
         let content = stager
             .stage_content_with_accounting(

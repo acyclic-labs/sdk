@@ -10,6 +10,24 @@ pub(super) struct ObservedSource<'a, F> {
     filled: usize,
 }
 
+pub(super) fn observed_range<'a>(
+    native: &'a acyclic_native_runtime::NativeFile,
+    range: &HostDataRange,
+    inline: &'a mut Option<[u8; crate::kernel::MAXIMUM_INLINE_FILE_BYTES]>,
+) -> Result<ObservedSource<'a, &'a acyclic_native_runtime::NativeFile>, WorkError> {
+    let bounded = acyclic_native_runtime::AsyncRangeReader::new(native, range.offset, range.length);
+    let observed = inline
+        .as_mut()
+        .map(|bytes| {
+            let start = usize::try_from(range.offset).map_err(|_| WorkError::Overflow)?;
+            let length = usize::try_from(range.length).map_err(|_| WorkError::Overflow)?;
+            let end = start.checked_add(length).ok_or(WorkError::Overflow)?;
+            bytes.get_mut(start..end).ok_or(WorkError::Overflow)
+        })
+        .transpose()?;
+    Ok(ObservedSource::new(bounded, observed))
+}
+
 impl<'a, F> ObservedSource<'a, F> {
     pub(super) fn new(
         inner: acyclic_native_runtime::AsyncRangeReader<F>,
