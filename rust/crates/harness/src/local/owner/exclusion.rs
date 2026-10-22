@@ -65,7 +65,7 @@ fn bounded(file: fs::File) -> std::result::Result<Vec<u8>, DemandError> {
 /// whether the file ends at a line boundary. Git applies the last matching
 /// rule and only a negation (`!`) can re-include a path, so a rule followed by
 /// any negation may be undone and is reasserted after it.
-fn contains(file: &mut fs::File, pattern: &[u8]) -> std::io::Result<(bool, bool)> {
+fn contains(mut file: &fs::File, pattern: &[u8]) -> std::io::Result<(bool, bool)> {
     let length = file.metadata()?.len();
     let mut remaining = length;
     let mut buffer = [0; 8192];
@@ -73,7 +73,7 @@ fn contains(file: &mut fs::File, pattern: &[u8]) -> std::io::Result<(bool, bool)
     let (mut start, mut negation, mut effective) = (true, false, false);
     let mut last = None;
     while remaining != 0 {
-        let count = (&mut *file).take(remaining).read(&mut buffer)?;
+        let count = (&mut file).take(remaining).read(&mut buffer)?;
         if count == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -279,11 +279,14 @@ impl Exclusion {
             .common
             .create_directories(Path::new("info"))
             .map_err(denied)?;
-        let mut file = info.open_file(Path::new("exclude"), true).map_err(denied)?;
         // Serialize the read/append pair across processes; retain opaque user
         // bytes and avoid duplicate records on reopen.
-        file.lock().map_err(storage)?;
-        let (present, line_ended) = contains(&mut file, &self.pattern).map_err(storage)?;
+        let file = acyclic_native_runtime::FileLock::acquire(
+            info.open_file(Path::new("exclude"), true).map_err(denied)?,
+            acyclic_native_runtime::FileLockMode::Exclusive,
+        )
+        .map_err(storage)?;
+        let (present, line_ended) = contains(&file, &self.pattern).map_err(storage)?;
         if !present {
             let mut appended = Vec::new();
             if !line_ended {
@@ -292,7 +295,7 @@ impl Exclusion {
             appended.extend_from_slice(b"# acyclic harness checkout incarnation\n");
             appended.extend_from_slice(&self.pattern);
             appended.push(b'\n');
-            acyclic_native_runtime::write_file_all(&mut file, &appended).map_err(storage)?;
+            acyclic_native_runtime::write_file_all(&mut &*file, &appended).map_err(storage)?;
         }
         info.sync_file(&file).map_err(storage)?;
         info.sync_directory().map_err(storage)
@@ -306,14 +309,18 @@ impl Exclusion {
             Err(error) if missing(&error) => return Ok(false),
             Err(error) => return Err(storage(error)),
         };
-        let mut file = match info.open_file(Path::new("exclude"), false) {
+        let file = match info.open_file(Path::new("exclude"), false) {
             Ok(file) => file,
             Err(error) if missing(&error) => return Ok(false),
             Err(error) => return Err(storage(error)),
         };
         // Serialize with appenders, which re-check under their own lock.
-        file.lock().map_err(storage)?;
-        if !contains(&mut file, &self.pattern).map_err(storage)?.0 {
+        let file = acyclic_native_runtime::FileLock::acquire(
+            file,
+            acyclic_native_runtime::FileLockMode::Exclusive,
+        )
+        .map_err(storage)?;
+        if !contains(&file, &self.pattern).map_err(storage)?.0 {
             return Ok(false);
         }
         settle(&info, &file)?;
@@ -386,7 +393,7 @@ mod tests {
             let mut file = tempfile::tempfile().unwrap();
             file.write_all(&bytes).unwrap();
             file.rewind().unwrap();
-            prop_assert_eq!(contains(&mut file, pattern).unwrap().0, expected);
+            prop_assert_eq!(contains(&file, pattern).unwrap().0, expected);
         }
     }
 
