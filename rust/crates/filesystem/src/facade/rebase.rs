@@ -372,8 +372,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 return Err(error);
             }
         }
-        let settled = match settled.map(|settled| settled.release(accounting)).transpose() {
-            Ok(settled) => settled,
+        // The followed ledger is built from the ledger as it is now, under
+        // its lock, so nothing recorded since classification is lost.
+        let ledger = Arc::clone(&self.dependencies.proof);
+        let mut proof = ledger.lock().unwrap_or_else(PoisonError::into_inner);
+        let followed = match followed_ledger(
+            &proof.dependencies,
+            &self.dependencies.data_custody,
+            settled,
+            accounting,
+        ) {
+            Ok(Ok(followed)) => followed,
+            Ok(Err(conflicted)) => {
+                rebased.retire(accounting)?;
+                crate::kernel::retire_allocation(classified.1, 0, accounting)?;
+                return Ok(conflicted);
+            }
             Err(error) => {
                 rebased.retire(accounting)?;
                 return Err(error);
@@ -381,9 +395,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         };
         // Working-root transfer is the final fallible step. No operation
         self.install_root_replacement(candidate_object, rebased.value, prepared);
-        if let Some(settled) = settled {
-            self.dependencies.proof().follow_settlements(&settled);
+        if let Some(followed) = followed {
+            proof.dependencies = followed;
         }
+        drop(proof);
         self.generation_root = candidate_object;
         self.authority_head = Some(candidate_head);
         Ok(classified)
@@ -506,5 +521,30 @@ pub(super) fn probe_limits(config: VolumeConfig) -> ProbeLimits {
         maximum_extent_spans: config.limits.maximum_directory_page_entries,
         maximum_content_payload_bytes: config.limits.maximum_read_bytes,
         maximum_directory_entries: config.limits.maximum_directory_page_entries,
+    }
+}
+
+type Decided = (RebaseDecision, crate::kernel::allocation::KernelOwnedAllocation);
+
+/// The ledger a rebase installs: `dependencies` with each settlement
+/// followed, built and charged to `owner` before the rebased root is
+/// installed. Two settlements that now expect different states of one region
+/// make the rebase conflict on its settled regions instead.
+fn followed_ledger(
+    dependencies: &CheckoutDependencies,
+    owner: &Arc<crate::kernel::ProofDataCustody>,
+    settled: Option<crate::kernel::Settled<'_>>,
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+) -> Result<Result<Option<CheckoutDependencies>, Decided>, FsError> {
+    let Some(mut settled) = settled else {
+        return Ok(Ok(None));
+    };
+    match settled.follow(dependencies, owner, accounting) {
+        Ok(Some(followed)) => settled.retire(accounting).map(|()| Ok(Some(followed))),
+        Ok(None) => settled.into_conflicts(accounting).map(Err),
+        Err(error) => {
+            settled.retire(accounting)?;
+            Err(error)
+        }
     }
 }

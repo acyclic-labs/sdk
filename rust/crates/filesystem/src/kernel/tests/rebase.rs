@@ -535,3 +535,67 @@ fn sync_rebase_conflict_limit_and_truncation_are_exact() -> Result<(), Box<dyn s
     assert_eq!(probe.calls.get(), 2);
     Ok(())
 }
+
+/// A rebase's followed ledger is a new, charged copy: it never unshares the
+/// snapshot the classifier borrowed in place, its name data is admitted and
+/// copied under the caller's budget (a denied budget leaves nothing behind),
+/// and each settlement lands on its region or its replacement's.
+#[test]
+fn followed_ledger_is_a_charged_copy_of_the_live_ledger() -> Result<(), Box<dyn std::error::Error>> {
+    let replacement = FileId::from_bytes([82; 16]);
+    let file = DependencyRegion::FileLength(FileId::from_bytes([81; 16]));
+    let name = DependencyRegion::DirectoryName {
+        directory_id: FileId::from_bytes([83; 16]),
+        name: LogicalName::new(NameEncoding::Utf8, b"report.txt".to_vec(), 64)?,
+    };
+    let old = DependencyState::Present(Digest::from_bytes([84; 32]));
+    let new = DependencyState::Present(Digest::from_bytes([85; 32]));
+    let ledger = CheckoutDependencies::new(
+        [file.clone(), name.clone()].map(|region| Dependency {
+            region,
+            expected: old,
+        }),
+        [],
+        8,
+    )?;
+    let held = ledger.clone();
+    let mut settled = vec![
+        (&name, Settlement::Expect(new)),
+        (
+            &file,
+            Settlement::Follow {
+                file: replacement,
+                expected: new,
+            },
+        ),
+    ];
+    settled.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+    let owner = Arc::new(ProofDataCustody::default());
+    let cancellation = CancellationToken::new();
+    let mut denied = super::allocation::KernelAccounting::standalone(
+        WorkBudget {
+            peak_allocation_bytes: 1,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    );
+    assert!(ledger.followed_with_accounting(&settled, Some(&owner), &mut denied).is_err());
+    assert_eq!(owner.retained_bytes(), 0);
+    let mut accounting =
+        super::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let followed = ledger
+        .followed_with_accounting(&settled, Some(&owner), &mut accounting)?
+        .ok_or("two settlements expect one state")?;
+    assert_ne!(accounting.spent().bytes_copied, 0, "name data is copied");
+    assert_ne!(owner.retained_bytes(), 0, "the copy is charged to its owner");
+    assert!(!Arc::ptr_eq(&followed.captured, &held.captured));
+    assert_ne!(followed.data_generation, held.data_generation);
+    assert_eq!(ledger, held, "the borrowed snapshot is untouched");
+    let expected = |region: &DependencyRegion| {
+        followed.captured.entries.get(region).map(|state| state.expected)
+    };
+    assert_eq!(expected(&file), None);
+    assert_eq!(expected(&file.of_file(replacement)), Some(new));
+    assert_eq!(expected(&name), Some(new));
+    Ok(())
+}

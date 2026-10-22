@@ -265,8 +265,14 @@ pub(crate) async fn classify_rebase_with_accounting<P: AccountingRebaseProbe>(
 pub(crate) enum Settlement {
     /// The region keeps its key and now expects the candidate's state.
     Expect(DependencyState),
-    /// A file region of the replaced identity now names its replacement.
-    Follow(FileId),
+    /// A file region of the replaced identity now names the same region of
+    /// its replacement, expecting the candidate's state there.
+    Follow {
+        /// The replacement identity.
+        file: FileId,
+        /// The candidate's state of the replacement's region.
+        expected: DependencyState,
+    },
 }
 
 /// Mismatches that a file replacement settled instead of conflicting. The
@@ -298,22 +304,18 @@ impl<'d> Settled<'d> {
         ))
     }
 
-    /// Releases the accounted settlement and returns its regions for the
-    /// infallible ledger update that completes a rebase. Nothing allocates
-    /// between this release and the vector's drop.
-    pub(crate) fn release(
-        self,
+    /// The ledger `dependencies` becomes once the candidate merge lands,
+    /// built and charged to `owner`; `None` when two settlements expect
+    /// different states of one region, which then conflicts.
+    pub(crate) fn follow(
+        &mut self,
+        dependencies: &CheckoutDependencies,
+        owner: &Arc<super::ProofDataCustody>,
         accounting: &mut super::allocation::KernelAccounting<'_>,
-    ) -> Result<Vec<(&'d DependencyRegion, Settlement)>, crate::FsError> {
-        let Self { regions, conflicts } = self;
-        let super::persistent_point::Owned {
-            value,
-            allocation,
-            bytes,
-        } = regions;
-        let conflicts = conflicts.conflicts.retire(accounting);
-        super::persistent_point::retire_allocation(allocation, bytes, accounting)?;
-        conflicts.map(|()| value)
+    ) -> Result<Option<CheckoutDependencies>, crate::FsError> {
+        // Deferred regions settle after the ledger pass; restore its order.
+        self.regions.value.sort_unstable_by_key(|(region, _)| *region);
+        dependencies.followed_with_accounting(&self.regions.value, Some(owner), accounting)
     }
 
     pub(crate) fn retire(
@@ -464,7 +466,7 @@ pub(crate) async fn classify_rebase_settling_with_accounting<'d, P: AccountingRe
     let result = async {
         work.ledger_pass(probe, [base, candidate], dependencies, accounting, cancellation)
             .await?;
-        work.deferred_reads(probe, candidate, ledger, accounting, cancellation)
+        work.deferred_regions(probe, candidate, ledger, accounting, cancellation)
             .await
     }
     .await;
@@ -472,9 +474,9 @@ pub(crate) async fn classify_rebase_settling_with_accounting<'d, P: AccountingRe
         conflicts,
         settled,
         pairs,
-        reads,
+        deferred,
     } = work;
-    let retired = pairs.retire(accounting).and(reads.retire(accounting));
+    let retired = pairs.retire(accounting).and(deferred.retire(accounting));
     if let Err(error) = result.and_then(|()| retired.map_err(ClassifyRebaseFailure::Accounting)) {
         let retired = conflicts.conflicts.retire(accounting);
         settled.retire(accounting).and(retired).map_err(ClassifyRebaseFailure::Accounting)?;
@@ -502,7 +504,7 @@ pub(crate) async fn classify_rebase_settling_with_accounting<'d, P: AccountingRe
     settled
         .retire(accounting)
         .map_err(ClassifyRebaseFailure::Accounting)?;
-    // Deferred reads append after the ledger pass; report in ledger order.
+    // Deferred regions append after the ledger pass; report in ledger order.
     conflicts.sort_by(|left, right| left.region.cmp(&right.region));
     Ok((
         RebaseDecision::Conflicted {
@@ -522,9 +524,9 @@ struct Classification<'d> {
     settled: Settled<'d>,
     /// Replaced identity and its replacement, from settled names.
     pairs: super::persistent_point::Owned<Vec<(FileId, FileId)>>,
-    /// Reads of an identity the candidate removed, checked once every
+    /// Regions of an identity the candidate removed, settled once every
     /// replaced name is known.
-    reads: super::persistent_point::Owned<Vec<(&'d DependencyRegion, States)>>,
+    deferred: super::persistent_point::Owned<Vec<(&'d DependencyRegion, States)>>,
 }
 
 impl Classification<'_> {
@@ -560,11 +562,11 @@ impl Classification<'_> {
             }
         };
         match Owned::allocate(0, accounting) {
-            Ok(reads) => Ok(Self {
+            Ok(deferred) => Ok(Self {
                 conflicts,
                 settled,
                 pairs,
-                reads,
+                deferred,
             }),
             Err(error) => {
                 pairs.retire(accounting)?;
@@ -578,7 +580,7 @@ impl Classification<'_> {
 
 impl<'d> Classification<'d> {
     /// Probes every ledger region in `candidate`, settling or recording
-    /// each mismatch; reads of removed identities wait in `reads`.
+    /// each mismatch; regions of removed identities wait in `deferred`.
     async fn ledger_pass<P: AccountingRebaseProbe>(
         &mut self,
         probe: &P,
@@ -625,20 +627,17 @@ impl<'d> Classification<'d> {
                     }
                     pair.map(|_| Settlement::Expect(actual))
                 }
-                (_, Some(file)) if captured.usage == DependencyUse::Mutation => {
-                    let removed = actual == DependencyState::Absent
-                        || probe
-                            .removed_locally_with_accounting(file, accounting, cancellation)
-                            .await?;
-                    removed.then_some(Settlement::Expect(actual))
-                }
                 (_, Some(_)) if actual == DependencyState::Absent => {
-                    self.reads
+                    self.deferred
                         .ensure_for_push(ledger, accounting)
                         .map_err(ClassifyRebaseFailure::Accounting)?;
-                    self.reads.value.push((region, states));
+                    self.deferred.value.push((region, states));
                     continue;
                 }
+                (_, Some(file)) if captured.usage == DependencyUse::Mutation => probe
+                    .removed_locally_with_accounting(file, accounting, cancellation)
+                    .await?
+                    .then_some(Settlement::Expect(actual)),
                 _ => None,
             };
             self.record(region, states, settlement, ledger, accounting)
@@ -647,10 +646,14 @@ impl<'d> Classification<'d> {
         Ok(())
     }
 
-    /// Checks each read of a removed identity against the same region of
-    /// its replacement, once every replaced name is known (the ledger orders
-    /// names after file regions).
-    async fn deferred_reads<P: AccountingRebaseProbe>(
+    /// Carries each region of a removed identity to the same region of its
+    /// replacement, once every replaced name is known (the ledger orders
+    /// names after file regions). A read must still see what it saw there.
+    /// A compare-before-write follows the replacement whatever its state, so
+    /// a later head change of those bytes is a mismatch the merge decides;
+    /// without a replacement it expects the absence, for the merge to decide
+    /// the deletion.
+    async fn deferred_regions<P: AccountingRebaseProbe>(
         &mut self,
         probe: &P,
         candidate: GenerationId,
@@ -659,7 +662,10 @@ impl<'d> Classification<'d> {
         cancellation: &CancellationToken,
     ) -> Result<(), ClassifyRebaseFailure<P::Error>> {
         self.pairs.value.sort_unstable();
-        for &(region, (usage, expected, absent)) in &self.reads.value {
+        for index in 0..self.deferred.value.len() {
+            let Some(&(region, (usage, expected, absent))) = self.deferred.value.get(index) else {
+                break;
+            };
             cancellation
                 .check()
                 .map_err(|error| ClassifyRebaseFailure::Accounting(error.into()))?;
@@ -672,8 +678,10 @@ impl<'d> Classification<'d> {
                     .map(|(_, replacement)| *replacement)
             });
             let Some(replacement) = replacement else {
-                self.conflicts
-                    .push(region, (usage, expected, absent), accounting)
+                let states = (usage, expected, absent);
+                let settlement =
+                    (usage == DependencyUse::Mutation).then_some(Settlement::Expect(absent));
+                self.record(region, states, settlement, ledger, accounting)
                     .map_err(ClassifyRebaseFailure::Accounting)?;
                 continue;
             };
@@ -691,15 +699,13 @@ impl<'d> Classification<'d> {
                     cancellation,
                 )
                 .await?;
-            let settlement = (actual == expected).then_some(Settlement::Follow(replacement));
-            let settled = &mut self.settled;
-            let conflicts = &mut self.conflicts;
-            let states = (usage, expected, actual);
-            match settlement {
-                Some(settlement) => settle(settled, region, states, settlement, ledger, accounting),
-                None => conflicts.push(region, states, accounting),
-            }
-            .map_err(ClassifyRebaseFailure::Accounting)?;
+            let follows = usage == DependencyUse::Mutation || actual == expected;
+            let settlement = follows.then_some(Settlement::Follow {
+                file: replacement,
+                expected: actual,
+            });
+            self.record(region, (usage, expected, actual), settlement, ledger, accounting)
+                .map_err(ClassifyRebaseFailure::Accounting)?;
         }
         Ok(())
     }

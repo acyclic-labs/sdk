@@ -865,6 +865,11 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
         let record = self
             .record_with_accounting(generation, file_id, accounting, cancellation)
             .await?;
+        // A captured range lay within its file. Where the file now ends
+        // before the range does, that exact region no longer exists.
+        if range_past_end(record, region) {
+            return Ok(DependencyState::Absent);
+        }
         self.capture_validated_record_with_accounting(
             record,
             region,
@@ -1409,6 +1414,20 @@ fn validate_capture_batch_error(count: usize, maximum: u32) -> Result<(), crate:
         return Err(AuthenticatedProbeError::TooManyRegions { maximum }.into());
     }
     Ok(())
+}
+
+/// Whether `region` is a content range that extends past the end of the
+/// regular file `record`.
+fn range_past_end(record: Option<FileRecord>, region: &DependencyRegion) -> bool {
+    let DependencyRegion::ContentRange { offset, length, .. } = region else {
+        return false;
+    };
+    let file_bytes = match record.map(|record| record.payload) {
+        Some(FilePayload::InlineRegular(data)) => usize_to_u64(data.as_bytes().len()),
+        Some(FilePayload::Regular { logical_bytes, .. }) => logical_bytes,
+        _ => return false,
+    };
+    offset.checked_add(*length).is_none_or(|end| end > file_bytes)
 }
 
 fn region_owned_bytes(region: &DependencyRegion) -> u64 {

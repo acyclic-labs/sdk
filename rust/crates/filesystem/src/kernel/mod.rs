@@ -89,7 +89,9 @@ pub(crate) use persistent_point::split_allocation;
 pub(crate) use publication::publish_generation_async_guarded_with_native_work;
 pub(crate) use range::plan_extent_range_with_accounting;
 pub(crate) use probe::WorkingRebaseProbe;
-pub(crate) use rebase::{ClassifyRebaseFailure, classify_rebase_settling_with_accounting};
+pub(crate) use rebase::{
+    ClassifyRebaseFailure, Settled, classify_rebase_settling_with_accounting,
+};
 pub(crate) use regular_mutation::apply_regular_mutation_with_accounting;
 pub(crate) use search::binary_search_with_accounting;
 
