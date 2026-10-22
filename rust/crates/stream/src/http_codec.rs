@@ -63,19 +63,26 @@ fn request_json_append(input: &[u8]) -> Result<Value> {
 fn append_json(request: &crate::AppendRequest) -> Result<Value> {
     crate::request::validate_records(&request.records).map_err(|error| error.code())?;
     crate::request::validate_append_size(request).map_err(|error| error.code())?;
-    let values: Vec<_> = request
-        .records
-        .iter()
-        .map(|value| STANDARD.encode(value))
-        .collect();
+    let values: Vec<_> = request.records.iter().map(append_record_json).collect();
     let mut value = serde_json::Map::from_iter([
         ("path".into(), json!(request.path.to_string())),
-        ("values".into(), json!(values)),
+        ("records".into(), json!(values)),
     ]);
     if let Some(options) = options("ifTail", request.if_tail, request.idempotency_key.as_ref()) {
         value.insert("options".into(), options);
     }
     Ok(Value::Object(value))
+}
+
+fn append_record_json(record: &crate::AppendRecord) -> Value {
+    json!({
+        "value": STANDARD.encode(&record.value),
+        "keys": record.headers.keys().iter().map(|key| STANDARD.encode(key)).collect::<Vec<_>>(),
+        "attributes": record.headers.attributes().iter().map(|attribute| json!({
+            "name": attribute.name,
+            "value": STANDARD.encode(&attribute.value),
+        })).collect::<Vec<_>>(),
+    })
 }
 
 fn request_json_fork(input: &[u8]) -> Result<Value> {
@@ -125,22 +132,31 @@ fn request_json_commit(input: &[u8]) -> Result<Value> {
             }),
         })
         .collect();
-    let mutations: Vec<_> = request.mutations.iter().map(|mutation| match mutation {
-        crate::CommitMutation::Append { path, records } => json!({
-            "append": {
-                "path": path.to_string(),
-                "values": records.iter().map(|record| STANDARD.encode(record)).collect::<Vec<_>>(),
-            },
-        }),
-        crate::CommitMutation::Fork { source, destination, at_tail, records } => json!({
-            "fork": {
-                "source": source.to_string(),
-                "destination": destination.to_string(),
-                "atTail": at_tail.to_string(),
-                "values": records.iter().map(|record| STANDARD.encode(record)).collect::<Vec<_>>(),
-            },
-        }),
-    }).collect();
+    let mutations: Vec<_> = request
+        .mutations
+        .iter()
+        .map(|mutation| match mutation {
+            crate::CommitMutation::Append { path, records } => json!({
+                "append": {
+                    "path": path.to_string(),
+                    "records": records.iter().map(append_record_json).collect::<Vec<_>>(),
+                },
+            }),
+            crate::CommitMutation::Fork {
+                source,
+                destination,
+                at_tail,
+                records,
+            } => json!({
+                "fork": {
+                    "source": source.to_string(),
+                    "destination": destination.to_string(),
+                    "atTail": at_tail.to_string(),
+                    "records": records.iter().map(append_record_json).collect::<Vec<_>>(),
+                },
+            }),
+        })
+        .collect();
     let mut commit_options = serde_json::Map::from_iter([(
         "idempotencyKey".into(),
         json!(STANDARD.encode(request.idempotency_key.as_bytes())),

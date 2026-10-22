@@ -97,6 +97,18 @@ impl From<&[u8]> for AppendRecord {
     }
 }
 
+impl From<&str> for AppendRecord {
+    fn from(value: &str) -> Self {
+        Self::from(Bytes::from(value))
+    }
+}
+
+impl From<String> for AppendRecord {
+    fn from(value: String) -> Self {
+        Self::from(Bytes::from(value))
+    }
+}
+
 /// Successful contiguous append.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppendReceipt {

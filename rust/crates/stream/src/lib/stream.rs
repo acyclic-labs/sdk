@@ -39,14 +39,17 @@ impl<P: StreamProvider> Stream<P> {
     }
 
     /// Unconditionally appends one record.
-    pub async fn append(&self, value: impl Into<Bytes>) -> Result<AppendOutcome, StreamError> {
+    pub async fn append(
+        &self,
+        value: impl Into<AppendRecord>,
+    ) -> Result<AppendOutcome, StreamError> {
         self.append_batch(vec![value.into()], None, None).await
     }
 
     /// Appends one record only at the exact tail.
     pub async fn append_at(
         &self,
-        value: impl Into<Bytes>,
+        value: impl Into<AppendRecord>,
         if_tail: u64,
     ) -> Result<AppendOutcome, StreamError> {
         self.append_batch(vec![value.into()], Some(if_tail), None)
@@ -56,7 +59,7 @@ impl<P: StreamProvider> Stream<P> {
     /// Atomically appends a contiguous batch.
     pub async fn append_batch(
         &self,
-        records: Vec<Bytes>,
+        records: Vec<AppendRecord>,
         if_tail: Option<u64>,
         idempotency_key: Option<IdempotencyKey>,
     ) -> Result<AppendOutcome, StreamError> {

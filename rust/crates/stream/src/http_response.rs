@@ -54,6 +54,11 @@ fn record_json(value: &wire::Record) -> Value {
         "value": STANDARD.encode(&value.value),
         "commitId": STANDARD.encode(&value.commit_id),
         "committedAtMicros": value.committed_at_micros.to_string(),
+        "keys": value.keys.iter().map(|key| STANDARD.encode(key)).collect::<Vec<_>>(),
+        "attributes": value.attributes.iter().map(|attribute| json!({
+            "name": attribute.name,
+            "value": STANDARD.encode(&attribute.value),
+        })).collect::<Vec<_>>(),
     })
 }
 

@@ -71,7 +71,31 @@ fn key(value: &Value) -> Result {
 fn validate_record(value: &Value) -> Result {
     let item = object(value)?;
     u64_string(field(item, "sequence")?)?;
-    bytes(field(item, "value")?)?;
+    let value = bytes(field(item, "value")?)?;
+    let keys = array(field(item, "keys")?)?;
+    let attributes = array(field(item, "attributes")?)?;
+    if keys.len() > crate::MAX_RECORD_KEYS || attributes.len() > crate::MAX_RECORD_ATTRIBUTES {
+        return Err("record header count exceeded");
+    }
+    let headers = crate::RecordHeaders::new(
+        keys.iter()
+            .map(|key| bytes(key).map(Into::into))
+            .collect::<Result<Vec<_>>>()?,
+        attributes
+            .iter()
+            .map(|attribute| {
+                let attribute = object(attribute)?;
+                Ok(crate::Attribute {
+                    name: string(field(attribute, "name")?)?.to_owned(),
+                    value: bytes(field(attribute, "value")?)?.into(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+    )
+    .map_err(|_| "invalid record headers")?;
+    if value.len().saturating_add(headers.payload_bytes()) > crate::MAX_RECORD_BYTES {
+        return Err("record payload exceeded");
+    }
     id(field(item, "commitId")?)?;
     u64_string(field(item, "committedAtMicros")?)?;
     Ok(())
