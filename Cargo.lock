@@ -2958,6 +2958,7 @@ dependencies = [
  "futures",
  "libc",
  "proptest",
+ "rustix 1.1.5",
  "rustix-openpty",
  "serde",
  "serde_json",
