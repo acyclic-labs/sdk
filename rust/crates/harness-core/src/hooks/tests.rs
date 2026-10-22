@@ -395,16 +395,16 @@ fn invalid_hook_replacement_is_atomic() -> Result<()> {
 fn imports_normalize_to_the_same_typed_rules_and_validate_atomically() -> Result<()> {
     let mut imported = Hooks::default();
     imported.add_json(
-        br#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[
+        json!({"hooks":{"PreToolUse":[{"matcher":crate::tools::shell::PLATFORM.hook_names[0],"hooks":[
         {"type":"command","command":"guard","args":["--check"],"shell":"bash","timeout":2,"onFailure":"block"},
         {"type":"command","command":"format","shell":"sh"}
-    ]}]}}"#,
+    ]}]}}).to_string().as_bytes(),
     )?;
     let mut toml = Hooks::default();
-    toml.add_toml(
+    toml.add_toml(&format!(
         r#"
         [[hooks.PreToolUse]]
-        matcher = "Bash"
+        matcher = "{matcher}"
         [[hooks.PreToolUse.hooks]]
         type = "command"
         command = "guard"
@@ -417,10 +417,11 @@ fn imports_normalize_to_the_same_typed_rules_and_validate_atomically() -> Result
         command = "format"
         shell = "sh"
     "#,
-    )?;
+        matcher = crate::tools::shell::PLATFORM.hook_names[0]
+    ))?;
     let rule = HookRule {
         on: HookEvent::PreToolUse,
-        matcher: "Bash".into(),
+        matcher: crate::tools::shell::PLATFORM.hook_names[0].into(),
         hooks: vec![
             HookSpec {
                 run: HookRun::Executable {
@@ -447,7 +448,7 @@ fn imports_normalize_to_the_same_typed_rules_and_validate_atomically() -> Result
     assert_eq!(restored, rule);
     let mut typed = Hooks::default();
     typed.add_rules([restored])?;
-    let input = json!({"tool_name":"bash"});
+    let input = json!({"tool_name":crate::tools::shell::PLATFORM.name});
     let registry = registry()?;
     for hooks in [&imported, &toml, &typed] {
         assert_eq!(
