@@ -578,7 +578,7 @@ proptest! {
             let mut client = CommandSession::open(volume, session_id(), 32_768, 128).await.unwrap();
             client.submit("/shell echo original", &DeniedReader).await.unwrap();
             let mut fabricated = client.next_request().await.unwrap();
-            fabricated.bytes = serde_json::to_vec(&json!({"kind":"tool","tool":"shell","input":{"command":text}})).unwrap().into();
+            fabricated.bytes = serde_json::to_vec(&json!({"kind":"tool","tool":"bash","input":{"command":text}})).unwrap().into();
             let result = client.consume(&fabricated, |_, _, _| async { panic!("fabricated input reached dispatch") }).await;
             prop_assert!(matches!(result, Err(Error::Unauthorized(_))));
             Ok(())
