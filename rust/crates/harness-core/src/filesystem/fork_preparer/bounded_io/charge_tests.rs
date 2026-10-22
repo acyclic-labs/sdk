@@ -2,11 +2,11 @@
 use super::*;
 
 #[test]
-fn standalone_charge_matches_kernel_for_every_counter_and_failure_boundary() -> Result<()> {
-    let fields: Vec<String> = serde_json::to_value(WorkCounters::default())
-        .expect("work counters serialize")
+fn standalone_charge_matches_kernel_for_every_counter_and_failure_boundary()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let fields: Vec<String> = serde_json::to_value(WorkCounters::default())?
         .as_object()
-        .expect("work counters are an object")
+        .ok_or("work counters are an object")?
         .keys()
         .cloned()
         .collect();
@@ -20,27 +20,25 @@ fn standalone_charge_matches_kernel_for_every_counter_and_failure_boundary() -> 
                             let budget = acyclic_fs::performance::work_budget(8, 8);
                             let fast = PreparationIo::from_budget(budget, &cancellation)?;
                             let reference = PreparationIo::from_budget(budget, &cancellation)?;
-                            let mut initial_json = serde_json::to_value(WorkCounters::default())
-                                .expect("work counters serialize");
+                            let mut initial_json = serde_json::to_value(WorkCounters::default())?;
                             initial_json[&field] = initial.into();
-                            let initial: WorkCounters = serde_json::from_value(initial_json)
-                                .expect("initial work counters decode");
+                            let initial: WorkCounters = serde_json::from_value(initial_json)?;
                             for io in [&fast, &reference] {
                                 io.retain_owned(live)?;
                                 let PreparationIo::Owned { work, .. } = io else {
                                     unreachable!()
                                 };
-                                let mut state = work.lock().expect("initial accounting ledger");
+                                let mut state = work
+                                    .lock()
+                                    .map_err(|_| "initial accounting ledger poisoned")?;
                                 state.0 = initial;
                                 if invalid_ledger {
                                     state.1 = Err(acyclic_fs::WorkError::Overflow);
                                 }
                             }
-                            let mut delta_json = serde_json::to_value(WorkCounters::default())
-                                .expect("work counters serialize");
+                            let mut delta_json = serde_json::to_value(WorkCounters::default())?;
                             delta_json[&field] = proposed.into();
-                            let mut delta: WorkCounters = serde_json::from_value(delta_json)
-                                .expect("delta work counters decode");
+                            let mut delta: WorkCounters = serde_json::from_value(delta_json)?;
                             if cancelled {
                                 cancellation.cancel();
                             }
@@ -66,8 +64,12 @@ fn standalone_charge_matches_kernel_for_every_counter_and_failure_boundary() -> 
                             let PreparationIo::Owned { work: expected, .. } = &reference else {
                                 unreachable!()
                             };
-                            let actual = actual.lock().expect("actual accounting ledger");
-                            let expected = expected.lock().expect("reference accounting ledger");
+                            let actual = actual
+                                .lock()
+                                .map_err(|_| "actual accounting ledger poisoned")?;
+                            let expected = expected
+                                .lock()
+                                .map_err(|_| "reference accounting ledger poisoned")?;
                             assert_eq!(
                                 actual.0, expected.0,
                                 "rejected work must leave the same counters"
