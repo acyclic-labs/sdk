@@ -35,10 +35,27 @@ pub(crate) fn service_identity(data: &Path) -> Result<String, String> {
     service_identity_for(data, &current_executable()?)
 }
 
+type SettledIdentity = std::sync::Mutex<Option<([u8; 32], String)>>;
+static SETTLED_IDENTITIES: SettledIdentity = std::sync::Mutex::new(None);
+
 /// The identity of an executable's artifact bytes. Hashing tens of megabytes
 /// on every session start is avoidable: the identity is cached under the
 /// file's fingerprint, which every rewrite or replacement of the file changes.
 pub(crate) fn service_identity_for(data: &Path, executable: &Path) -> Result<String, String> {
+    service_identity_using(
+        data,
+        executable,
+        &SETTLED_IDENTITIES,
+        std::time::SystemTime::now,
+    )
+}
+
+fn service_identity_using(
+    data: &Path,
+    executable: &Path,
+    identities: &SettledIdentity,
+    now: impl FnOnce() -> std::time::SystemTime,
+) -> Result<String, String> {
     let cache = data.join("executable-identity");
     let file = fs::File::open(executable).map_err(display)?;
     let (fingerprint, changed) = executable_fingerprint(&file)?;
@@ -48,20 +65,34 @@ pub(crate) fn service_identity_for(data: &Path, executable: &Path) -> Result<Str
     {
         return Ok(identity);
     }
-    let mut hasher = blake3::Hasher::new();
-    read_executable(&file, |bytes| {
-        hasher.update(bytes);
-    })?;
-    let identity = service_identity_from_digest(&hasher.finalize().to_hex());
+    // A process can open several service roots for the same artifact. Keep
+    // one settled identity across those roots and serialize a cold hash, so
+    // concurrent roots do not each read the complete executable. Disk cache
+    // entries never populate this process-wide cache: another root's saved
+    // cache must not become authority for this root's artifact bytes.
+    let mut cached = identities.lock().map_err(display)?;
+    let identity = if let Some((_, identity)) = cached
+        .as_ref()
+        .filter(|(selected, _)| *selected == fingerprint)
+    {
+        identity.clone()
+    } else {
+        let mut hasher = blake3::Hasher::new();
+        read_executable(&file, |bytes| {
+            hasher.update(bytes);
+        })?;
+        service_identity_from_digest(&hasher.finalize().to_hex())
+    };
     // Cache only a hash of bytes that did not change while they were read and
     // whose last change is older than any timestamp granularity: a later write
     // in the same clock tick could otherwise keep the fingerprint (the racy
     // timestamp problem Git's index solves the same way). A cache that cannot
     // be written, or is lost, only costs the next caller one hash.
-    let settled = std::time::SystemTime::now()
+    let settled = now()
         .duration_since(changed)
         .is_ok_and(|age| age > SETTLED_EXECUTABLE_AGE);
     if settled && executable_fingerprint(&file)?.0 == fingerprint {
+        *cached = Some((fingerprint, identity.clone()));
         let staged = data.join(format!("executable-identity.{}", std::process::id()));
         let entry = format!("{}\n{identity}", hex::encode(fingerprint));
         if fs::write(&staged, entry)
@@ -202,6 +233,8 @@ pub(crate) fn read_executable(
         if read == 0 {
             break;
         }
+        #[cfg(test)]
+        tests::READ_BYTES.with(|total| total.set(total.get() + read));
         let chunk = buffer
             .get(..read)
             .ok_or_else(|| "binary hash read exceeded its buffer".to_owned())?;
@@ -279,3 +312,6 @@ pub(crate) fn blake3_file(path: &Path) -> Result<String, String> {
     })?;
     Ok(hasher.finalize().to_hex().to_string())
 }
+
+#[cfg(test)]
+mod tests;
