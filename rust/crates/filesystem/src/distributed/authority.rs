@@ -312,6 +312,41 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         }
     }
 
+    pub(super) async fn retained_generation(
+        &self,
+        authority: AuthorityId,
+        generation: GenerationId,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<bool, AuthorityStoreError> {
+        work.check()?;
+        self.authority_require_live(authority, work).await?;
+        let locator = work.path(authority, "/generations/", Some(generation))?;
+        let bytes = locator.as_str().len() as u64;
+        let result = self.record(locator, 0, work).await;
+        work.release(bytes)?;
+        let record = match result {
+            Err(error) if authority_missing(&error) => return Ok(false),
+            result => result?,
+        };
+        let tail = decode_lineage_tail(&record.0.value)?;
+        drop(record);
+        let from = tail.checked_sub(1).ok_or_else(|| {
+            authority_corrupt("generation locator selected an empty lineage", work)
+        })?;
+        let selected = self
+            .read_at(authority, "/lineage", from, work, |record, _| {
+                decode_lineage_generation(&record.value)
+            })
+            .await?;
+        if selected != generation {
+            return Err(authority_corrupt(
+                "generation locator and lineage disagree",
+                work,
+            ));
+        }
+        Ok(true)
+    }
+
     pub(super) async fn resolve_source_fork_point(
         &self,
         authority: AuthorityId,

@@ -350,7 +350,7 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
         };
         let expected_opens = match (entry, mode) {
             (Entry::Create, _) => 2,
-            (Entry::Retry, None) => 3,
+            (Entry::Retry, None) => 1,
             _ => 1,
         };
         assert_eq!(opens(&after.1), expected_opens, "{entry:?} {mode:?}");
@@ -567,6 +567,45 @@ fn retained_native_bytes_keep_original_funding_until_the_last_owner_drops() -> R
             !funded(&unfunded),
             "an unfunded copy must fail the same predicate"
         );
+    }
+    Ok(())
+}
+
+#[test]
+fn published_content_retries_and_recovery_do_not_append_retention_records() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    for entry in [Entry::Create, Entry::Retry, Entry::Observe] {
+        for native in [false, true] {
+            let (host, source, grant) = runtime.block_on(initialize(0, b"original"))?;
+            let (result, receipt, _, _, _, _) = accounted(native, 64 * 1024 * 1024, false, |io| {
+                runtime.block_on(execute(
+                    &host,
+                    &source,
+                    &grant,
+                    entry,
+                    b"original",
+                    Some(io),
+                ))
+            })
+            .map_err(|(error, receipt)| Error::Storage(format!("{error}: {receipt:?}")))?;
+            let file = result?;
+            if matches!(entry, Entry::Create) {
+                assert!(receipt.authority_records_appended > 0);
+                assert!(
+                    receipt.authority_records_appended <= 4,
+                    "published content appended redundant retention: {receipt:?}"
+                );
+            } else {
+                assert_eq!(
+                    receipt.authority_records_appended, 0,
+                    "authenticated content recovery appended retention: {entry:?} {receipt:?}"
+                );
+                assert_eq!(file, source);
+            }
+        }
     }
     Ok(())
 }

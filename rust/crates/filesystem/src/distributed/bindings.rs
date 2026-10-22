@@ -9,6 +9,20 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         true
     }
 
+    async fn retains_generation(
+        &self,
+        authority: AuthorityId,
+        generation: GenerationId,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<bool, AuthorityStoreError> {
+        let mut child = work.operation()?;
+        let result = self
+            .retained_generation(authority, generation, &mut child)
+            .await;
+        work.record(child.spent())?;
+        result
+    }
+
     async fn create_authority<G: AuthorityGuard>(
         &self,
         authority: AuthorityId,

@@ -324,10 +324,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         .await?;
         if let Some(prior) = prior {
             let generation = (self).generation_ref_id(prior.id(), io)?;
-            match io {
-                Some(io) => fork_preparer_io::retain(&prior, Some(io)).await?,
-                None => self.retain_generation(&workspace, &generation).await?,
-            }
+            fork_preparer_io::retain(&prior, io).await?;
             let version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
             let receipt_path = crate::executor::with_history_io(io, |work| {
                 crate::executor::preparation_format(format_args!("/{receipt_path}"), work)
@@ -345,25 +342,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 ));
             }
             drop(original_receipt);
-            let indexed = match io {
-                Some(io) => {
-                    let indexed_path = crate::executor::with_history_io(Some(io), |work| {
-                        crate::executor::preparation_format(format_args!("/{metadata_path}"), work)
-                    })?;
-                    read_generation(&prior, &indexed_path, metadata_bytes.len() as u64, Some(io))
-                        .await?
-                }
-                None => {
-                    self.read(
-                        &workspace,
-                        Some(&generation),
-                        &format!("/{metadata_path}"),
-                        metadata_bytes.len() as u64,
-                        None,
-                    )
-                    .await?
-                }
-            };
+            let indexed_path = crate::executor::with_history_io(io, |work| {
+                crate::executor::preparation_format(format_args!("/{metadata_path}"), work)
+            })?;
+            let indexed =
+                read_generation(&prior, &indexed_path, metadata_bytes.len() as u64, io).await?;
             if indexed.as_ref() != metadata_bytes.as_slice() {
                 return Err(stock_boundary(
                     io,
@@ -451,7 +434,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 Some(io) => fork_preparer_io::retain(&generation, Some(io)).await?,
                 None => {
                     generation
-                        .pin(
+                        .retain_if_unpublished(
                             format!("harness-generation-{version}"),
                             acyclic_fs::WorkBudget::UNBOUNDED,
                             &acyclic_fs::CancellationToken::new(),

@@ -15,6 +15,10 @@ struct Fixture {
 
 impl Fixture {
     async fn new(bytes: &[u8]) -> TestResult<Self> {
+        Self::with_publication(bytes, false).await
+    }
+
+    async fn with_publication(bytes: &[u8], published: bool) -> TestResult<Self> {
         let stream = Arc::new(acyclic_stream::MemoryStream::default());
         let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
         let filesystem = Fs::from_memory_providers(stream.clone(), Arc::new(objects), bucket);
@@ -36,10 +40,9 @@ impl Fixture {
         let host = FilesystemHost::new(filesystem, &provider, None)?;
         host.create_volume(&volume).await?;
         let reference = fork_preparer_io::content_workspace(&provider, &volume, None)?;
-        // Raw publication deliberately creates no harness-generation pin. An
-        // upload fixture would hide a consumer that silently omitted retention.
-        let generation = host
-            .apply(
+        let workspace = host.open(&reference, None).await?;
+        let generation = if published {
+            host.apply(
                 &reference,
                 None,
                 &[WorkspaceMutation::PutFile {
@@ -48,7 +51,43 @@ impl Fixture {
                 }],
                 &IdempotencyKey::new("raw")?,
             )
-            .await?;
+            .await?
+        } else {
+            let cancel = acyclic_fs::CancellationToken::new();
+            let mut checkout = workspace
+                .checkout(
+                    acyclic_fs::model::GenerationSelector::Head,
+                    acyclic_fs::model::CheckoutMode::tracking_transaction(),
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancel,
+                )
+                .await?
+                .value;
+            let path = acyclic_fs::kernel::NamespacePath::new(
+                vec![acyclic_fs::kernel::LogicalName::new(
+                    acyclic_fs::kernel::NameEncoding::Utf8,
+                    b"payload".to_vec(),
+                    checkout.volume_config().limits.maximum_component_bytes,
+                )?],
+                checkout.volume_config().limits,
+            )?;
+            checkout
+                .create(
+                    acyclic_fs::AuthoredMutation::CreateFile {
+                        path,
+                        bytes: bytes::Bytes::copy_from_slice(bytes).into(),
+                        metadata: acyclic_fs::kernel::FileMetadata::default(),
+                    },
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancel,
+                )
+                .await?;
+            let generation = checkout
+                .checkpoint(acyclic_fs::WorkBudget::UNBOUNDED, &cancel)
+                .await?
+                .value;
+            host.generation_ref_id(generation, None)?
+        };
         let version = hex::encode(generation.as_resource().key());
         let file = FileRef::new(
             volume.clone(),
@@ -223,5 +262,29 @@ async fn a_failed_descriptor_check_does_not_retain_unmetered_content() -> TestRe
             .is_err()
     );
     fixture.assert_unretained().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn published_reads_reuse_authenticated_history_without_a_pin() -> TestResult {
+    for bytes in [b"".as_slice(), b"published original".as_slice()] {
+        let fixture = Fixture::with_publication(bytes, true).await?;
+        fixture.assert_unretained().await;
+        let first = fixture
+            .host
+            .read_pinned_receipt_io(&fixture.file, 4096, None)
+            .await?;
+        fixture.workspace.write_text("/payload", "advanced").await?;
+        assert_eq!(first.retain().await?.as_ref(), bytes);
+        assert_eq!(
+            fixture
+                .host
+                .read_content(&fixture.file, &fixture.grant, 4096, None)
+                .await?
+                .as_ref(),
+            bytes
+        );
+        fixture.assert_unretained().await;
+    }
     Ok(())
 }

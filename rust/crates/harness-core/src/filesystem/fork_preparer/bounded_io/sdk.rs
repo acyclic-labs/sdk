@@ -206,14 +206,16 @@ pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObject
         .map_err(|error| LazyError::WorkspaceCause(WorkspaceError::Path(error.to_string())))?;
     let Some(io) = io else {
         return generation
-            .pin(label, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .retain_if_unpublished(label, WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
             .map(|_| ())
             .map_err(|failure| LazyError::WorkspaceCause(failure.error));
     };
     io.spent(encoding).map_err(LazyError::Filesystem)?;
     io.remaining().map_err(LazyError::Filesystem)?;
-    let (result, recorded) = generation.pin(label, io, io.cancellation()).await;
+    let (result, recorded) = generation
+        .retain_if_unpublished(label, io, io.cancellation())
+        .await;
     match result {
         Err(source) => Err(LazyError::WorkspaceCause(source)),
         Ok(_) => recorded.map_err(LazyError::Filesystem),

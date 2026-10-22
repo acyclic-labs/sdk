@@ -154,7 +154,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             hex::encode(reference.as_resource().key())
         );
         generation
-            .pin(
+            .retain_if_unpublished(
                 identity,
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),

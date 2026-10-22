@@ -10,6 +10,17 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
         false
     }
 
+    /// Whether durable published lineage already retains this exact generation.
+    /// Unsupported backends conservatively require an independent retention pin.
+    fn retains_generation(
+        &self,
+        _authority: AuthorityId,
+        _generation: GenerationId,
+        _work: &mut AuthorityWork<'_>,
+    ) -> impl Future<Output = Result<bool, crate::AuthorityStoreError>> + ProviderTask {
+        std::future::ready(Ok(false))
+    }
+
     /// Creates an authority, sealing publication and recovery.
     fn create_authority<G: AuthorityGuard>(
         &self,

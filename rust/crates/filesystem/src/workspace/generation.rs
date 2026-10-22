@@ -35,6 +35,49 @@ impl<A, O> Generation<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
+    /// Retains this generation until its owning volume ends, reusing durable
+    /// published history when available. Unpublished generations receive an
+    /// independent pin. Explicit named pins continue to use `pin`.
+    pub async fn retain_if_unpublished<W: crate::facade::FsWork>(
+        &self,
+        identity: impl AsRef<str>,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<(), WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = async {
+            if self
+                .workspace
+                .volume
+                .fs
+                .workspace_generation_is_retained(
+                    &self.workspace.volume,
+                    self.id,
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?
+            {
+                return Ok(());
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(original) = accounting.native_work() {
+                self.pin(identity, original, cancellation).await?;
+                return Ok(());
+            }
+            let retained = self
+                .pin(identity, accounting.remaining()?, cancellation)
+                .await;
+            let (allocations, spent, _, _) = accounting
+                .standalone_parts()
+                .ok_or(crate::WorkError::Overflow)?;
+            merge_workspace_backend(retained, spent, allocations.live_bytes())?;
+            Ok(())
+        }
+        .await;
+        work.finish(result, &accounting)
+    }
+
     /// Performs the operation under the supplied limits.
     pub async fn matches_fork_selection<W: crate::facade::FsWork>(
         &self,

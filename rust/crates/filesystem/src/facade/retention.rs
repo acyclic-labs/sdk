@@ -1,6 +1,23 @@
 use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
+    pub(crate) async fn workspace_generation_is_retained(
+        &self,
+        volume: &Volume<A, O>,
+        generation: GenerationId,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<bool, FsError> {
+        let mut work = authority_work(accounting, cancellation)?;
+        let result = self
+            .inner
+            .authority
+            .retains_generation(volume_authority_id(volume.id), generation, &mut work)
+            .await;
+        record_authority_work(accounting, &work)?;
+        result.map_err(Into::into)
+    }
+
     /// Durably retains one generation under a retention label.
     pub(crate) async fn retain_workspace_generation<W: FsWork>(
         &self,

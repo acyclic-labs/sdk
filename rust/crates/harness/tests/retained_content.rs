@@ -215,6 +215,35 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         .await
         .is_err()
     );
+    // Never read this generation before collection, so no retaining read can
+    // protect it. Overwrite the same path before dropping every SDK handle.
+    let unread = host
+        .put_content(
+            &volume,
+            &write,
+            "messages/unread.txt",
+            b"unread original",
+            "text/plain",
+            "unread.txt",
+            64,
+            &IdempotencyKey::new("unread-original")?,
+            None,
+            None,
+        )
+        .await?;
+    host.put_content(
+        &volume,
+        &write,
+        "messages/unread.txt",
+        b"overwritten",
+        "text/plain",
+        "unread.txt",
+        64,
+        &IdempotencyKey::new("unread-overwrite")?,
+        None,
+        None,
+    )
+    .await?;
     drop(host);
 
     let fs = Fs::local(options)
@@ -224,6 +253,40 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         .await
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
     let reopened = FilesystemHost::new(fs, &provider, None)?;
+    let recovered = reopened
+        .content_for_operation(
+            &volume,
+            &write,
+            &IdempotencyKey::new("unread-original")?,
+            "messages/unread.txt",
+            64,
+            None,
+        )
+        .await?
+        .expect("published operation survives cold collection");
+    assert_eq!(recovered, unread);
+    let retried = reopened
+        .put_content(
+            &volume,
+            &write,
+            "messages/unread.txt",
+            b"unread original",
+            "text/plain",
+            "unread.txt",
+            64,
+            &IdempotencyKey::new("unread-original")?,
+            None,
+            None,
+        )
+        .await?;
+    assert_eq!(retried, unread);
+    assert_eq!(
+        reopened
+            .read_content(&unread, &read, 64, None)
+            .await?
+            .as_ref(),
+        b"unread original"
+    );
     assert_eq!(
         reopened
             .read_content(&admitted, &read, 64, None)
