@@ -71,13 +71,12 @@ async fn write_child_bytes(control: &ControlPlane, name: &str, bytes: &'static [
 fn write_host_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt as _;
     // ProjFS does not report its provider process's own file I/O.
-    // Expansion inside quotes preserves literal shell characters in both paths.
+    // Invoke this test binary directly so Windows passes every path literally.
     let staging = tempfile::tempdir()?;
     let source = staging.path().join("host-write.bin");
     fs::write(&source, bytes)?;
-    let output = std::process::Command::new("cmd.exe")
-        .args(["/d", "/v:off", "/c"])
-        .raw_arg(r#"copy /b /y "%ACYCLIC_COPY_SOURCE%" "%ACYCLIC_COPY_DESTINATION%""#)
+    let output = std::process::Command::new(std::env::current_exe()?)
+        .args(["--exact", "tests::git::external_host_writer_child", "--ignored"])
         .env("ACYCLIC_COPY_SOURCE", &source)
         .env("ACYCLIC_COPY_DESTINATION", path)
         .creation_flags(0x0800_0000)
@@ -90,6 +89,15 @@ fn write_host_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> 
         )));
     }
     Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "invoked in a separate host process by write_host_file"]
+fn external_host_writer_child() {
+    let source = std::env::var_os("ACYCLIC_COPY_SOURCE").expect("source path");
+    let destination = std::env::var_os("ACYCLIC_COPY_DESTINATION").expect("destination path");
+    fs::copy(source, destination).unwrap();
 }
 
 #[cfg(windows)]
