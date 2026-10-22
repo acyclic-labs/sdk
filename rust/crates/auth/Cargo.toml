@@ -9,6 +9,9 @@ repository.workspace = true
 description = "Shared capability chain contract and verification"
 
 
+[features]
+test-support = []
+
 [dependencies]
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 ed25519-dalek = { version = "=3.0.0", features = ["zeroize"] }

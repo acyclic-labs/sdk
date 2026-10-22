@@ -4,7 +4,7 @@ use crate::{BoxProviderFuture, StreamError, StreamProvider};
 use futures::StreamExt as _;
 use std::sync::Arc;
 
-struct Local<P: ?Sized>(Arc<P>, Arc<dyn Executor>);
+struct Local<P: ?Sized>(Arc<P>, Arc<dyn Executor>, Arc<super::Authority>);
 impl<P: StreamProvider + ?Sized> transport::Transport for Local<P> {
     fn session(
         &self,
@@ -13,6 +13,7 @@ impl<P: StreamProvider + ?Sized> transport::Transport for Local<P> {
         Box::pin(async move {
             super::serve_on(
                 self.0.clone(),
+                self.2.clone(),
                 "local".into(),
                 Limits::default(),
                 Box::pin(source.map(Ok)),
@@ -27,9 +28,10 @@ impl Client {
     /// The provider supplies authority; no socket, daemon or second protocol runs.
     pub fn in_process<P: StreamProvider + ?Sized>(
         provider: Arc<P>,
+        authority: Arc<super::Authority>,
         executor: Arc<dyn Executor>,
     ) -> Self {
-        let endpoint: transport::Endpoint = Arc::new(Local(provider, executor.clone()));
+        let endpoint: transport::Endpoint = Arc::new(Local(provider, executor.clone(), authority));
         let local = endpoint.clone();
         Self::with_transport(
             endpoint,

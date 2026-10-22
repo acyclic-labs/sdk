@@ -146,7 +146,7 @@ async fn resumed_children_session<P: StreamProvider>(
     };
     for body in [
         Body::Hello(wire::SessionHello {
-            credentials: Vec::new(),
+            credentials: vec![crate::session::testing::credential()],
             version: 1,
             client_id: bytes::Bytes::from_static(b"held-flush-client"),
             destination_node: String::new(),
@@ -180,6 +180,7 @@ async fn resumed_children_session<P: StreamProvider>(
     // A fresh session resumes the accepted cursor while its flush is still held.
     let mut output = crate::session::serve(
         Arc::new(provider),
+        crate::session::testing::authority(),
         "local".into(),
         crate::session::Limits::default(),
         input.boxed(),

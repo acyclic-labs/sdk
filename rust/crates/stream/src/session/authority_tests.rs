@@ -1,7 +1,6 @@
 use super::*;
-#[path = "../../../auth/tests/common/signed.rs"]
-mod signed;
 use acyclic_auth::contract::*;
+use acyclic_auth::testing as signed;
 use std::sync::{
     RwLock,
     atomic::{AtomicU64, Ordering},
@@ -143,9 +142,12 @@ fn slots_reject_forgery_expiry_wrong_audience_holder_and_widening() {
         assert!(bind(&auth, &slots, "allowed").is_err());
     }
     auth.register(&mut slots, 0, &bytes, 2).unwrap();
-    let (binding, _) = bind(&auth, &slots, "allowed").unwrap();
+    let (mut binding, _) = bind(&auth, &slots, "allowed").unwrap();
     state.publish(signed::Snapshot::default(), 1000);
-    assert_eq!(auth.validate(&slots, &binding, 1), Err(Rejection::Expired));
+    assert_eq!(
+        auth.validate(&slots, &mut binding, 1),
+        Err(Rejection::Expired)
+    );
 }
 #[tokio::test]
 async fn revocation_and_drop_invalidate_idle_bindings_without_record_credit() {
@@ -154,9 +156,9 @@ async fn revocation_and_drop_invalidate_idle_bindings_without_record_credit() {
     let mut slots = Slots::default();
     let bytes = token("allowed", |_| {});
     auth.register(&mut slots, 0, &bytes, 2).unwrap();
-    let (binding, _) = bind(&auth, &slots, "allowed").unwrap();
+    let (mut binding, _) = bind(&auth, &slots, "allowed").unwrap();
     let revision = auth.snapshot().unwrap().revision;
-    let changed = auth.changed(revision, auth.deadline(&slots));
+    let changed = auth.changed(revision, auth.deadline(&mut slots));
     futures::pin_mut!(changed);
     assert!(futures::poll!(changed.as_mut()).is_pending());
     let cap = verify::verify(&bytes, &signed::Snapshot::default(), signed::NOW).unwrap();
@@ -168,11 +170,14 @@ async fn revocation_and_drop_invalidate_idle_bindings_without_record_credit() {
         signed::NOW,
     );
     changed.await;
-    assert_eq!(auth.validate(&slots, &binding, 1), Err(Rejection::Revoked));
+    assert_eq!(
+        auth.validate(&slots, &mut binding, 1),
+        Err(Rejection::Revoked)
+    );
     state.publish(signed::Snapshot::default(), signed::NOW);
     auth.register(&mut slots, 0, &[], 2).unwrap();
     assert_eq!(
-        auth.validate(&slots, &binding, 1),
+        auth.validate(&slots, &mut binding, 1),
         Err(Rejection::Forbidden)
     );
 }
@@ -190,7 +195,7 @@ fn rotation_cannot_drop_pins_filters_or_rebind_the_declaring_subject() {
         }]
     });
     auth.register(&mut slots, 0, &bytes, 2).unwrap();
-    let (binding, filter) = bind(&auth, &slots, "allowed").unwrap();
+    let (mut binding, filter) = bind(&auth, &slots, "allowed").unwrap();
     let headers = |author: &'static str| {
         crate::RecordHeaders::new(
             vec![],
@@ -224,7 +229,7 @@ fn rotation_cannot_drop_pins_filters_or_rebind_the_declaring_subject() {
     let plain = token("allowed", |_| {});
     auth.register(&mut slots, 0, &plain, 2).unwrap();
     assert_eq!(
-        auth.validate(&slots, &binding, 1),
+        auth.validate(&slots, &mut binding, 1),
         Err(Rejection::Forbidden)
     );
     let attributes = RecordAttributes::default();

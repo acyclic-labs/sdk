@@ -4,14 +4,16 @@ use tonic::{Request, Response, Status, Streaming};
 /// Thin platform gRPC adapter for one provider's multiplexed follow sessions.
 pub struct Service<P> {
     provider: Arc<P>,
+    authority: Arc<Authority>,
     node: String,
     limits: Limits,
 }
 impl<P> Service<P> {
     /// Binds an authenticated host's provider and node identity.
-    pub fn new(provider: Arc<P>, node: String, limits: Limits) -> Self {
+    pub fn new(provider: Arc<P>, authority: Arc<Authority>, node: String, limits: Limits) -> Self {
         Self {
             provider,
+            authority,
             node,
             limits,
         }
@@ -31,6 +33,7 @@ impl<P: StreamProvider> wire::stream_session_service_server::StreamSessionServic
             .boxed();
         let session = serve(
             Arc::clone(&self.provider),
+            Arc::clone(&self.authority),
             self.node.clone(),
             self.limits,
             incoming,

@@ -212,6 +212,7 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
             .boxed();
         let output = session::serve(
             Arc::clone(&self.provider),
+            acyclic_stream::session::testing::authority(),
             self.counts
                 .node
                 .lock()

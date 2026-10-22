@@ -39,6 +39,7 @@ impl transport::Transport for ReplacedNode {
             }
             let output = super::super::super::serve(
                 self.provider.clone(),
+                crate::session::testing::authority(),
                 node.into(),
                 Limits::default(),
                 Box::pin(stream::once(future::ready(Ok(hello))).chain(source.map(Ok))),
@@ -71,6 +72,7 @@ async fn same_client_discovers_replacement_after_idle_close() -> TestResult {
             Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
             Arc::new(super::super::super::runtime::PlatformExecutor),
         );
+        client.register_credential(0, crate::session::testing::credential())?;
         let mut first = client
             .follow(
                 StreamPath::new("events")?,

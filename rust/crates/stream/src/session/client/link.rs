@@ -10,6 +10,28 @@ impl Pool {
         }
         link.epoch = self.next_link;
         self.next_link = self.next_link.checked_add(1).ok_or(StreamError::Capacity)?;
+        // A rotation may race the handshake. Replay the current complete slot
+        // set before any subscription; dropped slots from the old handshake
+        // are also explicitly removed.
+        let opening_credentials = std::mem::take(&mut link.opening_credentials);
+        let slots = opening_credentials
+            .keys()
+            .chain(self.credentials.keys())
+            .copied()
+            .collect::<BTreeSet<_>>();
+        for slot in slots {
+            if opening_credentials.get(&slot) == self.credentials.get(&slot) {
+                continue;
+            }
+            let credential = self.credentials.get(&slot).cloned().unwrap_or_default();
+            let value = frame(
+                0,
+                0,
+                Body::Credential(wire::SessionCredential { slot, credential }),
+            );
+            let bytes = value.encoded_len();
+            link.sender.push(value, bytes)?;
+        }
         self.links.insert(node.clone(), link);
         self.read(node.clone(), response);
         self.connections.advance()?;
@@ -22,6 +44,7 @@ impl Pool {
         }
         let connect = self.connect.clone();
         let identity = self.identity.clone();
+        let credentials = self.credentials.clone();
         let epoch = self.dial_epoch;
         let executor = self.executor.clone();
         // Capture only the subscriber. Neither a dial nor a shared Link owns
@@ -45,7 +68,14 @@ impl Pool {
                             Some(channel) => channel.clone(),
                             None => connect(node.clone()).await?,
                         };
-                        open_link(channel, &name, identity.clone(), executor.clone()).await
+                        open_link(
+                            channel,
+                            &name,
+                            identity.clone(),
+                            credentials.clone(),
+                            executor.clone(),
+                        )
+                        .await
                     }
                     .await;
                     match result {
@@ -313,6 +343,7 @@ async fn open_link(
     channel: Endpoint,
     destination: &str,
     identity: Bytes,
+    credentials: BTreeMap<u32, Bytes>,
     executor: std::sync::Arc<dyn super::super::runtime::Executor>,
 ) -> Result<Ready, StreamError> {
     for attempt in 0..3 {
@@ -321,7 +352,12 @@ async fn open_link(
             .operation
             .clone()
             .scope(deadline::until(
-                handshake(channel.clone(), destination, identity.clone()),
+                handshake(
+                    channel.clone(),
+                    destination,
+                    identity.clone(),
+                    credentials.clone(),
+                ),
                 executor.sleep(1_000),
             ))
             .await
@@ -348,11 +384,19 @@ async fn handshake(
     channel: Endpoint,
     destination: &str,
     identity: Bytes,
+    credentials: BTreeMap<u32, Bytes>,
 ) -> Result<Ready, StreamError> {
     let sender = Arc::new(Outbound::new(crate::MAX_ITEMS, crate::MAX_COMMAND_BYTES));
     let credit = wire::SessionWindow {
         bytes: crate::MAX_COMMAND_BYTES as u64,
         frames: u32::try_from(crate::MAX_ITEMS).map_err(|_| StreamError::Capacity)?,
+    };
+    let opening_credentials = credentials.clone();
+    let credentials = match credentials.keys().next_back().copied() {
+        Some(last) => (0..=last)
+            .map(|slot| credentials.get(&slot).cloned().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        None => vec![],
     };
     let hello = frame(
         0,
@@ -363,13 +407,17 @@ async fn handshake(
             destination_node: destination.into(),
             receive_bytes: credit.bytes,
             receive_frames: credit.frames,
-            credentials: Vec::new(),
+            credentials,
         }),
     );
     let bytes = hello.encoded_len();
+    if bytes > crate::MAX_COMMAND_BYTES {
+        return Err(StreamError::LimitExceeded);
+    }
     sender.push(hello, bytes)?;
     // Ownership is installed before either credential or connection I/O await.
     let link = Link {
+        opening_credentials,
         observation: None,
         channel,
         sender,

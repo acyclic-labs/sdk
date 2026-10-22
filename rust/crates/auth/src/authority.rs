@@ -157,7 +157,7 @@ pub fn resource_matches(pattern: &ResourcePattern, name: &str) -> bool {
         name == pattern.name
     }
 }
-fn grants_allow(set: &GrantSet, r: &Request<'_>) -> bool {
+fn grants_allow(set: &GrantSet, r: &Request<'_>, record_facts: bool) -> bool {
     set.grants.iter().any(|g| {
         let Target::Resource { action, resource } = r.target else {
             return matches!((&g.kind, r.target), (GrantKind::WebsocketConnect(grant), Target::Websocket(destination)) if crate::socket::allows(grant, destination));
@@ -178,7 +178,10 @@ fn grants_allow(set: &GrantSet, r: &Request<'_>) -> bool {
             }
             _ => return false,
         };
-        resource_matches(&grant.resource, resource) && grant.actions.iter().any(|a| a == action)
+        grant.actions.iter().any(|a| a == action)
+            && (resource_matches(&grant.resource, resource)
+                || !record_facts && action == "streams/list"
+                    && resource_matches(&ResourcePattern { name: resource.into(), prefix: true }, &grant.resource.name))
     })
 }
 fn limits_allow(ceiling: &Limits, usage: &Limits) -> bool {
@@ -275,6 +278,25 @@ pub(crate) fn permits_follow(
     permits_operation(blocks, r, policy, false)
 }
 
+/// A children discovery may start above a granted descendant. Each returned
+/// name still requires the provider's grant and record predicate check.
+pub(crate) fn permits_children(
+    blocks: &[Block],
+    r: &Request<'_>,
+    policy: PolicyDecision,
+) -> Result<(), Deny> {
+    if !matches!(
+        r.target,
+        Target::Resource {
+            action: "streams/list",
+            ..
+        }
+    ) {
+        return Err(Deny::Capability);
+    }
+    permits_operation(blocks, r, policy, false)
+}
+
 fn permits_operation(
     blocks: &[Block],
     r: &Request<'_>,
@@ -311,13 +333,13 @@ fn permits_canonical(blocks: &[Block], r: &Request<'_>, record_facts: bool) -> b
         let key = &cert.key;
         r.now_unix_seconds >= key.validity.not_before_unix_seconds
             && r.now_unix_seconds < key.validity.expires_at_unix_seconds
-            && grants_allow(&key.grants, r)
+            && grants_allow(&key.grants, r, record_facts)
     }) {
         return false;
     }
     blocks.iter().enumerate().all(|(i, block)| {
         block.caveats.iter().all(|c| match &c.kind {
-            CaveatKind::Grants(set) => grants_allow(set, r),
+            CaveatKind::Grants(set) => grants_allow(set, r, record_facts),
             CaveatKind::ExpiresAtUnixSeconds(t) => r.now_unix_seconds < *t,
             CaveatKind::NotBeforeUnixSeconds(t) => r.now_unix_seconds >= *t,
             CaveatKind::Audience(a) => !a.prefix && resource_matches(a, r.audience),

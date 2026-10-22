@@ -136,6 +136,10 @@ enum Received {
     Frame(wire::SessionFrame),
 }
 enum Command {
+    Credential {
+        slot: u32,
+        credential: Bytes,
+    },
     Open {
         id: u64,
         attempt_epoch: u64,
@@ -172,6 +176,7 @@ struct Route {
     observation: super::runtime::OperationSpan,
 }
 struct Link {
+    opening_credentials: BTreeMap<u32, Bytes>,
     observation: Option<Observation>,
     epoch: u64,
     credit: wire::SessionWindow,
@@ -182,6 +187,7 @@ struct Link {
     released: wire::SessionWindow,
 }
 struct Pool {
+    credentials: BTreeMap<u32, Bytes>,
     connections: super::Connections,
     executor: std::sync::Arc<dyn super::runtime::Executor>,
     identity: Bytes,
@@ -234,6 +240,7 @@ impl Client {
         let attempt_epoch = Arc::new(AtomicU64::new(0));
         let abandoned = Arc::new(gate::Gate::new());
         let mut pool = Pool {
+            credentials: BTreeMap::new(),
             connections: connections.clone(),
             executor: executor.clone(),
             identity: crate::new_identity_bytes(),
@@ -272,6 +279,31 @@ impl Client {
             attempt_epoch,
             abandoned,
         }
+    }
+    /// Registers or renews a bounded capability slot on every physical session.
+    /// Empty bytes drop it. Registration is ordered before subsequent opens;
+    /// the server rechecks bound channels and reports refusal on those channels.
+    pub fn register_credential(&self, slot: u32, credential: Bytes) -> Result<(), StreamError> {
+        if slot as usize >= Limits::default().channels {
+            return Err(StreamError::Capacity);
+        }
+        let frame = frame(
+            0,
+            0,
+            Body::Credential(wire::SessionCredential {
+                slot,
+                credential: credential.clone(),
+            }),
+        );
+        if frame.encoded_len() > crate::MAX_COMMAND_BYTES {
+            return Err(StreamError::LimitExceeded);
+        }
+        self.commands
+            .try_send(Command::Credential { slot, credential })
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => StreamError::Capacity,
+                mpsc::error::TrySendError::Closed(_) => StreamError::Unavailable,
+            })
     }
     /// Observes successful handshakes without depending on further task records.
     #[must_use]

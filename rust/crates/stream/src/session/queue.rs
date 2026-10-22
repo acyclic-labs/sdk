@@ -6,6 +6,29 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         identity: wire::SessionChannel,
         record: Result<Event, StreamError>,
     ) -> Result<(), StreamError> {
+        if let Some(channel) = self.channels.get(&identity.channel_id)
+            && channel.generation == identity.generation
+        {
+            if let Err(reason) = self.validate_authority(identity.channel_id) {
+                return self.close_authority(identity, reason);
+            }
+            if let Ok(Event::Child(child, _)) = &record {
+                let count = self.channels.len();
+                let binding = self
+                    .channels
+                    .get_mut(&identity.channel_id)
+                    .and_then(|channel| channel.binding.as_mut())
+                    .ok_or(StreamError::AccessDenied)?;
+                match self
+                    .authority
+                    .permits_child(&self.slots, binding, &child.path, count)
+                {
+                    Ok(true) => {}
+                    Ok(false) => return Ok(()),
+                    Err(reason) => return self.close_authority(identity, reason),
+                }
+            }
+        }
         let Some(channel) = self.channels.get(&identity.channel_id).filter(|channel| {
             channel.generation == identity.generation && channel.ending.is_none()
         }) else {
@@ -184,6 +207,21 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         let Some((_, id)) = selected else {
             return Ok(None);
         };
+        if let Err(reason) = self.validate_authority(id) {
+            let generation = self
+                .channels
+                .get(&id)
+                .ok_or(StreamError::Unavailable)?
+                .generation;
+            self.close_authority(
+                wire::SessionChannel {
+                    channel_id: id,
+                    generation,
+                },
+                reason,
+            )?;
+            return Ok(self.controls.pop_front());
+        }
         if let Some(revalidate) = self
             .channels
             .get(&id)

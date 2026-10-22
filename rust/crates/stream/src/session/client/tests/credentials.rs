@@ -65,7 +65,12 @@ impl RotatingFixture {
         });
         let (controls, _) = tokio::sync::broadcast::channel(8);
         let host = RotatingHost {
-            service: crate::session::Service::new(provider, node.into(), Limits::default()),
+            service: crate::session::Service::new(
+                provider,
+                crate::session::testing::authority(),
+                node.into(),
+                Limits::default(),
+            ),
             calls,
             changed,
             controls: controls.clone(),
@@ -123,6 +128,9 @@ async fn session_credentials_renew_on_handshake_retry_reconnect_and_move() -> Te
             Some(certificate.as_bytes()),
         )
         .await?;
+        client
+            .session_client()?
+            .register_credential(0, crate::session::testing::credential())?;
         let mut records = client
             .follow(
                 StreamPath::new("events")?,

@@ -197,6 +197,7 @@ fn every_local_and_global_credit_combination_matches_the_admission_contract() {
                     for ending in [false, true] {
                         for room in 0..8 {
                             let channel = Channel {
+                                binding: None,
                                 generation: 1,
                                 latest,
                                 opaque_cursor: false,

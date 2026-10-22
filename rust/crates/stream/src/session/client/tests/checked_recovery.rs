@@ -159,6 +159,7 @@ async fn run(actions: &[bool], boundary: usize, moved: bool, broken: bool) -> Te
             as crate::BoxProviderFuture<'static, Result<transport::Endpoint, StreamError>>
     });
     let client = Client::with_transport(home, connect, std::sync::Arc::new(PlatformExecutor));
+    client.register_credential(0, crate::session::testing::credential())?;
     let mut data = client
         .follow_data(
             wire::SessionFollow {

@@ -6,6 +6,7 @@ pub(in crate::session::client) fn fixture(
     let (_, commands) = mpsc::channel(2);
     let released = Arc::new(signal::Signal::new());
     let mut pool = Pool {
+        credentials: BTreeMap::new(),
         connections: super::super::super::Connections::new(),
         executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
         identity: Bytes::from_static(b"model"),
@@ -42,6 +43,7 @@ pub(in crate::session::client) fn fixture(
         pool.links.insert(
             node.into(),
             Link {
+                opening_credentials: BTreeMap::new(),
                 observation: None,
                 epoch,
                 credit: wire::SessionWindow {

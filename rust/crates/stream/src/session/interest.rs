@@ -1,4 +1,14 @@
 use super::*;
+struct Opened {
+    identity: wire::SessionChannel,
+    channel: Channel,
+    source: Source,
+    terminal: Option<Source>,
+}
+enum Admission {
+    Open(Box<Opened>),
+    Denied(wire::SessionChannel, authority::Rejection),
+}
 
 impl<P: StreamProvider + ?Sized> Session<P> {
     pub(super) fn interest(&mut self, interest: wire::SessionInterest) -> Result<(), StreamError> {
@@ -36,12 +46,25 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         // Provider opens run independently; refusal closes only that channel.
         let mut opened = Vec::new();
         for subscription in interest.upsert {
-            opened.push(self.open(subscription)?);
+            opened.push(self.open(subscription, self.channels.len() - removed + added)?);
         }
         for remove in interest.remove {
             self.remove(remove.channel_id)?;
         }
-        for (identity, channel, source, terminal) in opened {
+        for admission in opened {
+            let opened = match admission {
+                Admission::Open(opened) => opened,
+                Admission::Denied(identity, reason) => {
+                    self.close_authority(identity, reason)?;
+                    continue;
+                }
+            };
+            let Opened {
+                identity,
+                channel,
+                source,
+                terminal,
+            } = *opened;
             self.remove(identity.channel_id)?;
             let mode = channel.source_mode();
             self.channels.insert(identity.channel_id, channel);
@@ -64,7 +87,8 @@ impl<P: StreamProvider + ?Sized> Session<P> {
     fn open(
         &self,
         subscription: wire::SessionSubscription,
-    ) -> Result<(wire::SessionChannel, Channel, Source, Option<Source>), StreamError> {
+        channels: usize,
+    ) -> Result<Admission, StreamError> {
         let channel = subscription.channel.ok_or(StreamError::InvalidArgument)?;
         let resume = subscription.resume.ok_or(StreamError::InvalidArgument)?;
         let identity = channel;
@@ -72,7 +96,8 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             subscription.kind,
             Some(Kind::Children(_) | Kind::FsPublications(_))
         );
-        let mut terminal = None;
+        let mut binding = None;
+        let terminal = None;
         let (latest, source, revalidate) = match subscription.kind {
             Some(Kind::Follow(follow)) => {
                 let preceding = wire_codec::session::preceding_follow(&follow, &resume)?;
@@ -85,12 +110,23 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     _ => return Err(StreamError::InvalidArgument),
                 };
                 let path = StreamPath::new(follow.path)?;
+                let (authorization, filter) = match self.authority.bind(
+                    &self.slots,
+                    subscription.credential,
+                    &path,
+                    subscription.filter.unwrap_or_default(),
+                    channels,
+                ) {
+                    Ok(binding) => binding,
+                    Err(reason) => return Ok(Admission::Denied(identity, reason)),
+                };
+                binding = Some(authorization);
                 let source = follow_source(
                     Arc::clone(&self.provider),
                     path,
                     resume.next,
                     preceding,
-                    crate::FollowFilter::new(subscription.filter.unwrap_or_default())?,
+                    filter,
                     identity,
                     self.executor.clone(),
                 );
@@ -102,6 +138,18 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 }
                 let request = wire_codec::children_from_wire(request)?;
                 children::validate_resume(&request, &resume)?;
+                binding = Some(
+                    match self.authority.bind_children(
+                        &self.slots,
+                        subscription.credential,
+                        request.parent.as_ref(),
+                        subscription.filter.unwrap_or_default(),
+                        channels,
+                    ) {
+                        Ok(binding) => binding,
+                        Err(reason) => return Ok(Admission::Denied(identity, reason)),
+                    },
+                );
                 (
                     false,
                     children::source(
@@ -113,29 +161,12 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     None,
                 )
             }
-            Some(Kind::FsPublications(encoded)) => {
-                let subscription = self
-                    .publications
-                    .as_ref()
-                    .ok_or(StreamError::Unsupported)?
-                    .subscribe(encoded, resume.clone())?;
-                let latest = match subscription.delivery {
-                    wire::SessionDelivery::All => false,
-                    wire::SessionDelivery::Latest => true,
-                    _ => return Err(StreamError::InvalidArgument),
-                };
-                terminal = Some(publications::terminal(subscription.terminal, identity));
-                (
-                    latest,
-                    publications::source(subscription.open, identity),
-                    Some(subscription.revalidate),
-                )
-            }
             _ => return Err(StreamError::Unsupported),
         };
-        Ok((
+        Ok(Admission::Open(Box::new(Opened {
             identity,
-            Channel {
+            channel: Channel {
+                binding,
                 generation: identity.generation,
                 latest,
                 opaque_cursor,
@@ -149,7 +180,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             },
             source,
             terminal,
-        ))
+        })))
     }
 
     pub(super) fn remove(&mut self, id: u64) -> Result<(), StreamError> {

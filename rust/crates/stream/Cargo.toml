@@ -26,7 +26,7 @@ name = "browser-test-host"
 required-features = ["grpc"]
 
 [features]
-test-support = ["acyclic-native-runtime/test-support"]
+test-support = ["acyclic-native-runtime/test-support", "acyclic-auth/test-support"]
 default = ["grpc"]
 grpc = ["dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/rt", "tokio/macros"]
 http = ["grpc", "dep:reqwest"]
@@ -81,7 +81,7 @@ acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 loom = { version = "0.7.2", features = ["futures"] }
 
 [dev-dependencies]
-ed25519-dalek = { version = "=3.0.0", features = ["zeroize"] }
+acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
 proptest.workspace = true
 tokio = { version = "1.48.0", features = ["macros", "rt", "test-util"] }
 

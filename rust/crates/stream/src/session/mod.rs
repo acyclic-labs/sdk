@@ -14,6 +14,9 @@ use tokio::sync::oneshot;
 use wire::{session_data::Item, session_frame::Body, session_subscription::Kind};
 
 mod authority;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod testing;
 pub use authority::{Authority, AuthorityState, TrustSnapshot};
 mod sources;
 #[cfg(acyclic_stream_loom)]
@@ -85,6 +88,7 @@ impl Default for Limits {
 }
 
 struct Channel {
+    binding: Option<authority::Binding>,
     generation: u64,
     latest: bool,
     opaque_cursor: bool,
@@ -110,6 +114,10 @@ type SourceItem = (wire::SessionChannel, Result<Event, StreamError>);
 type Source = crate::BoxProviderStream<'static, SourceItem>;
 
 struct Session<P: ?Sized> {
+    authority: Arc<Authority>,
+    slots: authority::Slots,
+    trust_revision: u64,
+    deadline: Option<u64>,
     provider: Arc<P>,
     publications: Option<Arc<dyn PublicationProvider>>,
     executor: Arc<dyn runtime::Executor>,
@@ -133,19 +141,21 @@ struct Session<P: ?Sized> {
 }
 
 /// Opens one bidirectional node session over the canonical provider.
-/// Transport authentication and per-path capabilities remain the host's responsibility.
+/// The host binds authenticated public trust, audience and presenting account.
 pub fn serve<P: StreamProvider + ?Sized>(
     provider: Arc<P>,
+    authority: Arc<Authority>,
     node: String,
     limits: Limits,
     incoming: transport::Responses,
 ) -> Result<transport::Responses, StreamError> {
-    serve_with_publications(provider, None, node, limits, incoming)
+    serve_with_publications(provider, authority, None, node, limits, incoming)
 }
 
 /// Opens a session with a filesystem publication provider.
 pub fn serve_with_publications<P: StreamProvider + ?Sized>(
     provider: Arc<P>,
+    authority: Arc<Authority>,
     publications: Option<Arc<dyn PublicationProvider>>,
     node: String,
     limits: Limits,
@@ -153,6 +163,7 @@ pub fn serve_with_publications<P: StreamProvider + ?Sized>(
 ) -> Result<transport::Responses, StreamError> {
     serve_on_with_publications(
         provider,
+        authority,
         publications,
         node,
         limits,
@@ -162,16 +173,18 @@ pub fn serve_with_publications<P: StreamProvider + ?Sized>(
 }
 fn serve_on<P: StreamProvider + ?Sized>(
     provider: Arc<P>,
+    authority: Arc<Authority>,
     node: String,
     limits: Limits,
     incoming: transport::Responses,
     executor: Arc<dyn runtime::Executor>,
 ) -> Result<transport::Responses, StreamError> {
-    serve_on_with_publications(provider, None, node, limits, incoming, executor)
+    serve_on_with_publications(provider, authority, None, node, limits, incoming, executor)
 }
 
 fn serve_on_with_publications<P: StreamProvider + ?Sized>(
     provider: Arc<P>,
+    authority: Arc<Authority>,
     publications: Option<Arc<dyn PublicationProvider>>,
     node: String,
     limits: Limits,
@@ -185,7 +198,15 @@ fn serve_on_with_publications<P: StreamProvider + ?Sized>(
     {
         return Err(StreamError::InvalidArgument);
     }
+    let trust_revision = authority
+        .snapshot()
+        .map_err(|_| StreamError::AccessDenied)?
+        .revision;
     let session = Session {
+        authority,
+        slots: authority::Slots::default(),
+        trust_revision,
+        deadline: None,
         provider,
         publications,
         executor,
@@ -211,6 +232,7 @@ fn serve_on_with_publications<P: StreamProvider + ?Sized>(
         session,
         |mut session| async move {
             loop {
+                session.fence_changed()?;
                 if let Some(frame) = session.controls.pop_front() {
                     return Ok(Some((frame, session)));
                 }
@@ -218,10 +240,14 @@ fn serve_on_with_publications<P: StreamProvider + ?Sized>(
                     return Ok(Some((frame, session)));
                 }
                 if session.sources.is_empty() && session.terminals.is_empty() {
-                    let Some(frame) = session.incoming.next().await else {
-                        return Ok(None);
-                    };
-                    session.receive(frame?)?;
+                    let changed = session
+                        .authority
+                        .changed(session.trust_revision, session.deadline);
+                    match future::select(session.incoming.next(), Box::pin(changed)).await {
+                        future::Either::Left((Some(frame), _)) => session.receive(frame?)?,
+                        future::Either::Left((None, _)) => return Ok(None),
+                        future::Either::Right(_) => session.revalidate(None)?,
+                    }
                     continue;
                 }
                 // Alternate deterministic priority. This bounds ready-side work
@@ -238,15 +264,29 @@ fn serve_on_with_publications<P: StreamProvider + ?Sized>(
                 let source = session
                     .sources
                     .next_with_control(&mut session.terminals, room);
-                let event = if session.prefer_control {
-                    match future::select(input, source).await {
-                        future::Either::Left((input, _)) => future::Either::Left(input),
-                        future::Either::Right((source, _)) => future::Either::Right(source),
+                let changed = Box::pin(
+                    session
+                        .authority
+                        .changed(session.trust_revision, session.deadline),
+                );
+                let event = async {
+                    if session.prefer_control {
+                        match future::select(input, source).await {
+                            future::Either::Left((input, _)) => future::Either::Left(input),
+                            future::Either::Right((source, _)) => future::Either::Right(source),
+                        }
+                    } else {
+                        match future::select(source, input).await {
+                            future::Either::Left((source, _)) => future::Either::Right(source),
+                            future::Either::Right((input, _)) => future::Either::Left(input),
+                        }
                     }
-                } else {
-                    match future::select(source, input).await {
-                        future::Either::Left((source, _)) => future::Either::Right(source),
-                        future::Either::Right((input, _)) => future::Either::Left(input),
+                };
+                let event = match future::select(Box::pin(event), changed).await {
+                    future::Either::Left((event, _)) => event,
+                    future::Either::Right(_) => {
+                        session.revalidate(None)?;
+                        continue;
                     }
                 };
                 session.prefer_control = !session.prefer_control;
@@ -296,6 +336,18 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             {
                 return Err(StreamError::InvalidArgument);
             }
+            if hello.credentials.len() > self.limits.channels {
+                return Err(StreamError::Capacity);
+            }
+            for (slot, credential) in hello.credentials.iter().enumerate() {
+                self.authority.register(
+                    &mut self.slots,
+                    u32::try_from(slot).map_err(|_| StreamError::Capacity)?,
+                    credential,
+                    self.limits.channels,
+                )?;
+            }
+            self.deadline = self.authority.deadline(&mut self.slots);
             self.hello = true;
             self.credit = wire::SessionWindow {
                 bytes: hello.receive_bytes,
@@ -325,6 +377,15 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             }
         }
         match body {
+            Body::Credential(credential) if input.channel_id == 0 && input.generation == 0 => {
+                self.authority.register(
+                    &mut self.slots,
+                    credential.slot,
+                    &credential.credential,
+                    self.limits.channels,
+                )?;
+                self.revalidate(Some(credential.slot))
+            }
             Body::Interest(interest) if input.channel_id == 0 && input.generation == 0 => {
                 self.interest(interest)
             }

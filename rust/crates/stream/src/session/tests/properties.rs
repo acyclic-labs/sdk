@@ -4,6 +4,10 @@ use proptest::prelude::*;
 
 pub(super) fn empty_session(latest: bool) -> Session<MemoryStream> {
     Session {
+        authority: testing::authority(),
+        slots: testing::slots(),
+        trust_revision: 0,
+        deadline: Some(1000),
         provider: Arc::new(MemoryStream::default()),
         executor: Arc::new(runtime::PlatformExecutor),
         publications: None,
@@ -15,6 +19,7 @@ pub(super) fn empty_session(latest: bool) -> Session<MemoryStream> {
         channels: BTreeMap::from([(
             1,
             Channel {
+                binding: Some(testing::binding()),
                 opaque_cursor: false,
                 revalidate: None,
                 generation: 1,

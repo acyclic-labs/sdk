@@ -8,8 +8,10 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
         append(&provider, "events", records).await?;
         let client = Client::in_process(
             provider.clone(),
+            crate::session::testing::authority(),
             Arc::new(super::super::super::runtime::PlatformExecutor),
         );
+        client.register_credential(0, crate::session::testing::credential())?;
         let path = StreamPath::new("events")?;
         let mut ordinary = client
             .follow(path.clone(), 0, crate::FollowFilter::default())

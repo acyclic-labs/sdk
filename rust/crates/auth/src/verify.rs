@@ -342,6 +342,18 @@ impl VerifiedCapability {
         authority::permits_follow(&self.blocks, request, policy).map_err(VerifyError::Denied)
     }
 
+    /// Admit children discovery, including discovery above a granted prefix.
+    /// Every returned child still needs its own grant and mandatory predicate.
+    pub fn authorize_children(
+        &self,
+        trust: &(impl Trust + ?Sized),
+        request: &authority::Request<'_>,
+        policy: authority::PolicyDecision,
+    ) -> Result<(), VerifyError> {
+        self.check(trust, request.now_unix_seconds)?;
+        authority::permits_children(&self.blocks, request, policy).map_err(VerifyError::Denied)
+    }
+
     /// Append a conjunctive block. The caller supplies fresh cryptographic entropy;
     /// reusing any ancestor key is rejected, including the account's online leaf.
     pub fn attenuate(
