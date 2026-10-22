@@ -8,3 +8,9 @@ rustflags = ["-C", "target-feature=+crt-static"]
 # Cargo's target linker applies to dev, release and dist profiles.
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld"
+
+# Use the parallel native linker for GNU Linux edit-build links. Other target
+# triples keep their platform linker and flags.
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]

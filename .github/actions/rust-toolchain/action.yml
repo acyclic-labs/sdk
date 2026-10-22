@@ -19,6 +19,15 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Install native Linux linker
+      if: runner.os == 'Linux' && runner.arch == 'X64'
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v clang >/dev/null || ! command -v mold >/dev/null; then
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y clang mold
+        fi
     - name: Read the pinned Rust release
       id: pinned
       shell: bash
