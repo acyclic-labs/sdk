@@ -90,6 +90,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     path,
                     resume.next,
                     preceding,
+                    crate::FollowFilter::new(subscription.filter.unwrap_or_default())?,
                     identity,
                     self.executor.clone(),
                 );
@@ -175,6 +176,7 @@ fn follow_source<P: StreamProvider + ?Sized>(
     path: StreamPath,
     from: u64,
     preceding: Option<crate::CommitId>,
+    filter: crate::FollowFilter,
     identity: wire::SessionChannel,
     executor: Arc<dyn runtime::Executor>,
 ) -> Source {
@@ -184,6 +186,7 @@ fn follow_source<P: StreamProvider + ?Sized>(
         path,
         from,
         preceding,
+        filter,
         None::<crate::RecordStream>,
         false,
         0_u8,
@@ -197,6 +200,7 @@ fn follow_source<P: StreamProvider + ?Sized>(
                 path,
                 mut next,
                 mut preceding,
+                filter,
                 mut records,
                 mut opened,
                 mut ended,
@@ -205,17 +209,19 @@ fn follow_source<P: StreamProvider + ?Sized>(
                     if records.is_none() {
                         records = Some(match preceding {
                             Some(anchor) => {
-                                provider.follow_checked(path.clone(), next, anchor).await?
+                                provider
+                                    .follow_checked(path.clone(), next, anchor, filter.clone())
+                                    .await?
                             }
-                            None => provider.follow(path.clone(), next).await?,
+                            None => provider.follow(path.clone(), next, filter.clone()).await?,
                         });
                         if !opened {
                             opened = true;
                             return Ok(Some((
                                 Event::Opened(preceding),
                                 (
-                                    provider, executor, path, next, preceding, records, opened,
-                                    ended,
+                                    provider, executor, path, next, preceding, filter, records,
+                                    opened, ended,
                                 ),
                             )));
                         }
@@ -236,7 +242,8 @@ fn follow_source<P: StreamProvider + ?Sized>(
                         return Ok(Some((
                             Event::Record(record),
                             (
-                                provider, executor, path, next, preceding, records, opened, ended,
+                                provider, executor, path, next, preceding, filter, records, opened,
+                                ended,
                             ),
                         )));
                     } else {

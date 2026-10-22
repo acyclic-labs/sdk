@@ -435,17 +435,23 @@ impl StreamProvider for HttpStream {
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         Ok(stream::iter(self.read_page(request).await?.into_iter().map(Ok)).boxed())
     }
-    async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        self.session_client()?.follow(path, from).await
+    async fn follow(
+        &self,
+        path: StreamPath,
+        from: u64,
+        filter: crate::FollowFilter,
+    ) -> Result<RecordStream, StreamError> {
+        self.session_client()?.follow(path, from, filter).await
     }
     async fn follow_checked(
         &self,
         path: StreamPath,
         from: u64,
         preceding: CommitId,
+        filter: crate::FollowFilter,
     ) -> Result<RecordStream, StreamError> {
         self.session_client()?
-            .follow_checked(path, from, preceding)
+            .follow_checked(path, from, preceding, filter)
             .await
     }
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {

@@ -50,7 +50,9 @@ async fn measure<P: StreamProvider>(writer: &P, reader: &P, label: &str) -> Test
             idempotency_key: None,
         })
         .await?;
-    let mut follow = reader.follow(path.clone(), 1).await?;
+    let mut follow = reader
+        .follow(path.clone(), 1, crate::FollowFilter::default())
+        .await?;
     let mut samples = Vec::new();
     for sequence in 1..=144 {
         let started = std::time::Instant::now();

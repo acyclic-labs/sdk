@@ -104,8 +104,16 @@ pub async fn follow_records<P: StreamProvider + ?Sized>(
     }
     let path = StreamPath::new(&follow.path)?;
     match record_anchor(cursor)? {
-        Some(anchor) => provider.follow_checked(path, cursor.next, anchor).await,
-        None => provider.follow(path, 0).await,
+        Some(anchor) => {
+            provider
+                .follow_checked(path, cursor.next, anchor, crate::FollowFilter::default())
+                .await
+        }
+        None => {
+            provider
+                .follow(path, 0, crate::FollowFilter::default())
+                .await
+        }
     }
 }
 

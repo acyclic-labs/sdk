@@ -159,14 +159,21 @@ async fn a_peer_that_stops_reading_controls_cannot_stall_healthy_nodes_or_cancel
             connect,
         );
         phase.set("opening redirected healthy follow");
-        let mut records = client.follow(StreamPath::new("healthy")?, 1).await?;
+        let mut records = client
+            .follow(
+                StreamPath::new("healthy")?,
+                1,
+                crate::FollowFilter::default(),
+            )
+            .await?;
         let rejected = Arc::new(tokio::sync::Notify::new());
         let rejection = Arc::clone(&rejected);
         let opening = client.clone();
         let storm = tokio::spawn(async move {
             let path = StreamPath::new("x".repeat(4096)).expect("bounded stream path");
-            let mut opens: FuturesUnordered<_> =
-                (0..1400).map(|_| opening.follow(path.clone(), 0)).collect();
+            let mut opens: FuturesUnordered<_> = (0..1400)
+                .map(|_| opening.follow(path.clone(), 0, crate::FollowFilter::default()))
+                .collect();
             while let Some(result) = opens.next().await {
                 if matches!(result, Err(StreamError::Capacity)) {
                     rejection.notify_one();
@@ -230,7 +237,13 @@ async fn native_discovery_pushes_creations_after_snapshot_exhaustion() -> TestRe
         "agents/first"
     );
     assert!(futures::poll!(children.next()).is_pending());
-    let mut records = client.follow(StreamPath::new("agents/first")?, 1).await?;
+    let mut records = client
+        .follow(
+            StreamPath::new("agents/first")?,
+            1,
+            crate::FollowFilter::default(),
+        )
+        .await?;
     append(&provider, "agents/later", 1).await?;
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(1), children.next())

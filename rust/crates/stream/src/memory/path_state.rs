@@ -3,6 +3,7 @@ struct PathState {
     prefix: [Option<HistoryWindow>; 2],
     tail: u64,
     changed: watch::Sender<u64>,
+    follows: Option<Arc<crate::query_sync::SyncMutex<crate::follow_index::FollowIndex>>>,
     children: ChildIndex,
     next_sibling: Option<StreamPath>,
     _allocation: Allocation,

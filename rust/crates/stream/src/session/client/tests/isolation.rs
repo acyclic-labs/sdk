@@ -20,7 +20,13 @@ async fn malformed_discovery_closes_only_its_node_and_keeps_later_opens_live() -
             None,
             connect,
         );
-        let mut healthy = client.follow(StreamPath::new("healthy")?, 1).await?;
+        let mut healthy = client
+            .follow(
+                StreamPath::new("healthy")?,
+                1,
+                crate::FollowFilter::default(),
+            )
+            .await?;
         let mut children = client
             .children(crate::ChildrenRequest {
                 parent: Some(StreamPath::new("agents")?),
@@ -80,7 +86,13 @@ async fn malformed_discovery_closes_only_its_node_and_keeps_later_opens_live() -
         )))?;
         assert_eq!(children.next().await, Some(Err(StreamError::Unavailable)));
         assert!(children.next().await.is_none());
-        let mut later = client.follow(StreamPath::new("healthy")?, 1).await?;
+        let mut later = client
+            .follow(
+                StreamPath::new("healthy")?,
+                1,
+                crate::FollowFilter::default(),
+            )
+            .await?;
         append(&memory, "healthy", 1).await?;
         assert_eq!(next(&mut healthy).await?.sequence, 1);
         assert_eq!(next(&mut later).await?.sequence, 1);

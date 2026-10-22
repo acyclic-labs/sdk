@@ -104,7 +104,12 @@ pub(crate) fn accepted_queries_and_publication_have_no_lost_wakeup_or_durability
         });
         block_on(async {
             let mut follow = stream
-                .follow_checked(path.clone(), 1, seed.commit_id)
+                .follow_checked(
+                    path.clone(),
+                    1,
+                    seed.commit_id,
+                    crate::FollowFilter::default(),
+                )
                 .await?;
             let record = follow.next().await.ok_or("follow ended")??;
             assert_eq!(record.value.as_slice(), b"accepted");
@@ -152,7 +157,10 @@ pub(crate) fn poison_wakes_checked_followers(omit_publication: bool) {
             }
         });
         block_on(async {
-            match stream.follow_checked(path, 1, seed.commit_id).await {
+            match stream
+                .follow_checked(path, 1, seed.commit_id, crate::FollowFilter::default())
+                .await
+            {
                 Ok(mut follow) => assert!(matches!(
                     follow.next().await,
                     Some(Err(StreamError::Unavailable))
@@ -185,7 +193,12 @@ pub(crate) fn persist_wakes_parked_followers(omit_wake: bool) {
         let AppendOutcome::Committed(seed) = seed else {
             return Err("seed conflict".into());
         };
-        let mut follow = block_on(stream.follow_checked(path.clone(), 1, seed.commit_id))?;
+        let mut follow = block_on(stream.follow_checked(
+            path.clone(),
+            1,
+            seed.commit_id,
+            crate::FollowFilter::default(),
+        ))?;
         let pushed = Arc::new(Push(loom::sync::atomic::AtomicBool::new(false)));
         let waker = std::task::Waker::from(pushed.clone());
         let mut context = std::task::Context::from_waker(&waker);

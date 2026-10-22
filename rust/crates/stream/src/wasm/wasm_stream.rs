@@ -225,8 +225,12 @@ impl WasmStream {
     pub async fn open_follow(&self, input: &[u8]) -> Result<WasmFollow, JsValue> {
         check_command_size(input)?;
         let request = decode::<wire::FollowRequest>(input)?;
-        let (path, from) = wire_codec::follow_from_wire(request).map_err(js_error)?;
-        let stream = self.provider.follow(path, from).await.map_err(js_error)?;
+        let (path, from, filter) = wire_codec::follow_from_wire(request).map_err(js_error)?;
+        let stream = self
+            .provider
+            .follow(path, from, filter)
+            .await
+            .map_err(js_error)?;
         Ok(WasmFollow {
             state: Rc::new(FollowState::new(
                 stream

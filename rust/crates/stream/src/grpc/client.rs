@@ -28,13 +28,14 @@ impl Client {
         &self,
         follow: wire::SessionFollow,
         from: u64,
+        filter: crate::FollowFilter,
     ) -> Result<
         futures::stream::BoxStream<'static, Result<wire::SessionData, StreamError>>,
         StreamError,
     > {
         Ok(self
             .session()?
-            .follow_data_with_ack(follow, from, self.acknowledge_deliveries)
+            .follow_data_with_ack(follow, from, self.acknowledge_deliveries, filter)
             .await?
             .boxed())
     }
@@ -224,9 +225,14 @@ impl StreamProvider for Client {
         Ok(stream::iter(first).chain(records).boxed())
     }
 
-    async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
+    async fn follow(
+        &self,
+        path: StreamPath,
+        from: u64,
+        filter: crate::FollowFilter,
+    ) -> Result<RecordStream, StreamError> {
         self.session()?
-            .follow_with_ack(path, from, self.acknowledge_deliveries)
+            .follow_with_ack(path, from, self.acknowledge_deliveries, filter)
             .await
     }
 
@@ -239,9 +245,16 @@ impl StreamProvider for Client {
         path: StreamPath,
         from: u64,
         preceding: CommitId,
+        filter: crate::FollowFilter,
     ) -> Result<RecordStream, StreamError> {
         self.session()?
-            .follow_records(path, from, Some(preceding), self.acknowledge_deliveries)
+            .follow_records(
+                path,
+                from,
+                Some(preceding),
+                self.acknowledge_deliveries,
+                filter,
+            )
             .await
     }
 

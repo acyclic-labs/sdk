@@ -66,6 +66,7 @@ async fn latest_overview(
                 ..Default::default()
             },
             0,
+            crate::FollowFilter::default(),
         )
         .await?;
     let data = overview.next().await.ok_or("latest ended")??;
@@ -160,9 +161,12 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
             }
         );
         let clones: Vec<_> = (0..64).map(|_| client.clone()).collect();
-        let mut follows =
-            futures::future::try_join_all(clones.iter().map(|clone| clone.follow(path.clone(), 1)))
-                .await?;
+        let mut follows = futures::future::try_join_all(
+            clones
+                .iter()
+                .map(|clone| clone.follow(path.clone(), 1, crate::FollowFilter::default())),
+        )
+        .await?;
         let anchor = provider
             .read(ReadRequest {
                 path: path.clone(),
@@ -176,11 +180,18 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
             .commit_id;
         assert!(matches!(
             client
-                .follow_checked(path.clone(), 1, CommitId::from_bytes([42; 32]))
+                .follow_checked(
+                    path.clone(),
+                    1,
+                    CommitId::from_bytes([42; 32]),
+                    crate::FollowFilter::default()
+                )
                 .await,
             Err(StreamError::PrefixNotRetained)
         ));
-        let mut checked = client.follow_checked(path.clone(), 1, anchor).await?;
+        let mut checked = client
+            .follow_checked(path.clone(), 1, anchor, crate::FollowFilter::default())
+            .await?;
         let mut children = client
             .children(ChildrenRequest {
                 parent: Some(StreamPath::new("agents")?),
@@ -264,7 +275,13 @@ async fn http_session_preserves_the_callers_additional_tls_root() -> TestResult 
             MAX_COMMAND_BYTES,
             Some(pem.as_bytes()),
         )?;
-        let mut records = client.follow(StreamPath::new("events")?, 1).await?;
+        let mut records = client
+            .follow(
+                StreamPath::new("events")?,
+                1,
+                crate::FollowFilter::default(),
+            )
+            .await?;
         let mut children = client
             .children(ChildrenRequest {
                 parent: Some(StreamPath::new("agents")?),

@@ -36,9 +36,15 @@ pub(crate) fn verify(retain_pending: bool, children: bool, checked: bool) {
             .boxed()
         } else {
             let follow = if checked {
-                block_on(provider.follow_checked(path.clone(), 1, seed.commit_id)).unwrap()
+                block_on(provider.follow_checked(
+                    path.clone(),
+                    1,
+                    seed.commit_id,
+                    crate::FollowFilter::default(),
+                ))
+                .unwrap()
             } else {
-                block_on(provider.follow(path.clone(), 0)).unwrap()
+                block_on(provider.follow(path.clone(), 0, crate::FollowFilter::default())).unwrap()
             };
             follow
                 .map(move |record| {
@@ -107,9 +113,14 @@ pub(crate) fn shutdown(
             .boxed()
         } else {
             let follow = if checked {
-                block_on(provider.follow_checked(path.clone(), 1, seed.commit_id))
+                block_on(provider.follow_checked(
+                    path.clone(),
+                    1,
+                    seed.commit_id,
+                    crate::FollowFilter::default(),
+                ))
             } else {
-                block_on(provider.follow(path.clone(), 0))
+                block_on(provider.follow(path.clone(), 0, crate::FollowFilter::default()))
             }
             .unwrap();
             follow
@@ -205,7 +216,7 @@ pub(crate) fn abandon(
             .map(|child| child.map(|_| ()))
             .boxed()
         } else {
-            block_on(provider.follow(path, 0))
+            block_on(provider.follow(path, 0, crate::FollowFilter::default()))
                 .unwrap()
                 .map(|record| record.map(|_| ()))
                 .boxed()

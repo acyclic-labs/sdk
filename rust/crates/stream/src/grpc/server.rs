@@ -170,7 +170,12 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             let path = path(request.path).map_err(|error| error_status(&error))?;
             let records = self
                 .provider
-                .follow(path, request.from)
+                .follow(
+                    path,
+                    request.from,
+                    crate::FollowFilter::new(request.filter.unwrap_or_default())
+                        .map_err(|error| error_status(&error))?,
+                )
                 .await
                 .map_err(|error| error_status(&error))?;
             Ok(observe_body(&span, records.map(record_frame)).boxed())

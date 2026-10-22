@@ -329,7 +329,9 @@ async fn follow_scales_with_history_depth() -> Result<(), StreamError> {
                 })
                 .await?;
         }
-        let mut follow = provider.follow(stream, 0).await?;
+        let mut follow = provider
+            .follow(stream, 0, crate::FollowFilter::default())
+            .await?;
         for expected in 0..count {
             let record = follow.next().await.ok_or(StreamError::Unavailable)??;
             assert_eq!(record.sequence, expected);

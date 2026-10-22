@@ -156,7 +156,9 @@ fn subscription_and_append(omit_wake: bool) {
             }
         });
         block_on(async {
-            let mut stream = provider.follow_checked(path, 1, anchor).await?;
+            let mut stream = provider
+                .follow_checked(path, 1, anchor, crate::FollowFilter::default())
+                .await?;
             let record = stream.next().await.ok_or("follow ended")??;
             assert_eq!(record.sequence, 1);
             assert_eq!(record.value.as_slice(), b"next");
@@ -188,7 +190,10 @@ fn subscription_and_recovery(retain_old: bool) {
             }
         });
         block_on(async {
-            match provider.follow_checked(path, 1, anchor).await {
+            match provider
+                .follow_checked(path, 1, anchor, crate::FollowFilter::default())
+                .await
+            {
                 Ok(mut stream) => assert!(matches!(
                     stream.next().await,
                     Some(Err(StreamError::NotFound
@@ -330,7 +335,9 @@ pub fn session_registration_and_recovery_never_splice(omit_anchor: bool) {
             };
             let cursor = wire_codec::session::record_cursor(1, anchor).unwrap();
             let registered = if omit_anchor {
-                provider.follow(path, cursor.next).await
+                provider
+                    .follow(path, cursor.next, crate::FollowFilter::default())
+                    .await
             } else {
                 wire_codec::session::follow_records(&provider, &follow, &cursor).await
             };

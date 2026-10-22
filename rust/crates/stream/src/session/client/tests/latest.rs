@@ -89,12 +89,17 @@ impl StreamProvider for Arc<Counted> {
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.memory.read_commit(id).await
     }
-    async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
+    async fn follow(
+        &self,
+        path: StreamPath,
+        from: u64,
+        filter: crate::FollowFilter,
+    ) -> Result<RecordStream, StreamError> {
         let status = path.as_str() == "status";
         let counted = Arc::clone(self);
         Ok(self
             .memory
-            .follow(path, from)
+            .follow(path, from, crate::FollowFilter::default())
             .await?
             .inspect(move |_| {
                 if status {
@@ -118,8 +123,20 @@ async fn saturated_latest_conflates_only_ordinary_values_and_shares_healthy_all(
     });
     let fixture = Fixture::open(Arc::new(Arc::clone(&counted)), "node").await?;
     let client = fixture.client()?;
-    let mut overview = client.follow_data(subscription("status", true), 1).await?;
-    let mut full = client.follow(StreamPath::new("events")?, 1).await?;
+    let mut overview = client
+        .follow_data(
+            subscription("status", true),
+            1,
+            crate::FollowFilter::default(),
+        )
+        .await?;
+    let mut full = client
+        .follow(
+            StreamPath::new("events")?,
+            1,
+            crate::FollowFilter::default(),
+        )
+        .await?;
     for (sent, sequence) in (1..=2).enumerate() {
         status(&memory, sequence, false).await?;
         fixture
@@ -166,7 +183,13 @@ async fn canonical_all_data_preserves_the_exact_cursor_and_both_watermarks() -> 
     append(&memory, "events", 1).await?;
     let fixture = Fixture::open(memory, "node").await?;
     let client = fixture.client()?.without_delivery_acknowledgements();
-    let mut raw = client.follow_data(subscription("events", false), 1).await?;
+    let mut raw = client
+        .follow_data(
+            subscription("events", false),
+            1,
+            crate::FollowFilter::default(),
+        )
+        .await?;
     let expected = wire::SessionData {
         after: Some(cursor(2)),
         accepted: 7,
@@ -206,7 +229,12 @@ async fn invalid_follow_modes_and_checked_latest_are_rejected_before_session_rpc
             ..subscription("status", true)
         },
     ] {
-        assert!(client.follow_data(follow, 1).await.is_err());
+        assert!(
+            client
+                .follow_data(follow, 1, crate::FollowFilter::default())
+                .await
+                .is_err()
+        );
     }
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 0);
     Ok(())
@@ -229,7 +257,13 @@ async fn latest_moves_and_reconnects_resume_consumed_cursors_and_keep_attention(
         None,
         connect,
     );
-    let mut raw = client.follow_data(subscription("status", true), 1).await?;
+    let mut raw = client
+        .follow_data(
+            subscription("status", true),
+            1,
+            crate::FollowFilter::default(),
+        )
+        .await?;
     status(&memory, 1, false).await?;
     assert_status(&delivery(&mut raw).await?, 1, false);
     for sequence in 2..=4 {

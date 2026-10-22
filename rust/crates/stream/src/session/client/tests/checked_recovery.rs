@@ -169,6 +169,7 @@ async fn run(actions: &[bool], boundary: usize, moved: bool, broken: bool) -> Te
                 ),
             },
             1,
+            crate::FollowFilter::default(),
         )
         .await?;
     // Independent state: a ledger supplied by accepted appends and a cursor

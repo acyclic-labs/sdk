@@ -145,8 +145,8 @@ impl Pool {
                 opaque: opaque.into(),
             }),
             kind: Some(route.kind.clone()),
-            credential: 0,
-            filter: None,
+            credential: route.credential,
+            filter: route.filter.clone(),
         };
         let value = frame(
             0,

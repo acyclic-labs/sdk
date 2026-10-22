@@ -4,6 +4,7 @@ impl LocalStream {
         path: StreamPath,
         from: u64,
         anchor: Option<crate::CommitId>,
+        filter: crate::FollowFilter,
     ) -> Result<RecordStream, StreamError> {
         let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.follow",
@@ -16,7 +17,12 @@ impl LocalStream {
             .scope(async {
                 let failed = self.inner.failed.subscribe();
                 let prepared = self
-                    .accepted(self.inner.provider.prepare_follow(&path, from, anchor))
+                    .accepted(self.inner.provider.prepare_follow(
+                        &path,
+                        from,
+                        anchor,
+                        filter.clone(),
+                    ))
                     .await
                     .and_then(std::convert::identity);
                 let (changed, cursor) = prepared.inspect_err(|error| {
@@ -32,6 +38,7 @@ impl LocalStream {
             cursor,
             anchor,
             changed,
+            filter,
             failed,
             done: false,
             span: span.clone(),

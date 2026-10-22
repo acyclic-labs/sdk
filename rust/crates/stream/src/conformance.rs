@@ -175,7 +175,9 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), StreamError> {
     {
         return Err(StreamError::Unavailable);
     }
-    let mut follow = provider.follow(child.clone(), 1).await?;
+    let mut follow = provider
+        .follow(child.clone(), 1, crate::FollowFilter::default())
+        .await?;
     provider
         .append(AppendRequest {
             path: child.clone(),

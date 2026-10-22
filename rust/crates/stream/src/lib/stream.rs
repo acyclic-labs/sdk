@@ -112,8 +112,12 @@ impl<P: StreamProvider> Stream<P> {
     }
 
     /// Replays from `from`, then remains live.
-    pub async fn follow(&self, from: u64) -> Result<RecordStream, StreamError> {
-        self.provider.follow(self.path.clone(), from).await
+    pub async fn follow(
+        &self,
+        from: u64,
+        filter: crate::FollowFilter,
+    ) -> Result<RecordStream, StreamError> {
+        self.provider.follow(self.path.clone(), from, filter).await
     }
 }
 

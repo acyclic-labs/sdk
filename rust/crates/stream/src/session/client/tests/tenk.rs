@@ -53,15 +53,27 @@ impl StreamProvider for Owners {
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.memory.read_commit(id).await
     }
-    async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
+    async fn follow(
+        &self,
+        path: StreamPath,
+        from: u64,
+        filter: crate::FollowFilter,
+    ) -> Result<RecordStream, StreamError> {
         let index = path
             .as_str()
             .strip_prefix("agents/")
             .and_then(|name| name.parse::<usize>().ok())
             .ok_or(StreamError::InvalidPath)?;
         match &self.nodes[index % NODES] {
-            Some(node) => node.follow(path, from).await,
-            None => self.memory.follow(path, from).await,
+            Some(node) => {
+                node.follow(path, from, crate::FollowFilter::default())
+                    .await
+            }
+            None => {
+                self.memory
+                    .follow(path, from, crate::FollowFilter::default())
+                    .await
+            }
         }
     }
 }
@@ -76,7 +88,9 @@ async fn agent(
     let peer = paths.get(id ^ 1).ok_or("agent has no peer")?.clone();
     let first = id.is_multiple_of(2);
     if !first {
-        let mut inbox = memory.follow(own.clone(), 1).await?;
+        let mut inbox = memory
+            .follow(own.clone(), 1, crate::FollowFilter::default())
+            .await?;
         assert_eq!(next(&mut inbox).await?.sequence, 1);
     }
     let stamp = u64::try_from(epoch.elapsed().as_nanos())?;
@@ -111,7 +125,9 @@ async fn agent(
         CommitOutcome::Committed(_)
     ));
     if first {
-        let mut reply = memory.follow(own, 2).await?;
+        let mut reply = memory
+            .follow(own, 2, crate::FollowFilter::default())
+            .await?;
         assert_eq!(next(&mut reply).await?.sequence, 2);
     }
     Ok(())
@@ -134,7 +150,7 @@ async fn run_swarm<P: StreamProvider>(
         .map(|(id, path)| async move {
             Ok::<_, StreamError>(
                 provider
-                    .follow(path, 1)
+                    .follow(path, 1, crate::FollowFilter::default())
                     .await?
                     .map(move |record| (id, record))
                     .boxed(),
@@ -320,7 +336,15 @@ async fn unshared_session_control_is_rejected_by_the_same_node_work_counters() -
         .collect::<Result<Vec<_>, _>>()?;
     let mut follows = Vec::new();
     for client in &clients {
-        follows.push(client.follow(StreamPath::new("agents/0")?, 1).await?);
+        follows.push(
+            client
+                .follow(
+                    StreamPath::new("agents/0")?,
+                    1,
+                    crate::FollowFilter::default(),
+                )
+                .await?,
+        );
     }
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 4);
     assert_eq!(fixture.counts.connections.load(Ordering::Relaxed), 1);
@@ -336,7 +360,13 @@ async fn redundant_control_traffic_is_rejected_by_the_same_linear_byte_budget() 
     append(&memory, "agents/0", 1).await?;
     let fixture = Fixture::open(Arc::clone(&memory), "redundant").await?;
     let client = fixture.client()?;
-    let mut follow = client.follow(StreamPath::new("agents/0")?, 1).await?;
+    let mut follow = client
+        .follow(
+            StreamPath::new("agents/0")?,
+            1,
+            crate::FollowFilter::default(),
+        )
+        .await?;
     assert_eq!(node_work(&fixture.counts, 1), Ok(()));
     let redundant = frame(0, 0, Body::Window(wire::SessionWindow::default()));
     // Valid zero-credit controls do not change delivery or exhaust a queue.
@@ -402,7 +432,9 @@ async fn quiescence_rejects_extra_deliveries_and_truncated_follow_controls() -> 
     for (extra, truncate) in [(false, false), (true, false), (false, true), (true, true)] {
         let memory = MemoryStream::default();
         append(&memory, "probe", if extra { 3 } else { 2 }).await?;
-        let follow = memory.follow(StreamPath::new("probe")?, 0).await?;
+        let follow = memory
+            .follow(StreamPath::new("probe")?, 0, crate::FollowFilter::default())
+            .await?;
         let mut follow = if truncate {
             follow.take(2).boxed()
         } else {

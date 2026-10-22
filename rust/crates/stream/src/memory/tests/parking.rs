@@ -31,11 +31,19 @@ async fn unpolled_streams_do_not_block_appends() {
         } else {
             let follow = if checked {
                 provider
-                    .follow_checked(path.clone(), 1, seed.commit_id)
+                    .follow_checked(
+                        path.clone(),
+                        1,
+                        seed.commit_id,
+                        crate::FollowFilter::default(),
+                    )
                     .await
                     .unwrap()
             } else {
-                provider.follow(path.clone(), 0).await.unwrap()
+                provider
+                    .follow(path.clone(), 0, crate::FollowFilter::default())
+                    .await
+                    .unwrap()
             };
             follow.map(|item| item.map(|_| ())).boxed()
         };
@@ -93,7 +101,7 @@ async fn dropped_consumers_leave_no_queued_snapshot_reservation() {
                 .boxed()
         } else {
             provider
-                .follow(path, 0)
+                .follow(path, 0, crate::FollowFilter::default())
                 .await
                 .unwrap()
                 .map(|item| item.map(|_| ()))

@@ -123,7 +123,13 @@ async fn session_credentials_renew_on_handshake_retry_reconnect_and_move() -> Te
             Some(certificate.as_bytes()),
         )
         .await?;
-        let mut records = client.follow(StreamPath::new("events")?, 0).await?;
+        let mut records = client
+            .follow(
+                StreamPath::new("events")?,
+                0,
+                crate::FollowFilter::default(),
+            )
+            .await?;
         assert_eq!(next(&mut records).await?.sequence, 0);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         old.controls.send(Err(Status::unavailable("disconnect")))?;
@@ -163,7 +169,13 @@ async fn session_credentials_renew_on_handshake_retry_reconnect_and_move() -> Te
             future::ready(Err(grpc::CredentialError::Invalid))
         }));
         assert!(matches!(
-            denied.follow(StreamPath::new("events")?, 0).await,
+            denied
+                .follow(
+                    StreamPath::new("events")?,
+                    0,
+                    crate::FollowFilter::default()
+                )
+                .await,
             Err(StreamError::AccessDenied)
         ));
         assert_eq!(

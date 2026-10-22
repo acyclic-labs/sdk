@@ -4,9 +4,10 @@ impl MemoryStream {
         path: &StreamPath,
         from: u64,
         anchor: Option<CommitId>,
-    ) -> Result<(watch::Receiver<u64>, HistoryCursor), StreamError> {
-        let state = self.state.read().await;
-        let path = state.paths.get(path).ok_or(StreamError::NotFound)?;
+        filter: crate::FollowFilter,
+    ) -> Result<(crate::follow_index::FollowInterest, HistoryCursor), StreamError> {
+        let mut state = self.state.write().await;
+        let path = state.paths.get_mut(path).ok_or(StreamError::NotFound)?;
         if from > path.tail {
             return Err(StreamError::OutOfRange);
         }
@@ -25,7 +26,15 @@ impl MemoryStream {
                 return Err(StreamError::PrefixNotRetained);
             }
         }
-        Ok((path.changed.subscribe(), cursor))
+        let index = path.follows.get_or_insert_with(|| {
+            Arc::new(crate::query_sync::SyncMutex::new(
+                crate::follow_index::FollowIndex::default(),
+            ))
+        });
+        Ok((
+            crate::follow_index::FollowIndex::subscribe(index, filter, path.tail)?,
+            cursor,
+        ))
     }
 
     pub(crate) async fn next_checked_record(
@@ -33,6 +42,7 @@ impl MemoryStream {
         path: &StreamPath,
         cursor: &mut HistoryCursor,
         anchor: &mut Option<CommitId>,
+        filter: &crate::FollowFilter,
     ) -> Result<Option<Record>, StreamError> {
         let state = self.state.read().await;
         let path = state.paths.get(path).ok_or(StreamError::NotFound)?;
@@ -43,13 +53,15 @@ impl MemoryStream {
             cursor.check_anchor(path, *anchor)?;
         }
         cursor.sync(path.history.as_ref(), path.tail);
-        let record = cursor.next_record();
-        if anchor.is_some()
-            && let Some(record) = &record
-        {
-            *anchor = Some(record.commit_id);
+        while let Some(record) = cursor.next_record() {
+            if anchor.is_some() {
+                *anchor = Some(record.commit_id);
+            }
+            if filter.matches(&record.headers) {
+                return Ok(Some(record));
+            }
         }
-        Ok(record)
+        Ok(None)
     }
 
     async fn follow_from(
@@ -57,12 +69,16 @@ impl MemoryStream {
         path: StreamPath,
         from: u64,
         anchor: Option<CommitId>,
+        filter: crate::FollowFilter,
     ) -> Result<RecordStream, StreamError> {
-        let (receiver, cursor) = self.prepare_follow(&path, from, anchor).await?;
+        let (interest, cursor) = self
+            .prepare_follow(&path, from, anchor, filter.clone())
+            .await?;
         let state = Box::new(MemoryFollow {
             provider: self.clone(),
             path,
-            changed: receiver,
+            interest,
+            filter,
             cursor,
             anchor,
             done: false,
@@ -85,7 +101,7 @@ impl MemoryStream {
                     Ok(Some(record)) => break Ok(record),
                     Err(error) => break Err(error),
                     Ok(None) => {
-                        if state.changed.changed().await.is_err() {
+                        if state.interest.changed.changed().await.is_err() {
                             break Err(if state.anchor.is_some() {
                                 StreamError::PrefixNotRetained
                             } else {
@@ -105,7 +121,8 @@ impl MemoryStream {
 struct MemoryFollow {
     provider: MemoryStream,
     path: StreamPath,
-    changed: watch::Receiver<u64>,
+    interest: crate::follow_index::FollowInterest,
+    filter: crate::FollowFilter,
     cursor: HistoryCursor,
     anchor: Option<CommitId>,
     done: bool,
@@ -116,7 +133,12 @@ impl crate::snapshot::Snapshot for Box<MemoryFollow> {
         let state = &mut **self;
         state
             .provider
-            .next_checked_record(&state.path, &mut state.cursor, &mut state.anchor)
+            .next_checked_record(
+                &state.path,
+                &mut state.cursor,
+                &mut state.anchor,
+                &state.filter,
+            )
             .await
     }
 }

@@ -101,7 +101,12 @@ impl StreamProvider for EndingFollow {
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.inner.read(request).await
     }
-    async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
+    async fn follow(
+        &self,
+        path: StreamPath,
+        from: u64,
+        filter: crate::FollowFilter,
+    ) -> Result<RecordStream, StreamError> {
         let attempt = self.follows.fetch_add(1, Ordering::SeqCst);
         if self.finite {
             return if attempt == 0 {
@@ -123,7 +128,9 @@ impl StreamProvider for EndingFollow {
         if self.deny {
             return Err(StreamError::AccessDenied);
         }
-        self.inner.follow(path, from).await
+        self.inner
+            .follow(path, from, crate::FollowFilter::default())
+            .await
     }
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
         if self.deny {
@@ -245,7 +252,9 @@ async fn follow_resumes_after_a_clean_end_of_stream() -> TestResult {
         })
         .await?;
     let transport = client(provider)?;
-    let mut records = transport.follow(path, 0).await?;
+    let mut records = transport
+        .follow(path, 0, crate::FollowFilter::default())
+        .await?;
     let record = tokio::time::timeout(Duration::from_secs(1), records.next())
         .await?
         .ok_or("follow ended")??;
@@ -264,7 +273,11 @@ async fn a_denied_follow_reports_access_denied_once_and_then_ends() -> TestResul
     let items = tokio::time::timeout(
         Duration::from_secs(1),
         transport
-            .follow(StreamPath::new("accounts/events")?, 0)
+            .follow(
+                StreamPath::new("accounts/events")?,
+                0,
+                crate::FollowFilter::default(),
+            )
             .await?
             .collect::<Vec<_>>(),
     )
@@ -515,7 +528,10 @@ async fn source_eof_never_discards_records_queued_before_terminal_close() -> Tes
     let client = client(provider)?;
     let result = tokio::time::timeout(
         Duration::from_secs(1),
-        client.follow(path, 0).await?.collect::<Vec<_>>(),
+        client
+            .follow(path, 0, crate::FollowFilter::default())
+            .await?
+            .collect::<Vec<_>>(),
     )
     .await?;
     assert_eq!(result.len(), 21);

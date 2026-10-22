@@ -87,6 +87,16 @@ impl FollowFilter {
         self.0.iter().all(|clause| clause.matches(headers))
     }
 
+    pub(crate) fn transport_filter(&self) -> Result<wire::SessionFilter, StreamError> {
+        if self.0.iter().any(|clause| clause.all_keys) {
+            return Err(StreamError::Unsupported);
+        }
+        Ok(self
+            .0
+            .first()
+            .map_or_else(wire::SessionFilter::default, |clause| clause.filter.clone()))
+    }
+
     /// Stable identity of the canonical effective conjunction.
     pub fn digest(&self) -> [u8; 32] {
         let mut hash = Sha256::new();

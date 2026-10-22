@@ -282,8 +282,12 @@ pub fn read_from_wire(value: wire::ReadRequest) -> Result<crate::ReadRequest, St
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub(crate) fn follow_from_wire(
     value: wire::FollowRequest,
-) -> Result<(StreamPath, u64), StreamError> {
-    Ok((path(value.path)?, value.from))
+) -> Result<(StreamPath, u64, crate::FollowFilter), StreamError> {
+    Ok((
+        path(value.path)?,
+        value.from,
+        crate::FollowFilter::new(value.filter.unwrap_or_default())?,
+    ))
 }
 
 #[cfg(any(

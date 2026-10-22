@@ -12,7 +12,9 @@ impl HttpStream {
         futures::stream::BoxStream<'static, Result<wire::SessionData, StreamError>>,
         StreamError,
     > {
-        self.session_client()?.follow_data(follow, from).await
+        self.session_client()?
+            .follow_data(follow, from, crate::FollowFilter::default())
+            .await
     }
     pub(super) fn session_client(&self) -> Result<crate::grpc::Client, StreamError> {
         shared::shared(&self.sessions, || {

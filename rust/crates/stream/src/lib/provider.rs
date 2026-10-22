@@ -65,7 +65,12 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     /// Opens a bounded finite read pinned to one immutable history snapshot.
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError>;
     /// Replays and then remains live without a handoff gap.
-    async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError>;
+    async fn follow(
+        &self,
+        path: StreamPath,
+        from: u64,
+        filter: crate::FollowFilter,
+    ) -> Result<RecordStream, StreamError>;
     /// Atomically checks the record at `from - 1` and subscribes after it. A missing
     /// or changed anchor fails immediately; it must never wait for a future record.
     /// History replacement during delivery must fail instead of joining histories.
@@ -74,8 +79,9 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         path: StreamPath,
         from: u64,
         preceding: CommitId,
+        filter: crate::FollowFilter,
     ) -> Result<RecordStream, StreamError> {
-        let _ = (path, from, preceding);
+        let _ = (path, from, preceding, filter);
         Err(StreamError::Unsupported)
     }
     /// Replays direct children and pushes each newly created child once, without a handoff gap.

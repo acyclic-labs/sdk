@@ -3,7 +3,8 @@ struct FollowState {
     path: StreamPath,
     cursor: crate::memory::HistoryCursor,
     anchor: Option<crate::CommitId>,
-    changed: watch::Receiver<u64>,
+    changed: crate::follow_index::FollowInterest,
+    filter: crate::FollowFilter,
     failed: watch::Receiver<bool>,
     done: bool,
     span: obs::OperationSpan,
@@ -20,13 +21,14 @@ impl crate::snapshot::Snapshot for Box<FollowState> {
                 &state.path,
                 &mut state.cursor,
                 &mut state.anchor,
+                &state.filter,
             ))
             .await?
     }
 }
 impl FollowState {
     async fn wait(&mut self) -> Result<(), StreamError> {
-        let publication = self.changed.changed();
+        let publication = self.changed.changed.changed();
         #[cfg(acyclic_loom)]
         let publication = async {
             if self.provider.inner.omit_follow_wake {

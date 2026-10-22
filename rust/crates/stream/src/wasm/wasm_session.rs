@@ -35,7 +35,9 @@ impl WasmSession {
         let client = self.client.clone();
         let acknowledge = self.acknowledge;
         let stream = futures::stream::once(async move {
-            client.follow_data_with_ack(follow, from, acknowledge).await
+            client
+                .follow_data_with_ack(follow, from, acknowledge, crate::FollowFilter::default())
+                .await
         })
         .try_flatten()
         .map(|item| item.map(|data| data.encode_to_vec()))

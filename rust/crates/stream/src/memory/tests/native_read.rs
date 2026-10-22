@@ -11,7 +11,7 @@ async fn seeded() -> MemoryResult<MemoryStream> {
             records: vec![
                 (OwnedBytes::from_static(b"aa")).into(),
                 (OwnedBytes::from_static(b"bb")).into(),
-                OwnedBytes::from_static(b"cc"),
+                OwnedBytes::from_static(b"cc").into(),
             ],
             if_tail: Some(0),
             idempotency_key: None,

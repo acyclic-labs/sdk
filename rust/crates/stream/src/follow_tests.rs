@@ -37,12 +37,14 @@ async fn checked_registration_never_waits_for_a_missing_or_reused_anchor()
         (StreamPath::new("missing")?, 1, id, StreamError::NotFound),
     ] {
         let result = provider
-            .follow_checked(path, from, expected)
+            .follow_checked(path, from, expected, crate::FollowFilter::default())
             .now_or_never()
             .ok_or("registration waited for an absent anchor")?;
         assert!(matches!(result, Err(actual) if actual == error));
     }
-    let mut follow = provider.follow_checked(path.clone(), 1, id).await?;
+    let mut follow = provider
+        .follow_checked(path.clone(), 1, id, crate::FollowFilter::default())
+        .await?;
     assert!(follow.next().now_or_never().is_none());
     provider
         .append(AppendRequest {
@@ -92,7 +94,12 @@ async fn checked_delivery_rejects_history_loss_after_registration_or_while_waiti
         let second = rows.next().await.ok_or("missing second")??.commit_id;
         let from = if loss == "unconsumed" { 1 } else { 2 };
         let mut follow = provider
-            .follow_checked(path.clone(), from, if from == 1 { first } else { second })
+            .follow_checked(
+                path.clone(),
+                from,
+                if from == 1 { first } else { second },
+                crate::FollowFilter::default(),
+            )
             .await?;
         if loss != "unconsumed" {
             assert!(follow.next().now_or_never().is_none());

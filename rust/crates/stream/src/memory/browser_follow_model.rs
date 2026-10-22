@@ -49,11 +49,18 @@ fn check<const OMIT_ANCHOR: bool>() {
             } else {
                 Some(receipt.commit_id)
             };
-            let (_, mut cursor) = provider.prepare_follow(&path, 1, anchor).await?;
+            let (_, mut cursor) = provider
+                .prepare_follow(&path, 1, anchor, crate::FollowFilter::default())
+                .await?;
             changed
                 .next(async || {
                     provider
-                        .next_checked_record(&path, &mut cursor, &mut anchor)
+                        .next_checked_record(
+                            &path,
+                            &mut cursor,
+                            &mut anchor,
+                            &crate::FollowFilter::default(),
+                        )
                         .await
                 })
                 .await

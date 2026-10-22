@@ -25,6 +25,7 @@ async fn registration_deadline_removes_only_the_stalled_interest() -> TestResult
         StreamPath::new("stalled")?,
         1,
         crate::CommitId::from_bytes([7; 32]),
+        crate::FollowFilter::default(),
     ));
     assert!(futures::poll!(stalled.as_mut()).is_pending());
     let Some(Command::Open {
@@ -33,7 +34,11 @@ async fn registration_deadline_removes_only_the_stalled_interest() -> TestResult
     else {
         return Err("missing registration".into());
     };
-    let mut healthy = Box::pin(client.follow(StreamPath::new("healthy")?, 0));
+    let mut healthy = Box::pin(client.follow(
+        StreamPath::new("healthy")?,
+        0,
+        crate::FollowFilter::default(),
+    ));
     assert!(futures::poll!(healthy.as_mut()).is_pending());
     let Some(Command::Open {
         id: healthy_id,
@@ -60,12 +65,14 @@ async fn registration_deadline_removes_only_the_stalled_interest() -> TestResult
 #[tokio::test(start_paused = true)]
 async fn registration_deadline_also_withdraws_blocked_queue_admission() -> TestResult {
     let (client, mut commands) = waiting_client();
-    let mut first = Box::pin(client.follow(StreamPath::new("first")?, 0));
+    let mut first =
+        Box::pin(client.follow(StreamPath::new("first")?, 0, crate::FollowFilter::default()));
     assert!(futures::poll!(first.as_mut()).is_pending());
     let mut blocked = Box::pin(client.follow_checked(
         StreamPath::new("blocked")?,
         1,
         crate::CommitId::from_bytes([7; 32]),
+        crate::FollowFilter::default(),
     ));
     assert!(futures::poll!(blocked.as_mut()).is_pending());
     tokio::time::advance(Duration::from_secs(10)).await;
@@ -143,6 +150,7 @@ fn traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop() ->
                 StreamPath::new("private/stalled")?,
                 1,
                 crate::CommitId::from_bytes([7; 32]),
+                crate::FollowFilter::default(),
             ));
             assert!(futures::poll!(stalled.as_mut()).is_pending());
             let _held = commands.recv().await.ok_or("missing Open")?;
@@ -154,7 +162,13 @@ fn traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop() ->
             append(&memory, "private/events", 1).await?;
             let fixture = Fixture::open(Arc::clone(&memory), "node").await?;
             let client = fixture.client()?;
-            let mut records = client.follow(StreamPath::new("private/events")?, 1).await?;
+            let mut records = client
+                .follow(
+                    StreamPath::new("private/events")?,
+                    1,
+                    crate::FollowFilter::default(),
+                )
+                .await?;
             fixture
                 .controls
                 .send(Err(Status::unavailable("fixture reconnect")))?;
@@ -179,7 +193,13 @@ fn traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop() ->
                 .send(Err(Status::permission_denied("terminal fixture failure")))?;
             assert_eq!(records.next().await, Some(Err(StreamError::AccessDenied)));
             drop(records);
-            let cancelled = client.follow(StreamPath::new("private/events")?, 2).await?;
+            let cancelled = client
+                .follow(
+                    StreamPath::new("private/events")?,
+                    2,
+                    crate::FollowFilter::default(),
+                )
+                .await?;
             drop(cancelled);
             // Retirement is an observable completion, not a sleep or elapsed-time assertion.
             loop {

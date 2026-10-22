@@ -227,6 +227,7 @@ impl MemoryStream {
                     prefix: [None, None],
                     tail: 0,
                     changed,
+                    follows: None,
                     _allocation: claim,
                 },
             ));
@@ -564,6 +565,12 @@ fn publish_fact(
     let notify = true;
     if notify {
         stream.changed.send_replace(tail);
+        if let Some(index) = &stream.follows {
+            index
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .publish(fact_records(fact), tail);
+        }
     }
     state.record_count += fact_records(fact).len();
     state.payload_bytes += fact_records(fact)

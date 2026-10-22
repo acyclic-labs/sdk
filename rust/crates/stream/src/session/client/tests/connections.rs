@@ -71,12 +71,24 @@ async fn same_client_discovers_replacement_after_idle_close() -> TestResult {
             Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
             Arc::new(super::super::super::runtime::PlatformExecutor),
         );
-        let mut first = client.follow(StreamPath::new("events")?, 0).await?;
+        let mut first = client
+            .follow(
+                StreamPath::new("events")?,
+                0,
+                crate::FollowFilter::default(),
+            )
+            .await?;
         assert_eq!(next(&mut first).await?.sequence, 0);
         endpoint.replacement.store(1, Ordering::Release);
         drop(first);
         endpoint.closed.notified().await;
-        let mut second = client.follow(StreamPath::new("events")?, 0).await?;
+        let mut second = client
+            .follow(
+                StreamPath::new("events")?,
+                0,
+                crate::FollowFilter::default(),
+            )
+            .await?;
         assert_eq!(next(&mut second).await?.sequence, 0);
         assert_eq!(*endpoint.destinations.lock().unwrap(), ["", ""]);
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
@@ -315,7 +327,9 @@ async fn reconnect_pushes_a_generation_without_new_records() -> TestResult {
         Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
     );
     let connections = client.connections();
-    let _idle = client.follow(StreamPath::new("idle")?, 1).await?;
+    let _idle = client
+        .follow(StreamPath::new("idle")?, 1, crate::FollowFilter::default())
+        .await?;
     let first = connections.changed(0).await?;
     fixture.reset()?;
     let second = tokio::time::timeout(Duration::from_secs(1), connections.changed(first)).await??;

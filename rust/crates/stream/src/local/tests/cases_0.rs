@@ -863,7 +863,11 @@ async fn local_follow_observes_lifetime_drop_and_late_error()
             tracing_subscriber::Registry::default().with(captured.clone()),
             || {
                 let parent = obs::OperationSpan::new(tracing::info_span!("origin_parent"));
-                parent.scope(async { provider.follow(path, 1).await })
+                parent.scope(async {
+                    provider
+                        .follow(path, 1, crate::FollowFilter::default())
+                        .await
+                })
             },
         )
         .await?;
@@ -927,7 +931,9 @@ async fn follow_out_of_range_is_rejected_at_registration() -> Result<(), Box<dyn
         })
         .await?;
     assert!(matches!(
-        provider.follow(path, 2).await,
+        provider
+            .follow(path, 2, crate::FollowFilter::default())
+            .await,
         Err(StreamError::OutOfRange)
     ));
     Ok(())
