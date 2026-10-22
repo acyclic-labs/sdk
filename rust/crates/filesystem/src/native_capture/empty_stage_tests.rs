@@ -39,6 +39,7 @@ fn empty_staging_preserves_bytes_and_retires_custody() -> Result<(), Box<dyn std
         source_file: Some(file!()),
         ..ProptestConfig::default()
     });
+    let source = tempfile::tempdir()?;
     // No content ranges means no source bytes, no staged-byte increment, and
     // no retained allocation after the returned empty vector retires.
     runner.run(
@@ -48,7 +49,7 @@ fn empty_staging_preserves_bytes_and_retires_custody() -> Result<(), Box<dyn std
             any::<bool>(),
         ),
         |(before, length, cancelled)| {
-            let source = tempfile::tempdir().unwrap();
+            reset_source(source.path()).unwrap();
             sparse_file(&source.path().join("file"), length);
             let root = HostRoot::open(source.path(), &mut crate::native_host::ordinary_work())
                 .map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
@@ -88,6 +89,20 @@ fn empty_staging_preserves_bytes_and_retires_custody() -> Result<(), Box<dyn std
             Ok(())
         },
     )?;
+    Ok(())
+}
+
+// No host handles survive a capture. Each generated case starts with fresh
+// leaves (and no alternate streams), while NTFS parent creation/ACL setup is
+// paid once for this independent property rather than for every case.
+fn reset_source(root: &Path) -> std::io::Result<()> {
+    for name in ["file", "replacement", "displaced"] {
+        match std::fs::remove_file(root.join(name)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
     Ok(())
 }
 
@@ -266,31 +281,45 @@ pub(super) async fn encoded_record(
 #[test]
 fn empty_finalization_rejects_growth_replacement_removal_and_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
+    empty_finalization(0)
+}
+
+#[test]
+fn sparse_empty_finalization_rejects_growth_replacement_removal_and_cancellation()
+-> Result<(), Box<dyn std::error::Error>> {
+    empty_finalization(65537)
+}
+
+// Empty and nonresident sparse files are independent domains of the same
+// property. Give each to the existing test executor: each retains all 64
+// generated inputs, both import paths, exact work boundaries and omitted-proof
+// negative controls, without serializing their physical NTFS operations.
+fn empty_finalization(length: u64) -> Result<(), Box<dyn std::error::Error>> {
     acyclic_native_runtime::initialize_native_io_services()?;
     let _inline = acyclic_native_runtime::InlineBlocking::enter();
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    let setup =
-        NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).unwrap();
+    let setup = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .map_err(|(error, _)| error)?;
     let initial = runtime.block_on(async {
-        crate::Fs::memory()
-            .create_workspace(
-                "empty-differential",
-                WorkBudget::UNBOUNDED,
-                setup.cancellation(),
-            )
-            .await
-            .unwrap()
-            .value
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::tracking_transaction(),
-                WorkBudget::UNBOUNDED,
-                setup.cancellation(),
-            )
-            .await
-            .unwrap()
-            .value
-    });
+        Ok::<_, Box<dyn std::error::Error>>(
+            crate::Fs::memory()
+                .create_workspace(
+                    "empty-differential",
+                    WorkBudget::UNBOUNDED,
+                    setup.cancellation(),
+                )
+                .await?
+                .value
+                .checkout(
+                    crate::model::GenerationSelector::Head,
+                    crate::model::CheckoutMode::tracking_transaction(),
+                    WorkBudget::UNBOUNDED,
+                    setup.cancellation(),
+                )
+                .await?
+                .value,
+        )
+    })?;
     let path = NamespacePath::from_portable(
         &crate::path::PortablePath::parse("/file", initial.volume_config().limits)?,
         initial.volume_config().limits,
@@ -300,139 +329,142 @@ fn empty_finalization_rejects_growth_replacement_removal_and_cancellation()
         source_file: Some(file!()),
         ..ProptestConfig::default()
     });
+    let source = tempfile::tempdir()?;
     runner.run(
         &(1_usize..17, prop::collection::vec(any::<u8>(), 0..17)),
         |(growth, attribute)| {
             runtime.block_on(async {
-                for length in [0, 65537] {
-                    let source = tempfile::tempdir().unwrap();
-                    let file = source.path().join("file");
-                    sparse_file(&file, length);
-                    side_data(&file, &attribute);
-                    let options = CaptureOptions {
-                        source_root: source.path().to_owned(),
-                        expected_root_identity: capture_root_identity(source.path()).unwrap(),
-                        maximum_paths: 8,
-                        maximum_extent_spans: 8,
-                    };
-                    let (mut baseline, seeded, _, _) = run_capture(
-                        &initial,
-                        &path,
-                        &options,
-                        &setup,
-                        (true, false),
-                        (0, growth),
-                        WorkBudget::UNBOUNDED,
-                    )
-                    .await;
-                    seeded.unwrap();
-                    // Compare admission at the same decoded-cache state: the first
-                    // metadata lookup otherwise pays a cold read shared by later clones.
-                    baseline
-                        .read_metadata(&path, &setup, setup.cancellation())
-                        .await
-                        .unwrap();
-                    for edit in 0..5 {
-                        let mut outcomes = Vec::new();
-                        for force_import in [true, false] {
-                            if edit != 0 {
-                                if file.exists() {
-                                    std::fs::remove_file(&file).unwrap();
-                                }
-                                sparse_file(&file, length);
-                                side_data(&file, &attribute);
-                            }
-                            let (mut checkout, result, _work, before) = run_capture(
-                                &baseline,
-                                &path,
-                                &options,
-                                &setup,
-                                (force_import, false),
-                                (edit, growth),
-                                WorkBudget::UNBOUNDED,
-                            )
-                            .await;
-                            acceptance_matches(result.is_ok(), edit)?;
-                            if edit == 0 {
-                                let receipt = result.unwrap();
-                                prop_assert_eq!(receipt.value.staged_file_bytes, 0);
-                                outcomes.push((
-                                    checkout.root().clone(),
-                                    encoded_record(&mut checkout, &path, &setup).await,
-                                    receipt.work.backend_read_operations
-                                        - before.backend_read_operations,
-                                    receipt.work.source_bytes_read - before.source_bytes_read,
-                                ));
-                            } else {
-                                prop_assert_eq!(checkout.root(), baseline.root());
-                            }
-                        }
-                        if edit == 0 {
-                            prop_assert_eq!(&outcomes[0].0, &outcomes[1].0);
-                            prop_assert_eq!(&outcomes[0].1, &outcomes[1].1);
-                            prop_assert_eq!(outcomes[0].3, outcomes[1].3);
-                            prop_assert!(outcomes[0].2 > outcomes[1].2);
-                            for force_import in [true, false] {
-                                let index = usize::from(!force_import);
-                                let reads = outcomes[index].2;
-                                for limit in [reads - 1, reads] {
-                                    let budget = WorkBudget {
-                                        backend_read_operations: limit,
-                                        ..WorkBudget::UNBOUNDED
-                                    };
-                                    let (mut bounded, result, _work, before) = run_capture(
-                                        &baseline,
-                                        &path,
-                                        &options,
-                                        &setup,
-                                        (force_import, false),
-                                        (0, growth),
-                                        budget,
-                                    )
-                                    .await;
-                                    let work = match result {
-                                        Ok(receipt) => {
-                                            prop_assert_eq!(limit, reads);
-                                            prop_assert_eq!(bounded.root(), &outcomes[index].0);
-                                            prop_assert_eq!(
-                                                encoded_record(&mut bounded, &path, &setup).await,
-                                                outcomes[index].1.clone()
-                                            );
-                                            receipt.work
-                                        }
-                                        Err(failure) => {
-                                            prop_assert_eq!(limit + 1, reads);
-                                            prop_assert_eq!(bounded.root(), baseline.root());
-                                            *failure.work
-                                        }
-                                    };
-                                    prop_assert!(
-                                        work.backend_read_operations
-                                            - before.backend_read_operations
-                                            <= limit
-                                    );
-                                }
-                            }
-                        } else if edit != 4 {
-                            // The identical production capture, deliberately omitting its
-                            // final proof, must be rejected by the acceptance oracle.
+                reset_source(source.path())
+                    .map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
+                let file = source.path().join("file");
+                sparse_file(&file, length);
+                side_data(&file, &attribute);
+                let options = CaptureOptions {
+                    source_root: source.path().to_owned(),
+                    expected_root_identity: capture_root_identity(source.path())
+                        .map_err(|error| TestCaseError::fail(format!("{error:?}")))?,
+                    maximum_paths: 8,
+                    maximum_extent_spans: 8,
+                };
+                let (mut baseline, seeded, _, _) = run_capture(
+                    &initial,
+                    &path,
+                    &options,
+                    &setup,
+                    (true, false),
+                    (0, growth),
+                    WorkBudget::UNBOUNDED,
+                )
+                .await;
+                seeded.map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
+                // Compare admission at the same decoded-cache state: the first
+                // metadata lookup otherwise pays a cold read shared by later clones.
+                baseline
+                    .read_metadata(&path, &setup, setup.cancellation())
+                    .await
+                    .map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
+                for edit in 0..5 {
+                    let mut outcomes = Vec::new();
+                    for force_import in [true, false] {
+                        if edit != 0 {
                             if file.exists() {
-                                std::fs::remove_file(&file).unwrap();
+                                std::fs::remove_file(&file)
+                                    .map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
                             }
                             sparse_file(&file, length);
                             side_data(&file, &attribute);
-                            let (_, broken, _, _) = run_capture(
-                                &baseline,
-                                &path,
-                                &options,
-                                &setup,
-                                (false, true),
-                                (edit, growth),
-                                WorkBudget::UNBOUNDED,
-                            )
-                            .await;
-                            prop_assert!(acceptance_matches(broken.is_ok(), edit).is_err());
                         }
+                        let (mut checkout, result, _work, before) = run_capture(
+                            &baseline,
+                            &path,
+                            &options,
+                            &setup,
+                            (force_import, false),
+                            (edit, growth),
+                            WorkBudget::UNBOUNDED,
+                        )
+                        .await;
+                        acceptance_matches(result.is_ok(), edit)?;
+                        if edit == 0 {
+                            let receipt = result
+                                .map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
+                            prop_assert_eq!(receipt.value.staged_file_bytes, 0);
+                            outcomes.push((
+                                checkout.root().clone(),
+                                encoded_record(&mut checkout, &path, &setup).await,
+                                receipt.work.backend_read_operations
+                                    - before.backend_read_operations,
+                                receipt.work.source_bytes_read - before.source_bytes_read,
+                            ));
+                        } else {
+                            prop_assert_eq!(checkout.root(), baseline.root());
+                        }
+                    }
+                    if edit == 0 {
+                        prop_assert_eq!(&outcomes[0].0, &outcomes[1].0);
+                        prop_assert_eq!(&outcomes[0].1, &outcomes[1].1);
+                        prop_assert_eq!(outcomes[0].3, outcomes[1].3);
+                        prop_assert!(outcomes[0].2 > outcomes[1].2);
+                        for force_import in [true, false] {
+                            let index = usize::from(!force_import);
+                            let reads = outcomes[index].2;
+                            for limit in [reads - 1, reads] {
+                                let budget = WorkBudget {
+                                    backend_read_operations: limit,
+                                    ..WorkBudget::UNBOUNDED
+                                };
+                                let (mut bounded, result, _work, before) = run_capture(
+                                    &baseline,
+                                    &path,
+                                    &options,
+                                    &setup,
+                                    (force_import, false),
+                                    (0, growth),
+                                    budget,
+                                )
+                                .await;
+                                let work = match result {
+                                    Ok(receipt) => {
+                                        prop_assert_eq!(limit, reads);
+                                        prop_assert_eq!(bounded.root(), &outcomes[index].0);
+                                        prop_assert_eq!(
+                                            encoded_record(&mut bounded, &path, &setup).await,
+                                            outcomes[index].1.clone()
+                                        );
+                                        receipt.work
+                                    }
+                                    Err(failure) => {
+                                        prop_assert_eq!(limit + 1, reads);
+                                        prop_assert_eq!(bounded.root(), baseline.root());
+                                        *failure.work
+                                    }
+                                };
+                                prop_assert!(
+                                    work.backend_read_operations - before.backend_read_operations
+                                        <= limit
+                                );
+                            }
+                        }
+                    } else if edit != 4 {
+                        // The identical production capture, deliberately omitting its
+                        // final proof, must be rejected by the acceptance oracle.
+                        if file.exists() {
+                            std::fs::remove_file(&file)
+                                .map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
+                        }
+                        sparse_file(&file, length);
+                        side_data(&file, &attribute);
+                        let (_, broken, _, _) = run_capture(
+                            &baseline,
+                            &path,
+                            &options,
+                            &setup,
+                            (false, true),
+                            (edit, growth),
+                            WorkBudget::UNBOUNDED,
+                        )
+                        .await;
+                        prop_assert!(acceptance_matches(broken.is_ok(), edit).is_err());
                     }
                 }
                 Ok(())
