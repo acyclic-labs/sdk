@@ -148,6 +148,35 @@ fn frame(channel: u64, body: Body) -> session::SessionFrame {
     }
 }
 
+// Observe the actual source cursor, rather than treating one Pending poll as
+// proof that a cooperatively scheduled provider has exhausted its ready data.
+struct ObservedPublications<P> {
+    inner: P,
+    next: Arc<std::sync::atomic::AtomicU64>,
+}
+impl<P: PublicationProvider> PublicationProvider for ObservedPublications<P> {
+    fn subscribe(
+        &self,
+        encoded: Bytes,
+        resume: session::SessionCursor,
+    ) -> std::result::Result<engine::PublicationSubscription, StreamError> {
+        let mut subscription = self.inner.subscribe(encoded, resume)?;
+        let open = subscription.open;
+        let next = Arc::clone(&self.next);
+        subscription.open = Box::pin(async move {
+            let publications = open.await?;
+            Ok(Box::pin(publications.inspect(move |item| {
+                if let Ok(data) = item
+                    && let Some(cursor) = &data.after
+                {
+                    next.store(cursor.next, std::sync::atomic::Ordering::Release);
+                }
+            })) as engine::PublicationStream)
+        });
+        Ok(subscription)
+    }
+}
+
 struct Connection {
     sender: mpsc::UnboundedSender<std::result::Result<session::SessionFrame, StreamError>>,
     output: engine::transport::Responses,
@@ -304,8 +333,22 @@ async fn latest_conflates_full_manifests_all_preserves_history() -> Result {
     let (_fs, workspace, stream) = fixture().await?;
     for latest in [false, true] {
         let sub = subscription(workspace.id().volume_id(), latest);
-        let mut connection =
-            Connection::open(stream.clone(), &sub, session::SessionCursor::default()).await?;
+        let observed = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let provider = Arc::new(ObservedPublications {
+            inner: Provider::new(stream.clone(), |_: &Subscription| Ok(())),
+            next: Arc::clone(&observed),
+        });
+        let mut connection = Connection::start(
+            stream.clone(),
+            provider,
+            &sub,
+            session::SessionCursor::default(),
+        )
+        .await?;
+        assert!(matches!(
+            connection.next().await?.body,
+            Some(Body::Opened(_))
+        ));
         // No channel credit: LATEST may fold pending roots; ALL must retain them.
         assert!(connection.output.next().now_or_never().is_none());
         workspace
@@ -316,6 +359,23 @@ async fn latest_conflates_full_manifests_all_preserves_history() -> Result {
             .write_text("/entry", if latest { "latest-2" } else { "all-2" })
             .await?;
         assert!(connection.output.next().now_or_never().is_none());
+        if latest {
+            // A pending snapshot may be running under independent ownership.
+            // Drive its real wakes until the latest publication has entered the
+            // session, while asserting that no data can cross the credit fence.
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                futures::future::poll_fn(|cx| {
+                    assert!(connection.output.poll_next_unpin(cx).is_pending());
+                    if observed.load(std::sync::atomic::Ordering::Acquire) == 6 {
+                        std::task::Poll::Ready(())
+                    } else {
+                        std::task::Poll::Pending
+                    }
+                }),
+            )
+            .await?;
+        }
         connection.grant()?;
         let (publication, _) = connection.data().await?;
         if latest {
