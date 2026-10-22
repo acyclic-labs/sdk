@@ -789,6 +789,9 @@ mod checkout_reopen;
 #[cfg(all(feature = "native-execution", unix))]
 mod checkout_reconciliation;
 
+#[cfg(feature = "native-execution")]
+mod merge_recovery;
+
 #[cfg(all(feature = "native-execution", unix))]
 mod volume_tools;
 

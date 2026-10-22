@@ -162,6 +162,52 @@ fn held_windows_metadata_applies_and_verifies_file_and_directory_fields()
     )?;
     Ok(())
 }
+/// Sparseness is how the host stores a file's holes, not metadata a
+/// checkout demands: attributes captured from a dense file apply exactly to
+/// a sparse one, and the reverse, each keeping its own representation.
+#[test]
+fn held_windows_metadata_leaves_sparseness_to_the_file() -> std::io::Result<()> {
+    let mut work = ordinary_work();
+    use crate::kernel::{FileMetadata, MetadataField};
+    use std::os::windows::fs::MetadataExt as _;
+    const HIDDEN: u32 = 0x2;
+    const ARCHIVE: u32 = 0x20;
+    const SPARSE: u32 = 0x200;
+    let temporary = tempfile::tempdir()?;
+    std::fs::write(temporary.path().join("dense"), b"payload")?;
+    let sparse = std::fs::File::create(temporary.path().join("sparse"))?;
+    acyclic_native_runtime::device_control_in_place(
+        &sparse,
+        windows::Win32::System::Ioctl::FSCTL_SET_SPARSE,
+        &[],
+        &mut [],
+        None,
+    )?;
+    drop(sparse);
+    let root = test_root(temporary.path())?;
+    for (path, requested, observed) in [
+        ("sparse", ARCHIVE | HIDDEN, ARCHIVE | HIDDEN | SPARSE),
+        ("dense", ARCHIVE | HIDDEN | SPARSE, ARCHIVE | HIDDEN),
+    ] {
+        apply_metadata(
+            &root
+                .open_windows_metadata_target(&test_path(path), &mut work)
+                .map_err(std::io::Error::other)?,
+            FileMetadata {
+                windows_attributes: MetadataField::Value(requested),
+                ..FileMetadata::default()
+            },
+            &mut work,
+        )
+        .map_err(std::io::Error::other)?;
+        assert_eq!(
+            std::fs::symlink_metadata(temporary.path().join(path))?.file_attributes(),
+            observed,
+            "{path}"
+        );
+    }
+    Ok(())
+}
 #[test]
 fn held_windows_metadata_rejects_unrepresentable_fields_and_path_escape() -> std::io::Result<()> {
     let mut work = ordinary_work();

@@ -38,15 +38,18 @@ pub(crate) fn apply_metadata<W: NativeHostWork<Error = DemandError>>(
         // Readonly, hidden, system, archive, normal, temporary, and not-content-indexed.
         const SETTABLE: u32 = 0x21a7;
         // Every known structural attribute remains unchanged.
-        const STRUCTURAL: u32 = 0x5fde50;
+        const STRUCTURAL: u32 = 0x5fdc50;
+        // Sparseness is how this host stores the file's holes, chosen by
+        // whoever wrote it; it stays as the file has it.
+        let requested = attributes & !SPARSE;
         if attributes == 0
-            || attributes & !(SETTABLE | STRUCTURAL) != 0
-            || attributes & 0x80 != 0 && attributes != 0x80
-            || attributes & STRUCTURAL != current.FileAttributes & STRUCTURAL
+            || requested & !(SETTABLE | STRUCTURAL) != 0
+            || requested & 0x80 != 0 && requested != 0x80
+            || requested & STRUCTURAL != current.FileAttributes & STRUCTURAL
         {
             return Err(NativeMetadataError("Windows attributes").into());
         }
-        desired.FileAttributes = attributes;
+        desired.FileAttributes = if requested == 0 { 0x80 } else { requested };
     }
     for (requested, value) in [
         (metadata.created_ns, &mut desired.CreationTime),
@@ -87,10 +90,21 @@ pub(crate) fn apply_metadata<W: NativeHostWork<Error = DemandError>>(
             return Err(NativeMetadataError("Windows timestamp").into());
         }
     }
-    if matches!(metadata.windows_attributes, MetadataField::Value(_))
-        && observed.FileAttributes != desired.FileAttributes
+    if let MetadataField::Value(attributes) = metadata.windows_attributes
+        && exact_windows_attributes(observed.FileAttributes) != exact_windows_attributes(attributes)
     {
         return Err(NativeMetadataError("Windows attributes").into());
     }
     Ok(())
+}
+
+/// The sparse-file attribute: a storage representation of holes, not file
+/// metadata a checkout can demand.
+const SPARSE: u32 = 0x200;
+
+/// The attributes a materialization reproduces exactly: everything but
+/// sparseness, with `NORMAL` (no other attribute) as the empty set.
+const fn exact_windows_attributes(attributes: u32) -> u32 {
+    let attributes = attributes & !SPARSE;
+    if attributes == 0x80 { 0 } else { attributes }
 }
