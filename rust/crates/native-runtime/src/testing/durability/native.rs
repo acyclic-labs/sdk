@@ -10,10 +10,22 @@ enum Operation {
     Rename,
 }
 
-fn retains_cut(operation: Operation, fault: DurableFault, bytes: &[u8], erase: bool) -> bool {
-    let directory = tempfile::tempdir().unwrap();
-    let from = directory.path().join("from");
-    let to = directory.path().join("to");
+fn retains_cut(
+    directory: &std::path::Path,
+    operation: Operation,
+    fault: DurableFault,
+    bytes: &[u8],
+    erase: bool,
+) -> bool {
+    let from = directory.join("from");
+    let to = directory.join("to");
+    for path in [&from, &to] {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("reset cut fixture: {error}"),
+        }
+    }
     std::fs::write(&from, b"original").unwrap();
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -110,12 +122,15 @@ proptest::proptest! {
         bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 2..32),
         prefix in 0usize..32,
     ) {
+        // Reuse only the empty parent namespace. Every cut still starts with
+        // newly created original bytes, its own held handle and fresh schedule.
+        let directory = tempfile::tempdir().unwrap();
         for operation in [Operation::Write, Operation::Resize, Operation::Publish, Operation::Rename] {
             for fault in [DurableFault::Before, DurableFault::After, DurableFault::Failed,
                 DurableFault::DiskFull, DurableFault::Torn(prefix)] {
-                proptest::prop_assert!(retains_cut(operation, fault, &bytes, false), "{operation:?} lost {fault:?}");
+                proptest::prop_assert!(retains_cut(directory.path(), operation, fault, &bytes, false), "{operation:?} lost {fault:?}");
                 // Erasing the real scoped boundary must fail the same oracle.
-                proptest::prop_assert!(!retains_cut(operation, fault, &bytes, true), "erased {operation:?} escaped the control");
+                proptest::prop_assert!(!retains_cut(directory.path(), operation, fault, &bytes, true), "erased {operation:?} escaped the control");
             }
         }
     }
