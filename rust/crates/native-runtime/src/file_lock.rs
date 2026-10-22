@@ -105,12 +105,28 @@ impl FileLock {
             }
         };
         Self::ensure_unheld(*held)?;
-        match mode {
-            FileLockMode::Shared => self.file.try_lock_shared(),
-            FileLockMode::Exclusive => self.file.try_lock(),
-        }
-        .map_err(io::Error::from)?;
+        Self::try_lock_file(&self.file, mode)?;
         *held = true;
+        Ok(())
+    }
+
+    /// Takes the lock on `file` only if no conflicting holder exists, and
+    /// keeps it, with `file` open, until this process exits. Only the exit
+    /// releases it, so it suits a process that holds the lock for its whole
+    /// life and shares the description with no process that outlives it.
+    ///
+    /// It makes only the lock system call and allocates nothing, so a
+    /// forked child may call it before exec.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::ErrorKind::WouldBlock`] under contention, otherwise the
+    /// OS error; `file` is then closed.
+    #[cfg(unix)]
+    pub fn try_hold_until_exit(file: File, mode: FileLockMode) -> io::Result<()> {
+        Self::try_lock_file(&file, mode)?;
+        // The descriptor, and with it the lock, stays until exit.
+        std::mem::forget(file);
         Ok(())
     }
 
@@ -143,6 +159,14 @@ impl FileLock {
             .held
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn try_lock_file(file: &File, mode: FileLockMode) -> io::Result<()> {
+        match mode {
+            FileLockMode::Shared => file.try_lock_shared(),
+            FileLockMode::Exclusive => file.try_lock(),
+        }
+        .map_err(io::Error::from)
     }
 
     fn ensure_unheld(held: bool) -> io::Result<()> {

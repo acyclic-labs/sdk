@@ -338,17 +338,14 @@ fn leave_group() -> io::Result<()> {
 
 /// Locks the record, writes the warden's identity, and returns the owner's
 /// exit watch.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "the warden holds its record's lock for its whole life; only its exit releases it, and no process it forks keeps the description past its own exit or close"
-)]
 fn arm(record: c_int, owner: pid_t, warden: pid_t) -> io::Result<c_int> {
-    // The kernel releases this lock only when the warden's last descriptor
-    // of the record closes: when the warden has exited.
-    // SAFETY: the record descriptor opened by the caller.
-    if unsafe { libc::flock(record, libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
+    use std::os::fd::FromRawFd as _;
+    // Held until the warden exits: the program closes its copy before exec,
+    // and the group anchor is reaped before the warden supervises.
+    // SAFETY: the record descriptor opened by the caller, which stays open
+    // for the warden's whole life.
+    let file = unsafe { std::fs::File::from_raw_fd(record) };
+    crate::FileLock::try_hold_until_exit(file, crate::FileLockMode::Exclusive)?;
     let mut boot = [0; BOOT_BYTES];
     boot_identity(&mut boot)?;
     let mut start = [0; START_BYTES];
