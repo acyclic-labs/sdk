@@ -145,6 +145,10 @@ impl Renderer {
     }
 
     pub(crate) fn block_line(&mut self, line: Line) {
+        if self.prefixes.is_empty() {
+            self.lines.push(line);
+            return;
+        }
         let mut prefixed = Line::plain(&self.prefix(), MUTED);
         prefixed.spans.extend(line.spans);
         self.lines.push(prefixed);

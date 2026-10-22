@@ -8,16 +8,38 @@ struct Mark {
     bytes: usize,
 }
 
+impl Mark {
+    fn take_line(self, lines: &mut Vec<Line>, first: usize) -> Line {
+        let mut line = lines.get_mut(first).map(std::mem::take).unwrap_or_default();
+        lines.truncate(first);
+        line.spans.truncate(self.spans);
+        if let Some(span) = line.spans.last_mut() {
+            span.text.truncate(self.bytes);
+        }
+        line
+    }
+}
+
 // Content before this mark is retained only while the same span still crosses
-// its synthetic opener. An unmatched opener or a changed outer span reopens the
-// real paragraph. Delimiter runs inside styled text remain before the mark.
-#[derive(Clone)]
+// its synthetic opener. Reclassification rewinds to the real span opener;
+// delimiter runs inside styled text remain before the mark.
 struct Carry {
     prefix: String,
     kind: Option<TagEnd>,
 }
 
-#[derive(Default)]
+impl Clone for Carry {
+    fn clone(&self) -> Self {
+        #[cfg(test)]
+        work::copy(self.prefix.len());
+        Self {
+            prefix: self.prefix.clone(),
+            kind: self.kind,
+        }
+    }
+}
+
+#[derive(Default, Clone)]
 pub(super) struct Checkpoint {
     offset: usize,
     mark: Mark,
@@ -27,14 +49,37 @@ pub(super) struct Checkpoint {
     carry: Option<Carry>,
 }
 
+impl Checkpoint {
+    fn prefix(&self, source: &str, start: usize, previous: usize) -> String {
+        let tail = source.get(self.offset..).unwrap_or_default();
+        let context = if let Some(carry) = &self.carry {
+            carry.prefix.clone()
+        } else if self.offset == start {
+            String::new()
+        } else if source.get(previous..).unwrap_or_default().contains('\n') || tail.contains('\n') {
+            row_prefix(source.get(..self.offset).unwrap_or_default())
+        } else {
+            left_context(source.get(..self.offset).unwrap_or_default())
+        };
+        self.openers.prefix(&context)
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Inline {
     pub(super) checkpoint: Checkpoint,
     provisional: Option<Checkpoint>,
+    rollback: Option<Checkpoint>,
     start: usize,
 }
 
 impl Inline {
+    pub(super) fn rewind(&mut self) {
+        if let Some(rollback) = self.rollback.clone() {
+            self.checkpoint = rollback;
+        }
+        self.provisional = None;
+    }
     #[cfg(test)]
     pub(super) fn retained(&self) -> usize {
         let retained = |checkpoint: &Checkpoint| {
@@ -44,7 +89,9 @@ impl Inline {
                     .as_ref()
                     .map_or(0, |carry| carry.prefix.capacity())
         };
-        retained(&self.checkpoint) + self.provisional.as_ref().map_or(0, retained)
+        retained(&self.checkpoint)
+            + self.provisional.as_ref().map_or(0, retained)
+            + self.rollback.as_ref().map_or(0, retained)
     }
     pub(super) fn visible_frontier(&self, stable: usize, fallback: usize) -> (usize, usize) {
         let mark = self.checkpoint.mark;
@@ -62,27 +109,13 @@ impl Inline {
 impl Markdown {
     pub(super) fn advance_inline(&mut self, previous: usize) -> Option<usize> {
         let inline = self.inline.as_ref()?;
+        let start = inline.start;
+        let saved_rollback = inline.rollback.clone();
         let checkpoint = inline.provisional.as_ref().unwrap_or(&inline.checkpoint);
-        let cost = checkpoint.cost;
         let base = checkpoint.offset;
         let mark = checkpoint.mark;
         let tail = self.source.get(base..).unwrap_or_default();
-        let context = if let Some(carry) = &checkpoint.carry {
-            carry.prefix.clone()
-        } else if base == inline.start {
-            String::new()
-        } else if self
-            .source
-            .get(previous..)
-            .unwrap_or_default()
-            .contains('\n')
-            || tail.contains('\n')
-        {
-            row_prefix(self.source.get(..base).unwrap_or_default())
-        } else {
-            left_context(self.source.get(..base).unwrap_or_default())
-        };
-        let prefix = checkpoint.openers.prefix(&context);
+        let prefix = checkpoint.prefix(&self.source, start, previous);
         let sentinel = prefix.len();
         let source = format!("{prefix}{tail}");
         #[cfg(test)]
@@ -95,7 +128,7 @@ impl Markdown {
                 .len()
                 .max(100_000)
                 .saturating_sub(self.reference_cost)
-                .saturating_sub(cost),
+                .saturating_sub(checkpoint.cost),
         );
         let continues = |event: &Event<'_>, range: &Range<usize>| {
             range.start < sentinel
@@ -112,17 +145,28 @@ impl Markdown {
         if checkpoint.carry.is_some()
             && !events.iter().any(|(event, range)| continues(event, range))
         {
+            let inline = self.inline.as_mut()?;
+            inline.checkpoint = inline.rollback.clone()?;
+            inline.provisional = None;
+            return self.advance_inline(previous);
+        }
+        if !paragraph(&source, &events) {
             return None;
         }
-        if !paragraph(&source, &events)
-            || events.iter().any(|(event, range)| {
-                matches!(event, Event::Start(tag) if !matches!(tag, Tag::Paragraph))
-                    && range.start < sentinel
-                    && range.end > sentinel
-                    && !continues(event, range)
-            })
-        {
-            return None;
+        if events.iter().any(|(event, range)| {
+            matches!(event, Event::Start(tag) if !matches!(tag, Tag::Paragraph))
+                && range.start < sentinel
+                && range.end > sentinel
+                && !continues(event, range)
+        }) {
+            let inline = self.inline.as_mut()?;
+            let rollback = inline.rollback.clone()?;
+            if rollback.offset >= base {
+                return None;
+            }
+            inline.checkpoint = rollback;
+            inline.provisional = None;
+            return self.advance_inline(previous);
         }
         let (boundary, mut provisional, openers, limit) = boundary(&source, &events, sentinel);
         let carry = carry(&source, &events, sentinel)
@@ -130,147 +174,33 @@ impl Markdown {
         if let Some((end, _)) = &carry {
             provisional = Some(*end);
         }
-        let (cost, valid) = references::extend_expansion(
-            cost,
-            &checkpoint.valid,
-            calls.iter().filter(|(end, _)| *end <= boundary),
-        );
         let first = self.stable_lines + mark.line;
-        let mut line = self
-            .lines
-            .get_mut(first)
-            .map(std::mem::take)
-            .unwrap_or_default();
-        self.lines.truncate(first);
-        line.spans.truncate(mark.spans);
-        if let Some(span) = line.spans.last_mut() {
-            span.text.truncate(mark.bytes);
-        }
-        let mut renderer = render::Renderer::inline(line);
-        let mut committed = mark;
-        let mut previous_mark = mark;
-        let mut depth = 0usize;
-        for (event, range) in &events {
-            if range.end <= sentinel && !matches!(event, Event::Start(_) | Event::End(_)) {
-                continue;
-            }
-            match event {
-                Event::Code(text) if range.start < sentinel => {
-                    // The retained code prefix contains one synthetic content byte.
-                    renderer.event_in(
-                        &Event::Code(text.get(1..).unwrap_or_default().into()),
-                        Some(&self.references),
-                    );
-                }
-                Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph) => continue,
-                Event::Text(text) if source.get(range.clone()) == Some(text.as_ref()) => {
-                    let start = sentinel.saturating_sub(range.start).min(text.len());
-                    if let Some(cut) =
-                        provisional.filter(|cut| *cut >= range.start + start && *cut < range.end)
-                    {
-                        let cut = cut - range.start;
-                        renderer.event_in(
-                            &Event::Text(text.get(start..cut).unwrap_or_default().into()),
-                            Some(&self.references),
-                        );
-                        previous_mark = renderer.inline_mark(mark);
-                        renderer.event_in(
-                            &Event::Text(text.get(cut..).unwrap_or_default().into()),
-                            Some(&self.references),
-                        );
-                    } else {
-                        renderer.event_in(
-                            &Event::Text(text.get(start..).unwrap_or_default().into()),
-                            Some(&self.references),
-                        );
-                    }
-                }
-                Event::Text(text) if range.start < sentinel => {
-                    let text = text.get(sentinel - range.start..).unwrap_or_default();
-                    renderer.event_in(&Event::Text(text.into()), Some(&self.references));
-                }
-                _ => renderer.event_in(event, Some(&self.references)),
-            }
-            match event {
-                Event::Start(_) => depth += 1,
-                Event::End(_) => depth = depth.saturating_sub(1),
-                _ => {}
-            }
-            if depth == 0 && range.end == boundary {
-                committed = renderer.inline_mark(mark);
-            }
-            if carry.as_ref().is_some_and(|(end, _)| match event {
-                Event::Code(_) => range.start < *end && *end < range.end,
-                Event::Text(_) => range.end == *end,
-                _ => false,
-            }) {
-                previous_mark = renderer.inline_mark(mark);
-            }
-            if depth == 0 && Some(range.end) == provisional {
-                previous_mark = renderer.inline_mark(mark);
-            }
-        }
-        #[cfg(test)]
-        {
-            let count = renderer.lines.len() + 1;
-            work::copy(count * std::mem::size_of::<Line>());
-            if self.lines.capacity() - self.lines.len() < count {
-                work::copy(self.lines.len() * std::mem::size_of::<Line>());
-            }
-        }
-        self.lines.reserve(renderer.lines.len() + 1);
-        self.lines.append(&mut renderer.lines);
-        self.lines.push(renderer.into_inline());
-        self.inline = Some(Inline {
-            checkpoint: Checkpoint {
-                offset: base + boundary.saturating_sub(sentinel),
-                mark: committed,
-                cost,
-                valid,
-                openers: delimiters::State::compile(&openers, boundary),
-                carry: (boundary == sentinel)
-                    .then(|| checkpoint.carry.clone())
-                    .flatten(),
-            },
-            provisional: provisional.map(|end| {
-                let (cost, valid) = references::extend_expansion(
-                    checkpoint.cost,
-                    &checkpoint.valid,
-                    calls.iter().filter(|(position, _)| *position <= end),
-                );
-                Checkpoint {
-                    offset: base + end.saturating_sub(sentinel),
-                    mark: previous_mark,
-                    cost,
-                    valid,
-                    openers: delimiters::State::compile(&openers, end),
-                    carry: carry.as_ref().map(|(_, carry)| carry.clone()).or_else(|| {
-                        (end == sentinel)
-                            .then(|| checkpoint.carry.clone())
-                            .flatten()
-                    }),
-                }
-            }),
-            start: inline.start,
-        });
+        let line = mark.take_line(&mut self.lines, first);
+        let frame = InlineFrame {
+            source: &source,
+            events: &events,
+            calls: &calls,
+            sentinel,
+            base,
+            boundary,
+            provisional,
+            carry: &carry,
+            openers: &openers,
+        };
+        let Paint { renderer, marks } = frame.paint(checkpoint, line, &self.references);
+        let inline = frame.checkpoints(checkpoint, marks, saved_rollback, start);
+        frame.commit_lines(self, renderer);
+        self.inline = Some(inline);
         let fallback = if mark.visible == 0 {
             self.visibility.end
         } else {
             self.stable_lines + mark.visible
         };
         self.visible_lines = self.visible_end(first, self.lines.len(), fallback);
-        let tail = source.get(sentinel..).unwrap_or_default();
-        self.plain_links = tail.contains('[')
-            && tail
-                .rsplit_once(']')
-                .is_none_or(|(_, rest)| rest.starts_with('('));
-        self.plain_entity = tail
-            .rsplit_once('&')
-            .is_some_and(|(_, rest)| rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '#'));
-        self.plain_spaces = tail.bytes().rev().take_while(|byte| *byte == b' ').count();
-        self.plain = tail.len() >= 8 && !tail.rsplit('\n').next().unwrap_or_default().trim_start_matches([' ', '\t']).starts_with('<') && !table_candidate(&source) && !block_pending(tail.rsplit('\n').next().unwrap_or_default()) && events.iter().rev().find(|(event, _)| !matches!(event, Event::End(_)))
-            .is_some_and(|(event, range)| matches!(event, Event::Text(text) if text.chars().next_back().is_some_and(plain_character))
-                && range.end > sentinel && range.end == source.trim_end_matches(' ').len());
+        frame.plain(self);
+        if sentinel == 0 && base == start {
+            self.flanking = flanking::Flanking::new(&source, &events, base);
+        }
         Some(first)
     }
 
@@ -299,6 +229,7 @@ impl Markdown {
                 carry: None,
             },
             provisional: None,
+            rollback: None,
             start: base + source.len() - source.trim_start_matches([' ', '\t']).len(),
         });
         // Replay only this initial open tail; subsequent pushes retain its prefix.
@@ -330,23 +261,23 @@ fn carry(
                     style = if whole_run {
                         match tag {
                             Tag::Emphasis => {
-                                Some((tag.to_end(), &source[range.start..range.start + 1]))
+                                Some((tag.to_end(), source.get(range.start..range.start + 1)?))
                             }
                             Tag::Strong => {
-                                Some((tag.to_end(), &source[range.start..range.start + 2]))
+                                Some((tag.to_end(), source.get(range.start..range.start + 2)?))
                             }
-                            Tag::Strikethrough => None,
                             _ => None,
                         }
                     } else {
                         None
                     };
                     if whole_run && matches!(tag, Tag::Strikethrough) {
-                        let count = source[range.start..]
+                        let count = source
+                            .get(range.start..)?
                             .bytes()
                             .take_while(|byte| *byte == b'~')
                             .count();
-                        style = Some((tag.to_end(), &source[range.start..range.start + count]));
+                        style = Some((tag.to_end(), source.get(range.start..range.start + count)?));
                     }
                 }
             }
@@ -386,7 +317,7 @@ fn carry(
                     candidate = Some((
                         end,
                         Carry {
-                            prefix: format!("{}x", &raw[..count]),
+                            prefix: format!("{}x", raw.get(..count)?),
                             kind: None,
                         },
                     ));
@@ -398,11 +329,16 @@ fn carry(
     candidate
 }
 
-fn unstable_text(source: &str, range: Range<usize>) -> bool {
+pub(super) fn unstable_text(source: &str, range: Range<usize>) -> bool {
     #[cfg(test)]
     work::scan(range.len());
     let mut cursor = range.start;
-    for (index, byte) in source[range.clone()].bytes().enumerate() {
+    for (index, byte) in source
+        .get(range.clone())
+        .unwrap_or_default()
+        .bytes()
+        .enumerate()
+    {
         let position = range.start + index;
         if position < cursor {
             continue;
@@ -419,10 +355,10 @@ fn unstable_text(source: &str, range: Range<usize>) -> bool {
     false
 }
 
-fn left_context(source: &str) -> String {
+pub(super) fn left_context(source: &str) -> String {
     let trimmed = source.trim_end_matches([' ', '\t']);
     if trimmed.ends_with('\n') {
-        return format!("x\n{}", &source[trimmed.len()..]);
+        return format!("x\n{}", source.get(trimmed.len()..).unwrap_or_default());
     }
     match source.chars().next_back() {
         Some(c) if c.is_whitespace() => "x ".into(),
@@ -515,6 +451,78 @@ fn possible_definition(source: &str) -> bool {
             .is_none_or(|(_, rest)| rest.starts_with(':') || rest.chars().all(char::is_whitespace))
 }
 
+fn block_limit(source: &str) -> usize {
+    let (prefix, row) = source.rsplit_once('\n').unwrap_or(("", source));
+    let mut limit = if block_pending(row) {
+        prefix.len()
+    } else {
+        source.len()
+    };
+    if table_candidate(source) {
+        limit = limit.min(source.rfind('\n').unwrap_or(source.len()));
+    }
+    limit
+}
+
+fn event_frontier(
+    source: &str,
+    events: &[(Event<'_>, Range<usize>)],
+    sentinel: usize,
+    limit: usize,
+    quoted_end: usize,
+) -> (usize, Option<usize>) {
+    let mut depth = 0usize;
+    let mut boundary = sentinel;
+    let mut provisional = None;
+    for (event, range) in events {
+        match event {
+            Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph) | Event::SoftBreak => {
+                continue;
+            }
+            Event::Start(_) => depth += 1,
+            Event::End(_) => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        if depth == 0
+            && range.end > sentinel
+            && range.end <= limit
+            && delimiters::safe_boundary(source, range.end)
+        {
+            // Every complete top-level event closes a checkpoint. At the input
+            // edge retain its predecessor too: another byte can change delimiter
+            // flanking or extend the closing run, regardless of the construct.
+            provisional = (range.end == limit).then_some(boundary);
+            if range.end == limit
+                && let Event::Text(text) = event
+                && source.get(range.clone()) == Some(text.as_ref())
+            {
+                let cut = delimiters::text_frontier(text, range.start).max(sentinel);
+                if cut >= range.start && delimiters::safe_boundary(source, cut) {
+                    provisional = Some(cut);
+                }
+            }
+            // An escaped character is complete; never split its escape pair.
+            if range.end == quoted_end {
+                provisional = None;
+            }
+            boundary = range.end;
+        }
+    }
+    (boundary, provisional)
+}
+
+// A still-open bracket or either of the last two labels can be rewritten by
+// a later destination/reference suffix. Earlier labels cannot capture it.
+fn reference_limit(brackets: &[usize], labels: &[usize]) -> usize {
+    brackets
+        .first()
+        .into_iter()
+        .chain(labels.get(labels.len().saturating_sub(2)))
+        .copied()
+        .min()
+        .unwrap_or(usize::MAX)
+}
+
 fn boundary(
     source: &str,
     events: &[(Event<'_>, Range<usize>)],
@@ -525,15 +533,7 @@ fn boundary(
     Vec<(usize, delimiters::Opener)>,
     usize,
 ) {
-    let (prefix, row) = source.rsplit_once('\n').unwrap_or(("", source));
-    let mut limit = if block_pending(row) {
-        prefix.len()
-    } else {
-        source.len()
-    };
-    if table_candidate(source) {
-        limit = limit.min(source.rfind('\n').unwrap_or(source.len()));
-    }
+    let mut limit = block_limit(source);
     let mut brackets = Vec::new();
     let mut labels = Vec::new();
     let mut opaque_until = 0;
@@ -604,10 +604,8 @@ fn boundary(
                                 limit = limit.min(offset);
                             }
                         }
-                        b'`' | b'&' | b'<' | b'\\' => {
-                            if offset >= closed_until {
-                                limit = limit.min(offset);
-                            }
+                        b'`' | b'&' | b'<' | b'\\' if offset >= closed_until => {
+                            limit = limit.min(offset);
                         }
                         _ => {}
                     }
@@ -635,49 +633,8 @@ fn boundary(
             _ => {}
         }
     }
-    if let Some(start) = brackets.first() {
-        limit = limit.min(*start);
-    }
-    if let Some(start) = labels.get(labels.len().saturating_sub(2)) {
-        limit = limit.min(*start);
-    }
-    let mut depth = 0usize;
-    let mut boundary = sentinel;
-    let mut provisional = None;
-    for (event, range) in events {
-        match event {
-            Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph) | Event::SoftBreak => {
-                continue;
-            }
-            Event::Start(_) => depth += 1,
-            Event::End(_) => depth = depth.saturating_sub(1),
-            _ => {}
-        }
-        if depth == 0
-            && range.end > sentinel
-            && range.end <= limit
-            && delimiters::safe_boundary(source, range.end)
-        {
-            // Every complete top-level event closes a checkpoint. At the input
-            // edge retain its predecessor too: another byte can change delimiter
-            // flanking or extend the closing run, regardless of the construct.
-            provisional = (range.end == limit).then_some(boundary);
-            if range.end == limit
-                && let Event::Text(text) = event
-                && source.get(range.clone()) == Some(text.as_ref())
-            {
-                let cut = delimiters::text_frontier(text, range.start).max(sentinel);
-                if cut >= range.start && delimiters::safe_boundary(source, cut) {
-                    provisional = Some(cut);
-                }
-            }
-            // An escaped character is complete; never split its escape pair.
-            if range.end == quoted_end {
-                provisional = None;
-            }
-            boundary = range.end;
-        }
-    }
+    limit = limit.min(reference_limit(&brackets, &labels));
+    let (boundary, provisional) = event_frontier(source, events, sentinel, limit, quoted_end);
     (boundary, provisional, openers, limit)
 }
 
@@ -703,5 +660,255 @@ impl render::Renderer {
             spans: line.spans.len(),
             bytes: line.spans.last().map_or(0, |span| span.text.len()),
         }
+    }
+}
+
+// The parsed suffix and its dependency boundaries are shared by painting,
+// checkpoint construction and plain-text admission.
+#[derive(Clone, Copy)]
+struct InlineFrame<'a> {
+    source: &'a str,
+    events: &'a [(Event<'static>, Range<usize>)],
+    calls: &'a [(usize, usize)],
+    sentinel: usize,
+    base: usize,
+    boundary: usize,
+    provisional: Option<usize>,
+    carry: &'a Option<(usize, Carry)>,
+    openers: &'a [(usize, delimiters::Opener)],
+}
+
+struct Marks {
+    committed: Mark,
+    provisional: Mark,
+    rollback: Option<Checkpoint>,
+}
+
+struct Paint {
+    renderer: render::Renderer,
+    marks: Marks,
+}
+
+impl InlineFrame<'_> {
+    fn paint(&self, checkpoint: &Checkpoint, line: Line, references: &References) -> Paint {
+        let Self {
+            events,
+            calls,
+            sentinel,
+            base,
+            boundary,
+            provisional,
+            carry,
+            openers,
+            ..
+        } = *self;
+        let mark = checkpoint.mark;
+        let mut renderer = render::Renderer::inline(line);
+        let mut committed = mark;
+        let mut previous_mark = mark;
+        let mut depth = 0usize;
+        let mut rollback = None;
+        for (event, range) in events {
+            if range.end <= sentinel && !matches!(event, Event::Start(_) | Event::End(_)) {
+                continue;
+            }
+            if depth == 0
+                && range.start >= sentinel
+                && (matches!(event, Event::Start(tag) if !matches!(tag, Tag::Paragraph))
+                    || matches!(event, Event::Code(_)))
+            {
+                let (cost, valid) = references::extend_expansion(
+                    checkpoint.cost,
+                    &checkpoint.valid,
+                    calls
+                        .iter()
+                        .filter(|(position, _)| *position <= range.start),
+                );
+                rollback = Some(Checkpoint {
+                    offset: base + range.start - sentinel,
+                    mark: renderer.inline_mark(mark),
+                    cost,
+                    valid,
+                    openers: delimiters::State::compile(openers, range.start),
+                    carry: None,
+                });
+            }
+            if matches!(
+                event,
+                Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph)
+            ) {
+                continue;
+            }
+            if let Some(previous) =
+                self.paint_event(&mut renderer, (event, range), mark, references)
+            {
+                previous_mark = previous;
+            }
+            match event {
+                Event::Start(_) => depth += 1,
+                Event::End(_) => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            if depth == 0 && range.end == boundary {
+                committed = renderer.inline_mark(mark);
+            }
+            if carry.as_ref().is_some_and(|(end, _)| match event {
+                Event::Code(_) => range.start < *end && *end < range.end,
+                Event::Text(_) => range.end == *end,
+                _ => false,
+            }) {
+                previous_mark = renderer.inline_mark(mark);
+            }
+            if depth == 0 && Some(range.end) == provisional {
+                previous_mark = renderer.inline_mark(mark);
+            }
+        }
+        Paint {
+            renderer,
+            marks: Marks {
+                committed,
+                provisional: previous_mark,
+                rollback,
+            },
+        }
+    }
+
+    fn commit_lines(&self, markdown: &mut Markdown, mut renderer: render::Renderer) {
+        #[cfg(test)]
+        {
+            let count = renderer.lines.len() + 1;
+            work::copy(count * std::mem::size_of::<Line>());
+            if markdown.lines.capacity() - markdown.lines.len() < count {
+                work::copy(markdown.lines.len() * std::mem::size_of::<Line>());
+            }
+        }
+        markdown.lines.reserve(renderer.lines.len() + 1);
+        markdown.lines.append(&mut renderer.lines);
+        markdown.lines.push(renderer.into_inline());
+    }
+
+    fn paint_event(
+        &self,
+        renderer: &mut render::Renderer,
+        (event, range): (&Event<'_>, &Range<usize>),
+        mark: Mark,
+        references: &References,
+    ) -> Option<Mark> {
+        let source = self.source;
+        let sentinel = self.sentinel;
+        let provisional = self.provisional;
+        match event {
+            Event::Code(text) if range.start < sentinel => {
+                // The retained code prefix contains one synthetic content byte.
+                renderer.event_in(
+                    &Event::Code(text.get(1..).unwrap_or_default().into()),
+                    Some(references),
+                );
+            }
+            Event::Text(text) if source.get(range.clone()) == Some(text.as_ref()) => {
+                let start = sentinel.saturating_sub(range.start).min(text.len());
+                if let Some(cut) =
+                    provisional.filter(|cut| *cut >= range.start + start && *cut < range.end)
+                {
+                    let cut = cut - range.start;
+                    renderer.event_in(
+                        &Event::Text(text.get(start..cut).unwrap_or_default().into()),
+                        Some(references),
+                    );
+                    let previous_mark = renderer.inline_mark(mark);
+                    renderer.event_in(
+                        &Event::Text(text.get(cut..).unwrap_or_default().into()),
+                        Some(references),
+                    );
+                    return Some(previous_mark);
+                } else {
+                    renderer.event_in(
+                        &Event::Text(text.get(start..).unwrap_or_default().into()),
+                        Some(references),
+                    );
+                }
+            }
+            Event::Text(text) if range.start < sentinel => {
+                let text = text.get(sentinel - range.start..).unwrap_or_default();
+                renderer.event_in(&Event::Text(text.into()), Some(references));
+            }
+            _ => renderer.event_in(event, Some(references)),
+        }
+        None
+    }
+
+    fn checkpoints(
+        &self,
+        checkpoint: &Checkpoint,
+        marks: Marks,
+        saved_rollback: Option<Checkpoint>,
+        start: usize,
+    ) -> Inline {
+        let Self {
+            calls,
+            sentinel,
+            base,
+            boundary,
+            provisional,
+            carry,
+            openers,
+            ..
+        } = *self;
+        let (cost, valid) = references::extend_expansion(
+            checkpoint.cost,
+            &checkpoint.valid,
+            calls.iter().filter(|(end, _)| *end <= boundary),
+        );
+        Inline {
+            checkpoint: Checkpoint {
+                offset: base + boundary.saturating_sub(sentinel),
+                mark: marks.committed,
+                cost,
+                valid,
+                openers: delimiters::State::compile(openers, boundary),
+                carry: (boundary == sentinel)
+                    .then(|| checkpoint.carry.clone())
+                    .flatten(),
+            },
+            provisional: provisional.map(|end| {
+                let (cost, valid) = references::extend_expansion(
+                    checkpoint.cost,
+                    &checkpoint.valid,
+                    calls.iter().filter(|(position, _)| *position <= end),
+                );
+                Checkpoint {
+                    offset: base + end.saturating_sub(sentinel),
+                    mark: marks.provisional,
+                    cost,
+                    valid,
+                    openers: delimiters::State::compile(openers, end),
+                    carry: carry.as_ref().map(|(_, carry)| carry.clone()).or_else(|| {
+                        (end == sentinel)
+                            .then(|| checkpoint.carry.clone())
+                            .flatten()
+                    }),
+                }
+            }),
+            rollback: marks.rollback.or(saved_rollback),
+            start,
+        }
+    }
+
+    fn plain(&self, markdown: &mut Markdown) {
+        let source = self.source;
+        let sentinel = self.sentinel;
+        let events = self.events;
+        let tail = source.get(sentinel..).unwrap_or_default();
+        markdown.plain_links = tail.contains('[')
+            && tail
+                .rsplit_once(']')
+                .is_none_or(|(_, rest)| rest.starts_with('('));
+        markdown.plain_entity = tail
+            .rsplit_once('&')
+            .is_some_and(|(_, rest)| rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '#'));
+        markdown.plain_spaces = tail.bytes().rev().take_while(|byte| *byte == b' ').count();
+        markdown.plain = tail.len() >= 8 && !tail.rsplit('\n').next().unwrap_or_default().trim_start_matches([' ', '\t']).starts_with('<') && !table_candidate(source) && !block_pending(tail.rsplit('\n').next().unwrap_or_default()) && events.iter().rev().find(|(event, _)| !matches!(event, Event::End(_)))
+            .is_some_and(|(event, range)| matches!(event, Event::Text(text) if text.chars().next_back().is_some_and(plain_character))
+                && range.end > sentinel && range.end == source.trim_end_matches(' ').len());
     }
 }

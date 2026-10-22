@@ -172,3 +172,42 @@ impl crate::Markdown {
         frontier(source, &self.references)
     }
 }
+
+// A frontier can reuse its single parse only while every reference attempt fits
+// the remaining document allowance. Otherwise leaves use their scoped budgets.
+pub(super) struct FrontierReferences {
+    calls: Option<Charges>,
+    consumed: usize,
+    pub(super) cost: usize,
+}
+
+impl FrontierReferences {
+    pub(super) fn new(calls: Option<Charges>, cost: usize, length: usize) -> Self {
+        let reusable = calls.as_ref().is_some_and(|calls| {
+            calls.iter().map(|(_, cost)| cost).sum::<usize>()
+                < length.max(100_000).saturating_sub(cost)
+        });
+        Self {
+            calls: calls.filter(|_| reusable),
+            consumed: 0,
+            cost,
+        }
+    }
+
+    pub(super) fn reuse(&mut self, cache: &mut crate::Cached, end: usize) -> bool {
+        let Some(calls) = &mut self.calls else {
+            return false;
+        };
+        let remaining = calls.get(self.consumed..).unwrap_or_default();
+        let length = remaining
+            .iter()
+            .take_while(|(position, _)| *position <= end)
+            .count();
+        let (used, interval) = crate::references::expansion(remaining.iter().take(length));
+        self.consumed += length;
+        cache.cost = used;
+        cache.budget = interval;
+        self.cost = self.cost.saturating_add(used);
+        true
+    }
+}

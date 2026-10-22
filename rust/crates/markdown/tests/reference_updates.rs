@@ -151,7 +151,7 @@ fn expansion_calls(charges: &[usize], mut budget: usize) -> Vec<(usize, usize)> 
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig { rng_seed: proptest::test_runner::RngSeed::Fixed(0x6d61_726b_0000_0003), ..ProptestConfig::with_cases(64) })]
     #[test]
     fn reference_budget_intervals_preserve_every_resolution(
         charges in prop::collection::vec(0usize..1024, 0..16),
@@ -217,8 +217,7 @@ fn malformed_definition_does_not_repeat_reference_parsing() {
         let used = references::PARSED_BYTES.get() - before;
         assert!(
             used <= source.len() + definition.len() * 3,
-            "{} parser bytes for {definition:?}",
-            used
+            "{used} parser bytes for {definition:?}"
         );
     }
 }

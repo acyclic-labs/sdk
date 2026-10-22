@@ -41,12 +41,18 @@ fn retained(markdown: &Markdown) -> (usize, usize) {
             }
         }
     }
+    let (flanking_payload, flanking_metadata) = markdown
+        .flanking
+        .as_ref()
+        .map_or((0, 0), flanking::Flanking::retained);
+    bytes += flanking_payload;
     let (table_payload, table_metadata) = markdown
         .table
         .as_ref()
         .map_or((0, 0), |table| table.retained(&mut targets));
     bytes += table_payload;
     let metadata = table_metadata
+        + flanking_metadata
         + markdown.inline.as_ref().map_or(0, inline::Inline::retained)
         + markdown.context.capacity() * std::mem::size_of::<Container>()
         + markdown.lines.capacity() * std::mem::size_of::<Line>()
@@ -156,7 +162,16 @@ fn measure(
     for index in 0..count * copies {
         for (position, action) in actions.iter().enumerate() {
             production(*action, index, padding, &mut push);
-            push(["", " ", "\n", "!", "x"][separators[position % separators.len()] as usize]);
+            let separator = separators
+                .get(position % separators.len())
+                .copied()
+                .unwrap();
+            push(
+                ["", " ", "\n", "!", "x"]
+                    .get(usize::from(separator))
+                    .copied()
+                    .unwrap(),
+            );
         }
     }
     if actions.iter().any(|action| matches!(action, 3 | 15)) {
@@ -177,7 +192,7 @@ fn production(action: u8, index: usize, padding: usize, push: &mut impl FnMut(&s
     match action {
         0 => push("word"),
         1 => push("*em* **strong** ~~gone~~"),
-        2 => push("[label](u)"),
+        2 | 12 => push("[label](u)"),
         3 => push("[x][r]"),
         4 => push("![](u)\n\n"),
         5 => {
@@ -197,7 +212,6 @@ fn production(action: u8, index: usize, padding: usize, push: &mut impl FnMut(&s
         9 => push("![alt](u)"),
         10 => push("[outer [inner](u)](v)"),
         11 => push("a &amp; b"),
-        12 => push("[label](u)"),
         13 => push("word\n"),
         14 => {
             if index == 0 {
@@ -235,6 +249,7 @@ proptest! {
         failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::Direct(
             concat!(env!("CARGO_MANIFEST_DIR"), "/tests/sequence_work.txt")
         ))),
+        rng_seed: proptest::test_runner::RngSeed::Fixed(0x6d61_726b_0000_0004),
         ..ProptestConfig::with_cases(24)
     })]
     #[test]
@@ -270,6 +285,9 @@ fn repeated_inline_spans_have_linear_work() {
     for (actions, count, separators) in [
         (&[16][..], 6, &[0, 1, 0, 1][..]),
         (&[26][..], 7, &[0, 3][..]),
+        (&[26, 16][..], 16, &[4, 3, 4, 1][..]),
+        (&[26, 26][..], 2, &[4, 3, 4, 1][..]),
+        (&[26, 26][..], 16, &[4, 3, 4, 1][..]),
         (&[17][..], 6, &[0][..]),
         (&[19][..], 5, &[0][..]),
         (&[13, 14][..], 1, &[1, 0, 0][..]),
@@ -363,5 +381,50 @@ fn short_inline_spans_preserve_all_partitions() {
         "*a*b", "_a_b", "`a`b", "**a**b", "~~a~~b", "`a``a`", "_a__a_", "*a**a*",
     ] {
         super::block_checkpoints::check_all_partitions(source);
+    }
+}
+
+#[test]
+fn intraword_underscore_sequences_have_linear_work() {
+    for count in [4, 16, 64, 128] {
+        let small = measure(&[26], count, &"u".repeat(1024), 2, &[4, 3, 4, 1], 1);
+        let large = measure(&[26], count, &"u".repeat(1024), 2, &[4, 3, 4, 1], 2);
+        assert!(
+            large.0 <= 2 * small.0 + 1024,
+            "count {count}: work {} -> {}",
+            small.0,
+            large.0
+        );
+    }
+}
+
+#[test]
+fn flanking_rewrites_preserve_every_cut() {
+    for span in ["_a_", "__a__", "*a*", "**a**", "~a~", "~~a~~"] {
+        for flank in ["x", "x ", "!", "é", " x", "_", "*"] {
+            let source = format!("{span}{flank}{span}{flank}{span}\n\na");
+            block_checkpoints::check_inline_cuts(&[&source]);
+        }
+    }
+}
+
+#[test]
+fn fence_reference_visibility_has_linear_storage() {
+    let destination = "a".repeat(547);
+    for count in [20, 21, 22, 42] {
+        let small = measure(&[7, 15, 9], count, &destination, 2, &[1, 0, 0], 1);
+        let large = measure(&[7, 15, 9], count, &destination, 2, &[1, 0, 0], 2);
+        assert!(
+            large.0 <= 2 * small.0 + 1024,
+            "work {} -> {}",
+            small.0,
+            large.0
+        );
+        assert!(
+            large.1 <= 2 * small.1 + 1024,
+            "storage {} -> {}",
+            small.1,
+            large.1
+        );
     }
 }

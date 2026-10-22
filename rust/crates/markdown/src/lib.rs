@@ -5,6 +5,7 @@ mod code;
 mod context;
 mod delimiters;
 mod events;
+mod flanking;
 mod inline;
 mod reference_render;
 mod references;
@@ -47,6 +48,7 @@ pub struct Markdown {
     table: Option<stream_table::Stream>,
     reference_cost: usize,
     reference_limit: usize,
+    flanking: Option<flanking::Flanking>,
     plain: bool,
     plain_links: bool,
     plain_entity: bool,
@@ -161,6 +163,12 @@ impl Markdown {
             return old_len;
         }
         let budget_line = self.advance_budget();
+        if let Some(changed) = self.advance_flanking() {
+            return changed
+                .min(old_len)
+                .min(self.visible_lines)
+                .min(budget_line);
+        }
         let appended = self.source.get(previous..).unwrap_or_default();
         if self.plain
             && plain_text(appended)
@@ -347,23 +355,32 @@ impl Markdown {
         let prefix = context_prefix(&self.context);
         let source = format!("{prefix}{}", self.source.get(base..).unwrap_or_default());
         let (events, calls) = self.parse_frontier(&source);
-        let reusable = calls.as_ref().is_some_and(|calls| {
-            calls.iter().map(|(_, cost)| cost).sum::<usize>()
-                < self
-                    .source
-                    .len()
-                    .max(100_000)
-                    .saturating_sub(self.reference_cost)
-        });
-        let mut attempts = calls.as_deref().unwrap_or_default().iter().peekable();
         self.seal_leading_definitions(base, &source, &events);
-        let following_blocks = self.following_blocks(&source, &events);
+        let following = self.following_blocks(&source, &events);
+        if self.render_frontier(&source, (base, prefix.len()), &events, &following, calls) {
+            return self.advance_fence();
+        }
+        self.finish_definitions(&source, &events, (base, prefix.len()));
+        self.begin_inline(&source, &events, base);
+        self.begin_table(&source, &events, base);
+        false
+    }
+
+    fn render_frontier(
+        &mut self,
+        source: &str,
+        (base, prefix): (usize, usize),
+        events: &[(Event<'_>, Range<usize>)],
+        following_blocks: &[bool],
+        calls: Option<Vec<(usize, usize)>>,
+    ) -> bool {
         let mut out = self.state.checkpoint();
         let mut stack = self.context.clone();
         let mut candidate = None;
         let mut leaf = None;
         let mut caches: Vec<(usize, Cached)> = Vec::new();
-        let mut cost = self.reference_cost;
+        let mut references =
+            events::FrontierReferences::new(calls, self.reference_cost, self.source.len());
         let mut synthetic_leaf = false;
         for (index, (event, range)) in events.iter().enumerate() {
             let html_end = matches!(event, Event::End(TagEnd::HtmlBlock))
@@ -372,13 +389,13 @@ impl Markdown {
                     .is_some_and(|container| container.end == TagEnd::HtmlBlock);
             if html_end {
                 synthetic_leaf = false;
-            } else if context_event(event, range, prefix.len(), &mut synthetic_leaf) {
+            } else if context_event(event, range, prefix, &mut synthetic_leaf) {
                 continue;
             }
             if let Event::Start(tag) = event {
                 if is_leaf(tag) {
                     let closed =
-                        stream_code::closed(&source, events.get(index..).unwrap_or_default());
+                        stream_code::closed(source, events.get(index..).unwrap_or_default());
                     leaf = Some((
                         range.start,
                         self.lines.len() + out.lines.len(),
@@ -389,38 +406,23 @@ impl Markdown {
                     ));
                     if !closed
                         && self.start_fence(
-                            &source,
-                            (base, prefix.len()),
+                            source,
+                            (base, prefix),
                             events.get(index..).unwrap_or_default(),
                             &mut out,
                             &stack,
                         )
                     {
-                        for (end, cache) in caches {
-                            if base + end.saturating_sub(prefix.len()) <= self.offset {
-                                self.cache(cache);
-                            }
-                        }
-                        return self.advance_fence();
+                        self.cache_frontier(caches, (base, prefix));
+                        return true;
                     }
                 }
-                stack.push(container(&source, range.start, tag));
+                stack.push(container(source, range.start, tag));
             }
             out.event_in(event, Some(&self.references));
-            if matches!(event, Event::Html(_))
-                && range.end > prefix.len()
-                && source.as_bytes().get(range.end.saturating_sub(1)) == Some(&b'\n')
-                && stack
-                    .last()
-                    .is_some_and(|container| container.end == TagEnd::HtmlBlock)
-            {
-                candidate = Some((
-                    base + range.end - prefix.len(),
-                    self.lines.len() + out.lines.len(),
-                    out.checkpoint(),
-                    stack.clone(),
-                ));
-            }
+            candidate = self
+                .html_checkpoint(source, (event, range), (base, prefix), &out, &stack)
+                .or(candidate);
             if let Event::End(end) = event {
                 if stack.last().is_some_and(|container| container.end == *end) {
                     stack.pop();
@@ -430,26 +432,15 @@ impl Markdown {
                 if leaf_end
                     && let Some((start, first, state, begin, _)) = leaf.take()
                     && let Some(mut cache) = Cached::new(
-                        &source,
+                        source,
                         start..range.end,
                         first..self.lines.len() + out.lines.len(),
                         state,
                         events.get(begin..=index).unwrap_or_default(),
                     )
                 {
-                    if reusable {
-                        let (used, interval) = references::expansion(std::iter::from_fn(|| {
-                            attempts
-                                .peek()
-                                .is_some_and(|(end, _)| *end <= range.end)
-                                .then(|| attempts.next())
-                                .flatten()
-                        }));
-                        cache.cost = used;
-                        cache.budget = interval;
-                        cost = cost.saturating_add(used);
-                    } else {
-                        self.render_cache(&mut cache, &mut out, &mut cost);
+                    if !references.reuse(&mut cache, range.end) {
+                        self.render_cache(&mut cache, &mut out, &mut references.cost);
                     }
                     caches.push((range.end, cache));
                 }
@@ -461,14 +452,11 @@ impl Markdown {
                 }
                 let next_block = following_blocks.get(index).copied().unwrap_or_default();
                 let sealed = closed
-                    || sealed(&source, range.end, *end, next_block)
-                    || (*end == TagEnd::HtmlBlock && context::html_closed(&source, range, &stack));
-                if range.end >= prefix.len()
-                    && (leaf_end || (stack.is_empty() && next_block))
-                    && sealed
-                {
+                    || sealed(source, range.end, *end, next_block)
+                    || (*end == TagEnd::HtmlBlock && context::html_closed(source, range, &stack));
+                if range.end >= prefix && (leaf_end || (stack.is_empty() && next_block)) && sealed {
                     candidate = Some((
-                        base + range.end - prefix.len(),
+                        base + range.end - prefix,
                         self.lines.len() + out.lines.len(),
                         out.checkpoint(),
                         stack.clone(),
@@ -481,11 +469,32 @@ impl Markdown {
         }
         out.flush();
         self.lines.extend(out.lines);
-        self.finish_tail(candidate, caches, (base, prefix.len()));
-        self.finish_definitions(&source, &events, (base, prefix.len()));
-        self.begin_inline(&source, &events, base);
-        self.begin_table(&source, &events, base);
+        self.finish_tail(candidate, caches, (base, prefix));
         false
+    }
+
+    fn html_checkpoint(
+        &self,
+        source: &str,
+        (event, range): (&Event<'_>, &Range<usize>),
+        (base, prefix): (usize, usize),
+        out: &render::Renderer,
+        stack: &[Container],
+    ) -> Option<(usize, usize, render::Renderer, Vec<Container>)> {
+        (matches!(event, Event::Html(_))
+            && range.end > prefix
+            && source.as_bytes().get(range.end.saturating_sub(1)) == Some(&b'\n')
+            && stack
+                .last()
+                .is_some_and(|container| container.end == TagEnd::HtmlBlock))
+        .then(|| {
+            (
+                base + range.end - prefix,
+                self.lines.len() + out.lines.len(),
+                out.checkpoint(),
+                stack.to_vec(),
+            )
+        })
     }
 
     fn seal_leading_definitions(
@@ -516,10 +525,14 @@ impl Markdown {
             self.set_stable_lines(lines);
             self.state = state;
             self.context = context;
-            for (end, cache) in caches {
-                if base + end.saturating_sub(prefix) <= offset && !cache.template.keys.is_empty() {
-                    self.cache(cache);
-                }
+            self.cache_frontier(caches, (base, prefix));
+        }
+    }
+
+    fn cache_frontier(&mut self, caches: Vec<(usize, Cached)>, (base, prefix): (usize, usize)) {
+        for (end, cache) in caches {
+            if base + end.saturating_sub(prefix) <= self.offset {
+                self.cache(cache);
             }
         }
     }

@@ -211,10 +211,9 @@ pub(super) fn context_prefix(context: &[Container]) -> String {
         .iter()
         .rev()
         .find(|container| !container.continuation.is_empty())
+        && container.end != TagEnd::Item
     {
-        if container.end != TagEnd::Item {
-            prefix.push_str(&container.continuation);
-        }
+        prefix.push_str(&container.continuation);
     }
     prefix
 }

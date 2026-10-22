@@ -628,6 +628,7 @@ proptest! {
         failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::Direct(
             concat!(env!("CARGO_MANIFEST_DIR"), "/tests/full_parse.txt")
         ))),
+        rng_seed: proptest::test_runner::RngSeed::Fixed(0x6d61_726b_0000_0001),
         ..ProptestConfig::with_cases(64)
     })]
     #[test]
@@ -749,4 +750,15 @@ proptest! {
         prop_assert_eq!(replay.lines(), expected);
         prop_assert_eq!(replay.into_source(), serialized);
     }
+}
+
+#[test]
+fn list_reference_title_remains_provisional_under_every_cut() {
+    block_checkpoints::check_inline_cuts(&[
+        "paragraph #word! #word! #word! #word! #word! #word! #word! (url)[r]: /url\n* [r]: /url\n(word); ",
+        "* [r]: /url\n(word)",
+        "- [r]: /url\n  (word)",
+        "> * [r]: /url\n>   (word)",
+        "1. * [r]: /url\n     (word)",
+    ]);
 }

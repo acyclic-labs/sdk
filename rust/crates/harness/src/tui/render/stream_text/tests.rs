@@ -52,7 +52,7 @@ fn replaced_head(bodies: &[String], forget_prefix: bool) {
     }
 }
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(ProptestConfig { rng_seed: proptest::test_runner::RngSeed::Fixed(0x6d61_726b_0000_000d), ..ProptestConfig::with_cases(32) })]
     #[test]
     fn logical_head_replacement_matches_current_file(bodies in prop::collection::vec("[a-z日€🙂]{1,24}",1..12)) {
         replaced_head(&bodies,false);
@@ -85,7 +85,7 @@ fn bounded_tool(lines: usize, chunk: usize, broken: bool) {
     assert_eq!(actual.markdown.lines(), baseline.lines());
 }
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(ProptestConfig { rng_seed: proptest::test_runner::RngSeed::Fixed(0x6d61_726b_0000_000e), ..ProptestConfig::with_cases(32) })]
     #[test]
     fn tool_output_bounds_source_lines_before_markdown(lines in 0usize..40, chunk in 1usize..32) {
         bounded_tool(lines,chunk,false);
@@ -132,7 +132,7 @@ fn separate_entries(entries: &[String], broken: bool) {
     }
 }
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(ProptestConfig { rng_seed: proptest::test_runner::RngSeed::Fixed(0x6d61_726b_0000_000f), ..ProptestConfig::with_cases(32) })]
     #[test]
     fn markdown_turns_have_independent_block_state(entries in prop::collection::vec(
         prop_oneof![Just("```rust\nlet a = 1;".to_owned()),Just("next answer".to_owned()),

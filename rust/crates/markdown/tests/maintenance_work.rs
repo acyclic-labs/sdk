@@ -68,7 +68,7 @@ fn invisible_history_work_is_linear() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(ProptestConfig { rng_seed: proptest::test_runner::RngSeed::Fixed(0x6d61_726b_0000_0002), ..ProptestConfig::with_cases(32) })]
     #[test]
     fn visible_checkpoint_matches_chunkings(
         count in 1usize..24,

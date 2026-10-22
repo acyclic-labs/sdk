@@ -8,7 +8,7 @@ pub(super) fn check_all_partitions(source: &str) {
         .collect();
     let expected: Vec<_> = ends
         .iter()
-        .map(|end| full_parse(&format!("{archive}{}", &source[..*end])))
+        .map(|end| full_parse(&format!("{archive}{}", source.get(..*end).unwrap())))
         .collect();
     for mask in 0..1usize << ends.len().saturating_sub(1) {
         let mut markdown = Markdown::default();
@@ -19,12 +19,13 @@ pub(super) fn check_all_partitions(source: &str) {
             if bit + 1 != ends.len() && mask & (1 << bit) == 0 {
                 continue;
             }
-            let changed = markdown.push(&source[start..end]);
+            let changed = markdown.push(source.get(start..end).unwrap());
             start = end;
             rows.truncate(changed);
-            rows.extend_from_slice(&markdown.lines()[changed..]);
+            rows.extend_from_slice(markdown.lines().get(changed..).unwrap());
             assert_eq!(
-                rows, expected[bit],
+                Some(rows.as_slice()),
+                expected.get(bit).map(Vec::as_slice),
                 "source {source:?}, mask {mask:b}, end {end}"
             );
         }
@@ -162,16 +163,20 @@ pub(super) fn check_rewrites(sources: &[&str]) {
         }
         for cut in source.char_indices().map(|(index, _)| index) {
             let mut markdown = Markdown::default();
-            markdown.push(&source[..cut]);
+            markdown.push(source.get(..cut).unwrap());
             let mut rows = markdown.lines().to_vec();
-            for character in source[cut..].chars() {
+            for character in source.get(cut..).unwrap().chars() {
                 let changed = markdown.push(&character.to_string());
                 rows.truncate(changed);
-                rows.extend_from_slice(&markdown.lines()[changed..]);
+                rows.extend_from_slice(markdown.lines().get(changed..).unwrap());
                 let end = markdown.source.len();
                 assert_eq!(
                     rows,
-                    expected[end].as_ref().unwrap().as_slice(),
+                    expected
+                        .get(end)
+                        .and_then(Option::as_ref)
+                        .unwrap()
+                        .as_slice(),
                     "cut {cut}, end {end}: {source:?}"
                 );
             }
@@ -194,11 +199,11 @@ pub(super) fn check_inline_cuts(sources: &[&str]) {
             .chain([source.len()])
         {
             let mut markdown = Markdown::default();
-            markdown.push(&source[..cut]);
+            markdown.push(source.get(..cut).unwrap());
             let mut rows = markdown.lines().to_vec();
-            let changed = markdown.push(&source[cut..]);
+            let changed = markdown.push(source.get(cut..).unwrap());
             rows.truncate(changed);
-            rows.extend_from_slice(&markdown.lines()[changed..]);
+            rows.extend_from_slice(markdown.lines().get(changed..).unwrap());
             assert_eq!(rows, expected, "two chunks at {cut}: {source:?}");
         }
     }

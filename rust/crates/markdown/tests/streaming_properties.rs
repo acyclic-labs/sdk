@@ -1,3 +1,4 @@
+//! Reproducible streaming-prefix and corpus invariants.
 #[path = "support/streaming_input.rs"]
 mod input;
 use proptest::prelude::*;
@@ -17,13 +18,13 @@ fn control_before_unicode_punctuation_keeps_literal_delimiters() {
     let mut variant = *bytes;
     let control = bytes.iter().position(|&byte| byte == 0x0e).unwrap();
     for before in 0..=127 {
-        variant[control] = before;
+        *variant.get_mut(control).unwrap() = before;
         input::check(&variant);
     }
     for count in 1..=8 {
-        let mut escaped = bytes[..control].to_vec();
+        let mut escaped = bytes.get(..control).unwrap().to_vec();
         escaped.extend(std::iter::repeat_n(b'\\', count));
-        escaped.extend_from_slice(&bytes[control + 1..]);
+        escaped.extend_from_slice(bytes.get(control + 1..).unwrap());
         input::check(&escaped);
     }
 }
@@ -35,7 +36,7 @@ fn negative_control_detects_append_only_rows() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig { rng_seed: proptest::test_runner::RngSeed::Fixed(0x6d61_726b_0000_0006), ..ProptestConfig::with_cases(64) })]
     #[test]
     fn streaming_and_normalized_replay_preserve_every_prefix(
         data in prop_oneof![

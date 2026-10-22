@@ -11,6 +11,14 @@ pub(super) struct Opener {
 #[derive(Default)]
 pub(super) struct State(Vec<Opener>);
 
+impl Clone for State {
+    fn clone(&self) -> Self {
+        #[cfg(test)]
+        work::copy(self.0.len() * std::mem::size_of::<Opener>());
+        Self(self.0.clone())
+    }
+}
+
 impl State {
     pub(super) fn compile(candidates: &[(usize, Opener)], end: usize) -> Self {
         let mut state = Vec::<Opener>::new();

@@ -170,7 +170,7 @@ fn stable_blocks_and_fence_lines_are_not_replaced() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig { rng_seed: proptest::test_runner::RngSeed::Fixed(0x6d61_726b_0000_0005), ..ProptestConfig::with_cases(64) })]
     #[test]
     fn arbitrary_delta_partitions(parts in prop::collection::vec(0usize..12, 1..25), cuts in prop::collection::vec(1usize..20, 1..12)) {
         let vocabulary = ["text 🦀", "**bold**", "\n", "\n\n", "- item\n", "```rust\n", "let x = 1;\n", "```\n", "[x](url)", "| a | b |\n", "| - | - |\n", "[r]: url\n"];

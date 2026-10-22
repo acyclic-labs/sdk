@@ -76,7 +76,7 @@ fn idle_pending_prompt_projection_allocates_nothing() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(ProptestConfig { rng_seed: proptest::test_runner::RngSeed::Fixed(0x6d61_726b_0000_000c), ..ProptestConfig::with_cases(32) })]
     /// Every line of a multi-line prompt is its own sanitized row, whatever the
     /// line ending; controls inside a line stay visible escapes.
     #[test]

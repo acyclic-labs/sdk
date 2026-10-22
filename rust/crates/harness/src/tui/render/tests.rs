@@ -76,7 +76,7 @@ fn empty_sibling_marker_preserves_list_indentation() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(ProptestConfig { rng_seed: proptest::test_runner::RngSeed::Fixed(0x6d61_726b_0000_000b), ..ProptestConfig::with_cases(32) })]
     #[test]
     fn byte_partitions_preserve_rows_and_linear_work(
         text in "[a-z日é€🙂\\n*# ]{1,40}",

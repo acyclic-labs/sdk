@@ -240,7 +240,7 @@ fn streaming(tools: usize, updates: usize, broken: bool) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(ProptestConfig { rng_seed: proptest::test_runner::RngSeed::Fixed(0x6d61_726b_0000_0010), ..ProptestConfig::with_cases(24) })]
     #[test]
     fn completion_and_replay_hide_only_the_duplicate_answer(tools in 1usize..8, details in any::<bool>()) {
         completion(tools, details, false);
