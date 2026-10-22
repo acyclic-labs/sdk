@@ -99,6 +99,10 @@ struct Shared {
     cleanup: Mutex<StartupCleanup>,
     ownership: SourcePayloadOwnership,
     delivery: Arc<Delivery>,
+    /// Disconnected after every payload and original keeper has been dropped.
+    /// Weak pointers expire before `Shared::drop` or its field destructors run.
+    #[cfg(all(test, feature = "native-mount"))]
+    drop_complete: Mutex<Option<std::sync::mpsc::Sender<()>>>,
 }
 
 #[derive(Default)]

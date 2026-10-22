@@ -63,6 +63,8 @@ impl NativeSourceWatch {
                 cleanup: Mutex::new(StartupCleanup::default()),
                 ownership,
                 delivery,
+                #[cfg(all(test, feature = "native-mount"))]
+                drop_complete: Mutex::new(None),
             }));
             let initialized = shared.as_ref().ok_or(DemandError::InvalidRequest)?;
             initialized.ownership.retain(control_bytes, work)?;

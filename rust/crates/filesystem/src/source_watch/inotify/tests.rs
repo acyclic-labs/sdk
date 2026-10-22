@@ -757,6 +757,24 @@ fn original_late_callback_cancellation_retains_the_driver_until_admitted_quiesce
     Ok(())
 }
 
+/// Holds the sink's destruction between Shared's weak-pointer expiry and
+/// Delivery's later release of the original keeper. Disconnecting `release`
+/// also releases this pause when the test unwinds.
+#[cfg(feature = "native-mount")]
+struct DropPause {
+    entered: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(feature = "native-mount")]
+impl Drop for DropPause {
+    fn drop(&mut self) {
+        if self.entered.send(()).is_ok() {
+            let _ = self.release.recv();
+        }
+    }
+}
+
 #[cfg(feature = "native-mount")]
 #[test]
 fn original_last_controller_drop_in_callback_retires_the_actual_reader()
@@ -764,8 +782,10 @@ fn original_last_controller_drop_in_callback_retires_the_actual_reader()
     struct Retires {
         watch: Mutex<Option<NativeSourceWatch>>,
         original: std::sync::Weak<crate::demand::NativeDemandReadMeter>,
-        invoked: AtomicBool,
+        invoked: Arc<AtomicBool>,
+        drop_pause: Mutex<Option<DropPause>>,
     }
+
     impl HostChangeSink for Retires {
         fn logical_owned_bytes(&self) -> u64 {
             0
@@ -807,28 +827,48 @@ fn original_last_controller_drop_in_callback_retires_the_actual_reader()
         &CancellationToken::new(),
     )));
     let lifetime = Arc::downgrade(&original);
+    let invoked = Arc::new(AtomicBool::new(false));
     let sink = Arc::new(Retires {
         watch: Mutex::new(None),
         original: lifetime.clone(),
-        invoked: AtomicBool::new(false),
+        invoked: invoked.clone(),
+        drop_pause: Mutex::new(None),
     });
     let mut work = crate::NativeMaterializationWork::from_meter(original.clone());
     let delivery = Arc::new(Delivery::new(sink.clone(), &mut work)?);
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
     let reader = Arc::downgrade(&watch.shared);
+    let (complete, completed) = std::sync::mpsc::channel();
+    *watch
+        .shared
+        .drop_complete
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(complete);
+    let (entered, dropping) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    *sink
+        .drop_pause
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(DropPause {
+        entered,
+        release: released,
+    });
     *sink.watch.lock().unwrap_or_else(PoisonError::into_inner) = Some(watch);
+    drop(sink);
     drop(work);
     drop(original);
     assert!(lifetime.upgrade().is_some());
     std::fs::write(root.path().join("retire"), b"event")?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while reader.upgrade().is_some() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    assert!(sink.invoked.load(Ordering::Acquire));
+    dropping.recv()?;
+    assert!(invoked.load(Ordering::Acquire));
+    assert!(reader.upgrade().is_none(), "Shared has started destruction");
+    // Negative control for the former inference: Shared's weak pointer is
+    // already expired, but its Delivery field still owns the original here.
+    assert!(lifetime.upgrade().is_some());
+    release.send(())?;
     assert!(
-        reader.upgrade().is_none(),
-        "physical worker custody reaches its actual terminal"
+        completed.recv().is_err(),
+        "all Shared fields were destroyed"
     );
     assert!(
         lifetime.upgrade().is_none(),
