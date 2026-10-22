@@ -499,6 +499,17 @@ fn root_selection_rejects_unselected_paths_and_invalid_identity() {
 
 #[tokio::test]
 async fn native_reply_survives_concurrent_settlement_and_reopen() {
+    native_reply_replay_case(128 * 1024, 0).await;
+}
+
+#[tokio::test]
+async fn native_repeated_replay_releases_page_custody() {
+    // Keep repeated ownership checks inside the original cumulative hashing
+    // allowance. The separate large-reply case retains its original payload.
+    native_reply_replay_case(16 * 1024, 8).await;
+}
+
+async fn native_reply_replay_case(payload_bytes: usize, additional_replays: usize) {
     use acyclic_harness::{IdempotencyKey, workflow::WorkflowJournal};
     let fixture = crate::pi_root_provider::tests::Fixture::new(PiRootIntent::ScratchOnly {}).await;
     let runtime = &fixture.runtime.runtime;
@@ -585,7 +596,7 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
         .await
         .unwrap();
     let prior = first.checkpoint().clone();
-    let input = json!({"commands":[{"operation_id":operation,"value":"q".repeat(128 * 1024)}]});
+    let input = json!({"commands":[{"operation_id":operation,"value":"q".repeat(payload_bytes)}]});
     let left = guard(&input, &work);
     let right = guard(&input, &work);
     let left_io = acyclic_harness::filesystem::PreparationIo::from_native_custody(left.1);
@@ -616,7 +627,7 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
     );
     let accepted = accepted.unwrap();
     let reply = control_reply(accepted.0.state, &work).unwrap();
-    assert_eq!(reply.0.unwrap().value, json!("q".repeat(128 * 1024)));
+    assert_eq!(reply.0.unwrap().value, json!("q".repeat(payload_bytes)));
     drop(reply.1);
     assert_eq!(stale.checkpoint(), &prior);
     let next = guard(&input, &work);
@@ -659,7 +670,7 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
             .as_ref()
             .expect("native retry retains custody")
             .bytes()
-            < 2 * 128 * 1024,
+            < 2 * payload_bytes as u64,
         "retry retained the discarded input body and page: {}",
         retried
             .1
@@ -673,7 +684,7 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
             .as_ref()
             .expect("native retry retains custody")
             .bytes()
-            >= 128 * 1024,
+            >= payload_bytes as u64,
         "retry released the live transition body"
     );
     assert_eq!(recovered.checkpoint(), &checkpoint);
@@ -681,7 +692,7 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
     // Replaying repeatedly on this same finite ledger must charge only each
     // live transition, and release that charge when the returned owner drops.
     let baseline = work.live_allocation_bytes();
-    for _ in 0..8 {
+    for _ in 0..additional_replays {
         let retry = guard(&input, &work);
         let io = acyclic_harness::filesystem::PreparationIo::from_native_custody(retry.1);
         let replayed = recovered
@@ -700,7 +711,7 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
             .expect("live transition custody")
             .bytes();
         assert!(
-            (128 * 1024..2 * 128 * 1024).contains(&live),
+            (payload_bytes as u64..2 * payload_bytes as u64).contains(&live),
             "discarded replay bytes retained: {live}"
         );
         drop(replayed);
