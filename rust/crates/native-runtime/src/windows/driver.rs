@@ -471,6 +471,8 @@ impl DriverState {
             Ok(_) => Err(io::Error::other("write completion exceeded buffer")),
             Err(error) => Err(error),
         };
+        // Retire the completed carrier before publishing or waking its caller.
+        drop(bytes);
         self.done(batch, index, result);
         None
     }
@@ -534,3 +536,7 @@ impl DriverState {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "driver_retirement_tests.rs"]
+mod retirement_tests;
