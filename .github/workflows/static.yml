@@ -40,6 +40,8 @@ jobs:
         run: cargo update --workspace --locked
       - name: Reject workspace dev-dependency cycles
         run: node --test scripts/check-dev-dependency-cycles.test.mjs && node scripts/check-dev-dependency-cycles.mjs
+      - name: Verify the feature matrix selection
+        run: node --test scripts/check-feature-matrix.test.mjs
   aarch64:
     # Integer widths in libc differ by architecture (for example nlink_t is u32 on
     # aarch64 Linux and u64 on x86_64). Type-check the native host crates on an arm

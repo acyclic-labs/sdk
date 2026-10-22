@@ -406,6 +406,9 @@ case "$lane" in
     # Focused bb1 gate: Q:/lanes/bs.ps1 bash scripts/check-storage-feature-sets.sh
     bash scripts/check-storage-feature-sets.sh
     node scripts/clippy-feature-sets.mjs 2
+    # Every published crate alone in each consumer-selectable feature set. The
+    # bb2 merge gate runs this same script on every PR and on main.
+    node scripts/check-feature-matrix.mjs 2 --each-feature
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
     install_tool cargo-deny-0.19.0-x86_64-unknown-linux-musl.tar.gz \
       https://github.com/EmbarkStudios/cargo-deny/releases/download/0.19.0/cargo-deny-0.19.0-x86_64-unknown-linux-musl.tar.gz \
