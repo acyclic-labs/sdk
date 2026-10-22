@@ -15,6 +15,10 @@ documentation = "https://docs.rs/acyclic-harness-core"
 build = "build.rs"
 
 [[test]]
+name = "platform-shell"
+path = "tests/platform_shell.rs"
+
+[[test]]
 name = "git_executor"
 path = "tests/git_executor.rs"
 required-features = ["filesystem-local", "native-execution"]
