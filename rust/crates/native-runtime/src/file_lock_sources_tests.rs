@@ -37,7 +37,7 @@ const RAW_LOCKS: [&str; 12] = [
 ];
 
 /// Exact remaining raw spellings: (file, spelling, count).
-const ALLOWED: [(&str, &str, usize); 4] = [
+const ALLOWED: [(&str, &str, usize); 5] = [
     // The guard itself.
     (
         "rust/crates/native-runtime/src/file_lock.rs",
@@ -53,6 +53,13 @@ const ALLOWED: [(&str, &str, usize); 4] = [
         "rust/crates/native-runtime/src/file_lock.rs",
         "lock_shared",
         2,
+    ),
+    // A custody warden's record lock, held for the warden's whole life and
+    // released only by its exit: no concurrent spawn shares the description.
+    (
+        "rust/crates/native-runtime/src/process_tree/warden.rs",
+        "flock(",
+        1,
     ),
     // A Perl contender's lock, taken and released by its own process.
     (

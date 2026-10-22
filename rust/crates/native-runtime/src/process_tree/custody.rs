@@ -191,19 +191,19 @@ mod unix {
         else {
             return Ok(false);
         };
-        let mut record = match File::open(path) {
+        let record = match File::open(path) {
             Ok(record) => record,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(true),
             Err(error) => return Err(error),
         };
         // Blocks until the warden, the lock's only other holder, has exited.
-        record.lock()?;
+        let record = crate::FileLock::acquire(record, crate::FileLockMode::Exclusive)?;
         if record.metadata()?.nlink() == 0 {
             // The warden drained its tree and unlinked the record.
             return Ok(true);
         }
         let mut recorded = Vec::new();
-        record.read_to_end(&mut recorded)?;
+        (&*record).read_to_end(&mut recorded)?;
         let mut boot = [0; super::super::warden::BOOT_BYTES];
         super::super::warden::boot_identity(&mut boot)?;
         // A record from another boot, or one whose warden died before it
