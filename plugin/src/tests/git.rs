@@ -76,7 +76,11 @@ fn write_host_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> 
     let source = staging.path().join("host-write.bin");
     fs::write(&source, bytes)?;
     let output = std::process::Command::new(std::env::current_exe()?)
-        .args(["--exact", "tests::git::external_host_writer_child", "--ignored"])
+        .args([
+            "--exact",
+            "tests::git::external_host_writer_child",
+            "--ignored",
+        ])
         .env("ACYCLIC_COPY_SOURCE", &source)
         .env("ACYCLIC_COPY_DESTINATION", path)
         .creation_flags(0x0800_0000)

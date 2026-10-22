@@ -580,4 +580,58 @@ mod unmount_tests {
         }
         drop(fixtures);
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn multi_root_unmount_cleanup_failure_keeps_every_route_retryable() {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        acyclic_native_runtime::initialize_native_io_services().unwrap();
+        acyclic_fs::initialize_native_mount_services().unwrap();
+        let fixtures = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
+        let mut controls = Vec::new();
+        let mut sources = Vec::new();
+        for (name, directory) in ["left", "right"].into_iter().zip(&fixtures) {
+            let root = directory.path().join("source");
+            fs::create_dir(&root).unwrap();
+            fs::write(root.join("source.txt"), name).unwrap();
+            let mut control = ControlPlane::open(directory.path().join("state"))
+                .await
+                .unwrap();
+            control
+                .session_start(json!({"session_id":name,"cwd":root}))
+                .await
+                .unwrap();
+            sources.push((name.to_owned(), control.roots.pop_first().unwrap().1));
+            controls.push(control);
+        }
+        let destination = tempfile::tempdir().unwrap();
+        let mounted = LocalMount::mount(sources, destination.path())
+            .await
+            .unwrap();
+        let left = destination.path().join("left/source.txt");
+        let right = destination.path().join("right/source.txt");
+        assert_eq!(fs::read(&left).unwrap(), b"left");
+        // Allow ordinary publication reads/writes but deny DELETE access on the
+        // second route, so preparing its held cleanup handles really fails.
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(3)
+            .open(&right)
+            .unwrap();
+        assert!(mounted.unmount().await.is_err(), "second cleanup must fail");
+        assert_eq!(
+            fs::read(&left).unwrap(),
+            b"left",
+            "first route detached early"
+        );
+        assert_eq!(fs::read(&right).unwrap(), b"right");
+        drop(held);
+        mounted
+            .unmount()
+            .await
+            .expect("all routes remain retryable");
+        drop(mounted);
+        for control in controls {
+            control.shutdown().await.unwrap();
+        }
+    }
 }

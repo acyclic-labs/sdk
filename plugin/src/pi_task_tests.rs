@@ -678,6 +678,39 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
     );
     assert_eq!(recovered.checkpoint(), &checkpoint);
     drop(retried);
+    // Replaying repeatedly on this same finite ledger must charge only each
+    // live transition, and release that charge when the returned owner drops.
+    let baseline = work.live_allocation_bytes();
+    for _ in 0..8 {
+        let retry = guard(&input, &work);
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_custody(retry.1);
+        let replayed = recovered
+            .step(
+                OperationId::from_bytes([operation; 16]),
+                IdempotencyKey::new(key).unwrap(),
+                retry.0,
+                Some(&io),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replayed.0.state, checkpoint.state);
+        let live = replayed
+            .1
+            .as_ref()
+            .expect("live transition custody")
+            .bytes();
+        assert!(
+            (128 * 1024..2 * 128 * 1024).contains(&live),
+            "discarded replay bytes retained: {live}"
+        );
+        drop(replayed);
+        drop(io);
+        assert_eq!(
+            work.live_allocation_bytes(),
+            baseline,
+            "replay leaked page custody"
+        );
+    }
     let journal = runtime
         .workflow_journal_with_native_work(task, &fence, &work)
         .await
