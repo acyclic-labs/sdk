@@ -569,7 +569,7 @@ fn followed_ledger_is_a_charged_copy_of_the_live_ledger() -> Result<(), Box<dyn 
             },
         ),
     ];
-    settled.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+    settled.sort_unstable_by_key(|(region, _)| *region);
     let owner = Arc::new(ProofDataCustody::default());
     let cancellation = CancellationToken::new();
     let mut denied = super::allocation::KernelAccounting::standalone(

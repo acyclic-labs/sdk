@@ -308,8 +308,10 @@ mod dependencies;
 use super::{allocation, persistent_btree, persistent_io, persistent_point, tree_mutation};
 pub(crate) use classification::{
     AccountingRebaseProbe, ClassifyRebaseFailure, Settled, Settlement,
-    classify_rebase_settling_with_accounting, classify_rebase_with_accounting,
+    classify_rebase_settling_with_accounting,
 };
+#[cfg(test)]
+pub(crate) use classification::classify_rebase_with_accounting;
 pub use classification::{classify_rebase, classify_rebase_async};
 pub(crate) use custody::{ProofDataClaim, ProofDataCustody};
 
