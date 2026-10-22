@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import test from 'node:test';
+import test, { describe } from 'node:test';
 
 const golden = JSON.parse(readFileSync(new URL('./fixtures/cloud-identity/golden.json', import.meta.url), 'utf8'));
 
@@ -63,6 +63,10 @@ async function fixture(t, handle) {
     call: args => run([...args, '--json', '--endpoint', endpoint, '--credentials', credentials], directory),
   };
 }
+
+// Every case owns its HTTP listener, credentials, child processes and directory.
+// Their real protocol polling delays can progress independently.
+describe('independent native identity processes', { concurrency: true }, () => {
 
 test('golden fixtures identify the immutable Cloud handler tests for every operation', () => {
   assert.equal(golden.source.repository, 'acyclic-labs/cloud');
@@ -192,4 +196,6 @@ test('login preserves the Global device-denial error without saving a session', 
   assert.equal(JSON.parse(result.stdout).error, denied.error);
   await assert.rejects(readFile(f.credentials), { code: 'ENOENT' });
   assert.equal(f.requests.length, 2);
+});
+
 });

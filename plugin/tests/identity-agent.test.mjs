@@ -7,7 +7,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
-import { test } from 'node:test';
+import { describe, test } from 'node:test';
 
 const binary = process.env.ACYCLIC_TEST_BINARY;
 assert.ok(binary, 'set ACYCLIC_TEST_BINARY to the built native acyclic binary');
@@ -22,6 +22,10 @@ function run(args) {
     child.on('close', code => resolve({ code, stdout, stderr }));
   });
 }
+
+// Every case owns its HTTP listener, credentials, child processes and directory.
+// Their real protocol polling delays can progress independently.
+describe('independent native identity processes', { concurrency: true }, () => {
 
 test('CLI and MCP agent signup solve the published proof, preserve keys and sign renewal/upgrade', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'acyclic-agent-'));
@@ -421,4 +425,6 @@ test('login recovers a committed agent upgrade after a lost token response or fa
       await rm(directory, { recursive: true, force: true });
     }
   }
+});
+
 });
