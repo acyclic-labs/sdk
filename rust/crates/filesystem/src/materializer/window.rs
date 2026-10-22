@@ -1,6 +1,6 @@
 use super::*;
 use crate::sync::Mutex;
-use crate::{WorkBudget, WorkCounters};
+use crate::{WorkBudget, WorkCounters, WorkError};
 use std::sync::Arc;
 
 /// Cumulative work one invocation charged to a shared ledger.
@@ -12,12 +12,47 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub(crate) struct NativeWorkWindow {
     // Locked only under the original leaf, which serializes every window of the ledger.
-    consumed: Mutex<WorkCounters>,
-    // Reservations this window still holds. Every other window sees them as free, so one
-    // window's reservation never blocks a fresh window. Only live allocation stays shared.
-    pending: Mutex<WorkCounters>,
+    ledger: Mutex<WindowLedger>,
     // Claimed outside every window, so charging through it never stacks two windows.
     metadata: NativeAllocation,
+}
+
+/// The only cumulative state a window's budget is derived from.
+#[derive(Clone, Copy, Debug, Default)]
+struct WindowLedger {
+    /// Work this window charged.
+    consumed: WorkCounters,
+    /// Reservations this window holds and has not yet started or refunded.
+    held: WorkCounters,
+}
+
+impl WindowLedger {
+    /// The ledger budget that leaves this window exactly `limit - held - consumed`
+    /// against the shared `work`, which already includes everything this window charged.
+    fn view(&self, limit: &WorkBudget, work: &WorkCounters) -> Result<WorkBudget, WorkError> {
+        limit
+            .checked_add_cumulative(&work.checked_sub_cumulative(&self.consumed)?)?
+            .checked_sub_cumulative(&self.held)
+    }
+    /// This window after an operation moved the shared work and pending reservations,
+    /// with the work it charged.
+    fn settle(
+        &self,
+        work: (&WorkCounters, &WorkCounters),
+        pending: (&WorkCounters, &WorkCounters),
+    ) -> Result<(Self, WorkCounters), WorkError> {
+        let charged = work.1.checked_sub_cumulative(work.0)?;
+        Ok((
+            Self {
+                consumed: self.consumed.checked_add_cumulative(&charged)?,
+                held: self
+                    .held
+                    .checked_add_cumulative(pending.1)?
+                    .checked_sub_cumulative(pending.0)?,
+            },
+            charged,
+        ))
+    }
 }
 
 impl NativeWorkWindow {
@@ -30,33 +65,10 @@ impl NativeWorkWindow {
             .work()
             .state(|state| state.within_window(Some(self), operation))
     }
-    fn consumed(&self) -> WorkCounters {
-        *self
-            .consumed
+    fn ledger(&self) -> crate::sync::MutexGuard<'_, WindowLedger> {
+        self.ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-    fn consume(&self, delta: &WorkCounters) {
-        let mut consumed = self
-            .consumed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *consumed = consumed.saturating_add_cumulative(delta);
-    }
-    fn pending(&self) -> WorkCounters {
-        *self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-    fn hold(&self, before: &WorkCounters, after: &WorkCounters) {
-        let mut pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *pending = pending
-            .saturating_add_cumulative(&after.saturating_sub_cumulative(before))
-            .saturating_sub_cumulative(&before.saturating_sub_cumulative(after));
     }
 }
 
@@ -80,8 +92,7 @@ impl NativeMaterializationWork {
         let metadata = base.claim(bytes, 1, WorkCounters::UNCHARGED)?;
         let mut work = self.allocation_work();
         work.window = Some(Arc::new(NativeWorkWindow {
-            consumed: Mutex::new(WorkCounters::UNCHARGED),
-            pending: Mutex::new(WorkCounters::UNCHARGED),
+            ledger: Mutex::new(WindowLedger::default()),
             metadata,
         }));
         Ok(work)
@@ -102,12 +113,14 @@ impl NativeMaterializationWork {
 impl crate::demand::DemandWork {
     /// Runs `operation` with the budget seen from `window`.
     ///
-    /// Inside a window the cumulative limit is
-    /// `budget + unwindowed + pending - held - consumed`: work charged and reservations
-    /// held outside this window are excluded, and this window's own work and
-    /// reservations count in full. Work charged inside a window is excluded from every other view by raising
-    /// the stored budget by the same amount. Any budget change the operation makes
-    /// itself, such as a reservation or refund, is carried back exactly.
+    /// Inside a window every cumulative counter has exactly `limit - held - consumed`
+    /// left, from that window's own state alone: work and reservations of other windows
+    /// and of the unwindowed ledger are never part of its view. The shared ledger keeps
+    /// only live allocation and peak. The unwindowed budget is raised by exactly what
+    /// the window charged, so no other view counts it.
+    ///
+    /// Arithmetic is exact. A view or settlement that cannot be represented is an
+    /// accounting invariant failure, which fails the ledger closed; nothing is clamped.
     pub(crate) fn within_window<R>(
         &mut self,
         window: Option<&NativeWorkWindow>,
@@ -116,39 +129,42 @@ impl crate::demand::DemandWork {
         let Some(window) = window else {
             return operation(self);
         };
-        let consumed = window.consumed();
-        let before = self.work;
-        let pending = self.pending_reservations();
-        let unwindowed = before.saturating_sub_cumulative(&self.windowed);
-        let elsewhere = pending.saturating_sub_cumulative(&window.pending());
         let stored = self.budget;
-        let viewed = stored
-            .saturating_add_cumulative(&unwindowed)
-            .saturating_add_cumulative(&elsewhere)
-            .saturating_sub_cumulative(&consumed);
-        self.budget = viewed;
+        let work = self.work;
+        let pending = self.pending_reservations();
+        let ledger = *window.ledger();
+        self.budget = match ledger.view(&self.original_budget(), &work) {
+            Ok(view) => view,
+            Err(error) => {
+                self.fail_window_invariant(error);
+                work
+            }
+        };
+        self.budget.peak_allocation_bytes = stored.peak_allocation_bytes;
         let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(self)));
-        let charged = self.work.saturating_sub_cumulative(&before);
-        let changed = self.budget;
-        self.budget = stored
-            .shifted_cumulative(&viewed, &changed)
-            .saturating_add_cumulative(&charged);
-        self.windowed = self.windowed.saturating_add_cumulative(&charged);
-        window.consume(&charged);
-        window.hold(&pending, &self.pending_reservations());
+        let peak = self.budget.peak_allocation_bytes;
+        let settled = ledger
+            .settle(
+                (&work, &self.work),
+                (&pending, &self.pending_reservations()),
+            )
+            .and_then(|(ledger, charged)| Ok((ledger, stored.checked_add_cumulative(&charged)?)));
+        self.budget = match settled {
+            Ok((settled, budget)) => {
+                *window.ledger() = settled;
+                budget
+            }
+            Err(error) => {
+                self.fail_window_invariant(error);
+                stored
+            }
+        };
+        self.budget.peak_allocation_bytes = peak;
         answer.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     }
-}
-
-impl WorkBudget {
-    /// `self + (to - from)` per cumulative counter, saturating at both ends; the peak
-    /// allocation bound follows `to`.
-    fn shifted_cumulative(&self, from: &Self, to: &Self) -> Self {
-        let mut shifted = self
-            .saturating_add_cumulative(&to.saturating_sub_cumulative(from))
-            .saturating_sub_cumulative(&from.saturating_sub_cumulative(to));
-        shifted.peak_allocation_bytes = to.peak_allocation_bytes;
-        shifted
+    fn fail_window_invariant(&mut self, error: WorkError) {
+        self.record_native_io_failure(error.into());
+        self.poison_native_original_work();
     }
 }
 

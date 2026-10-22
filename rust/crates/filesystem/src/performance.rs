@@ -209,34 +209,51 @@ impl WorkCounters {
         additive_counters!(intersect)
     }
 
-    /// Saturating sum of every additive counter; the peak allocation keeps `self`'s value.
+    /// Exact `self + other` per additive counter. An unbounded (`u64::MAX`) counter of
+    /// `self` stays unbounded; any other overflow is an error. The peak allocation keeps
+    /// `self`'s value.
     #[cfg(not(target_arch = "wasm32"))]
-    #[must_use]
-    pub(crate) fn saturating_add_cumulative(&self, other: &Self) -> Self {
-        macro_rules! add {
-            ($($field:ident),* $(,)?) => {
-                Self {
-                    $($field: self.$field.saturating_add(other.$field),)*
-                    peak_allocation_bytes: self.peak_allocation_bytes,
-                }
-            };
-        }
-        additive_counters!(add)
+    pub(crate) fn checked_add_cumulative(&self, other: &Self) -> Result<Self, WorkError> {
+        self.exact_cumulative(other, u64::checked_add)
     }
 
-    /// Saturating difference of every additive counter; the peak allocation keeps `self`'s value.
+    /// Exact `self - other` per additive counter. An unbounded (`u64::MAX`) counter of
+    /// `self` stays unbounded; any underflow is an error, never clamped. The peak
+    /// allocation keeps `self`'s value.
     #[cfg(not(target_arch = "wasm32"))]
-    #[must_use]
-    pub(crate) fn saturating_sub_cumulative(&self, other: &Self) -> Self {
-        macro_rules! sub {
+    pub(crate) fn checked_sub_cumulative(&self, other: &Self) -> Result<Self, WorkError> {
+        self.exact_cumulative(other, u64::checked_sub)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn exact_cumulative(
+        &self,
+        other: &Self,
+        apply: fn(u64, u64) -> Option<u64>,
+    ) -> Result<Self, WorkError> {
+        let mut inexact = false;
+        let mut exact = |left: u64, right: u64| {
+            if left == u64::MAX {
+                return u64::MAX;
+            }
+            apply(left, right).unwrap_or_else(|| {
+                inexact = true;
+                0
+            })
+        };
+        macro_rules! combine {
             ($($field:ident),* $(,)?) => {
                 Self {
-                    $($field: self.$field.saturating_sub(other.$field),)*
+                    $($field: exact(self.$field, other.$field),)*
                     peak_allocation_bytes: self.peak_allocation_bytes,
                 }
             };
         }
-        additive_counters!(sub)
+        let combined = additive_counters!(combine);
+        if inexact {
+            return Err(WorkError::Overflow);
+        }
+        Ok(combined)
     }
 
     /// No work at all, as a constant: [`WorkCounters::default`] usable in `const` charges such as one page read.

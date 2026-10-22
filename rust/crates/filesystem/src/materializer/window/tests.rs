@@ -226,3 +226,126 @@ fn window_layout_matches_its_claim() {
     drop(window);
     assert_eq!(session.live_allocation_bytes(), before);
 }
+
+fn left(window: &NativeMaterializationWork) -> u64 {
+    window.remaining().unwrap().authority_records_appended
+}
+
+#[test]
+fn two_windows_hold_full_reservations_at_once() {
+    let session = root();
+    let first = session.invocation_window().unwrap();
+    let second = session.invocation_window().unwrap();
+    let first_held = first.reserve_work(appends(APPENDS)).unwrap();
+    let second_held = second.reserve_work(appends(APPENDS)).unwrap();
+    // The second window holds its whole budget: no later call can grant it more.
+    assert_eq!(left(&second), 0);
+    assert!(second.reserve_work(appends(1)).is_err());
+    assert_eq!(left(&second), 0);
+    assert_eq!(left(&first), 0);
+    drop(second_held);
+    assert_eq!(left(&second), APPENDS);
+    assert_eq!(left(&first), 0);
+    drop(first_held);
+    assert_eq!(left(&first), APPENDS);
+    assert_eq!(left(&session), APPENDS);
+}
+
+#[test]
+fn interleaved_reserve_charge_and_release_stay_exact_per_window() {
+    let session = root();
+    let first = session.invocation_window().unwrap();
+    let second = session.invocation_window().unwrap();
+    let first_held = first.reserve_work(appends(4)).unwrap();
+    let second_held = second.reserve_work(appends(7)).unwrap();
+    assert_eq!((left(&first), left(&second)), (6, 3));
+    first.record_admitted(appends(3)).unwrap();
+    second_held.record_completed(appends(5)).unwrap();
+    assert_eq!((left(&first), left(&second)), (3, 3));
+    drop(first_held);
+    assert_eq!((left(&first), left(&second)), (7, 3));
+    second.record_admitted(appends(3)).unwrap();
+    assert_eq!((left(&first), left(&second)), (7, 0));
+    assert!(second.reserve_work(appends(1)).is_err());
+    drop(second_held);
+    assert_eq!((left(&first), left(&second)), (7, 2));
+    assert_eq!(left(&session), APPENDS);
+}
+
+#[derive(Clone, Debug)]
+enum Step {
+    Reserve(usize, u64),
+    Spend(usize, usize, u64),
+    Charge(usize, u64),
+    Release(usize, usize),
+}
+
+fn step() -> impl proptest::strategy::Strategy<Value = Step> {
+    use proptest::prelude::*;
+    prop_oneof![
+        (0..3_usize, 0..=APPENDS).prop_map(|(window, count)| Step::Reserve(window, count)),
+        (0..3_usize, 0..4_usize, 0..=APPENDS)
+            .prop_map(|(window, held, count)| Step::Spend(window, held, count)),
+        (0..3_usize, 0..=APPENDS).prop_map(|(window, count)| Step::Charge(window, count)),
+        (0..3_usize, 0..4_usize).prop_map(|(window, held)| Step::Release(window, held)),
+    ]
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+    /// Any interleaving across three windows: no window ever has more than its own
+    /// limit, and every release restores exactly what its reservation still held.
+    #[test]
+    fn every_interleaving_keeps_each_window_within_its_own_limit(
+        steps in proptest::collection::vec(step(), 1..40),
+    ) {
+        let session = root();
+        let windows: Vec<_> = (0..3).map(|_| session.invocation_window().unwrap()).collect();
+        let mut held: Vec<Vec<NativeWorkReservation>> = (0..3).map(|_| Vec::new()).collect();
+        let mut consumed = [0_u64; 3];
+        let reserved = |held: &[NativeWorkReservation]| -> u64 {
+            held.iter().map(|r| r.remaining_work().authority_records_appended).sum()
+        };
+        for step in steps {
+            match step {
+                Step::Reserve(w, count) => {
+                    let fits = reserved(&held[w]) + consumed[w] + count <= APPENDS;
+                    let result = windows[w].reserve_work(appends(count));
+                    proptest::prop_assert_eq!(result.is_ok(), fits);
+                    if let Ok(reservation) = result {
+                        held[w].push(reservation);
+                    }
+                }
+                Step::Spend(w, index, count) => {
+                    if let Some(reservation) = held[w].get(index % held[w].len().max(1)) {
+                        let count = count % (reservation.remaining_work().authority_records_appended + 1);
+                        reservation.record_completed(appends(count)).unwrap();
+                        consumed[w] += count;
+                    }
+                }
+                Step::Charge(w, count) => {
+                    if reserved(&held[w]) + consumed[w] + count <= APPENDS {
+                        windows[w].record_admitted(appends(count)).unwrap();
+                        consumed[w] += count;
+                    } else {
+                        proptest::prop_assert!(windows[w].reserve_work(appends(count)).is_err());
+                    }
+                }
+                Step::Release(w, index) => {
+                    if !held[w].is_empty() {
+                        let index = index % held[w].len();
+                        drop(held[w].swap_remove(index));
+                    }
+                }
+            }
+            for w in 0..3 {
+                proptest::prop_assert_eq!(left(&windows[w]), APPENDS - reserved(&held[w]) - consumed[w]);
+            }
+            proptest::prop_assert_eq!(left(&session), APPENDS);
+        }
+        drop(held);
+        for w in 0..3 {
+            proptest::prop_assert_eq!(left(&windows[w]), APPENDS - consumed[w]);
+        }
+    }
+}
