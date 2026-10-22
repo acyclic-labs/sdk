@@ -952,3 +952,43 @@ fn linux_demand_watch_accepts_directories_absent_from_the_source()
 mod work;
 #[cfg(target_os = "macos")]
 mod fsevents_fence;
+
+/// A failed delivery batch is reported once, but it keeps the watch
+/// invalidated: every later fence refuses to confirm, and every poll asks for
+/// a rescan, until a rescan begins and completes.
+#[test]
+fn a_lost_delivery_requires_a_rescan_until_one_completes() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = tempfile::tempdir()?;
+    let mut watch = NativeWatch::open(
+        root.path(),
+        NativeWatchOptions::new(VolumeLimits::default()),
+    )?;
+    watch.begin_rescan()?;
+    watch.finish_rescan()?;
+    // Negative control: a delivered batch leaves the watch confirmable.
+    watch.lost_delivery(Ok::<_, crate::demand::DemandError>(()))?;
+    assert!(watch.confirmable()?);
+    let lost = watch.lost_delivery(Err::<(), _>(crate::demand::DemandError::Io(
+        std::io::Error::other("lost batch"),
+    )));
+    assert!(lost.is_err());
+    // The one-shot error is gone, but the loss is not.
+    for _ in 0..2 {
+        watch.lost_delivery(Ok::<_, crate::demand::DemandError>(()))?;
+        assert!(!watch.confirmable()?);
+        assert!(matches!(
+            watch
+                .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+                .value,
+            WatchBatch::RescanRequired {
+                reason: WatchInvalidationReason::BackendError,
+                ..
+            }
+        ));
+    }
+    watch.begin_rescan()?;
+    watch.finish_rescan()?;
+    assert!(watch.confirmable()?);
+    Ok(())
+}

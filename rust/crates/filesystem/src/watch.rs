@@ -3078,9 +3078,10 @@ impl NativeWatch {
         work: &mut W,
     ) -> Result<bool, NativeWatchError> {
         if let NativeWatchDriver::Source(watcher) = &self.watcher {
-            watcher
-                .take_failure_with_work(work)
-                .map_err(demand_watch_error)?;
+            self.lost_delivery(watcher.take_failure_with_work(work))?;
+        }
+        if !self.confirmable()? {
+            return Ok(false);
         }
         let Some(cookie) = self.fence_cookie_path()? else {
             return Ok(false);
@@ -3091,6 +3092,36 @@ impl NativeWatch {
         })
         .map_err(demand_watch_error)?;
         self.await_cookie(&cookie, timeout)
+    }
+
+    /// Records a failed delivery batch in the watch's invalidation state. A
+    /// backend reports each failure once, but the changes it lost stay lost:
+    /// the watch remains invalidated until a rescan begins, so no later fence
+    /// can confirm delivery in between.
+    #[cfg(any(test, target_os = "macos"))]
+    pub(crate) fn lost_delivery<T>(
+        &self,
+        result: Result<T, crate::demand::DemandError>,
+    ) -> Result<T, NativeWatchError> {
+        result.map_err(|error| {
+            if let Ok(mut shared) = self.shared.lock() {
+                shared
+                    .invalidation
+                    .get_or_insert(WatchInvalidationReason::BackendError);
+            }
+            demand_watch_error(error)
+        })
+    }
+
+    /// Whether a fence may confirm delivery: never while a rescan is owed.
+    #[cfg(any(test, target_os = "macos"))]
+    pub(crate) fn confirmable(&self) -> Result<bool, NativeWatchError> {
+        Ok(self
+            .shared
+            .lock()
+            .map_err(|_| NativeWatchError::StatePoisoned)?
+            .invalidation
+            .is_none())
     }
 
     fn root_unchanged_with_work<W: crate::demand::SourceDemandReadWork>(
