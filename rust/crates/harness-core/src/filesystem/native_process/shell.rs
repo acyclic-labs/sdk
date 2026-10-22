@@ -73,7 +73,11 @@ pub fn prepare<T>(
         .arguments
         .iter()
         .map(|argument| (*argument).into())
-        .chain([input.command])
+        .chain([format!(
+            "{}{}",
+            crate::tools::shell::PLATFORM.command_prefix,
+            input.command
+        )])
         .collect();
     invocation.standard_input = None;
     invocation.mcp_stdio = None;

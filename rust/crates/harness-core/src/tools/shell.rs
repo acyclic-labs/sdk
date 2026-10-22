@@ -1,3 +1,4 @@
+//! Platform shell contracts shared by model tools, policy routing and execution.
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path};
@@ -14,6 +15,8 @@ pub struct ShellSpec {
     pub executables: &'static [&'static str],
     /// Non-interactive arguments preceding the source text.
     pub arguments: &'static [&'static str],
+    /// Host initialization prepended to the command source.
+    pub command_prefix: &'static str,
 }
 
 /// Windows commands must use the native filesystem namespace.
@@ -24,6 +27,7 @@ pub const PLATFORM: ShellSpec = ShellSpec {
     hook_names: &["PowerShell"],
     executables: &["pwsh.exe", "powershell.exe"],
     arguments: &["-NoProfile", "-NonInteractive", "-Command"],
+    command_prefix: "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; ",
 };
 
 /// Unix hosts retain the bash command language.
@@ -34,6 +38,7 @@ pub const PLATFORM: ShellSpec = ShellSpec {
     hook_names: &["Bash"],
     executables: &["bash"],
     arguments: &["--noprofile", "--norc", "-c"],
+    command_prefix: "",
 };
 
 /// A command in the calling task's view; workspace selection is host-owned.

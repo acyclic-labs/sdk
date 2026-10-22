@@ -578,15 +578,15 @@ fn tool_matchers_use_declared_names_and_exact_identifiers() -> Result<()> {
     let registry = registry()?;
     let mut hooks = Hooks::default();
     hooks.add_json(
-        br#"{"hooks":{"PreToolUse":[
-        {"matcher":"Bash","hooks":[{"type":"command","command":"guard"}]},
+        json!({"hooks":{"PreToolUse":[
+        {"matcher":crate::tools::shell::PLATFORM.hook_names[0],"hooks":[{"type":"command","command":"guard"}]},
         {"matcher":"Edit","hooks":[{"type":"command","command":"edit"}]},
         {"matcher":"Edit|Write","hooks":[{"type":"command","command":"changes"}]},
         {"matcher":"fs","hooks":[{"type":"command","command":"fs"}]}
-    ]}}"#,
+    ]}}).to_string().as_bytes(),
     )?;
     for (name, commands) in [
-        ("bash", vec!["guard"]),
+        (crate::tools::shell::PLATFORM.name, vec!["guard"]),
         ("edit", vec!["edit", "changes"]),
         ("write", vec!["changes"]),
         ("fs", vec!["fs"]),
@@ -1039,7 +1039,7 @@ exit 2
     write(
         &home,
         ".claude/settings.json",
-        &json!({"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[hook]}]}}),
+        &json!({"hooks":{"PreToolUse":[{"matcher":crate::tools::shell::PLATFORM.hook_names[0],"hooks":[hook]}]}}),
     )?;
     let project = json!({"hooks":{"Stop":[{"hooks":[hook]}]}});
     for path in [
@@ -1058,7 +1058,7 @@ exit 2
     )
     .await?
     .hooks;
-    let input = json!({"tool_name":"bash","session_id":"test"});
+    let input = json!({"tool_name":crate::tools::shell::PLATFORM.name,"session_id":"test"});
     assert_eq!(
         hooks
             .run(HookEvent::Stop, &workspace, &cwd, &input, &registry)
@@ -1074,7 +1074,7 @@ exit 2
         .await?;
     assert!(
         output.blocks(),
-        "user Bash guard fires on registry tool bash: {output:?}"
+        "user shell guard fires on the platform tool: {output:?}"
     );
     assert!(output.diagnostics.is_empty(), "{output:?}");
     assert!(
@@ -1086,7 +1086,7 @@ exit 2
             .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(
         captured,
-        json!({"tool_name":"bash", "session_id":"test", "hook_event_name":"PreToolUse", "cwd":cwd.to_string_lossy()})
+        json!({"tool_name":crate::tools::shell::PLATFORM.name, "session_id":"test", "hook_event_name":"PreToolUse", "cwd":cwd.to_string_lossy()})
     );
     let failure = hooks
         .run(

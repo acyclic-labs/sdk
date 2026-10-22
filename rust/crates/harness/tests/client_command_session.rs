@@ -99,6 +99,35 @@ async fn published_shell_request_causes_a_real_tool_effect_and_does_not_replay()
 }
 
 #[tokio::test]
+async fn saved_shell_catalog_and_request_reopen_with_their_original_identity() -> Result<()> {
+    let volume = volume().await?;
+    publish(
+        &volume,
+        "commands/catalog.json",
+        br#"[{"name":"shell","description":"Run a shell command","arguments":"required_text","action":{"kind":"tool","tool":"bash"}}]"#.to_vec(),
+    ).await?;
+    let mut client = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;
+    client.submit("/shell echo saved", &DeniedReader).await?;
+    drop(client);
+    let mut reopened = CommandSession::open(volume, session_id(), 32_768, 128).await?;
+    let request = reopened.next_request().await?;
+    reopened
+        .consume(&request, |_, _, intent| async move {
+            assert_eq!(serde_json::to_value(&intent).unwrap()["tool"], "bash");
+            assert_eq!(
+                intent,
+                CommandResolution::Tool {
+                    tool: CommandTool::Bash,
+                    input: json!({"command":"echo saved"}),
+                }
+            );
+            Ok(json!({"reopened":true}))
+        })
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn catalog_and_external_requests_are_observed_through_the_cursor_follow() -> Result<()> {
     let volume = volume().await?;
     let mut client = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;
@@ -145,7 +174,7 @@ async fn catalog_and_external_requests_are_observed_through_the_cursor_follow() 
     );
     let operation = OperationId::new();
     let resolution = CommandResolution::Tool {
-        tool: CommandTool::Shell,
+        tool: CommandTool::Bash,
         input: json!({"command":"echo hi"}),
     };
     publish(

@@ -19,7 +19,7 @@ async fn composer_commands_are_typed_and_unknown_commands_never_admit() -> Resul
             .resolve_input(operation, "/shell echo hello")
             .await?,
         CommandResolution::Tool {
-            tool: crate::client::CommandTool::Shell,
+            tool: crate::client::CommandTool::Bash,
             ..
         }
     ));
@@ -143,7 +143,7 @@ async fn composer_duplicate_and_unsafe_sources_fail_before_model_work() -> Resul
             .resolve_input(OperationId::new(), "/shell echo hello")
             .await?,
         CommandResolution::Tool {
-            tool: crate::client::CommandTool::Shell,
+            tool: crate::client::CommandTool::Bash,
             ..
         }
     ));

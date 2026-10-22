@@ -17,7 +17,7 @@ pub async fn schedule_command_effect<F: Future>(
     let detached = matches!(
         resolution,
         CommandResolution::Tool {
-            tool: CommandTool::Shell | CommandTool::WebSearch | CommandTool::UrlFetch,
+            tool: CommandTool::Bash | CommandTool::WebSearch | CommandTool::UrlFetch,
             ..
         } | CommandResolution::Submit {
             request: CommandRequest::Compact { .. } | CommandRequest::ClearAll

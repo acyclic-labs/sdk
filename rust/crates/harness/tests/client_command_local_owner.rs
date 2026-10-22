@@ -612,7 +612,7 @@ async fn clear_all_pages_an_archive_larger_than_its_enumeration_bound() -> Resul
                     OperationId::new(),
                     None,
                     CommandResolution::Tool {
-                        tool: acyclic_harness::client::CommandTool::Shell,
+                        tool: acyclic_harness::client::CommandTool::Bash,
                         input: json!({"command":42}),
                     }
                 )

@@ -31,7 +31,7 @@ async fn direct_shell_command_uses_native_powershell() -> Result<()> {
     assert!(matches!(
         resolution,
         crate::client::CommandResolution::Tool {
-            tool: crate::client::CommandTool::Shell,
+            tool: crate::client::CommandTool::Bash,
             ..
         }
     ));
@@ -97,7 +97,7 @@ async fn scripted_powershell_reads_writes_runs_and_captures_exit_code() -> Resul
         call(
             "shell",
             "powershell",
-            json!({"command": "[Console]::Write((Get-Content -Raw input.txt)); [Console]::Write((Get-Content -Raw ../from-write.txt)); [IO.File]::WriteAllText((Join-Path (Get-Location) 'captured.txt'), 'native write'); [IO.File]::WriteAllText((Join-Path $env:ACYCLIC_VOLUME_SCRATCH 'scratch.txt'), 'volume write'); [Console]::Error.Write('diagnostic'); exit 7", "cwd":"src"}),
+            json!({"command": "[Console]::Write('café 東京'); [Console]::Write((Get-Content -Raw input.txt)); [Console]::Write((Get-Content -Raw ../from-write.txt)); [IO.File]::WriteAllText((Join-Path (Get-Location) 'captured.txt'), 'native write'); [IO.File]::WriteAllText((Join-Path $env:ACYCLIC_VOLUME_SCRATCH 'scratch.txt'), 'volume write'); [Console]::Error.Write('diagnostic café 東京'); exit 7", "cwd":"src"}),
         ),
         call(
             "scratch",
@@ -134,8 +134,11 @@ async fn scripted_powershell_reads_writes_runs_and_captures_exit_code() -> Resul
     };
     assert_eq!(result("shell")["success"], false);
     assert_eq!(result("shell")["exit_code"], 7);
-    assert_eq!(result("shell")["stdout"], "projected inputfile tool input");
-    assert_eq!(result("shell")["stderr"], "diagnostic");
+    assert_eq!(
+        result("shell")["stdout"],
+        "café 東京projected inputfile tool input"
+    );
+    assert_eq!(result("shell")["stderr"], "diagnostic café 東京");
     assert_eq!(result("scratch")["stdout"], "volume write");
     assert_eq!(result("scratch")["exit_code"], 0);
     assert!(
@@ -202,7 +205,9 @@ async fn powershell_cancellation_kills_parent_and_descendant() -> Result<()> {
     };
     let cancel = async {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while !marker.is_file() {
+            while !std::fs::read_to_string(&marker)
+                .is_ok_and(|pids| pids.split_whitespace().count() == 2)
+            {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         })
