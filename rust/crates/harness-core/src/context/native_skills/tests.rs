@@ -62,7 +62,7 @@ async fn retained_records_share_one_sync_on_the_native_io_service() -> Result<()
             assert!(
                 std::thread::current()
                     .name()
-                    .is_some_and(|name| name.starts_with("acyclic-native-io-")),
+                    .is_some_and(|name| name.starts_with("acyclic-host-io-")),
                 "retained metadata sync bypassed the native I/O service"
             );
             observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
