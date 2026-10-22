@@ -34,10 +34,7 @@ impl FollowFilter {
         capability: &acyclic_auth::verify::VerifiedCapability,
     ) -> Result<Self, StreamError> {
         use acyclic_auth::contract::SubjectReferenceKind;
-        let mut clauses = vec![Clause {
-            all_keys: false,
-            filter: canonical(requested)?,
-        }];
+        let mut clauses = Self::new(requested)?.0.as_ref().clone();
         for scoped in capability.effective().filters() {
             let source = scoped.filter();
             let attributes = source
@@ -64,6 +61,9 @@ impl FollowFilter {
                     }
                 })
                 .collect();
+            if source.keys.is_empty() && source.attributes.is_empty() {
+                continue;
+            }
             clauses.push(Clause {
                 all_keys: true,
                 filter: canonical(wire::SessionFilter {

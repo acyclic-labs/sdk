@@ -155,7 +155,16 @@ async fn retry_headers(provider: &impl StreamProvider) -> TestResult {
     }
     for fork in [false, true] {
         let request = CommitRequest {
-            conditions: vec![],
+            conditions: vec![if fork {
+                CommitCondition::Absent {
+                    path: StreamPath::new("header-fork")?,
+                }
+            } else {
+                CommitCondition::Tail {
+                    path: path.clone(),
+                    expected: 1,
+                }
+            }],
             mutations: vec![if fork {
                 CommitMutation::Fork {
                     source: path.clone(),
