@@ -248,6 +248,9 @@ fn last_native_file_owner_releases_both_physical_allocations() -> io::Result<()>
     let expected = measure(|| drop((payload, health)));
     let actual = measure(|| drop(native));
     assert_eq!(expected.count_current, -2);
-    assert_eq!(actual, expected, "file health escaped its last owner's drop");
+    assert_eq!(
+        actual, expected,
+        "file health escaped its last owner's drop"
+    );
     Ok(())
 }
