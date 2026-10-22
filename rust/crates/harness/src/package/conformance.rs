@@ -7,26 +7,36 @@ use crate::Result;
 #[derive(Clone, Debug)]
 pub enum Action {
     /// Deliver an admitted input.
-    Deliver(Event),
+    Deliver {
+        /// Owner attempting this delivery, including stale-owner probes.
+        placement: Placement,
+        /// Immutable inbox input.
+        event: Event,
+    },
     /// Reconstruct from provider history without adding an input.
-    Recover,
+    Recover(Placement),
     /// Fence effects and settle a durable cancellation event.
-    Cancel(Event),
+    Cancel {
+        /// Owner attempting cancellation.
+        placement: Placement,
+        /// Immutable cancellation admission.
+        event: Event,
+    },
 }
 
 /// Runs the identical ordered history on any installed runtime. Callers assert
 /// snapshots and errors against an independent oracle, including negative controls.
-pub async fn history(
-    runtime: &dyn ActorRuntime,
-    placement: &Placement,
-    actions: &[Action],
-) -> Vec<Result<Snapshot>> {
+pub async fn history(runtime: &dyn ActorRuntime, actions: &[Action]) -> Vec<Result<Snapshot>> {
     let mut observations = Vec::with_capacity(actions.len());
     for action in actions {
         observations.push(match action {
-            Action::Deliver(event) => runtime.deliver(placement.clone(), event.clone()).await,
-            Action::Recover => runtime.recover(placement.clone()).await,
-            Action::Cancel(event) => runtime.cancel(placement.clone(), event.clone()).await,
+            Action::Deliver { placement, event } => {
+                runtime.deliver(placement.clone(), event.clone()).await
+            }
+            Action::Recover(placement) => runtime.recover(placement.clone()).await,
+            Action::Cancel { placement, event } => {
+                runtime.cancel(placement.clone(), event.clone()).await
+            }
         });
     }
     observations
@@ -41,6 +51,102 @@ mod tests {
     };
     use serde_json::Value;
     use std::sync::Arc;
+
+    struct EpochOracle;
+
+    impl super::ActorRuntime for EpochOracle {
+        fn install(
+            &self,
+            _: Arc<dyn ActorPackage>,
+        ) -> acyclic_stream::BoxProviderFuture<'_, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn place(
+            &self,
+            _: super::Placement,
+            _: Value,
+        ) -> acyclic_stream::BoxProviderFuture<'_, Result<super::Snapshot>> {
+            Box::pin(async {
+                Err(crate::Error::Unsupported(
+                    "oracle only observes histories".into(),
+                ))
+            })
+        }
+        fn deliver(
+            &self,
+            placement: super::Placement,
+            _: super::Event,
+        ) -> acyclic_stream::BoxProviderFuture<'_, Result<super::Snapshot>> {
+            self.recover(placement)
+        }
+        fn recover(
+            &self,
+            placement: super::Placement,
+        ) -> acyclic_stream::BoxProviderFuture<'_, Result<super::Snapshot>> {
+            Box::pin(async move {
+                if placement.epoch != 2 {
+                    return Err(crate::Error::Conflict("stale owner".into()));
+                }
+                Ok(super::Snapshot {
+                    placement,
+                    checkpoint: crate::workflow::MachineCheckpoint {
+                        machine: manifest().agent,
+                        revision: 0,
+                        state: Value::Null,
+                    },
+                    consumed: 0,
+                    status: crate::workflow::MachineStatus::Suspended,
+                    pending: Vec::new(),
+                    cancelled: false,
+                })
+            })
+        }
+        fn cancel(
+            &self,
+            placement: super::Placement,
+            _: super::Event,
+        ) -> acyclic_stream::BoxProviderFuture<'_, Result<super::Snapshot>> {
+            self.recover(placement)
+        }
+    }
+
+    #[tokio::test]
+    async fn history_preserves_each_actions_placement() {
+        let current = super::Placement {
+            actor: crate::AgentId::from_bytes([1; 16]),
+            node: "node-2".into(),
+            epoch: 2,
+        };
+        let stale = super::Placement {
+            node: "node-1".into(),
+            epoch: 1,
+            ..current.clone()
+        };
+        let event = super::Event {
+            operation_id: crate::OperationId::from_bytes([1; 16]),
+            idempotency_key: crate::IdempotencyKey::new("history").unwrap(),
+            input: Value::Null,
+        };
+        let actions = [
+            super::Action::Deliver {
+                placement: current.clone(),
+                event: event.clone(),
+            },
+            super::Action::Recover(stale.clone()),
+            super::Action::Cancel {
+                placement: current.clone(),
+                event: event.clone(),
+            },
+            super::Action::Deliver {
+                placement: stale,
+                event,
+            },
+            super::Action::Recover(current),
+        ];
+        let observations = super::history(&EpochOracle, &actions).await;
+        let successes: Vec<_> = observations.iter().map(Result::is_ok).collect();
+        assert_eq!(successes, [true, false, true, false, true]);
+    }
 
     struct Fixture {
         manifest: Manifest,
