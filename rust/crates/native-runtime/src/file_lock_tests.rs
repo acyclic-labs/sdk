@@ -53,6 +53,27 @@ fn modes_exclude_exactly_their_conflicts() -> io::Result<()> {
     Ok(())
 }
 
+/// What a single-owner root relies on: a second exclusive acquisition fails
+/// as recognized contention while the first is held, and succeeds once the
+/// first is dropped.
+#[test]
+fn a_dropped_exclusive_lock_admits_the_next_exclusive_owner() -> io::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("lock");
+    let first = FileLock::try_acquire(open(&path)?, FileLockMode::Exclusive)?;
+    let contended = FileLock::try_acquire(open(&path)?, FileLockMode::Exclusive)
+        .map(|_| ())
+        .unwrap_err();
+    assert!(
+        crate::is_exclusive_lock_contention(&contended),
+        "{contended:?}"
+    );
+    drop(first);
+    let next = FileLock::try_acquire(open(&path)?, FileLockMode::Exclusive)?;
+    assert!(next.is_held());
+    Ok(())
+}
+
 #[test]
 fn a_nonblocking_acquisition_never_waits_for_another_operation() -> io::Result<()> {
     let directory = tempfile::tempdir()?;
