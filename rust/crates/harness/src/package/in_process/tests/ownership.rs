@@ -20,6 +20,77 @@ impl AdmissionPolicy for SelectivePolicy {
 }
 
 #[tokio::test]
+async fn waiting_handler_actions_recheck_revoked_authority_before_publication() {
+    let (stream, _, policy, effects, host) = fixture().await;
+    let owner = placement();
+    host.place(owner.clone(), json!(0)).await.unwrap();
+    let journal = host.journal(&host.package().unwrap(), &owner).unwrap();
+    for action in [
+        AdmissionAction::Place,
+        AdmissionAction::Deliver,
+        AdmissionAction::Cancel,
+    ] {
+        let claim = journal.claim_handler().await.unwrap();
+        let mut work = match action {
+            AdmissionAction::Place => host.place(owner.clone(), json!(0)),
+            AdmissionAction::Deliver => host.deliver(owner.clone(), event(2, json!(1))),
+            AdmissionAction::Cancel => host.cancel(owner.clone(), event(3, Value::Null)),
+            _ => unreachable!(),
+        };
+        assert!(futures::poll!(&mut work).is_pending());
+        policy.0.store(false, Ordering::SeqCst);
+        drop(claim);
+        assert!(
+            matches!(work.await, Err(Error::Unauthorized(_))),
+            "{action:?}"
+        );
+        let workflow =
+            StreamPath::new(format!("runtime/{}", Manifest::workflow(owner.actor))).unwrap();
+        let inbox = StreamPath::new(format!("runtime/{}", Manifest::inbox(owner.actor))).unwrap();
+        assert_eq!(stream.tail(workflow).await.unwrap(), 1);
+        assert!(matches!(
+            stream.tail(inbox).await,
+            Err(acyclic_stream::StreamError::NotFound)
+        ));
+        assert_eq!(effects.fences.load(Ordering::SeqCst), 0);
+        policy.0.store(true, Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn waiting_recovery_intents_recheck_revoked_authority_before_fencing() {
+    for cancellation in [false, true] {
+        let (_, _, policy, effects, host) = fixture().await;
+        let mut owner = placement();
+        host.place(owner.clone(), json!(0)).await.unwrap();
+        if cancellation {
+            assert!(
+                host.cancel(owner.clone(), event(2, Value::Null))
+                    .await
+                    .is_err()
+            );
+        } else {
+            owner.epoch += 1;
+            assert!(host.place(owner.clone(), json!(0)).await.is_err());
+        }
+        let journal = host.journal(&host.package().unwrap(), &owner).unwrap();
+        let before = journal.load().await.unwrap();
+        let claim = journal.claim_handler().await.unwrap();
+        let mut recovery = host.recover(owner);
+        assert!(futures::poll!(&mut recovery).is_pending());
+        policy.0.store(false, Ordering::SeqCst);
+        drop(claim);
+        assert!(matches!(recovery.await, Err(Error::Unauthorized(_))));
+        let after = journal.load().await.unwrap();
+        assert_eq!(
+            (after.head, after.last.snapshot),
+            (before.head, before.last.snapshot)
+        );
+        assert_eq!(effects.fences.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
 async fn every_entry_point_authorizes_its_own_runtime_supplied_action() {
     let package = package();
     let policy = Arc::new(SelectivePolicy(Mutex::new(None)));

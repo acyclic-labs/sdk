@@ -106,6 +106,92 @@ fn machine() -> Arc<Machine> {
 }
 
 #[tokio::test]
+async fn subscription_resumes_cancellation_admitted_while_waiting_for_the_last_effect() {
+    let directory = tempfile::tempdir().unwrap();
+    let stream = Arc::new(
+        acyclic_stream::LocalStream::open(directory.path(), Default::default())
+            .await
+            .unwrap(),
+    );
+    let package = machine();
+    let effects = Arc::new(Host {
+        calls: AtomicUsize::new(0),
+        unavailable: AtomicBool::new(false),
+    });
+    let host = InProcessRuntime::new(
+        stream,
+        package.manifest().bindings.clone(),
+        Arc::new(Policy(AtomicBool::new(true))),
+        effects.clone(),
+    );
+    host.install(package).await.unwrap();
+    let owner = placement();
+    host.place(owner.clone(), json!(0)).await.unwrap();
+    host.deliver(owner.clone(), event(2, json!({"command":command()})))
+        .await
+        .unwrap();
+    let journal = host.journal(&host.package().unwrap(), &owner).unwrap();
+    // Another recovery owns the final effect while this subscription waits.
+    let effect_claim = journal.claim_effects().await.unwrap();
+    let mut subscription = host.run(owner.clone());
+    assert!(futures::poll!(&mut subscription).is_pending());
+    let result = effects.execute(owner.clone(), command()).await.unwrap();
+    let completed_effect = host.deliver_event(owner, result, true).await.unwrap();
+    assert!(completed_effect.pending.is_empty());
+    // Crash the cancellation owner immediately after its atomic stop intent.
+    journal
+        .admit_event(event(3, Value::Null), true)
+        .await
+        .unwrap();
+    drop(effect_claim);
+    let settled = tokio::time::timeout(std::time::Duration::from_secs(2), subscription)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(settled.cancelled);
+    assert!(settled.pending.is_empty());
+    assert_eq!((settled.checkpoint.state, settled.consumed), (json!(3), 3));
+}
+
+#[tokio::test]
+async fn waiting_effect_recovery_rechecks_revoked_authority_before_dispatch() {
+    let directory = tempfile::tempdir().unwrap();
+    let stream = Arc::new(
+        acyclic_stream::LocalStream::open(directory.path(), Default::default())
+            .await
+            .unwrap(),
+    );
+    let package = machine();
+    let policy = Arc::new(Policy(AtomicBool::new(true)));
+    let effects = Arc::new(Host {
+        calls: AtomicUsize::new(0),
+        unavailable: AtomicBool::new(false),
+    });
+    let host = InProcessRuntime::new(
+        stream,
+        package.manifest().bindings.clone(),
+        policy.clone(),
+        effects.clone(),
+    );
+    host.install(package).await.unwrap();
+    let owner = placement();
+    host.place(owner.clone(), json!(0)).await.unwrap();
+    let before = host
+        .deliver(owner.clone(), event(2, json!({"command":command()})))
+        .await
+        .unwrap();
+    let journal = host.journal(&host.package().unwrap(), &owner).unwrap();
+    let claim = journal.claim_effects().await.unwrap();
+    let mut recovery = host.recover(owner);
+    assert!(futures::poll!(&mut recovery).is_pending());
+    policy.0.store(false, Ordering::SeqCst);
+    drop(claim);
+    assert!(matches!(recovery.await, Err(Error::Unauthorized(_))));
+    assert_eq!(effects.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(journal.load().await.unwrap().last.snapshot, before);
+}
+
+#[tokio::test]
 async fn caller_inputs_cannot_acknowledge_a_runtime_effect_or_reserve_its_result() {
     let directory = tempfile::tempdir().unwrap();
     let stream = Arc::new(

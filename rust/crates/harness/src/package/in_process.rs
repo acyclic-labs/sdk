@@ -119,6 +119,19 @@ impl<P: StreamProvider> InProcessRuntime<P> {
         Ok((package, journal))
     }
 
+    async fn authorize_claim<'a>(
+        &self,
+        claim: acyclic_stream::OperationClaim<'a, ()>,
+        action: AdmissionAction,
+        placement: &Placement,
+        event: Option<&Event>,
+    ) -> Result<acyclic_stream::OperationClaim<'a, ()>> {
+        // Waiting for a live owner may outlast the caller's authority. Check
+        // again under the acquired claim before admission, fencing or dispatch.
+        self.checked(action, placement, event).await?;
+        Ok(claim)
+    }
+
     async fn finish_cancel(&self, journal: &Journal<P>) -> Result<Snapshot> {
         let current = journal.load().await?;
         if current.last.snapshot.cancelled {
@@ -180,7 +193,14 @@ impl<P: StreamProvider> InProcessRuntime<P> {
             let (package, journal) = self
                 .checked(AdmissionAction::Deliver, &placement, Some(&event))
                 .await?;
-            let _claim = journal.claim_handler().await?;
+            let _claim = self
+                .authorize_claim(
+                    journal.claim_handler().await?,
+                    AdmissionAction::Deliver,
+                    &placement,
+                    Some(&event),
+                )
+                .await?;
             let current = journal.load().await?;
             journal.require_owner(&current)?;
             if !trusted {
@@ -300,7 +320,14 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
             let (package, journal) = self
                 .checked(AdmissionAction::Place, &placement, None)
                 .await?;
-            let _claim = journal.claim_handler().await?;
+            let _claim = self
+                .authorize_claim(
+                    journal.claim_handler().await?,
+                    AdmissionAction::Place,
+                    &placement,
+                    None,
+                )
+                .await?;
             if let Some(current) = journal.load_optional().await? {
                 if current.bootstrap.input != input
                     || current.bootstrap.manifest != package.manifest
@@ -390,7 +417,14 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
                 .await?;
             let current = journal.load().await?;
             if current.last.moving.as_ref() == Some(&placement) {
-                let _claim = journal.claim_handler().await?;
+                let _claim = self
+                    .authorize_claim(
+                        journal.claim_handler().await?,
+                        AdmissionAction::Recover,
+                        &placement,
+                        None,
+                    )
+                    .await?;
                 return self.finish_move(&journal, &placement).await;
             }
             journal.require_owner(&current)?;
@@ -403,7 +437,14 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
             )
             .await?;
             if current.last.cancelling {
-                let _claim = journal.claim_handler().await?;
+                let _claim = self
+                    .authorize_claim(
+                        journal.claim_handler().await?,
+                        AdmissionAction::Recover,
+                        &placement,
+                        None,
+                    )
+                    .await?;
                 return self.finish_cancel(&journal).await;
             }
             if let Some(admitted) = journal.next_input(current.last.snapshot.consumed).await? {
@@ -417,7 +458,14 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
                 return Ok(current.last.snapshot);
             };
             journal.require_durable(current.tail).await?;
-            let _claim = journal.claim_effects().await?;
+            let _claim = self
+                .authorize_claim(
+                    journal.claim_effects().await?,
+                    AdmissionAction::Recover,
+                    &placement,
+                    None,
+                )
+                .await?;
             // Cancellation and placement can advance while a dispatch claim is
             // acquired. Recheck before entering the host's permanently fenced
             // epoch; the host closes the final check/start race itself.
@@ -448,7 +496,14 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
             let (_, journal) = self
                 .checked(AdmissionAction::Cancel, &placement, Some(&event))
                 .await?;
-            let _claim = journal.claim_handler().await?;
+            let _claim = self
+                .authorize_claim(
+                    journal.claim_handler().await?,
+                    AdmissionAction::Cancel,
+                    &placement,
+                    Some(&event),
+                )
+                .await?;
             let current = journal.load().await?;
             journal.require_owner(&current)?;
             journal.reject_result_identity(&event).await?;

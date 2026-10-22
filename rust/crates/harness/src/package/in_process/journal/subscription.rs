@@ -20,6 +20,7 @@ impl<P: StreamProvider> InProcessRuntime<P> {
                 let current = journal.load().await?;
                 journal.require_owner(&current)?;
                 if current.last.snapshot != snapshot
+                    || current.last.cancelling
                     || !snapshot.pending.is_empty()
                     || journal.next_input(snapshot.consumed).await?.is_some()
                 {
