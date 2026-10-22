@@ -84,10 +84,8 @@ pub(crate) fn with_file_admission<T>(
     file: &File,
     operation: impl FnOnce() -> io::Result<T>,
 ) -> io::Result<T> {
-    let (identity, health) = shared_file_health(file, None)?;
-    let result = admitted(file, &health, operation);
-    release_file_health(identity, &health);
-    result
+    let health = shared_file_health(file, None)?;
+    admitted(file, &health, operation)
 }
 
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]

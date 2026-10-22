@@ -140,8 +140,67 @@ fn last_owner_unregisters_healthy_file_on_its_own_thread() -> io::Result<()> {
     assert!(registered(&file)?);
     // A borrowed admission while an owner is live shares and keeps that owner.
     read_at(&file, 0, &mut byte)?;
-    assert!(registered(&file)?, "a borrowed admission released a live owner");
+    assert!(
+        registered(&file)?,
+        "a borrowed admission released a live owner"
+    );
     drop(native);
     assert!(!registered(&file)?, "the last native owner left its row");
+    Ok(())
+}
+
+// Queued jobs own the health too. Whichever owner drops last unregisters it:
+// here an unpolled read outlives its NativeFile, so the job's owner is last.
+#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+#[test]
+fn pending_job_that_outlives_its_file_unregisters_health() -> io::Result<()> {
+    initialize_native_io_services()?;
+    let temporary = tempfile::NamedTempFile::new()?;
+    let file = temporary.reopen()?;
+    let native = NativeFile::from_file(temporary.reopen()?, None).map_err(|(error, _)| error)?;
+    let read = native.read_batch_async(vec![OwnedRead {
+        offset: 0,
+        length: 1,
+    }]);
+    let control = native.control_async(|_, _| Ok(()), None)?;
+    drop(native);
+    assert!(
+        registered(&file)?,
+        "a pending job's owner was released early"
+    );
+    drop(read);
+    assert!(
+        registered(&file)?,
+        "a pending control's owner was released early"
+    );
+    drop(control);
+    assert!(!registered(&file)?, "the last pending job left its row");
+    Ok(())
+}
+
+// Negative control: an owner that is a bare `Arc<FileHealth>`, not a
+// `HealthOwner`, drops last without unregistering, and the check above sees
+// its row left behind. The registry lock is held across the drop and the
+// check, so no other thread's sweep can remove the row in between.
+#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+#[test]
+fn bare_health_owner_dropped_last_leaves_its_row() -> io::Result<()> {
+    initialize_native_io_services()?;
+    let temporary = tempfile::NamedTempFile::new()?;
+    let file = temporary.reopen()?;
+    let identity = file_identity(&file)?;
+    let native = NativeFile::from_file(temporary.reopen()?, None).map_err(|(error, _)| error)?;
+    let bare = Arc::clone(&native.health);
+    drop(native);
+    let registry = FILE_HEALTH
+        .get()
+        .ok_or(io::ErrorKind::NotConnected)?
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    drop(bare);
+    assert!(
+        registry.find(identity, None)?.is_ok(),
+        "a bare owner unregistered its health"
+    );
     Ok(())
 }

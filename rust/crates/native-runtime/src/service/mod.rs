@@ -46,7 +46,10 @@ impl ServiceReadiness {
                     Ok(_) if frame[0] == FAILURE_FRAME => {
                         let mut reason = Vec::new();
                         // The failing service closes the channel as it exits.
-                        match (&mut self.0).take(MAXIMUM_FAILURE_BYTES).read_to_end(&mut reason) {
+                        match (&mut self.0)
+                            .take(MAXIMUM_FAILURE_BYTES)
+                            .read_to_end(&mut reason)
+                        {
                             Ok(_) => {}
                             Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
                             Err(error) => break Err(error),

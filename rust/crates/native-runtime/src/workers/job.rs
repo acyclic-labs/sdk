@@ -9,7 +9,7 @@ pub(crate) enum NativeJob {
         overlapped: bool,
         state: Arc<CompletionMutex<CompletionState<Vec<Bytes>>>>,
         completion: Option<Arc<OperationFence>>,
-        health: Option<Arc<FileHealth>>,
+        health: Option<HealthOwner>,
     },
     Write {
         file: Arc<NativeFilePayload>,
@@ -19,7 +19,7 @@ pub(crate) enum NativeJob {
         overlapped: bool,
         state: Arc<CompletionMutex<CompletionState<()>>>,
         completion: Option<Arc<OperationFence>>,
-        health: Option<Arc<FileHealth>>,
+        health: Option<HealthOwner>,
     },
     Task {
         #[cfg(feature = "test-support")]
@@ -32,7 +32,7 @@ pub(crate) enum NativeJob {
         /// needs if the queue is full is paid at creation, so whether the
         /// queue is full never changes the task's receipt.
         admission: Option<ReadAllocation>,
-        health: Option<Arc<FileHealth>>,
+        health: Option<HealthOwner>,
         completion: Option<Arc<OperationFence>>,
     },
 }
@@ -137,7 +137,7 @@ impl NativeJob {
                 completion,
                 health,
             } => span.in_scope(|| {
-                with_file_scope(health.as_ref(), || {
+                with_file_scope(health.as_deref(), || {
                     let finish = FileCompletion::new(
                         state,
                         completion,

@@ -3,19 +3,9 @@ use crate::*;
 /// One file owned by the native I/O runtime.
 pub struct NativeFile {
     pub(crate) file: Arc<NativeFilePayload>,
-    pub(crate) health: Arc<FileHealth>,
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    identity: FileIdentity,
+    pub(crate) health: HealthOwner,
     #[cfg(windows)]
     pub(crate) overlapped: bool,
-}
-
-#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-impl Drop for NativeFile {
-    fn drop(&mut self) {
-        // The last owner unregisters its health, so it is freed here.
-        release_file_health(self.identity, &self.health);
-    }
 }
 
 /// Accounting supplied when importing a native handle.
@@ -79,17 +69,11 @@ impl NativeFile {
             .map_or(Ok(()), |meter| {
                 meter.allocate(std::mem::size_of::<FileHealth>() as u64)
             })
-            .map(|()| ((), Arc::new(FileHealth::default())));
+            .map(|()| HealthOwner::unregistered());
         match health {
-            #[cfg_attr(
-                not(any(windows, target_os = "linux", target_vendor = "apple")),
-                expect(unused_variables, reason = "no registry identity")
-            )]
-            Ok((identity, health)) => Ok(Self {
+            Ok(health) => Ok(Self {
                 file: payload,
                 health,
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                identity,
                 #[cfg(windows)]
                 overlapped: false,
             }),
@@ -157,7 +141,7 @@ impl NativeFile {
         F: FnOnce(&File, Option<&dyn NativeReadMeter>) -> io::Result<()> + Send + 'static,
     {
         let file = Arc::clone(&self.file);
-        let health = Arc::clone(&self.health);
+        let health = self.health.clone();
         let observer = meter.clone();
         let span = if meter.is_some() {
             obs::file_span!(DEBUG, "acyclic.runtime.bounded_unit")
@@ -185,7 +169,7 @@ impl NativeFile {
             },
             meter,
             None,
-            Some(Arc::clone(&self.health)),
+            Some(self.health.clone()),
             &NATIVE_WORKERS,
         )
     }
@@ -257,7 +241,7 @@ impl NativeFile {
             },
             Some(meter),
             None,
-            Some(Arc::clone(&self.health)),
+            Some(self.health.clone()),
             &NATIVE_WORKERS,
         )
     }
@@ -313,7 +297,7 @@ impl NativeFile {
             },
             Some(meter),
             None,
-            Some(Arc::clone(&self.health)),
+            Some(self.health.clone()),
             &NATIVE_WORKERS,
         )
     }
@@ -380,7 +364,7 @@ impl NativeFile {
             },
             Some(meter),
             None,
-            Some(Arc::clone(&self.health)),
+            Some(self.health.clone()),
             &NATIVE_WORKERS,
         )
     }
@@ -390,7 +374,7 @@ impl NativeFile {
         NativeCompletion::submit(
             Arc::clone(&self.file),
             reads,
-            Some(Arc::clone(&self.health)),
+            Some(self.health.clone()),
             obs::file_span!(DEBUG, "acyclic.runtime.read_batch"),
             #[cfg(windows)]
             self.overlapped,
@@ -413,7 +397,7 @@ impl NativeFile {
                 overlapped: self.overlapped,
                 state: Arc::clone(&state),
                 completion: None,
-                health: Some(Arc::clone(&self.health)),
+                health: Some(self.health.clone()),
             },
             state,
             &NATIVE_WORKERS,

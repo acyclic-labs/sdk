@@ -71,7 +71,7 @@ pub(crate) fn task_completion<T: Send + 'static>(
     operation: impl FnOnce() -> io::Result<T> + Send + 'static,
     meter: Option<Arc<dyn NativeReadMeter>>,
     allocation_meter: Option<&Arc<dyn NativeReadMeter>>,
-    health: Option<Arc<FileHealth>>,
+    health: Option<HealthOwner>,
     pool: &'static LazyLock<io::Result<NativeWorkers>>,
 ) -> io::Result<NativeCompletion<T>> {
     #[cfg(feature = "test-support")]

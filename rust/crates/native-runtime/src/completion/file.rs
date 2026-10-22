@@ -3,7 +3,7 @@ use crate::*;
 pub(crate) struct FileCompletion<T> {
     state: Option<Arc<CompletionMutex<CompletionState<T>>>>,
     fence: Option<Arc<OperationFence>>,
-    health: Option<Arc<FileHealth>>,
+    health: Option<HealthOwner>,
     file: Option<Arc<NativeFilePayload>>,
     span: obs::OperationSpan,
 }
@@ -12,7 +12,7 @@ impl<T> FileCompletion<T> {
     pub(crate) fn new(
         state: Arc<CompletionMutex<CompletionState<T>>>,
         fence: Option<Arc<OperationFence>>,
-        health: Option<Arc<FileHealth>>,
+        health: Option<HealthOwner>,
         file: Option<Arc<NativeFilePayload>>,
         span: obs::OperationSpan,
     ) -> Self {

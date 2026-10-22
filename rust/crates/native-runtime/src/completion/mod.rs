@@ -29,7 +29,7 @@ impl NativeCompletion<Vec<Bytes>> {
     pub(crate) fn submit(
         file: Arc<NativeFilePayload>,
         reads: Vec<OwnedRead>,
-        health: Option<Arc<FileHealth>>,
+        health: Option<HealthOwner>,
         span: obs::OperationSpan,
         #[cfg(windows)] overlapped: bool,
     ) -> Self {
