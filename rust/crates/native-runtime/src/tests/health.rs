@@ -227,3 +227,27 @@ fn unreleased_owner_keeps_its_row() -> io::Result<()> {
     assert!(!registered(&file)?, "the released owner left its row");
     Ok(())
 }
+
+// The registry's Weak must disappear with the last owner. Otherwise another
+// thread's admission frees this Arc header and contaminates its heap counters.
+#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+#[test]
+fn last_native_file_owner_releases_both_physical_allocations() -> io::Result<()> {
+    use acyclic_test_support::measure;
+
+    initialize_native_io_services()?;
+    let temporary = tempfile::NamedTempFile::new()?;
+    let native = NativeFile::from_file(temporary.reopen()?, None).map_err(|(error, _)| error)?;
+    // Independent owners model the two complete Arc allocations, including
+    // their headers, without assuming the standard library's Arc layout.
+    let payload = Arc::new(NativeFilePayload {
+        file: temporary.reopen()?,
+        _allocation: None,
+    });
+    let health = Arc::new(FileHealth::default());
+    let expected = measure(|| drop((payload, health)));
+    let actual = measure(|| drop(native));
+    assert_eq!(expected.count_current, -2);
+    assert_eq!(actual, expected, "file health escaped its last owner's drop");
+    Ok(())
+}
