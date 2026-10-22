@@ -388,3 +388,76 @@ fn fence_kills_the_tree_of_a_zombie_warden() {
     assert!(survived, "the zombie warden's tree must outlive the warden");
     assert!(fenced, "the fence left a zombie warden's tree running");
 }
+
+/// A program whose descendant leaves the tree's process group and session,
+/// publishing its own PID.
+#[cfg(target_os = "linux")]
+fn escaping_program(pid: &Path) -> Command {
+    let mut command = crate::shell_command(
+        &format!(
+            "setsid sh -c 'echo $$ > \"{0}.tmp\"; mv \"{0}.tmp\" \"{0}\"; exec sleep 3600' & wait",
+            pid.display()
+        ),
+        Some("sh"),
+    );
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
+}
+
+/// Starts `command`, waits for its escaped descendant, and cancels the tree.
+/// Returns the descendant's watch once cancellation has returned.
+#[cfg(target_os = "linux")]
+fn cancel_after_escape(mut tree: ProcessTree, pid: &Path) -> Watch {
+    while !pid.exists() {
+        assert!(
+            tree.try_wait(None).expect("try_wait").is_none(),
+            "the tree exited before its descendant escaped"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    let escaped = Watch::new(
+        fs::read_to_string(pid)
+            .expect("pid")
+            .trim()
+            .parse()
+            .expect("numeric pid"),
+    )
+    .expect("running descendant");
+    tree.terminate(None).expect("terminate");
+    escaped
+}
+
+/// Cancelling a custodied tree kills its group, never its warden, which
+/// then drains every descendant, including one in another session, before
+/// the owner observes the tree gone.
+#[cfg(target_os = "linux")]
+#[test]
+fn cancelled_custodied_tree_leaves_no_descendant_outside_its_group() {
+    let root = tempfile::tempdir().expect("root");
+    let processes = root.path().join("processes");
+    let custody = ProcessCustody::open(&processes).expect("custody");
+    let pid = root.path().join("pid");
+    let tree = ProcessTree::spawn_in_custody(&mut escaping_program(&pid), &custody).expect("spawn");
+    let escaped = cancel_after_escape(tree, &pid);
+    let survived = !escaped.exited();
+    escaped.kill();
+    assert!(!survived, "a cancelled tree's escaped descendant survived");
+    assert_eq!(fs::read_dir(&processes).expect("records").count(), 0);
+}
+
+/// Negative control: the same cancellation without custody leaves the
+/// escaped descendant running.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_cancelled_uncustodied_tree_leaves_its_escaped_descendant() {
+    let root = tempfile::tempdir().expect("root");
+    let pid = root.path().join("pid");
+    let tree = ProcessTree::spawn(&mut escaping_program(&pid)).expect("spawn");
+    let escaped = cancel_after_escape(tree, &pid);
+    let survived = !escaped.exited();
+    escaped.kill();
+    assert!(survived, "the oracle cannot observe an escaped descendant");
+}

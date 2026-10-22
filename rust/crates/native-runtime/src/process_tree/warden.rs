@@ -236,6 +236,15 @@ pub(super) fn enter(directory: c_int, owner: pid_t) -> io::Result<()> {
             return Err(error);
         }
     };
+    // The program waits on this pipe until the warden has left the group.
+    let mut admitted = [0; 2];
+    // SAFETY: writable storage for two descriptors.
+    if unsafe { libc::pipe(admitted.as_mut_ptr()) } != 0 {
+        let error = io::Error::last_os_error();
+        unlink();
+        return Err(error);
+    }
+    let [admission, admit] = admitted;
     // SAFETY: fork in the single-threaded child; both branches below make
     // only async-signal-safe calls until exec or _exit.
     let program = unsafe { libc::fork() };
@@ -244,19 +253,95 @@ pub(super) fn enter(directory: c_int, owner: pid_t) -> io::Result<()> {
         unsafe {
             libc::close(record);
             libc::close(watch);
+            libc::close(admit);
         }
-        return Ok(());
+        return admitted_by_warden(admission);
     }
+    // SAFETY: the read end, which only the program uses.
+    unsafe { libc::close(admission) };
     if program < 0 {
         let error = io::Error::last_os_error();
+        // SAFETY: the write end opened above.
+        unsafe { libc::close(admit) };
         unlink();
         return Err(error);
     }
+    if leave_group().is_ok() {
+        // A failed write leaves the program unadmitted, which fails the spawn.
+        let _ = write_full(admit, &[1]);
+    }
+    // SAFETY: the write end opened above.
+    unsafe { libc::close(admit) };
     supervise(directory, record, watch, owner, warden, program, name)
+}
+
+/// In the program: waits until the warden has left the tree's group.
+/// Without that, a kill of the tree would also kill its custodian, so the
+/// spawn fails instead.
+fn admitted_by_warden(admission: c_int) -> io::Result<()> {
+    let mut byte = [0_u8];
+    let read = loop {
+        // SAFETY: one writable byte.
+        let read = unsafe { libc::read(admission, byte.as_mut_ptr().cast(), 1) };
+        if read >= 0 || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+            break read;
+        }
+    };
+    // SAFETY: the descriptor this process owns.
+    unsafe { libc::close(admission) };
+    if read == 1 {
+        Ok(())
+    } else {
+        Err(io::ErrorKind::PermissionDenied.into())
+    }
+}
+
+/// Moves the warden out of the tree's process group into a group of its
+/// own, so a kill of the tree's group never reaches the warden, while the
+/// warden's live PID keeps the tree's group ID from naming any other group.
+fn leave_group() -> io::Result<()> {
+    // A new group needs a leader to name it: a short-lived child.
+    // SAFETY: fork in the single-threaded warden; the child only sleeps.
+    let anchor = unsafe { libc::fork() };
+    if anchor == 0 {
+        // SAFETY: blocking every catchable signal, then sleeping until the
+        // warden's SIGKILL.
+        unsafe {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigfillset(&raw mut set);
+            libc::sigprocmask(libc::SIG_SETMASK, &raw const set, std::ptr::null_mut());
+            loop {
+                libc::pause();
+            }
+        }
+    }
+    if anchor < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the anchor is this warden's own unexeced child in its session,
+    // and the warden then joins that group in the same session.
+    let moved = if unsafe { libc::setpgid(anchor, anchor) == 0 && libc::setpgid(0, anchor) == 0 } {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    };
+    // The group lives on with the warden as its only member.
+    // SAFETY: this warden's own unreaped child.
+    unsafe { libc::kill(anchor, libc::SIGKILL) };
+    let mut status = 0;
+    // SAFETY: this warden's own child and writable status storage.
+    while unsafe { libc::waitpid(anchor, &raw mut status, 0) } < 0
+        && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
+    {}
+    moved
 }
 
 /// Locks the record, writes the warden's identity, and returns the owner's
 /// exit watch.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the warden holds its record's lock for its whole life; only its exit releases it, and no process it forks keeps the description past its own exit or close"
+)]
 fn arm(record: c_int, owner: pid_t, warden: pid_t) -> io::Result<c_int> {
     // The kernel releases this lock only when the warden's last descriptor
     // of the record closes: when the warden has exited.
@@ -497,13 +582,12 @@ fn drain(_watch: c_int, warden: pid_t, program: pid_t, mut status: Option<c_int>
         return status;
     };
     loop {
+        // The warden left this group, and its live PID keeps the group's ID
+        // from naming any other group: this reaches only the tree.
+        // SAFETY: signalling the tree's process group.
+        unsafe { libc::kill(-warden, libc::SIGKILL) };
         if !kill_children(children) {
-            // Without the children listing, an orphaned owner's tree still
-            // dies as a group, this warden included; reopen fences the rest.
-            if status.is_none() {
-                // SAFETY: this warden's own process group.
-                unsafe { libc::kill(-warden, libc::SIGKILL) };
-            }
+            // Without the children listing, the tree still dies as a group.
             return status;
         }
         let mut raw = 0;
@@ -568,24 +652,30 @@ fn kill_children(path: &CStr) -> bool {
     true
 }
 
-/// Kills every other member of this warden's process group and waits for
-/// each to exit.
+/// Kills the tree's process group and waits for each member to exit.
 #[cfg(target_vendor = "apple")]
 fn drain(queue: c_int, warden: pid_t, program: pid_t, mut status: Option<c_int>) -> Option<c_int> {
     let mut members = [0 as pid_t; 256];
     loop {
+        // The warden left this group, and its live PID keeps the group's ID
+        // from naming any other group: one signal reaches exactly the tree,
+        // never a listed PID that may since have been reused.
+        // SAFETY: signalling the tree's process group.
+        unsafe { libc::kill(-warden, libc::SIGKILL) };
         reap_ready(program, &mut status);
         let Ok(count) = group_members(warden, &mut members) else {
             return status;
         };
         let mut live = false;
         for member in members.iter().take(count).copied() {
-            if member == warden || member <= 0 {
+            if member <= 0 {
                 continue;
             }
-            // SAFETY: a member of this warden's own process group.
-            unsafe { libc::kill(member, libc::SIGKILL) };
-            live |= watch_exit(queue, member).unwrap_or(false);
+            // A listed PID may since have been reused; only a watch that
+            // still names a member counts. No process joins the group now.
+            // SAFETY: getpgid only reads the named process's group.
+            live |= watch_exit(queue, member).unwrap_or(false)
+                && unsafe { libc::getpgid(member) } == warden;
         }
         if !live {
             reap_ready(program, &mut status);
