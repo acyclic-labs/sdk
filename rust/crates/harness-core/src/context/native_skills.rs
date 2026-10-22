@@ -234,11 +234,9 @@ impl NativeSkills {
         };
         match retained.as_ref() {
             RetainedSource::Batch(_) => Err(Error::Invalid("nested retained skill batch".into())),
-            RetainedSource::Shadow(record) => {
-                self.read_shadow(volume, &record, maximum, work).await
-            }
+            RetainedSource::Shadow(record) => self.read_shadow(volume, record, maximum, work).await,
             RetainedSource::Native(record) => {
-                Self::read_native(volume, &record, maximum, work).await
+                Self::read_native(volume, record, maximum, work).await
             }
         }
     }
