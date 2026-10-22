@@ -45,9 +45,12 @@ test("installed Pi controls retain one authenticated root across service death a
     }
     await fixture.start();
     const observation = original as {tasks:Array<{task:string}>};
-    const cancelled = JSON.parse((await command(["__pi", "TaskCancel"], JSON.stringify({
-      cwd:project, session_id:manager.getSessionId(), task:observation.tasks[0].task,
-    }))).stdout);
+    const fields = { cwd:project, session_id:manager.getSessionId(), task:observation.tasks[0].task };
+    // Every control but SessionStart proves its caller; native session identity alone never does.
+    await assert.rejects(command(["__pi", "TaskCancel"], JSON.stringify(fields)), /original caller proof/);
+    const caller = JSON.parse((await command(["__pi", "SessionStart"], JSON.stringify(fields))).stdout).caller;
+    assert.ok(caller, "SessionStart must issue the original root caller proof");
+    const cancelled = JSON.parse((await command(["__pi", "TaskCancel"], JSON.stringify({ ...fields, caller }))).stdout);
     assert.equal(cancelled.tasks[0].state, "outcome");
     assert.equal(cancelled.tasks[0].task, observation.tasks[0].task);
     await fixture.close();
