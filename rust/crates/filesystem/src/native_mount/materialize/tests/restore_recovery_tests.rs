@@ -846,6 +846,41 @@ fn same_path_restores_are_serialized_by_a_process_crash_safe_lock()
     Ok(())
 }
 
+#[test]
+fn blocking_restore_retries_real_platform_lock_contention()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temporary = tempfile::tempdir()?;
+    let relative = Path::new("entry");
+    let mut work = restoration_work();
+    let root = HostRoot::open(temporary.path(), &mut work)?;
+    let parent = held_parent(&root, relative, &mut work)?;
+    let mut held = Some(acquire_restore_lock(&parent, relative, true, &mut work)?);
+    let name = restore_artifact_name(".acyclic-restore-lock-", relative, &mut work)?;
+    let contender = crate::native_host::open_leaf(
+        &parent.directory,
+        &name,
+        &crate::native_host::NativeOpenOptions::ReadWriteCreate,
+        &mut work,
+    )?;
+    let mut attempts = 0;
+    let _acquired = lock_restore_file(contender, true, &mut work, |file| {
+        attempts += 1;
+        let result = fs2::FileExt::try_lock_exclusive(file);
+        if attempts == 1 {
+            assert_eq!(
+                result.as_ref().err().and_then(std::io::Error::raw_os_error),
+                fs2::lock_contended_error().raw_os_error()
+            );
+            // Release only after the OS has returned genuine contention.
+            // The retry decision still consumes that exact error.
+            drop(held.take());
+        }
+        result
+    })?;
+    assert_eq!(attempts, 2, "the contended attempt must be retried");
+    Ok(())
+}
+
 #[tokio::test]
 async fn cancelled_restore_waiter_keeps_lock_until_host_io_finishes()
 -> Result<(), Box<dyn std::error::Error>> {
