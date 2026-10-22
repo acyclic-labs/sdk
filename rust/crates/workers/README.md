@@ -14,7 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let endpoint = std::env::var("EDGE_ENDPOINT")?;
     let token = std::env::var("ACYCLIC_API_KEY")?;
     let workers = Client::new(http::Client::new(&endpoint, &token, 1024 * 1024)?,
-        HttpObjects::new(&endpoint, &token, 1024 * 1024)?, "actors-code".into());
+        HttpObjects::new(&endpoint, &token, 1024 * 1024, None)?, "actors-code".into());
     let digest = workers.publish(std::fs::read("worker.mjs")?.into(), "publish-worker".into()).await?;
     let actor = workers.create(&wire::CreateActorRequest {
         code_sha256: digest.to_vec(), home_region: "la".into(),
