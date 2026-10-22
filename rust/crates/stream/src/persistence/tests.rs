@@ -165,7 +165,10 @@ async fn invalid_record_identity_sequence_time_and_positions_are_rejected()
     let AppendOutcome::Committed(receipt) = provider
         .append(AppendRequest {
             path: StreamPath::new("source")?,
-            records: vec![(Bytes::from_static(b"a")).into(), Bytes::from_static(b"b")],
+            records: vec![
+                (Bytes::from_static(b"a")).into(),
+                (Bytes::from_static(b"b")).into(),
+            ],
             if_tail: None,
             idempotency_key: None,
         })

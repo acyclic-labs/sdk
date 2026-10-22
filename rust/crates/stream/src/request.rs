@@ -1,5 +1,5 @@
 //! Canonical request validation and retry identity.
-use crate::OwnedBytes as Bytes;
+use crate::AppendRecord;
 use crate::{
     AppendRequest, CommitCondition, CommitMutation, CommitRequest, ForkRequest, MAX_COMMAND_BYTES,
     MAX_ITEMS, MAX_RECORD_BYTES, StreamError, StreamPath,

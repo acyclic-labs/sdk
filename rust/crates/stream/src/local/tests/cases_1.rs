@@ -60,7 +60,7 @@ async fn local_append_emits_its_span() -> Result<(), Box<dyn std::error::Error>>
             path: StreamPath::new("traced/path")?,
             records: vec![
                 (Bytes::from_static(b"body")).into(),
-                Bytes::from_static(b"more"),
+                (Bytes::from_static(b"more")).into(),
             ],
             if_tail: None,
             idempotency_key: None,

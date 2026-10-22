@@ -104,7 +104,7 @@ mod tests {
     fn current_writer_roundtrips_and_rejects_noncanonical_payloads() -> Result<(), StreamError> {
         let append = Command::Append(AppendRequest {
             path: crate::StreamPath::new("codec/events")?,
-            records: vec![(Bytes::from_static(b"one")).into(), Bytes::new()],
+            records: vec![(Bytes::from_static(b"one")).into(), (Bytes::new()).into()],
             if_tail: Some(0),
             idempotency_key: Some(crate::IdempotencyKey::new(Bytes::from_static(b"key"))?),
         });

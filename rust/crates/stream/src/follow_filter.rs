@@ -21,7 +21,10 @@ impl FollowFilter {
         if filter.keys.is_empty() && filter.attributes.is_empty() {
             return Ok(Self::default());
         }
-        Ok(Self(Arc::new(vec![Clause { all_keys: false, filter }])))
+        Ok(Self(Arc::new(vec![Clause {
+            all_keys: false,
+            filter,
+        }])))
     }
 
     /// Intersects a request with authenticated capability clauses. Subject

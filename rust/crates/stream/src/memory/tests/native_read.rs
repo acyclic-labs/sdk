@@ -10,7 +10,7 @@ async fn seeded() -> MemoryResult<MemoryStream> {
             path: path("native/read")?,
             records: vec![
                 (OwnedBytes::from_static(b"aa")).into(),
-                OwnedBytes::from_static(b"bb"),
+                (OwnedBytes::from_static(b"bb")).into(),
                 OwnedBytes::from_static(b"cc"),
             ],
             if_tail: Some(0),

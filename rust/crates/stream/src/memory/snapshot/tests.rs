@@ -53,7 +53,7 @@ async fn real_append_fork_and_commit_snapshots_preserve_exclusive_tails_and_retr
         path: source.clone(),
         records: vec![
             (Bytes::from_static(b"first")).into(),
-            Bytes::from_static(b"second"),
+            (Bytes::from_static(b"second")).into(),
         ],
         if_tail: Some(0),
         idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"append"))?),
