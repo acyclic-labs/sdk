@@ -13,19 +13,26 @@ pub(in crate::local) struct Snapshot(Vec<(PathBuf, Option<Vec<u8>>, std::fs::Per
 
 impl Snapshot {
     pub fn capture(root: &Path) -> Result<Self> {
-        let mut pending = vec![PathBuf::new()];
+        let mut pending = vec![(
+            PathBuf::new(),
+            std::fs::symlink_metadata(root).map_err(storage)?,
+        )];
         let mut entries = Vec::new();
-        while let Some(relative) = pending.pop() {
+        while let Some((relative, metadata)) = pending.pop() {
             let path = root.join(&relative);
-            let metadata = std::fs::symlink_metadata(&path).map_err(storage)?;
             assert!(!metadata.is_symlink(), "fixture contains a symlink");
             let bytes = if metadata.is_dir() {
                 let mut children = std::fs::read_dir(&path)
                     .map_err(storage)?
-                    .map(|entry| entry.map(|entry| relative.join(entry.file_name())))
+                    .map(|entry| {
+                        let entry = entry?;
+                        // Enumeration already supplies the no-follow metadata on
+                        // Windows. These independent fixtures have no concurrent writer.
+                        Ok((relative.join(entry.file_name()), entry.metadata()?))
+                    })
                     .collect::<std::io::Result<Vec<_>>>()
                     .map_err(storage)?;
-                children.sort();
+                children.sort_by(|(left, _), (right, _)| left.cmp(right));
                 pending.extend(children.into_iter().rev());
                 None
             } else {
