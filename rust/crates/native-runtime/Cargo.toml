@@ -49,6 +49,12 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 
+# acyclic-test-support depends on this crate, so a loom test build also links
+# this crate as an ordinary dependency, compiled with the same --cfg. Every
+# copy built under the cfg needs loom, not only the test copy.
+[target.'cfg(acyclic_native_runtime_loom)'.dependencies]
+loom = "=0.7.2"
+
 [dev-dependencies]
 acyclic-test-support = { path = "../test-support" }
 tempfile = "3.27.0"
