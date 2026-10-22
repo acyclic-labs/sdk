@@ -127,6 +127,7 @@ async fn serve(
     let host = Host {
         service: crate::session::Service::new(
             Arc::clone(provider),
+            crate::session::testing::authority(),
             "node".into(),
             crate::session::Limits::default(),
         ),
@@ -257,6 +258,7 @@ async fn http_session_preserves_the_callers_additional_tls_root() -> TestResult 
     let host = Host {
         service: crate::session::Service::new(
             Arc::clone(&provider),
+            crate::session::testing::authority(),
             "tls".into(),
             crate::session::Limits::default(),
         ),

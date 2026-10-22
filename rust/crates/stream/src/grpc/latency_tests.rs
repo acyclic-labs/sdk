@@ -22,6 +22,7 @@ async fn append_follow_latency() -> TestResult {
                 wire::stream_session_service_server::StreamSessionServiceServer::new(
                     crate::session::Service::new(
                         provider,
+                        crate::session::testing::authority(),
                         "latency-node".into(),
                         crate::session::Limits::default(),
                     ),

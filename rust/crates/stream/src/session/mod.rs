@@ -246,7 +246,10 @@ fn serve_on_with_publications<P: StreamProvider + ?Sized>(
                     match future::select(session.incoming.next(), Box::pin(changed)).await {
                         future::Either::Left((Some(frame), _)) => session.receive(frame?)?,
                         future::Either::Left((None, _)) => return Ok(None),
-                        future::Either::Right(_) => session.revalidate(None)?,
+                        future::Either::Right(((), pending)) => {
+                            drop(pending);
+                            session.revalidate(None)?;
+                        }
                     }
                     continue;
                 }
@@ -284,7 +287,8 @@ fn serve_on_with_publications<P: StreamProvider + ?Sized>(
                 };
                 let event = match future::select(Box::pin(event), changed).await {
                     future::Either::Left((event, _)) => event,
-                    future::Either::Right(_) => {
+                    future::Either::Right(((), pending)) => {
+                        drop(pending);
                         session.revalidate(None)?;
                         continue;
                     }

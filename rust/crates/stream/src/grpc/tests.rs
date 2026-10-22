@@ -44,6 +44,7 @@ pub(crate) fn client<P: StreamProvider>(provider: P) -> Result<Client, ConnectEr
                             wire::stream_session_service_server::StreamSessionServiceServer::new(
                                 crate::session::Service::new(
                                     provider,
+                                    crate::session::testing::authority(),
                                     "fixture".into(),
                                     crate::session::Limits::default(),
                                 ),

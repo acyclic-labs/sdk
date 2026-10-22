@@ -47,8 +47,13 @@ pub fn credential() -> Bytes {
 pub(super) fn slots() -> authority::Slots {
     let auth = authority();
     let mut slots = authority::Slots::default();
-    auth.register(&mut slots, 0, &credential(), Limits::default().channels)
-        .unwrap();
+    auth.register(
+        &mut slots,
+        0,
+        &credential(),
+        super::Limits::default().channels,
+    )
+    .unwrap();
     slots
 }
 #[cfg(test)]

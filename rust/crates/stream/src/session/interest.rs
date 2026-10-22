@@ -96,7 +96,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             subscription.kind,
             Some(Kind::Children(_) | Kind::FsPublications(_))
         );
-        let mut binding = None;
+        let binding;
         let terminal = None;
         let (latest, source, revalidate) = match subscription.kind {
             Some(Kind::Follow(follow)) => {

@@ -58,12 +58,9 @@ impl Fixture {
     }
     fn client(&self) -> Result<grpc::Client, Box<dyn std::error::Error + Send + Sync>> {
         let client = match &self.tls_client {
-            Some(client) => Ok(client.with_credential("fixture")?),
-            None => Ok(grpc::Client::from_channel(
-                self._channel.clone(),
-                "Bearer fixture".parse()?,
-            )),
-        }?;
+            Some(client) => client.with_credential("fixture")?,
+            None => grpc::Client::from_channel(self._channel.clone(), "Bearer fixture".parse()?),
+        };
         client
             .session_client()?
             .register_credential(0, crate::session::testing::credential())?;
