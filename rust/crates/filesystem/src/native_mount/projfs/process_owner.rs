@@ -27,7 +27,8 @@ fn creation_time(handle: HANDLE) -> std::io::Result<u64> {
     let mut kernel = FILETIME::default();
     let mut user = FILETIME::default();
     // SAFETY: the handle is held by the caller; all four output pointers are live.
-    unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) }?;
+    unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) }
+        .map_err(|error| std::io::Error::from_raw_os_error(error.code().0 & 0xffff))?;
     Ok(u64::from(creation.dwLowDateTime) | (u64::from(creation.dwHighDateTime) << 32))
 }
 
@@ -64,7 +65,7 @@ pub(in crate::native_mount) fn require_dead_process_owner(
             handle: unsafe { OwnedHandle::from_raw_handle(handle.0) },
             close,
         })
-        .map_err(std::io::Error::from)
+        .map_err(|error| std::io::Error::from_raw_os_error(error.code().0 & 0xffff))
     });
     let handle = match opened {
         Ok(handle) => handle,

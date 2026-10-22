@@ -409,6 +409,16 @@ fn a_volume_mismatched_receipt_cannot_authorize_an_unchanged_root()
 // A provider can relinquish its OS lock while its process still exists. The
 // durable incarnation must independently deny recovery in that state.
 #[test]
+fn an_absent_pid_is_proven_dead_from_the_native_error_code()
+-> Result<(), Box<dyn std::error::Error>> {
+    let work = setup_work()?;
+    // A nonzero PID that does not name a Windows process. Keep the actual
+    // OpenProcess boundary: HRESULT-as-io conversion used to hide error 87.
+    super::require_dead_process_owner(u32::MAX, 1, &work)?;
+    Ok(())
+}
+
+#[test]
 fn live_process_is_refused_even_without_a_provider_lock() -> Result<(), Box<dyn std::error::Error>>
 {
     custody_control(false, false, false, false)
