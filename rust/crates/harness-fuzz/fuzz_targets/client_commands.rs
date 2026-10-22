@@ -1,4 +1,6 @@
 #![no_main]
+#[cfg(test)]
+use acyclic_harness::{AgentId, conversation, resources};
 
 use acyclic_harness::{
     Error, OperationId, Result,

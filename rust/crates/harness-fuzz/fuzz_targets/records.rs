@@ -1,4 +1,6 @@
 #![no_main]
+#[cfg(test)]
+use acyclic_harness::{conversation, resources};
 
 use acyclic_harness::{
     AgentId, OperationId, TaskId, conversation::VolumeRef, tool::files::*, workflow,
