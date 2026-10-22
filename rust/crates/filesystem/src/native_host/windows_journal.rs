@@ -225,7 +225,9 @@ fn open_windows_named_with_options<W: NativeHostWork>(
             "host root is not a real directory",
         )
         .into()),
-        None if disposition == nt::FILE_CREATE => Err(io::ErrorKind::AlreadyExists.into()),
+        None if disposition == nt::FILE_CREATE => {
+            Err(io::Error::from(io::ErrorKind::AlreadyExists).into())
+        }
         None => Err(W::invalid_request()),
     }
 }
