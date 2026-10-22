@@ -461,3 +461,121 @@ fn a_cancelled_uncustodied_tree_leaves_its_escaped_descendant() {
     escaped.kill();
     assert!(survived, "the oracle cannot observe an escaped descendant");
 }
+
+const ANCHOR_MODE: &str = "ACYCLIC_CUSTODY_ANCHOR_MODE";
+
+/// A stand-in warden: holds a record lock until exit, forks a child, and
+/// publishes the child's PID. "anchor" forks the warden's group anchor;
+/// "paused" forks a child that keeps every inherited descriptor and only
+/// sleeps.
+#[cfg(target_os = "linux")]
+#[test]
+fn anchor_parent_helper() {
+    let Ok(mode) = std::env::var(ANCHOR_MODE) else {
+        return;
+    };
+    let root = PathBuf::from(std::env::var_os(ROOT).expect("helper root"));
+    let record = fs::File::create(root.join("record")).expect("record");
+    crate::FileLock::try_hold_until_exit(record, crate::FileLockMode::Exclusive)
+        .expect("record lock");
+    let child = if mode == "anchor" {
+        super::warden::spawn_anchor().expect("anchor")
+    } else {
+        // SAFETY: the child only sleeps, which is async-signal-safe.
+        match unsafe { libc::fork() } {
+            0 => loop {
+                // SAFETY: sleeping until a signal.
+                unsafe { libc::pause() };
+            },
+            pid => pid,
+        }
+    };
+    assert!(child > 0, "fork: {}", std::io::Error::last_os_error());
+    fs::write(root.join("child.tmp"), child.to_string()).expect("child pid");
+    fs::rename(root.join("child.tmp"), root.join("child")).expect("child pid");
+    loop {
+        thread::park();
+    }
+}
+
+/// Kills a stand-in warden that forked a child in `mode`, then reports
+/// whether the record lock was free once the child was gone or, for a
+/// child that outlives the warden, while it still lives.
+#[cfg(target_os = "linux")]
+fn record_free_after_killed_parent(mode: &str) -> bool {
+    let root = tempfile::tempdir().expect("root");
+    let mut parent = Command::new(std::env::current_exe().expect("test executable"))
+        .args([
+            "--exact",
+            "process_tree::custody_tests::anchor_parent_helper",
+            "--nocapture",
+        ])
+        .env(ANCHOR_MODE, mode)
+        .env(ROOT, root.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("helper");
+    let child = published_child(root.path(), &mut parent);
+    let watch = Watch::new(child).expect("running child");
+    parent.kill().expect("kill helper");
+    parent.wait().expect("reap helper");
+    // An anchor exits with its parent; a paused child never does, so only
+    // the anchor is awaited, and only a failure meets the bound.
+    let bound = if mode == "anchor" { 10_000 } else { 0 };
+    let mut ready = libc::pollfd {
+        fd: std::os::fd::AsRawFd::as_raw_fd(&watch.fd),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: one initialized pollfd.
+    let exited = unsafe { libc::poll(&raw mut ready, 1, bound) } == 1;
+    let record = fs::File::open(root.path().join("record")).expect("record");
+    let free = match crate::FileLock::try_acquire(record, crate::FileLockMode::Exclusive) {
+        Ok(_lock) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => false,
+        Err(error) => panic!("probe: {error}"),
+    };
+    watch.kill();
+    assert_eq!(exited, free, "the lock outlived its last holder");
+    free
+}
+
+#[cfg(target_os = "linux")]
+fn published_child(root: &Path, parent: &mut std::process::Child) -> u32 {
+    while !root.join("child").exists() {
+        assert!(
+            parent.try_wait().expect("helper").is_none(),
+            "helper exited early"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    fs::read_to_string(root.join("child"))
+        .expect("child pid")
+        .trim()
+        .parse()
+        .expect("numeric pid")
+}
+
+/// A warden killed while its group anchor lives leaves no holder of its
+/// record's lock: the anchor holds none of its descriptors and exits with it.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_anchor_never_outlives_or_holds_for_its_killed_warden() {
+    assert!(
+        record_free_after_killed_parent("anchor"),
+        "a killed warden's anchor kept its record locked"
+    );
+}
+
+/// Negative control: a child that keeps the inherited descriptors and only
+/// sleeps holds the record locked after its parent is killed.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_paused_child_keeps_its_killed_parents_record_locked() {
+    assert!(
+        !record_free_after_killed_parent("paused"),
+        "the oracle cannot observe a lock kept by a surviving child"
+    );
+}

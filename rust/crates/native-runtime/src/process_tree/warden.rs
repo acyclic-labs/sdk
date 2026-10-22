@@ -296,28 +296,70 @@ fn admitted_by_warden(admission: c_int) -> io::Result<()> {
     }
 }
 
+/// Forks the anchor, a child that only waits, and returns its PID.
+pub(super) fn spawn_anchor() -> io::Result<pid_t> {
+    // SAFETY: getpid has no preconditions.
+    let warden = unsafe { libc::getpid() };
+    // SAFETY: fork; the child makes only async-signal-safe calls.
+    let anchor = unsafe { libc::fork() };
+    if anchor == 0 {
+        anchor_until_warden_exits(warden);
+    }
+    if anchor < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(anchor)
+}
+
+/// In the anchor: holds none of the warden's descriptors, so neither the
+/// record's lock nor the program's admission outlives the warden, and exits
+/// when the warden does, if the warden's SIGKILL has not come first.
+fn anchor_until_warden_exits(warden: pid_t) -> ! {
+    // SAFETY: blocking every catchable signal; getpid has no preconditions.
+    let anchor = unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigfillset(&raw mut set);
+        libc::sigprocmask(libc::SIG_SETMASK, &raw const set, std::ptr::null_mut());
+        libc::getpid()
+    };
+    close_except([-1; 3], anchor);
+    // The watch names the warden only while it is still the parent.
+    if let Ok(watch) = owner_watch(warden) {
+        // SAFETY: getppid has no preconditions.
+        if unsafe { libc::getppid() } == warden {
+            await_watch(watch);
+        }
+    }
+    // SAFETY: immediate exit without running host destructors.
+    unsafe { libc::_exit(0) }
+}
+
+/// Blocks until the process an `owner_watch` names has exited.
+#[cfg(target_os = "linux")]
+fn await_watch(watch: c_int) {
+    let mut ready = libc::pollfd {
+        fd: watch,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: one initialized pollfd; no timeout.
+    while unsafe { libc::poll(&raw mut ready, 1, -1) } < 0
+        && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
+    {}
+}
+
+/// Blocks until the process an `owner_watch` names has exited.
+#[cfg(target_vendor = "apple")]
+fn await_watch(watch: c_int) {
+    let _ = next_exit(watch);
+}
+
 /// Moves the warden out of the tree's process group into a group of its
 /// own, so a kill of the tree's group never reaches the warden, while the
 /// warden's live PID keeps the tree's group ID from naming any other group.
 fn leave_group() -> io::Result<()> {
     // A new group needs a leader to name it: a short-lived child.
-    // SAFETY: fork in the single-threaded warden; the child only sleeps.
-    let anchor = unsafe { libc::fork() };
-    if anchor == 0 {
-        // SAFETY: blocking every catchable signal, then sleeping until the
-        // warden's SIGKILL.
-        unsafe {
-            let mut set: libc::sigset_t = std::mem::zeroed();
-            libc::sigfillset(&raw mut set);
-            libc::sigprocmask(libc::SIG_SETMASK, &raw const set, std::ptr::null_mut());
-            loop {
-                libc::pause();
-            }
-        }
-    }
-    if anchor < 0 {
-        return Err(io::Error::last_os_error());
-    }
+    let anchor = spawn_anchor()?;
     // SAFETY: the anchor is this warden's own unexeced child in its session,
     // and the warden then joins that group in the same session.
     let moved = if unsafe { libc::setpgid(anchor, anchor) == 0 && libc::setpgid(0, anchor) == 0 } {
