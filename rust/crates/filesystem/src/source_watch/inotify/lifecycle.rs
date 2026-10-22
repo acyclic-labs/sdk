@@ -49,9 +49,10 @@ impl NativeSourceWatch {
                 this: this.clone(),
                 inbox: Mutex::new(hub::Inbox::default()),
                 retired: Mutex::new(false),
+                retiring: AtomicBool::new(false),
                 ancestors: Mutex::new(Vec::new()),
                 retained_variable_bytes: AtomicU64::new(0),
-                reading: Mutex::new(RawReads::default()),
+                reading: Reading::default(),
                 reading_changed: Condvar::new(),
                 watches: Mutex::new(Vec::new()),
                 stopping: AtomicBool::new(false),
@@ -68,10 +69,7 @@ impl NativeSourceWatch {
             control_transferred = true;
             // Background delivery waits for this guard: no routed record is
             // consumed before this watch's registrations are recorded.
-            let startup_reading = initialized
-                .reading
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let startup_reading = initialized.reading();
             work.started_io(READ)?;
             hub.subscribe(initialized)?;
             subscribed = true;
@@ -208,6 +206,7 @@ impl NativeSourceWatch {
                         .retired
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner) = true;
+                    shared.retiring.store(true, Ordering::Release);
                     cleaned = cleaned.and(shared.clear_measured(work));
                     shared.cancel_cleanup(work);
                 }
@@ -385,7 +384,14 @@ impl NativeSourceWatch {
             }
             return result;
         }
-        let reading = stop_custody(&self.shared.reading, wait)?;
+        let reading = match wait {
+            Some(wait) if wait.is_cancelled() => return Err(DemandError::Cancelled),
+            Some(_) => self
+                .shared
+                .try_reading()
+                .ok_or(DemandError::WorkerUnavailable)?,
+            None => self.shared.reading(),
+        };
         let watches = stop_custody(&self.shared.watches, wait)?;
         let ancestors = stop_custody(&self.shared.ancestors, wait)?;
         let records = reading
@@ -488,10 +494,7 @@ impl NativeSourceWatch {
 
     #[cfg(test)]
     pub(crate) fn paused(&self) -> impl Sized + '_ {
-        self.shared
-            .reading
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.shared.reading()
     }
 }
 
@@ -545,14 +548,30 @@ impl Shared {
             return;
         }
         *retired = true;
-        drop(self.reading.lock().unwrap_or_else(PoisonError::into_inner));
+        self.retiring.store(true, Ordering::Release);
+        let mut reading = self.reading();
         if self.delivery.original.is_some() {
-            self.finish_native_reader();
+            self.finish_native_reader_locked(&mut reading);
         }
     }
 
-    pub(super) fn is_retired(&self) -> bool {
-        *self.retired.lock().unwrap_or_else(PoisonError::into_inner)
+    /// [`Self::retire`] from a service pass that holds the cursor, so no
+    /// delivery is in flight. It never waits: a retirer already running
+    /// waits for this cursor and completes retirement itself.
+    pub(super) fn retire_in_service(&self, mut reading: ReadingGuard<'_>) {
+        let mut retired = match self.retired.try_lock() {
+            Ok(retired) => retired,
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return,
+        };
+        if *retired {
+            return;
+        }
+        *retired = true;
+        self.retiring.store(true, Ordering::Release);
+        if self.delivery.original.is_some() {
+            self.finish_native_reader_locked(&mut reading);
+        }
     }
 
     /// Schedules a service pass when routed records wait unscheduled.
@@ -574,10 +593,10 @@ impl Shared {
         }
     }
 
-    pub(super) fn finish_native_reader(&self) {
+    fn finish_native_reader_locked(&self, reading: &mut RawReads) {
         self.stopping.store(true, Ordering::Release);
         let mut work = self.delivery.callback_work();
-        let result = self.clear_measured(&mut work);
+        let result = self.clear_measured_locked(reading, &mut work);
         if let Err(error) = result {
             self.delivery.failed_with_work(error, &mut work);
         }

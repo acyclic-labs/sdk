@@ -8,31 +8,36 @@ impl Shared {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .begin_service();
-        if self.is_retired() {
+        if self.retiring.load(Ordering::Acquire) {
             return;
         }
+        // Never wait for the cursor: its holder serves this pass on release.
+        let Some(mut reading) = self.service_reading() else {
+            return;
+        };
         if self.stopping.load(Ordering::Acquire) {
             // A controller that could not stop leaves retirement to delivery.
             if self.delivery.original.is_some() && !self.controller_alive.load(Ordering::Acquire) {
-                self.retire();
+                self.retire_in_service(reading);
             }
             return;
         }
-        if self
-            .reading
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .blocked
-        {
+        if reading.blocked {
             // The fence that unblocks delivery reschedules waiting records.
             return;
         }
         #[cfg(test)]
         self.polling.store(false, Ordering::Release);
         let mut work = self.delivery.callback_work();
+        let started = std::time::Instant::now();
         let delivered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             work.started_io(READ)?;
-            self.read_events_and_deliver(std::time::Duration::MAX, &mut work)
+            self.read_events_and_deliver_locked(
+                &mut reading,
+                started,
+                std::time::Duration::MAX,
+                &mut work,
+            )
         }));
         #[cfg(test)]
         self.polling.store(true, Ordering::Release);
@@ -40,11 +45,11 @@ impl Shared {
             Ok(Ok(_)) => {}
             Ok(Err(error)) => {
                 self.delivery.failed_with_work(error, &mut work);
-                self.retire();
+                self.retire_in_service(reading);
             }
             Err(_) => {
                 self.delivery.exact.store(false, Ordering::Release);
-                self.retire();
+                self.retire_in_service(reading);
             }
         }
     }
@@ -100,10 +105,6 @@ impl Shared {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "One locked event drain retains its cursor, accounting and failure state together."
-    )]
     pub(super) fn read_events_and_deliver<W: SourceDemandReadWork>(
         &self,
         timeout: std::time::Duration,
@@ -114,11 +115,29 @@ impl Shared {
             return Ok(false);
         }
         let started = std::time::Instant::now();
-        let mut reading = self.reading.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut reading = self.reading();
+        self.read_events_and_deliver_locked(&mut reading, started, timeout, work)
+    }
+
+    /// [`Self::read_events_and_deliver`] under a held cursor.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "One locked event drain retains its cursor, accounting and failure state together."
+    )]
+    fn read_events_and_deliver_locked<W: SourceDemandReadWork>(
+        &self,
+        reading: &mut RawReads,
+        started: std::time::Instant,
+        timeout: std::time::Duration,
+        work: &mut W,
+    ) -> Result<bool, DemandError> {
+        work.check()?;
+        if self.delivery.original.is_some() && !self.delivery.is_exact() {
+            return Ok(false);
+        }
         if self.stopping.load(Ordering::Acquire) {
             return Ok(false);
         }
-        let reading = &mut *reading;
         let result = (|| {
             loop {
                 work.check()?;

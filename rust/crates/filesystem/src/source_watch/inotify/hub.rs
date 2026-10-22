@@ -9,6 +9,9 @@
 //! consumes its inbox exactly as it consumed its own descriptor, so ordering,
 //! overflow and fence semantics are unchanged: a fence first drains the shared
 //! kernel queue through the router, then consumes its own inbox.
+//! A service pass never waits for a watch's read cursor (see `Reading`):
+//! with the pool shared, a pass parked behind one watch's fence or pause
+//! would stall delivery to every watch in the process.
 //!
 //! Routing work is proportional to the interested subscribers, never to every
 //! watch: a watch registers an ancestor only for the one child name on the way
@@ -30,7 +33,7 @@ use std::sync::{OnceLock, Weak};
 /// Records a watch may hold undelivered before it reports lost changes.
 pub(super) const INBOX_BYTES: usize = READ_BUFFER_BYTES;
 /// Threads delivering inbox records to watch sinks.
-const SERVICE_THREADS: usize = 2;
+pub(super) const SERVICE_THREADS: usize = 2;
 /// Records that concern a directory itself rather than one named child.
 const SELF_RECORDS: u32 =
     libc::IN_IGNORED | libc::IN_DELETE_SELF | libc::IN_MOVE_SELF | libc::IN_UNMOUNT;
@@ -615,6 +618,12 @@ impl Inbox {
     #[cfg(test)]
     pub(super) fn pending(&self) -> (usize, bool) {
         (self.bytes.len(), self.overflowed)
+    }
+
+    /// Whether a service pass is scheduled and has not yet started.
+    #[cfg(test)]
+    pub(super) fn scheduled(&self) -> bool {
+        self.scheduled
     }
 
     /// Records that a service pass started: later records schedule again.

@@ -220,7 +220,15 @@ impl Shared {
         &self,
         work: &mut W,
     ) -> Result<(), DemandError> {
-        let mut reading = self.reading.lock().unwrap_or_else(PoisonError::into_inner);
+        self.clear_measured_locked(&mut self.reading(), work)
+    }
+
+    /// [`Self::clear_measured`] under a held cursor.
+    pub(super) fn clear_measured_locked<W: SourceDemandReadWork>(
+        &self,
+        reading: &mut RawReads,
+        work: &mut W,
+    ) -> Result<(), DemandError> {
         let mut watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
         let mut ancestors = self
             .ancestors
