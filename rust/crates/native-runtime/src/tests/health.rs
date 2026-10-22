@@ -210,18 +210,20 @@ fn concurrent_final_owner_drops_unregister_health() -> io::Result<()> {
     Ok(())
 }
 
-// Negative control: an owner whose release never runs (leaked here, as a
-// bare `Arc` owner would be uncounted) keeps the row, and the check used
-// above sees it.
+// Negative control: while an owner's release has not run, the check used
+// above sees its row. The owner is held, not leaked, so the process-wide
+// registry is left clean for later tests once it drops.
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 #[test]
-fn owner_that_never_releases_leaves_its_row() -> io::Result<()> {
+fn unreleased_owner_keeps_its_row() -> io::Result<()> {
     initialize_native_io_services()?;
     let temporary = tempfile::NamedTempFile::new()?;
     let file = temporary.reopen()?;
     let native = NativeFile::from_file(temporary.reopen()?, None).map_err(|(error, _)| error)?;
-    std::mem::forget(native.health.clone());
+    let unreleased = native.health.clone();
     drop(native);
-    assert!(registered(&file)?, "a leaked owner's row was removed");
+    assert!(registered(&file)?, "an unreleased owner's row was removed");
+    drop(unreleased);
+    assert!(!registered(&file)?, "the released owner left its row");
     Ok(())
 }
