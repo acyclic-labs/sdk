@@ -43,8 +43,7 @@ fn directory() -> Result<&'static Path, NativeMountError> {
 
 // Ordinary control-path queries run before any bounded native invocation.
 pub(super) fn path() -> Result<PathBuf, NativeMountError> {
-    #[cfg(test)]
-    #[cfg(all(acyclic_fs_native_loom, target_os = "linux"))]
+    #[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
     if let Some(kernel) = super::disconnected::kernel::current()
         && let Some(directory) = kernel.registry_directory()
     {
@@ -60,8 +59,7 @@ pub(super) fn open<W: crate::native_host::NativeHostWork>(
 where
     NativeMountError: From<W::Error>,
 {
-    #[cfg(test)]
-    #[cfg(all(acyclic_fs_native_loom, target_os = "linux"))]
+    #[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
     if let Some(kernel) = super::disconnected::kernel::current()
         && let Some(directory) = kernel.registry_directory()
     {

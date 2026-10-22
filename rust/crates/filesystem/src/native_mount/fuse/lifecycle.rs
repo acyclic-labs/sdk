@@ -203,8 +203,7 @@ pub(super) fn fuse_recovery_stat(
 ) -> Result<rustix::fs::Stat, NativeTreeMaterializationError> {
     loop {
         work.charge(ReadOperations.delta(1))?;
-        #[cfg(test)]
-        #[cfg(acyclic_fs_native_loom)]
+        #[cfg(all(test, acyclic_fs_native_loom))]
         if let Some(kernel) = crate::native_mount::disconnected::kernel::current() {
             return Ok(kernel.helper_stat());
         }
@@ -216,8 +215,7 @@ pub(super) fn fuse_recovery_stat(
 }
 
 fn pinned_umount(path: &CStr) -> std::io::Result<()> {
-    #[cfg(test)]
-    #[cfg(acyclic_fs_native_loom)]
+    #[cfg(all(test, acyclic_fs_native_loom))]
     if crate::native_mount::disconnected::kernel::current().is_some() {
         // Force the unprivileged helper path, whose fence must span helper exit.
         return Err(std::io::Error::from_raw_os_error(libc::EPERM));

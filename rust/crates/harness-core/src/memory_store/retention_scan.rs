@@ -2,12 +2,10 @@
 // also omits its observed invocation. Production builds contain only the call.
 macro_rules! operation {
     ($phase:ident, $delta:expr, $call:expr) => {{
-        #[cfg(test)]
-        #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+        #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
         crate::accounting_trace::before(crate::accounting_trace::Phase::$phase, &$delta);
         let result = $call;
-        #[cfg(test)]
-        #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+        #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
         crate::accounting_trace::after(crate::accounting_trace::Phase::$phase, &$delta, &result);
         result
     }};

@@ -110,8 +110,7 @@ impl NativeResourceAllowance {
         delta: WorkCounters,
         bytes: u64,
     ) -> Result<(), DemandError> {
-        #[cfg(test)]
-        #[cfg(not(acyclic_fs_loom))]
+        #[cfg(all(test, not(acyclic_fs_loom)))]
         if super::views::tests::skip_ancestor_check(self) {
             return Ok(());
         }

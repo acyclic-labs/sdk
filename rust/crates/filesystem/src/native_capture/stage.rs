@@ -63,8 +63,7 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     let mut inline = (metadata.len() <= crate::kernel::MAXIMUM_INLINE_FILE_BYTES as u64)
         .then_some([0; crate::kernel::MAXIMUM_INLINE_FILE_BYTES]);
     let skip_import = ranges.as_ref().is_some_and(Vec::is_empty);
-    #[cfg(test)]
-    #[cfg(feature = "memory")]
+    #[cfg(all(test, feature = "memory"))]
     let skip_import = super::empty_stage_tests::after_ranges(skip_import);
     if skip_import {
         let staged = capture_vec(0, meter)?;
@@ -79,8 +78,7 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         });
     }
     let native = native_positional_file(file, meter)?;
-    #[cfg(test)]
-    #[cfg(all(feature = "memory", any(windows, target_os = "linux")))]
+    #[cfg(all(test, feature = "memory", any(windows, target_os = "linux")))]
     let native = super::owner_allocation_tests::owner(native, meter);
     #[cfg(windows)]
     let ranges = match ranges {
@@ -139,8 +137,7 @@ pub(super) fn finish_regular_capture(
     file: &std::fs::File,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
-    #[cfg(test)]
-    #[cfg(feature = "memory")]
+    #[cfg(all(test, feature = "memory"))]
     if super::empty_stage_tests::omit_finish() {
         return Ok(());
     }

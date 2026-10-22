@@ -98,8 +98,7 @@ async fn retain_inheritance<P: StreamProvider + ?Sized>(
     Ok(value)
 }
 fn require_parent(retained: &Value, expected: Option<TaskId>) -> Result<()> {
-    #[cfg(test)]
-    #[cfg(acyclic_harness_loom)]
+    #[cfg(all(test, acyclic_harness_loom))]
     if model::broken_parent() {
         return Ok(());
     }
@@ -131,8 +130,7 @@ async fn prepare<P: StreamProvider + ?Sized>(
     // The owner is authoritative even when a legacy/crashed admission has no
     // inheritance files. Reject its changed parent before any cache publication.
     let admitted = admission.await?;
-    #[cfg(test)]
-    #[cfg(acyclic_harness_loom)]
+    #[cfg(all(test, acyclic_harness_loom))]
     let admitted = if model::unchecked_admission() {
         None
     } else {
@@ -397,8 +395,7 @@ impl LocalHarness {
             self.limits.file_bytes,
         )
         .await?;
-        #[cfg(test)]
-        #[cfg(not(acyclic_harness_loom))]
+        #[cfg(all(test, not(acyclic_harness_loom)))]
         tests::compaction_race::after_capture(task).await?;
         if let Some(mut selected) = selected {
             if value["model"].is_null() {

@@ -30,8 +30,7 @@ pub(crate) fn endpoint(provider: &ResolvedModel) -> Result<String> {
         Adapter::Chat => "chat/completions".into(),
         Adapter::Gemini => {
             let name = &provider.model.name;
-            #[cfg(test)]
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(test, not(target_arch = "wasm32")))]
             let name = if crate::tests::catalog_identity_tests::SUBSTITUTE_WIRE_MODEL
                 .with(std::cell::Cell::get)
             {
@@ -190,8 +189,7 @@ pub(crate) fn body_named<'a>(
         .as_object_mut()
         .ok_or_else(|| invalid("model options must be an object"))?;
     let model = request.model.name.as_str();
-    #[cfg(test)]
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     let model =
         if crate::tests::catalog_identity_tests::SUBSTITUTE_WIRE_MODEL.with(std::cell::Cell::get) {
             "unselected-model"

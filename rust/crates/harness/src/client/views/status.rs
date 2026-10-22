@@ -102,8 +102,7 @@ impl Agents {
 
     pub(super) fn retire(&mut self, agent: &StreamPath) {
         if let Some(retired) = self.entries.remove(agent) {
-            #[cfg(test)]
-            #[cfg(not(acyclic_harness_loom))]
+            #[cfg(all(test, not(acyclic_harness_loom)))]
             if LEAK.with(std::cell::Cell::get) {
                 return;
             }
@@ -204,8 +203,7 @@ impl Agents {
             statuses: self,
             previous: Some(previous),
         };
-        #[cfg(test)]
-        #[cfg(not(acyclic_harness_loom))]
+        #[cfg(all(test, not(acyclic_harness_loom)))]
         if ABANDON.with(std::cell::Cell::get) {
             return Err(Error::Invalid("abandoned status reservation".into()));
         }
@@ -266,8 +264,7 @@ impl Reservation<'_> {
 
 impl Drop for Reservation<'_> {
     fn drop(&mut self) {
-        #[cfg(test)]
-        #[cfg(not(acyclic_harness_loom))]
+        #[cfg(all(test, not(acyclic_harness_loom)))]
         if LEAK.with(std::cell::Cell::get) {
             return;
         }

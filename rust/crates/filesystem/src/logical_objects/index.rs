@@ -2,8 +2,7 @@ use super::*;
 use std::{alloc::Layout, collections::hash_map::RandomState, hash::BuildHasher};
 
 pub(super) fn hash_state() -> RandomState {
-    #[cfg(test)]
-    #[cfg(feature = "memory")]
+    #[cfg(all(test, feature = "memory"))]
     {
         // Independent differential fixtures use identical hash keys, never
         // shared table contents, so their exact probe receipts are comparable.

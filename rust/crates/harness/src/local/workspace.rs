@@ -61,11 +61,9 @@ pub struct LocalWorkspace {
     pub(super) state: StateArc<AsyncMutex<super::checkout_tools::State>>,
     pub(super) mounts: Arc<Mounts>,
     pub(super) context_line: String,
-    #[cfg(test)]
-    #[cfg(not(acyclic_harness_loom))]
+    #[cfg(all(test, not(acyclic_harness_loom)))]
     pub(super) selection_reads: std::sync::atomic::AtomicUsize,
-    #[cfg(test)]
-    #[cfg(not(acyclic_harness_loom))]
+    #[cfg(all(test, not(acyclic_harness_loom)))]
     pub(super) mount_advances: std::sync::atomic::AtomicUsize,
 }
 
@@ -196,8 +194,7 @@ impl LocalWorkspace {
         acyclic_fs::WorkspaceId,
         Option<checkout_tools::reconciliation::Pending>,
     )> {
-        #[cfg(test)]
-        #[cfg(not(acyclic_harness_loom))]
+        #[cfg(all(test, not(acyclic_harness_loom)))]
         self.selection_reads
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root = self.view.workspace().id();
@@ -376,11 +373,9 @@ pub(super) async fn open(
         Arc::clone(&mounts),
     )));
     Ok(LocalWorkspace {
-        #[cfg(test)]
-        #[cfg(not(acyclic_harness_loom))]
+        #[cfg(all(test, not(acyclic_harness_loom)))]
         selection_reads: std::sync::atomic::AtomicUsize::new(0),
-        #[cfg(test)]
-        #[cfg(not(acyclic_harness_loom))]
+        #[cfg(all(test, not(acyclic_harness_loom)))]
         mount_advances: std::sync::atomic::AtomicUsize::new(0),
         path,
         fresh,

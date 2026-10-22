@@ -1,35 +1,5 @@
 use super::*;
 
-#[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
-mod tests {
-    use super::*;
-    use proptest::prelude::*;
-
-    // Property: sampling removes all fresh tool grants, preserves every other
-    // grant and leaves the exact manifest catalog/admitted revisions intact.
-    proptest! {
-        #[test]
-        fn sampling_attenuation_keeps_the_pinned_catalog(grants in prop::collection::vec(
-            prop_oneof!["tool:call:[a-z]{0,16}", "other:[a-z]{0,16}", Just("model:generate".into()), Just("tool:callback".into())], 0..16,
-        )) {
-            let mut tools = ToolRegistry::default();
-            tools.register((crate::tool::files::write()?, None), &mut None, None)?;
-            let before = tools.definitions(None)?;
-            let expected = crate::Capabilities::new(grants.iter().filter(|grant| !grant.starts_with("tool:call:")).cloned());
-            let executor = StockExecutor::new(
-                Model::new("test".into(), "sampling".into(), "1".into(), Value::Null)?,
-                Arc::new(crate::test_support::ScriptedModelProvider::new([])),
-                ContextPipeline::default(), tools,
-            ).with_tool_authority(RuntimeScope::new(crate::Capabilities::new(grants), Limits::default())?, None)?
-                .without_tool_authority();
-            prop_assert_eq!(executor.tool_scope.grants(), &expected);
-            prop_assert_eq!(executor.tools.definitions(None)?, before);
-            prop_assert!(stock_tool_definitions(&executor.tools, &executor.tool_scope, None)?.is_empty());
-        }
-    }
-}
-
 impl StockExecutor {
     #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn with_hooks(mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) -> Self {
@@ -301,5 +271,35 @@ impl Executor for StockExecutor {
             )
             .await
         })
+    }
+}
+
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // Property: sampling removes all fresh tool grants, preserves every other
+    // grant and leaves the exact manifest catalog/admitted revisions intact.
+    proptest! {
+        #[test]
+        fn sampling_attenuation_keeps_the_pinned_catalog(grants in prop::collection::vec(
+            prop_oneof!["tool:call:[a-z]{0,16}", "other:[a-z]{0,16}", Just("model:generate".into()), Just("tool:callback".into())], 0..16,
+        )) {
+            let mut tools = ToolRegistry::default();
+            tools.register((crate::tool::files::write()?, None), &mut None, None)?;
+            let before = tools.definitions(None)?;
+            let expected = crate::Capabilities::new(grants.iter().filter(|grant| !grant.starts_with("tool:call:")).cloned());
+            let executor = StockExecutor::new(
+                Model::new("test".into(), "sampling".into(), "1".into(), Value::Null)?,
+                Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+                ContextPipeline::default(), tools,
+            ).with_tool_authority(RuntimeScope::new(crate::Capabilities::new(grants), Limits::default())?, None)?
+                .without_tool_authority();
+            prop_assert_eq!(executor.tool_scope.grants(), &expected);
+            prop_assert_eq!(executor.tools.definitions(None)?, before);
+            prop_assert!(stock_tool_definitions(&executor.tools, &executor.tool_scope, None)?.is_empty());
+        }
     }
 }

@@ -131,8 +131,7 @@ impl HostRoot {
         path: &NativePath,
         work: &mut W,
     ) -> Result<HostStat, DemandError> {
-        #[cfg(test)]
-        #[cfg(windows)]
+        #[cfg(all(test, windows))]
         if stat_probe::old() {
             return self.stat_source(path, work);
         }
@@ -180,13 +179,11 @@ impl HostRoot {
         file: &File,
         work: &mut W,
     ) -> Result<HostStat, W::Error> {
-        #[cfg(test)]
-        #[cfg(any(target_os = "linux", windows))]
+        #[cfg(all(test, any(target_os = "linux", windows)))]
         if stat_probe::duplicate() {
             self.stat_file(file, work)?;
         }
-        #[cfg(test)]
-        #[cfg(windows)]
+        #[cfg(all(test, windows))]
         if stat_probe::old() {
             return self.stat_file(file, work);
         }

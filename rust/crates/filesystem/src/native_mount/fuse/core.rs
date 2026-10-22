@@ -73,8 +73,7 @@ impl StateGuard<'_> {
             unreachable!("the guard owns its lock until drop");
         };
         self.core.invalidation.notify_all();
-        #[cfg(test)]
-        #[cfg(acyclic_fs_loom)]
+        #[cfg(all(test, acyclic_fs_loom))]
         invalidation::model_checking::before_waiter_wait();
         self.state = Some(
             condition
@@ -97,8 +96,7 @@ impl Drop for StateGuard<'_> {
         DROPPED_ATTRIBUTES.with_borrow_mut(|dropped| {
             dropped.extend(superseded.iter().map(|(inode, _)| *inode));
         });
-        #[cfg(test)]
-        #[cfg(acyclic_fs_loom)]
+        #[cfg(all(test, acyclic_fs_loom))]
         let notify = !invalidation::model_checking::omit_guard_notification();
         #[cfg(not(all(test, acyclic_fs_loom)))]
         let notify = true;

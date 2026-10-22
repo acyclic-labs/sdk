@@ -6,14 +6,11 @@ pub(crate) struct CompletionState<T> {
     pub(crate) panic: Option<Box<dyn std::any::Any + Send>>,
     pub(crate) waker: Option<Waker>,
     pub(crate) _allocation: Option<ReadAllocation>,
-    #[cfg(test)]
-    #[cfg(acyclic_native_runtime_loom)]
+    #[cfg(all(test, acyclic_native_runtime_loom))]
     pub(crate) broken_wake: bool,
-    #[cfg(test)]
-    #[cfg(acyclic_native_runtime_loom)]
+    #[cfg(all(test, acyclic_native_runtime_loom))]
     pub(crate) broken_accounting: bool,
-    #[cfg(test)]
-    #[cfg(acyclic_native_runtime_loom)]
+    #[cfg(all(test, acyclic_native_runtime_loom))]
     pub(crate) broken_charge: bool,
 }
 
@@ -25,14 +22,11 @@ impl<T> Default for CompletionState<T> {
             panic: None,
             waker: None,
             _allocation: None,
-            #[cfg(test)]
-            #[cfg(acyclic_native_runtime_loom)]
+            #[cfg(all(test, acyclic_native_runtime_loom))]
             broken_wake: false,
-            #[cfg(test)]
-            #[cfg(acyclic_native_runtime_loom)]
+            #[cfg(all(test, acyclic_native_runtime_loom))]
             broken_accounting: false,
-            #[cfg(test)]
-            #[cfg(acyclic_native_runtime_loom)]
+            #[cfg(all(test, acyclic_native_runtime_loom))]
             broken_charge: false,
         }
     }
@@ -42,8 +36,7 @@ impl<T> CompletionState<T> {
     /// Moves the state's charge to the observer, which retires it after
     /// releasing the lock.
     pub(crate) fn take_charge(&mut self) -> Option<ReadAllocation> {
-        #[cfg(test)]
-        #[cfg(acyclic_native_runtime_loom)]
+        #[cfg(all(test, acyclic_native_runtime_loom))]
         if self.broken_charge {
             return None;
         }
@@ -98,14 +91,12 @@ impl<T: Send> TaskTerminal for CompletionMutex<CompletionState<T>> {
         let mut state = self
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        #[cfg(test)]
-        #[cfg(acyclic_native_runtime_loom)]
+        #[cfg(all(test, acyclic_native_runtime_loom))]
         if state.broken_accounting {
             return state.waker.take();
         }
         state.task_pending = false;
-        #[cfg(test)]
-        #[cfg(acyclic_native_runtime_loom)]
+        #[cfg(all(test, acyclic_native_runtime_loom))]
         if state.broken_wake {
             state.waker = None;
         }

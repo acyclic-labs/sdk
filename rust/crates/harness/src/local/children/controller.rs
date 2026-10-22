@@ -109,8 +109,7 @@ impl LocalHarness {
                     &mut generation,
                 )
                 .await?;
-                #[cfg(test)]
-                #[cfg(not(acyclic_harness_loom))]
+                #[cfg(all(test, not(acyclic_harness_loom)))]
                 super::cuts::follow_probe(files.as_ref(), &reference, &mut cursor).await?;
                 let state = desired(&reference, &values)?;
                 let previous = execution(&reference, &values)?;
@@ -296,8 +295,7 @@ impl LocalHarness {
                 {
                     continue;
                 }
-                #[cfg(test)]
-                #[cfg(not(acyclic_harness_loom))]
+                #[cfg(all(test, not(acyclic_harness_loom)))]
                 super::cuts::stop("status", OperationId::from_bytes(child.into_bytes()))?;
                 let (child_files, context) = self.child_files(child, files.as_ref()).await?;
                 let journal = self.runtime.workflow_journal_with_context(&context)?;

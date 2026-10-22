@@ -9,8 +9,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<acyclic_stream::OwnedBytes, WorkspaceError> {
-        #[cfg(test)]
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(test, not(target_arch = "wasm32")))]
         acyclic_test_support::differential::record(("workspace read", maximum_bytes));
         read_selected(
             self,

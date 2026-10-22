@@ -109,8 +109,7 @@ impl Commands<'_> {
                 .as_ref()
                 .is_err_and(|error| stopped(cancellation.is_cancelled(), error))
         {
-            #[cfg(test)]
-            #[cfg(not(acyclic_harness_loom))]
+            #[cfg(all(test, not(acyclic_harness_loom)))]
             if matches!(
                 &result,
                 Err(Error::InteractionRejected(

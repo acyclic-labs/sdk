@@ -103,11 +103,9 @@ struct Shard {
 struct Idle {
     classes: Vec<(usize, Vec<Vec<u8>>)>,
     bytes: usize,
-    #[cfg(test)]
-    #[cfg(acyclic_native_runtime_loom)]
+    #[cfg(all(test, acyclic_native_runtime_loom))]
     broken_accounting: bool,
-    #[cfg(test)]
-    #[cfg(acyclic_native_runtime_loom)]
+    #[cfg(all(test, acyclic_native_runtime_loom))]
     broken_ownership: bool,
 }
 
@@ -115,11 +113,9 @@ impl Idle {
     const EMPTY: Self = Self {
         classes: Vec::new(),
         bytes: 0,
-        #[cfg(test)]
-        #[cfg(acyclic_native_runtime_loom)]
+        #[cfg(all(test, acyclic_native_runtime_loom))]
         broken_accounting: false,
-        #[cfg(test)]
-        #[cfg(acyclic_native_runtime_loom)]
+        #[cfg(all(test, acyclic_native_runtime_loom))]
         broken_ownership: false,
     };
 }
@@ -195,8 +191,7 @@ impl Shard {
                 .iter_mut()
                 .find(|(capacity, _)| *capacity == class)
                 .and_then(|(_, buffers)| buffers.pop());
-            #[cfg(test)]
-            #[cfg(acyclic_native_runtime_loom)]
+            #[cfg(all(test, acyclic_native_runtime_loom))]
             let broken = idle.broken_accounting;
             #[cfg(not(all(test, acyclic_native_runtime_loom)))]
             let broken = false;
@@ -229,8 +224,7 @@ impl Idle {
         if self.bytes + class > POOL_BUDGET / POOL_SHARDS {
             return Some(buffer);
         }
-        #[cfg(test)]
-        #[cfg(acyclic_native_runtime_loom)]
+        #[cfg(all(test, acyclic_native_runtime_loom))]
         if self.broken_ownership {
             return Some(buffer);
         }

@@ -34,8 +34,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                     &child,
                 ));
             }
-            #[cfg(test)]
-            #[cfg(all(acyclic_fs_loom, acyclic_loom))]
+            #[cfg(all(test, acyclic_fs_loom, acyclic_loom))]
             let replacement = if super::head_payload_loom_tests::resample_payload() {
                 Some(
                     Box::pin(super::head_payload_loom_tests::resampled_payload(
@@ -46,8 +45,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             } else {
                 None
             };
-            #[cfg(test)]
-            #[cfg(all(acyclic_fs_loom, acyclic_loom))]
+            #[cfg(all(test, acyclic_fs_loom, acyclic_loom))]
             let payload = replacement.as_deref().unwrap_or(&record.value[offset..]);
             #[cfg(not(all(test, acyclic_fs_loom, acyclic_loom)))]
             let payload = &record.value[offset..];

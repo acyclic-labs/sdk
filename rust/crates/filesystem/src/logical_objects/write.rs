@@ -143,8 +143,7 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
         // The existing unique list supplies the seed if promotion is necessary.
         let mut kinds = [0u64; 4];
         let mut index = None;
-        #[cfg(test)]
-        #[cfg(feature = "memory")]
+        #[cfg(all(test, feature = "memory"))]
         if super::tests::eager_index() {
             index = Some(super::index::Index::new(writes.len(), work)?);
         }
@@ -159,8 +158,7 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
             } else {
                 self.validate_write(id, body, work)?;
             }
-            #[cfg(test)]
-            #[cfg(feature = "memory")]
+            #[cfg(all(test, feature = "memory"))]
             super::tests::replay_duplicate_scan(&unique, id, parts, work)?;
             let tag = usize::from(id.kind.canonical_tag());
             let bit = 1u64 << (tag % 64);

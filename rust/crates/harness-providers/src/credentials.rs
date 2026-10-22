@@ -10,8 +10,7 @@ pub struct Credentials {
     pub api_keys: BTreeMap<String, String>,
     #[serde(skip, default = "native_sources")]
     native_sources: bool,
-    #[cfg(test)]
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     #[serde(skip)]
     pub(crate) source: Option<std::sync::Arc<dyn Fn(&str, Source) -> KeyResult + Send + Sync>>,
 }
@@ -41,8 +40,7 @@ pub(crate) enum Source {
     Environment,
     Configuration,
     /// The test double's CODEX_HOME, so tests never discover the user's login.
-    #[cfg(test)]
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     CodexHome,
 }
 
@@ -55,8 +53,7 @@ impl Default for Credentials {
         Self {
             api_keys: BTreeMap::new(),
             native_sources: true,
-            #[cfg(test)]
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(test, not(target_arch = "wasm32")))]
             source: None,
         }
     }
@@ -82,8 +79,7 @@ impl Credentials {
         Self {
             api_keys,
             native_sources: false,
-            #[cfg(test)]
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(test, not(target_arch = "wasm32")))]
             source: None,
         }
     }
@@ -110,8 +106,7 @@ impl Credentials {
     }
 
     fn read(&self, provider: &str, source: Source) -> KeyResult {
-        #[cfg(test)]
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(test, not(target_arch = "wasm32")))]
         if let Some(read) = &self.source {
             return read(provider, source);
         }
@@ -158,8 +153,7 @@ impl Credentials {
                 Ok(None)
             }
             Source::Configuration => Ok(self.api_keys.get(provider).cloned()),
-            #[cfg(test)]
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(test, not(target_arch = "wasm32")))]
             Source::CodexHome => Ok(None),
         }
     }

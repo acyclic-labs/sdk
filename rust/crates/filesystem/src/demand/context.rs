@@ -21,8 +21,7 @@ impl NativeDemandReadMeter {
     }
     #[track_caller]
     pub(crate) fn lock(&self) -> crate::lock_order::MutexGuard<'_, DemandWork> {
-        #[cfg(test)]
-        #[cfg(not(acyclic_fs_loom))]
+        #[cfg(all(test, not(acyclic_fs_loom)))]
         lock_probe::visit(self);
         crate::lock_order::lock::<_, { crate::lock_order::LEAF }>(&self.0).unwrap_or_else(
             |poisoned| {
@@ -95,8 +94,7 @@ impl CaptureTransientCustody {
         self.retained.fetch_add(bytes, Ordering::AcqRel);
     }
     pub(super) fn release(&self, bytes: u64) {
-        #[cfg(test)]
-        #[cfg(acyclic_fs_loom)]
+        #[cfg(all(test, acyclic_fs_loom))]
         if model_checking::broken_release() {
             let current = self.retained.load(Ordering::Acquire);
             self.retained

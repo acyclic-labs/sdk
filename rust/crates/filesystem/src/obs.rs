@@ -183,10 +183,6 @@ mod worker_context_tests {
     use acyclic_grpc_observability::tests::{Capture, Evidence};
 
     struct NotifyClose(mpsc::Sender<()>);
-    #[expect(
-        clippy::expect_used,
-        reason = "test notification invariants must fail immediately"
-    )]
     impl<S> tracing_subscriber::Layer<S> for NotifyClose
     where
         S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
@@ -337,10 +333,6 @@ mod worker_context_tests {
     }
 
     #[cfg(all(feature = "native-mount", target_os = "linux"))]
-    #[expect(
-        clippy::expect_used,
-        reason = "test assertion helper cannot return errors; poisoned evidence must fail the test"
-    )]
     pub(crate) fn assert_filtered_callback_isolation(
         body: impl Fn(&tracing::span::EnteredSpan) -> i32,
     ) {

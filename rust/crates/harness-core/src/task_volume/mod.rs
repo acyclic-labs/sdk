@@ -764,4 +764,3 @@ impl<P: StreamProvider + 'static> TaskVolume<P> {
         TaskVolume::open(provider, self.path.clone()).await
     }
 }
-

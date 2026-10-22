@@ -302,8 +302,7 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &impl KernelCache
                 state.invalidation.retry = false;
                 break key;
             }
-            #[cfg(test)]
-            #[cfg(acyclic_fs_loom)]
+            #[cfg(all(test, acyclic_fs_loom))]
             model_checking::before_invalidator_wait();
             state = core
                 .invalidation

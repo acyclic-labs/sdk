@@ -79,8 +79,7 @@ impl WorkspaceName {
             .allocation
             .absorb(&mut accounting.claim_owned(control, 1)?)?;
         let output = Self(Arc::new((name, owned.allocation)));
-        #[cfg(test)]
-        #[cfg(all(not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
         name_tests::redundant_allocation();
         Ok(output)
     }
@@ -176,8 +175,7 @@ impl WorkspaceId {
             hasher.update(name.as_str().as_bytes());
             let mut bytes = [0_u8; 16];
             bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-            #[cfg(test)]
-            #[cfg(all(acyclic_fs_loom, not(target_arch = "wasm32")))]
+            #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
             model::completed(
                 bytes.len() as u64,
                 (WORKSPACE_ID_DOMAIN.len() + namespace.len() + 8 + name.as_str().len()) as u64,
@@ -254,8 +252,7 @@ fn charged<T>(
     delta: crate::WorkCounters,
     effect: impl FnOnce() -> T,
 ) -> Result<T, FsError> {
-    #[cfg(test)]
-    #[cfg(all(acyclic_fs_loom, not(target_arch = "wasm32")))]
+    #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
     if name_model::check_only() {
         accounting.admit(delta)?;
         let output = effect();

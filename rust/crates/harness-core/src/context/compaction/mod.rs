@@ -34,8 +34,7 @@ impl ThresholdCompaction {
     #[doc(hidden)]
     pub fn for_capacity(capacity: ModelContextCapacity, fixed_tokens: u32) -> Result<Self> {
         capacity.validate()?;
-        #[cfg(test)]
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(test, not(target_arch = "wasm32")))]
         if capacity.output_tokens.is_none()
             && unknown_output_tests::REQUIRE_OUTPUT_BOUND.with(std::cell::Cell::get)
         {
@@ -98,8 +97,7 @@ impl ThresholdCompaction {
         input_tokens: u64,
     ) -> Result<bool> {
         self.validate(capacity, None)?;
-        #[cfg(test)]
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(test, not(target_arch = "wasm32")))]
         if capacity.output_tokens.is_none()
             && unknown_output_tests::IGNORE_CONTEXT_PRESSURE.with(std::cell::Cell::get)
         {

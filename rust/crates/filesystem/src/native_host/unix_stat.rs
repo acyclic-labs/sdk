@@ -50,8 +50,7 @@ pub(super) fn open_unix<W: NativeHostWork>(
         READ
     };
     let result = retry_io(work, delta, || {
-        #[cfg(test)]
-        #[cfg(target_os = "linux")]
+        #[cfg(all(test, target_os = "linux"))]
         stat_probe::event("openat");
         use std::os::fd::FromRawFd as _;
         // SAFETY: callers retain the parent and name; a successful open returns one owned descriptor.
@@ -226,8 +225,7 @@ pub(super) fn fstat<W: NativeHostWork>(
     work: &mut W,
 ) -> Result<libc::stat, W::Error> {
     retry_io(work, READ, || {
-        #[cfg(test)]
-        #[cfg(target_os = "linux")]
+        #[cfg(all(test, target_os = "linux"))]
         stat_probe::fstat_query();
         let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
         // SAFETY: held descriptor, terminated name and complete output remain live.

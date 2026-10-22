@@ -24,8 +24,7 @@ pub(super) fn regular_data_ranges(
     meter: &NativeMaterializationWork,
 ) -> Result<Option<Vec<HostDataRange>>, CaptureError> {
     let dense = dense_attributes(metadata.raw.FileAttributes);
-    #[cfg(test)]
-    #[cfg(feature = "memory")]
+    #[cfg(all(test, feature = "memory"))]
     let dense = dense && !super::windows_dense_tests::force_query();
     if !dense || metadata.len() == 0 {
         return allocated_data_ranges(file, 0, metadata.len(), maximum_ranges, &mut meter.clone())

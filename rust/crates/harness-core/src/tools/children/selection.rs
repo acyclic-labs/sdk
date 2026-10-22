@@ -21,8 +21,7 @@ pub(super) async fn load<P: StreamProvider + ?Sized>(
     key: &FileKey,
     binding: &Value,
 ) -> Result<Option<Value>> {
-    #[cfg(test)]
-    #[cfg(not(acyclic_harness_loom))]
+    #[cfg(all(test, not(acyclic_harness_loom)))]
     if IGNORE.with(std::cell::Cell::get) {
         return Ok(None);
     }
@@ -71,8 +70,7 @@ pub(super) async fn load<P: StreamProvider + ?Sized>(
         )
         .map_err(storage)?;
     }
-    #[cfg(test)]
-    #[cfg(not(acyclic_harness_loom))]
+    #[cfg(all(test, not(acyclic_harness_loom)))]
     if DROP_METADATA.with(std::cell::Cell::get) {
         if let Some(outcome) = result["agents"][0]["result"]["outcome"]["Succeeded"].as_object_mut()
         {
@@ -89,8 +87,7 @@ pub(super) async fn save<P: StreamProvider + ?Sized>(
     result: Value,
     owner: Option<&dyn OwnedTaskMailbox>,
 ) -> Result<()> {
-    #[cfg(test)]
-    #[cfg(not(acyclic_harness_loom))]
+    #[cfg(all(test, not(acyclic_harness_loom)))]
     if IGNORE.with(std::cell::Cell::get) {
         return Ok(());
     }

@@ -14,15 +14,12 @@ pub(crate) struct AdmissionState {
     pub(crate) tail: Weak<CapacityWaiter>,
     pub(crate) waiter_count: usize,
     pub(crate) queued_jobs: usize,
-    #[cfg(test)]
-    #[cfg(acyclic_native_runtime_loom)]
+    #[cfg(all(test, acyclic_native_runtime_loom))]
     pub(crate) broken_wake: bool,
-    #[cfg(test)]
-    #[cfg(acyclic_native_runtime_loom)]
+    #[cfg(all(test, acyclic_native_runtime_loom))]
     pub(crate) broken_accounting: bool,
     /// Leaves a retired waiter's charge on its node, for the Loom control.
-    #[cfg(test)]
-    #[cfg(acyclic_native_runtime_loom)]
+    #[cfg(all(test, acyclic_native_runtime_loom))]
     pub(crate) broken_charge: bool,
 }
 
@@ -46,14 +43,11 @@ impl AdmissionState {
             tail: Weak::new(),
             waiter_count: 0,
             queued_jobs: 0,
-            #[cfg(test)]
-            #[cfg(acyclic_native_runtime_loom)]
+            #[cfg(all(test, acyclic_native_runtime_loom))]
             broken_wake: false,
-            #[cfg(test)]
-            #[cfg(acyclic_native_runtime_loom)]
+            #[cfg(all(test, acyclic_native_runtime_loom))]
             broken_accounting: false,
-            #[cfg(test)]
-            #[cfg(acyclic_native_runtime_loom)]
+            #[cfg(all(test, acyclic_native_runtime_loom))]
             broken_charge: false,
         }
     }
@@ -105,8 +99,7 @@ impl AdmissionState {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        #[cfg(test)]
-        #[cfg(acyclic_native_runtime_loom)]
+        #[cfg(all(test, acyclic_native_runtime_loom))]
         let charge = if self.broken_charge {
             None
         } else {
@@ -315,8 +308,7 @@ pub(crate) fn notify_capacity_released(admission: &Mutex<AdmissionState>) {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         debug_assert_ne!(admission.queued_jobs, 0, "native queue accounting lost");
-        #[cfg(test)]
-        #[cfg(acyclic_native_runtime_loom)]
+        #[cfg(all(test, acyclic_native_runtime_loom))]
         if admission.broken_accounting {
             return;
         }
@@ -326,8 +318,7 @@ pub(crate) fn notify_capacity_released(admission: &Mutex<AdmissionState>) {
         } else {
             usize::from(admission.head.is_some())
         };
-        #[cfg(test)]
-        #[cfg(acyclic_native_runtime_loom)]
+        #[cfg(all(test, acyclic_native_runtime_loom))]
         let count = if admission.broken_wake { 0 } else { count };
         (admission.head.clone(), count)
     };

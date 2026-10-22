@@ -79,8 +79,7 @@ where
             .map_err(storage)?
             .ok_or_else(|| Error::Conflict("acknowledged child input is absent".into()))?;
         deliver(file).await?;
-        #[cfg(test)]
-        #[cfg(not(acyclic_harness_loom))]
+        #[cfg(all(test, not(acyclic_harness_loom)))]
         super::super::cuts::stop("input-sent", OperationId::from_bytes(child.into_bytes()))?;
         delivered += 1;
         if RETAIN {

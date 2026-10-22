@@ -430,8 +430,7 @@ fn insert_value<F: Format, const PREFIX: bool>(
 ) -> Result<(), FsError> {
     let prepared = (|| {
         let compare = |entry: &ValueChange<F::Key, F::Value>| {
-            #[cfg(test)]
-            #[cfg(feature = "memory")]
+            #[cfg(all(test, feature = "memory"))]
             tests::ordered::record_comparison();
             entry.key.cmp(F::key(&value.value))
         };

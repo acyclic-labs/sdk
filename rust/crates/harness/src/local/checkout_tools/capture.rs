@@ -25,8 +25,7 @@ pub(in crate::local) struct Cursor {
     initial: Option<WatchBatch>,
     #[cfg(target_os = "macos")]
     work: acyclic_fs::NativeMaterializationWork,
-    #[cfg(test)]
-    #[cfg(not(acyclic_harness_loom))]
+    #[cfg(all(test, not(acyclic_harness_loom)))]
     injection: Option<tests::Injection>,
 }
 
@@ -67,8 +66,7 @@ impl Cursor {
             initial: None,
             #[cfg(target_os = "macos")]
             work,
-            #[cfg(test)]
-            #[cfg(not(acyclic_harness_loom))]
+            #[cfg(all(test, not(acyclic_harness_loom)))]
             injection: None,
         })
     }

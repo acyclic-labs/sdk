@@ -179,8 +179,7 @@ pub(super) fn append_path_measured(
     limits: crate::model::VolumeLimits,
     meter: &NativeMaterializationWork,
 ) -> Result<NamespacePath, CaptureError> {
-    #[cfg(test)]
-    #[cfg(feature = "memory")]
+    #[cfg(all(test, feature = "memory"))]
     if super::path_error_tests::restore_old_append() {
         return super::path_error_tests::old_append(parent, name, limits, meter);
     }

@@ -206,8 +206,7 @@ pub struct FileRecord {
 
 impl FileRecord {
     pub(crate) fn validate(self) -> Result<(), FileTableError> {
-        #[cfg(test)]
-        #[cfg(all(not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
         decode_probe::validation();
         if self.link_count == 0 || self.metadata.kind != ObjectKind::Metadata {
             return Err(FileTableError::InvalidRecord);
