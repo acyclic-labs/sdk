@@ -4,6 +4,9 @@ Measured on 2026-10-22, comparing source `e9b3a0f92` with the dev/test profile
 and Linux linker change in `80edcecdf`. The compiler was stable Rust 1.98.1.
 Dev and inherited test optimization change from level 1 to level 0; SHA-2 and
 BLAKE3 retain level 3 for executable hashing. Release profiles retain LLVM.
+The measurements used clang with `-fuse-ld=mold` in Cargo rustflags. The final
+configuration passes the same option through a linker script to preserve it
+when qualification sets `RUSTFLAGS`; that routing change is checked separately.
 
 ## Method
 
