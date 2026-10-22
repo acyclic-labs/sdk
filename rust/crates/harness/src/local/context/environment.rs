@@ -11,6 +11,28 @@ const GIT_STATUS_BYTES: u64 = 64 * 1024;
 /// A slow `git status` only drops the summary, never delays the turn further.
 const GIT_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 
+// Git's `rev-parse --local-env-vars`, plus repository-discovery controls.
+// A caller's repository selection must never replace the task binding.
+const REPOSITORY_ENVIRONMENT: &[&str] = &[
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+];
+
 /// Resolves only physical Git facts that still describe the task's bound view.
 pub(super) async fn gather(
     cwd: Option<&Path>,
@@ -29,8 +51,16 @@ pub(super) async fn gather(
 
 /// One-line summary of `git status`, or `None` outside a work tree.
 async fn git_status(cwd: &Path) -> Option<String> {
+    let command = tokio::process::Command::new(which::which("git").ok()?);
+    git_status_from(cwd, command).await
+}
+
+async fn git_status_from(cwd: &Path, mut command: tokio::process::Command) -> Option<String> {
     use tokio::io::AsyncReadExt as _;
-    let mut child = tokio::process::Command::new(which::which("git").ok()?)
+    for name in REPOSITORY_ENVIRONMENT {
+        command.env_remove(name);
+    }
+    let mut child = command
         .current_dir(cwd)
         .args([
             "status",
@@ -72,6 +102,42 @@ async fn git_status(cwd: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn inherited_repository_selection_cannot_replace_the_bound_checkout() {
+        let bound = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let git = which::which("git").unwrap();
+        for (root, branch) in [
+            (bound.path(), "bound-fixture"),
+            (other.path(), "other-fixture"),
+        ] {
+            assert!(
+                std::process::Command::new(&git)
+                    .current_dir(root)
+                    .env("GIT_CONFIG_GLOBAL", root.join("missing-config"))
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
+                    .args(["init", "--quiet", "--template=", "--initial-branch", branch])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        std::fs::write(bound.path().join("bound.txt"), "bound").unwrap();
+        std::fs::write(other.path().join("other.txt"), "other").unwrap();
+        std::fs::write(other.path().join("second.txt"), "other").unwrap();
+        let mut command = tokio::process::Command::new(git);
+        command
+            .env("GIT_DIR", other.path().join(".git"))
+            .env("GIT_WORK_TREE", other.path())
+            .env("GIT_COMMON_DIR", other.path().join(".git"))
+            .env("GIT_INDEX_FILE", other.path().join(".git/index"));
+        assert_eq!(
+            git_status_from(bound.path(), command).await.as_deref(),
+            Some("branch No commits yet on bound-fixture; 1 untracked")
+        );
+    }
+
     #[test]
     fn porcelain_records_summarize_by_state() {
         let porcelain =
