@@ -428,3 +428,25 @@ fn fence_reference_visibility_has_linear_storage() {
         );
     }
 }
+
+#[test]
+fn intraword_openers_preserve_left_flanking() {
+    let mut markdown = Markdown::default();
+    markdown.push("a*b*");
+    markdown.push("*");
+    assert_eq!(markdown.lines(), full_parse("a*b**"));
+    for source in ["a*b**", ".*+b**", "a***b** c**", ".**+b***"] {
+        block_checkpoints::check_all_partitions(source);
+    }
+    for prefix in ["a", ".", "é", " "] {
+        for marker in ["*", "**", "_", "__", "~", "~~"] {
+            for body in ["b", "+b", "b+", "éb"] {
+                for suffix in ["*", "**", "_"] {
+                    block_checkpoints::check_inline_cuts(&[&format!(
+                        "{prefix}{marker}{body}{marker}{suffix}"
+                    )]);
+                }
+            }
+        }
+    }
+}

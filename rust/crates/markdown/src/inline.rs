@@ -25,6 +25,7 @@ impl Mark {
 // delimiter runs inside styled text remain before the mark.
 struct Carry {
     prefix: String,
+    opener: usize,
     kind: Option<TagEnd>,
 }
 
@@ -34,8 +35,41 @@ impl Clone for Carry {
         work::copy(self.prefix.len());
         Self {
             prefix: self.prefix.clone(),
+            opener: self.opener,
             kind: self.kind,
         }
+    }
+}
+
+impl Carry {
+    fn styled(source: &str, start: usize, opening: &str, text: &str, kind: TagEnd) -> Option<Self> {
+        // Flanking and the rule of three depend on the byte before the real
+        // opener. Keep that bounded context separately from the opener offset.
+        let context = if start == 0 {
+            String::new()
+        } else {
+            left_context(source.get(..start)?)
+        };
+        let right = source.get(start + opening.len()..)?.chars().next()?;
+        let right = if right.is_ascii_punctuation() {
+            '.'
+        } else if right.is_ascii() {
+            if right.is_ascii_whitespace() {
+                ' '
+            } else {
+                'x'
+            }
+        } else {
+            right
+        };
+        let prefix = format!("{context}{opening}{right}{}", left_context(text));
+        #[cfg(test)]
+        work::copy(prefix.len());
+        Some(Self {
+            prefix,
+            opener: context.len(),
+            kind: Some(kind),
+        })
     }
 }
 
@@ -134,7 +168,7 @@ impl Markdown {
             range.start < sentinel
                 && range.end > sentinel
                 && checkpoint.carry.as_ref().is_some_and(|carry| {
-                    range.start == sentinel - carry.prefix.len()
+                    range.start == sentinel - carry.prefix.len() + carry.opener
                         && match (carry.kind, event) {
                             (None, Event::Code(_)) => true,
                             (Some(kind), Event::Start(tag)) => tag.to_end() == kind,
@@ -260,12 +294,16 @@ fn carry(
                         range.start == 0 || source.as_bytes().get(range.start - 1) != marker;
                     style = if whole_run {
                         match tag {
-                            Tag::Emphasis => {
-                                Some((tag.to_end(), source.get(range.start..range.start + 1)?))
-                            }
-                            Tag::Strong => {
-                                Some((tag.to_end(), source.get(range.start..range.start + 2)?))
-                            }
+                            Tag::Emphasis => Some((
+                                tag.to_end(),
+                                source.get(range.start..range.start + 1)?,
+                                range.start,
+                            )),
+                            Tag::Strong => Some((
+                                tag.to_end(),
+                                source.get(range.start..range.start + 2)?,
+                                range.start,
+                            )),
                             _ => None,
                         }
                     } else {
@@ -277,8 +315,17 @@ fn carry(
                             .bytes()
                             .take_while(|byte| *byte == b'~')
                             .count();
-                        style = Some((tag.to_end(), source.get(range.start..range.start + count)?));
+                        style = Some((
+                            tag.to_end(),
+                            source.get(range.start..range.start + count)?,
+                            range.start,
+                        ));
                     }
+                    // A nested style can consume only part of its opening run.
+                    // Its full delimiter geometry remains provisional.
+                    style = style.filter(|(_, opening, start)| {
+                        source.as_bytes().get(*start + opening.len()) != marker
+                    });
                 }
             }
             Event::End(_) => {
@@ -293,13 +340,10 @@ fn carry(
                     && source.get(range.clone()) == Some(text.as_ref()) =>
             {
                 blocked |= unstable_text(source, range.clone());
-                if !blocked && let Some((kind, opening)) = style {
+                if !blocked && let Some((kind, opening, start)) = style {
                     candidate = Some((
                         range.end,
-                        Carry {
-                            prefix: format!("{opening}{}", left_context(text)),
-                            kind: Some(kind),
-                        },
+                        Carry::styled(source, start, opening, text, kind)?,
                     ));
                 }
             }
@@ -318,6 +362,7 @@ fn carry(
                         end,
                         Carry {
                             prefix: format!("{}x", raw.get(..count)?),
+                            opener: 0,
                             kind: None,
                         },
                     ));
