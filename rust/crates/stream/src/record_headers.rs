@@ -180,3 +180,7 @@ impl crate::Record {
         self.value.len().saturating_add(self.headers.payload_bytes())
     }
 }
+
+#[cfg(test)]
+#[path = "record_header_tests.rs"]
+mod tests;
