@@ -15,6 +15,73 @@ fn call(id: &str, name: &str, arguments: Value) -> ScriptedTurn {
 }
 
 #[tokio::test]
+async fn direct_shell_command_uses_native_powershell() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
+    let provider = scripted([]);
+    let harness = LocalHarness::open(
+        super::checkout_config(directory.path(), (model()?, provider.clone()))?
+            .state_directory(state.path()),
+    )
+    .await?;
+    let operation = OperationId::new();
+    let resolution = harness.resolve_input(operation,
+        "/shell [IO.File]::WriteAllText((Join-Path (Get-Location) 'direct.txt'), 'direct write'); [Console]::Write('direct output')",
+    ).await?;
+    assert!(matches!(
+        resolution,
+        crate::client::CommandResolution::Tool {
+            tool: crate::client::CommandTool::Shell,
+            ..
+        }
+    ));
+    let result = harness
+        .dispatch_command(operation, None, resolution)
+        .await?;
+    assert_eq!(result["exit_code"], 0, "{result}");
+    assert_eq!(result["stdout"], "direct output");
+    assert_eq!(
+        std::fs::read(directory.path().join("direct.txt")).map_err(super::super::storage)?,
+        b"direct write"
+    );
+    assert!(provider.requests().is_empty());
+    harness.close().await?;
+    Ok(())
+}
+
+#[test]
+fn scripted_e2e_runs_with_windows_powershell_51_when_pwsh_is_absent() -> Result<()> {
+    let executable = which::which("powershell.exe").map_err(super::super::storage)?;
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let output = std::process::Command::new(
+        std::env::current_exe().map_err(super::super::storage)?,
+    )
+    .args([
+        "local::tests::powershell::scripted_powershell_reads_writes_runs_and_captures_exit_code",
+        "--exact",
+        "--nocapture",
+    ])
+    .current_dir(directory.path())
+    .env(
+        "PATH",
+        executable
+            .parent()
+            .expect("absolute Windows PowerShell path"),
+    )
+    .env("CODEX_HOME", directory.path().join("codex"))
+    .output()
+    .map_err(super::super::storage)?;
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed;"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn scripted_powershell_reads_writes_runs_and_captures_exit_code() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state = tempfile::tempdir().map_err(super::super::storage)?;
