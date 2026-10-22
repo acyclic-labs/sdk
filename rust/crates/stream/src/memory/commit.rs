@@ -61,7 +61,7 @@ impl CommitPlan {
 impl MemoryStream {
     fn records(
         &self,
-        bodies: &[Bytes],
+        bodies: &[AppendRecord],
         start: u64,
         commit_id: CommitId,
         time: u64,
@@ -77,7 +77,13 @@ impl MemoryStream {
                 (bodies.len() * std::mem::size_of::<Record>()) as u64,
             ))?;
         }
-        let records = crate::preparation::records(start, bodies, commit_id, time, buffer)?;
+        let mut records = crate::preparation::records(start, bodies, commit_id, time, buffer)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = &self.work {
+            for record in &mut records {
+                record.headers = work.record(record.headers.bind_native(&work.meter))?;
+            }
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
             work.record(work.meter.record_examination(
@@ -464,7 +470,7 @@ fn envelope_payload_bytes(result: &CommitOutcome) -> usize {
             .mutations
             .iter()
             .flat_map(fact_records)
-            .map(|record| record.value.len())
+            .map(|record| record.payload_bytes())
             .sum(),
         CommitOutcome::Conflict(_) => 0,
     }
@@ -562,7 +568,7 @@ fn publish_fact(
     state.record_count += fact_records(fact).len();
     state.payload_bytes += fact_records(fact)
         .iter()
-        .map(|record| record.value.len())
+        .map(|record| record.payload_bytes())
         .sum::<usize>();
     Ok(())
 }

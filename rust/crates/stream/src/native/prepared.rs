@@ -31,10 +31,13 @@ impl PreparedNativeCommit {
     }
 
     /// Supplies the unchanged canonical request's one record and transfers its already funded future.
-    pub fn finish(mut self, record: OwnedBytes) -> NativeProviderFuture<'static, CommitOutcome> {
-        let record = if record.is_empty() {
+    pub fn finish(
+        mut self,
+        record: crate::AppendRecord,
+    ) -> NativeProviderFuture<'static, CommitOutcome> {
+        let record = if record.value.is_empty() {
             Err(StreamError::InvalidArgument)
-        } else if record.len() > self.maximum_record_bytes {
+        } else if record.payload_bytes() > self.maximum_record_bytes {
             Err(StreamError::LimitExceeded)
         } else {
             Ok(record)
@@ -54,7 +57,7 @@ impl Drop for PreparedNativeCommit {
 }
 
 type RecordSlotState = (
-    Option<Result<OwnedBytes, StreamError>>,
+    Option<Result<crate::AppendRecord, StreamError>>,
     Option<std::task::Waker>,
 );
 
@@ -80,7 +83,7 @@ impl NativeCommitRecordSlot {
         Ok(record)
     }
 
-    pub(crate) async fn receive(&self) -> Result<OwnedBytes, StreamError> {
+    pub(crate) async fn receive(&self) -> Result<crate::AppendRecord, StreamError> {
         futures::future::poll_fn(|context| {
             let mut state = self
                 .state
@@ -104,7 +107,7 @@ impl NativeCommitRecordSlot {
         .await
     }
 
-    fn supply(&self, record: Result<OwnedBytes, StreamError>) {
+    fn supply(&self, record: Result<crate::AppendRecord, StreamError>) {
         let waiter = {
             let mut state = self
                 .state

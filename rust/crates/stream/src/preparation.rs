@@ -1,5 +1,5 @@
 //! Mutation facts used by the memory state machine.
-use crate::OwnedBytes as Bytes;
+use crate::AppendRecord;
 use crate::{
     CommitId, CommitMutation, CommitRequest, CommittedAppend, ForkRequest, Record, StreamError,
     StreamPath,
@@ -58,7 +58,7 @@ pub(crate) fn authority(
 
 pub(crate) fn records(
     start: u64,
-    bodies: &[Bytes],
+    bodies: &[AppendRecord],
     commit_id: CommitId,
     committed_at_micros: u64,
     mut records: Vec<Record>,
@@ -73,7 +73,8 @@ pub(crate) fn records(
             .ok_or(StreamError::LimitExceeded)?;
         records.push(Record {
             sequence,
-            value,
+            value: value.value,
+            headers: value.headers,
             commit_id,
             committed_at_micros,
         });

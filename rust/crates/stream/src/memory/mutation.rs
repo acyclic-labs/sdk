@@ -9,12 +9,15 @@ fn reserve_commit(state: &State, limits: MemoryLimits) -> Result<(), StreamError
 fn reserve_append(
     state: &State,
     path: &StreamPath,
-    records: &[Bytes],
+    records: &[AppendRecord],
     limits: MemoryLimits,
 ) -> Result<(), StreamError> {
     reserve_paths(state, path, limits)?;
     reserve_commit(state, limits)?;
-    let bytes = records.iter().map(Bytes::len).sum::<usize>();
+    let bytes = records
+        .iter()
+        .map(AppendRecord::payload_bytes)
+        .sum::<usize>();
     reserve_records(state, records.len(), bytes, limits)
 }
 

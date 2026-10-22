@@ -410,7 +410,7 @@ fn copy_outcome(
             {
                 return Err(StreamError::IdempotencyMismatch);
             }
-            if record.value.len() > maximum {
+            if record.payload_bytes() > maximum {
                 return Err(StreamError::LimitExceeded);
             }
             *target.records.first_mut().ok_or(StreamError::Unavailable)? = record.clone();

@@ -252,7 +252,11 @@ impl MemoryStream {
                 .map(|mutation| match mutation {
                     CommitMutation::Append { records, .. }
                     | CommitMutation::Fork { records, .. } => {
-                        records.capacity() * std::mem::size_of::<Bytes>()
+                        records.capacity() * std::mem::size_of::<AppendRecord>()
+                            + records
+                                .iter()
+                                .map(|record| record.headers.owned_bytes())
+                                .sum::<usize>()
                     }
                 })
                 .sum::<usize>();
@@ -273,12 +277,8 @@ impl MemoryStream {
 #[cfg(not(target_arch = "wasm32"))]
 fn commit_hash_bytes(request: &CommitRequest) -> u64 {
     let path_bytes = |path: &StreamPath| 8 + path.as_str().len() as u64;
-    let record_bytes = |records: &[Bytes]| {
-        8 + records
-            .iter()
-            .map(|record| 8 + record.len() as u64)
-            .sum::<u64>()
-    };
+    let record_bytes =
+        |records: &[AppendRecord]| 8 + records.iter().map(AppendRecord::hash_bytes).sum::<u64>();
     b"acyclic.stream.request.v1\0".len() as u64
         + b"commit".len() as u64
         + request

@@ -1,5 +1,6 @@
 use crate::{
-    AppendRequest, CommitCondition, CommitMutation, CommitRequest, ForkRequest, OwnedBytes,
+    AppendRecord, AppendRequest, Attribute, CommitCondition, CommitMutation, CommitRequest,
+    ForkRequest,
 };
 
 pub(crate) fn block_len(bytes: usize) -> usize {
@@ -8,8 +9,39 @@ pub(crate) fn block_len(bytes: usize) -> usize {
 fn uint_len(value: Option<u64>) -> usize {
     value.map_or(0, |value| 1 + prost::encoding::encoded_len_varint(value))
 }
-fn records_len(records: &[OwnedBytes]) -> usize {
-    records.iter().map(|record| block_len(record.len())).sum()
+fn attribute_len(attribute: &Attribute) -> usize {
+    block_len(attribute.name.len())
+        + if attribute.value.is_empty() {
+            0
+        } else {
+            block_len(attribute.value.len())
+        }
+}
+fn append_record_len(record: &AppendRecord) -> usize {
+    let value = if record.value.is_empty() {
+        0
+    } else {
+        block_len(record.value.len())
+    };
+    value
+        + record
+            .headers
+            .keys()
+            .iter()
+            .map(|key| block_len(key.len()))
+            .sum::<usize>()
+        + record
+            .headers
+            .attributes()
+            .iter()
+            .map(|attribute| block_len(attribute_len(attribute)))
+            .sum::<usize>()
+}
+fn records_len(records: &[AppendRecord]) -> usize {
+    records
+        .iter()
+        .map(|record| block_len(append_record_len(record)))
+        .sum()
 }
 
 pub(crate) fn append_len(request: &AppendRequest) -> usize {
@@ -107,9 +139,22 @@ fn uint(out: &mut Vec<u8>, tag: u32, value: Option<u64>) {
     all(test, feature = "http"),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
-fn records(out: &mut Vec<u8>, tag: u32, values: &[OwnedBytes]) {
-    for value in values {
-        bytes(out, tag, value);
+fn records(out: &mut Vec<u8>, tag: u32, records: &[AppendRecord]) {
+    for record in records {
+        header(out, tag, append_record_len(record));
+        if !record.value.is_empty() {
+            bytes(out, 1, &record.value);
+        }
+        for key in record.headers.keys() {
+            bytes(out, 2, key);
+        }
+        for attribute in record.headers.attributes() {
+            header(out, 3, attribute_len(attribute));
+            bytes(out, 1, attribute.name.as_bytes());
+            if !attribute.value.is_empty() {
+                bytes(out, 2, &attribute.value);
+            }
+        }
     }
 }
 

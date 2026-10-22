@@ -121,7 +121,7 @@ fn reserve_coordinated(
             }
         };
         records = records.saturating_add(batch.len());
-        bytes = bytes.saturating_add(batch.iter().map(Bytes::len).sum::<usize>());
+        bytes = bytes.saturating_add(batch.iter().map(AppendRecord::payload_bytes).sum::<usize>());
     }
     if state.paths.len().saturating_add(new_paths) > limits.paths
         || state.path_bytes.saturating_add(path_bytes) > limits.path_bytes

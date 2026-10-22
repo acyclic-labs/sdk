@@ -153,7 +153,7 @@ pub use path::StreamPath;
 include!("lib/domain.rs");
 
 mod record_headers;
-pub use record_headers::RecordHeaders;
+pub use record_headers::{MAX_RECORD_ATTRIBUTES, MAX_RECORD_KEY_BYTES, MAX_RECORD_KEYS, RecordHeaders};
 
 include!("lib/provider.rs");
 

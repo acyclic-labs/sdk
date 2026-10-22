@@ -174,7 +174,7 @@ impl StreamProvider for Client {
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         let body = wire::AppendRequest {
             path: request.path.to_string(),
-            records: request.records.into_iter().map(Bytes::from_owner).collect(),
+            records: request.records.into_iter().map(crate::wire_codec::append_record_wire).collect(),
             if_tail: request.if_tail,
             idempotency_key: Some(retry_identity(request.idempotency_key)),
         };

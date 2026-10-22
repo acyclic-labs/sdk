@@ -84,10 +84,7 @@ pub(crate) fn mutation_wire(value: CommitMutation) -> wire::CommitMutation {
         CommitMutation::Append { path, records } => {
             wire::commit_mutation::Mutation::Append(wire::AppendMutation {
                 path: path.to_string(),
-                records: records
-                    .iter()
-                    .map(|record| bytes::Bytes::copy_from_slice(record))
-                    .collect(),
+                records: records.into_iter().map(append_record_wire).collect(),
             })
         }
         CommitMutation::Fork {
@@ -99,10 +96,7 @@ pub(crate) fn mutation_wire(value: CommitMutation) -> wire::CommitMutation {
             source: source.to_string(),
             destination: destination.to_string(),
             at_tail,
-            records: records
-                .iter()
-                .map(|record| bytes::Bytes::copy_from_slice(record))
-                .collect(),
+            records: records.into_iter().map(append_record_wire).collect(),
         }),
     };
     wire::CommitMutation {
@@ -122,13 +116,21 @@ pub(crate) fn mutation_from_wire(
     match value.mutation.ok_or(StreamError::InvalidArgument)? {
         wire::commit_mutation::Mutation::Append(value) => Ok(CommitMutation::Append {
             path: path(value.path)?,
-            records: value.records.into_iter().map(Into::into).collect(),
+            records: value
+                .records
+                .into_iter()
+                .map(append_record)
+                .collect::<Result<_, _>>()?,
         }),
         wire::commit_mutation::Mutation::Fork(value) => Ok(CommitMutation::Fork {
             source: path(value.source)?,
             destination: path(value.destination)?,
             at_tail: value.at_tail,
-            records: value.records.into_iter().map(Into::into).collect(),
+            records: value
+                .records
+                .into_iter()
+                .map(append_record)
+                .collect::<Result<_, _>>()?,
         }),
     }
 }
@@ -237,7 +239,11 @@ pub(crate) fn append_receipt(value: &wire::AppendReceipt) -> Result<AppendReceip
 pub fn append_from_wire(value: wire::AppendRequest) -> Result<crate::AppendRequest, StreamError> {
     Ok(crate::AppendRequest {
         path: path(value.path)?,
-        records: value.records.into_iter().map(Into::into).collect(),
+        records: value
+            .records
+            .into_iter()
+            .map(append_record)
+            .collect::<Result<_, _>>()?,
         if_tail: value.if_tail,
         idempotency_key: optional_key(value.idempotency_key)?,
     })

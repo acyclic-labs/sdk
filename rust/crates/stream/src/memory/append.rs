@@ -4,15 +4,29 @@ impl MemoryStream {
         request: AppendRequest,
     ) -> Result<(AppendOutcome, Allocation), StreamError> {
         #[cfg(not(target_arch = "wasm32"))]
-        let _input = self.adopt(request.records.capacity() * std::mem::size_of::<Bytes>())?;
-        let bytes = request.records.iter().map(Bytes::len).sum::<usize>();
+        let _input = self.adopt(
+            request.records.capacity() * std::mem::size_of::<AppendRecord>()
+                + request
+                    .records
+                    .iter()
+                    .map(|record| record.headers.owned_bytes())
+                    .sum::<usize>(),
+        )?;
+        let bytes = request
+            .records
+            .iter()
+            .map(AppendRecord::payload_bytes)
+            .sum::<usize>();
         #[cfg(not(target_arch = "wasm32"))]
         let hashed = b"acyclic.stream.request.v1\0".len() as u64
             + b"append".len() as u64
             + 24
             + request.path.as_str().len() as u64
-            + 8 * request.records.len() as u64
-            + bytes as u64;
+            + request
+                .records
+                .iter()
+                .map(AppendRecord::hash_bytes)
+                .sum::<u64>();
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
             work.record(work.meter.admit_codec(0, 0, hashed))?;

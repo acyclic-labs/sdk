@@ -55,7 +55,7 @@ pub(crate) fn clone_commit(
                         Some(acyclic_native_runtime::NativeByteReservation::new(
                             Arc::clone(meter),
                             kind,
-                            record.value.len(),
+                            record.payload_bytes(),
                         )?)
                     } else {
                         None
@@ -64,7 +64,7 @@ pub(crate) fn clone_commit(
                     records.push(record.clone());
                     let read = bytes
                         .as_mut()
-                        .map_or(Ok(()), |bytes| bytes.record(record.value.len()));
+                        .map_or(Ok(()), |bytes| bytes.record(record.payload_bytes()));
                     let examined =
                         meter.record_examination(1, std::mem::size_of::<Record>() as u64);
                     read?;

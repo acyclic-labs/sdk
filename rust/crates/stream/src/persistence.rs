@@ -171,7 +171,7 @@ fn validate_records(
     for (index, record) in records.iter().enumerate() {
         if record.sequence != start + index as u64
             || record.commit_id != commit_id
-            || record.value.len() > MAX_RECORD_BYTES
+            || record.payload_bytes() > MAX_RECORD_BYTES
             || time.is_some_and(|time| time != record.committed_at_micros)
         {
             return Err(StreamError::InvalidArgument);

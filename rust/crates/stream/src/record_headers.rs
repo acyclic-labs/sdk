@@ -31,7 +31,9 @@ impl RecordHeaders {
             return Err(StreamError::LimitExceeded);
         }
         if keys.windows(2).any(|pair| pair[0] >= pair[1])
-            || attributes.windows(2).any(|pair| pair[0].name >= pair[1].name)
+            || attributes
+                .windows(2)
+                .any(|pair| pair[0].name >= pair[1].name)
             || attributes.iter().any(|attribute| {
                 attribute.name.is_empty() || attribute.name.chars().any(char::is_control)
             })
@@ -65,24 +67,34 @@ impl RecordHeaders {
 
     /// Bytes counted against the record's shared value-and-header bound.
     pub fn payload_bytes(&self) -> usize {
-        self.keys().iter().fold(0usize, |total, key| total.saturating_add(key.len()))
+        self.keys()
+            .iter()
+            .fold(0usize, |total, key| total.saturating_add(key.len()))
             .saturating_add(self.attributes().iter().fold(0usize, |total, attribute| {
-                total.saturating_add(attribute.name.len()).saturating_add(attribute.value.len())
+                total
+                    .saturating_add(attribute.name.len())
+                    .saturating_add(attribute.value.len())
             }))
     }
 
     pub(crate) fn hash_bytes(&self) -> u64 {
-        16 + 8 * self.keys().len() as u64 + 16 * self.attributes().len() as u64
+        16 + 8 * self.keys().len() as u64
+            + 16 * self.attributes().len() as u64
             + self.payload_bytes() as u64
     }
 
     /// Memory retained by unmetered ingress, excluding shared byte owners.
     pub(crate) fn owned_bytes(&self) -> usize {
         self.0.as_ref().map_or(0, |data| {
-            std::mem::size_of::<HeaderData>() + 2 * std::mem::size_of::<usize>()
+            std::mem::size_of::<HeaderData>()
+                + 2 * std::mem::size_of::<usize>()
                 + data.keys.capacity() * std::mem::size_of::<OwnedBytes>()
                 + data.attributes.capacity() * std::mem::size_of::<Attribute>()
-                + data.attributes.iter().map(|attribute| attribute.name.capacity()).sum::<usize>()
+                + data
+                    .attributes
+                    .iter()
+                    .map(|attribute| attribute.name.capacity())
+                    .sum::<usize>()
         })
     }
 
@@ -92,12 +104,24 @@ impl RecordHeaders {
         meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> std::io::Result<Self> {
         use acyclic_native_runtime::ReadAllocation;
-        let Some(data) = &self.0 else { return Ok(self.clone()); };
+        meter.check()?;
+        let Some(data) = &self.0 else {
+            return Ok(self.clone());
+        };
         if data._allocation.is_some() {
             return Ok(self.clone());
         }
+        let copied = data.keys.len() * std::mem::size_of::<OwnedBytes>()
+            + data.attributes.len() * std::mem::size_of::<Attribute>()
+            + data
+                .attributes
+                .iter()
+                .map(|attribute| attribute.name.len())
+                .sum::<usize>();
+        meter.admit_codec(0, copied as u64, 0)?;
         let mut allocation = ReadAllocation::new(
-            meter, std::mem::size_of::<HeaderData>() + 2 * std::mem::size_of::<usize>(),
+            meter,
+            std::mem::size_of::<HeaderData>() + 2 * std::mem::size_of::<usize>(),
         )?;
         let mut keys = crate::native::vector(data.keys.len(), meter, &mut allocation)?;
         keys.extend(data.keys.iter().cloned());
@@ -110,7 +134,14 @@ impl RecordHeaders {
                 value: attribute.value.clone(),
             });
         }
-        Ok(Self(Some(Arc::new(HeaderData { keys, attributes, _allocation: Some(allocation) }))))
+        let headers = Self(Some(Arc::new(HeaderData {
+            keys,
+            attributes,
+            _allocation: Some(allocation),
+        })));
+        meter.record_codec(0, copied as u64, 0)?;
+        meter.check()?;
+        Ok(headers)
     }
 }
 
@@ -122,18 +153,30 @@ impl PartialEq for RecordHeaders {
 impl Eq for RecordHeaders {}
 impl std::fmt::Debug for RecordHeaders {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("RecordHeaders")
-            .field("keys", &self.keys()).field("attributes", &self.attributes()).finish()
+        formatter
+            .debug_struct("RecordHeaders")
+            .field("keys", &self.keys())
+            .field("attributes", &self.attributes())
+            .finish()
     }
 }
 
 impl crate::AppendRecord {
     /// Value and header bytes counted together against MAX_RECORD_BYTES.
     pub fn payload_bytes(&self) -> usize {
-        self.value.len().saturating_add(self.headers.payload_bytes())
+        self.value
+            .len()
+            .saturating_add(self.headers.payload_bytes())
     }
 
     pub(crate) fn hash_bytes(&self) -> u64 {
         8 + self.value.len() as u64 + self.headers.hash_bytes()
+    }
+}
+
+impl crate::Record {
+    /// Shared value and indexed-header payload bound used by every reader.
+    pub fn payload_bytes(&self) -> usize {
+        self.value.len().saturating_add(self.headers.payload_bytes())
     }
 }

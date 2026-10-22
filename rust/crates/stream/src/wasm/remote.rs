@@ -151,7 +151,7 @@ impl StreamProvider for Remote {
             records: request
                 .records
                 .into_iter()
-                .map(bytes::Bytes::from_owner)
+                .map(crate::wire_codec::append_record_wire)
                 .collect(),
             if_tail: request.if_tail,
             idempotency_key: Some(identity(request.idempotency_key)),

@@ -445,9 +445,10 @@ impl StreamProvider for MemoryStream {
                             .iter()
                             .map(|mutation| match mutation {
                                 CommitMutation::Append { records, .. }
-                                | CommitMutation::Fork { records, .. } => {
-                                    records.iter().map(Bytes::len).sum::<usize>()
-                                }
+                                | CommitMutation::Fork { records, .. } => records
+                                    .iter()
+                                    .map(AppendRecord::payload_bytes)
+                                    .sum::<usize>(),
                             })
                             .sum();
                         work.reserve_write(bytes).map_err(E::from)?;
@@ -517,7 +518,13 @@ impl StreamProvider for MemoryStream {
                 Err(error) => return work.finish(Err(error)),
             };
             if !existing
-                && let Err(error) = work.reserve_write(request.records.iter().map(Bytes::len).sum())
+                && let Err(error) = work.reserve_write(
+                    request
+                        .records
+                        .iter()
+                        .map(AppendRecord::payload_bytes)
+                        .sum(),
+                )
             {
                 return work.finish(Err(error));
             }

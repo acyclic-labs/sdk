@@ -1,16 +1,16 @@
 //! Canonical request validation and retry identity.
-use crate::OwnedBytes as Bytes;
+use crate::AppendRecord;
 use crate::{
     AppendRequest, CommitCondition, CommitMutation, CommitRequest, ForkRequest, MAX_COMMAND_BYTES,
     MAX_ITEMS, MAX_RECORD_BYTES, StreamError, StreamPath,
 };
 use sha2::{Digest, Sha256};
-pub(crate) fn validate_records(records: &[Bytes]) -> Result<(), StreamError> {
+pub(crate) fn validate_records(records: &[AppendRecord]) -> Result<(), StreamError> {
     if records.is_empty() || records.len() > MAX_ITEMS {
         return Err(StreamError::LimitExceeded);
     }
     for record in records {
-        if record.len() > MAX_RECORD_BYTES {
+        if record.payload_bytes() > MAX_RECORD_BYTES {
             return Err(StreamError::LimitExceeded);
         }
     }
@@ -122,11 +122,23 @@ pub(crate) fn hash_path(hash: &mut Sha256, path: &StreamPath) {
     hash.update(path.as_str().as_bytes());
 }
 
-pub(crate) fn hash_records(hash: &mut Sha256, records: &[Bytes]) {
+pub(crate) fn hash_records(hash: &mut Sha256, records: &[AppendRecord]) {
     hash.update((records.len() as u64).to_le_bytes());
     for record in records {
-        hash.update((record.len() as u64).to_le_bytes());
-        hash.update(record);
+        hash.update((record.value.len() as u64).to_le_bytes());
+        hash.update(&record.value);
+        hash.update((record.headers.keys().len() as u64).to_le_bytes());
+        for key in record.headers.keys() {
+            hash.update((key.len() as u64).to_le_bytes());
+            hash.update(key);
+        }
+        hash.update((record.headers.attributes().len() as u64).to_le_bytes());
+        for attribute in record.headers.attributes() {
+            hash.update((attribute.name.len() as u64).to_le_bytes());
+            hash.update(attribute.name.as_bytes());
+            hash.update((attribute.value.len() as u64).to_le_bytes());
+            hash.update(&attribute.value);
+        }
     }
 }
 
@@ -217,7 +229,7 @@ pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), Strea
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::OwnedBytes as Bytes;
+    use crate::AppendRecord;
     use crate::{IdempotencyKey, IdempotencyObservation, MemoryStream, StreamPath, StreamProvider};
 
     #[tokio::test]

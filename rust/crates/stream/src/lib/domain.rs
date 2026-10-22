@@ -72,7 +72,28 @@ pub struct AppendRecord {
 
 impl From<Bytes> for AppendRecord {
     fn from(value: Bytes) -> Self {
-        Self { value, headers: RecordHeaders::default() }
+        Self {
+            value,
+            headers: RecordHeaders::default(),
+        }
+    }
+}
+
+impl From<bytes::Bytes> for AppendRecord {
+    fn from(value: bytes::Bytes) -> Self {
+        Self::from(Bytes::from(value))
+    }
+}
+
+impl From<Vec<u8>> for AppendRecord {
+    fn from(value: Vec<u8>) -> Self {
+        Self::from(Bytes::from(value))
+    }
+}
+
+impl From<&[u8]> for AppendRecord {
+    fn from(value: &[u8]) -> Self {
+        Self::from(Bytes::from(value))
     }
 }
 
