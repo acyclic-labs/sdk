@@ -31,11 +31,22 @@ try {
   writeFileSync(join(fixture, 'src/main.rs'), 'fn main() { println!("profile contract"); }\n#[cfg(test)] mod tests { #[test] fn panic_is_caught() { assert!(std::panic::catch_unwind(|| panic!("expected")).is_err()); } }\n');
   run('cargo', ['generate-lockfile', '--offline', '--manifest-path', join(fixture, 'Cargo.toml')]);
   const binaries = build(['build'], '0');
-  build(['test'], '0');
+  const tests = build(['test'], '0');
   const host = run('rustc', ['-vV']);
   if (host.includes('host: x86_64-unknown-linux-gnu')) {
-    for (const artifact of binaries.filter(item => item.executable)) {
-      assert.match(run('readelf', ['--string-dump=.comment', artifact.executable]), /mold/, 'native Linux executable must be linked by mold');
+    function checkMold(artifacts) {
+      for (const artifact of artifacts.filter(item => item.executable)) {
+        assert.match(run('readelf', ['--string-dump=.comment', artifact.executable]), /mold/, 'native Linux executable must be linked by mold');
+      }
+    }
+    checkMold([...binaries, ...tests]);
+    const flags = process.env.RUSTFLAGS;
+    try {
+      process.env.RUSTFLAGS = `${flags ?? ''} -Dwarnings`;
+      checkMold(build(['build'], '0'));
+    } finally {
+      if (flags === undefined) delete process.env.RUSTFLAGS;
+      else process.env.RUSTFLAGS = flags;
     }
   }
   const releaseDeps = join(target, 'release/deps');
