@@ -88,6 +88,11 @@ async fn scripted_powershell_reads_writes_runs_and_captures_exit_code() -> Resul
     std::fs::create_dir(directory.path().join("src")).map_err(super::super::storage)?;
     std::fs::write(directory.path().join("src/input.txt"), "projected input")
         .map_err(super::super::storage)?;
+    // Source exceeds CreateProcess's argument limit and must travel through stdin.
+    let command = format!(
+        "using namespace System.IO; #{}\n[Console]::Write('café 東京'); [Console]::Write(\"it’s ‘ready’\"); [Console]::Write((Get-Content -Raw input.txt)); [Console]::Write((Get-Content -Raw ../from-write.txt)); [File]::WriteAllText((Join-Path (Get-Location) 'captured.txt'), 'native write'); [IO.File]::WriteAllText(([IO.Path]::Combine($env:ACYCLIC_VOLUME_SCRATCH, 'scratch.txt')), 'volume write'); [Console]::Error.Write('diagnostic café 東京'); exit 7",
+        "x".repeat(35_000)
+    );
     let provider = scripted([
         call(
             "write",
@@ -97,7 +102,7 @@ async fn scripted_powershell_reads_writes_runs_and_captures_exit_code() -> Resul
         call(
             "shell",
             "powershell",
-            json!({"command": "using namespace System.IO; [Console]::Write('café 東京'); [Console]::Write(\"it’s ‘ready’\"); [Console]::Write((Get-Content -Raw input.txt)); [Console]::Write((Get-Content -Raw ../from-write.txt)); [File]::WriteAllText((Join-Path (Get-Location) 'captured.txt'), 'native write'); [IO.File]::WriteAllText(([IO.Path]::Combine($env:ACYCLIC_VOLUME_SCRATCH, 'scratch.txt')), 'volume write'); [Console]::Error.Write('diagnostic café 東京'); exit 7", "cwd":"src"}),
+            json!({"command": command, "cwd":"src"}),
         ),
         call(
             "scratch",

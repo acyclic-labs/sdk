@@ -15,8 +15,8 @@ pub struct ShellSpec {
     pub executables: &'static [&'static str],
     /// Non-interactive arguments preceding the source text.
     pub arguments: &'static [&'static str],
-    /// Host initialization prepended to the command source.
-    pub command_prefix: &'static str,
+    /// Fixed bootstrap reading UTF-8 source from stdin; otherwise pass source as an argument.
+    pub stdin_bootstrap: Option<&'static str>,
 }
 
 /// Windows commands must use the native filesystem namespace.
@@ -27,7 +27,9 @@ pub const PLATFORM: ShellSpec = ShellSpec {
     hook_names: &["PowerShell"],
     executables: &["pwsh.exe", "powershell.exe"],
     arguments: &["-NoProfile", "-NonInteractive", "-Command"],
-    command_prefix: "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; ",
+    stdin_bootstrap: Some(
+        "[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; & ([ScriptBlock]::Create([Console]::In.ReadToEnd()))",
+    ),
 };
 
 /// Unix hosts retain the bash command language.
@@ -38,7 +40,7 @@ pub const PLATFORM: ShellSpec = ShellSpec {
     hook_names: &["Bash"],
     executables: &["bash"],
     arguments: &["--noprofile", "--norc", "-c"],
-    command_prefix: "",
+    stdin_bootstrap: None,
 };
 
 /// A command in the calling task's view; workspace selection is host-owned.

@@ -69,24 +69,17 @@ pub fn prepare<T>(
     invocation.environment = mounts.environment()?;
     invocation.inherit_environment = true;
     invocation.timeout_ms = input.timeout_ms()?;
-    #[cfg(windows)]
-    let command = {
-        use base64::Engine as _;
-        let source = base64::engine::general_purpose::STANDARD.encode(input.command.as_bytes());
-        format!(
-            "{}& ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{source}'))))",
-            crate::tools::shell::PLATFORM.command_prefix,
-        )
+    let (command, standard_input) = match crate::tools::shell::PLATFORM.stdin_bootstrap {
+        Some(bootstrap) => (bootstrap.to_owned(), Some(input.command.into_bytes())),
+        None => (input.command, None),
     };
-    #[cfg(not(windows))]
-    let command = input.command;
     invocation.argv = crate::tools::shell::PLATFORM
         .arguments
         .iter()
         .map(|argument| (*argument).into())
         .chain([command])
         .collect();
-    invocation.standard_input = None;
+    invocation.standard_input = standard_input;
     invocation.mcp_stdio = None;
     super::invocation::validate(
         &invocation.executable,
