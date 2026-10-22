@@ -61,13 +61,13 @@ fn seed_711_interleaves_the_actual_manifest_and_rejects_the_grouped_control() ->
 }
 
 fn expected(scenario: Scenario) -> Result<BTreeMap<String, usize>> {
-    // Text/EffectAndContinuation/Compaction verify 14/36/27 retained files.
-    // Reopening each already authenticated generation cost eight ready authority
-    // reads. Reuse removes only those reads; content and descriptor checks remain.
-    // Counts include HEAD-write verification now traced on main. Independent
-    // old/new scenario traces derive the ready pins:
-    // Text 2098 - 14*8 = 1986; Effect 5587 - 36*8 = 5299;
-    // Compaction 3805 - 27*8 = 3589. Every other boundary count is unchanged.
+    // Published generations already have durable history ownership. Reading an
+    // authenticated generation therefore needs no automatic pin transaction,
+    // checkpoint, or completion task. Independent real-scenario traces on Linux
+    // and Windows agree on these pins after removing those redundant operations.
+    // Model/tool dispatch and blocked-stream boundaries are unchanged. Every
+    // remaining native, blocking and task boundary still gets its own cut, and
+    // ready reads remain an independently checked exact count.
     let bytes: &[u8] = match scenario {
         Scenario::Text => include_bytes!("coverage/text.json"),
         Scenario::EffectAndContinuation => include_bytes!("coverage/effect_goal.json"),
@@ -147,27 +147,33 @@ fn omitted_actual_hook_and_cut_are_rejected() -> Result<()> {
         .enable_all()
         .build()
         .map_err(storage)?;
-    let observed = runtime.block_on(case(Scenario::Text, None, &[], None))?;
-    let actual = observed.points;
-    check_boundaries(Scenario::Text, &actual, observed.ready_reads)?;
-    let omitted = actual
-        .iter()
-        .position(|name| *name == "task:submitted")
-        .unwrap();
-    let mut broken = actual.clone();
-    broken.remove(omitted);
-    assert!(
-        check_boundaries(Scenario::Text, &broken, observed.ready_reads).is_err(),
-        "missing real hook went undetected"
-    );
-    assert!(
-        check_cuts(
-            Scenario::Text,
-            actual.len(),
-            (1..=actual.len()).filter(|cut| *cut != omitted + 1)
-        )
-        .is_err(),
-        "missing real replay went undetected"
-    );
+    for scenario in [
+        Scenario::Text,
+        Scenario::EffectAndContinuation,
+        Scenario::Compaction,
+    ] {
+        let observed = runtime.block_on(case(scenario, None, &[], None))?;
+        let actual = observed.points;
+        check_boundaries(scenario, &actual, observed.ready_reads)?;
+        let omitted = actual
+            .iter()
+            .position(|name| *name == "task:submitted")
+            .unwrap();
+        let mut broken = actual.clone();
+        broken.remove(omitted);
+        assert!(
+            check_boundaries(scenario, &broken, observed.ready_reads).is_err(),
+            "missing real hook went undetected"
+        );
+        assert!(
+            check_cuts(
+                scenario,
+                actual.len(),
+                (1..=actual.len()).filter(|cut| *cut != omitted + 1)
+            )
+            .is_err(),
+            "missing real replay went undetected"
+        );
+    }
     Ok(())
 }
