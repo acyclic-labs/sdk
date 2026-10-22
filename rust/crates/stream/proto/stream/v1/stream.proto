@@ -21,11 +21,25 @@ message Record {
   bytes value = 2;
   bytes commit_id = 3;
   uint64 committed_at_micros = 4;
+  repeated bytes keys = 5;
+  repeated Attribute attributes = 6;
+}
+
+// Indexed headers are part of the immutable, size-bounded record.
+message Attribute {
+  string name = 1;
+  bytes value = 2;
+}
+
+message AppendRecord {
+  bytes value = 1;
+  repeated bytes keys = 2;
+  repeated Attribute attributes = 3;
 }
 
 message AppendRequest {
   string path = 1;
-  repeated bytes records = 2;
+  repeated AppendRecord records = 2;
   optional uint64 if_tail = 3;
   optional bytes idempotency_key = 4;
 }
@@ -87,6 +101,15 @@ message ReadRequest {
 message FollowRequest {
   string path = 1;
   uint64 from = 2;
+  SessionFilter filter = 3;
+}
+
+// Ranges are OR; named attribute clauses are AND. Empty end is unbounded.
+message KeyRange { bytes start = 1; bytes end = 2; }
+message AttributeMatch { string name = 1; repeated bytes any_of = 2; }
+message SessionFilter {
+  repeated KeyRange keys = 1;
+  repeated AttributeMatch attributes = 2;
 }
 
 // Encoding of one read frame's data.
@@ -176,7 +199,7 @@ message HeadCondition {
 
 message AppendMutation {
   string path = 1;
-  repeated bytes records = 2;
+  repeated AppendRecord records = 2;
 }
 
 // Forks the source's prefix ending at `at_tail` into the new destination,
@@ -185,7 +208,7 @@ message ForkMutation {
   string source = 1;
   string destination = 2;
   uint64 at_tail = 3;
-  repeated bytes records = 4;
+  repeated AppendRecord records = 4;
 }
 
 message CommitMutation {

@@ -23,6 +23,7 @@ message SessionFrame {
     SessionClosed closed = 18;
     SessionMoved moved = 19;
     SessionWatermark watermark = 20;
+    SessionCredential credential = 21;
   }
 }
 message SessionHello {
@@ -31,7 +32,10 @@ message SessionHello {
   string destination_node = 3;
   uint64 receive_bytes = 4; // finite aggregate payload credit
   uint32 receive_frames = 5; // finite aggregate frame credit
+  repeated bytes credentials = 6; // bounded slots, oldest index first
 }
+// Empty credential drops the slot and closes every channel bound to it.
+message SessionCredential { uint32 slot = 1; bytes credential = 2; }
 message SessionWelcome {
   uint32 version = 1;
   string node_id = 2;
@@ -53,6 +57,8 @@ message SessionInterestApplied {
 message SessionSubscription {
   SessionChannel channel = 1;
   SessionCursor resume = 2;
+  uint32 credential = 3;
+  SessionFilter filter = 4;
   oneof kind {
     SessionFollow follow = 10;
     ChildrenRequest children = 11;

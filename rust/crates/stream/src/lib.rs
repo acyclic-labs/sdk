@@ -152,6 +152,9 @@ pub use path::StreamPath;
 
 include!("lib/domain.rs");
 
+mod record_headers;
+pub use record_headers::RecordHeaders;
+
 include!("lib/provider.rs");
 
 include!("lib/stream.rs");

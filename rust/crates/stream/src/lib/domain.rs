@@ -48,6 +48,32 @@ pub struct Record {
     pub commit_id: CommitId,
     /// Stable replicated commit time in Unix microseconds.
     pub committed_at_micros: u64,
+    /// Canonically sorted indexed keys, authenticated with the value.
+    pub headers: RecordHeaders,
+}
+
+/// One immutable single-valued indexed header.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Attribute {
+    /// Header name.
+    pub name: String,
+    /// Opaque header value.
+    pub value: Bytes,
+}
+
+/// Record value and its indexed headers, admitted atomically on every write path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AppendRecord {
+    /// Opaque application value.
+    pub value: Bytes,
+    /// Canonical indexed keys and attributes, sharing their original owner.
+    pub headers: RecordHeaders,
+}
+
+impl From<Bytes> for AppendRecord {
+    fn from(value: Bytes) -> Self {
+        Self { value, headers: RecordHeaders::default() }
+    }
 }
 
 /// Successful contiguous append.
@@ -81,7 +107,7 @@ pub struct AppendRequest {
     /// Permanent destination.
     pub path: StreamPath,
     /// Nonempty contiguous batch.
-    pub records: Vec<Bytes>,
+    pub records: Vec<AppendRecord>,
     /// Optional exact tail condition.
     pub if_tail: Option<u64>,
     /// Optional stable recovery identity.
@@ -265,7 +291,7 @@ pub enum CommitMutation {
         /// Destination.
         path: StreamPath,
         /// Opaque records.
-        records: Vec<Bytes>,
+        records: Vec<AppendRecord>,
     },
     /// Fork one pre-commit prefix into a new destination, then append
     Fork {
@@ -276,7 +302,7 @@ pub enum CommitMutation {
         /// Exact source prefix end.
         at_tail: u64,
         /// Opaque records appended after the prefix; may be empty.
-        records: Vec<Bytes>,
+        records: Vec<AppendRecord>,
     },
 }
 
