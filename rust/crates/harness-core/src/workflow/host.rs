@@ -1,5 +1,39 @@
 use super::*;
 
+// Both outbox reads and idempotent retries discard the rest of a journal page.
+// Release its ownership only after those payloads and the page buffer are gone.
+fn take_page_transition(
+    mut page: (Vec<WorkflowRecord>, NativeCustody),
+    io: Option<&PreparationIo>,
+) -> Result<(MachineTransition, NativeCustody)> {
+    let record = page
+        .0
+        .pop()
+        .ok_or_else(|| stock_boundary(io, Storage, "workflow record is unavailable"))?;
+    let WorkflowRecord {
+        transition,
+        prior,
+        input,
+        idempotency_key,
+        ..
+    } = record;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let retained = transition.retained_owned_bytes()?;
+    drop((prior, input, idempotency_key, page.0));
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(custody) = page.1.as_mut() {
+        let discarded = custody.bytes().checked_sub(retained).ok_or_else(|| {
+            stock_boundary(
+                io,
+                Storage,
+                "workflow page custody is smaller than its transition",
+            )
+        })?;
+        custody.release(discarded)?;
+    }
+    Ok((transition, page.1))
+}
+
 /// Replay-safe host for pinned machines and their atomic journals.
 pub struct DurableWorkflowHost {
     registry: MachineRegistry,
@@ -169,7 +203,7 @@ impl DurableWorkflowHost {
         if self.checkpoint.revision == 0 {
             return Ok((None, None));
         }
-        let mut page =
+        let page =
             journal::page(self.journal.as_ref(), self.checkpoint.revision - 1, 1, io).await?;
         let [record] = page.0.as_slice() else {
             return Err(stock_boundary(
@@ -193,17 +227,8 @@ impl DurableWorkflowHost {
                 "latest workflow record changed",
             ));
         }
-        Ok((
-            Some(
-                page.0
-                    .pop()
-                    .ok_or_else(|| {
-                        stock_boundary(io, Storage, "latest workflow record is missing")
-                    })?
-                    .transition,
-            ),
-            page.1.take(),
-        ))
+        let (transition, custody) = take_page_transition(page, io)?;
+        Ok((Some(transition), custody))
     }
     /// Validates a proposed transition before committing its checkpoint and outbox.
     pub async fn step(
@@ -419,7 +444,7 @@ impl DurableWorkflowHost {
     ) -> Result<(MachineTransition, u64, u64)> {
         let (revision, digest) = replay;
 
-        let mut page = journal::page(self.journal.as_ref(), *revision, 1, io).await?;
+        let page = journal::page(self.journal.as_ref(), *revision, 1, io).await?;
         let [record] = page.0.as_slice() else {
             return Err(stock_boundary(
                 io,
@@ -442,27 +467,11 @@ impl DurableWorkflowHost {
         if let Some(io) = io {
             // The page already owns the validated transition. Transfer that
             // payload and its original custody instead of copying its JSON.
-            let record = page.0.pop().ok_or_else(|| {
-                stock_boundary(Some(io), Storage, "workflow retry record is unavailable")
-            })?;
-            let WorkflowRecord {
-                transition,
-                prior,
-                input,
-                idempotency_key,
-                ..
-            } = record;
-            let retained = transition.retained_owned_bytes()?;
-            drop((prior, input, idempotency_key, page.0));
-            if let Some(mut custody) = page.1.take() {
-                let discarded = custody.bytes().checked_sub(retained).ok_or_else(|| {
-                    stock_boundary(
-                        Some(io),
-                        Storage,
-                        "workflow page custody is smaller than its transition",
-                    )
-                })?;
-                custody.release(discarded)?;
+            let (transition, custody) = take_page_transition(page, Some(io))?;
+            let retained = custody
+                .as_ref()
+                .map_or(0, acyclic_fs::NativeAllocation::bytes);
+            if let Some(custody) = custody {
                 io.absorb_native_custody(custody)?;
             }
             return Ok((transition, 0, retained));
@@ -511,4 +520,68 @@ impl DurableWorkflowHost {
         }
         Ok(())
     }
+}
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+fn replay_page_charge_tracks_only_live_transition_owners() -> Result<()> {
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024),
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let baseline = work.live_allocation_bytes();
+    let mut live = Vec::new();
+    for index in 0..32 {
+        let transition = MachineTransition {
+            state: Value::String("live".repeat(256)),
+            commands: Vec::with_capacity(3),
+            status: MachineStatus::Completed {
+                value: Value::String("result".repeat(128)),
+            },
+        };
+        let retained = transition.retained_owned_bytes()?;
+        let prior = MachineCheckpoint {
+            machine: MachineIdentity {
+                name: "test.page".into(),
+                version: "1".into(),
+                digest: [1; 32],
+            },
+            revision: index,
+            state: Value::String("prior".repeat(4096)),
+        };
+        let input = "input".repeat(16384);
+        let key = IdempotencyKey::new("page-replay")?;
+        let discarded = prior.machine.name.capacity() as u64
+            + prior.machine.version.capacity() as u64
+            + prior.state.as_str().unwrap().len() as u64
+            + input.capacity() as u64
+            + key.0.capacity() as u64
+            + (4 * std::mem::size_of::<WorkflowRecord>()) as u64;
+        let custody = work.claim(retained + discarded, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
+        let mut page = Vec::with_capacity(4);
+        page.push(WorkflowRecord {
+            operation_id: OperationId::from_bytes([1; 16]),
+            idempotency_key: key,
+            prior,
+            input: Value::String(input),
+            transition,
+        });
+        let (transition, custody) = take_page_transition((page, Some(custody)), None)?;
+        let custody = custody.expect("transition retains its original owner");
+        assert_eq!(
+            custody.bytes(),
+            retained,
+            "discarded journal page remains charged"
+        );
+        live.push((transition, custody));
+        if live.len() > 2 {
+            drop(live.remove(0));
+        }
+        let retained: u64 = live.iter().map(|(_, custody)| custody.bytes()).sum();
+        assert_eq!(work.live_allocation_bytes(), baseline + retained);
+    }
+    drop(live);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    Ok(())
 }
