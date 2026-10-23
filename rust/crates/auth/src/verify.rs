@@ -6,8 +6,10 @@ use std::collections::HashSet;
 use zeroize::Zeroizing;
 
 mod effective;
+mod signer;
 mod wire;
 pub use effective::{Effective, ScopedFilter};
+pub use signer::CertifiedSigner;
 
 /// Authentication, structural admission or authority failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
