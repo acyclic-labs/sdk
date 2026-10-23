@@ -187,7 +187,8 @@ impl Executor {
     }
 }
 
-pub(crate) async fn cancellable<T>(
+#[doc(hidden)]
+pub async fn cancellable<T>(
     future: impl std::future::Future<Output = Result<T>>,
     cancellation: Option<&acyclic_fs::CancellationToken>,
 ) -> Result<T> {

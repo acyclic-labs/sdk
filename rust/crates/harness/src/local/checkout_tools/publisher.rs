@@ -177,11 +177,11 @@ impl CheckoutPublisher {
             .owe_write_capture(selected, watcher, owed)
             .await?;
         self.materialize(view, operation, &file).await?;
-        #[cfg(test)]
+        #[cfg(all(test, not(acyclic_harness_loom)))]
         if tests::KILL_BEFORE_CAPTURE.get() {
             return Err(Error::Storage("killed before the write's capture".into()));
         }
-        #[cfg(test)]
+        #[cfg(all(test, not(acyclic_harness_loom)))]
         if tests::REPLAY_SKIPS_CAPTURE.get() {
             return self.observed(view, operation, file).await;
         }

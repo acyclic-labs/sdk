@@ -205,6 +205,7 @@ export const harnessModelSuites = {
     ["distributed::tests::model_checking::", 3],
     ["distributed::tests::scheduler_model::", 1],
     ["hooks::effects::models::", 1],
+    ["workflow::model_checking::tests::", 2],
   ],
   "acyclic-harness": [
     ["local::admission::model::", 3],
@@ -212,6 +213,7 @@ export const harnessModelSuites = {
     ["local::routing::model::", 3],
     ["local::orphans::model::", 4],
     ["local::workspace::bootstrap::loom_tests::", 1],
+    ["local::checkout_tools::tests::", 8],
     ["local::children::preparation::models::", 1],
     ["local::children::controller::inputs::models::", 1],
     ["local::children::controller::follow::models::", 1],

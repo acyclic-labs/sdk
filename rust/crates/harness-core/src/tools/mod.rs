@@ -39,6 +39,6 @@ pub fn rejected_input(error: crate::Error) -> crate::tool::ToolResult {
     }
 }
 
-#[cfg(test)]
 #[cfg(acyclic_harness_loom)]
-pub(crate) use children::cancellable as cancellable_child_wait;
+#[doc(hidden)]
+pub use children::cancellable as cancellable_child_wait;

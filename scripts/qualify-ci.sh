@@ -221,9 +221,6 @@ case "$lane" in
         --test client-mailbox-model
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
       harness_tests -p acyclic-harness-core --features model-checking --test mcp-loom
-    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
-      harness_tests -p acyclic-harness-core --features model-checking \
-        --lib workflow::model_checking::tests::
     node scripts/qualify-mcp-loom.mjs --gate
     nextest --workspace --all-features --locked
     cargo test -p acyclic-harness --all-features --locked --example approved-native-process

@@ -86,9 +86,10 @@ pub(crate) async fn capture_checked(
     .map(|(output, ())| output)
 }
 
-// Ownership stays in the worker until process cleanup finishes, even if its
-// awaiting task is cancelled. The checkout Loom model uses this same boundary.
-pub(crate) fn with_custody<T, R>(mut custody: T, operation: impl FnOnce(&mut T) -> R) -> (R, T) {
+/// Retains ownership in the worker through cleanup when its waiter is cancelled.
+/// The facade's checkout model exercises this same production boundary.
+#[doc(hidden)]
+pub fn with_custody<T, R>(mut custody: T, operation: impl FnOnce(&mut T) -> R) -> (R, T) {
     let result = operation(&mut custody);
     (result, custody)
 }
