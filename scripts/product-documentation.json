@@ -84,6 +84,7 @@
   "rust/crates/workers/tests/fixtures/cloud-workers/README.md",
   "rust/vendor/tonic-web-wasm-client-0.9.2/ACYCLIC_PROVENANCE.md",
   "rust/vendor/tonic-web-wasm-client-0.9.2/README.md",
+  "scripts/benchmarks/README.md",
   "scripts/graphcoder-e2e/README.md",
   "scripts/vendor/README.md",
   "tools/sdk-generator/README.md",
