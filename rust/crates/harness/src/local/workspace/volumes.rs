@@ -135,7 +135,7 @@ pub(super) async fn attach(
             held_directories(root, parent)?;
         }
         #[cfg(windows)]
-        recover_volume_after_crash(root, Path::new(relative), source.id().volume_id())?;
+        recover_volume_after_crash(root.path(), Path::new(relative), source.id().volume_id())?;
         acyclic_fs::WorkspaceGraph::new(store.clone())
             .register_root(&source)
             .await?;

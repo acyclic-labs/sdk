@@ -385,7 +385,7 @@ fn invalidate_root_hints<W: crate::demand::SourceDemandReadWork>(
 /// the fence cookie written there confirms that every earlier change was
 /// delivered: a quiet command never rescans, so it never reads files it did
 /// not touch.
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 struct RootHints {
     root: PathBuf,
     shared: Arc<Mutex<SharedState>>,
@@ -393,7 +393,7 @@ struct RootHints {
     _root_allocation: Option<crate::NativeAllocation>,
 }
 
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 impl RootHints {
     /// Accepts one delivered batch. The fence cookie confirms delivery only
     /// once its whole batch is accepted: a batch that fails after the cookie
@@ -447,7 +447,7 @@ impl RootHints {
     }
 }
 
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 impl crate::source_watch::HostChangeSink for RootHints {
     fn logical_owned_bytes(&self) -> u64 {
         size_of::<Self>() as u64 + self.root.capacity() as u64
