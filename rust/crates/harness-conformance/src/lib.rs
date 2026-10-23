@@ -40,29 +40,33 @@ pub enum CaseObservation {
 }
 
 /// Collects raw fixture observations using the host's resolved providers.
-pub async fn collect_on<P, A, O>(
+pub fn collect_on<P, A, O>(
     recipe: serde_json::Value,
     paths: Vec<String>,
     filesystem: acyclic_fs::Fs<A, O>,
     stream: std::sync::Arc<P>,
-) -> TestResult<CaseObservation>
+) -> acyclic_stream::BoxProviderFuture<'static, TestResult<CaseObservation>>
 where
     P: acyclic_stream::StreamProvider,
     A: acyclic_fs::AsyncAuthorityStore + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
 {
-    match recipe.get("driver").and_then(serde_json::Value::as_str) {
-        None | Some("executor") => Ok(CaseObservation::Executor(
-            observation::collect_on(recipe, paths, filesystem, stream).await?,
-        )),
-        Some("composer") => Ok(CaseObservation::Composer(
-            composer::collect(recipe, paths, filesystem, stream).await?,
-        )),
-        Some("filesystem-policy") => Ok(CaseObservation::FilesystemPolicy(
-            policy_owner::collect(recipe, filesystem).await?,
-        )),
-        _ => Err("unknown portable fixture driver".into()),
-    }
+    // Hosts only need the observation result. Erase the composed driver future
+    // here so each substrate does not inherit every driver's async layout.
+    Box::pin(async move {
+        match recipe.get("driver").and_then(serde_json::Value::as_str) {
+            None | Some("executor") => Ok(CaseObservation::Executor(
+                observation::collect_on(recipe, paths, filesystem, stream).await?,
+            )),
+            Some("composer") => Ok(CaseObservation::Composer(
+                composer::collect(recipe, paths, filesystem, stream).await?,
+            )),
+            Some("filesystem-policy") => Ok(CaseObservation::FilesystemPolicy(
+                policy_owner::collect(recipe, filesystem).await?,
+            )),
+            _ => Err("unknown portable fixture driver".into()),
+        }
+    })
 }
 /// Corpus discovery and inherited-default resolution used by the native suite.
 pub mod scenario_data {
