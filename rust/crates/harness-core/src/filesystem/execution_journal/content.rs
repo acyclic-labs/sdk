@@ -60,7 +60,7 @@ where
                     expected_path: Some(&path),
                     maximum_bytes: self.maximum_payload_bytes,
                     internal_class: Some(InternalContentClass::Execution),
-                    read_content: true,
+                    purpose: super::super::PublicationPurpose::Content,
                     scope: &self.scope,
                     ceiling: None,
                 },

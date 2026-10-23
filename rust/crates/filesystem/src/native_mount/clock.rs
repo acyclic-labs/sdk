@@ -57,7 +57,8 @@ thread_local! {
     feature = "test-support",
     any(target_os = "linux", target_os = "macos")
 ))]
-pub fn capture_mount_clock_callbacks() -> impl FnOnce(u64, bool) -> Vec<u8> + Send {
+pub fn capture_mount_clock_callbacks()
+-> impl FnOnce(u64, bool) -> Result<Vec<u8>, super::MountSourceError> + Send {
     let clock = Clock::capture();
     move |host_millis, restore_host_callback| {
         struct Restore(Option<u64>);
@@ -101,10 +102,8 @@ pub fn capture_mount_clock_callbacks() -> impl FnOnce(u64, bool) -> Vec<u8> + Se
         };
         bytes.extend_from_slice(&timestamp.to_le_bytes());
         bytes.extend_from_slice(
-            &super::adapter::access::access_time(&callback_clock)
-                .expect("captured access clock")
-                .to_le_bytes(),
+            &super::adapter::access::access_time(&callback_clock)?.to_le_bytes(),
         );
-        bytes
+        Ok(bytes)
     }
 }

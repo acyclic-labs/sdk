@@ -623,13 +623,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             let workspace = self.open(reference, Some(io)).await?;
             let operation = fork_preparer_io::operation_key(&key, Some(io))?;
-            let mut transaction = if !matches!(publication, FilePublication::Replace(_)) {
-                io.sdk(
-                    workspace
-                        .begin_transaction(operation, io, io.cancellation())
-                        .await,
-                )?
-            } else {
+            let mut transaction = if matches!(publication, FilePublication::Replace(_)) {
                 let pinned = match expected {
                     Some(reference) => self.generation(&workspace, reference, Some(io)).await?,
                     None => io.sdk(workspace.head(io, io.cancellation()).await)?,
@@ -637,6 +631,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 io.sdk(
                     workspace
                         .begin_transaction_at(&pinned, operation, io, io.cancellation())
+                        .await,
+                )?
+            } else {
+                io.sdk(
+                    workspace
+                        .begin_transaction(operation, io, io.cancellation())
                         .await,
                 )?
             };

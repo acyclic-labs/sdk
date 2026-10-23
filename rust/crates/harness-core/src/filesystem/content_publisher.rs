@@ -334,7 +334,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     expected_path: None,
                     maximum_bytes: maximum.min(self.maximum_bytes),
                     internal_class: None,
-                    read_content: false,
+                    purpose: super::PublicationPurpose::Metadata,
                     scope: self.grant.policy_scope(),
                     ceiling,
                 },
@@ -542,15 +542,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         maximum: u64,
         ceiling: Option<&crate::Capabilities>,
     ) -> Result<Option<FileRef>> {
-        self.host
-            .content_for_operation(
-                &self.volume,
-                &self.grant,
-                &upload_key(operation, path, None)?,
-                path,
-                maximum.min(self.maximum_bytes),
-                crate::conversation::ContentAccess { ceiling, io: None },
-            )
+        self.observe_write_receipt(upload_key(operation, path, None)?, path, maximum, ceiling)
             .await
     }
     #[doc(hidden)]
@@ -561,15 +553,40 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         maximum: u64,
         ceiling: Option<&crate::Capabilities>,
     ) -> Result<Option<FileRef>> {
-        self.host
-            .content_for_operation(
-                &self.volume,
-                &self.grant,
-                &replacement_key(operation, source.path(), None)?,
-                source.path(),
-                maximum.min(self.maximum_bytes),
-                crate::conversation::ContentAccess { ceiling, io: None },
+        self.observe_write_receipt(
+            replacement_key(operation, source.path(), None)?,
+            source.path(),
+            maximum,
+            ceiling,
+        )
+        .await
+    }
+
+    async fn observe_write_receipt(
+        &self,
+        key: IdempotencyKey,
+        path: &str,
+        maximum: u64,
+        ceiling: Option<&crate::Capabilities>,
+    ) -> Result<Option<FileRef>> {
+        self.grant
+            .require(&self.volume, VolumeOperation::Write, None)?;
+        let observed = self
+            .host
+            .content_for_operation_record_io(
+                super::PublicationLookup {
+                    volume: &self.volume,
+                    key: &key,
+                    expected_path: Some(path),
+                    maximum_bytes: maximum.min(self.maximum_bytes),
+                    internal_class: None,
+                    purpose: super::PublicationPurpose::WriteReceipt,
+                    scope: self.grant.policy_scope(),
+                    ceiling,
+                },
+                None,
             )
-            .await
+            .await?;
+        Ok(observed.map(|(file, _)| file))
     }
 }

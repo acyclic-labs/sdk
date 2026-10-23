@@ -101,7 +101,7 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
                     expected_path: Some(&path),
                     maximum_bytes: 4096,
                     internal_class: Some(InternalContentClass::Execution),
-                    read_content: true,
+                    purpose: super::super::super::PublicationPurpose::Content,
                     scope: &scope,
                     ceiling: None,
                 },
@@ -155,7 +155,11 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
                         expected_path: Some(&path),
                         maximum_bytes: 4096,
                         internal_class: Some(InternalContentClass::Execution),
-                        read_content,
+                        purpose: if read_content {
+                            super::super::super::PublicationPurpose::Content
+                        } else {
+                            super::super::super::PublicationPurpose::Metadata
+                        },
                         scope: &scoped,
                         ceiling: None,
                     },

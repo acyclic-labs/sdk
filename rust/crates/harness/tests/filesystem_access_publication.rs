@@ -1,5 +1,96 @@
 use super::*;
 
+#[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+#[tokio::test]
+async fn known_write_receipts_do_not_authorize_metadata_discovery() -> Result<(), Box<dyn Error>> {
+    use acyclic_harness::conversation::{ContentAccess, ContentPublisher};
+    use acyclic_harness::filesystem::FilesystemContentPublisher;
+    let fixture = Fixture::new().await?;
+    let capability = Capability {
+        layers: vec![vec![Grant {
+            actions: [Action::Create, Action::Write, Action::ReadHistory]
+                .into_iter()
+                .collect(),
+            resource: ResourcePattern {
+                lineage_root: None,
+                volume: None,
+                generations: Generations::All,
+                path: "secrets/**".into(),
+            },
+        }]],
+        expires_at: None,
+    };
+    let scope = fixture.issuer.issue(
+        "write-receipts",
+        &Capabilities::new([
+            fixture
+                .volume
+                .capability(VolumeOperation::Write, &mut None)?,
+            capability.to_scope_label()?,
+        ]),
+        fixture.scope.agent(),
+        None,
+        &mut None,
+    )?;
+    let writer = FilesystemContentPublisher::new(
+        fixture.host.clone(),
+        &fixture.volume,
+        &fixture.issuer.verifier(&mut None)?,
+        &scope,
+        4096,
+        None,
+    )?;
+    let operation = acyclic_harness::OperationId::from_bytes([52; 16]);
+    let path = "secrets/receipt";
+    let (first, _) = writer
+        .stage(
+            operation,
+            path,
+            b"first",
+            "text/plain",
+            "receipt",
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert_eq!(
+        writer
+            .observe_staged_path(operation, path, 4096, None)
+            .await?,
+        Some(first.clone())
+    );
+    let replacement = acyclic_harness::OperationId::from_bytes([53; 16]);
+    let (next, _) = writer
+        .stage_at(replacement, &first, b"next", None, None)?
+        .await?;
+    assert_eq!(
+        writer
+            .observe_staged_at(replacement, &first, 4096, None)
+            .await?,
+        Some(next)
+    );
+    let unknown = acyclic_harness::OperationId::from_bytes([54; 16]);
+    let _ = writer
+        .stage_once(
+            unknown,
+            "secrets/unknown",
+            b"hidden",
+            "text/plain",
+            "unknown",
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert_eq!(
+        writer
+            .observe_staged_once(unknown, 4096, ContentAccess::default())?
+            .await
+            .err()
+            .ok_or("metadata discovery unexpectedly succeeded")?
+            .code(),
+        acyclic_harness::wire::ErrorCode::Unauthorized,
+    );
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(24))]
     #[test]

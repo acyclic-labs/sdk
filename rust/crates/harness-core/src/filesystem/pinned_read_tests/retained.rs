@@ -44,9 +44,11 @@ fn grant(file: &FileRef) -> Result<ContentGrant> {
     );
     let scope = issuer.issue(
         "owner",
-        &crate::Capabilities::new([file
-            .volume()
-            .capability(VolumeOperation::Write, &mut None)?]),
+        &crate::Capabilities::new([
+            file.volume()
+                .capability(VolumeOperation::Write, &mut None)?,
+            file.volume().capability(VolumeOperation::Read, &mut None)?,
+        ]),
         Some(AgentId::from_bytes([1; 16])),
         None,
         &mut None,

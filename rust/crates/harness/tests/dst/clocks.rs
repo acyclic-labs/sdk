@@ -2,11 +2,14 @@
 use acyclic_fs::native_mount::capture_mount_clock_callbacks;
 use acyclic_native_runtime::testing::Schedule;
 
-fn trace(seed: u64, host_millis: u64, restore_host_callback: bool) -> Vec<u8> {
+fn trace(
+    seed: u64,
+    host_millis: u64,
+    restore_host_callback: bool,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
-        .build()
-        .unwrap();
+        .build()?;
     let (schedule, _) = Schedule::seeded(seed);
     let callback = runtime.block_on(async {
         tokio::time::pause();
@@ -17,13 +20,16 @@ fn trace(seed: u64, host_millis: u64, restore_host_callback: bool) -> Vec<u8> {
     });
     // A driver thread has neither the seed's task-local context nor a runtime.
     // Invoke after scope exit, retaining the runtime only through the provider.
-    std::thread::spawn(move || callback(host_millis, restore_host_callback))
-        .join()
-        .unwrap()
+    Ok(
+        std::thread::spawn(move || callback(host_millis, restore_host_callback))
+            .join()
+            .map_err(|_| "mount callback thread panicked")??,
+    )
 }
 
 #[test]
-fn mount_callbacks_replay_identically_despite_host_clock_skew() {
+fn mount_callbacks_replay_identically_despite_host_clock_skew()
+-> Result<(), Box<dyn std::error::Error>> {
     let equal = |left: &[u8], right: &[u8]| -> Result<(), &'static str> {
         if left == right {
             Ok(())
@@ -34,16 +40,17 @@ fn mount_callbacks_replay_identically_despite_host_clock_skew() {
     for seed in [0, 71, u64::MAX] {
         let before = 1_600_000_000_000;
         let after = 1_900_000_000_000;
-        let left = trace(seed, before, false);
-        let right = trace(seed, after, false);
-        equal(&left, &right).expect("same seed, skewed host clock");
+        let left = trace(seed, before, false)?;
+        let right = trace(seed, after, false)?;
+        equal(&left, &right)?;
         // Restore just the FUSE/NFS now-attribute callback to the host clock.
         // The same byte comparator must reject the broken production path.
-        let left = trace(seed, before, true);
-        let right = trace(seed, after, true);
+        let left = trace(seed, before, true)?;
+        let right = trace(seed, after, true)?;
         assert_eq!(equal(&left, &right), Err("mount callback trace diverged"));
-        assert_eq!(equal(&left, &trace(seed, before, true)), Ok(()));
+        assert_eq!(equal(&left, &trace(seed, before, true)?), Ok(()));
     }
+    Ok(())
 }
 
 #[test]

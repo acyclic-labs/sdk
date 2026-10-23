@@ -1,6 +1,13 @@
 use super::*;
 use std::marker::PhantomData;
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(in crate::filesystem) enum PublicationPurpose {
+    WriteReceipt,
+    Metadata,
+    Content,
+}
+
 #[derive(Clone, Copy)]
 pub(in crate::filesystem) struct PublicationLookup<'a> {
     pub volume: &'a VolumeRef,
@@ -8,7 +15,7 @@ pub(in crate::filesystem) struct PublicationLookup<'a> {
     pub expected_path: Option<&'a str>,
     pub maximum_bytes: u64,
     pub internal_class: Option<InternalContentClass>,
-    pub read_content: bool,
+    pub purpose: PublicationPurpose,
     pub scope: &'a Scope,
     pub ceiling: Option<&'a crate::Capabilities>,
 }
@@ -109,12 +116,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             scope,
             volume,
             ceiling,
-            read_content,
+            purpose,
             ..
         } = *request;
         // Recovery of a caller-selected path returns the original write receipt.
         // Discovery of an unknown path still requires directory disclosure.
-        let write_receipt = !read_content && request.expected_path.is_some();
+        let write_receipt = purpose == PublicationPurpose::WriteReceipt;
+        if write_receipt && request.expected_path.is_none() {
+            return Err(io.invalid("write receipt recovery requires its original path"));
+        }
         if write_receipt {
             for grants in [Some(scope.capabilities()), ceiling].into_iter().flatten() {
                 if !crate::core::volume_write_granted_with_work(
@@ -187,7 +197,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 io,
             )?;
         }
-        if read_content {
+        if purpose == PublicationPurpose::Content {
             super::super::access::require(
                 &view.0,
                 acyclic_fs::access::Action::Read,
@@ -266,7 +276,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         drop(recorded.0.1.take());
         recorded.1.substitute(recorded.0.0.logical_owned_bytes()?)?;
         recorded.1.into_retained()?;
-        let payload = if request.read_content {
+        let payload = if request.purpose == PublicationPurpose::Content {
             if let Some(hold) = bytes.1 {
                 hold.into_retained()?;
             }
