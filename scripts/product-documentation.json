@@ -28,6 +28,7 @@
   "docs/objects-v1-http.md",
   "docs/observability.md",
   "docs/release-candidate.md",
+  "docs/resource-identity.md",
   "docs/rust-source-generation.md",
   "docs/tool-composition.md",
   "docs/volume-composition.md",
