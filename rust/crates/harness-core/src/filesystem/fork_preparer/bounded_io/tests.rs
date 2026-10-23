@@ -5,6 +5,68 @@ use crate::filesystem::workspace_ref;
 use acyclic_fs::Fs;
 
 #[test]
+fn access_records_share_the_native_budget_and_cover_physical_storage() -> Result<()> {
+    use acyclic_fs::access::{Capability, Policy};
+    let capability = include_bytes!("../../access/legacy-native.json");
+    for attributes in [0, 4] {
+        let mut policy: Policy = serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let rule = policy
+            .layers
+            .first_mut()
+            .and_then(|layer| layer.first_mut())
+            .ok_or_else(|| Error::Invalid("fixture has no policy rule".into()))?;
+        rule.principal.attributes = (0..attributes)
+            .map(|index| (format!("claim-{index}"), "authenticated-value".repeat(8)))
+            .collect();
+        let bytes =
+            serde_json::to_vec(&policy).map_err(|error| Error::Invalid(error.to_string()))?;
+        let native = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+            &CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = native.live_allocation_bytes();
+        let io = PreparationIo::from_native_work(&native)?;
+        let mut decoded = None;
+        let physical = acyclic_test_support::measure(|| {
+            decoded = Some((|| -> Result<_> {
+                let capability = io.decode(
+                    std::marker::PhantomData::<Capability>,
+                    capability,
+                    crate::wire::ErrorCode::Unauthorized,
+                )?;
+                let policy = io.decode(
+                    std::marker::PhantomData::<Policy>,
+                    &bytes,
+                    crate::wire::ErrorCode::Storage,
+                )?;
+                Ok((capability, policy))
+            })());
+        });
+        let ((actual_capability, capability_custody), (actual_policy, policy_custody)) =
+            decoded.expect("decoder ran")?;
+        assert_eq!(actual_policy, policy);
+        assert_eq!(actual_capability.layers.len(), 1);
+        assert!(physical.count_total > 0, "allocation observer is active");
+        assert!(
+            physical.bytes_max <= native.receipt().peak_allocation_bytes - baseline,
+            "physical={physical:?}; receipt={:?}",
+            native.receipt()
+        );
+        assert!(
+            physical.bytes_current.cast_unsigned()
+                <= capability_custody.bytes() + policy_custody.bytes()
+        );
+        drop((actual_capability, actual_policy));
+        drop((capability_custody, policy_custody));
+        drop(io);
+        assert_eq!(native.live_allocation_bytes(), baseline);
+    }
+    Ok(())
+}
+
+#[test]
 fn workflow_value_payloads_do_not_reserve_typed_metadata_diagnostics() -> Result<()> {
     use crate::workflow::{
         MachineCheckpoint, MachineIdentity, MachineStatus, MachineTransition, WorkflowRecord,

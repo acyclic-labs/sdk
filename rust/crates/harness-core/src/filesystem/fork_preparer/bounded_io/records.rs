@@ -150,7 +150,6 @@ macro_rules! records {
     ($($record:ty => $schema:ident),* $(,)?) => {$(impl PreparationRecord for $record { fn json_value_schema() -> &'static Schema { Schema::$schema } })*};
 }
 records!(
-    acyclic_fs::access::Policy => None, acyclic_fs::access::Capability => None,
     crate::Capabilities => None,
     crate::context::Context => Context, crate::context::SummarySource => SummarySource, crate::context::CanonicalContextCheckpoint => None, crate::context::CompactionReference => None,
     crate::executor::ResponseProjection => ResponseProjection, crate::model::ModelEvent => ModelEvent,
@@ -159,6 +158,26 @@ records!(
     FileRef => None, Vec<crate::conversation::Attachment> => None,
     crate::workflow::WorkflowAdmission => WorkflowAdmission, crate::workflow::MachineCheckpoint => MachineCheckpoint, crate::workflow::WorkflowCommand => None,
 );
+impl PreparationRecord for acyclic_fs::access::Policy {
+    fn maximum_slot_bytes() -> u64 {
+        preparation_slot_bytes::<acyclic_fs::access::Rule>()
+    }
+    fn container_collection_slots() -> bool {
+        // Rule headers belong to parsed objects, not each action enum or string.
+        // Every lexical item still funds serde Content buffering and strings.
+        true
+    }
+}
+impl PreparationRecord for acyclic_fs::access::Capability {
+    fn maximum_slot_bytes() -> u64 {
+        preparation_slot_bytes::<acyclic_fs::access::Grant>()
+    }
+    fn container_collection_slots() -> bool {
+        // Grant vectors grow at their object/array openings. Scalar actions
+        // retain their separate Content allowance without another Grant header.
+        true
+    }
+}
 impl PreparationRecord for crate::workflow::WorkflowRecord {
     fn diagnostic_source_bytes(shape: JsonValueShape) -> u64 {
         // The closed workflow envelope's Value fields accept any admitted
