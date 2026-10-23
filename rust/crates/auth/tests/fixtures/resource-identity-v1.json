@@ -212,6 +212,41 @@
       "error": "empty_label"
     },
     {
+      "case": "invalid-a-label-id",
+      "account_hex": "6163636f756e74",
+      "id_hex": "786e2d2d61",
+      "domain": "example.com",
+      "error": "invalid_character"
+    },
+    {
+      "case": "invalid-a-label-account",
+      "account_hex": "786e2d2d61",
+      "id_hex": "776f726b6572",
+      "domain": "example.com",
+      "error": "invalid_character"
+    },
+    {
+      "case": "invalid-a-label-domain",
+      "account_hex": "6163636f756e74",
+      "id_hex": "776f726b6572",
+      "domain": "example.xn--a",
+      "error": "invalid_character"
+    },
+    {
+      "case": "valid-a-label-id",
+      "account_hex": "6163636f756e74",
+      "id_hex": "786e2d2d6361662d646d61",
+      "domain": "example.com",
+      "hostname": "xn--caf-dma.account.example.com"
+    },
+    {
+      "case": "valid-a-label-domain",
+      "account_hex": "6163636f756e74",
+      "id_hex": "776f726b6572",
+      "domain": "xn--caf-dma.example",
+      "hostname": "worker.account.xn--caf-dma.example"
+    },
+    {
       "case": "max-host",
       "account_hex": "616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
       "id_hex": "626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262",

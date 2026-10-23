@@ -15,6 +15,8 @@ DNS is `<id>.<account>.<domain>`, with strict lowercase LDH labels and no alias
 folding. Only IDs that are already valid labels have a DNS representation.
 The returned canonical hostname is the spelling for URL authority, TLS SNI and
 signed Host bytes.
+Invalid IDNA A-labels are rejected by the shared URL host parser; valid ASCII
+A-labels are retained byte for byte. No input is converted to another spelling.
 
 JavaScript callers must supply `Uint8Array` fields and string DNS text; wrong
 argument shapes raise `TypeError` before WASM can coerce them. Byte-content and

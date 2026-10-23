@@ -80,6 +80,13 @@ impl CanonicalHost {
         {
             return Err(DnsError::NumericHost);
         }
+        // An LDH spelling can still be an invalid IDNA A-label (for example
+        // xn--a). Accept only bytes retained exactly by the URL host parser,
+        // so browser authority, SNI and signed Host cannot disagree.
+        match url::Host::parse(host).map_err(|_| DnsError::InvalidCharacter)? {
+            url::Host::Domain(canonical) if canonical == host => {}
+            _ => return Err(DnsError::InvalidCharacter),
+        }
         Ok(Self(host.to_owned()))
     }
 

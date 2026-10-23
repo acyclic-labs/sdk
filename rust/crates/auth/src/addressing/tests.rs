@@ -41,6 +41,14 @@ proptest! {
         prop_assert_eq!(CanonicalHost::parse(host.as_str())?, host);
     }
     #[test]
+    fn admitted_hosts_retain_their_url_authority(labels in prop::collection::vec("[a-z0-9][a-z0-9-]{0,61}[a-z0-9]", 1..=4)) {
+        let text = labels.join(".");
+        if let Ok(host) = CanonicalHost::parse(&text) {
+            let url = url::Url::parse(&format!("https://{}", host.as_str()))?;
+            prop_assert_eq!(url.host_str(), Some(host.as_str()));
+        }
+    }
+    #[test]
     fn parser_accepts_only_canonical_bytes(bytes in prop::collection::vec(any::<u8>(), 0..10000)) {
         if let Ok(value) = ResourceIdentity::decode(&bytes) {
             prop_assert_eq!(value.encode(), bytes);
@@ -137,6 +145,29 @@ fn rejects_tls_and_signature_aliases() -> Result<(), DnsError> {
     ] {
         assert!(CanonicalHost::parse(alias).is_err(), "{alias:?}");
     }
+    Ok(())
+}
+
+#[test]
+fn invalid_a_labels_cannot_cross_the_url_boundary() -> Result<(), Box<dyn std::error::Error>> {
+    let invalid = "xn--a.account.example.com";
+    // The former LDH-only path accepts every label; the URL authority refuses it.
+    assert!(
+        invalid
+            .split('.')
+            .all(|label| validate_dns_label(label.as_bytes()).is_ok())
+    );
+    assert!(url::Url::parse(&format!("https://{invalid}")).is_err());
+    assert_eq!(
+        CanonicalHost::parse(invalid),
+        Err(DnsError::InvalidCharacter)
+    );
+    let valid = "xn--caf-dma.account.example.com";
+    assert_eq!(CanonicalHost::parse(valid)?.as_str(), valid);
+    assert_eq!(
+        url::Url::parse(&format!("https://{valid}"))?.host_str(),
+        Some(valid)
+    );
     Ok(())
 }
 
