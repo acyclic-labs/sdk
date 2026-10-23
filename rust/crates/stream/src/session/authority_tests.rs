@@ -60,18 +60,23 @@ fn authority(state: Arc<State>) -> Authority {
 }
 fn token(path: &str, change: impl Fn(&mut Block)) -> Vec<u8> {
     signed::root(|block| {
-        for certificate in block.certificates.iter_mut().flat_map(|chain| chain.keys.iter_mut()).take(1) {
+        for certificate in block
+            .certificates
+            .iter_mut()
+            .flat_map(|chain| chain.keys.iter_mut())
+            .take(1)
+        {
             certificate.key.grants = GrantSet {
-            grants: vec![Grant {
-                kind: GrantKind::Resource(ResourceGrant {
-                    resource: ResourcePattern {
-                        name: format!("streams:/{path}"),
-                        prefix: true,
-                    },
-                    actions: vec!["streams/follow".into()],
-                }),
-            }],
-        };
+                grants: vec![Grant {
+                    kind: GrantKind::Resource(ResourceGrant {
+                        resource: ResourcePattern {
+                            name: format!("streams:/{path}"),
+                            prefix: true,
+                        },
+                        actions: vec!["streams/follow".into()],
+                    }),
+                }],
+            };
         }
         change(block);
     })
@@ -114,7 +119,9 @@ fn slots_reject_forgery_expiry_wrong_audience_holder_and_widening() {
         Err(StreamError::Capacity)
     );
     let mut forged = bytes.clone();
-    if let Some(byte) = forged.get_mut(20) { *byte ^= 1; }
+    if let Some(byte) = forged.get_mut(20) {
+        *byte ^= 1;
+    }
     auth.register(&mut slots, 0, &forged, 2).unwrap();
     assert!(matches!(
         bind(&auth, &slots, "allowed"),
@@ -272,7 +279,8 @@ async fn live_sessions_close_idle_and_queued_follows_before_disclosure() {
             };
             append(b"seed").await;
             let bytes = token("allowed", |_| {});
-            let (sender, mut output) = live_session(provider.clone(), state.clone(), bytes.clone(), &path).unwrap();
+            let (sender, mut output) =
+                live_session(provider.clone(), state.clone(), bytes.clone(), &path).unwrap();
             let mut opened = false;
             for _ in 0..3 {
                 let message =
@@ -308,37 +316,7 @@ async fn live_sessions_close_idle_and_queued_follows_before_disclosure() {
                 append(b"must remain private").await;
             }
             assert!(futures::poll!(output.next()).is_pending());
-            match reason {
-                "revoked" => {
-                    let capability =
-                        verify::verify(&bytes, &signed::Snapshot::default(), signed::NOW).unwrap();
-                    state.publish(
-                        signed::Snapshot {
-                            revoked_blocks: vec![*capability.block_ids().first().unwrap()],
-                            ..Default::default()
-                        },
-                        signed::NOW,
-                    );
-                }
-                "credential_expired" => state.publish(signed::Snapshot::default(), 1000),
-                _ => {
-                    let replacement = if reason == "drop" {
-                        vec![]
-                    } else {
-                        token("other", |_| {})
-                    };
-                    sender
-                        .unbounded_send(Ok(frame(
-                            0,
-                            0,
-                            Body::Credential(wire::SessionCredential {
-                                slot: 0,
-                                credential: replacement.into(),
-                            }),
-                        )))
-                        .unwrap();
-                }
-            }
+            invalidate_session(reason, &state, &bytes, &sender);
             let closed = tokio::time::timeout(std::time::Duration::from_secs(1), output.next())
                 .await
                 .unwrap()
@@ -379,57 +357,90 @@ async fn live_sessions_close_idle_and_queued_follows_before_disclosure() {
     }
 }
 
-fn live_session(provider: Arc<crate::MemoryStream>, state: Arc<State>, bytes: Vec<u8>, path: &StreamPath) -> Result<(futures::channel::mpsc::UnboundedSender<Result<wire::SessionFrame, StreamError>>, transport::Responses), Box<dyn std::error::Error>> {
+type LiveSender = futures::channel::mpsc::UnboundedSender<Result<wire::SessionFrame, StreamError>>;
+fn invalidate_session(reason: &str, state: &State, bytes: &[u8], sender: &LiveSender) {
+    match reason {
+        "revoked" => {
+            let capability =
+                verify::verify(&bytes, &signed::Snapshot::default(), signed::NOW).unwrap();
+            state.publish(
+                signed::Snapshot {
+                    revoked_blocks: vec![*capability.block_ids().first().unwrap()],
+                    ..Default::default()
+                },
+                signed::NOW,
+            );
+        }
+        "credential_expired" => state.publish(signed::Snapshot::default(), 1000),
+        _ => {
+            let replacement = if reason == "drop" {
+                vec![]
+            } else {
+                token("other", |_| {})
+            };
+            sender
+                .unbounded_send(Ok(frame(
+                    0,
+                    0,
+                    Body::Credential(wire::SessionCredential {
+                        slot: 0,
+                        credential: replacement.into(),
+                    }),
+                )))
+                .unwrap();
+        }
+    }
+}
+
+fn live_session(
+    provider: Arc<crate::MemoryStream>,
+    state: Arc<State>,
+    bytes: Vec<u8>,
+    path: &StreamPath,
+) -> Result<(LiveSender, transport::Responses), Box<dyn std::error::Error>> {
     use futures::channel::mpsc;
-            let (sender, receiver) = mpsc::unbounded();
-            sender
-                .unbounded_send(Ok(frame(
-                    0,
-                    0,
-                    Body::Hello(wire::SessionHello {
-                        version: 1,
-                        client_id: Bytes::from_static(b"authority-control"),
-                        destination_node: "node".into(),
-                        receive_bytes: 1_000_000,
-                        receive_frames: 100,
-                        credentials: vec![bytes.clone().into()],
-                    }),
-                )))
-                ?;
-            sender
-                .unbounded_send(Ok(frame(
-                    0,
-                    0,
-                    Body::Interest(wire::SessionInterest {
-                        revision: 1,
-                        upsert: vec![wire::SessionSubscription {
-                            channel: Some(wire::SessionChannel {
-                                channel_id: 1,
-                                generation: 1,
-                            }),
-                            resume: Some(cursor(1)),
-                            credential: 0,
-                            filter: None,
-                            kind: Some(Kind::Follow(wire::SessionFollow {
-                                resource: crate::wire_codec::session::stream_resource(
-                                    path.as_str(),
-                                ),
-                                delivery: wire::SessionDelivery::All as i32,
-                                ..Default::default()
-                            })),
-                        }],
-                        remove: vec![],
-                    }),
-                )))
-                ?;
-            let output = serve(
-                provider.clone(),
-                Arc::new(authority(state.clone())),
-                "node".into(),
-                crate::session::Limits::default(),
-                receiver.boxed(),
-            )
-            ?;
+    let (sender, receiver) = mpsc::unbounded();
+    sender.unbounded_send(Ok(frame(
+        0,
+        0,
+        Body::Hello(wire::SessionHello {
+            version: 1,
+            client_id: Bytes::from_static(b"authority-control"),
+            destination_node: "node".into(),
+            receive_bytes: 1_000_000,
+            receive_frames: 100,
+            credentials: vec![bytes.into()],
+        }),
+    )))?;
+    sender.unbounded_send(Ok(frame(
+        0,
+        0,
+        Body::Interest(wire::SessionInterest {
+            revision: 1,
+            upsert: vec![wire::SessionSubscription {
+                channel: Some(wire::SessionChannel {
+                    channel_id: 1,
+                    generation: 1,
+                }),
+                resume: Some(cursor(1)),
+                credential: 0,
+                filter: None,
+                kind: Some(Kind::Follow(wire::SessionFollow {
+                    resource: crate::wire_codec::session::stream_resource(path.as_str()),
+                    delivery: wire::SessionDelivery::All as i32,
+                    ..Default::default()
+                })),
+            }],
+            remove: vec![],
+        }),
+    )))?;
+    let output = serve(
+        provider,
+        Arc::new(authority(state)),
+        "node".into(),
+        crate::session::Limits::default(),
+        receiver.boxed(),
+    )?;
     Ok((sender, output))
 }
 
@@ -509,10 +520,23 @@ fn canonical_resource_bindings_preserve_reserved_names_and_literal_escapes()
 
 fn fs_token(resource: &str, change: impl Fn(&mut Block)) -> Vec<u8> {
     signed::root(|block| {
-        for certificate in block.certificates.iter_mut().flat_map(|chain| chain.keys.iter_mut()).take(1) {
-            certificate.key.grants = GrantSet { grants: vec![Grant {
-            kind: GrantKind::Resource(ResourceGrant { resource: ResourcePattern { name: resource.into(), prefix: true }, actions: vec!["fs/list".into()] }),
-        }] };
+        for certificate in block
+            .certificates
+            .iter_mut()
+            .flat_map(|chain| chain.keys.iter_mut())
+            .take(1)
+        {
+            certificate.key.grants = GrantSet {
+                grants: vec![Grant {
+                    kind: GrantKind::Resource(ResourceGrant {
+                        resource: ResourcePattern {
+                            name: resource.into(),
+                            prefix: true,
+                        },
+                        actions: vec!["fs/list".into()],
+                    }),
+                }],
+            };
         }
         change(block);
     })
@@ -523,23 +547,59 @@ fn filesystem_discovery_defers_only_list_and_checks_full_paths_and_deny_wins() {
     let mut slots = Slots::default();
     let bytes = fs_token("fs:/volume/public", |_| {});
     auth.register(&mut slots, 0, &bytes, 2).unwrap();
-    let (_, filter, context) = auth.bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1).unwrap();
+    let (_, filter, context) = auth
+        .bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
+        .unwrap();
     let attributes = RecordAttributes::try_new(vec![]).unwrap();
-    assert!(context.authorize("fs:/volume/public/file", &[], &attributes, PolicyDecision::Allow).is_ok());
-    for name in ["fs:/volume/private", "fs:/volume/public-other", "fs:/other/public"] {
-        assert!(context.authorize(name, &[], &attributes, PolicyDecision::Allow).is_err());
+    assert!(
+        context
+            .authorize(
+                "fs:/volume/public/file",
+                &[],
+                &attributes,
+                PolicyDecision::Allow
+            )
+            .is_ok()
+    );
+    for name in [
+        "fs:/volume/private",
+        "fs:/volume/public-other",
+        "fs:/other/public",
+    ] {
+        assert!(
+            context
+                .authorize(name, &[], &attributes, PolicyDecision::Allow)
+                .is_err()
+        );
     }
-    assert!(context.authorize("fs:/volume/public", &[], &attributes, PolicyDecision::Deny).is_err());
+    assert!(
+        context
+            .authorize("fs:/volume/public", &[], &attributes, PolicyDecision::Deny)
+            .is_err()
+    );
     let indexed = context.filter_paths("fs:/volume", &filter).unwrap();
     for key in [b"public".as_slice(), b"public/file"] {
-        assert!(indexed.matches(&crate::RecordHeaders::new(vec![key.to_vec().into()], vec![]).unwrap()));
+        assert!(
+            indexed.matches(&crate::RecordHeaders::new(vec![key.to_vec().into()], vec![]).unwrap())
+        );
     }
     for key in [b"private".as_slice(), b"public-other", b"public0"] {
-        assert!(!indexed.matches(&crate::RecordHeaders::new(vec![key.to_vec().into()], vec![]).unwrap()));
+        assert!(
+            !indexed
+                .matches(&crate::RecordHeaders::new(vec![key.to_vec().into()], vec![]).unwrap())
+        );
     }
     let cap = verify::verify(&bytes, &signed::Snapshot::default(), signed::NOW).unwrap();
     let usage = signed::limits(None);
-    assert!(cap.authorize_resource_follow(&signed::Snapshot::default(), &signed::request("fs:/volume/public", &attributes, &usage), PolicyDecision::Allow).is_err(), "fs/read cannot use discovery deferral");
+    assert!(
+        cap.authorize_resource_follow(
+            &signed::Snapshot::default(),
+            &signed::request("fs:/volume/public", &attributes, &usage),
+            PolicyDecision::Allow
+        )
+        .is_err(),
+        "fs/read cannot use discovery deferral"
+    );
 }
 #[test]
 fn filesystem_context_rechecks_revocation_expiry_and_renewal_before_disclosure() {
@@ -549,28 +609,79 @@ fn filesystem_context_rechecks_revocation_expiry_and_renewal_before_disclosure()
         let mut slots = Slots::default();
         let bytes = fs_token("fs:/volume/public", |_| {});
         auth.register(&mut slots, 0, &bytes, 2).unwrap();
-        let (_, _, context) = auth.bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1).unwrap();
+        let (_, _, context) = auth
+            .bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
+            .unwrap();
         let attributes = RecordAttributes::try_new(vec![]).unwrap();
-        assert!(context.authorize("fs:/volume/public", &[], &attributes, PolicyDecision::Allow).is_ok());
+        assert!(
+            context
+                .authorize("fs:/volume/public", &[], &attributes, PolicyDecision::Allow)
+                .is_ok()
+        );
         let cap = verify::verify(&bytes, &signed::Snapshot::default(), signed::NOW).unwrap();
-        state.publish(signed::Snapshot { revoked_blocks: if revoke { vec![*cap.block_ids().first().unwrap()] } else { vec![] }, ..Default::default() }, if revoke { signed::NOW } else { 1000 });
-        assert!(context.authorize("fs:/volume/public", &[], &attributes, PolicyDecision::Allow).is_err());
+        state.publish(
+            signed::Snapshot {
+                revoked_blocks: if revoke {
+                    vec![*cap.block_ids().first().unwrap()]
+                } else {
+                    vec![]
+                },
+                ..Default::default()
+            },
+            if revoke { signed::NOW } else { 1000 },
+        );
+        assert!(
+            context
+                .authorize("fs:/volume/public", &[], &attributes, PolicyDecision::Allow)
+                .is_err()
+        );
     }
     let auth = Arc::new(authority(State::new()));
     let mut slots = Slots::default();
-    auth.register(&mut slots, 0, &fs_token("fs:/volume", |_| {}), 2).unwrap();
-    let (mut binding, _, _) = auth.bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1).unwrap();
-    auth.register(&mut slots, 0, &fs_token("fs:/volume/public", |_| {}), 2).unwrap();
-    assert!(matches!(auth.validate(&slots, &mut binding, 1), Err(Rejection::Forbidden)), "queued entries must not retain the former grant ceiling");
+    auth.register(&mut slots, 0, &fs_token("fs:/volume", |_| {}), 2)
+        .unwrap();
+    let (mut binding, _, _) = auth
+        .bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
+        .unwrap();
+    auth.register(&mut slots, 0, &fs_token("fs:/volume/public", |_| {}), 2)
+        .unwrap();
+    assert!(
+        matches!(
+            auth.validate(&slots, &mut binding, 1),
+            Err(Rejection::Forbidden)
+        ),
+        "queued entries must not retain the former grant ceiling"
+    );
 }
 #[test]
 fn filesystem_context_rejects_forged_expired_and_wrong_audience_credentials() {
     let auth = Arc::new(authority(State::new()));
     let mut slots = Slots::default();
     let valid = fs_token("fs:/volume", |_| {});
-    let mut forged = valid; if let Some(byte) = forged.get_mut(20) { *byte ^= 1; }
-    for bytes in [forged, fs_token("fs:/volume", |block| block.caveats.push(Caveat { kind: CaveatKind::ExpiresAtUnixSeconds(signed::NOW) })), fs_token("fs:/volume", |block| block.caveats.push(Caveat { kind: CaveatKind::Audience(ResourcePattern { name: "workers:/other".into(), prefix: false }) }))] {
+    let mut forged = valid;
+    if let Some(byte) = forged.get_mut(20) {
+        *byte ^= 1;
+    }
+    for bytes in [
+        forged,
+        fs_token("fs:/volume", |block| {
+            block.caveats.push(Caveat {
+                kind: CaveatKind::ExpiresAtUnixSeconds(signed::NOW),
+            })
+        }),
+        fs_token("fs:/volume", |block| {
+            block.caveats.push(Caveat {
+                kind: CaveatKind::Audience(ResourcePattern {
+                    name: "workers:/other".into(),
+                    prefix: false,
+                }),
+            })
+        }),
+    ] {
         auth.register(&mut slots, 0, &bytes, 2).unwrap();
-        assert!(auth.bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1).is_err());
+        assert!(
+            auth.bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
+                .is_err()
+        );
     }
 }

@@ -204,7 +204,7 @@ pub struct ResourceFollowRequest {
     /// Preceding commit when the caller resumes an accepted cut.
     pub preceding: Option<crate::CommitId>,
     /// Requested selection intersected with all credential filter ceilings.
-    pub filter: &crate::FollowFilter,
+    pub filter: crate::FollowFilter,
     /// Verified channel authority; per-entry checks remain mandatory.
     pub authorization: ResourceAuthorization,
 }

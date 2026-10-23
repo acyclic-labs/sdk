@@ -6,15 +6,16 @@ async fn raw_changed_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     maximum_entries: u32,
     original: &crate::NativeMaterializationWork,
     cancellation: &CancellationToken,
-) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
-    raw_endpoint_paths(changes, maximum_entries, false, original, cancellation).await
+) -> Result<(Vec<ChangedPath>, crate::AuthorityAllocation), WorkspaceError> {
+    changes
+        .changed_paths(maximum_entries, original, cancellation)
+        .await
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 async fn raw_endpoint_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     changes: &ChangeSet<A, O>,
     maximum_entries: u32,
-    complete: bool,
     original: &crate::NativeMaterializationWork,
     cancellation: &CancellationToken,
 ) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
@@ -51,18 +52,9 @@ async fn raw_endpoint_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             root: to.value.root(),
         },
     ];
-    let result = if complete {
+    let result = {
         crate::workspace::complete_changed_paths(
             endpoints.map(Some),
-            maximum_entries,
-            &mut accounting,
-            cancellation,
-        )
-        .await
-    } else {
-        super::super::diff::changed_paths_in_roots(
-            endpoints,
-            &changes.changes,
             maximum_entries,
             &mut accounting,
             cancellation,
@@ -103,7 +95,7 @@ async fn complete_publication_delta_includes_unchanged_descendants_of_a_rename()
     let original =
         crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
             .map_err(|(error, _)| error)?;
-    let (paths, guard) = raw_endpoint_paths(&changes, 64, true, &original, &cancellation).await?;
+    let (paths, guard) = raw_endpoint_paths(&changes, 64, &original, &cancellation).await?;
     let names: Vec<_> = paths
         .iter()
         .map(|change| super::namespace_path_text(&change.path))
@@ -135,7 +127,7 @@ async fn complete_publication_delta_includes_unchanged_descendants_of_a_rename()
     drop(incomplete);
     drop(guard);
     assert!(matches!(
-        raw_endpoint_paths(&changes, 1, true, &original, &cancellation).await,
+        raw_endpoint_paths(&changes, 1, &original, &cancellation).await,
         Err(WorkspaceError::ChangedPathLimit)
     ));
     Ok(())

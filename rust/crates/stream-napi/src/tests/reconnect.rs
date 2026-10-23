@@ -554,6 +554,28 @@ impl CancellationEvidence {
     }
 }
 
+fn verify_retired_interest(
+    fixture: &Fixture,
+    successor: usize,
+    original_channel: u64,
+) -> TestResult {
+    let subscriptions = fixture.outage.subscriptions.lock();
+    let successor_interests = subscriptions
+        .get(&successor)
+        .ok_or("replacement has no interests")?;
+    assert!(
+        successor_interests.iter().all(|subscription| {
+            subscription.channel.as_ref().is_some_and(|channel| channel.channel_id != original_channel)
+                && matches!(
+                    &subscription.kind,
+                    Some(wire::session_subscription::Kind::Follow(follow)) if follow.resource == "streams:/replacement"
+                )
+        }),
+        "retired native interest crossed into the replacement session",
+    );
+    Ok(())
+}
+
 async fn cancellation_case(
     children: bool,
     action: u8,
@@ -635,21 +657,7 @@ async fn cancellation_case(
     record(&replacement, 1, 92).await?;
     // The fresh payload alone is insufficient: a leaked original cursor could
     // share this session. Audit real inbound subscription identities as well.
-    let subscriptions = fixture.outage.subscriptions.lock();
-    let successor_interests = subscriptions
-        .get(&successor)
-        .ok_or("replacement has no interests")?;
-    assert!(
-        successor_interests.iter().all(|subscription| {
-            subscription.channel.as_ref().is_some_and(|channel| channel.channel_id != original_channel)
-                && matches!(
-                    &subscription.kind,
-                    Some(wire::session_subscription::Kind::Follow(follow)) if follow.resource == "streams:/replacement"
-                )
-        }),
-        "retired native interest crossed into the replacement session",
-    );
-    drop(subscriptions);
+    verify_retired_interest(&fixture, successor, original_channel)?;
     assert_eq!(fixture.outage.handshake(old), Some(HandshakeState::Dropped));
     // Only now release the obsolete gate. It cannot carry replacement data.
     fixture.outage.recover();
@@ -770,7 +778,11 @@ proptest::proptest! {
     }
 }
 
-async fn retire_cursor(cursor: NativeStreamFollow, cancellation: &NativeStreamCancellation, action: u8) -> TestResult {
+async fn retire_cursor(
+    cursor: NativeStreamFollow,
+    cancellation: &NativeStreamCancellation,
+    action: u8,
+) -> TestResult {
     if action == 2 {
         let owner = Arc::downgrade(&cursor.state.records);
         drop(cursor);

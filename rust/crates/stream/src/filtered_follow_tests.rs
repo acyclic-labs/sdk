@@ -50,28 +50,34 @@ pub(crate) async fn qualify_progress(provider: &impl StreamProvider) -> TestResu
     Ok(())
 }
 
-async fn qualify_resume(provider: &impl StreamProvider, path: &StreamPath, next: u64, preceding: CommitId, updates: &mut FollowStream) -> TestResult {
-        // A checked resume at a skipped cut must lead to exactly the same match.
-        let mut resumed = provider
-            .follow_updates(path.clone(), next, Some(preceding), filter()?)
-            .await?;
-        for source in [updates, &mut resumed] {
-            assert!(
-                matches!(source.next().await.ok_or("missing resumed match")??,
-                FollowUpdate::Record(Record { sequence, .. }) if sequence == expected)
-            );
-        }
-        assert!(matches!(
-            provider
-                .follow_updates(
-                    path.clone(),
-                    next,
-                    Some(CommitId::from_bytes([0x55; 32])),
-                    filter()?
-                )
-                .await,
-            Err(StreamError::PrefixNotRetained)
-        ));
+async fn qualify_resume(
+    provider: &impl StreamProvider,
+    path: &StreamPath,
+    next: u64,
+    preceding: CommitId,
+    updates: &mut FollowStream,
+) -> TestResult {
+    // A checked resume at a skipped cut must lead to exactly the same match.
+    let mut resumed = provider
+        .follow_updates(path.clone(), next, Some(preceding), filter()?)
+        .await?;
+    for source in [updates, &mut resumed] {
+        assert!(
+            matches!(source.next().await.ok_or("missing resumed match")??,
+                FollowUpdate::Record(Record { sequence, .. }) if sequence == next)
+        );
+    }
+    assert!(matches!(
+        provider
+            .follow_updates(
+                path.clone(),
+                next,
+                Some(CommitId::from_bytes([0x55; 32])),
+                filter()?
+            )
+            .await,
+        Err(StreamError::PrefixNotRetained)
+    ));
     Ok(())
 }
 
@@ -110,7 +116,7 @@ fn record(key: &'static str, owner: &'static str) -> Result<AppendRecord, Stream
 }
 fn filter() -> Result<FollowFilter, StreamError> {
     FollowFilter::new(wire::SessionFilter {
-                    all_of: vec![],
+        all_of: vec![],
         keys: vec![wire::KeyRange {
             start: b"a".as_slice().into(),
             end: b"c".as_slice().into(),
@@ -260,7 +266,11 @@ async fn retry_headers(provider: &impl StreamProvider) -> TestResult {
         assert_eq!(provider.commit(request.clone()).await?, outcome);
         for body in [record("b", "alice")?, record("a", "bob")?] {
             let mut changed = request.clone();
-            match changed.mutations.first_mut().ok_or("missing commit mutation")? {
+            match changed
+                .mutations
+                .first_mut()
+                .ok_or("missing commit mutation")?
+            {
                 CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. } => {
                     *records = vec![body];
                 }

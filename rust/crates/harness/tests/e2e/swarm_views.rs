@@ -144,7 +144,7 @@ impl<'a> State<'a> {
                 if overview {
                     self.status(id, next, data.item)?;
                 } else {
-                    self.content(id, next, data)?;
+                    self.content(id, next, *data)?;
                     views.read(|view| {
                         let key = publish::agent(id);
                         let expected = &self.heads[&id];

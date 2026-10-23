@@ -43,38 +43,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             return Err(StreamError::Capacity);
         }
         // Validate and stage the whole diff before changing the active set.
-        fn follow_parameters(follow: &wire::SessionFollow, resume: &wire::SessionCursor) -> Result<(Option<crate::CommitId>, bool), StreamError> {
-                let preceding = wire_codec::session::preceding_follow(&follow, &resume)?;
-                if !resume.opaque.is_empty() {
-                    return Err(StreamError::InvalidArgument);
-                }
-                let latest = match wire::SessionDelivery::try_from(follow.delivery) {
-                    Ok(wire::SessionDelivery::All) => false,
-                    Ok(wire::SessionDelivery::Latest) => true,
-                    _ => return Err(StreamError::InvalidArgument),
-                };
-    Ok((preceding, latest))
-}
-impl Channel {
-    fn opened(binding: Option<authority::Binding>, identity: wire::SessionChannel, resume: wire::SessionCursor, revalidate: Option<ResourceRevalidation>, latest: bool, opaque_cursor: bool) -> Self {
-        Self {
-            binding,
-            generation: identity.generation,
-            latest,
-            opaque_cursor,
-            revalidate,
-            pending: VecDeque::new(),
-            progress: None,
-            indexed: None,
-            credit: wire::SessionWindow::default(),
-            sent: resume.clone(),
-            applied: resume,
-            ending: None,
-        }
-    }
-}
-
-// Provider opens run independently; refusal closes only that channel.
+        // Provider opens run independently; refusal closes only that channel.
         let mut opened = Vec::new();
         for subscription in interest.upsert {
             opened.push(self.open(subscription, self.channels.len() - removed + added)?);
@@ -189,11 +158,7 @@ impl Channel {
                 }
             }
             Some(Kind::Children(request)) => {
-                if self.limits.pending_bytes < CHILD_FRAME_BYTES {
-                    return Err(StreamError::Capacity);
-                }
-                let request = wire_codec::children_from_wire(request)?;
-                children::validate_resume(&request, &resume)?;
+                let request = self.children_request(request, &resume)?;
                 binding = Some(
                     match self.authority.bind_children(
                         &self.slots,
@@ -227,6 +192,19 @@ impl Channel {
         })))
     }
 
+    fn children_request(
+        &self,
+        request: wire::ChildrenRequest,
+        resume: &wire::SessionCursor,
+    ) -> Result<crate::ChildrenRequest, StreamError> {
+        if self.limits.pending_bytes < CHILD_FRAME_BYTES {
+            return Err(StreamError::Capacity);
+        }
+        let request = wire_codec::children_from_wire(request)?;
+        children::validate_resume(&request, resume)?;
+        Ok(request)
+    }
+
     pub(super) fn remove(&mut self, id: u64) -> Result<(), StreamError> {
         self.sources.remove(id);
         self.terminals.remove(id);
@@ -242,6 +220,47 @@ impl Channel {
                 .sum::<usize>();
         }
         Ok(())
+    }
+}
+
+fn follow_parameters(
+    follow: &wire::SessionFollow,
+    resume: &wire::SessionCursor,
+) -> Result<(Option<crate::CommitId>, bool), StreamError> {
+    let preceding = wire_codec::session::preceding_follow(follow, resume)?;
+    if !resume.opaque.is_empty() {
+        return Err(StreamError::InvalidArgument);
+    }
+    let latest = match wire::SessionDelivery::try_from(follow.delivery) {
+        Ok(wire::SessionDelivery::All) => false,
+        Ok(wire::SessionDelivery::Latest) => true,
+        _ => return Err(StreamError::InvalidArgument),
+    };
+    Ok((preceding, latest))
+}
+impl Channel {
+    fn opened(
+        binding: Option<authority::Binding>,
+        identity: wire::SessionChannel,
+        resume: wire::SessionCursor,
+        revalidate: Option<ResourceRevalidation>,
+        latest: bool,
+        opaque_cursor: bool,
+    ) -> Self {
+        Self {
+            binding,
+            generation: identity.generation,
+            latest,
+            opaque_cursor,
+            revalidate,
+            pending: VecDeque::new(),
+            progress: None,
+            indexed: None,
+            credit: wire::SessionWindow::default(),
+            sent: resume.clone(),
+            applied: resume,
+            ending: None,
+        }
     }
 }
 

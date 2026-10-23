@@ -303,7 +303,7 @@ async fn missing_and_corrupt_gates_fail_authority_reopen() -> TestResult {
             request.mutations.push(CommitMutation::Append {
                 path,
                 records: vec![
-                    acyclic_stream::OwnedBytes::from_static(PUBLICATION_GATE_FREE),
+                    acyclic_stream::OwnedBytes::from_static(PUBLICATION_GATE_FREE).into(),
                     acyclic_stream::OwnedBytes::copy_from_slice(gate).into(),
                 ],
             });
@@ -722,7 +722,12 @@ impl StreamProvider for ReleaseSpy {
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         self.inner.fork(request).await
     }
-    async fn follow(&self, path: StreamPath, from: u64, filter: acyclic_stream::FollowFilter) -> Result<RecordStream, StreamError> {
+    async fn follow(
+        &self,
+        path: StreamPath,
+        from: u64,
+        filter: acyclic_stream::FollowFilter,
+    ) -> Result<RecordStream, StreamError> {
         self.inner.follow(path, from, filter).await
     }
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
