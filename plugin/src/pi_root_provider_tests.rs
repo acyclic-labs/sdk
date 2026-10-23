@@ -1248,7 +1248,7 @@ async fn output_replay_uses_original_content_after_mutable_path_replacement() {
     assert_eq!(
         result.0.status,
         EffectStatus::Succeeded {
-            result: original.0.clone()
+            result: Box::new(original.0.clone())
         }
     );
     assert_eq!(

@@ -45,7 +45,7 @@ impl Fixture {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(allocation.0.0, result);
+        assert_eq!(allocation.0.0, *result);
         let mut handles = root.provider.take_created_handles().await;
         let key = root.request.binding.project_volumes.keys().next().unwrap();
         let handle = handles.remove(key).unwrap();

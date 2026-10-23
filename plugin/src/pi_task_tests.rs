@@ -549,7 +549,7 @@ async fn native_reply_replay_case(payload_bytes: usize, additional_replays: usiz
     .await
     .unwrap();
     let settled = guard(
-        &result(preparation.0.operation_id, &Outcome::Succeeded(allocation)),
+        &result(preparation.0.operation_id, &Outcome::Succeeded(*allocation)),
         &journal_window,
     );
     journal

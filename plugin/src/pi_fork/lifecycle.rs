@@ -324,7 +324,7 @@ impl<'a> PiForkCoordinator<'a> {
             .find_map(|capture| match capture {
                 acyclic_harness::fork::Capture::Captured(resource) => match &resource.revision {
                     acyclic_harness::fork::ResourceRevision::Project { volume, generation }
-                        if volume == &report.request.preparation.child_project_volume =>
+                        if volume.as_ref() == &report.request.preparation.child_project_volume =>
                     {
                         Some(generation)
                     }

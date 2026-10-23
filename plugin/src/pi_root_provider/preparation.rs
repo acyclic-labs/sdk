@@ -429,7 +429,13 @@ impl PiRootProvider {
         };
         let mut provider = work.display(ROOT_ALLOCATION_PROVIDER)?;
         let mut result = result;
+        let mut result_box = work.claim(
+            std::mem::size_of::<acyclic_harness::conversation::FileRef>() as u64,
+            1,
+            acyclic_fs::WorkCounters::default(),
+        )?;
         result.1.absorb(&mut provider.1)?;
+        result.1.absorb(&mut result_box)?;
         Ok(Some((
             EffectObservation {
                 provider: provider.0,
@@ -437,7 +443,9 @@ impl PiRootProvider {
                 attempt_id: attempt,
                 request_digest: state.request_digest,
                 guarantee: state.guarantee,
-                status: EffectStatus::Succeeded { result: result.0 },
+                status: EffectStatus::Succeeded {
+                    result: Box::new(result.0),
+                },
             },
             result.1,
         )))

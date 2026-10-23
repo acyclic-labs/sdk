@@ -298,15 +298,23 @@ impl<'a> PiForkCoordinator<'a> {
                 Some(history_version.0),
             )?;
             let mut selections = crate::pi_native::pi_native_vec(3, work)?;
+            let mut selection_boxes = work.claim(
+                (std::mem::size_of::<acyclic_harness::resources::StreamRef>()
+                    + 2 * std::mem::size_of::<acyclic_harness::conversation::VolumeRef>()
+                    + 2 * std::mem::size_of::<acyclic_harness::resources::GenerationRef>())
+                    as u64,
+                5,
+                acyclic_fs::WorkCounters::default(),
+            )?;
             for revision in [
-                acyclic_harness::fork::ResourceRevision::History(history),
+                acyclic_harness::fork::ResourceRevision::History(Box::new(history)),
                 acyclic_harness::fork::ResourceRevision::Project {
-                    volume: project.copy(&mut Some(&mut request_io))?,
-                    generation: generation.0,
+                    volume: Box::new(project.copy(&mut Some(&mut request_io))?),
+                    generation: Box::new(generation.0),
                 },
                 acyclic_harness::fork::ResourceRevision::PrivateVolume {
-                    volume: scratch.copy(&mut Some(&mut request_io))?,
-                    generation: private_generation.0,
+                    volume: Box::new(scratch.copy(&mut Some(&mut request_io))?),
+                    generation: Box::new(private_generation.0),
                     paths: Vec::new(),
                 },
             ] {
@@ -358,6 +366,7 @@ impl<'a> PiForkCoordinator<'a> {
                 &mut child_id.1,
                 &mut history_version.1,
                 &mut selections.1,
+                &mut selection_boxes,
                 &mut generation.1,
                 &mut private_generation.1,
             ]
