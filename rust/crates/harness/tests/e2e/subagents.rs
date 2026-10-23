@@ -30,28 +30,7 @@ pub(super) const LATEST: &str = "latest delivery";
 /// A refusal: the kind refused and the provider's typed cause.
 pub(super) type Refusal = (&'static str, StreamError);
 
-#[derive(Clone, Debug, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct SubagentCase {
-    /// Subagents fanned out under the root, at most 64.
-    pub agents: usize,
-    /// Each subagent's streamed reply, one Text chunk per publication.
-    pub chunks: Vec<String>,
-    /// Each subagent's final `status.json` state, as it publishes it.
-    pub status: String,
-    pub expect: Expect,
-}
-
-#[derive(Clone, Debug, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct Expect {
-    /// Children discovered under the root, in creation order.
-    pub children: Vec<String>,
-    /// Each subagent's reply chunks, in order, as its follow delivered them.
-    pub chunks: Vec<String>,
-    /// Each subagent's final state, as its follow decoded it.
-    pub status: String,
-}
+include!("../support/schema/subagents.rs");
 
 /// Names the step that failed, so a provider divergence names its operation.
 fn at<E: std::fmt::Display>(step: impl std::fmt::Display) -> impl FnOnce(E) -> String {
@@ -316,9 +295,7 @@ async fn run_publishing<P: StreamProvider>(
     author: impl Fn(usize) -> usize,
     fork_empty: bool,
 ) -> TestResult<Value> {
-    if !(1..=64).contains(&case.agents) || case.chunks.is_empty() {
-        return Err("a subagent case needs 1..=64 agents and a nonempty reply".into());
-    }
+    case.validate()?;
     let started = std::time::Instant::now();
     let phase = |label| {
         if case.agents >= 16 {

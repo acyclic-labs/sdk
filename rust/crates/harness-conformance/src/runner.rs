@@ -138,6 +138,17 @@ async fn run_case(
     let result = AssertUnwindSafe(async {
         let mut value = scenario_data::load_value(root, &path)?;
         requires = requirements(&value)?;
+        // Capability and filter exclusions do not excuse an invalid recipe.
+        // Native drivers share these exact schemas with their original runner.
+        let parsed = if requires
+            .iter()
+            .any(|capability| capability.starts_with("local-driver:"))
+        {
+            crate::native_schema::validate(value.clone())?;
+            None
+        } else {
+            Some(Case::parse(root, &path, &mut value)?)
+        };
         if filter.is_some_and(|filter| !case.contains(filter)) {
             return Ok((Status::Skip, "excluded by --filter".into()));
         }
@@ -156,7 +167,7 @@ async fn run_case(
                 ),
             ));
         }
-        let parsed = Case::parse(root, &path, &mut value)?;
+        let parsed = parsed.ok_or("no portable adapter for declared native capability")?;
         let paths = parsed.paths();
         parsed.prepare(&mut value)?;
         let observed = tokio::time::timeout_at(deadline, substrate.execute(value, paths))

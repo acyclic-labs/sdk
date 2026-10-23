@@ -132,7 +132,9 @@ impl Composer {
                 }
             }
             (actual, expected) => {
-                return Err(format!("composer error: expected {expected:?}, got {actual:?}").into());
+                return Err(
+                    format!("composer error: expected {expected:?}, got {actual:?}").into(),
+                );
             }
         }
         if self

@@ -1,4 +1,4 @@
-use super::{TestResult, matchers};
+use super::matchers;
 use acyclic_harness::{
     Error, LocalHarness, Result,
     context::{ModelContextCapacity, ModelTokenCount},
@@ -7,78 +7,17 @@ use acyclic_harness::{
         Model, ModelContent, ModelContentPart, ModelDispatch, ModelEvent, ModelProvider, ModelRole,
         PreparedModelRequest,
     },
-    task_volume::{
-        ChildFile, ChildState, ChildStatus, Component, Control, FileKey, FileValue, Query,
-    },
-    test_support::{ScriptedModelProvider, ScriptedTurn, local_harness_config, read_request_files},
+    task_volume::{ChildFile, ChildState, ChildStatus, Component, FileKey, FileValue, Query},
+    test_support::{ScriptedModelProvider, local_harness_config, read_request_files},
 };
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
 use futures::{StreamExt as _, TryStreamExt as _};
-use serde::Deserialize;
-use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Case {
-    prompt: String,
-    #[serde(default)]
-    seed: BTreeMap<String, String>,
-    /// Commit the seed into a host Git repository before the harness opens.
-    #[serde(default)]
-    repository: bool,
-    models: BTreeMap<String, Vec<ScriptedTurn>>,
-    #[serde(default)]
-    routes: BTreeMap<String, String>,
-    #[serde(default)]
-    actions: Vec<Action>,
-    #[serde(default)]
-    reader: Reader,
-    expect: Expected,
-}
-
-/// Whose authority a model request's file parts are read under.
-#[derive(Clone, Copy, Default, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum Reader {
-    /// The executing task's own reader, as the harness binds it.
-    #[default]
-    Task,
-    /// The first reader bound, reused for every task: the former
-    /// composition-wide binding, kept only as a negative control.
-    Composition,
-}
+include!("../support/schema/agents.rs");
 
 type BoundReader = (Arc<dyn ContentResidencyVerifier>, u64);
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Expected {
-    text: Option<String>,
-    #[serde(default)]
-    indeterminate: bool,
-    requests: BTreeMap<String, usize>,
-    task_files: BTreeMap<String, Value>,
-    #[serde(default)]
-    model_requests: BTreeMap<String, Vec<Value>>,
-    #[serde(default)]
-    files: BTreeMap<String, Option<String>>,
-    #[serde(default)]
-    active: Option<Vec<String>>,
-    #[serde(default)]
-    toolsets: BTreeMap<String, Vec<String>>,
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Action {
-    model: String,
-    request: usize,
-    agent: String,
-    control: Option<Control>,
-    message: Option<String>,
-}
 
 #[derive(Clone)]
 struct Models {
@@ -347,25 +286,6 @@ pub(super) async fn run(value: Value) -> TestResult {
     }
     check_files(&harness, directory.path(), case.expect.files).await?;
     check_task_files(&harness, case.expect.task_files).await
-}
-
-impl Case {
-    fn validate(&self) -> TestResult {
-        if self.expect.indeterminate != self.expect.text.is_none() {
-            return Err("scenario must select either an answer or an indeterminate outcome".into());
-        }
-        if self.models.keys().ne(self.expect.requests.keys()) {
-            return Err("every scripted model needs an exact request count".into());
-        }
-        for (name, turns) in &self.models {
-            if turns.len() != self.expect.requests[name] {
-                return Err(
-                    format!("model {name}: script must contain exactly the expected work").into(),
-                );
-            }
-        }
-        Ok(())
-    }
 }
 
 impl Models {

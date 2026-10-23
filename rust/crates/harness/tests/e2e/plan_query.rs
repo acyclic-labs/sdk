@@ -9,41 +9,14 @@ use acyclic_harness::{
     test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
 };
 use futures::StreamExt as _;
-use serde::Deserialize;
-use serde_json::{Value, json};
-use std::{collections::BTreeMap, sync::Arc};
+use serde_json::json;
+use std::sync::Arc;
 
 type CapturedRevision = (BTreeMap<String, String>, Vec<Vec<String>>);
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct PlanQuery {
-    writes: Vec<Revision>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Revision {
-    path: String,
-    text: String,
-    files: BTreeMap<String, String>,
-    panel: Vec<String>,
-}
+include!("../support/schema/plan_query.rs");
 
 impl PlanQuery {
-    pub(super) fn parse(value: Value) -> Result<Self, String> {
-        let case: Self = serde_json::from_value(value).map_err(|error| error.to_string())?;
-        if case.writes.is_empty()
-            || case
-                .writes
-                .iter()
-                .any(|revision| revision.files.is_empty() || revision.panel.is_empty())
-        {
-            return Err("every plan revision requires file and panel expectations".into());
-        }
-        Ok(case)
-    }
-
     pub(super) async fn run(self) -> TestResult {
         self.check(&self.capture(true).await?)
     }

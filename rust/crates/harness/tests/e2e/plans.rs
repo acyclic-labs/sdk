@@ -8,60 +8,12 @@ use acyclic_harness::{
     model::{Model, ModelEvent},
     test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
 };
-use serde::Deserialize;
-use serde_json::{Value, json};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use serde_json::json;
+use std::sync::Arc;
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct Plans {
-    prompt: String,
-    writes: Vec<Write>,
-    expect: BTreeMap<String, Expected>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Write {
-    path: String,
-    text: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(deny_unknown_fields)]
-struct Expected {
-    markdown: String,
-    tasks: Option<Vec<ExpectedTask>>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(deny_unknown_fields)]
-struct ExpectedTask {
-    state: String,
-    text: String,
-}
+include!("../support/schema/plans.rs");
 
 impl Plans {
-    pub(super) fn parse(value: Value) -> Result<Self, String> {
-        let case: Self = serde_json::from_value(value).map_err(|error| error.to_string())?;
-        let written: BTreeSet<_> = case
-            .writes
-            .iter()
-            .map(|write| write.path.as_str())
-            .collect();
-        let expected: BTreeSet<_> = case.expect.keys().map(String::as_str).collect();
-        if written.is_empty()
-            || written != expected
-            || written.iter().any(|path| !path.starts_with("plans/"))
-        {
-            return Err("every written plans/ file requires an expectation".into());
-        }
-        Ok(case)
-    }
-
     pub(super) async fn run(self) -> TestResult {
         self.check(&self.capture(true).await?)
     }

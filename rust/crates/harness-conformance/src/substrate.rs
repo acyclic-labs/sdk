@@ -98,6 +98,59 @@ fn field<'a>(value: &'a Value, name: &str) -> Result<&'a Value> {
         .ok_or_else(|| Error::Invalid(format!("missing scenario field {name}")))
 }
 
+const FIXTURE_SOURCES: &[(&str, &str)] = &[
+    ("substrate", include_str!("substrate.rs")),
+    ("dispatch", include_str!("lib.rs")),
+    ("execution_adapter", include_str!("execution.rs")),
+    (
+        "executor_observation",
+        include_str!("execution/observation.rs"),
+    ),
+    (
+        "executor",
+        include_str!("../../harness/tests/e2e/execution.rs"),
+    ),
+    (
+        "scenario",
+        include_str!("../../harness/tests/e2e/scenario.rs"),
+    ),
+    (
+        "expectations",
+        include_str!("../../harness/tests/e2e/expectations.rs"),
+    ),
+    (
+        "discovery",
+        include_str!("../../harness/tests/support/discovery.rs"),
+    ),
+    (
+        "scenario_data",
+        include_str!("../../harness/tests/support/scenario_data.rs"),
+    ),
+    (
+        "ordered_matcher",
+        include_str!("../../harness/tests/support/ordered_matcher.rs"),
+    ),
+    (
+        "scenario_matchers",
+        include_str!("../../harness/tests/support/scenario_matchers.rs"),
+    ),
+    (
+        "composer",
+        include_str!("../../harness/tests/support/composer.rs"),
+    ),
+    ("composer_observation", include_str!("composer.rs")),
+];
+
+fn fixture_digest(sources: &[(&str, &str)]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    for (name, source) in sources {
+        hasher.update(name.as_bytes());
+        hasher.update(&[0]);
+        hasher.update(blake3::hash(source.as_bytes()).as_bytes());
+    }
+    *hasher.finalize().as_bytes()
+}
+
 /// Pinned package shared by reference and external runtimes. The deterministic
 /// handler emits a compute command; all executor I/O stays in the effect host.
 #[derive(Clone)]
@@ -113,23 +166,48 @@ impl HarnessPackage {
                 agent: MachineIdentity {
                     name: "harness.scenario".into(),
                     version: "1".into(),
-                    digest: *blake3::hash(
-                        concat!(
-                            include_str!("substrate.rs"),
-                            include_str!("execution/observation.rs"),
-                            include_str!("../../harness/tests/e2e/execution.rs"),
-                            include_str!("../../harness/tests/support/composer.rs"),
-                            include_str!("composer.rs")
-                        )
-                        .as_bytes(),
-                    )
-                    .as_bytes(),
+                    digest: fixture_digest(FIXTURE_SOURCES),
                 },
                 effects: vec!["harness.scenario.compute".into()],
                 bindings,
             },
             schema: json!({"type":"object"}),
         }
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn pinned_parsing_and_discovery_changes_change_package_identity() -> TestResult {
+        let expected = HarnessPackage::new(fixture_bindings())
+            .manifest
+            .agent
+            .digest;
+        for critical in [
+            "scenario",
+            "discovery",
+            "dispatch",
+            "composer",
+            "executor_observation",
+        ] {
+            let position = FIXTURE_SOURCES
+                .iter()
+                .position(|(name, _)| *name == critical)
+                .ok_or_else(|| format!("missing pinned fixture source {critical}"))?;
+            let mut changed = FIXTURE_SOURCES.to_vec();
+            let (name, source) = changed.get(position).copied().ok_or("missing source")?;
+            let mutation = format!("{source}\n// changed implementation\n");
+            *changed.get_mut(position).ok_or("missing mutation slot")? = (name, &mutation);
+            assert_ne!(
+                expected,
+                fixture_digest(&changed),
+                "unbound source {critical}"
+            );
+        }
+        Ok(())
     }
 }
 impl ActorPackage for HarnessPackage {

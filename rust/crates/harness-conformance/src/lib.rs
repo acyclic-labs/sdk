@@ -4,6 +4,7 @@
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 mod composer;
+mod native_schema;
 
 #[path = "../../harness/tests/support/scenario_data.rs"]
 mod case_data;

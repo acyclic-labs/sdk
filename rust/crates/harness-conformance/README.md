@@ -21,6 +21,8 @@ files are configuration, not cases. Filtering produces explicit skips. No wall
 clock timestamps or random runtime identifiers appear in passing reports. Exit
 status is zero only with at least one pass and no failures; a filter matching
 nothing cannot qualify a host.
+Every known driver's shared schema is validated before capability or filter
+exclusions. A malformed native case fails even when its capability is missing.
 
 At the initial corpus revision, the 847 JSON files comprise 60 inherited-default
 files and 787 executable cases, matching the existing discovery rule. The
@@ -39,6 +41,8 @@ an explicit `Providers` bundle (or an equivalent executor using
 public command catalog APIs, using fixture-owned files. The package checkpoints
 the resulting immutable fs reference. The runner supplies fixture inputs and
 file paths to inspect, never expected answers. Assertions run on the client.
+The package digest pins shared parsing, defaults, discovery and observation
+code as well as the handler and composer fixture implementation.
 
 The runner uses only public Actors admission/recovery and fs publications. The
 runtime's inbox, checkpoint and outbox use Streams as specified in #1359. The

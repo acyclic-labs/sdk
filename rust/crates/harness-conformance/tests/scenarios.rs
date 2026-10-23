@@ -295,6 +295,57 @@ async fn bad_fixture_and_wrong_expected_answer_each_fail_with_a_record()
 }
 
 #[tokio::test]
+async fn malformed_known_drivers_fail_before_capability_and_filter_skips()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let directory = tempfile::tempdir()?;
+    let drivers = [
+        "local",
+        "goal-local",
+        "agents",
+        "composer_entry",
+        "notifications",
+        "task_query",
+        "subagents",
+        "swarm",
+        "plans",
+        "plan-query",
+        "executor",
+        "composer",
+    ];
+    for driver in drivers {
+        std::fs::write(
+            directory.path().join(format!("{driver}.json")),
+            serde_json::to_vec(&serde_json::json!({"driver":driver}))?,
+        )?;
+    }
+    std::fs::write(
+        directory.path().join("good.json"),
+        include_bytes!("../../harness/tests/scenarios/core/text.json"),
+    )?;
+    for substrate in [
+        &substrate::Local as &dyn substrate::Substrate,
+        &substrate::InProcess,
+    ] {
+        for filter in [None, Some("good")] {
+            let report = runner::run(directory.path(), substrate, filter, 4).await?;
+            assert_eq!(report.records.len(), drivers.len() + 1);
+            assert_eq!(report.failed, drivers.len());
+            assert_eq!(report.passed, 1);
+            assert_eq!(report.skipped, 0);
+            assert!(!report.success());
+        }
+    }
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_scenarios"))
+        .args(["--substrate", "in-process", "--corpus"])
+        .arg(directory.path())
+        .arg("--report")
+        .arg(directory.path().join("report.out"))
+        .output()?;
+    assert!(!output.status.success());
+    Ok(())
+}
+
+#[tokio::test]
 async fn client_oracles_reject_mutations_on_both_substrates()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let directory = tempfile::tempdir()?;
