@@ -27,21 +27,22 @@ test("external acceptance owns service descendants on normal exit and cancellati
     for (const pid of pids.slice(0, -1)) assert.equal(alive(pid), true);
     reap(pids); pids = [];
 
-    for (const mode of ["exit", "wait"]) {
+    for (const separateGroup of [false, true]) for (const mode of ["exit", "wait"]) {
       const owned = new Processes();
+      const args = [fixture, mode, ...(separateGroup ? ["--separate-group"] : [])];
       try {
         if (mode === "exit") {
-          const result = await owned.runOwned(python, [fixture, mode]);
-          assert.equal(result.code, 0, result.stderr);
+          const result = await owned.runOwned(python, args);
           pids = JSON.parse(result.stdout).pids;
+          assert.equal(result.code, 0, result.stderr);
         } else {
-          const running = owned.startOwned(python, [fixture, mode]);
+          const running = owned.startOwned(python, args);
           pids = (await new Events(running.child.stdout, running.closed).wait(event => event.pids)).pids;
           await owned.close();
           const result = await running.closed;
           assert.ok(result.signal || result.code !== 0, "cancellation must remain a failed acceptance run");
         }
-        for (const pid of pids) assert.equal(alive(pid), false, `service ${pid} survived ${mode}`);
+        for (const pid of pids) assert.equal(alive(pid), false, `service ${pid} survived ${mode}, separate group=${separateGroup}`);
         pids = [];
       } finally { reap(pids); pids = []; await owned.close(); }
     }

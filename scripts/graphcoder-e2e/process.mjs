@@ -5,17 +5,6 @@ import assert from "node:assert/strict";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
-async function drainGroup(pid) {
-  const watcher = spawn("python3", [fileURLToPath(new URL("./drain-group.py", import.meta.url)), String(pid)],
-    { stdio: ["ignore", "ignore", "pipe"] });
-  let stderr = "";
-  watcher.stderr.setEncoding("utf8").on("data", text => { stderr += text; });
-  await new Promise((resolve, reject) => {
-    watcher.once("error", reject);
-    watcher.once("close", code => code === 0 ? resolve() : reject(new Error(`process group drain failed: ${stderr}`)));
-  });
-}
-
 export async function schedule(items, platform, execute) {
   if (platform !== "win32") return Promise.all(items.map(execute));
   const results = [];
@@ -30,14 +19,12 @@ export class Processes {
   stopping = false;
   start(program, args, options = {}) {
     if (this.stopping) throw new Error("suite process scope is closed (deadline or cleanup)");
-    const { scopeKillSignal = "SIGKILL", scopeProcessGroup = false, scopeTreeControl = false, ...spawnOptions } = options;
+    const { scopeKillSignal = "SIGKILL", scopeTreeControl = false, ...spawnOptions } = options;
     const child = spawn(program, args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"], ...spawnOptions });
     child.stdin.on("error", error => { if (error.code !== "EPIPE") child.emit("error", error); });
     const kill = () => {
       if (scopeTreeControl) { child.stdin.end(); return; }
-      if (!scopeProcessGroup) { child.kill(scopeKillSignal); return; }
-      if (!child.pid) return;
-      try { process.kill(-child.pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+      child.kill(scopeKillSignal);
     };
     let stdout = "", stderr = "";
     const outputDecoder = new StringDecoder("utf8"), errorDecoder = new StringDecoder("utf8");
@@ -47,18 +34,12 @@ export class Processes {
     // surviving descendants, which recovery must be allowed to fence first.
     const exited = new Promise((resolve, reject) => {
       child.once("error", reject);
-      child.once("exit", async (code, signal) => {
-        try {
-          if (scopeProcessGroup) { kill(); await drainGroup(child.pid); }
-          resolve({ code, signal });
-        } catch (error) { reject(error); }
-      });
+      child.once("exit", (code, signal) => resolve({ code, signal }));
     });
     exited.catch(() => {});
     const closed = new Promise((resolve, reject) => {
       child.on("error", reject);
-      child.on("close", async (code, signal) => {
-        try { if (scopeProcessGroup && child.pid) await exited; } catch (error) { reject(error); }
+      child.on("close", (code, signal) => {
         this.children.delete(child);
         stdout += outputDecoder.end(); stderr += errorDecoder.end();
         resolve({ code, signal, stdout, stderr });
@@ -80,12 +61,12 @@ export class Processes {
       assert.ok(host && isAbsolute(host), "E2E_PROCESS_HOST must name the cross-built process-tree host");
       return this.start(host, [program, ...args], { ...options, scopeTreeControl: true });
     }
-    return this.start(program, args, { ...options, detached: true, scopeProcessGroup: true });
+    return this.start("python3", [fileURLToPath(new URL("./owned-process.py", import.meta.url)), program, ...args],
+      { ...options, scopeTreeControl: true });
   }
   async runOwned(program, args, options, input = "") {
     assert.equal(input, "", "external acceptance commands receive empty stdin");
     const running = this.startOwned(program, args, options);
-    if (process.platform !== "win32") running.child.stdin.end();
     const [, result] = await Promise.all([running.exited, running.closed]);
     return result;
   }
