@@ -96,10 +96,11 @@ where
 /// repository policy reserves for the host.
 ///
 /// Restoring exactly these paths makes every unreserved path of `from` match
-/// `to`, nested contents included, and leaves the reserved ones as they are.
-/// Each path is listed after its ancestors, so a directory that replaces a
-/// file is restored before its children; the restore removes paths deepest
-/// first on its own.
+/// `to`, nested contents included, and leaves the reserved ones as they are,
+/// with the directories that hold them (see
+/// [`git_paths_preserving_reserved`]). Each path is listed after its
+/// ancestors, so a directory that replaces a file is restored before its
+/// children; the restore removes paths deepest first on its own.
 pub async fn git_restore_paths<A, O>(
     from: &Generation<A, O>,
     to: &Generation<A, O>,
@@ -120,16 +121,86 @@ where
         .await
         .map(|receipt| receipt.value.0)
         .map_err(|failure| failure.error)?;
-    let mut paths = BTreeSet::new();
+    let mut paths = Vec::new();
     for change in changes {
         cancellation.check().map_err(WorkspaceError::from)?;
-        let path = portable_changed_path(&change.path)?;
-        if !repository.reserves(&path) {
-            paths.insert(path);
+        paths.push(portable_changed_path(&change.path)?);
+    }
+    git_paths_preserving_reserved(from, Some(to), repository, paths, cancellation).await
+}
+
+/// The paths among `paths` that applying `source` over `live` may rewrite
+/// while every path `repository` reserves keeps its place: what a restore,
+/// reset, stash, abort or applied commit writes.
+///
+/// A reserved path is never rewritten. A reserved path that `live` holds
+/// also keeps each directory above it: rewriting one that `source` does not
+/// hold as a directory (absent, a file, or `source` itself absent) would
+/// remove the reserved path beneath it, so that directory stays as `live`
+/// has it, while its other children are still rewritten on their own.
+///
+/// The result is sorted with each path after its ancestors.
+pub async fn git_paths_preserving_reserved<A, O>(
+    live: &Generation<A, O>,
+    source: Option<&Generation<A, O>>,
+    repository: &GitIgnorePolicy,
+    paths: impl IntoIterator<Item = String>,
+    cancellation: &CancellationToken,
+) -> Result<Vec<String>, GitCaptureError>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+{
+    let mut candidates = paths
+        .into_iter()
+        .map(|path| path.trim_matches('/').to_owned())
+        .filter(|path| !path.is_empty() && !repository.reserves(path))
+        .collect::<BTreeSet<_>>();
+    let mut holding = BTreeSet::new();
+    for reserved in repository.reserved_paths() {
+        cancellation.check().map_err(WorkspaceError::from)?;
+        let ancestors = reserved
+            .match_indices('/')
+            .filter_map(|(end, _)| reserved.get(..end))
+            .filter(|ancestor| candidates.contains(*ancestor))
+            .collect::<Vec<_>>();
+        if !ancestors.is_empty() && kind_at(live, reserved, cancellation).await?.is_some() {
+            holding.extend(ancestors.into_iter().map(str::to_owned));
+        }
+    }
+    for ancestor in holding {
+        let directory = match source {
+            Some(source) => {
+                kind_at(source, &ancestor, cancellation).await? == Some(FileKind::Directory)
+            }
+            None => false,
+        };
+        if !directory {
+            candidates.remove(&ancestor);
         }
     }
     // A descendant `a/b` always sorts after its ancestor `a`.
-    Ok(paths.into_iter().collect())
+    Ok(candidates.into_iter().collect())
+}
+
+/// The kind of the entry at the portable `path`, if `generation` holds one.
+async fn kind_at<A, O>(
+    generation: &Generation<A, O>,
+    path: &str,
+    cancellation: &CancellationToken,
+) -> Result<Option<FileKind>, GitCaptureError>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+{
+    match generation
+        .stat(&format!("/{path}"), WorkBudget::UNBOUNDED, cancellation)
+        .await
+    {
+        Ok(receipt) => Ok(Some(receipt.value.kind)),
+        Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => Ok(None),
+        Err(failure) => Err(failure.error.into()),
+    }
 }
 
 /// Returns the Git-visible tracked paths after a workspace transition that

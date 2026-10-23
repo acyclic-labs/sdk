@@ -499,7 +499,8 @@ async fn merge_child_with_alias(reserved: &[String]) -> Result<AliasMerge> {
 }
 
 /// Authors a volume alias in `child` the way a mounted child projection
-/// does: a symbolic link to the host volume, published by the child itself.
+/// does: a symbolic link to the host volume, beneath a `.volumes` the host
+/// creates when absent, published by the child itself.
 async fn author_volume_alias(child: &Lazy) -> Result<()> {
     let stop = CancellationToken::new();
     let mut alias = child
@@ -507,6 +508,9 @@ async fn author_volume_alias(child: &Lazy) -> Result<()> {
         .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop)
         .await?
         .value;
+    alias
+        .create_dir_all("/.volumes", WorkBudget::UNBOUNDED, &stop)
+        .await?;
     alias
         .create_symbolic_link(
             "/.volumes/scratch",
@@ -1473,4 +1477,110 @@ async fn a_stash_cut_at_every_step_and_written_after_still_completes() -> Result
             return Ok(());
         }
     }
+}
+
+/// The host path every tree-applying entry point below must leave in place.
+const SCRATCH: &str = ".volumes/scratch";
+
+/// Commits a user file `/.volumes` (tagged `a`), then its removal, and
+/// returns the view. With `hosted`, the host then publishes its reserved
+/// `.volumes/scratch` alias, so `.volumes` is now a directory no saved tree
+/// holds as one. With `dirty`, `/base.txt` differs from both commits.
+async fn volumes_replaced(
+    hosted: bool,
+    dirty: bool,
+) -> Result<(tempfile::TempDir, LocalFs, LocalCoreStateStore, Lazy)> {
+    let (temp, _root, fs, store, main) = fixture().await?;
+    let repo = main.workspace().id();
+    let reserved = [SCRATCH.to_owned()];
+    write_text(&main, "/base.txt", b"base\n").await?;
+    write_text(&main, "/.volumes", b"user\n").await?;
+    for command in [&["add", "-A"][..], &["commit", "-m", "a"], &["tag", "a"]] {
+        run_reserving(&fs, &store, &main, repo, &reserved, command).await?;
+    }
+    main.workspace().remove("/.volumes").await?;
+    for command in [&["add", "-A"][..], &["commit", "-m", "b"]] {
+        run_reserving(&fs, &store, &main, repo, &reserved, command).await?;
+    }
+    if hosted {
+        author_volume_alias(&main).await?;
+    }
+    if dirty {
+        write_text(&main, "/base.txt", b"dirty\n").await?;
+    }
+    Ok((temp, fs, store, main))
+}
+
+/// Whether the head still holds the host's `.volumes/scratch` alias.
+async fn scratch_kept(view: &Lazy) -> Result<bool> {
+    let stop = CancellationToken::new();
+    let head = view
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value;
+    Ok(head
+        .stat("/.volumes/scratch", WorkBudget::UNBOUNDED, &stop)
+        .await
+        .is_ok_and(|stat| stat.value.kind == acyclic_fs::kernel::FileKind::SymbolicLink))
+}
+
+/// Every command that writes a saved tree over the live workspace keeps a
+/// reserved host path and the directory holding it, where restoring the
+/// saved `/.volumes` file would have removed that directory.
+#[tokio::test]
+async fn tree_applying_commands_keep_the_directories_of_reserved_paths() -> Result<()> {
+    let reserved = [SCRATCH.to_owned()];
+    for (command, dirty) in [
+        (&["reset", "--hard", "a"][..], true),
+        (&["restore", "--source", "a", ".volumes", "base.txt"], true),
+        (&["checkout", "a", "--", ".volumes", "base.txt"], true),
+        (&["restore", "--source", "a", ".volumes"], false),
+        (&["revert", "HEAD"], false),
+        (&["cherry-pick", "a"], false),
+    ] {
+        let (_temp, fs, store, main) = volumes_replaced(true, dirty).await?;
+        let repo = main.workspace().id();
+        run_reserving(&fs, &store, &main, repo, &reserved, command)
+            .await
+            .map_err(|error| format!("{command:?}: {error}"))?;
+        assert!(scratch_kept(&main).await?, "{command:?}");
+        assert_eq!(
+            read_text(&main, "/base.txt").await?.as_deref(),
+            Some(&b"base\n"[..]),
+            "{command:?}"
+        );
+    }
+    // Control: with nothing reserved beneath it, the saved file restores.
+    let (_temp, fs, store, main) = volumes_replaced(false, true).await?;
+    let repo = main.workspace().id();
+    run_reserving(
+        &fs,
+        &store,
+        &main,
+        repo,
+        &reserved,
+        &["reset", "--hard", "a"],
+    )
+    .await?;
+    assert_eq!(
+        read_text(&main, "/.volumes").await?.as_deref(),
+        Some(&b"user\n"[..])
+    );
+    Ok(())
+}
+
+/// A whole-tree restore (stash, abort) rewrites the unreserved children of a
+/// directory the saved tree lacks, and keeps the directory and its reserved
+/// child.
+#[tokio::test]
+async fn a_whole_tree_restore_keeps_the_directory_of_a_reserved_path() -> Result<()> {
+    let reserved = [SCRATCH.to_owned()];
+    let (_temp, fs, store, main) = volumes_replaced(true, false).await?;
+    let repo = main.workspace().id();
+    write_text(&main, "/.volumes/other.txt", b"user\n").await?;
+    run_reserving(&fs, &store, &main, repo, &reserved, &["stash"]).await?;
+    assert!(scratch_kept(&main).await?);
+    assert_eq!(read_text(&main, "/.volumes/other.txt").await?, None);
+    Ok(())
 }

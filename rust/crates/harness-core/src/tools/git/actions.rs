@@ -291,12 +291,23 @@ where
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)
             .map_err(Error::from)?;
+        // An applied commit, like a restore, never writes over a reserved
+        // path or a directory holding one.
+        let paths = git_paths_preserving_reserved(
+            &current,
+            source.as_ref(),
+            &self.ignore,
+            paths.iter().cloned(),
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(Error::from)?;
         let outcome = self
             .current
             .apply_paths_from(
                 base.as_ref(),
                 source.as_ref(),
-                &paths.iter().cloned().collect::<Vec<_>>(),
+                &paths,
                 current.id(),
                 IdempotencyKey::from_bytes(operation_id.into_bytes()),
                 self.permit,
