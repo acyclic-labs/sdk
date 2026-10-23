@@ -163,11 +163,17 @@ async fn stream_policy_revocation_survives_durable_provider_restart()
         .await?
         .value;
     let denied = source
-        .with_stable_policy(WorkBudget::UNBOUNDED, &cancellation, || {
-            source
-                .clone()
-                .bind_coarse_access(&[acyclic_fs::access::Action::Fork], &cancellation)
-        })
+        .with_stable_policy(
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            || -> BoxProviderFuture<'_, _> {
+                Box::pin(
+                    source
+                        .clone()
+                        .bind_coarse_access(&[acyclic_fs::access::Action::Fork], &cancellation),
+                )
+            },
+        )
         .await?
         .value;
     assert!(matches!(
