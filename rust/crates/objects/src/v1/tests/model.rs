@@ -7,8 +7,17 @@ async fn addressing_preserves_explicit_create_already_exists_and_recreation()
     let reference = wire::BucketRef {
         name: "addressing-fixture".into(),
     };
-    let address = reference.address(b"account-a")?;
-    assert_ne!(address, reference.address(b"account-b")?);
+    let identity = reference.identity(b"account-a")?;
+    assert_ne!(identity, reference.identity(b"account-b")?);
+    assert_eq!(
+        identity,
+        acyclic_stream::StreamPath::new(&reference.name)?.identity(b"account-a")?
+    );
+    let longest_path = acyclic_stream::StreamPath::new("s".repeat(acyclic_stream::MAX_PATH_BYTES))?;
+    assert_eq!(
+        longest_path.identity(b"account-a")?.id().as_bytes().len(),
+        acyclic_stream::MAX_PATH_BYTES
+    );
     let request = wire::CreateBucketRequest {
         name: reference.name.clone(),
         mutation: None,
@@ -33,8 +42,8 @@ async fn addressing_preserves_explicit_create_already_exists_and_recreation()
         recreated
             .bucket
             .ok_or("missing bucket")?
-            .address(b"account-a")?,
-        address
+            .identity(b"account-a")?,
+        identity
     );
     Ok(())
 }

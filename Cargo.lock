@@ -89,7 +89,6 @@ dependencies = [
  "acyclic-contract-derive",
  "acyclic-proto-build",
  "acyclic-test-support",
- "blake3",
  "ed25519-dalek",
  "futures",
  "proptest",
@@ -97,6 +96,7 @@ dependencies = [
  "prost-reflect",
  "prost-types",
  "protoc-bin-vendored",
+ "serde",
  "serde_json",
  "sha2 0.11.0",
  "syn 3.0.6",
@@ -488,11 +488,11 @@ dependencies = [
  "tracing-subscriber",
  "tsify",
  "uuid",
- "zeroize",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "which",
+ "zeroize",
 ]
 
 [[package]]

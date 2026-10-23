@@ -24,6 +24,20 @@ pub enum DnsError {
     NumericHost,
 }
 
+impl DnsError {
+    /// Stable code for language bindings.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::EmptyLabel => "empty_label",
+            Self::LabelTooLong => "label_too_long",
+            Self::InvalidCharacter => "invalid_character",
+            Self::EdgeHyphen => "edge_hyphen",
+            Self::HostTooLong => "host_too_long",
+            Self::NumericHost => "numeric_host",
+        }
+    }
+}
+
 /// Validate bytes without lowercasing, IDNA conversion or normalization.
 pub fn validate_dns_label(label: &[u8]) -> Result<(), DnsError> {
     if label.is_empty() {

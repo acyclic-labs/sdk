@@ -11,16 +11,12 @@ mod memory;
 pub(crate) use memory::persistence::Publication;
 pub mod request;
 impl wire::BucketRef {
-    /// Global address of the exact logical bucket name in the supplied account.
-    pub fn address(
+    /// Account and exact logical bucket id.
+    pub fn identity(
         &self,
         account: &[u8],
-    ) -> Result<crate::addressing::ResourceAddress, crate::addressing::AddressError> {
-        crate::addressing::ResourceAddress::new(
-            account,
-            crate::addressing::ResourceKind::Bucket,
-            self.name.as_bytes(),
-        )
+    ) -> Result<crate::addressing::ResourceIdentity, crate::addressing::IdentityError> {
+        crate::addressing::ResourceIdentity::new(account, self.name.as_bytes())
     }
 }
 pub mod response;

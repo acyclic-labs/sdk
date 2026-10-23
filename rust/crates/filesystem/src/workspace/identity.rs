@@ -5,18 +5,13 @@ use super::*;
 pub struct WorkspaceName(Arc<(String, KernelOwnedAllocation)>);
 
 impl WorkspaceName {
-    /// Global address of this workspace's retained name in the supplied account.
-    /// This does not replace the deployment-internal volume identity.
-    pub fn address(
+    /// Global pair using the retained workspace name as the resource id.
+    pub fn identity(
         &self,
         account: &[u8],
-    ) -> Result<acyclic_auth::addressing::ResourceAddress, acyclic_auth::addressing::AddressError>
+    ) -> Result<acyclic_auth::addressing::ResourceIdentity, acyclic_auth::addressing::IdentityError>
     {
-        acyclic_auth::addressing::ResourceAddress::new(
-            account,
-            acyclic_auth::addressing::ResourceKind::FsWorkspace,
-            self.as_str().as_bytes(),
-        )
+        acyclic_auth::addressing::ResourceIdentity::new(account, self.as_str().as_bytes())
     }
 
     /// Canonicalizes a name under the supplied work limits.

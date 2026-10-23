@@ -63,3 +63,25 @@ uuid_identity!(
 uuid_identity!(OperationId, "Address of one admitted operation.");
 uuid_identity!(MachineId, "Stable logical machine identity.");
 uuid_identity!(CheckpointId, "Stable immutable checkpoint identity.");
+
+impl MachineId {
+    /// Global pair retaining this machine's exact 16-byte UUID wire representation.
+    pub fn identity(
+        self,
+        account: &[u8],
+    ) -> Result<crate::addressing::ResourceIdentity, crate::addressing::IdentityError> {
+        crate::addressing::ResourceIdentity::new(account, &self.as_bytes())
+    }
+}
+
+#[cfg(test)]
+mod resource_identity_tests {
+    #[test]
+    fn addressing_retains_machine_wire_bytes() -> Result<(), Box<dyn std::error::Error>> {
+        let id = super::MachineId::parse("12345678-1234-4234-9234-123456789abc")?;
+        let identity = id.identity(b"account")?;
+        assert_eq!(identity.id().as_bytes(), id.as_bytes());
+        assert_eq!(identity.account().as_bytes(), b"account");
+        Ok(())
+    }
+}

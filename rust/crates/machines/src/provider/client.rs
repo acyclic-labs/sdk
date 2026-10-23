@@ -36,6 +36,14 @@ pub struct Machine {
     id: MachineId,
 }
 impl Machine {
+    /// Global identity of this handle in the caller's account.
+    pub fn identity(
+        &self,
+        account: &[u8],
+    ) -> Result<crate::addressing::ResourceIdentity, crate::addressing::IdentityError> {
+        self.id.identity(account)
+    }
+
     pub(crate) fn new(machines: Machines, id: MachineId) -> Self {
         Self { machines, id }
     }
