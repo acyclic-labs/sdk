@@ -2,6 +2,16 @@
 use super::*;
 use std::mem::size_of;
 
+// NativeConversationCustody adds four allocation tickets (messages, digests,
+// archive, index_buffer) and the indexes vector to ConversationState. Keep the
+// record bounds independent of this feature's inline custody, and bound the
+// allocation ticket separately so its growth cannot hide behind this formula.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+const CONVERSATION_CUSTODY_BYTES: usize = 4 * size_of::<Option<acyclic_fs::NativeAllocation>>()
+    + size_of::<Vec<acyclic_fs::NativeAllocation>>();
+#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+const CONVERSATION_CUSTODY_BYTES: usize = 0;
+
 macro_rules! ceiling {
     ($name:ident, $ty:ty, $maximum:expr) => {
         #[test]
@@ -17,9 +27,13 @@ macro_rules! ceiling {
         }
     };
 }
-ceiling!(reducer, Reducer, 1128);
-ceiling!(snapshot, Snapshot, 1104);
-ceiling!(projection, snapshot::Projection, 968);
+ceiling!(reducer, Reducer, 1128 + CONVERSATION_CUSTODY_BYTES);
+ceiling!(snapshot, Snapshot, 1104 + CONVERSATION_CUSTODY_BYTES);
+ceiling!(
+    projection,
+    snapshot::Projection,
+    968 + CONVERSATION_CUSTODY_BYTES
+);
 ceiling!(event, Event, 376);
 ceiling!(event_payload, EventPayload, 152);
 ceiling!(effect_status, EffectStatus, 24);
@@ -50,7 +64,17 @@ ceiling!(summary_fork_capture, crate::fork::SummaryForkCapture, 672);
 ceiling!(attested_boundary, crate::fork::AttestedBoundary, 96);
 ceiling!(project_merge_receipt, ProjectMergeReceipt, 1504);
 ceiling!(conversation_message, ConversationMessage, 648);
-ceiling!(conversation_state, ConversationState, 424);
+ceiling!(
+    conversation_state,
+    ConversationState,
+    424 + CONVERSATION_CUSTODY_BYTES
+);
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+ceiling!(
+    native_conversation_allocation_ticket,
+    Option<acyclic_fs::NativeAllocation>,
+    64
+);
 ceiling!(model_context_selection, ModelContextSelection, 304);
 ceiling!(file_ref, FileRef, 272);
 ceiling!(volume_ref, crate::conversation::VolumeRef, 136);
