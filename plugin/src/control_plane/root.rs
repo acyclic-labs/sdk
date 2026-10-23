@@ -273,12 +273,9 @@ impl ControlPlane {
             if route.lifecycle.needs_mount() || discarding_agents.contains(&route.agent_id) {
                 self.validate_route_paths(&route)?;
                 fs::create_dir_all(&route.mount_path).map_err(display)?;
-                // Fence names are derived from the canonical physical path.
-                // Windows adds its verbatim prefix when the provider opens the
-                // parent; use that same spelling before checking for a fence.
-                #[cfg(windows)]
+                // Fence names use the canonical physical parent. Resolve it
+                // without following a possibly disconnected mounted child.
                 let mount_path = route.mount_path.canonicalize().map_err(display)?;
-                #[cfg(windows)]
                 for root in route.roots.values() {
                     let path = mount_path.join(root.mount_name());
                     let [fence, ..] =
@@ -286,40 +283,52 @@ impl ControlPlane {
                     if !fence.try_exists().map_err(display)? {
                         continue;
                     }
-                    let volume = self
-                        .workspace_root(&route, root.id())
-                        .await?
-                        .id()
-                        .volume_id();
-                    let work = acyclic_fs::NativeMaterializationWork::new(
-                        WorkBudget::UNBOUNDED,
-                        &CancellationToken::new(),
-                    )
-                    .map_err(|(error, _)| display(error))?;
-                    let (parent, _) = work
-                        .open_root_directory(&route.mount_path)
+                    #[cfg(not(windows))]
+                    acyclic_fs::detach_native_mount_destination_after_crash(&path)
                         .map_err(display)?;
-                    let mut owner = acyclic_fs::NativeMountRecoveryOwner::acquire_in_directory(
-                        &path, &parent, &work,
-                    )
-                    .map_err(display)?;
-                    let recovery_path = self
-                        .config_root
-                        .join("recovery")
-                        .join(uuid::Uuid::from_bytes(volume.into_bytes()).to_string());
-                    fs::create_dir_all(&recovery_path).map_err(display)?;
-                    let (recovery, _) =
-                        work.open_root_directory(&recovery_path).map_err(display)?;
-                    let name = uuid::Uuid::from_bytes(acyclic_fs::OperationId::new().into_bytes())
-                        .to_string();
-                    if owner
-                        .preserve_crashed_in_directory(&recovery, Path::new(&name), volume, &work)
-                        .map_err(display)?
+                    #[cfg(windows)]
                     {
-                        eprintln!(
-                            "Acyclic preserved unpublished crash residue at {}; the workspace resumes from its last durable generation",
-                            recovery_path.join(name).display()
-                        );
+                        let volume = self
+                            .workspace_root(&route, root.id())
+                            .await?
+                            .id()
+                            .volume_id();
+                        let work = acyclic_fs::NativeMaterializationWork::new(
+                            WorkBudget::UNBOUNDED,
+                            &CancellationToken::new(),
+                        )
+                        .map_err(|(error, _)| display(error))?;
+                        let (parent, _) = work
+                            .open_root_directory(&route.mount_path)
+                            .map_err(display)?;
+                        let mut owner = acyclic_fs::NativeMountRecoveryOwner::acquire_in_directory(
+                            &path, &parent, &work,
+                        )
+                        .map_err(display)?;
+                        let recovery_path = self
+                            .config_root
+                            .join("recovery")
+                            .join(uuid::Uuid::from_bytes(volume.into_bytes()).to_string());
+                        fs::create_dir_all(&recovery_path).map_err(display)?;
+                        let (recovery, _) =
+                            work.open_root_directory(&recovery_path).map_err(display)?;
+                        let name =
+                            uuid::Uuid::from_bytes(acyclic_fs::OperationId::new().into_bytes())
+                                .to_string();
+                        if owner
+                            .preserve_crashed_in_directory(
+                                &recovery,
+                                Path::new(&name),
+                                volume,
+                                &work,
+                            )
+                            .map_err(display)?
+                        {
+                            eprintln!(
+                                "Acyclic preserved unpublished crash residue at {}; the workspace resumes from its last durable generation",
+                                recovery_path.join(name).display()
+                            );
+                        }
                     }
                 }
                 let mount = self.mount_route(&route).await?;
