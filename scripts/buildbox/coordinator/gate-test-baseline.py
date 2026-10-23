@@ -16,13 +16,19 @@ import subprocess
 
 
 def baseline_complete(output):
-    marker = re.search(r'^GATE_TEST_BASELINE_COMPLETE rc=(\d+)$', output, re.M)
-    build_failed = re.search(r'^error: (?:could not compile|failed to |the lock file|no matching|package ID)', output, re.M)
-    executor = re.search(r'^GATE_TEST_BASELINE_EXECUTOR rc=(\d+)$', output, re.M)
-    isolation_failed = re.search(r'^error: GATE_HOME_LEAK |^BB_DISK_LOW |^\[buildbox\] (?:cleanup|export) INFRA:', output, re.M)
-    if marker and marker[1] == '0' and executor and executor[1] != '0':
+    payloads = re.findall(r'^GATE_TEST_BASELINE_COMPLETE rc=(-?\d+)$', output, re.M)
+    executors = re.findall(r'^GATE_TEST_BASELINE_EXECUTOR rc=(-?\d+)$', output, re.M)
+    # A footer without the completed client boundary is incomplete, including
+    # a coordinator killed before appending its executor result.
+    if len(payloads) != 1 or len(executors) != 1:
         return False
-    return bool(marker and not build_failed and not isolation_failed and (marker[1] == '0' or re.search(r'^test result:|^error: test failed, to rerun pass ', output, re.M)))
+    payload, executor = int(payloads[0]), int(executors[0])
+    if payload < 0 or payload != executor:
+        return False
+    build_failed = re.search(r'^error: (?:could not compile|failed to |the lock file|no matching|package ID)', output, re.M)
+    isolation_failed = re.search(r'^error: GATE_HOME_LEAK |^BB_DISK_LOW |^\[buildbox\] (?:cleanup|export) INFRA:', output, re.M)
+    return bool(not build_failed and not isolation_failed and (payload == 0 or re.search(r'^test result:|^error: test failed, to rerun pass ', output, re.M)))
+
 
 
 def main():
@@ -69,7 +75,7 @@ def main():
     reruns = [line for line in text.splitlines() if 'to rerun pass' in line and any(re.search(r'-p ' + re.escape(p) + r'(?![A-Za-z0-9_-])', line) for p in roots)]
     only_docs = bool(reruns) and all(line.startswith('error: doctest failed') for line in reruns) and not re.search(r'^error: could not compile ', text, re.M)
     skips = [line.strip() for line in Path('Q:/lanes/hangs.txt').read_text().splitlines() if line.strip() and not line.startswith('#')]
-    key_data = {'base': args.base, 'roots': roots, 'docs': only_docs, 'skips': skips, 'target_coverage': 'all-targets+doc-v1', 'runner_sha256': hashlib.sha256((lanes / 'gate-test-runner.sh').read_bytes()).hexdigest()}
+    key_data = {'base': args.base, 'roots': roots, 'docs': only_docs, 'skips': skips, 'target_coverage': 'all-targets+doc-executor-v2', 'runner_sha256': hashlib.sha256((lanes / 'gate-test-runner.sh').read_bytes()).hexdigest()}
     if compiler_roots:
         key_data['check_targets'] = True
         key_data['check_only'] = not bool(failing_roots)
@@ -118,7 +124,7 @@ def main():
             existing = sorted(set(existing) | (set(scope['tests']) & members))
         (args.results / (key + '.json')).write_text(json.dumps({**key_data, 'existing_on_base': existing}, indent=2) + '\n', encoding='utf-8', newline='\n')
         if not existing:
-            log.write_text('GATE_TEST_BASELINE_COMPLETE rc=0\n', encoding='utf-8', newline='\n')
+            log.write_text('GATE_TEST_BASELINE_SKIPPED absent-on-base\nGATE_TEST_BASELINE_COMPLETE rc=0\nGATE_TEST_BASELINE_EXECUTOR rc=0\n', encoding='utf-8', newline='\n')
         else:
             shutil.copyfile(lanes / 'gate-test-runner.sh', args.worktree / '.gate-test-runner.sh')
             script = '''#!/bin/bash

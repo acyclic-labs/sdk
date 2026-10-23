@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Isolated baseline dispatch/verdict regression tests; no Rust compilation."""
 from pathlib import Path
-import contextlib,io,json,os,shutil,subprocess,sys,tempfile,types,unittest
+import contextlib,hashlib,io,json,os,shutil,subprocess,sys,tempfile,types,unittest
 HERE=Path(__file__).resolve().parent
 class BaselineTests(unittest.TestCase):
  def setUp(self):
@@ -33,6 +33,8 @@ esac
   # A historical default-target result must not satisfy wider qualification.
   (results/'old.json').write_text(json.dumps({'base':'a'*40,'roots':['acyclic-conformance'],'docs':False,'skips':[]}))
   (results/'old.log').write_text('test result: ok. 1 passed\nGATE_TEST_BASELINE_COMPLETE rc=0\n')
+  (results/'interrupted.json').write_text(json.dumps({'base':'a'*40,'roots':['acyclic-conformance'],'docs':False,'skips':[],'target_coverage':'all-targets+doc-executor-v2','runner_sha256':hashlib.sha256((root/'gate-test-runner.sh').read_bytes()).hexdigest()}))
+  (results/'interrupted.log').write_text('test result: ok. 1 passed\nGATE_TEST_BASELINE_COMPLETE rc=0\n')
   source=(HERE/'coordinator/gate-test-baseline.py').read_text().replace("Path('Q:/lanes/hangs.txt')",f'Path({str(root/"hangs")!r})')
   if negative:source=source.replace("else 'run_tests --all-targets; rc=$?'", "else 'run_tests; rc=$?'")
   module=types.ModuleType('fixture');module.__file__=str(root/'gate-test-baseline.py');exec(compile(source,module.__file__,'exec'),module.__dict__)
@@ -48,14 +50,14 @@ esac
   try:
    with contextlib.redirect_stdout(output):self.assertEqual(module.main(),0)
   finally:sys.argv=argv
-  log=Path(output.getvalue().strip());self.assertNotEqual(log,results/'old.log')
+  log=Path(output.getvalue().strip());self.assertNotEqual(log,results/'old.log');self.assertNotEqual(log,results/'interrupted.log')
   text=log.read_text();calls=(work/'calls').read_text()
   self.assertIn(' --doc ',calls)
   return text,calls,module
  def test_main_qualification_matches_all_targets_and_separate_docs(self):
   text,calls,module=self.qualify();self.assertIn(' --all-targets ',calls)
   self.assertIn('GATE_TEST_BASELINE_COMPLETE rc=101',text);self.assertIn('runtime signing custody is closed',text)
-  self.assertTrue(module.baseline_complete('error: test failed, to rerun pass `-p p --bench b`\nGATE_TEST_BASELINE_COMPLETE rc=101\n'))
+  self.assertTrue(module.baseline_complete('error: test failed, to rerun pass `-p p --bench b`\nGATE_TEST_BASELINE_COMPLETE rc=101\nGATE_TEST_BASELINE_EXECUTOR rc=101\n'))
   self.assertFalse(module.baseline_complete('error: could not compile p\nGATE_TEST_BASELINE_COMPLETE rc=101\n'))
  def test_old_default_target_selection_misses_the_main_benchmark(self):
   text,calls,_=self.qualify(True);self.assertNotIn(' --all-targets ',calls)
@@ -63,9 +65,17 @@ esac
  def test_executor_failure_cannot_qualify_a_passing_main_payload(self):
   with self.assertRaisesRegex(RuntimeError,'baseline did not complete'):
    self.qualify(negative=True,executor=224)
-  logs=[p for p in (self.d/'results').glob('*.log') if p.name!='old.log']
+  logs=[p for p in (self.d/'results').glob('*.log') if p.name not in ['old.log','interrupted.log']]
   self.assertEqual(len(logs),1)
   self.assertIn('GATE_TEST_BASELINE_EXECUTOR rc=224',logs[0].read_text())
+ def test_incomplete_or_mismatched_executor_never_qualifies_or_reuses(self):
+  _,_,module=self.qualify()
+  for payload in [0,101]:
+   footer=f'test result: FAILED. 0 passed; 1 failed\nGATE_TEST_BASELINE_COMPLETE rc={payload}\n'
+   self.assertFalse(module.baseline_complete(footer))
+   for executor in [-9,224,1 if payload==101 else 101]:
+    self.assertFalse(module.baseline_complete(footer+f'GATE_TEST_BASELINE_EXECUTOR rc={executor}\n'))
+   self.assertTrue(module.baseline_complete(footer+f'GATE_TEST_BASELINE_EXECUTOR rc={payload}\n'))
  def test_actual_verdict_qualifies_non_libtest_targets_without_hiding_new_failures(self):
   root=self.d;(root/'.codex-fleet').mkdir();(root/'flakes').write_text('')
   helper=root/'failed-tests.sh';source=(HERE/'coordinator/failed-tests.sh').read_text()
