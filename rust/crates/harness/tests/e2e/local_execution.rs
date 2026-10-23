@@ -594,7 +594,7 @@ fn verify_prompt(requests: &[ModelRequest], prompt: String) -> TestResult {
         // Only a failed case may stop before dispatch; validate() requires it.
         return Ok(());
     }
-    if ["bash", "fs", "read", "write", "edit"]
+    if ["shell", "fs", "read", "write", "edit"]
         .iter()
         .any(|name| !requests[0].tools.iter().any(|tool| tool.name == *name))
     {

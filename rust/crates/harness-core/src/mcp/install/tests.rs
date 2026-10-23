@@ -136,7 +136,7 @@ async fn installation_is_additive_filtered_and_uses_the_retained_connection() ->
             .iter()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
-        ["shell", "mcp.configured.read"]
+        ["mcp.configured.read", "shell"]
     );
     let original = installed
         .tools
