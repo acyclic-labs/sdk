@@ -34,10 +34,14 @@ fn observer_can_write_the_file_that_triggered_it() -> Result<(), Box<dyn std::er
                             offset: 4,
                             bytes: OwnedBytes::from_static(b"tail"),
                         },
-                        &work,
-                        self.source.cancellation(),
-                        &self.source.runtime.clock,
-                        None,
+                        false,
+                        ContentChangeContext {
+                            deadline: None,
+                            work: &work,
+                            lifetime: self.source.cancellation(),
+                            clock: &self.source.runtime.clock,
+                            guard: None,
+                        },
                     )
                 })
                 .expect("reentrant write finishes after the triggering write adopts");

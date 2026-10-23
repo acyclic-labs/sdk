@@ -58,7 +58,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             maximum_bytes,
             idempotency_key,
             Some(&generation),
-            None,
+            crate::conversation::ContentAccess::default(),
         )
         .await
     }

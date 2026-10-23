@@ -385,23 +385,22 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
     ) -> Result<FileRef> {
         let (file, _hold) = self
             .publisher
-            .stage(operation_id, path, bytes, media_type, display_name, None)?
+            .stage(
+                operation_id,
+                path,
+                bytes,
+                media_type,
+                display_name,
+                crate::conversation::ContentAccess::default(),
+            )?
             .await?;
         Ok(file)
     }
 
     /// Reads a pinned owner-private version after verifying its descriptor.
     pub async fn read(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
-        if let Ok(bytes) = self
-            .memory_store
-            .lock()
-            .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
-            .read(file)
-        {
-            return Ok(bytes.into());
-        }
         self.content_verifier
-            .read(file, self.maximum_file_bytes, None)?
+            .read(file, self.maximum_file_bytes, None, None)?
             .await
     }
 
@@ -418,9 +417,12 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
                 &self.volume,
                 "",
                 path,
-                expected_generation,
-                after,
-                maximum_entries,
+                crate::filesystem::DirectoryOptions {
+                    generation: expected_generation,
+                    after,
+                    maximum_entries,
+                    ceiling: None,
+                },
             )
             .await
     }
@@ -444,7 +446,7 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
         file: &FileRef,
     ) -> Result<acyclic_stream::OwnedBytes> {
         self.delegated_reader(scope)?
-            .read(file, self.maximum_file_bytes, None)?
+            .read(file, self.maximum_file_bytes, None, None)?
             .await
     }
 
@@ -474,9 +476,12 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
                 &self.volume,
                 granted_prefix,
                 path,
-                expected_generation,
-                after,
-                maximum_entries,
+                crate::filesystem::DirectoryOptions {
+                    generation: expected_generation,
+                    after,
+                    maximum_entries,
+                    ceiling: None,
+                },
             )
             .await
     }
@@ -497,7 +502,7 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
                 path,
                 expected_generation,
                 u64::MAX,
-                None,
+                crate::conversation::ContentAccess::default(),
             )?
             .await
             .map(|(file, bytes, _)| (file, bytes))?;
@@ -579,11 +584,11 @@ impl<P: StreamProvider, S: StreamProvider, O: AsyncObjectStore + 'static>
     MemoryHarnessStorage<P, StreamAuthorityStore<S>, O>
 {
     /// Queries the same private files written by the ordinary tools.
-    pub fn file_query(
+    pub async fn file_query(
         &self,
         budget: acyclic_fs::WorkBudget,
     ) -> Result<super::FilesystemFileQuery<S, O>> {
-        self.content_verifier.file_query(&self.volume, budget)
+        self.content_verifier.file_query(&self.volume, budget).await
     }
 }
 

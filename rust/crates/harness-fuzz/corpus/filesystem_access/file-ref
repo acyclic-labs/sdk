@@ -1,0 +1,1 @@
+{"volume":{"provider":{"namespace":"access-test","family":"filesystem","version":"2"},"id":"project","class":"project","owner":{"kind":"project","id":"owner"}},"path":"notes/file","version":"pending","descriptor":{"sha256":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"byte_length":0,"media_type":"text/plain"},"display_name":"file"}

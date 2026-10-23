@@ -8,6 +8,8 @@ use crate::{
 use acyclic_fs::{NativeWatch, PublicationPermit};
 use acyclic_stream::BoxProviderFuture;
 
+pub(super) mod access;
+
 mod capture;
 mod children;
 mod git;
@@ -33,6 +35,7 @@ mod tests;
 
 pub(super) struct CheckoutTools {
     workspace: Arc<LocalWorkspace>,
+    signed: Scope,
     read_grant: String,
     write_grant: String,
     capture_options: acyclic_fs::CaptureOptions,
@@ -90,6 +93,7 @@ impl CheckoutTools {
         workspace: Arc<LocalWorkspace>,
         project: &VolumeRef,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+        signed: &Scope,
         task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     ) -> Result<Self> {
         if workspace
@@ -123,6 +127,7 @@ impl CheckoutTools {
             }
         }
         Ok(Self {
+            signed: signed.clone(),
             read_grant: project.capability(VolumeOperation::Read, &mut None)?,
             write_grant: project.capability(VolumeOperation::Write, &mut None)?,
             capture_options,
@@ -133,6 +138,154 @@ impl CheckoutTools {
             state: shared,
             selected: false,
         })
+    }
+}
+
+struct PreparedCommand {
+    invocation: ToolInvocation,
+    shell: Option<crate::tools::ShellInput>,
+    fs: Option<crate::tools::FsCommand>,
+    request: Vec<u8>,
+    maximum: usize,
+}
+
+struct ShellCommand<'a> {
+    invocation: &'a ToolInvocation,
+    context: &'a ToolContext,
+    shell: Option<crate::tools::ShellInput>,
+    request: Vec<u8>,
+    maximum: usize,
+}
+
+impl CheckoutTools {
+    async fn run_checkout_command(
+        &self,
+        command: PreparedCommand,
+        context: &ToolContext,
+    ) -> Result<ToolResult> {
+        let PreparedCommand {
+            invocation,
+            shell,
+            fs,
+            request,
+            maximum,
+        } = command;
+        let result = serialized(&self.state, async |mut state| {
+            let owner = context.task().owned_mailbox.as_ref().ok_or_else(|| {
+                Error::Unauthorized("checkout command has no execution owner".into())
+            })?;
+            owner.verify_owner(None)?.await?;
+            let workspace = self.selected_workspace(&mut state, owner.as_ref()).await?;
+            let view = state
+                .active
+                .as_ref()
+                .unwrap_or_else(|| self.workspace.view());
+            self.require_command_access(
+                view.workspace(),
+                context.effective_scope().grants(),
+                invocation.name == "fs",
+            )
+            .await?;
+            if reconciliation::recover(&workspace, view, &|| async {
+                owner.verify_owner(None)?.await
+            })
+            .await?
+            {
+                state.watcher = None;
+            }
+            workspace::volumes::sync(&state.mounts).await?;
+            if let Some(parsed) = fs {
+                self.fs(parsed, context, &mut state, &workspace).await
+            } else {
+                self.shell_checkout(
+                    ShellCommand {
+                        invocation: &invocation,
+                        context,
+                        shell,
+                        request,
+                        maximum,
+                    },
+                    state,
+                    &workspace,
+                )
+                .await
+            }
+        })
+        .await;
+        #[cfg(test)]
+        if let Err(error) = &result {
+            eprintln!("checkout command {}: {error:?}", invocation.name);
+        }
+        result
+    }
+    async fn shell_checkout(
+        &self,
+        command: ShellCommand<'_>,
+        mut state: OwnedMutexGuard<State>,
+        workspace: &Arc<LocalWorkspace>,
+    ) -> Result<ToolResult> {
+        let ShellCommand {
+            invocation,
+            context,
+            shell,
+            request,
+            maximum,
+        } = command;
+        let State {
+            active, watcher, ..
+        } = &mut *state;
+        let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
+        self.capture(
+            (workspace, view),
+            watcher,
+            invocation.operation_id,
+            0,
+            PublicationPermit::Unrestricted,
+            Some((
+                context.task().ordinary_journal_owner::<LocalStream>()?,
+                false,
+            )),
+        )
+        .await?;
+        let input = shell.ok_or_else(|| Error::Invalid("shell input is absent".into()))?;
+        let files = output::Output::open(context, Arc::clone(&self.task_files), request).await?;
+        let mounts = Arc::clone(&state.mounts);
+        let publication = context.task().ordinary_journal_owner::<LocalStream>()?;
+        let (result, mut state, mut files) =
+            workspace::volumes::native_scope(&mounts, async |claims| {
+                let (result, state, files, claims) =
+                    self.shell(input, maximum, state, files, claims).await?;
+                if !result.as_ref().is_ok_and(|result| {
+                    result
+                        .value
+                        .get("stop")
+                        .is_none_or(|stop| stop.is_null() || stop["cleanup_completed"] == true)
+                }) {
+                    return Err(Error::Indeterminate(invocation.operation_id));
+                }
+                // Verify the journal owner before the scope publishes.
+                publication.verify(true, &mut None).await?;
+                Ok(((result, state, files), claims))
+            })
+            .await?;
+        let State {
+            active, watcher, ..
+        } = &mut *state;
+        let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
+        self.capture(
+            (workspace, view),
+            watcher,
+            invocation.operation_id,
+            1,
+            PublicationPermit::Unrestricted,
+            Some((Arc::clone(&publication), true)),
+        )
+        .await?;
+        publication.verify(true, &mut None).await?;
+        if let Ok(result) = &result {
+            files.finish(result).await?;
+        }
+        result
     }
 }
 
@@ -203,6 +356,24 @@ impl ToolExecutor for CheckoutTools {
                 let selected = self.child_checkout(original, project).await?;
                 return selected.execute(invocation, context).await;
             }
+            if !self.selected {
+                let context = context
+                    .as_ref()
+                    .ok_or_else(|| Error::Invalid("tool context missing".into()))?;
+                serialized(&self.state, async |state| {
+                    let view = state
+                        .active
+                        .as_ref()
+                        .unwrap_or_else(|| self.workspace.view());
+                    self.require_command_access(
+                        view.workspace(),
+                        context.effective_scope().grants(),
+                        invocation.name == "fs",
+                    )
+                    .await
+                })
+                .await?;
+            }
             if !self.selected
                 && let Some(selected) = self
                     .select(
@@ -253,92 +424,17 @@ impl ToolExecutor for CheckoutTools {
             };
             let maximum = context.effective_scope().limits().render_bytes;
             let maximum = usize::try_from(maximum).map_err(storage)?;
-            let result = serialized(&self.state, async |mut state| {
-                let owner = context.task().owned_mailbox.as_ref().ok_or_else(|| {
-                    Error::Unauthorized("checkout command has no execution owner".into())
-                })?;
-                owner.verify_owner(None)?.await?;
-                let workspace = self.selected_workspace(&mut state, owner.as_ref()).await?;
-                let view = state
-                    .active
-                    .as_ref()
-                    .unwrap_or_else(|| self.workspace.view());
-                if reconciliation::recover(&workspace, view, &|| async {
-                    owner.verify_owner(None)?.await
-                })
-                .await?
-                {
-                    state.watcher = None;
-                }
-                workspace::volumes::sync(&state.mounts).await?;
-                if let Some(parsed) = fs {
-                    self.fs(parsed, context, &mut state, &workspace).await
-                } else {
-                    let State {
-                        active, watcher, ..
-                    } = &mut *state;
-                    let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
-                    self.capture(
-                        (&workspace, view),
-                        watcher,
-                        invocation.operation_id,
-                        0,
-                        PublicationPermit::Unrestricted,
-                        Some((
-                            context.task().ordinary_journal_owner::<LocalStream>()?,
-                            false,
-                        )),
-                    )
-                    .await?;
-                    let input =
-                        shell.ok_or_else(|| Error::Invalid("shell input is absent".into()))?;
-                    let files =
-                        output::Output::open(context, Arc::clone(&self.task_files), request)
-                            .await?;
-                    let mounts = Arc::clone(&state.mounts);
-                    let publication = context.task().ordinary_journal_owner::<LocalStream>()?;
-                    let (result, mut state, mut files) =
-                        workspace::volumes::native_scope(&mounts, async |claims| {
-                            let (result, state, files, claims) =
-                                self.shell(input, maximum, state, files, claims).await?;
-                            if !result.as_ref().is_ok_and(|result| {
-                                result.value.get("stop").is_none_or(|stop| {
-                                    stop.is_null() || stop["cleanup_completed"] == true
-                                })
-                            }) {
-                                return Err(Error::Indeterminate(invocation.operation_id));
-                            }
-                            // Verify the journal owner before the scope publishes.
-                            publication.verify(true, &mut None).await?;
-                            Ok(((result, state, files), claims))
-                        })
-                        .await?;
-                    let State {
-                        active, watcher, ..
-                    } = &mut *state;
-                    let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
-                    self.capture(
-                        (&workspace, view),
-                        watcher,
-                        invocation.operation_id,
-                        1,
-                        PublicationPermit::Unrestricted,
-                        Some((Arc::clone(&publication), true)),
-                    )
-                    .await?;
-                    publication.verify(true, &mut None).await?;
-                    if let Ok(result) = &result {
-                        files.finish(result).await?;
-                    }
-                    result
-                }
-            })
-            .await;
-            #[cfg(test)]
-            if let Err(error) = &result {
-                eprintln!("checkout command {}: {error:?}", invocation.name);
-            }
-            result
+            self.run_checkout_command(
+                PreparedCommand {
+                    invocation,
+                    shell,
+                    fs,
+                    request,
+                    maximum,
+                },
+                context,
+            )
+            .await
         })
     }
 

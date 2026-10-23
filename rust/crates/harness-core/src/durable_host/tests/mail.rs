@@ -24,7 +24,7 @@ async fn b08_one_intent_keeps_recipient_and_payload() -> Result<()> {
         b"7",
         "application/json",
         "body.json",
-        None,
+        crate::conversation::ContentAccess::default(),
     )?
     .await?
     .0;
@@ -59,7 +59,7 @@ async fn b08_one_intent_keeps_recipient_and_payload() -> Result<()> {
         b"8",
         "application/json",
         "changed.json",
-        None,
+        crate::conversation::ContentAccess::default(),
     )?
     .await?
     .0;
@@ -86,7 +86,7 @@ async fn b09_inbox_rejects_hostile_envelopes() -> Result<()> {
         b"7",
         "application/json",
         "body.json",
-        None,
+        crate::conversation::ContentAccess::default(),
     )?
     .await?
     .0;

@@ -336,7 +336,7 @@ impl LocalHarness {
     ) -> Result<String> {
         let bytes = self
             .context_reader()?
-            .read(&checkpoint.summary, self.limits.file_bytes, None)?
+            .read(&checkpoint.summary, self.limits.file_bytes, None, None)?
             .await?;
         String::from_utf8(bytes.as_ref().to_vec()).map_err(storage)
     }

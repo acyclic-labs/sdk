@@ -4,6 +4,7 @@ use crate::*;
 
 const GIT_OPERATION_LEASE_MILLIS: u64 = 15 * 60 * 1_000;
 
+mod access;
 mod allocation;
 mod discard;
 mod git;

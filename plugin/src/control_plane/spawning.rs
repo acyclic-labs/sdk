@@ -198,6 +198,7 @@ impl ControlPlane {
             )
             .await
             .map_err(display)?;
+            let options = super::access::mount_options(&workspace, &pending.workspace_name).await?;
             roots.push((
                 root.mount_name(),
                 LazyWorkspace::open(
@@ -213,6 +214,7 @@ impl ControlPlane {
                 )
                 .await
                 .map_err(display)?,
+                options,
             ));
         }
         let mount = LocalMount::mount(roots, &pending.mount_path)

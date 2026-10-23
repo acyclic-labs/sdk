@@ -585,7 +585,7 @@ proptest! {
                 // The previous production path publishes the same bytes again
                 // under each command identity. It must fail the same assertion.
                 publisher.stage_once(OperationId::new(), "inputs/old.receive.json",
-                    b"{\"after\":0}", "application/json", "mailbox receive", None)?
+                    b"{\"after\":0}", "application/json", "mailbox receive", crate::conversation::ContentAccess::default())?
                     .await?;
                 let old = local.files.resolve(&reference, None).await?.generation;
                 // Recovery must retain the original stage_once fingerprint checks.
@@ -593,7 +593,7 @@ proptest! {
                 let bad = format!("{{\"after\":{turns}}}");
                 publisher.stage_once(super::super::turn::receive_operation(operation),
                     &format!("inputs/{operation}.receive.json"), bad.as_bytes(),
-                    "application/json", "mailbox receive", None)?.await?;
+                    "application/json", "mailbox receive", crate::conversation::ContentAccess::default())?.await?;
                 assert!(matches!(local.finish_turn_inputs(operation,
                     model.payload.clone(), publisher.as_ref()).await, Err(Error::Conflict(_))));
                 Ok::<_, Error>((before, after, old))
@@ -617,7 +617,7 @@ async fn legacy_receive_input_keeps_its_original_reference_on_retry_and_reopen()
             b"{\"after\":0}",
             "application/json",
             "mailbox receive",
-            None,
+            crate::conversation::ContentAccess::default(),
         )?
         .await?
         .0;

@@ -3,7 +3,26 @@ use super::*;
 #[derive(Clone, Copy)]
 enum FilePublication<'a> {
     Replace(Option<&'a GenerationRef>),
+    Authorized(acyclic_fs::access::PolicyFence),
     CreateOnly,
+}
+
+impl FilePublication<'_> {
+    fn fence(self) -> Option<acyclic_fs::access::PolicyFence> {
+        match self {
+            Self::Authorized(fence) => Some(fence),
+            Self::Replace(_) | Self::CreateOnly => None,
+        }
+    }
+}
+
+fn require_publication_time(fence: Option<acyclic_fs::access::PolicyFence>) -> Result<()> {
+    if fence.is_some_and(|fence| !fence.valid_at(access::access_now())) {
+        return Err(Error::Unauthorized(
+            "filesystem write authority expired".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn creation_error(error: WorkspaceError, io: Option<&PreparationIo>) -> Error {
@@ -235,94 +254,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .map_err(|failure| failure.error)
                 .map_err(map_error)?,
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        let batched = if !invalidate_metadata
-            && matches!(publication, FilePublication::Replace(_))
-            && mutations
-                .iter()
-                .all(|mutation| !matches!(mutation, WorkspaceMutation::Remove { .. }))
-        {
-            let directories = mutations
-                .iter()
-                .filter_map(|mutation| match mutation {
-                    WorkspaceMutation::CreateDirectory { path } => Some(path.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            let files = mutations
-                .iter()
-                .filter_map(|mutation| match mutation {
-                    WorkspaceMutation::PutFile { path, bytes } => {
-                        Some((path.as_str(), bytes.clone()))
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
+        if let Some(fence) = publication.fence() {
             transaction
-                .write_batch(&directories, &files, budget, &cancellation)
+                .observe_policy_fence(fence, budget, &cancellation)
                 .await
                 .map_err(|failure| map_error(failure.error))?;
-            true
-        } else {
-            false
-        };
-        #[cfg(target_arch = "wasm32")]
-        let batched = false;
-        if !batched {
-            for mutation in mutations {
-                match mutation {
-                    WorkspaceMutation::CreateDirectory { path } => {
-                        transaction
-                            .create_dir_all(path, budget, &cancellation)
-                            .await
-                            .map(|receipt| receipt.value)
-                            .map_err(|failure| failure.error)
-                            .map_err(map_error)?;
-                    }
-                    WorkspaceMutation::PutFile { path, bytes } => {
-                        match publication {
-                            FilePublication::Replace(_) => transaction
-                                .write(path, bytes.clone(), budget, &cancellation)
-                                .await
-                                .map_err(|failure| map_error(failure.error))?,
-                            FilePublication::CreateOnly => transaction
-                                .create_file(
-                                    path,
-                                    bytes.clone(),
-                                    acyclic_fs::kernel::FileMetadata::default(),
-                                    budget,
-                                    &cancellation,
-                                )
-                                .await
-                                .map_err(|failure| creation_error(failure.error, None))?,
-                        };
-                    }
-                    WorkspaceMutation::Remove { path } => {
-                        transaction
-                            .remove(path, budget, &cancellation)
-                            .await
-                            .map(|receipt| receipt.value)
-                            .map_err(|failure| failure.error)
-                            .map_err(map_error)?;
-                    }
-                }
-                // Raw mutations do not carry a descriptor or write publication.
-                // Invalidate the old index atomically, including same-byte writes.
-                // The content writer supplies its own metadata in this transaction.
-                if invalidate_metadata
-                    && let WorkspaceMutation::PutFile { path, .. }
-                    | WorkspaceMutation::Remove { path } = mutation
-                {
-                    let metadata =
-                        content_metadata_path_io(path.trim_start_matches('/'), true, None)?;
-                    match transaction.remove(&metadata, budget, &cancellation).await {
-                        Ok(_) => {}
-                        Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => {}
-                        Err(failure) => return Err(map_error(failure.error)),
-                    }
-                }
-            }
         }
+        Self::stage_unmeasured(
+            &mut transaction,
+            mutations,
+            invalidate_metadata,
+            publication,
+            budget,
+            &cancellation,
+        )
+        .await?;
         loop {
             let committed = transaction
                 .commit(
@@ -331,6 +277,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     budget,
                     &cancellation,
                     |_| async {
+                        require_publication_time(publication.fence())
+                            .map_err(acyclic_fs::OperationFailure::before_work)?;
                         Ok::<_, acyclic_fs::OperationFailure<Error>>(acyclic_fs::OperationReceipt {
                             value: (),
                             work: acyclic_fs::WorkCounters::default(),
@@ -343,7 +291,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             return match committed {
                 TransactionCommit::Committed(generation)
                 | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
-                TransactionCommit::Conflict { .. } if expected_generation.is_none() => {
+                TransactionCommit::Conflict { .. }
+                    if expected_generation.is_none()
+                        && publication
+                            .fence()
+                            .is_none_or(|fence| !fence.generation_sensitive()) =>
+                {
                     // Reuse the original candidate only when the SDK proves its
                     // exact observations and mutation dependencies still hold.
                     match transaction
@@ -369,6 +322,107 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 )),
             };
         }
+    }
+
+    async fn stage_unmeasured(
+        transaction: &mut acyclic_fs::Transaction<A, O>,
+        mutations: &[WorkspaceMutation],
+        invalidate_metadata: bool,
+        publication: FilePublication<'_>,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let batched = if !invalidate_metadata
+            && !matches!(publication, FilePublication::CreateOnly)
+            && mutations
+                .iter()
+                .all(|mutation| !matches!(mutation, WorkspaceMutation::Remove { .. }))
+        {
+            let directories = mutations
+                .iter()
+                .filter_map(|mutation| match mutation {
+                    WorkspaceMutation::CreateDirectory { path } => Some(path.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let files = mutations
+                .iter()
+                .filter_map(|mutation| match mutation {
+                    WorkspaceMutation::PutFile { path, bytes } => {
+                        Some((path.as_str(), bytes.clone()))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            transaction
+                .write_batch(&directories, &files, budget, cancellation)
+                .await
+                .map_err(|failure| map_error(failure.error))?;
+            true
+        } else {
+            false
+        };
+        #[cfg(target_arch = "wasm32")]
+        let batched = false;
+        if !batched {
+            for mutation in mutations {
+                match mutation {
+                    WorkspaceMutation::CreateDirectory { path } => {
+                        transaction
+                            .create_dir_all(path, budget, cancellation)
+                            .await
+                            .map(|receipt| receipt.value)
+                            .map_err(|failure| failure.error)
+                            .map_err(map_error)?;
+                    }
+                    WorkspaceMutation::PutFile { path, bytes } => {
+                        match publication {
+                            FilePublication::Replace(_) | FilePublication::Authorized(_) => {
+                                transaction
+                                    .write(path, bytes.clone(), budget, cancellation)
+                                    .await
+                                    .map_err(|failure| map_error(failure.error))?
+                            }
+                            FilePublication::CreateOnly => transaction
+                                .create_file(
+                                    path,
+                                    bytes.clone(),
+                                    acyclic_fs::kernel::FileMetadata::default(),
+                                    budget,
+                                    cancellation,
+                                )
+                                .await
+                                .map_err(|failure| creation_error(failure.error, None))?,
+                        };
+                    }
+                    WorkspaceMutation::Remove { path } => {
+                        transaction
+                            .remove(path, budget, cancellation)
+                            .await
+                            .map(|receipt| receipt.value)
+                            .map_err(|failure| failure.error)
+                            .map_err(map_error)?;
+                    }
+                }
+                // Raw mutations do not carry a descriptor or write publication.
+                // Invalidate the old index atomically, including same-byte writes.
+                // The content writer supplies its own metadata in this transaction.
+                if invalidate_metadata
+                    && let WorkspaceMutation::PutFile { path, .. }
+                    | WorkspaceMutation::Remove { path } = mutation
+                {
+                    let metadata =
+                        content_metadata_path_io(path.trim_start_matches('/'), true, None)?;
+                    match transaction.remove(&metadata, budget, cancellation).await {
+                        Ok(_) => {}
+                        Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => {}
+                        Err(failure) => return Err(map_error(failure.error)),
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Resolves the current immutable head under the caller's work context.
@@ -454,6 +508,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .try_into()
             .map_err(|_| io.invalid("generation reference key must be 32 bytes"))?;
         let generation = GenerationId::new(Digest::from_bytes(key));
+        self.select_generation(workspace, generation, io).await
+    }
+
+    pub(in crate::filesystem) async fn select_generation(
+        &self,
+        workspace: &Workspace<A, O>,
+        generation: GenerationId,
+        io: &PreparationIo,
+    ) -> Result<Generation<A, O>> {
         #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
         if let Some((root, store)) = &self.project_family
             && workspace.id() == *root
@@ -490,6 +553,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )
     }
 
+    pub(in crate::filesystem) fn apply_authorized_generation<'a>(
+        &'a self,
+        reference: &'a WorkspaceRef,
+        fence: acyclic_fs::access::PolicyFence,
+        mutations: &'a [WorkspaceMutation],
+        key: IdempotencyKey,
+        io: Option<&'a PreparationIo>,
+        preparation: Option<&'a Arc<crate::resource_preparation::TaskResourcePreparation>>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
+        self.publish_generation(
+            reference,
+            mutations,
+            key,
+            io,
+            preparation,
+            FilePublication::Authorized(fence),
+        )
+    }
+
     pub(in crate::filesystem) fn create_records<'a>(
         &'a self,
         reference: &'a WorkspaceRef,
@@ -519,7 +601,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
         let expected = match publication {
             FilePublication::Replace(expected) => expected,
-            FilePublication::CreateOnly => None,
+            FilePublication::CreateOnly | FilePublication::Authorized(_) => None,
         };
         let Some(io) = io else {
             return crate::conversation::BoundedContentFuture::new(None, || async move {
@@ -541,7 +623,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             let workspace = self.open(reference, Some(io)).await?;
             let operation = fork_preparer_io::operation_key(&key, Some(io))?;
-            let mut transaction = if matches!(publication, FilePublication::CreateOnly) {
+            let mut transaction = if !matches!(publication, FilePublication::Replace(_)) {
                 io.sdk(
                     workspace
                         .begin_transaction(operation, io, io.cancellation())
@@ -554,17 +636,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 };
                 io.sdk(
                     workspace
-                        .begin_pinned_transaction(&pinned, operation, io, io.cancellation())
+                        .begin_transaction_at(&pinned, operation, io, io.cancellation())
                         .await,
                 )?
             };
+            if let Some(fence) = publication.fence() {
+                io.sdk(
+                    transaction
+                        .observe_policy_fence(fence, io, io.cancellation())
+                        .await,
+                )?;
+            }
             #[cfg(test)]
             if let Some(pause) = &self.publication_pause {
                 pause().await;
             }
             Self::publish_mutations(&mut transaction, mutations, publication, io, preparation)
                 .await?;
-            Self::commit_publication(transaction, io, preparation).await
+            Self::commit_publication(transaction, io, preparation, publication.fence()).await
         })
     }
     async fn publish_mutations(
@@ -587,7 +676,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             .await,
                     )?,
                     WorkspaceMutation::PutFile { path, bytes } => match publication {
-                        FilePublication::Replace(_) => io.sdk(
+                        FilePublication::Replace(_) | FilePublication::Authorized(_) => io.sdk(
                             transaction
                                 .write(path, bytes.clone(), io, io.cancellation())
                                 .await,
@@ -627,6 +716,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         mut transaction: acyclic_fs::Transaction<A, O>,
         io: &PreparationIo,
         preparation: Option<&Arc<crate::resource_preparation::TaskResourcePreparation>>,
+        fence: Option<acyclic_fs::access::PolicyFence>,
     ) -> Result<Generation<A, O>> {
         let commit = crate::conversation::BoundedContentFuture::new(Some(io), || async {
             let commit = 'commit: {
@@ -636,7 +726,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     let mut native_before = move |work: &acyclic_fs::NativeMaterializationWork| {
                         let preparation = preparation.clone();
                         let work = work.clone();
-                        async move { verify_native_publication(preparation.as_ref(), &work).await }
+                        async move {
+                            require_publication_time(fence)?;
+                            verify_native_publication(preparation.as_ref(), &work).await?;
+                            require_publication_time(fence)
+                        }
                     };
                     break 'commit transaction
                         .commit_with_native_work(
@@ -656,12 +750,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             io.remaining()?,
                             io.cancellation(),
                             &mut |_| async move {
+                                require_publication_time(fence)
+                                    .map_err(acyclic_fs::OperationFailure::before_work)?;
                                 if let Some(task) = preparation {
                                     task.verify(false, Some(io))
                                         .map_err(acyclic_fs::OperationFailure::before_work)?
                                         .await
                                         .map_err(acyclic_fs::OperationFailure::before_work)?;
                                 }
+                                require_publication_time(fence)
+                                    .map_err(acyclic_fs::OperationFailure::before_work)?;
                                 Ok(acyclic_fs::OperationReceipt {
                                     value: (),
                                     work: acyclic_fs::WorkCounters::default(),

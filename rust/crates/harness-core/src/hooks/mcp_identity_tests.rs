@@ -1,6 +1,6 @@
 //! Canonical consumer assertions and their mutation controls, without provider dependencies.
-use futures::FutureExt as _;
 use super::SUBSTITUTE_HOOK_NAME;
+use futures::FutureExt as _;
 async fn canonical_consumers() {
     let call = crate::model::ToolCall::new(
         "call".into(),

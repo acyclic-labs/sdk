@@ -350,9 +350,10 @@ where
         &'a self,
         file: &'a FileRef,
         maximum_bytes: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         self.journal.authorize_selected_file_with_io(file, io)?;
-        self.inner.read(file, maximum_bytes, io)
+        self.inner.read(file, maximum_bytes, ceiling, io)
     }
 }

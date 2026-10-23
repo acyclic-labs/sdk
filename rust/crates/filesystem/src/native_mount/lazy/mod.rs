@@ -6,8 +6,8 @@ use super::view_ledger::{ViewChange, ViewEffect, ViewStamp};
 use super::{
     CheckoutMountSource, ContentSink, MountAttributePage, MountAttributeWriteMode, MountContentPin,
     MountDirectoryEntry, MountDirectoryPage, MountFilesystem, MountLookup, MountNode,
-    MountNodeKind, MountOpenFile, MountPath, MountRangeAllocation, MountSeekTarget,
-    MountSourceError, ViewObserver, capture_root_identity,
+    MountNodeKind, MountOpenAccess, MountOpenFile, MountPath, MountRangeAllocation,
+    MountSeekTarget, MountSourceError, ViewObserver, capture_root_identity,
 };
 use super::{NativeMountError, adapter};
 use crate::demand::{

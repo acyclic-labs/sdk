@@ -11,7 +11,7 @@ readme = "README.md"
 
 [features]
 harness-accounting = ["acyclic-harness/filesystem"]
-local-runner = ["acyclic-fs/local", "acyclic-fs/native-mount", "acyclic-objects/local", "acyclic-stream/local", "dep:tempfile", "dep:rusqlite", "dep:notify"]
+local-runner = ["acyclic-harness/filesystem-local", "acyclic-harness/native-execution", "acyclic-fs/local", "acyclic-fs/native-mount", "acyclic-objects/local", "acyclic-stream/local", "dep:tempfile", "dep:rusqlite", "dep:notify"]
 s3-fixture = ["local-runner", "acyclic-fs/s3-http", "dep:async-trait", "dep:axum", "dep:s3s"]
 
 [dependencies]
@@ -27,6 +27,7 @@ bytes.workspace = true
 futures.workspace = true
 blake3.workspace = true
 hex.workspace = true
+uuid.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["process"] }

@@ -143,6 +143,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -265,6 +266,7 @@ name = "acyclic-fs-napi"
 version = "0.2.0"
 dependencies = [
  "acyclic-fs",
+ "acyclic-harness",
  "acyclic-native-runtime",
  "bytes",
  "napi",

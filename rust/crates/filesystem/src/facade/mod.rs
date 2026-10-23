@@ -133,6 +133,7 @@ mod seeded_memory_tests;
 #[path = "../tests/facade/mod.rs"]
 mod tests;
 
+mod access_policy;
 mod attributes;
 mod authored_compile;
 mod authored_model;
@@ -159,6 +160,8 @@ pub(crate) use extents::seek_record_extent_with_accounting;
 mod fork;
 mod fs;
 mod generation;
+mod generation_cache;
+mod generation_position;
 mod join_publication;
 mod join_request;
 mod join_witness;
@@ -193,6 +196,7 @@ mod volume_creation;
 mod work;
 mod workspace_creation;
 
+pub(crate) use access_policy::policy_head_is_current;
 pub use attributes::NamedAttributeWriteMode;
 use authored_compile::clone_authored_path;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "native-watch")))]
@@ -302,6 +306,7 @@ use transactions::mutation_path_owned_bytes;
 use tree::directory_entries;
 use tree::list_directory_to_file_root_with_accounting;
 use volume_creation::CREATION_FINGERPRINT_DOMAIN;
+pub use volume_creation::VolumeInitialization;
 use volume_creation::creation_commit;
 use volume_creation::creation_fingerprint;
 use volume_creation::merge_creation_backend_work;

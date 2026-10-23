@@ -313,12 +313,33 @@ where
         bucket: &str,
         mutation: bool,
     ) -> S3Result<FilesystemS3Principal<A, O>> {
-        let principal = self.principal(request, bucket).await?;
+        let mut principal = self.principal(request, bucket).await?;
         if principal.bucket != bucket
             || mutation && (!principal.writable || principal.generation.is_some())
         {
             return Err(s3s::s3_error!(AccessDenied));
         }
+        use crate::access::Action;
+        let read = [Action::List, Action::Read, Action::ReadHistory];
+        let write = [
+            Action::List,
+            Action::Read,
+            Action::ReadHistory,
+            Action::Create,
+            Action::Write,
+            Action::Append,
+            Action::Delete,
+            Action::Rename,
+            Action::Lock,
+        ];
+        principal.workspace = principal
+            .workspace
+            .bind_coarse_access(
+                if mutation { &write } else { &read },
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|_| s3s::s3_error!(AccessDenied))?;
         Ok(principal)
     }
 }

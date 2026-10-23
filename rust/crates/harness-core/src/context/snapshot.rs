@@ -34,7 +34,9 @@ impl PinnedContextStage {
         crate::contract::validate_component_label(&name, "context snapshot")?;
         crate::contract::validate_component_label(&revision, "context snapshot revision")?;
         validate_reference(&reference, limits, None)?;
-        let bytes = reader.read(&reference, limits.render_bytes, None)?.await?;
+        let bytes = reader
+            .read(&reference, limits.render_bytes, None, None)?
+            .await?;
         reference.descriptor().verify(&bytes, &mut None)?;
         let context: Context = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Invalid(format!("context snapshot is invalid: {error}")))?;

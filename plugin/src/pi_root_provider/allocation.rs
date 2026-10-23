@@ -270,7 +270,12 @@ impl PiRootProvider {
                             &name.0,
                             Arc::clone(&physical.source),
                             self.store.clone(),
-                            VolumeConfig::native(Lifecycle::Durable),
+                            acyclic_fs::VolumeInitialization {
+                                config: VolumeConfig::native(Lifecycle::Durable),
+                                access_policy: Some(
+                                    acyclic_harness::filesystem::INITIAL_ACCESS_POLICY,
+                                ),
+                            },
                             operation,
                             &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
                                 work,
@@ -352,7 +357,10 @@ impl PiRootProvider {
                     .fs
                     .create_workspace_with_operation::<_, _, Error>(
                         name.0,
-                        VolumeConfig::portable(Lifecycle::Durable),
+                        acyclic_fs::VolumeInitialization {
+                            config: VolumeConfig::portable(Lifecycle::Durable),
+                            access_policy: Some(acyclic_harness::filesystem::INITIAL_ACCESS_POLICY),
+                        },
                         operation,
                         &io,
                         &cancellation,

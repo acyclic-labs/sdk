@@ -13,8 +13,7 @@ use super::{
 };
 use crate::kernel::{FileMetadata, MetadataField};
 use crate::lock_order::{
-    Condvar as RankedCondvar, FILE, Mutex as RankedMutex, MutexGuard as RankedGuard, OPERATION,
-    VIEW,
+    Condvar as RankedCondvar, Mutex as RankedMutex, MutexGuard as RankedGuard, OPERATION, VIEW,
 };
 use crate::materializer::NativeResourceCredit::{Copy, Items};
 use fuser::{

@@ -75,7 +75,7 @@ async fn stage(
             bytes,
             MEDIA,
             "one.txt",
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )?
         .await?;
     Ok(file)
@@ -87,7 +87,7 @@ async fn read(
     file: &acyclic_harness::conversation::FileRef,
     maximum: u64,
 ) -> acyclic_harness::Result<acyclic_stream::OwnedBytes> {
-    store.read(file, maximum, None)?.await
+    store.read(file, maximum, None, None)?.await
 }
 
 /// Runs the content scenario in a new `bucket` on `objects`, checks its oracle
@@ -163,7 +163,7 @@ pub(super) async fn run(
         offset: 1,
         length: 3,
     };
-    let ranged = owner_store.read_range(&file, range, None)?.await?;
+    let ranged = owner_store.read_range(&file, range, None, None)?.await?;
     check(
         "a range",
         ranged.as_ref(),
@@ -183,7 +183,7 @@ pub(super) async fn run(
             &manifest_bytes,
             "application/vnd.acyclic.harness.attachments+json",
             "one.json",
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )?
         .await?
         .0;

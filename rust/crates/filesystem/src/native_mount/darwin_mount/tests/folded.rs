@@ -11,10 +11,16 @@ fn filtered_pages(pages: usize, visible: bool) -> TestResult {
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
     let checkout = runtime.block_on(crate::facade::test_fixtures::folded_checkout(names))?;
     let config = checkout.volume_config();
-    let source = Arc::new(MemorySource::new(
-        Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
-        config,
-    )?);
+    let source = Arc::new(
+        crate::native_mount::adapter::tests::access::bind_test_access(
+            MemorySource::new(
+                Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
+                config,
+            )?,
+            vec![],
+            None,
+        )?,
+    );
     let work = work(
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),

@@ -417,7 +417,7 @@ where
                     b"replaced mutable media",
                     "application/octet-stream",
                     "replacement",
-                    None,
+                    acyclic_harness::conversation::ContentAccess::default(),
                 )?
                 .await?
                 .0;
@@ -428,7 +428,7 @@ where
                     br#"{"mode":"strict","scale":4}"#,
                     "application/json",
                     "replacement options",
-                    None,
+                    acyclic_harness::conversation::ContentAccess::default(),
                 )?
                 .await?
                 .0;

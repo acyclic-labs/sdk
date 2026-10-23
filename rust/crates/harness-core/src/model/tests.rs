@@ -78,6 +78,7 @@ impl crate::conversation::ContentResidencyVerifier for PrefixReader {
         &'a self,
         file: &'a FileRef,
         _: u64,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {

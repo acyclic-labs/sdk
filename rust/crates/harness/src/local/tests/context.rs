@@ -45,7 +45,7 @@ async fn goal_presence_never_reads_the_body_and_disabled_loops_ignore_unreadable
                 "GOAL.md",
                 None,
                 harness.limits.file_bytes,
-                None
+                crate::conversation::ContentAccess::default()
             )
             .await
             .is_err()
@@ -72,7 +72,7 @@ async fn instruction(harness: &LocalHarness, name: &str, text: &str) -> Result<(
         text.as_bytes(),
         "text/markdown",
         name,
-        None,
+        crate::conversation::ContentAccess::default(),
     )?
     .await?;
     Ok(())
@@ -85,7 +85,7 @@ pub(super) async fn manifest(
     let file = harness.retained_context_manifest(operation).await?;
     let bytes = harness
         .context_reader()?
-        .read(&file, harness.limits.file_bytes, None)?
+        .read(&file, harness.limits.file_bytes, None, None)?
         .await?;
     let manifest = ContextManifest::decode(&bytes, harness.limits)?;
     Ok((file, manifest))
@@ -124,7 +124,7 @@ async fn check_instructions(
         {
             assert_eq!(message.role, crate::model::ModelRole::User);
             let bytes = reader
-                .read(file, file.descriptor().byte_length(), None)?
+                .read(file, file.descriptor().byte_length(), None, None)?
                 .await?;
             file.descriptor().verify(&bytes, &mut None)?;
             rendered.push_str(
@@ -180,7 +180,11 @@ async fn volume_instructions_are_pinned_before_input_and_refreshed_for_the_next_
     assert!(
         harness
             .input_publisher()?
-            .observe_staged_once(operation, harness.limits.file_bytes, None)?
+            .observe_staged_once(
+                operation,
+                harness.limits.file_bytes,
+                crate::conversation::ContentAccess::default()
+            )?
             .await?
             .0
             .is_none()
@@ -348,6 +352,7 @@ async fn checkout_instructions_survive_source_edits_and_reopen_without_authored_
             &deleted.discovery.instructions[0],
             reopened.limits.file_bytes,
             None,
+            None,
         )?
         .await?;
     assert_eq!(bytes.as_ref(), b"same instance latest agents");
@@ -394,7 +399,11 @@ async fn invalid_instructions_reject_before_input_publication_or_model_dispatch(
         assert!(
             harness
                 .input_publisher()?
-                .observe_staged_once(operation, harness.limits.file_bytes, None)?
+                .observe_staged_once(
+                    operation,
+                    harness.limits.file_bytes,
+                    crate::conversation::ContentAccess::default()
+                )?
                 .await?
                 .0
                 .is_none()

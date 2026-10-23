@@ -18,7 +18,7 @@ async fn pinned(
         .expect("prompt input missing");
     let reader = harness.context_reader()?;
     let bytes = reader
-        .read(&command.payload, harness.limits.file_bytes, None)?
+        .read(&command.payload, harness.limits.file_bytes, None, None)?
         .await?;
     let command: crate::filesystem::ModelTaskCommand =
         serde_json::from_slice(&bytes).map_err(super::super::storage)?;
@@ -39,7 +39,9 @@ async fn pinned(
     assert_eq!(file.volume(), harness.journal_volume());
     assert!(file.path().starts_with("inputs/config/hooks/"));
     assert_eq!(file.descriptor().media_type(), Hooks::MEDIA_TYPE);
-    let bytes = reader.read(&file, harness.limits.file_bytes, None)?.await?;
+    let bytes = reader
+        .read(&file, harness.limits.file_bytes, None, None)?
+        .await?;
     let hooks: Hooks = serde_json::from_slice(&bytes).map_err(super::super::storage)?;
     assert_eq!(
         serde_json::to_vec(&hooks)
@@ -277,7 +279,7 @@ async fn oversized_current_hooks(explicit_override: bool) -> Result<()> {
         let (_, command) = reopened.recover_turn_inputs(next).await?.unwrap();
         let bytes = reopened
             .context_reader()?
-            .read(&command.payload, limits.file_bytes, None)?
+            .read(&command.payload, limits.file_bytes, None, None)?
             .await?;
         let command: crate::filesystem::ModelTaskCommand =
             serde_json::from_slice(&bytes).map_err(super::super::storage)?;

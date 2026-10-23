@@ -42,7 +42,7 @@ impl LocalHarness {
                 self.limits.file_bytes,
                 &key,
                 Some(&self.files.file_generation(&goal.source, None)?),
-                None,
+                crate::conversation::ContentAccess::default(),
             )
             .await?;
         Ok((

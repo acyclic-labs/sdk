@@ -150,8 +150,36 @@ pub struct MountSparseRange {
     pub spans: Vec<MountSparseSpan>,
 }
 
+/// Content rights requested by a native open that also returns metadata.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MountOpenAccess {
+    /// Names and metadata only.
+    Metadata,
+    /// Content reads.
+    Read,
+    /// Content writes or appends; each mutation retains its distinct check.
+    Write,
+    /// Both content reads and writes.
+    ReadWrite,
+}
+
 /// Path-independent regular-file handle used for every native open operation.
-pub trait MountOpenFile: Send + Sync + 'static {
+pub trait MountOpenFile: std::any::Any + Send + Sync + 'static {
+    /// Returns a readable source only for the exact destination checkout owner.
+    fn clone_source(
+        &self,
+        checkout: &(dyn std::any::Any + Send + Sync),
+        work: &NativeMaterializationWork,
+    ) -> Result<FileId, MountSourceError>;
+    /// Clones immutable extents through both open handles' authority.
+    fn clone_range_from(
+        &self,
+        source: &dyn MountOpenFile,
+        source_offset: u64,
+        offset: u64,
+        length: u64,
+        work: &NativeMaterializationWork,
+    ) -> Result<(), MountSourceError>;
     /// Looks up through the operative shared native invocation.
     fn lookup_with_meter(
         &self,
@@ -180,6 +208,13 @@ pub trait MountOpenFile: Send + Sync + 'static {
     ) -> Result<Option<u64>, MountSourceError>;
     /// Consumes the caller's exact already-admitted owned payload.
     fn write_range_with_meter(
+        &self,
+        offset: u64,
+        bytes: crate::kernel::OwnedSourceChunk,
+        work: &NativeMaterializationWork,
+    ) -> Result<(), MountSourceError>;
+    /// Writes only when `offset` is still EOF in the same mutation transaction.
+    fn append_range_with_meter(
         &self,
         offset: u64,
         bytes: crate::kernel::OwnedSourceChunk,
@@ -268,6 +303,8 @@ pub trait MountOpenFile: Send + Sync + 'static {
     fn seek(&self, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError>;
     /// Replaces one exact byte range in the detached file.
     fn write_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError>;
+    /// Writes only when `offset` is still EOF in the same mutation transaction.
+    fn append_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError>;
     /// Changes the detached logical file length.
     fn resize(&self, logical_bytes: u64) -> Result<(), MountSourceError>;
     /// Applies one exact sparse allocation operation.
@@ -429,6 +466,12 @@ pub enum MountAttributeWriteMode {
 /// Errors returned by the canonical checkout callback bridge.
 #[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum MountSourceError {
+    /// Policy or capability denies this operation.
+    #[error("filesystem access denied")]
+    AccessDenied,
+    /// The selected subtree admits no mutation.
+    #[error("filesystem subtree is read-only")]
+    ReadOnly,
     /// Path is authentically absent.
     #[error("path is absent")]
     NotFound,

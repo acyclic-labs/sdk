@@ -1,6 +1,7 @@
 struct CheckoutAttachedFile<A, O> {
     checkout: Arc<SharedCheckout<A, O>>,
     file_id: FileId,
+    deadline: Option<u64>,
     runtime: CallbackRuntime,
     cancellation: CancellationToken,
     profile: FilesystemProfile,
@@ -45,7 +46,7 @@ where
         let cancellation = work.cancellation();
         let mut carrier = NativeDemandCarrier::Native(work);
         let mut inputs = InputBuffers::new(&mut carrier)?;
-        let name = inputs.attribute_name(name, self.profile, self.limits)?;
+        let name = inputs.mutation_attribute_name(name, self.profile, self.limits)?;
         let mut candidate = self
             .checkout
             .file_candidate(
@@ -55,6 +56,7 @@ where
                 Some(&self.cancellation),
             )
             .await?;
+        candidate.deadline = self.deadline;
         candidate
             .checkout
             .change_named_attribute(self.file_id, &name, value, work, cancellation)
@@ -76,14 +78,27 @@ where
         change: ContentChange<FileId>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
+        self.change_content_at(change, false, work)
+    }
+
+    fn change_content_at(
+        &self,
+        change: ContentChange<FileId>,
+        append_only: bool,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
         invoke(&self.runtime, work, || {
             self.checkout.change_file_content(
                 self.file_id,
                 change,
-                work,
-                &self.cancellation,
-                &self.runtime.clock,
-                self.native_callback_guard.clone(),
+                append_only,
+                ContentChangeContext {
+                    work,
+                    deadline: self.deadline,
+                    lifetime: &self.cancellation,
+                    clock: &self.runtime.clock,
+                    guard: self.native_callback_guard.clone(),
+                },
             )
         })
     }
@@ -94,6 +109,44 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    fn clone_source(
+        &self,
+        checkout: &(dyn std::any::Any + Send + Sync),
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<FileId, MountSourceError> {
+        work.admit(crate::WorkCounters::UNCHARGED)?;
+        let checkout = checkout
+            .downcast_ref::<Arc<SharedCheckout<A, O>>>()
+            .ok_or(MountSourceError::NativeUnsupported)?;
+        if checkout.volume_id != self.checkout.volume_id {
+            return Err(MountSourceError::AccessDenied);
+        }
+        if !Arc::ptr_eq(checkout, &self.checkout) {
+            return Err(MountSourceError::NativeUnsupported);
+        }
+        Ok(self.file_id)
+    }
+
+    fn clone_range_from(
+        &self,
+        source: &dyn MountOpenFile,
+        source_offset: u64,
+        offset: u64,
+        length: u64,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        let source = source.clone_source(&self.checkout, work)?;
+        self.change_content(
+            ContentChange::CloneFrom {
+                source,
+                source_offset,
+                offset,
+                length,
+            },
+            work,
+        )
+    }
+
     fn lookup_with_meter(
         &self,
         work: &crate::NativeMaterializationWork,
@@ -210,6 +263,22 @@ where
         )
     }
 
+    fn append_range_with_meter(
+        &self,
+        offset: u64,
+        bytes: crate::kernel::OwnedSourceChunk,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        self.change_content_at(
+            ContentChange::Write {
+                offset,
+                bytes: bytes.bytes,
+            },
+            true,
+            work,
+        )
+    }
+
     fn resize_with_meter(
         &self,
         logical_bytes: u64,
@@ -278,6 +347,7 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
+            candidate.deadline = self.deadline;
             let record = candidate
                 .checkout
                 .read_file_record_by_id(self.file_id, work, cancellation)
@@ -340,6 +410,19 @@ where
         })
     }
 
+    fn append_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
+        boundary(&self.cancellation, |work| {
+            self.change_content_at(
+                ContentChange::Write {
+                    offset,
+                    bytes: bytes.into(),
+                },
+                true,
+                work,
+            )
+        })
+    }
+
     fn resize(&self, logical_bytes: u64) -> Result<(), MountSourceError> {
         boundary(&self.cancellation, |work| {
             self.resize_with_meter(logical_bytes, work)
@@ -374,6 +457,12 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
+            let current = candidate
+                .checkout
+                .read_metadata(self.file_id, work, cancellation)
+                .await?;
+            require_attribute_root(metadata, current)?;
+            candidate.deadline = self.deadline;
             candidate
                 .checkout
                 .set_attributes(self.file_id, metadata, logical_bytes, work, cancellation)

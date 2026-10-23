@@ -809,7 +809,10 @@ async fn partial_creation_requires_original_source_intent_and_operation() {
             .fs
             .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
                 &volume.storage_name(&mut None).unwrap(),
-                VolumeConfig::native(Lifecycle::Durable),
+                acyclic_fs::VolumeInitialization {
+                    config: VolumeConfig::native(Lifecycle::Durable),
+                    access_policy: Some(acyclic_harness::filesystem::INITIAL_ACCESS_POLICY),
+                },
                 operation,
                 &fixture.startup,
                 fixture.startup.cancellation(),
@@ -879,7 +882,10 @@ async fn partial_creation_requires_original_source_intent_and_operation() {
         .fs
         .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
             &name,
-            VolumeConfig::portable(Lifecycle::Durable),
+            acyclic_fs::VolumeInitialization {
+                config: VolumeConfig::portable(Lifecycle::Durable),
+                access_policy: Some(acyclic_harness::filesystem::INITIAL_ACCESS_POLICY),
+            },
             operation,
             &fixture.startup,
             fixture.startup.cancellation(),
@@ -1233,8 +1239,7 @@ async fn output_replay_uses_original_content_after_mutable_path_replacement() {
             "result.json",
             fixture.owner.policy().maximum_payload_bytes,
             &IdempotencyKey::new("different-output-operation").unwrap(),
-            None,
-            None,
+            None, acyclic_harness::conversation::ContentAccess::default(),
         )
         .await
         .unwrap();

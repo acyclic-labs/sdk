@@ -110,7 +110,7 @@ where
             b"0",
             "application/json",
             "replacement.json",
-            None,
+            crate::conversation::ContentAccess::default(),
         )?
         .await?;
         self.host

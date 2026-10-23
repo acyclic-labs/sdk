@@ -9,6 +9,11 @@ mod review;
 #[path = "../access_roundtrip.rs"]
 mod roundtrip;
 
+#[path = "../access_binding.rs"]
+mod binding;
+#[path = "../access_uniform.rs"]
+mod uniform;
+
 fn principal() -> Principal {
     Principal {
         kind: PrincipalKind::Agent,
@@ -934,6 +939,72 @@ proptest! {
             let res = resource(&principal.lineage, &path, 10);
             prop_assert!(!decide(&policy, &principal, action, res, context, &child).allowed
                 || decide(&policy, &principal, action, res, context, &parent).allowed);
+        }
+    }
+}
+
+#[test]
+fn unrestricted_projection_accepts_only_universal_decisions() -> Result<(), InvalidPolicy> {
+    let principal = principal();
+    let policy = policy(vec![rule("all", Effect::Allow, &Action::ALL, "**")]);
+    let context = Context {
+        now: 10,
+        approvals: 0,
+    };
+    let resource = Resource {
+        config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+        lineage: &[],
+        volume: "project",
+        generation: 1,
+        head: 1,
+        path: "",
+    };
+    let mut capability = capability();
+    let trie = PathTrie::compile(&policy, &principal, resource, context, &capability)?;
+    assert!(trie.allows_every_path(&Action::ALL, 10));
+    capability.expires_at = Some(11);
+    let trie = PathTrie::compile(&policy, &principal, resource, context, &capability)?;
+    assert!(trie.allows_every_path(&Action::ALL, 10));
+    assert!(!trie.allows_every_path(&Action::ALL, 11));
+    capability
+        .layers
+        .first_mut()
+        .and_then(|layer| layer.first_mut())
+        .ok_or(acyclic_fs::access::InvalidPolicy("missing fixture rule"))?
+        .resource
+        .path = "public/**".into();
+    let trie = PathTrie::compile(&policy, &principal, resource, context, &capability)?;
+    assert!(!trie.allows_every_path(&[Action::Read], 10));
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    // A universal proof must imply decide() allows every generated action/path;
+    // any actual deny or attenuated path must prevent raw-adapter admission.
+    #[test]
+    fn unrestricted_projection_implies_every_decision(
+        denied in "[a-z]{1,6}", path in "[a-z]{1,6}(/[a-z]{1,6}){0,3}",
+        deny_action in 0usize..12, restricted_capability in any::<bool>(),
+    ) {
+        let principal = principal();
+        let context = Context { now: 10, approvals: 0 };
+        let mut resource = Resource { config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+            lineage: &[], volume: "project", generation: 1, head: 1, path: &path };
+        let action = *Action::ALL.get(deny_action).ok_or(InvalidPolicy("missing fixture action"))?;
+        let mut policy = policy(vec![rule("all", Effect::Allow, &Action::ALL, "**")]);
+        let mut capability = capability();
+        if restricted_capability { capability.layers.first_mut().and_then(|layer| layer.first_mut()).ok_or(acyclic_fs::access::InvalidPolicy("missing fixture rule"))?.resource.path = format!("{denied}/**"); }
+        else { policy.layers.first_mut().ok_or(acyclic_fs::access::InvalidPolicy("missing fixture layer"))?.push(rule("deny", Effect::Deny, &[action], &denied)); }
+        let trie = PathTrie::compile(&policy, &principal, resource, context, &capability).unwrap();
+        prop_assert!(!trie.allows_every_path(&Action::ALL, 10));
+        for action in Action::ALL {
+            resource.path = &path;
+            if trie.allows_every_path(&[action], 10) {
+                prop_assert!(decide(&policy, &principal, action, resource, context, &capability).allowed);
+                resource.path = &denied;
+                prop_assert!(decide(&policy, &principal, action, resource, context, &capability).allowed);
+            }
         }
     }
 }

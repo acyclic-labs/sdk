@@ -119,7 +119,7 @@ fn paused_source() -> Result<(PausedSource, Arc<PausedObjects>), Box<dyn std::er
         )),
         config,
     )?;
-    Ok((source, objects))
+    Ok((bind_test_access(source, vec![], None)?, objects))
 }
 
 async fn write(
@@ -137,10 +137,14 @@ async fn write(
                 offset,
                 bytes: OwnedBytes::from_static(bytes),
             },
-            work,
-            source.cancellation(),
-            &source.runtime.clock,
-            None,
+            false,
+            ContentChangeContext {
+                deadline: None,
+                work,
+                lifetime: source.cancellation(),
+                clock: &source.runtime.clock,
+                guard: None,
+            },
         )
         .await
 }

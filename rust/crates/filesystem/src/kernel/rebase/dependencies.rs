@@ -411,7 +411,9 @@ impl CheckoutDependencies {
                 .map(|(_, settlement)| *settlement);
             match settlement {
                 None => (Cow::Borrowed(region), state.expected, state.usage),
-                Some(Settlement::Expect(expected)) => (Cow::Borrowed(region), expected, state.usage),
+                Some(Settlement::Expect(expected)) => {
+                    (Cow::Borrowed(region), expected, state.usage)
+                }
                 Some(Settlement::Follow { file, expected }) => {
                     (Cow::Owned(region.of_file(file)), expected, state.usage)
                 }

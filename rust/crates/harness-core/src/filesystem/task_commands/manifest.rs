@@ -12,6 +12,7 @@ impl ContentResidencyVerifier for ManifestReader<'_> {
         &'a self,
         reference: &'a FileRef,
         maximum_bytes: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         BoundedContentFuture::new(io, || async move {
@@ -22,7 +23,15 @@ impl ContentResidencyVerifier for ManifestReader<'_> {
                     "manifest source exceeds byte bound",
                 ));
             }
-            self.0.read_file(reference, io).await
+            self.0
+                .read_bound_file(
+                    self.0.content_binding(Some(reference.volume())),
+                    reference,
+                    self.0.scope(),
+                    ceiling,
+                    io,
+                )
+                .await
         })
     }
 
@@ -33,7 +42,7 @@ impl ContentResidencyVerifier for ManifestReader<'_> {
         path: &'a str,
         generation: Option<&'a GenerationRef>,
         maximum_bytes: u64,
-        io: Option<&'io PreparationIo>,
+        access: crate::conversation::ContentAccess<'a, 'io>,
     ) -> Result<
         BoundedContentFuture<
             'a,
@@ -47,18 +56,19 @@ impl ContentResidencyVerifier for ManifestReader<'_> {
     where
         'io: 'a,
     {
+        let crate::conversation::ContentAccess { ceiling, io } = access;
+
         BoundedContentFuture::new(io, || async move {
+            let grants = ceiling.unwrap_or(self.0.scope().grants());
+            if !grants.is_subset_of(self.0.scope().grants()) {
+                return Err(stock_boundary(
+                    io,
+                    ErrorCode::Unauthorized,
+                    "content caller cannot widen the bound task scope",
+                ));
+            }
             crate::executor::with_history_io(io, |work| {
-                let exact = volume.directory_read_capability(prefix, work)?;
-                let full = volume.capability(crate::conversation::VolumeOperation::Read, work)?;
-                let allowed = self.0.scope().grants().contains(&exact)
-                    || self.0.scope().grants().contains(&full);
-                let bytes = (exact.capacity() + full.capacity()) as u64;
-                drop((exact, full));
-                if let Some(work) = work.as_deref_mut() {
-                    work.release_owned(bytes)?;
-                }
-                if !allowed {
+                if !crate::core::directory_read_granted_with_work(grants, volume, prefix, work)? {
                     return Err(stock_boundary(
                         io,
                         ErrorCode::Unauthorized,
@@ -79,7 +89,17 @@ impl ContentResidencyVerifier for ManifestReader<'_> {
                 })?
                 .reader;
             reader
-                .read_private_path(volume, prefix, path, generation, maximum_bytes, io)?
+                .read_private_path(
+                    volume,
+                    prefix,
+                    path,
+                    generation,
+                    maximum_bytes,
+                    crate::conversation::ContentAccess {
+                        ceiling: Some(grants),
+                        io,
+                    },
+                )?
                 .await
         })
     }

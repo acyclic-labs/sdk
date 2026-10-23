@@ -40,8 +40,12 @@ async fn render_case(case: Case, repeat: bool) -> Result<()> {
         Limits::default().file_bytes,
         None,
     )?;
-    let goal_source = reader.file_query(harness.scratch(), BOUNDARY_BUDGET)?;
-    let head_source = reader.file_query(harness.journal_volume(), BOUNDARY_BUDGET)?;
+    let goal_source = reader
+        .file_query(harness.scratch(), BOUNDARY_BUDGET)
+        .await?;
+    let head_source = reader
+        .file_query(harness.journal_volume(), BOUNDARY_BUDGET)
+        .await?;
     let goal_query = Query::File(FileKey::Goal);
     let head_query = Query::File(FileKey::RequestHead);
     let mut client = ClientViews::new(

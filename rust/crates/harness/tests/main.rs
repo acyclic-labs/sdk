@@ -124,9 +124,6 @@ mod context_continuation;
 #[path = "cases/context_discovery.rs"]
 mod context_discovery;
 
-#[path = "cases/filesystem_access.rs"]
-mod filesystem_access;
-
 #[path = "cases/client_history.rs"]
 mod client_history;
 

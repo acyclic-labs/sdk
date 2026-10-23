@@ -85,7 +85,7 @@ async fn put(
             65_536,
             &IdempotencyKey::new(key)?,
             None,
-            None,
+            crate::conversation::ContentAccess::default(),
         )
         .await
 }

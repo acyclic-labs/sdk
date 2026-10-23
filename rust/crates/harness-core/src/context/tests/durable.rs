@@ -178,7 +178,7 @@ async fn context_pages_reject_corrupt_identity_and_unproven_compaction() -> Resu
             &context_bytes,
             "application/json",
             "context.json",
-            None,
+            crate::conversation::ContentAccess::default(),
         )?
         .await?;
     let record = serde_json::json!({

@@ -114,11 +114,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
 
     pub(super) async fn install_capture(
         &self,
-        candidate: CheckoutCandidate<'_, A, O>,
+        mut candidate: CheckoutCandidate<'_, A, O>,
         scope: InstallScope<'_>,
         carrier: &mut NativeDemandCarrier<'_>,
         cancellation: &CancellationToken,
     ) -> Result<bool, MountSourceError> {
+        candidate.deadline = earliest_deadline(candidate.deadline, self.mutation_deadline()?);
         let (effect, _allocation) = installed_changes(
             &candidate.base,
             &candidate.checkout,

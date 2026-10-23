@@ -245,6 +245,18 @@ impl FileRef {
         &self.version
     }
 
+    /// Binds verified staged metadata to its authenticated storage generation.
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn pin_version(
+        &mut self,
+        version: String,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<()> {
+        validate_label(&version, work)?;
+        self.version = version;
+        Ok(())
+    }
+
     /// Integrity and rendering metadata.
     #[must_use]
     pub const fn descriptor(&self) -> &FileDescriptor {

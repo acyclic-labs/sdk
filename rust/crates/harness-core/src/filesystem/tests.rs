@@ -218,7 +218,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             16,
             &IdempotencyKey::new("stage-first")?,
             None,
-            None,
+            crate::conversation::ContentAccess::default(),
         )
         .await?;
     let second = host
@@ -232,7 +232,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             16,
             &IdempotencyKey::new("stage-second")?,
             None,
-            None,
+            crate::conversation::ContentAccess::default(),
         )
         .await?;
     assert_eq!(
@@ -246,7 +246,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             16,
             &IdempotencyKey::new("stage-first")?,
             None,
-            None
+            crate::conversation::ContentAccess::default()
         )
         .await?,
         first
@@ -271,7 +271,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
                 16,
                 &IdempotencyKey::new("stage-first")?,
                 None,
-                None
+                crate::conversation::ContentAccess::default()
             )
             .await
             .is_err()
@@ -373,7 +373,17 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
     let delegated_reader =
         FilesystemContentVerifier::new(host.clone(), &verifier, &delegated_scope, 16, None)?;
     let (listed_generation, page) = delegated_reader
-        .list_private_directory(&volume, "messages", "messages", None, None, 10)
+        .list_private_directory(
+            &volume,
+            "messages",
+            "messages",
+            crate::filesystem::DirectoryOptions {
+                generation: None,
+                after: None,
+                maximum_entries: 10,
+                ceiling: None,
+            },
+        )
         .await?;
     assert_eq!(page.entries.len(), 1);
     let erased: &dyn ContentResidencyVerifier = delegated_reader.as_ref();
@@ -385,6 +395,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             Some(&listed_generation),
             None,
             10,
+            None,
             None,
         )?
         .await?;
@@ -403,7 +414,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             "messages/first.txt",
             Some(&listed_generation),
             16,
-            None,
+            crate::conversation::ContentAccess::default(),
         )?
         .await?;
     assert_eq!(portable_ref, second);
@@ -415,7 +426,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             "messages/first.txt",
             Some(&listed_generation),
             u64::MAX,
-            None,
+            crate::conversation::ContentAccess::default(),
         )?
         .await
         .map(|(file, bytes, _)| (file, bytes))?;
@@ -431,7 +442,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
         16,
         &IdempotencyKey::new("stage-later")?,
         None,
-        None,
+        crate::conversation::ContentAccess::default(),
     )
     .await?;
     let (old_generation, old_page) = delegated_reader
@@ -439,15 +450,28 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             &volume,
             "messages",
             "messages",
-            Some(&listed_generation),
-            None,
-            10,
+            crate::filesystem::DirectoryOptions {
+                generation: Some(&listed_generation),
+                after: None,
+                maximum_entries: 10,
+                ceiling: None,
+            },
         )
         .await?;
     assert_eq!(old_generation, listed_generation);
     assert_eq!(old_page.entries, page.entries);
     let (_, current_page) = delegated_reader
-        .list_private_directory(&volume, "messages", "messages", None, None, 10)
+        .list_private_directory(
+            &volume,
+            "messages",
+            "messages",
+            crate::filesystem::DirectoryOptions {
+                generation: None,
+                after: None,
+                maximum_entries: 10,
+                ceiling: None,
+            },
+        )
         .await?;
     assert_eq!(current_page.entries.len(), 2);
     let (old_ref, old_bytes) = delegated_reader
@@ -457,7 +481,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             "messages/first.txt",
             Some(&listed_generation),
             u64::MAX,
-            None,
+            crate::conversation::ContentAccess::default(),
         )?
         .await
         .map(|(file, bytes, _)| (file, bytes))?;
@@ -465,7 +489,17 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
     assert_eq!(old_bytes.as_ref(), b"two");
     assert!(
         delegated_reader
-            .list_private_directory(&volume, "messages", "elsewhere", None, None, 10)
+            .list_private_directory(
+                &volume,
+                "messages",
+                "elsewhere",
+                crate::filesystem::DirectoryOptions {
+                    generation: None,
+                    after: None,
+                    maximum_entries: 10,
+                    ceiling: None
+                }
+            )
             .await
             .is_err()
     );
@@ -477,7 +511,14 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
         &mut None,
     )?;
     let (discovered, bytes) = host
-        .read_private_path(&volume, &delegated, "messages/first.txt", None, 16, None)
+        .read_private_path(
+            &volume,
+            &delegated,
+            "messages/first.txt",
+            None,
+            16,
+            crate::conversation::ContentAccess::default(),
+        )
         .await?;
     assert_eq!(bytes.as_ref(), b"two");
     assert_ne!(discovered.version(), second.version());
@@ -494,7 +535,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             16,
             &IdempotencyKey::new("internal-write")?,
             None,
-            None
+            crate::conversation::ContentAccess::default()
         )
         .await
         .is_err()
@@ -510,7 +551,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             16,
             &IdempotencyKey::new("stage-empty")?,
             None,
-            None,
+            crate::conversation::ContentAccess::default(),
         )
         .await?;
     assert!(matches!(
@@ -521,7 +562,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
                 "messages/empty.txt",
                 Some(&listed_generation),
                 u64::MAX,
-                None
+                crate::conversation::ContentAccess::default()
             )?
             .await
             .map(|(file, bytes, _)| (file, bytes)),
@@ -552,7 +593,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             16,
             &IdempotencyKey::new("invalid-path")?,
             None,
-            None
+            crate::conversation::ContentAccess::default()
         )
         .await
         .is_err()
@@ -644,7 +685,7 @@ async fn conversation_stream_admission_requires_resident_files() -> Result<()> {
             32,
             &IdempotencyKey::new("input-upload")?,
             None,
-            None,
+            crate::conversation::ContentAccess::default(),
         )
         .await?;
     let manifest = host

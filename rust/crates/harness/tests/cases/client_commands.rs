@@ -550,7 +550,7 @@ async fn resolved_mentions_attach_to_the_stock_model_input_at_the_pinned_revisio
             assert_eq!(file.path(), path);
             assert_eq!(policy, &FileProjectionPolicy::BoundedFull);
             assert_eq!(
-                fixture.reader.read(file, 1024, None)?.await?.as_ref(),
+                fixture.reader.read(file, 1024, None, None)?.await?.as_ref(),
                 body.as_bytes()
             );
         }

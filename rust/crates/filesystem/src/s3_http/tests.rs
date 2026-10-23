@@ -1,4 +1,5 @@
 use super::*;
+include!("access_tests.rs");
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
@@ -124,10 +125,21 @@ async fn adapter_with_limits(
 ) -> S3Result<FilesystemS3Adapter<Resolver, MemoryAuthorityBackend, MemoryObjectBackend>> {
     let filesystem = Fs::memory();
     let workspace = filesystem
-        .create_workspace("s3-http", WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .create_workspace_with_operation::<_, (), crate::WorkspaceError>(
+            "s3-http",
+            crate::VolumeInitialization {
+                config: crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+                access_policy: Some(crate::access::INITIAL_POLICY),
+            },
+            crate::OperationId::new(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+            None,
+        )
         .await
         .map_err(|_| s3s::s3_error!(InternalError))?
-        .value;
+        .value
+        .workspace();
     FilesystemS3Adapter::new(
         Arc::new(Resolver {
             principal: FilesystemS3Principal {

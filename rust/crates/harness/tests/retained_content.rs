@@ -89,7 +89,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             64,
             &IdempotencyKey::new("admitted-content")?,
             None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let orphan = host
@@ -103,7 +103,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             64,
             &IdempotencyKey::new("unpublished-content")?,
             None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let attached = AgentId::from_bytes([33; 16]);
@@ -143,7 +143,17 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         &mut None,
     )?;
     let (listed_generation, page) = host
-        .list_private_directory(&volume, &attached_directory, "messages", None, None, 10)
+        .list_private_directory(
+            &volume,
+            &attached_directory,
+            "messages",
+            acyclic_harness::filesystem::DirectoryOptions {
+                generation: None,
+                after: None,
+                maximum_entries: 10,
+                ceiling: None,
+            },
+        )
         .await?;
     assert_eq!(page.entries.len(), 1);
     assert_eq!(
@@ -153,7 +163,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             "messages/current.txt",
             Some(&listed_generation),
             64,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?
         .1
@@ -181,7 +191,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         64,
         &IdempotencyKey::new("advanced-head")?,
         None,
-        None,
+        acyclic_harness::conversation::ContentAccess::default(),
     )
     .await?;
     let retried = host
@@ -195,7 +205,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             64,
             &IdempotencyKey::new("admitted-content")?,
             None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     assert_eq!(retried, admitted);
@@ -210,7 +220,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             64,
             &IdempotencyKey::new("admitted-content")?,
             None,
-            None
+            acyclic_harness::conversation::ContentAccess::default()
         )
         .await
         .is_err()
@@ -228,7 +238,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             64,
             &IdempotencyKey::new("unread-original")?,
             None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     host.put_content(
@@ -241,7 +251,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         64,
         &IdempotencyKey::new("unread-overwrite")?,
         None,
-        None,
+        acyclic_harness::conversation::ContentAccess::default(),
     )
     .await?;
     drop(host);
@@ -260,7 +270,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             &IdempotencyKey::new("unread-original")?,
             "messages/unread.txt",
             64,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?
         .expect("published operation survives cold collection");
@@ -276,7 +286,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             64,
             &IdempotencyKey::new("unread-original")?,
             None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     assert_eq!(retried, unread);
@@ -319,9 +329,12 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             &volume,
             &attached_directory,
             "messages",
-            Some(&listed_generation),
-            None,
-            10,
+            acyclic_harness::filesystem::DirectoryOptions {
+                generation: Some(&listed_generation),
+                after: None,
+                maximum_entries: 10,
+                ceiling: None,
+            },
         )
         .await?;
     assert_eq!(relisted_generation, listed_generation);
@@ -334,7 +347,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
                 "messages/current.txt",
                 Some(&listed_generation),
                 64,
-                None,
+                acyclic_harness::conversation::ContentAccess::default(),
             )
             .await?
             .1
@@ -349,7 +362,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
                 "messages/current.txt",
                 None,
                 64,
-                None,
+                acyclic_harness::conversation::ContentAccess::default(),
             )
             .await?
             .1

@@ -1,4 +1,5 @@
 use super::*;
+use crate::facade::FsWork as _;
 
 pub(super) async fn read_selected<
     A: AsyncAuthorityStore,
@@ -46,7 +47,7 @@ pub(super) async fn read_selected<
             .map_err(WorkspaceError::from)
     }
     .await;
-    work.finish(result, &accounting)
+    finish(workspace, &work, result, &mut accounting, cancellation).await
 }
 
 pub(super) async fn read_range<
@@ -109,7 +110,7 @@ pub(super) async fn read_range<
         Ok::<_, WorkspaceError>(crate::kernel::OwnedSourceChunk::claimed(read.bytes, bytes))
     }
     .await;
-    work.finish(result, &accounting)
+    finish(workspace, &work, result, &mut accounting, cancellation).await
 }
 
 pub(super) async fn read_link<
@@ -135,7 +136,7 @@ pub(super) async fn read_link<
             .map_err(WorkspaceError::from)
     }
     .await;
-    work.finish(result, &accounting)
+    finish(workspace, &work, result, &mut accounting, cancellation).await
 }
 
 async fn lookup_stat<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -187,7 +188,7 @@ pub(super) async fn stat<A: AsyncAuthorityStore, O: AsyncObjectStore, W: crate::
     let result = lookup_stat(workspace, selector, path, &mut accounting, cancellation)
         .await
         .and_then(|value| value.ok_or(WorkspaceError::NotFound));
-    work.finish(result, &accounting)
+    finish(workspace, &work, result, &mut accounting, cancellation).await
 }
 
 pub(super) async fn list<A: AsyncAuthorityStore, O: AsyncObjectStore, W: crate::facade::FsWork>(
@@ -218,7 +219,7 @@ pub(super) async fn list<A: AsyncAuthorityStore, O: AsyncObjectStore, W: crate::
         Ok::<_, WorkspaceError>((page, allocation))
     }
     .await;
-    work.finish(result, &accounting)
+    finish(workspace, &work, result, &mut accounting, cancellation).await
 }
 
 pub(super) async fn plan<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -229,54 +230,77 @@ pub(super) async fn plan<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     length: u64,
     maximum_spans: u32,
 ) -> Result<WorkspaceExtentPlan, WorkspaceError> {
-    let mut checkout = workspace
-        .checkout(
-            selector,
-            CheckoutMode::read_only_pinned(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
+    let work = WorkBudget::UNBOUNDED;
+    let cancellation = CancellationToken::new();
+    let mut accounting = work.accounting(&cancellation);
+    let result = async {
+        let mut checkout = workspace
+            .checkout(
+                selector,
+                CheckoutMode::read_only_pinned(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        let path = customer_path(path, checkout.volume_config())?;
+        let plan = checkout
+            .plan_file_extents(
+                &path,
+                crate::ByteRange { offset, length },
+                maximum_spans,
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .await
+            .map_err(WorkspaceError::engine)?
+            .value;
+        let spans = match plan {
+            Some(plan) => plan
+                .spans
+                .into_iter()
+                .map(|span| WorkspaceExtentSpan {
+                    offset: span.offset,
+                    length: span.length,
+                    source_end: span.source_end,
+                    kind: match span.kind {
+                        ExtentKind::Hole => WorkspaceExtentKind::Hole,
+                        ExtentKind::AllocatedZero => WorkspaceExtentKind::AllocatedZero,
+                        ExtentKind::Content { .. } => WorkspaceExtentKind::Content,
+                    },
+                })
+                .collect(),
+            None if length == 0 => Vec::new(),
+            None => vec![WorkspaceExtentSpan {
+                offset,
+                length,
+                source_end: offset
+                    .checked_add(length)
+                    .ok_or_else(|| WorkspaceError::Engine("file range overflows".to_owned()))?,
+                kind: WorkspaceExtentKind::Content,
+            }],
+        };
+        Ok(WorkspaceExtentPlan { spans })
+    }
+    .await;
+    finish(workspace, &work, result, &mut accounting, &cancellation)
         .await
-        .map_err(|failure| failure.error)?
-        .value;
-    let path = customer_path(path, checkout.volume_config())?;
-    let plan = checkout
-        .plan_file_extents(
-            &path,
-            crate::ByteRange { offset, length },
-            maximum_spans,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await
-        .map_err(WorkspaceError::engine)?
-        .value;
-    let spans = match plan {
-        Some(plan) => plan
-            .spans
-            .into_iter()
-            .map(|span| WorkspaceExtentSpan {
-                offset: span.offset,
-                length: span.length,
-                source_end: span.source_end,
-                kind: match span.kind {
-                    ExtentKind::Hole => WorkspaceExtentKind::Hole,
-                    ExtentKind::AllocatedZero => WorkspaceExtentKind::AllocatedZero,
-                    ExtentKind::Content { .. } => WorkspaceExtentKind::Content,
-                },
-            })
-            .collect(),
-        None if length == 0 => Vec::new(),
-        None => vec![WorkspaceExtentSpan {
-            offset,
-            length,
-            source_end: offset
-                .checked_add(length)
-                .ok_or_else(|| WorkspaceError::Engine("file range overflows".to_owned()))?,
-            kind: WorkspaceExtentKind::Content,
-        }],
-    };
-    Ok(WorkspaceExtentPlan { spans })
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
+}
+
+async fn finish<A: AsyncAuthorityStore, O: AsyncObjectStore, W: crate::facade::FsWork, T>(
+    workspace: &Workspace<A, O>,
+    work: &W,
+    result: Result<T, WorkspaceError>,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> W::Output<T, WorkspaceError> {
+    let authorization = workspace
+        .check_current_access(accounting, cancellation)
+        .await;
+    work.finish(authorization.and(result), accounting)
 }
 
 #[cfg(test)]

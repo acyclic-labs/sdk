@@ -140,6 +140,30 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
+    fn clone_source(
+        &self,
+        checkout: &(dyn std::any::Any + Send + Sync),
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<FileId, MountSourceError> {
+        self.observe(work, |file, _, _| {
+            file.ok_or(MountSourceError::NativeUnsupported)?
+                .clone_source(checkout, work)
+        })
+    }
+
+    fn clone_range_from(
+        &self,
+        source: &dyn MountOpenFile,
+        source_offset: u64,
+        offset: u64,
+        length: u64,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        self.mutate(work, |file| {
+            file.clone_range_from(source, source_offset, offset, length, work)
+        })
+    }
+
     /// Refreshes source facts while the path retains the opened identity.
     /// A replacement path keeps the pinned source facts of this handle.
     fn lookup_with_meter(
@@ -274,6 +298,17 @@ where
     ) -> Result<(), MountSourceError> {
         self.mutate(work, |file| {
             file.write_range_with_meter(offset, bytes, work)
+        })
+    }
+
+    fn append_range_with_meter(
+        &self,
+        offset: u64,
+        bytes: crate::kernel::OwnedSourceChunk,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        self.mutate(work, |file| {
+            file.append_range_with_meter(offset, bytes, work)
         })
     }
 
@@ -483,6 +518,12 @@ where
             )
         })
     }
+    fn append_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
+        adapter::boundary(self.authored.cancellation(), |work| {
+            self.mutate(work, |file| file.append_range(offset, bytes))
+        })
+    }
+
     fn resize(&self, logical_bytes: u64) -> Result<(), MountSourceError> {
         adapter::boundary(self.authored.cancellation(), |work| {
             self.resize_with_meter(logical_bytes, work)

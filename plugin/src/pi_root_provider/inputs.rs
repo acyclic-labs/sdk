@@ -232,7 +232,10 @@ pub(super) async fn observe_pi_input_at(
             &coordinates.key.0,
             &coordinates.path.0,
             maximum(owner),
-            Some(&io),
+            acyclic_harness::conversation::ContentAccess {
+                ceiling: None,
+                io: Some(&io),
+            },
         )
         .await?
     else {
@@ -268,8 +271,7 @@ pub(super) fn publish_pi_input_with_native_coordinates<'a, T: Serialize + Sync>(
                 &coordinates.display_name.0,
                 maximum(owner),
                 &coordinates.key.0,
-                None,
-                Some(&io),
+                None, acyclic_harness::conversation::ContentAccess { ceiling: None, io: Some(&io) },
             )
             .await;
         drop(encoded);

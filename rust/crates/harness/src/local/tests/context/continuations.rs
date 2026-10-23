@@ -83,7 +83,7 @@ async fn case(bits: u8, bootstrap: &super::super::bootstrap::Bootstrap) -> Resul
                     body.as_bytes(),
                     "text/markdown",
                     "document",
-                    None,
+                    crate::conversation::ContentAccess::default(),
                 )?
                 .await?;
         }

@@ -136,10 +136,10 @@ impl ControlPlane {
         let mut roots = Vec::with_capacity(route.roots.len());
         for root in route.roots.values() {
             let root_id = WorkspaceRootId::from_bytes(root.root_id);
-            roots.push((
-                root.mount_name(),
-                self.lazy_workspace_root(route, root_id).await?,
-            ));
+            let workspace = self.lazy_workspace_root(route, root_id).await?;
+            let options =
+                super::access::mount_options(workspace.workspace(), &route.agent_id).await?;
+            roots.push((root.mount_name(), workspace, options));
         }
         LocalMount::mount(roots, &route.mount_path).await
     }

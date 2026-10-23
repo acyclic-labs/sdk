@@ -70,7 +70,7 @@ async fn composer_templates_and_mentions_retain_the_original_cut_through_dispatc
     assert_eq!(
         harness
             .client_reader()?
-            .read(&attached, 1024, None)?
+            .read(&attached, 1024, None, None)?
             .await?
             .as_ref(),
         b"value = 42\n"
@@ -97,7 +97,7 @@ async fn composer_templates_and_mentions_retain_the_original_cut_through_dispatc
         .expect("model input");
     let bytes = harness
         .client_reader()?
-        .read(&model.payload, harness.limits.file_bytes, None)?
+        .read(&model.payload, harness.limits.file_bytes, None, None)?
         .await?;
     let staged: crate::filesystem::ModelTaskCommand =
         serde_json::from_slice(&bytes).map_err(super::super::storage)?;
@@ -226,7 +226,10 @@ async fn native_tui_submission_uses_the_same_pinned_composer_resolution() -> Res
     }
     assert_eq!(attachments.len(), 1);
     assert_eq!(
-        reader.read(attachments[0], 1024, None)?.await?.as_ref(),
+        reader
+            .read(attachments[0], 1024, None, None)?
+            .await?
+            .as_ref(),
         b"tui_unique_value = 42\n"
     );
     assert!(matches!(

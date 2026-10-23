@@ -368,6 +368,7 @@ macro_rules! source_methods {
 
 impl MountFilesystem for GatedSource {
     source_methods! {
+        authorize_with_meter(requests: &[(crate::access::Action, &MountPath)], work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
         native_callback_guard() -> Option<Arc<dyn crate::native_mount::NativeMountCallbackGuard>>;
         native_original_work() -> Result<Option<crate::NativeMaterializationWork>, MountSourceError>;
         supports_posix_named_attributes() -> bool;
@@ -408,7 +409,7 @@ impl MountFilesystem for GatedSource {
         set_attributes(path: &MountPath, metadata: FileMetadata, logical_bytes: Option<u64>, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
         flush(work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
         open_file_with_meter(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
-        open_file_with_lookup_with_meter(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<(crate::native_mount::MountOpenClaim, MountLookup), MountSourceError>;
+        open_file_with_lookup_with_meter(path: &MountPath, access: crate::native_mount::MountOpenAccess, work: &crate::NativeMaterializationWork) -> Result<(crate::native_mount::MountOpenClaim, MountLookup), MountSourceError>;
         open_created_with_meter(path: &MountPath, created: &MountLookup, work: &crate::NativeMaterializationWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
         detach_file_with_meter(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
         create_file(path: &MountPath, metadata: FileMetadata, stamp: Option<ViewStamp>, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
@@ -417,7 +418,6 @@ impl MountFilesystem for GatedSource {
         list_attributes_with_meter(path: &MountPath, cursor: Option<&[u8]>, maximum: u32, work: &crate::NativeMaterializationWork) -> Result<(crate::native_mount::MountAttributePage, crate::NativeAllocation), MountSourceError>;
         write_attribute(path: &MountPath, name: &[u8], value: crate::kernel::OwnedSourceChunk, mode: crate::native_mount::MountAttributeWriteMode, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
         remove_attribute(path: &MountPath, name: &[u8], work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
-        clone_range_by_id(source: FileId, source_offset: u64, destination: FileId, destination_offset: u64, length: u64, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
         hard_link(source: &MountPath, destination: &MountPath, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
         folded_path_with_meter(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<Option<(MountPath,u64)>, MountSourceError>;
         view_is_stable_with_meter(work: &crate::NativeMaterializationWork) -> Result<bool, MountSourceError>;

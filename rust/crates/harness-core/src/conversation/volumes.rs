@@ -317,6 +317,7 @@ pub fn contains_content_label(
 /// Verified, exact-volume authority for a single storage operation.
 #[derive(Clone, Debug)]
 pub struct ContentGrant {
+    scope: Scope,
     pub(super) volume: VolumeRef,
     pub(super) operation: VolumeOperation,
     pub(super) exact_file: Option<(String, String, FileDescriptor, String)>,
@@ -324,6 +325,12 @@ pub struct ContentGrant {
 }
 
 impl ContentGrant {
+    /// Borrows the authenticated grant for the persisted-policy decision.
+    #[cfg(feature = "filesystem")]
+    pub(crate) const fn policy_scope(&self) -> &Scope {
+        &self.scope
+    }
+
     /// Constructs read authority from authenticated project-source authorization.
     #[cfg(feature = "filesystem")]
     pub(crate) fn from_project_source(
@@ -333,6 +340,7 @@ impl ContentGrant {
     ) -> Result<Self> {
         authorization.verify_scope(verifier, work)?;
         Ok(Self {
+            scope: authorization.policy_scope.copy(work)?,
             volume: authorization.project.copy(work)?,
             operation: VolumeOperation::Read,
             exact_file: None,
@@ -359,6 +367,7 @@ impl ContentGrant {
             file.volume().identity_digest(u64::MAX, &mut None)?,
         ) {
             return Ok(Self {
+                scope: scope.copy(&mut None)?,
                 volume: file.volume.clone(),
                 operation: VolumeOperation::Read,
                 exact_file: None,
@@ -378,6 +387,7 @@ impl ContentGrant {
                 display_name,
             } = file.clone();
             return Ok(Self {
+                scope: scope.copy(&mut None)?,
                 volume,
                 operation: VolumeOperation::Read,
                 exact_file: Some((path, version, descriptor, display_name)),
@@ -401,6 +411,7 @@ impl ContentGrant {
                         ));
                     }
                     let grant = Self {
+                        scope: scope.copy(&mut None)?,
                         volume: file.volume.clone(),
                         operation: VolumeOperation::Read,
                         exact_file: None,
@@ -427,6 +438,7 @@ impl ContentGrant {
     ) -> Result<Self> {
         Self::authorize_volume(verifier, scope, volume, operation, maximum_bytes, work)?;
         Ok(Self {
+            scope: scope.copy(work)?,
             volume: volume.copy(work)?,
             operation,
             exact_file: None,
@@ -436,7 +448,11 @@ impl ContentGrant {
 
     #[cfg(feature = "filesystem")]
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        let mut bytes = self.volume.logical_owned_bytes()?;
+        let mut bytes = self
+            .volume
+            .logical_owned_bytes()?
+            .checked_add(self.scope.logical_owned_bytes()?)
+            .ok_or_else(|| Error::Invalid("grant scope ownership overflow".into()))?;
         if let Some((path, version, descriptor, display_name)) = &self.exact_file {
             bytes = [path.capacity(), version.capacity(), display_name.capacity()]
                 .into_iter()
@@ -463,6 +479,12 @@ impl ContentGrant {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         verifier.verify(scope, work)?;
+        volume.validate(work)?;
+        if volume.provider().family() == "filesystem"
+            && crate::core::filesystem_scope_label(scope.capabilities(), work)?.is_some()
+        {
+            return Ok(());
+        }
         if operation == VolumeOperation::Write {
             volume.require_writer(scope.agent(), work)?;
         }
@@ -501,23 +523,15 @@ impl ContentGrant {
                 "internal storage paths cannot be delegated",
             ));
         }
-        if scope.agent().is_none()
-            || !(contains_content_label(
+        let structured = volume.provider().family() == "filesystem"
+            && crate::core::filesystem_scope_label(scope.capabilities(), work)?.is_some();
+        if (!structured && scope.agent().is_none())
+            || !crate::core::directory_read_granted_with_work(
                 scope.capabilities(),
-                acyclic_fs::access::DIRECTORY_READ_PREFIX,
-                volume.directory_digest(
-                    prefix,
-                    crate::store::default_projection_read_limits().maximum_bytes,
-                    work,
-                )?,
-            ) || contains_content_label(
-                scope.capabilities(),
-                VolumeOperation::Read.capability_prefix(),
-                volume.identity_digest(
-                    crate::store::default_projection_read_limits().maximum_bytes,
-                    work,
-                )?,
-            ))
+                volume,
+                prefix,
+                work,
+            )?
         {
             return Err(conversation_error(
                 work,
@@ -526,7 +540,10 @@ impl ContentGrant {
             ));
         }
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let scope = scope.copy(quota.work())?;
+        quota.adopt(scope.logical_owned_bytes()?)?;
         let grant = Self {
+            scope,
             volume: volume.clone_in_quota(&mut quota)?,
             operation: VolumeOperation::Read,
             exact_file: None,
@@ -564,6 +581,7 @@ impl ContentGrant {
             display_name,
         } = file.clone();
         Ok(Self {
+            scope: scope.copy(&mut None)?,
             volume,
             operation: VolumeOperation::Read,
             exact_file: Some((path, version, descriptor, display_name)),

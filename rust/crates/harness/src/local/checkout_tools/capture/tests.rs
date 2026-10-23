@@ -63,6 +63,7 @@ async fn fixture() -> Result<(tempfile::TempDir, LocalHarness, CheckoutTools)> {
         physical.clone(),
         &harness.project,
         Arc::new(acyclic_stream::SystemUnixMillisClock),
+        &harness.signed,
         harness.task_files.clone(),
     )
     .await?;

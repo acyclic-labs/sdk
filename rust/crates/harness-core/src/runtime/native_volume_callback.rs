@@ -95,8 +95,20 @@ impl TaskContext {
             .into_iter()
             .chain(writable.then_some(VolumeOperation::Write))
         {
-            let capability = volume.capability(operation, &mut Some(&mut io.history_io()))?;
-            if !self.scope().grants().contains(&capability) {
+            let admitted = match operation {
+                VolumeOperation::Read => crate::core::directory_read_granted_with_work(
+                    self.scope().grants(),
+                    volume,
+                    "",
+                    &mut Some(&mut io.history_io()),
+                )?,
+                VolumeOperation::Write => crate::core::volume_write_granted_with_work(
+                    self.scope().grants(),
+                    volume,
+                    &mut Some(&mut io.history_io()),
+                )?,
+            };
+            if !admitted {
                 return Err(denied(
                     "native callback volume differs from its original scope",
                 ));

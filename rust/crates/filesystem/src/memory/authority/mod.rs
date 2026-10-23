@@ -90,6 +90,8 @@ enum CreatePlan {
 pub struct MemoryAuthorityStore {
     operation_claims: acyclic_stream::OperationClaims,
     maximum_payload_bytes: u64,
+    // Lock order: authority map -> allocation ledger (native accounting only).
+    // Never await, enter an object store, or call an owner guard while held.
     authorities: Mutex<HashMap<AuthorityId, AuthorityState>>,
 }
 

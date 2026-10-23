@@ -5,7 +5,7 @@ pub(super) struct PublicationStepFailure<E> {
     pub(super) work: Option<WorkCounters>,
 }
 
-fn accept_backend(
+pub(super) fn accept_backend(
     accounting: &mut KernelAccounting<'_>,
     more: WorkCounters,
 ) -> Result<(), crate::FsError> {

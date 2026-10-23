@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_fs::{CancellationToken, WorkBudget, kernel::NamespacePath};
+use acyclic_fs::{CancellationToken, MountPublication, WorkBudget, kernel::NamespacePath};
 use acyclic_native_runtime::spawn;
 
 pub(super) const SCRATCH_PATH: &str = ".volumes/scratch";
@@ -112,8 +112,11 @@ pub(super) async fn attach(
     store: &acyclic_fs::LocalCoreStateStore,
     root: &acyclic_fs::HeldRoot,
     mounts: &mut Mounts,
+    authority: (&AuthorityIssuer, AgentId),
 ) -> Result<()> {
     let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     for (relative, mount) in mounts.mounts_mut() {
         if relative.is_empty() {
             continue;
@@ -134,6 +137,15 @@ pub(super) async fn attach(
         if let Some(parent) = Path::new(relative).parent() {
             held_directories(root, parent)?;
         }
+        let options = crate::filesystem::owner_mount_options(
+            &source,
+            authority.0,
+            Some(authority.1),
+            !mount.mode.read_only(),
+            &work,
+        )
+        .await?
+        .publication(MountPublication::Manual);
         #[cfg(windows)]
         recover_volume_after_crash(root.path(), Path::new(relative), source.id().volume_id())?;
         acyclic_fs::WorkspaceGraph::new(store.clone())
@@ -142,6 +154,7 @@ pub(super) async fn attach(
         mount.view.source = Some(Arc::new(MountedVolume {
             workspace: crate::tools::git::OwnedView::Volume(source),
             destination,
+            options,
             native: StateArc::new(AsyncMutex::new(None)),
             users: StateArc::new(crate::sync::SyncMutex::new(0)),
             execution: StateArc::new(AsyncMutex::new(())),

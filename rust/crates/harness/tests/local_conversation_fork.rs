@@ -186,7 +186,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                 1_024,
                 &IdempotencyKey::new("message")?,
                 None,
-                None,
+                acyclic_harness::conversation::ContentAccess::default(),
             )
             .await?;
         let attachment_file = host
@@ -200,7 +200,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                 1_024,
                 &IdempotencyKey::new("attachment")?,
                 None,
-                None,
+                acyclic_harness::conversation::ContentAccess::default(),
             )
             .await?;
         aggregate
@@ -365,7 +365,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                 1_024,
                 &IdempotencyKey::new("merge-notice")?,
                 None,
-                None,
+                acyclic_harness::conversation::ContentAccess::default(),
             )
             .await?;
         let notice = ConversationMessage {

@@ -12,6 +12,7 @@ impl ContentResidencyVerifier for Resolver {
         &'a self,
         _: &'a FileRef,
         _: u64,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         BoundedContentFuture::new(io, || async {

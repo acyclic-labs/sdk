@@ -101,6 +101,7 @@ impl ContentResidencyVerifier for StoredContent {
         &'a self,
         file: &'a FileRef,
         maximum_bytes: u64,
+        _ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a acyclic_harness::conversation::ContentIo>,
     ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
     {
@@ -125,7 +126,7 @@ impl ContentPublisher for StoredContent {
         bytes: &'a [u8],
         media_type: &'a str,
         display_name: &'a str,
-        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+        access: acyclic_harness::conversation::ContentAccess<'a, 'a>,
     ) -> Result<
         acyclic_harness::conversation::BoundedContentFuture<
             'a,
@@ -135,6 +136,11 @@ impl ContentPublisher for StoredContent {
             ),
         >,
     > {
+        let acyclic_harness::conversation::ContentAccess {
+            ceiling: _ceiling,
+            io,
+        } = access;
+
         acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
             self.0
                 .stage(operation, path, bytes, media_type, display_name)

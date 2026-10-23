@@ -120,6 +120,7 @@ mod mounting;
 use mounting::*;
 
 mod benchmark;
+mod benchmark_access;
 use benchmark::*;
 
 mod kernel_bench;

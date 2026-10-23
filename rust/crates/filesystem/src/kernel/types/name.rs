@@ -20,6 +20,17 @@ impl NameEncoding {
         }
     }
 
+    pub(crate) fn write_unicode_case_fold_key(
+        self,
+        text: &str,
+        sink: &mut impl std::fmt::Write,
+    ) -> std::fmt::Result {
+        match self {
+            Self::Utf8 => super::case_fold::write_key(text, sink),
+            Self::PosixBytes | Self::WindowsUtf16Le => sink.write_str(text),
+        }
+    }
+
     pub(crate) fn unicode_case_fold_key(self, text: &str) -> std::borrow::Cow<'_, str> {
         match self {
             Self::Utf8 => super::case_fold::key(text),

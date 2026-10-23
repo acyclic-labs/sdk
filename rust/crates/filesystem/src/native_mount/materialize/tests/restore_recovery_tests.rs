@@ -117,7 +117,9 @@ async fn observe_multipath_failure<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         completed.work.backend_read_operations,
         failed.work.backend_read_operations,
     );
-    assert!(materialization_reads_match_actual_source(&failed, &completed));
+    assert!(materialization_reads_match_actual_source(
+        &failed, &completed
+    ));
     assert_eq!(completed.work.output_bytes, 5);
     assert_eq!(failed.work.output_bytes, completed.work.output_bytes);
     failed.work.verify(FINITE_MATERIALIZATION_BUDGET)?;
@@ -135,7 +137,9 @@ async fn runtime_write_preserves_the_actual_os_error_and_unchanged_bytes()
     let expected = std::io::Write::write(&mut ordinary, b"after")
         .err()
         .ok_or("ordinary read-only handle accepted a write")?;
-    let expected_code = expected.raw_os_error().ok_or("control did not reach the OS")?;
+    let expected_code = expected
+        .raw_os_error()
+        .ok_or("control did not reach the OS")?;
     let cancellation = CancellationToken::new();
     let original =
         crate::NativeMaterializationWork::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)
@@ -143,14 +147,15 @@ async fn runtime_write_preserves_the_actual_os_error_and_unchanged_bytes()
     let mut receipt = GenerationReceipt::from_work(&original)?;
     let native = acyclic_native_runtime::NativeFile::from_file(
         File::open(&path)?,
-        Some(acyclic_native_runtime::NativeFileMeter::Owned(original.runtime_meter())),
+        Some(acyclic_native_runtime::NativeFileMeter::Owned(
+            original.runtime_meter(),
+        )),
     )
     .map_err(|(error, file)| {
         drop(file);
         original.runtime_error(error)
     })?;
-    let mut before_effect =
-        None::<&mut fn(_) -> std::future::Ready<Result<(), MaterializeError>>>;
+    let mut before_effect = None::<&mut fn(_) -> std::future::Ready<Result<(), MaterializeError>>>;
     let failure = write_generation_bytes(
         &native,
         0,
@@ -198,10 +203,19 @@ async fn metadata_offload_keeps_original_cancellation_without_starting_host_io()
             .await
             .err()
             .ok_or("metadata offload ignored original cancellation")?;
-    assert!(matches!(failure, MaterializeError::Cancelled(_)), "{failure:?}");
+    assert!(
+        matches!(failure, MaterializeError::Cancelled(_)),
+        "{failure:?}"
+    );
     let after = original.receipt();
-    assert_eq!(after.backend_read_operations, before.backend_read_operations);
-    assert_eq!(after.backend_write_operations, before.backend_write_operations);
+    assert_eq!(
+        after.backend_read_operations,
+        before.backend_read_operations
+    );
+    assert_eq!(
+        after.backend_write_operations,
+        before.backend_write_operations
+    );
     assert_eq!(after.output_bytes, before.output_bytes);
     assert_eq!(std::fs::read(directory.path().join("file"))?, b"unchanged");
     after.verify(FINITE_MATERIALIZATION_BUDGET)?;
@@ -399,7 +413,10 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
         "{:?}",
         no_sync.error
     );
-    assert_eq!(std::fs::read(no_sync_output.path().join("a-present"))?, b"first");
+    assert_eq!(
+        std::fs::read(no_sync_output.path().join("a-present"))?,
+        b"first"
+    );
     assert_eq!(no_sync.work.output_bytes, 5);
     assert_eq!(no_sync.work.durability_operations, 0);
 
@@ -426,10 +443,12 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
             WorkBudget::UNBOUNDED,
             &cancellation,
             |_| {
-                std::future::ready(Ok::<_, OperationFailure<crate::FsError>>(OperationReceipt {
-                    value: (),
-                    work: WorkCounters::UNCHARGED,
-                }))
+                std::future::ready(Ok::<_, OperationFailure<crate::FsError>>(
+                    OperationReceipt {
+                        value: (),
+                        work: WorkCounters::UNCHARGED,
+                    },
+                ))
             },
         )
         .await?;
@@ -483,9 +502,18 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
     .await
     .err()
     .ok_or("post-write cancellation was ignored")?;
-    assert!(cancelled_after_write, "completed physical write was never observed");
-    assert!(matches!(late_error, MaterializeError::Cancelled(_)), "{late_error:?}");
-    assert_eq!(std::fs::read(late_output.path().join("a-present"))?, b"first");
+    assert!(
+        cancelled_after_write,
+        "completed physical write was never observed"
+    );
+    assert!(
+        matches!(late_error, MaterializeError::Cancelled(_)),
+        "{late_error:?}"
+    );
+    assert_eq!(
+        std::fs::read(late_output.path().join("a-present"))?,
+        b"first"
+    );
     assert!(!late_output.path().join("z-missing").exists());
     let late_spent = late_work.receipt();
     assert_eq!(late_spent.output_bytes, 5);

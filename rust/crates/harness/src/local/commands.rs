@@ -188,9 +188,12 @@ impl LocalHarness {
                     &self.journal,
                     &grant,
                     "inputs",
-                    generation.as_ref(),
-                    after.as_ref(),
-                    self.limits.context_messages.min(64) as u32,
+                    crate::filesystem::DirectoryOptions {
+                        generation: generation.as_ref(),
+                        after: after.as_ref(),
+                        maximum_entries: self.limits.context_messages.min(64) as u32,
+                        ceiling: None,
+                    },
                 )
                 .await
             {
@@ -454,7 +457,7 @@ impl LocalHarness {
                 &bytes,
                 "application/json",
                 "command input",
-                None,
+                crate::conversation::ContentAccess::default(),
             )?
             .await?
             .0;

@@ -1,4 +1,4 @@
-use super::{Action, PathTrie, PreparedPath};
+use super::{Action, PathTrie, PinnedPath, PreparedPath};
 
 /// Metadata projection of the same decisions used to authorize mount callbacks.
 /// Operations still call `decide` to check expiry and attribute the rule at the
@@ -68,6 +68,16 @@ impl PreparedPath<'_> {
     /// Constant-time, allocation-free native mode from the same pinned decisions.
     #[must_use]
     pub fn mount_mode(self, now: u64) -> MountMode {
+        MountMode {
+            actions: self.action_mask(now),
+        }
+    }
+}
+
+impl PinnedPath {
+    /// Project the pinned handle's decisions without refreshing its policy.
+    #[must_use]
+    pub fn mount_mode(&self, now: u64) -> MountMode {
         MountMode {
             actions: self.action_mask(now),
         }

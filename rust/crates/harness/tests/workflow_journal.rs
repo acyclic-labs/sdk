@@ -117,7 +117,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
             65_536,
             &IdempotencyKey::new("command-payload")?,
             None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let journal = FilesystemWorkflowJournal::new(

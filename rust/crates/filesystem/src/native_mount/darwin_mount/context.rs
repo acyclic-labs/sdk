@@ -3,7 +3,7 @@ use crate::lock_order::{FILE, Mutex as RankedMutex, OPERATION, VIEW};
 
 pub(super) struct FileHandle {
     file_id: FileId,
-    file: Option<RetainedFile>,
+    file: RetainedFile,
     written: Arc<DarwinOwned<AtomicU64>>,
 }
 
@@ -351,15 +351,35 @@ impl DarwinMountContext {
     pub(super) fn open(
         &self,
         path: &MountPath,
+        access: super::super::MountOpenAccess,
         written: u64,
         work: &Work,
     ) -> Result<u64, NativeMountError> {
-        let lookup = self.lookup(path, work)?;
-        match lookup.node.kind {
-            MountNodeKind::Regular => {}
-            MountNodeKind::Directory => return Err(driver_errno(libc::EISDIR)),
-            _ => return Err(driver_errno(libc::EINVAL)),
-        }
+        let (file, lookup) = self
+            .source
+            .open_file_with_lookup_with_meter(path, access, work)?;
+        self.install_file(lookup, (file.file, file.bytes), written, work)
+    }
+
+    pub(super) fn open_created(
+        &self,
+        path: &MountPath,
+        created: &MountLookup,
+        written: u64,
+        work: &Work,
+    ) -> Result<u64, NativeMountError> {
+        let file = self.source.open_created_with_meter(path, created, work)?;
+        self.install_file(*created, file, written, work)
+    }
+
+    fn install_file(
+        &self,
+        lookup: MountLookup,
+        file: (Arc<dyn MountOpenFile>, u64),
+        written: u64,
+        work: &Work,
+    ) -> Result<u64, NativeMountError> {
+        let file = retained_file(work, file)?;
         let handle = self
             .next_handle
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |handle| {
@@ -368,7 +388,7 @@ impl DarwinMountContext {
             .map_err(|_| driver_errno(libc::EMFILE))?;
         let entry = FileHandle {
             file_id: lookup.node.file_id,
-            file: None,
+            file,
             written: shared(work, DarwinOwned::empty(AtomicU64::new(written)))?,
         };
         let mut files = self.files.write().map_err(|_| driver_errno(libc::EIO))?;
@@ -393,30 +413,11 @@ impl DarwinMountContext {
                 None,
             ));
         }
-        let file_id = {
-            let files = self.files.read().map_err(|_| driver_errno(libc::EIO))?;
-            let entry = files
-                .get(&handle)
-                .ok_or_else(|| driver_errno(libc::ESTALE))?;
-            if let Some(file) = &entry.file {
-                return Ok((file.clone(), Some(Arc::clone(&entry.written))));
-            }
-            entry.file_id
-        };
-        let (file, lookup) = self.source.open_file_with_lookup_with_meter(path, work)?;
-        let file = retained_file(work, (file.file, file.bytes))?;
-        if lookup.node.file_id != file_id {
-            return Err(driver_errno(libc::ESTALE));
-        }
-        let mut files = self.files.write().map_err(|_| driver_errno(libc::EIO))?;
-        // Recheck after source I/O: close or unlink may have changed the entry.
+        let files = self.files.read().map_err(|_| driver_errno(libc::EIO))?;
         let entry = files
-            .get_mut(&handle)
+            .get(&handle)
             .ok_or_else(|| driver_errno(libc::ESTALE))?;
-        Ok((
-            entry.file.get_or_insert(file).clone(),
-            Some(Arc::clone(&entry.written)),
-        ))
+        Ok((entry.file.clone(), Some(Arc::clone(&entry.written))))
     }
 
     pub(super) fn lookup_handle(
@@ -435,10 +436,13 @@ impl DarwinMountContext {
                 .ok_or_else(|| driver_errno(libc::ESTALE))?;
             (entry.file_id, entry.file.clone())
         };
-        let lookup = match file {
-            Some((file, _custody)) => file.lookup_with_meter(work)?,
-            None => self.lookup(path, work)?,
-        };
+        let lookup = file
+            .0
+            .lookup_with_meter(work)
+            .map_err(|error| match error {
+                MountSourceError::NotFound => driver_errno(libc::ESTALE),
+                error => NativeMountError::from(error),
+            })?;
         if lookup.node.file_id != file_id {
             return Err(driver_errno(libc::ESTALE));
         }
@@ -460,26 +464,44 @@ impl DarwinMountContext {
                 .map_err(|_| driver_errno(libc::EIO))?
                 .values()
                 .any(|entry| entry.file_id == lookup.node.file_id);
-        let detached = self.mutate(
-            || {
-                let detached = if has_open {
-                    Some(self.source.detach_file_with_meter(path, work)?)
-                } else {
-                    None
-                };
-                unlink()?;
-                Ok(detached)
-            },
-            work,
-        )?;
-        if let Some(detached) = detached {
-            let detached = retained_file(work, detached)?;
-            let mut files = self.files.write().map_err(|_| driver_errno(libc::EIO))?;
-            for entry in files
-                .values_mut()
+        self.admit_write(work)?;
+        let detached = if has_open {
+            Some(retained_file(
+                work,
+                self.source.detach_file_with_meter(path, work)?,
+            )?)
+        } else {
+            None
+        };
+        let files = self.files.read().map_err(|_| driver_errno(libc::EIO))?;
+        let count = if detached.is_some() {
+            files
+                .values()
                 .filter(|entry| entry.file_id == lookup.node.file_id)
+                .count()
+        } else {
+            0
+        };
+        let mut replacements = vector(work, count)?;
+        if let Some(detached) = detached {
+            for (handle, entry) in files
+                .iter()
+                .filter(|(_, entry)| entry.file_id == lookup.node.file_id)
             {
-                entry.file = Some(detached.clone());
+                let replacement = super::super::adapter::retarget_file(
+                    entry.file.0.as_ref(),
+                    detached.0.as_ref(),
+                    work,
+                )?;
+                replacements.push((*handle, retained_file(work, replacement)?));
+            }
+        }
+        drop(files);
+        self.mutate(unlink, work)?;
+        let mut files = self.files.write().map_err(|_| driver_errno(libc::EIO))?;
+        for (handle, replacement) in replacements.drain(..) {
+            if let Some(entry) = files.get_mut(&handle) {
+                entry.file = replacement;
             }
         }
         Ok(())

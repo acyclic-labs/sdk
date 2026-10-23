@@ -64,18 +64,7 @@ impl PlanQuery {
         Ok(())
     }
 
-    async fn capture(&self, agent: bool) -> TestResult<Vec<CapturedRevision>> {
-        let storage = MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
-        let goal = storage
-            .stage(
-                OperationId::new(),
-                "GOAL.md",
-                b"---\nstatus: blocked\n---\nShip\n",
-                "text/markdown",
-                "GOAL.md",
-            )
-            .await?;
-        let volume = storage.file_query(acyclic_fs::performance::BOUNDARY_BUDGET)?;
+    fn scripted_provider(&self) -> Arc<ScriptedModelProvider> {
         let turns: Vec<_> = self.writes.iter().enumerate().flat_map(|(index, revision)| [
             ScriptedTurn::Events(vec![
                 ScriptedEvent::Event(ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
@@ -86,23 +75,17 @@ impl PlanQuery {
             ]),
             ScriptedTurn::Text("Plans saved".into()),
         ]).collect();
-        let provider = Arc::new(ScriptedModelProvider::new(turns));
-        let bundle = if agent {
-            Some(
-                storage
-                    .builder()
-                    .model(
-                        Model::new("scripted".into(), "plans".into(), "1".into(), Value::Null)?,
-                        provider.clone(),
-                    )
-                    .grant("model:generate")
-                    .grant("tool:call:write")
-                    .compaction(CompactionPolicy::Disabled)
-                    .build()?,
-            )
-        } else {
-            None
-        };
+        Arc::new(ScriptedModelProvider::new(turns))
+    }
+
+    async fn capture(&self, agent: bool) -> TestResult<Vec<CapturedRevision>> {
+        let storage = MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+        let goal = seed_goal(&storage).await?;
+        let volume = storage
+            .file_query(acyclic_fs::performance::BOUNDARY_BUDGET)
+            .await?;
+        let provider = self.scripted_provider();
+        let bundle = plan_bundle(&storage, agent, provider.clone())?;
         let observation = volume.observe_files(Query::Plans, None, 32, 65_536).await?;
         let snapshot = observation.snapshot.ok_or("missing initial snapshot")?;
         let identity = (snapshot.cursor.volume, snapshot.cursor.query);
@@ -244,4 +227,41 @@ fn new_views() -> acyclic_harness::Result<acyclic_harness::client::ClientViews> 
             },
         },
     )
+}
+
+fn plan_bundle(
+    storage: &MemoryHarnessStorage,
+    agent: bool,
+    provider: Arc<ScriptedModelProvider>,
+) -> TestResult<Option<acyclic_harness::Harness>> {
+    Ok(if agent {
+        Some(
+            storage
+                .builder()
+                .model(
+                    Model::new("scripted".into(), "plans".into(), "1".into(), Value::Null)?,
+                    provider,
+                )
+                .grant("model:generate")
+                .grant("tool:call:write")
+                .compaction(CompactionPolicy::Disabled)
+                .build()?,
+        )
+    } else {
+        None
+    })
+}
+
+async fn seed_goal(
+    storage: &MemoryHarnessStorage,
+) -> TestResult<acyclic_harness::conversation::FileRef> {
+    Ok(storage
+        .stage(
+            OperationId::new(),
+            "GOAL.md",
+            b"---\nstatus: blocked\n---\nShip\n",
+            "text/markdown",
+            "GOAL.md",
+        )
+        .await?)
 }

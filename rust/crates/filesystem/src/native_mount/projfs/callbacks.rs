@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) struct Runtime {
+    pub(super) _policy_lease: Box<dyn Send + Sync>,
     pub(super) source: Arc<dyn MountFilesystem>,
     pub(super) work: Mutex<crate::NativeMaterializationWork>,
     pub(super) active_work: Mutex<super::super::NativeMountMeterActivation>,

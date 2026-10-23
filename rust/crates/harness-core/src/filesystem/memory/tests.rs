@@ -12,6 +12,7 @@ const FINITE_CONTENT_BUDGET: acyclic_fs::WorkBudget =
 
 use crate::test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn};
 
+mod access;
 mod content;
 
 fn synthetic_token_count(

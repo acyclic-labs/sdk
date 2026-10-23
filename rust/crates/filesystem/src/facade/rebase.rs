@@ -524,7 +524,10 @@ pub(super) fn probe_limits(config: VolumeConfig) -> ProbeLimits {
     }
 }
 
-type Decided = (RebaseDecision, crate::kernel::allocation::KernelOwnedAllocation);
+type Decided = (
+    RebaseDecision,
+    crate::kernel::allocation::KernelOwnedAllocation,
+);
 
 /// The ledger a rebase installs: `dependencies` with each settlement
 /// followed, built and charged to `owner` before the rebased root is

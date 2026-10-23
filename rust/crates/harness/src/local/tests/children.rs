@@ -166,7 +166,7 @@ async fn child_pre_tool_hook_uses_its_own_checkout_and_grants() -> Result<()> {
             b"inspect the child files",
             "text/plain",
             "request.md",
-            None,
+            crate::conversation::ContentAccess::default(),
         )?
         .await?;
     host.send_mail(parent, &fence, child, message, payload, None)
@@ -345,6 +345,63 @@ async fn child_request_prepares_a_replayable_lazy_fork_and_runs_under_its_origin
     {
         use proptest::prelude::*;
         let child_context = Arc::new(child_context);
+        let binding_context = ToolContext::new(
+            Arc::clone(&child_context),
+            OperationId::new(),
+            "child-binding",
+            None,
+        )?;
+        let (mounts, signed) = harness
+            .workspace()
+            .unwrap()
+            .created_mounts(&project, &binding_context)
+            .await?;
+        let check_binding = |signed: &crate::core::Scope| {
+            assert_eq!(
+                signed.capabilities(),
+                binding_context.effective_scope().grants()
+            );
+            assert_ne!(signed.agent(), harness.signed.agent());
+        };
+        check_binding(&signed);
+        let admitted = super::super::checkout_tools::access::require_mount_access(
+            view.workspace(),
+            &mounts,
+            &signed,
+            binding_context.effective_scope().grants(),
+            "child checkout",
+        )
+        .await;
+        assert!(admitted.is_ok(), "{admitted:?}");
+        let read_only =
+            crate::Capabilities::new([project.capability(VolumeOperation::Read, &mut None)?]);
+        let denied = super::super::checkout_tools::access::require_mount_access(
+            view.workspace(),
+            &mounts,
+            &signed,
+            &read_only,
+            "child checkout",
+        )
+        .await;
+        let check_ceiling = |result: &Result<()>| {
+            assert!(matches!(
+                result,
+                Err(Error::FilesystemAccessConfiguration("child checkout"))
+            ));
+        };
+        check_ceiling(&denied);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check_ceiling(&admitted)))
+                .is_err(),
+            "the same checker must detect replacing the caller ceiling with the signed grants"
+        );
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check_binding(
+                &harness.signed
+            )))
+            .is_err(),
+            "the same checker must reject the parent credential"
+        );
         let read = project.capability(VolumeOperation::Read, &mut None)?;
         let write = project.capability(VolumeOperation::Write, &mut None)?;
         proptest::test_runner::TestRunner::new(ProptestConfig {
@@ -409,7 +466,7 @@ async fn child_request_prepares_a_replayable_lazy_fork_and_runs_under_its_origin
             b"inspect the child files",
             "text/plain",
             "request.md",
-            None,
+            crate::conversation::ContentAccess::default(),
         )?
         .await?;
     host.send_mail(parent, &fence, child, message, payload, None)
@@ -512,7 +569,7 @@ async fn child_agent_keeps_its_admission_and_waits_after_each_received_turn() ->
                 text.as_bytes(),
                 "text/plain",
                 "request.md",
-                None,
+                crate::conversation::ContentAccess::default(),
             )?
             .await?;
         host.send_mail(parent, &fence, child, message, payload, None)
@@ -532,7 +589,7 @@ async fn child_agent_keeps_its_admission_and_waits_after_each_received_turn() ->
                     b"1",
                     "application/json",
                     "private.json",
-                    None,
+                    crate::conversation::ContentAccess::default(),
                 )?
                 .await?;
             let slot = host.workflow_suspension(child, &mut None).await?.unwrap();
@@ -555,7 +612,7 @@ async fn child_agent_keeps_its_admission_and_waits_after_each_received_turn() ->
                     b"1",
                     "application/json",
                     "readable.json",
-                    None,
+                    crate::conversation::ContentAccess::default(),
                 )?
                 .await?;
             host.resume_workflow(

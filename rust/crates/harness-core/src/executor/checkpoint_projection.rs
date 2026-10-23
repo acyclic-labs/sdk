@@ -150,6 +150,7 @@ impl crate::conversation::ContentResidencyVerifier for CheckpointDeltaResolver<'
         &'a self,
         file: &'a FileRef,
         maximum_bytes: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         self.authorize(file, io)?;
@@ -168,7 +169,7 @@ impl crate::conversation::ContentResidencyVerifier for CheckpointDeltaResolver<'
                 "checkpoint delta reader has no bounded capability",
             ));
         }
-        let read = self.inner.read(file, maximum_bytes, io)?;
+        let read = self.inner.read(file, maximum_bytes, ceiling, io)?;
         crate::conversation::BoundedContentFuture::new(io, || async move {
             let bytes = read.await?;
             if file.descriptor().media_type() == "application/vnd.acyclic.harness.attachments+json"

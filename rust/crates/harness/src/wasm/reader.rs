@@ -17,8 +17,10 @@ impl ContentResidencyVerifier for BrowserContentReader {
         &'a self,
         file: &'a FileRef,
         maximum: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {
+        crate::conversation::require_owner_reader(ceiling)?;
         if io.is_some() {
             return Err(Error::Unsupported(
                 "browser content reader has no finite ledger".into(),

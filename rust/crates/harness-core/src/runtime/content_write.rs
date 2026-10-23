@@ -247,7 +247,7 @@ impl TaskContext {
         io: Option<&ContentIo>,
     ) -> Result<()> {
         if let Some(source) = source {
-            self.authorize_file_read(source, scope, io)?;
+            self.authorize_file_read(source, scope, scope.grants(), io)?;
         }
         publication_destination(
             self.content_binding(source.map(FileRef::volume)),
@@ -306,7 +306,7 @@ impl TaskContext {
         self.scope.verify_created_write(volume, io).await?;
         let output = match publication {
             ContentPublication::Replacement(source) => {
-                self.authorize_file_read(source, scope, io)?;
+                self.authorize_file_read(source, scope, scope.grants(), io)?;
                 if source.volume() != volume || source.path() != relative.as_ref() {
                     return Err(content_error(
                         io,
@@ -318,61 +318,56 @@ impl TaskContext {
                     .reader
                     .verify(source, source.descriptor().byte_length(), io)?
                     .await?;
-                writer.stage_at(operation_id, source, bytes, io)?.await?
+                writer
+                    .stage_at(operation_id, source, bytes, Some(scope.grants()), io)?
+                    .await?
             }
             ContentPublication::OperationBound => {
                 writer
-                    .stage_once(operation_id, path, bytes, media_type, display_name, io)?
+                    .stage_once(
+                        operation_id,
+                        path,
+                        bytes,
+                        media_type,
+                        display_name,
+                        crate::conversation::ContentAccess {
+                            ceiling: Some(scope.grants()),
+                            io,
+                        },
+                    )?
                     .await?
             }
             ContentPublication::PathBound => {
                 writer
-                    .stage(operation_id, path, bytes, media_type, display_name, io)?
+                    .stage(
+                        operation_id,
+                        path,
+                        bytes,
+                        media_type,
+                        display_name,
+                        crate::conversation::ContentAccess {
+                            ceiling: Some(scope.grants()),
+                            io,
+                        },
+                    )?
                     .await?
             }
         };
         self.scope.verify_created_write(volume, io).await?;
-        let file = &output.0;
-        crate::executor::with_history_io(io, |work| scope.limits.validate_file(file, work))?;
-        if file.volume() != volume
-            || file.path() != relative.as_ref()
-            || file.display_name() != display_name
-            || file.descriptor().media_type() != media_type
-            || file.descriptor().byte_length() != bytes.len() as u64
-        {
-            return Err(Error::Storage(
-                "content publisher returned another file identity".into(),
-            ));
-        }
-        #[cfg(feature = "filesystem")]
-        let retained = output.1.as_ref().map_or(0, |hold| hold.bytes());
-        #[cfg(not(feature = "filesystem"))]
-        let retained = 0;
-        #[cfg(feature = "filesystem")]
-        if output.1.is_none()
-            && let Some(io) = io
-        {
-            #[cfg(not(target_arch = "wasm32"))]
-            let native = io.original_native_work().is_some();
-            #[cfg(target_arch = "wasm32")]
-            let native = false;
-            if !native {
-                io.retain_owned(crate::filesystem::UploadRecord::logical_owned_bytes(file)?)?;
-            }
-        }
-        crate::executor::with_history_io(io, |work| file.descriptor().verify(bytes, work))?;
-        content
-            .reader
-            .verify(file, file.descriptor().byte_length(), io)?
-            .await?;
-        let (file, hold) = output;
-        #[cfg(feature = "filesystem")]
-        if let Some(hold) = hold {
-            hold.into_retained()?;
-        }
-        #[cfg(not(feature = "filesystem"))]
-        let _ = hold;
-        Ok((file, retained))
+        finish_publication(
+            content,
+            output,
+            PublishedFile {
+                volume,
+                path: relative.as_ref(),
+                bytes,
+                media_type,
+                display_name,
+            },
+            scope,
+            io,
+        )
+        .await
     }
 }
 
@@ -432,7 +427,9 @@ fn authorize_volume_write(
     scope: &RuntimeScope,
     io: Option<&ContentIo>,
 ) -> Result<()> {
-    if !can_write_volume(volume, scope, io)? {
+    if !crate::executor::with_history_io(io, |work| {
+        crate::core::volume_write_granted_with_work(&scope.grants, volume, work)
+    })? {
         return Err(content_error(
             io,
             ErrorCode::Unauthorized,
@@ -455,6 +452,64 @@ fn can_write_volume(
             work,
         )
     })
+}
+
+struct PublishedFile<'a> {
+    volume: &'a VolumeRef,
+    path: &'a str,
+    bytes: &'a [u8],
+    media_type: &'a str,
+    display_name: &'a str,
+}
+
+async fn finish_publication<'io>(
+    content: &ContentBindings,
+    output: (FileRef, Option<crate::conversation::ContentHold<'io>>),
+    expected: PublishedFile<'_>,
+    scope: &RuntimeScope,
+    io: Option<&'io ContentIo>,
+) -> Result<(FileRef, u64)> {
+    let file = &output.0;
+    crate::executor::with_history_io(io, |work| scope.limits.validate_file(file, work))?;
+    if file.volume() != expected.volume
+        || file.path() != expected.path
+        || file.display_name() != expected.display_name
+        || file.descriptor().media_type() != expected.media_type
+        || file.descriptor().byte_length() != expected.bytes.len() as u64
+    {
+        return Err(Error::Storage(
+            "content publisher returned another file identity".into(),
+        ));
+    }
+    #[cfg(feature = "filesystem")]
+    let retained = output.1.as_ref().map_or(0, |hold| hold.bytes());
+    #[cfg(not(feature = "filesystem"))]
+    let retained = 0;
+    #[cfg(feature = "filesystem")]
+    if output.1.is_none()
+        && let Some(io) = io
+    {
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = io.original_native_work().is_some();
+        #[cfg(target_arch = "wasm32")]
+        let native = false;
+        if !native {
+            io.retain_owned(crate::filesystem::UploadRecord::logical_owned_bytes(file)?)?;
+        }
+    }
+    crate::executor::with_history_io(io, |work| file.descriptor().verify(expected.bytes, work))?;
+    content
+        .reader
+        .verify(file, file.descriptor().byte_length(), io)?
+        .await?;
+    let (file, hold) = output;
+    #[cfg(feature = "filesystem")]
+    if let Some(hold) = hold {
+        hold.into_retained()?;
+    }
+    #[cfg(not(feature = "filesystem"))]
+    let _ = hold;
+    Ok((file, retained))
 }
 
 #[cfg(test)]

@@ -59,8 +59,8 @@ fn configured_sources(
         Arc::new(SharedCheckout::with_publication(checkout()?, publication))
     };
     Ok((
-        CheckoutMountSource::new(first, config)?,
-        CheckoutMountSource::new(second, config)?,
+        bind_test_access(CheckoutMountSource::new(first, config)?, vec![], None)?,
+        bind_test_access(CheckoutMountSource::new(second, config)?, vec![], None)?,
     ))
 }
 fn native_test_path(name: &str) -> MountPath {
@@ -93,8 +93,16 @@ fn mount_source(
 
 include!("runtime.rs");
 mod leases;
+mod policy_refresh;
+pub(in crate::native_mount) mod return_fence;
 include!("namespace.rs");
 include!("lifecycle.rs");
 include!("platform.rs");
 include!("source_limits.rs");
+
+pub(in crate::native_mount) mod access;
+use access::bind_test_access;
+mod clone_view;
 mod concurrent;
+#[cfg(unix)]
+mod policy;

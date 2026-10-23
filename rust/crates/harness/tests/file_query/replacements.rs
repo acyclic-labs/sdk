@@ -45,7 +45,7 @@ async fn indexed(fixture: &Fixture) -> Result<()> {
             4096,
             &IdempotencyKey::new(uuid::Uuid::new_v4().to_string())?,
             None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     Ok(())

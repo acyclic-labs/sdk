@@ -53,7 +53,10 @@ impl SkillMetadata {
                 &source.path,
                 Some(&source.generation),
                 maximum_bytes,
-                content_io,
+                crate::conversation::ContentAccess {
+                    ceiling: None,
+                    io: content_io,
+                },
             )?
             .await?;
         if file.volume() != &source.root.volume
@@ -218,7 +221,7 @@ pub async fn discover_skills_at(
                     &source.path,
                     &generation,
                     u64::from(work.limits.header_bytes),
-                    None,
+                    crate::conversation::ContentAccess::default(),
                 )?
                 .await?;
             if prefix.len() > work.limits.header_bytes as usize {

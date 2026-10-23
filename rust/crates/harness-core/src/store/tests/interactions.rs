@@ -25,7 +25,7 @@ async fn admission_content_keeps_original_published_bytes_until_last_alias() -> 
             &published,
             "application/json",
             "request.json",
-            None,
+            crate::conversation::ContentAccess::default(),
         )?
         .await?
         .0;

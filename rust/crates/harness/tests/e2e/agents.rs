@@ -474,7 +474,14 @@ async fn check_files(
             // owner's durable private bytes through its authenticated reader.
             match harness
                 .client_reader()?
-                .read_private_path(harness.scratch(), "", relative, None, 65_536, None)?
+                .read_private_path(
+                    harness.scratch(),
+                    "",
+                    relative,
+                    None,
+                    65_536,
+                    acyclic_harness::conversation::ContentAccess::default(),
+                )?
                 .await
             {
                 Ok((_, bytes, _)) => Some(String::from_utf8(bytes.to_vec())?),

@@ -90,6 +90,7 @@ mod workspace_mount;
 pub use workspace_mount::*;
 mod write;
 
+use acyclic_fs::MountPublication;
 use acyclic_fs::kernel::{
     AttributeClass, AttributeName, DecodeLimits, ExtentKind, ExtentSeekTarget, FileKind,
     FileMetadata, FilePayload, FilePayloadKind, FileRecord, LogicalName, NameEncoding,
@@ -124,7 +125,6 @@ use acyclic_fs::{
     capture_root_identity, capture_watch_batch, materialize_checkout, mount_native,
     probe_native_mount, seal_checkout,
 };
-use acyclic_fs::{MountOptions, MountPublication};
 use acyclic_fs::{ReconcileOutcome, SourceMode, SourceOptions, SourceState};
 use napi::bindgen_prelude::{Array, AsyncTask, BigInt, Buffer, Error, PromiseRaw, Result, Status};
 use napi::{Env, Task};

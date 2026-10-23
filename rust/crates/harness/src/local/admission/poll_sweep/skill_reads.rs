@@ -51,7 +51,7 @@ async fn root_reads(fixture: &mut Fixture, harness: &Harness) -> Result<usize> {
                 name,
                 Some(&generation),
                 harness.limits.file_bytes,
-                None,
+                crate::conversation::ContentAccess::default(),
             )?
             .await
         {

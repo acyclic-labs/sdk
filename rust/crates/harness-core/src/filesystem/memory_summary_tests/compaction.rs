@@ -79,7 +79,10 @@ async fn staging_growth(storages: &[MemoryHarnessStorage]) -> Result<()> {
                     b"small input",
                     "text/plain",
                     "input.txt",
-                    Some(&io),
+                    crate::conversation::ContentAccess {
+                        ceiling: None,
+                        io: Some(&io),
+                    },
                 )?
                 .await?;
             // Compare steady-state work after the initially shallow trees have filled.

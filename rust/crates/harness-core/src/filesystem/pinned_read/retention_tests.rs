@@ -218,6 +218,70 @@ fn content_read_pins_an_initially_unretained_generation_without_reopening() -> T
 }
 
 #[tokio::test]
+async fn private_checkpoints_cannot_claim_a_publication_range_or_head_grant() -> TestResult {
+    use acyclic_fs::access::{
+        Action, Capability, GenerationRange, Generations, Grant, ResourcePattern,
+    };
+    let fixture = Fixture::new(b"private checkpoint").await?;
+    let generation = GenerationId::new(Digest::from_bytes(
+        hex::decode(fixture.file.version())?
+            .try_into()
+            .map_err(|_| "generation length")?,
+    ));
+    let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+    for generations in [
+        Generations::All,
+        Generations::Head,
+        Generations::Range(GenerationRange {
+            first: 1,
+            last: u64::MAX,
+        }),
+    ] {
+        let capability = Capability {
+            layers: vec![vec![Grant {
+                actions: [Action::Read, Action::ReadHistory].into_iter().collect(),
+                resource: ResourcePattern {
+                    lineage_root: None,
+                    volume: None,
+                    generations,
+                    path: "**".into(),
+                },
+            }]],
+            expires_at: None,
+        };
+        let result = access::access_view(
+            &fixture.workspace,
+            fixture.grant.policy_scope(),
+            Some(generation),
+            &serde_json::to_vec(&capability)?,
+            None,
+            &io,
+        )
+        .await;
+        match generations {
+            Generations::All => assert!(
+                result?
+                    .0
+                    .decide(Action::Read, "payload", access::access_now())
+                    .allowed
+            ),
+            Generations::Head => assert!(
+                !result?
+                    .0
+                    .decide(Action::Read, "payload", access::access_now())
+                    .allowed
+            ),
+            Generations::Range(_) => assert!(
+                result.is_err(),
+                "an unpublished root acquired a publication ordinal"
+            ),
+        }
+    }
+    fixture.assert_unretained().await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn authenticated_receipts_retain_the_original_generation_after_head_advancement() -> TestResult
 {
     let fixture = Fixture::new(b"original").await?;

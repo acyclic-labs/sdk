@@ -723,7 +723,7 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 1_024,
                 &IdempotencyKey::new(format!("message-{level}"))?,
                 None,
-                None,
+                acyclic_harness::conversation::ContentAccess::default(),
             )
             .await?;
         let attachment_bytes = format!("evidence at depth {level}");
@@ -738,7 +738,7 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 1_024,
                 &IdempotencyKey::new(format!("attachment-{level}"))?,
                 None,
-                None,
+                acyclic_harness::conversation::ContentAccess::default(),
             )
             .await?;
         let child_read = ContentGrant::verify(
@@ -776,7 +776,7 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     1_024,
                     &IdempotencyKey::new(format!("manifest-{level}"))?,
                     None,
-                    None,
+                    acyclic_harness::conversation::ContentAccess::default(),
                 )
                 .await?;
             ReferencedAttachments::Manifest {
@@ -863,7 +863,7 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             1_024,
             &IdempotencyKey::new("deep-final-image")?,
             None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let manifest = host

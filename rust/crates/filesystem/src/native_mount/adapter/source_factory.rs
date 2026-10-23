@@ -30,6 +30,9 @@ impl<A, O> CheckoutMountSource<A, O> {
         }
         work.admit(crate::WorkCounters::UNCHARGED)
             .map_err(MountSourceError::NativeWork)?;
+        if config != checkout.config {
+            return Err(MountSourceError::AccessDenied.into());
+        }
         if !profile_is_native(config.profile) {
             return Err(NativeMountError::ProfileUnavailable {
                 profile: profile_name(config.profile),
@@ -68,8 +71,9 @@ impl<A, O> CheckoutMountSource<A, O> {
         Ok(Self {
             checkout,
             root,
-            limits: config.limits,
-            profile: config.profile,
+            config,
+            access_view: None,
+            access_refresh: None,
             folds_names: config.case_sensitivity == CaseSensitivity::ProfileFolded
                 && matches!(
                     config.profile,

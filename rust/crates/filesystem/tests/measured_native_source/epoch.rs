@@ -40,7 +40,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
             "epoch-attachment",
             source.clone(),
             store.clone(),
-            config,
+            acyclic_fs::VolumeInitialization::new(config, None),
             operation,
             &mut accounting,
         )
@@ -101,7 +101,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
             "epoch-attachment",
             reopened_source,
             store.clone(),
-            config,
+            acyclic_fs::VolumeInitialization::new(config, None),
             operation,
             &mut accounting,
         )
@@ -170,7 +170,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
             "epoch-attachment",
             foreign_source,
             store.clone(),
-            config,
+            acyclic_fs::VolumeInitialization::new(config, None),
             operation,
             &mut accounting,
         )

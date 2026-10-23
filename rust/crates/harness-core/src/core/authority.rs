@@ -138,6 +138,12 @@ impl Scope {
         self.agent
     }
 
+    /// Authenticated service identity that signed this grant.
+    #[must_use]
+    pub fn issuer(&self) -> &str {
+        &self.issuer
+    }
+
     /// Copies the immutable grant under the caller's optional ledger.
     pub fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
         CodecQuota::produce(work, |quota| {

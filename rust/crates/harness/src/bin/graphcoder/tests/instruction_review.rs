@@ -42,6 +42,7 @@ impl ContentResidencyVerifier for Reader {
         &'a self,
         file: &'a FileRef,
         maximum: u64,
+        _ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         assert_eq!(maximum, file.descriptor().byte_length());

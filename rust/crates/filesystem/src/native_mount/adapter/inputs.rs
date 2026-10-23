@@ -49,6 +49,20 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
         Ok(values)
     }
 
+    fn mount_name(&mut self, logical: &LogicalName) -> Result<Vec<u8>, MountSourceError> {
+        let (name, mut allocation) = native_mount_name(logical, self.carrier)?;
+        self.allocation
+            .as_mut()
+            .ok_or(MountSourceError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            ))?
+            .absorb(allocation.as_mut().ok_or(MountSourceError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            ))?)
+            .map_err(MountSourceError::NativeWork)?;
+        Ok(name)
+    }
+
     pub(super) fn copy_bytes(&mut self, bytes: &[u8]) -> Result<Vec<u8>, MountSourceError> {
         let delta = crate::materializer::NativeResourceCredit::Copy.delta(bytes.len() as u64);
         self.admit(delta)?;
@@ -98,6 +112,20 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
             limits.maximum_component_bytes,
         )
         .map_err(engine_error)
+    }
+
+    fn mutation_attribute_name(
+        &mut self,
+        bytes: &[u8],
+        profile: FilesystemProfile,
+        limits: VolumeLimits,
+    ) -> Result<AttributeName, MountSourceError> {
+        // Policy records are changed through the policy owner, never through
+        // native xattr operations (including handles opened before revocation).
+        if bytes == crate::access::POLICY_METADATA_KEY {
+            return Err(MountSourceError::AccessDenied);
+        }
+        self.attribute_name(bytes, profile, limits)
     }
 
     pub(super) fn admit(&mut self, delta: crate::WorkCounters) -> Result<(), MountSourceError> {

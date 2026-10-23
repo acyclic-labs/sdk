@@ -1,5 +1,9 @@
 /// Serialization and publication boundary for a canonical checkout.
 pub struct SharedCheckout<A, O> {
+    volume: crate::Volume<A, O>,
+    volume_id: VolumeId,
+    clock: crate::native_mount::clock::Clock,
+    config: VolumeConfig,
     state: tokio::sync::RwLock<SharedCheckoutState<A, O>>,
     publication_fence: tokio::sync::RwLock<()>,
     file_mutations: StdMutex<FileMutationEntries>,
@@ -33,6 +37,7 @@ pub struct SharedCheckoutState<A, O> {
         acyclic_stream::OwnedBytes,
     )>,
     publication: MountPublication,
+    pending_deadline: Option<u64>,
     ledger: Arc<ViewLedger>,
     recorded_view: ObjectId,
 }
@@ -49,6 +54,10 @@ impl<A, O> SharedCheckout<A, O> {
     pub fn with_publication(checkout: Checkout<A, O>, publication: MountPublication) -> Self {
         let ledger = Arc::new(ViewLedger::default());
         Self {
+            volume: checkout.volume_handle(),
+            volume_id: checkout.volume_id(),
+            clock: crate::native_mount::clock::Clock::capture(),
+            config: checkout.volume_config(),
             publication_fence: tokio::sync::RwLock::new(()),
             file_mutations: StdMutex::new(FileMutationEntries::default()),
             state: tokio::sync::RwLock::new(SharedCheckoutState {
@@ -56,6 +65,7 @@ impl<A, O> SharedCheckout<A, O> {
                 checkout,
                 publication_operation: None,
                 publication_evidence: None,
+                pending_deadline: None,
                 publication,
                 ledger: Arc::clone(&ledger),
             }),
@@ -83,6 +93,10 @@ impl<A, O> SharedCheckout<A, O> {
         let ledger = ViewLedger::new(&mut NativeDemandCarrier::Native(work))?;
         let view_gate = ViewGate::new_with_native_work(work)?;
         Ok(Arc::new(Self {
+            volume: checkout.volume_handle(),
+            volume_id: checkout.volume_id(),
+            clock: crate::native_mount::clock::Clock::capture(),
+            config: checkout.volume_config(),
             publication_fence: tokio::sync::RwLock::new(()),
             file_mutations: StdMutex::new(FileMutationEntries::default()),
             state: tokio::sync::RwLock::new(SharedCheckoutState {
@@ -90,6 +104,7 @@ impl<A, O> SharedCheckout<A, O> {
                 checkout,
                 publication_operation: None,
                 publication_evidence: None,
+                pending_deadline: None,
                 publication,
                 ledger: Arc::clone(&ledger),
             }),
@@ -193,6 +208,7 @@ impl<A, O> SharedCheckout<A, O> {
             ))?;
         Ok(CheckoutCandidate {
             _publication: publication,
+            deadline: None,
             _file_mutation: None,
             base: state
                 .checkout

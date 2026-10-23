@@ -392,6 +392,11 @@ impl<A, O> JoinPlan<A, O> {
         &self.source_head.workspace
     }
 
+    /// Destination workspace retained by the plan.
+    pub const fn target(&self) -> &Workspace<A, O> {
+        &self.target_head.workspace
+    }
+
     /// Captures exact join inputs under supplied work limits.
     pub fn commit_witness<W: crate::facade::FsWork>(
         &self,

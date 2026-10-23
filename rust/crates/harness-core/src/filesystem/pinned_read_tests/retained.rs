@@ -103,7 +103,7 @@ async fn initialize(prefix: usize, bytes: &[u8]) -> Result<(Arc<Host>, FileRef, 
             4096,
             &IdempotencyKey::new("retained")?,
             None,
-            None,
+            crate::conversation::ContentAccess::default(),
         )
         .await?;
     host.apply(
@@ -146,7 +146,7 @@ async fn execute(
                 4096,
                 &IdempotencyKey::new("next")?,
                 None,
-                io,
+                crate::conversation::ContentAccess { ceiling: None, io },
             )
             .await
         }
@@ -161,7 +161,7 @@ async fn execute(
                 4096,
                 &IdempotencyKey::new("retained")?,
                 None,
-                io,
+                crate::conversation::ContentAccess { ceiling: None, io },
             )
             .await
         }
@@ -172,7 +172,7 @@ async fn execute(
                 &IdempotencyKey::new("retained")?,
                 "retained",
                 4096,
-                io,
+                crate::conversation::ContentAccess { ceiling: None, io },
             )
             .await?
             .ok_or_else(|| Error::NotFound("retained publication".into())),

@@ -210,7 +210,7 @@ impl LocalHarness {
                         .observe_staged_once(
                             checkpoint_operation,
                             narrowed.limits().file_bytes,
-                            None,
+                            crate::conversation::ContentAccess::default(),
                         )?
                         .await?;
                     let (checkpoint, cut) = if let Some(checkpoint) = checkpoint {
@@ -230,7 +230,7 @@ impl LocalHarness {
                                 &bytes,
                                 "application/json",
                                 "source.json",
-                                None,
+                                crate::conversation::ContentAccess::default(),
                             )?
                             .await?;
                         (checkpoint, cut)
@@ -383,7 +383,7 @@ impl LocalHarness {
                             &bytes,
                             "application/json",
                             "fork.json",
-                            None,
+                            crate::conversation::ContentAccess::default(),
                         )?
                         .await?;
                     let request = ResourcePreparationRequest {

@@ -471,6 +471,7 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
         .executor(
             harness.project(),
             Arc::new(acyclic_stream::SystemUnixMillisClock),
+            &harness.signed,
             Arc::clone(harness.task_files()),
         )
         .await?;
@@ -478,6 +479,7 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
         .executor(
             harness.project(),
             Arc::new(acyclic_stream::SystemUnixMillisClock),
+            &harness.signed,
             Arc::clone(harness.task_files()),
         )
         .await?;

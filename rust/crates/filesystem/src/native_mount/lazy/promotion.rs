@@ -22,6 +22,7 @@ where
             .shared_checkout()
             .candidate(None, carrier, cancellation, Some(authored.cancellation()))
             .await?;
+        candidate.deadline = authored.mutation_deadline()?;
         if candidate.checkout.bound_authored_operation_id().is_none() {
             candidate.checkout.bind_authored_operation(operation);
         }

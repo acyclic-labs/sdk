@@ -39,7 +39,10 @@ async fn creation_lookup_is_readonly_exact_and_bounded() -> Result<(), Box<dyn E
     let initial = fs
         .create_workspace_with_operation::<_, (), WorkspaceError>(
             "creation",
-            config,
+            crate::VolumeInitialization {
+                config,
+                access_policy: None,
+            },
             operation,
             budget,
             &cancellation,
@@ -181,7 +184,10 @@ async fn native_creation_and_fork_call_original_guard_without_publishing()
         let result = if create {
             fs.create_workspace_with_operation::<_, _, OwnerError>(
                 "denied",
-                source.volume.config,
+                crate::VolumeInitialization {
+                    config: source.volume.config,
+                    access_policy: Some(b"owner policy"),
+                },
                 IdempotencyKey::new().operation_id(),
                 &original,
                 &cancellation,

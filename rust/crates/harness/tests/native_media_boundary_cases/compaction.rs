@@ -227,7 +227,7 @@ where
                     &bytes,
                     "text/plain",
                     "media-summary",
-                    None,
+                    acyclic_harness::conversation::ContentAccess::default(),
                 )?
                 .await?
                 .0;
@@ -241,7 +241,7 @@ where
             &ModelPrefix::select(&exported, None)?.canonical_bytes(None)?,
             ModelPrefix::MEDIA_TYPE,
             "media-prefix",
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )?
         .await?
         .0;

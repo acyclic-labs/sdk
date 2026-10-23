@@ -2,14 +2,25 @@
 use crate::{Adapter, Credentials, HttpRequest, HttpResponse, HttpTransport, Registry};
 use acyclic_harness_core::{
     Result,
-    conversation::{BoundedContentFuture, ContentIo, ContentResidencyVerifier, FileDescriptor, FileRef, Limits},
-    model::{FileProjectionPolicy, ImageDetail, ModelContent, ModelContentPart, ModelMessage, ModelRequest,
-        ModelRole, NativeMediaIntent, NativeMediaPolicy, PreparedModelRequest, image_media_type},
+    conversation::{
+        BoundedContentFuture, ContentIo, ContentResidencyVerifier, FileDescriptor, FileRef, Limits,
+    },
+    model::{
+        FileProjectionPolicy, ImageDetail, ModelContent, ModelContentPart, ModelMessage,
+        ModelRequest, ModelRole, NativeMediaIntent, NativeMediaPolicy, PreparedModelRequest,
+        image_media_type,
+    },
 };
 use acyclic_stream::{BoxProviderFuture, OwnedBytes};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
-use std::{sync::{Arc, atomic::{AtomicUsize, Ordering}}, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 struct NoHttp;
 impl HttpTransport for NoHttp {
@@ -19,19 +30,36 @@ impl HttpTransport for NoHttp {
     fn delay(&self, _: Duration) -> BoxProviderFuture<'static, ()> {
         panic!("encoding must not wait")
     }
-    fn now(&self) -> Duration { Duration::ZERO }
+    fn now(&self) -> Duration {
+        Duration::ZERO
+    }
 }
 struct Reader {
     bytes: Vec<Vec<u8>>,
     reads: AtomicUsize,
 }
 impl ContentResidencyVerifier for Reader {
-    fn read<'a>(&'a self, file: &'a FileRef, _: u64, io: Option<&'a ContentIo>)
-        -> Result<BoundedContentFuture<'a, OwnedBytes>> {
+    fn read<'a>(
+        &'a self,
+        file: &'a FileRef,
+        _: u64,
+        ceiling: Option<&'a acyclic_harness_core::Capabilities>,
+        io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {
+        if ceiling.is_some() {
+            return Err(acyclic_harness_core::Error::Unsupported(
+                "fixture image reader cannot enforce a caller ceiling".into(),
+            ));
+        }
         BoundedContentFuture::new(io, || async move {
             self.reads.fetch_add(1, Ordering::SeqCst);
-            Ok(self.bytes.iter().find(|bytes| bytes.len() as u64 == file.descriptor().byte_length())
-                .expect("generated image length").clone().into())
+            Ok(self
+                .bytes
+                .iter()
+                .find(|bytes| bytes.len() as u64 == file.descriptor().byte_length())
+                .expect("generated image length")
+                .clone()
+                .into())
         })
     }
 }

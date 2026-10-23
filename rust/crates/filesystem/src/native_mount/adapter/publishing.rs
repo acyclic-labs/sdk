@@ -95,14 +95,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             )?;
             let producer = original.checkout.private_control_custody();
             proof.producer = Some(&producer);
+            let deadline = original.pending_deadline;
             let source_lifetime = lifetime.cloned();
             let guard_submitted = Arc::clone(&submitted);
+            let clock = self.clock.clone();
             let mut guarded = move |work: &crate::NativeMaterializationWork| {
                 publication_guard(
                     work,
                     &mut before_publication,
                     source_lifetime.as_ref(),
                     &guard_submitted,
+                    &clock,
+                    deadline,
                 )
             };
             let ack = super::publication::seal_checkout_with_permit_guarded_with_native_work(
@@ -119,6 +123,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 || original.checkout.mode().mutations == crate::model::MutationMode::PrivateOverlay
             {
                 original.clear_retained_operation(operation);
+            }
+            if ack.is_some() || !original.checkout.has_pending_mutations() {
+                original.pending_deadline = None;
             }
             let (operation, generation) = ack.ok_or(MountSourceError::Stale)?;
             if let Some(context) = context {
@@ -169,6 +176,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckoutState<A, O> {
             publication_operation: Some(operation),
             publication_evidence: None,
             publication: self.publication,
+            pending_deadline: None,
             ledger: Arc::clone(&self.ledger),
         })
     }
@@ -221,6 +229,8 @@ fn publication_guard<E, F, Fut>(
     before_publication: &mut F,
     lifetime: Option<&CancellationToken>,
     submitted: &Arc<(AtomicBool, crate::NativeAllocation)>,
+    clock: &crate::native_mount::clock::Clock,
+    deadline: Option<u64>,
 ) -> futures::future::Either<
     std::future::Ready<Result<(), E>>,
     impl Future<Output = Result<(), E>> + Send + 'static + use<E, F, Fut>,
@@ -235,6 +245,10 @@ where
             MountSourceError::Stale,
         ))));
     }
+    if let Err(error) = check_mutation_deadline(deadline, clock) {
+        return futures::future::Either::Left(std::future::ready(Err(E::from(error))));
+    }
+    let clock = clock.clone();
     let future = before_publication(work);
     let lifetime = lifetime.cloned();
     let submitted = Arc::clone(submitted);
@@ -246,6 +260,7 @@ where
             return Err(E::from(MountSourceError::Stale));
         }
         future.await?;
+        check_mutation_deadline(deadline, &clock).map_err(E::from)?;
         if lifetime
             .as_ref()
             .is_some_and(CancellationToken::is_cancelled)

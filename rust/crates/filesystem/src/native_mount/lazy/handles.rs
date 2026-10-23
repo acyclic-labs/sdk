@@ -116,6 +116,27 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    fn clone_source(
+        &self,
+        checkout: &(dyn std::any::Any + Send + Sync),
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<FileId, MountSourceError> {
+        self.with_view(Some(work), |file| file.clone_source(checkout, work))
+    }
+
+    fn clone_range_from(
+        &self,
+        source: &dyn MountOpenFile,
+        source_offset: u64,
+        offset: u64,
+        length: u64,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        self.with_mutation(Some(work), |file| {
+            file.clone_range_from(source, source_offset, offset, length, work)
+        })
+    }
+
     fn lookup_with_meter(
         &self,
         work: &crate::NativeMaterializationWork,
@@ -162,6 +183,17 @@ where
             file.write_range_with_meter(offset, bytes, work)
         })
     }
+    fn append_range_with_meter(
+        &self,
+        offset: u64,
+        bytes: crate::kernel::OwnedSourceChunk,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        self.with_mutation(Some(work), |file| {
+            file.append_range_with_meter(offset, bytes, work)
+        })
+    }
+
     fn resize_with_meter(
         &self,
         logical_bytes: u64,
@@ -244,6 +276,10 @@ where
 
     fn settle(&self, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         self.with_mutation(Some(work), |file| file.settle(work))
+    }
+
+    fn append_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
+        self.with_mutation(None, |file| file.append_range(offset, bytes))
     }
 
     fn resize(&self, logical_bytes: u64) -> Result<(), MountSourceError> {

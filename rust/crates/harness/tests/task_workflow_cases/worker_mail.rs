@@ -18,7 +18,10 @@ where
         .first()
         .ok_or_else(|| Error::NotFound("committed mail item".into()))?;
     assert_eq!(
-        reader.read(&first.payload, 65_536, None)?.await?.as_ref(),
+        reader
+            .read(&first.payload, 65_536, None, None)?
+            .await?
+            .as_ref(),
         b"7"
     );
     if with_mail_send {

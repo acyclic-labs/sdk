@@ -173,6 +173,7 @@ impl PreparedModelRequest {
                 verifier,
                 &reference,
                 reference.descriptor().byte_length(),
+                None,
                 io,
             )
             .await?;

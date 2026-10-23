@@ -52,7 +52,11 @@ impl<P: StreamProvider> Transport<P> {
         Ok(())
     }
 
-    async fn result(&self, status: EffectStatus) -> Result<rmcp::model::CallToolResult> {
+    async fn result(
+        &self,
+        status: EffectStatus,
+        ceiling: &acyclic_harness::Capabilities,
+    ) -> Result<rmcp::model::CallToolResult> {
         if let EffectStatus::Failed { message } = status {
             return Ok(rmcp::model::CallToolResult::error(vec![
                 rmcp::model::ContentBlock::text(message),
@@ -65,7 +69,7 @@ impl<P: StreamProvider> Transport<P> {
             &self
                 .approved
                 .content
-                .read(&result, 1_000_000, None)?
+                .read(&result, 1_000_000, Some(ceiling), None)?
                 .await?,
         )
         .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -104,6 +108,7 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
                     .run_task_effect(&binding.owner, binding.command, &binding.plan, None, false)
                     .await
                     .map(|result| result.0)?,
+                context.effective_scope().grants(),
             )
             .await
         })
@@ -127,9 +132,10 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
                 .await
                 .map(|result| result.0)
             {
-                Ok(status @ (EffectStatus::Succeeded { .. } | EffectStatus::Failed { .. })) => {
-                    self.result(status).await.map(Some)
-                }
+                Ok(status @ (EffectStatus::Succeeded { .. } | EffectStatus::Failed { .. })) => self
+                    .result(status, context.effective_scope().grants())
+                    .await
+                    .map(Some),
                 Ok(_) | Err(Error::NotFound(_)) => Ok(None),
                 Err(error) => Err(error),
             }

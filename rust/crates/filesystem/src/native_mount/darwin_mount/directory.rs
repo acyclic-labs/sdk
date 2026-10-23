@@ -22,6 +22,26 @@ impl DirectoryRead {
         self.page = None;
     }
 
+    pub(super) fn next_visible(
+        &mut self,
+        context: &DarwinMountContext,
+        work: &Work,
+    ) -> Result<Option<DarwinOwned<MountPath>>, NativeMountError> {
+        loop {
+            ensure_directory_page(context, self, work)?;
+            let Some(entry) = self.page.as_ref().and_then(|page| page.entries.last()) else {
+                return Ok(None);
+            };
+            work.charge(scan_work(1))?;
+            let path = child_path(&self.path, &entry.name, work)?;
+            if crate::native_mount::filesystem::can_disclose(context.source.as_ref(), &path, work)?
+            {
+                return Ok(Some(path));
+            }
+            self.pop_entry();
+        }
+    }
+
     #[allow(
         clippy::expect_used,
         reason = "The admitted source page owns each entry name until it is popped."
@@ -128,14 +148,16 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
             directory.emitted = next;
         }
         loop {
-            ensure_directory_page(context, &mut directory, work)?;
-            let Some(entry) = directory.page.as_ref().and_then(|page| page.entries.last()) else {
+            let Some(path) = directory.next_visible(context, work)? else {
                 directory.keep_current(context, work)?;
                 return Ok(0);
             };
-            work.charge(scan_work(1))?;
+            let entry = directory
+                .page
+                .as_ref()
+                .and_then(|page| page.entries.last())
+                .ok_or_else(|| driver_errno(libc::EIO))?;
             let name = native_name(&entry.name, work)?;
-            let path = child_path(&directory.path, &entry.name, work)?;
             let attributes = context.attributes_from_lookup(
                 &path,
                 MountLookup {
@@ -178,8 +200,7 @@ pub(super) fn advance_directory_to_offset(
     while directory.emitted < offset {
         work.charge(scan_work(1))?;
         if directory.emitted >= 2 {
-            ensure_directory_page(context, directory, work)?;
-            if !directory.pop_entry() {
+            if directory.next_visible(context, work)?.is_none() || !directory.pop_entry() {
                 return Err(driver_errno(libc::EINVAL));
             }
         }
@@ -193,6 +214,9 @@ pub(super) fn ensure_directory_page(
     directory: &mut DirectoryRead,
     work: &Work,
 ) -> Result<(), NativeMountError> {
+    context
+        .source
+        .authorize_with_meter(&[(crate::access::Action::List, &directory.path)], work)?;
     directory.keep_current(context, work)?;
     let mut restarts = 0;
     loop {

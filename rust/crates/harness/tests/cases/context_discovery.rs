@@ -34,10 +34,11 @@ impl ContentResidencyVerifier for CountingReader<'_> {
         &'a self,
         reference: &'a acyclic_harness::conversation::FileRef,
         maximum_bytes: u64,
+        ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a acyclic_harness::conversation::ContentIo>,
     ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
     {
-        self.inner.read(reference, maximum_bytes, io)
+        self.inner.read(reference, maximum_bytes, ceiling, io)
     }
 
     fn read_private_path<'a, 'io>(
@@ -47,7 +48,7 @@ impl ContentResidencyVerifier for CountingReader<'_> {
         path: &'a str,
         expected_generation: Option<&'a acyclic_harness::resources::GenerationRef>,
         maximum_bytes: u64,
-        io: Option<&'io acyclic_harness::conversation::ContentIo>,
+        access: acyclic_harness::conversation::ContentAccess<'a, 'io>,
     ) -> Result<
         acyclic_harness::conversation::BoundedContentFuture<
             'a,
@@ -61,6 +62,8 @@ impl ContentResidencyVerifier for CountingReader<'_> {
     where
         'io: 'a,
     {
+        let acyclic_harness::conversation::ContentAccess { ceiling, io } = access;
+
         self.reads.fetch_add(1, Ordering::Relaxed);
         self.inner.read_private_path(
             volume,
@@ -68,7 +71,7 @@ impl ContentResidencyVerifier for CountingReader<'_> {
             path,
             expected_generation,
             maximum_bytes,
-            io,
+            acyclic_harness::conversation::ContentAccess { ceiling, io },
         )
     }
 }
@@ -254,7 +257,7 @@ impl Fixture {
                 1_000_000,
                 &IdempotencyKey::new(key)?,
                 None,
-                None,
+                acyclic_harness::conversation::ContentAccess::default(),
             )
             .await?;
         Ok(())
@@ -800,7 +803,7 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
                 &source.path,
                 &source.generation,
                 256,
-                None,
+                acyclic_harness::conversation::ContentAccess::default(),
             )?
             .await
             .is_err()

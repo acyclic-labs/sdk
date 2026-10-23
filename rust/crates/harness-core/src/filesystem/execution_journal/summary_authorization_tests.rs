@@ -170,7 +170,7 @@ async fn a_head_file_is_not_an_upload_receipt_and_cannot_replace_pinned_provenan
                 &bytes,
                 "application/json",
                 "forged.json",
-                None
+                crate::conversation::ContentAccess::default(),
             )?
             .await
             .is_err()

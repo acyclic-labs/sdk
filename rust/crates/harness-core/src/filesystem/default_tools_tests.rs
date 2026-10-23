@@ -202,7 +202,7 @@ async fn merge_rejects_foreign_receipts_and_success_shaped_nonoutcomes() -> Resu
             4096,
             &IdempotencyKey::new("merge-notice")?,
             None,
-            None,
+            crate::conversation::ContentAccess::default(),
         )
         .await?;
     let controller = fixture.controller()?;

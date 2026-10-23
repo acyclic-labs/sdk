@@ -59,7 +59,7 @@ async fn fixture_with_filesystem(
             4096,
             &IdempotencyKey::new("payload")?,
             None,
-            None,
+            crate::conversation::ContentAccess::default(),
         )
         .await?;
     Ok((host, file))

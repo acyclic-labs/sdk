@@ -140,6 +140,7 @@ impl ContentResidencyVerifier for TestContentVerifier {
         &'a self,
         _: &'a FileRef,
         maximum: u64,
+        _: Option<&'a crate::Capabilities>,
         io: Option<&'a crate::conversation::ContentIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, OwnedBytes>> {
         if io.is_some() || maximum < 4 {

@@ -89,6 +89,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .read(
                 &binding.configuration.content,
                 self.admission.limits.render_bytes,
+                None,
                 io,
             )?
             .await?;
@@ -114,9 +115,25 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             ));
         }
         volume.validate(work)?;
-        let grant = volume.capability(operation, work)?;
-        if !self.admission.grants.contains(&grant) {
-            return Err(Error::Unauthorized(format!("task scope lacks {grant}")));
+        let admitted = match operation {
+            crate::conversation::VolumeOperation::Read => {
+                crate::core::directory_read_granted_with_work(
+                    &self.admission.grants,
+                    volume,
+                    "",
+                    work,
+                )?
+            }
+            crate::conversation::VolumeOperation::Write => {
+                crate::core::volume_write_granted_with_work(&self.admission.grants, volume, work)?
+            }
+        };
+        if !admitted {
+            return Err(crate::fork::boundary_error(
+                work,
+                crate::wire::ErrorCode::Unauthorized,
+                "task scope lacks volume authority",
+            ));
         }
         Ok(())
     }

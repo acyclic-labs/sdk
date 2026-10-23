@@ -169,7 +169,7 @@ async fn run(case: Case) -> Result<()> {
             "GOAL.md",
             None,
             Limits::default().file_bytes,
-            None,
+            crate::conversation::ContentAccess::default(),
         )
         .await;
     match &case.final_goal {
@@ -333,7 +333,7 @@ async fn local_goal_settle_loses_to_a_new_user_admission() -> Result<()> {
             b"Continue",
             "text/markdown",
             "GOAL.md",
-            None,
+            crate::conversation::ContentAccess::default(),
         )?
         .await?;
     let user = OperationId::new();
@@ -377,7 +377,7 @@ pub(super) async fn write_goal(harness: &LocalHarness, contents: &str) -> Result
         contents.as_bytes(),
         "text/markdown",
         "GOAL.md",
-        None,
+        crate::conversation::ContentAccess::default(),
     )?
     .await?;
     Ok(())

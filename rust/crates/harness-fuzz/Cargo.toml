@@ -30,14 +30,16 @@ default = ["runtime"]
 runtime = ["filesystem-local", "native-execution", "dep:acyclic-harness", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:tempfile", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
 # Harness sources included by `#[path]` gate native helpers on these features;
 # the fuzz runtime compiles them as the native harness it depends on does.
+filesystem-access = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem"]
 filesystem-local = []
 native-execution = []
+
 notifications = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]
 
 [dependencies]
 harness-mock-model = { path = "../harness-mock-model" }
 blake3.workspace = true
-acyclic-harness = { path = "../harness", features = ["terminal", "tui", "filesystem-local", "native-execution", "grpc", "test-support", "search-http"], optional = true }
+acyclic-harness = { path = "../harness", features = ["terminal", "tui", "filesystem-local", "native-execution", "grpc", "test-support", "search-http", "objects"], optional = true }
 diffy = { workspace = true, optional = true }
 serde-saphyr = { version = "=1.3.0", features = ["serialize"], optional = true }
 libfuzzer-sys = "0.4"
@@ -187,6 +189,14 @@ bench = false
 name = "plan_markdown"
 path = "fuzz_targets/plan_markdown.rs"
 required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "filesystem_access"
+path = "fuzz_targets/filesystem_access.rs"
+required-features = ["filesystem-access"]
 test = false
 doc = false
 bench = false

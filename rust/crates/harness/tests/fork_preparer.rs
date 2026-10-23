@@ -209,7 +209,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             1_024,
             &IdempotencyKey::new("parent-message")?,
             None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let attachment = host
@@ -223,7 +223,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             1_024,
             &IdempotencyKey::new("parent-attachment")?,
             None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let manifest_bytes = serde_json::to_vec(&vec![Attachment {
@@ -242,7 +242,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             1_024,
             &IdempotencyKey::new("parent-manifest")?,
             None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     aggregate

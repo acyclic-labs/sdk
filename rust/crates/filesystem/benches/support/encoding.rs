@@ -35,7 +35,12 @@ fn workspace_create(bencher: Bencher, native: bool) {
             let workspace = complete(
                 fs.create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
                     "bench",
-                    acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+                    acyclic_fs::VolumeInitialization {
+                        config: acyclic_fs::VolumeConfig::portable(
+                            acyclic_fs::Lifecycle::Ephemeral,
+                        ),
+                        access_policy: None,
+                    },
                     acyclic_fs::OperationId::from_bytes([4; 16]),
                     work,
                     &cancellation,
@@ -49,7 +54,12 @@ fn workspace_create(bencher: Bencher, native: bool) {
             let created = complete(
                 fs.create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
                     "bench",
-                    acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+                    acyclic_fs::VolumeInitialization {
+                        config: acyclic_fs::VolumeConfig::portable(
+                            acyclic_fs::Lifecycle::Ephemeral,
+                        ),
+                        access_policy: None,
+                    },
                     acyclic_fs::OperationId::from_bytes([4; 16]),
                     budget,
                     &cancellation,

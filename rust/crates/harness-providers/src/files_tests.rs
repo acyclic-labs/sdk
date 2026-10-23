@@ -79,6 +79,7 @@ impl ContentResidencyVerifier for Reader {
         &'a self,
         _file: &'a FileRef,
         _maximum: u64,
+        _ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         BoundedContentFuture::new(io, || async move {
@@ -458,4 +459,70 @@ fn unresolved_fulltext_is_never_silently_omitted() -> Result<()> {
             .is_err()
     );
     Ok(())
+}
+
+async fn resolved_instruction(body: &str, path: &str, broken: bool) -> Result<String> {
+    let (provider, _) = provider(Adapter::Chat, 200);
+    let file = file(body.as_bytes(), "text/plain")?;
+    let policy = FileProjectionPolicy::ProjectInstructions(Box::new(
+        acyclic_harness::model::InstructionIdentity::new(file.volume().clone(), path.into())?,
+    ));
+    let request = with_parts(
+        &provider,
+        vec![ModelContentPart::File {
+            file: file.clone(),
+            policy: if broken {
+                FileProjectionPolicy::BoundedFull
+            } else {
+                policy.clone()
+            },
+        }],
+    )?;
+    let reader = Arc::new(Reader {
+        data: body.as_bytes().to_vec(),
+        reads: AtomicUsize::new(0),
+    });
+    let mut resolved = crate::files::resolve(
+        &crate::files::Files {
+            reader: Some(reader.clone()),
+            maximum_bytes: 4096,
+        },
+        request.request(),
+        None,
+    )
+    .await?;
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+    resolved.project(&file, &policy)
+}
+
+fn check_instruction_frame(actual: &str, path: &str, body: &str) {
+    let (directory, filename) = path.rsplit_once('/').unwrap_or((".", path));
+    assert_eq!(
+        actual,
+        format!(
+            "# {filename} instructions for {directory}\n\n<INSTRUCTIONS>\n{body}\n</INSTRUCTIONS>"
+        ),
+        "instruction framing was lost"
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn retained_instruction_files_keep_their_source_frame_without_rereading(
+        body in prop::collection::vec(any::<char>(), 0..32), nested in any::<bool>(),
+    ) {
+        let body: String = body.into_iter().collect();
+        let path = if nested { "nested/AGENTS.md" } else { "CLAUDE.md" };
+        let actual = futures::executor::block_on(resolved_instruction(&body, path, false)).unwrap();
+        check_instruction_frame(&actual, path, &body);
+    }
+}
+
+#[test]
+#[should_panic(expected = "instruction framing was lost")]
+fn raw_instruction_projection_negative_control() {
+    let actual =
+        futures::executor::block_on(resolved_instruction("body", "AGENTS.md", true)).unwrap();
+    check_instruction_frame(&actual, "AGENTS.md", "body");
 }

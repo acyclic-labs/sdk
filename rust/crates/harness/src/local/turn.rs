@@ -419,7 +419,7 @@ impl LocalHarness {
                 &bytes,
                 "application/json",
                 "model input",
-                None,
+                crate::conversation::ContentAccess::default(),
             )?
             .await?
             .0;
@@ -455,7 +455,11 @@ impl LocalHarness {
     ) -> Result<Option<(WorkflowCommand, WorkflowCommand)>> {
         let publisher = self.input_publisher()?;
         let (payload, _) = publisher
-            .observe_staged_once(operation, self.limits.file_bytes, None)?
+            .observe_staged_once(
+                operation,
+                self.limits.file_bytes,
+                crate::conversation::ContentAccess::default(),
+            )?
             .await?;
         let Some(payload) = payload else {
             return Ok(None);
@@ -485,7 +489,11 @@ impl LocalHarness {
         // Older admissions retained one identical payload per turn. Keep their
         // exact reference on retry; new commands share one immutable journal file.
         let (retained, _) = publisher
-            .observe_staged_once(receive_operation, self.limits.file_bytes, None)?
+            .observe_staged_once(
+                receive_operation,
+                self.limits.file_bytes,
+                crate::conversation::ContentAccess::default(),
+            )?
             .await?;
         let payload = match retained {
             Some(payload) => {
@@ -518,7 +526,7 @@ impl LocalHarness {
                         b"{\"after\":0}",
                         "application/json",
                         "mailbox receive",
-                        None,
+                        crate::conversation::ContentAccess::default(),
                     )?
                     .await?
                     .0

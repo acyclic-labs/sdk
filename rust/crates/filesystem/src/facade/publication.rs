@@ -535,7 +535,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             self.authority_head = Some(head);
             self.prepared_merge_parent = None;
             self.dependencies.proof().clear();
-            self.last_commit = Some(LastCommit {
+            self.observed_generation = super::checkout::ObservedGeneration::committed(LastCommit {
                 operation_id,
                 generation_id,
                 head,
@@ -648,11 +648,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             if accounting.native_work().is_some() {
                 accounting.check()?;
             }
-            if let Some(last) = self.last_commit {
-                if last.operation_id != operation_id {
+            if let Some(last_operation) = self.observed_generation.operation() {
+                if last_operation != operation_id {
                     return Err(FsError::NoPendingMutations);
                 }
-                if last.generation_id == GenerationId::new(self.generation_root.digest) {
+                if let Some(last) = self.observed_generation.commit()
+                    && last.generation_id == GenerationId::new(self.generation_root.digest)
+                {
                     return Ok(LivePublicationObservation::AlreadyCommitted {
                         generation_id: last.generation_id,
                         head: last.head,

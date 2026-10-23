@@ -60,7 +60,8 @@ proptest::proptest! {
                 let harness = LocalHarness::open(crate::test_support::local_harness_config(
                     directory.path(), (model()?, scripted([])),
                 )?).await?;
-                assert!(harness.scratch_files(acyclic_fs::WorkBudget::UNBOUNDED).is_err());
+                assert!(harness.scratch_files(acyclic_fs::WorkBudget::UNBOUNDED).await.is_err());
+
                 let publisher = FilesystemContentPublisher::new(
                     harness.files.clone(), harness.scratch(), &harness.verifier,
                     &harness.signed, harness.limits.file_bytes, None,
@@ -70,7 +71,7 @@ proptest::proptest! {
                     ("plans/release notes.md", format!("- [ ] Scratch plan {text}")),
                 ] {
                     publisher.stage_once(OperationId::new(), path, body.as_bytes(),
-                        "text/markdown", path.rsplit('/').next().unwrap(), None)?.await?;
+                        "text/markdown", path.rsplit('/').next().unwrap(), crate::conversation::ContentAccess::default())?.await?;
                 }
                 let cut = harness.task_files().snapshot(&Query::File(FileKey::Goal), 1).await?;
                 harness.task_files().write(cut.generation,
@@ -85,7 +86,7 @@ proptest::proptest! {
                 assert!(!initial.contains("Wrong execution-log goal"));
                 let updated = format!("# Updated goal {text}");
                 publisher.stage_once(OperationId::new(), "GOAL.md", updated.as_bytes(),
-                    "text/markdown", "GOAL.md", None)?.await?;
+                    "text/markdown", "GOAL.md", crate::conversation::ContentAccess::default())?.await?;
                 for _ in 0..2 {apply_next(&mut source, &mut session).await?;}
                 let followed = picture(&session, &owner);
                 assert!(followed.contains("Updated goal"), "{followed}");

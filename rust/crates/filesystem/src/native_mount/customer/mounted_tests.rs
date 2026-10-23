@@ -33,7 +33,11 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
         Ok::<_, LazyWorkspaceError>(())
     };
     let generation = head(lazy.workspace(), &setup).await?;
-    let options = MountOptions::read_write().publication(MountPublication::Manual);
+    let options = super::tests::fixture_options(
+        lazy.workspace(),
+        MountOptions::read_write().publication(MountPublication::Manual),
+    )
+    .await?;
     let path_budget = WorkBudget {
         bytes_copied: 0,
         ..WorkBudget::UNBOUNDED

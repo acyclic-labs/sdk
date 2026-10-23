@@ -2,6 +2,7 @@ pub(super) struct CheckoutCandidate<'a, A, O> {
     pub(super) base: Checkout<A, O>,
     pub(super) checkout: Checkout<A, O>,
     pub(super) operation: Option<OperationId>,
+    pub(super) deadline: Option<u64>,
     pub(super) epoch: u64,
     pub(super) stamp: ViewStamp,
     _publication: tokio::sync::RwLockReadGuard<'a, ()>,

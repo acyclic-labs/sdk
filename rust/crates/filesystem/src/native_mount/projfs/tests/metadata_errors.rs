@@ -6,6 +6,7 @@ pub(super) fn callback_runtime(
     work: &crate::NativeMaterializationWork,
 ) -> Result<Runtime, Box<dyn std::error::Error>> {
     Ok(Runtime {
+        _policy_lease: Box::new(()),
         source,
         work: Mutex::new(work.clone()),
         active_work: Mutex::new(Default::default()),

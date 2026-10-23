@@ -6,6 +6,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         effect: ViewChange<'_>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
+        candidate.deadline = self.mutation_deadline()?;
         apply_authored(&mut candidate.checkout, &change, work).await?;
         self.checkout
             .install_change(

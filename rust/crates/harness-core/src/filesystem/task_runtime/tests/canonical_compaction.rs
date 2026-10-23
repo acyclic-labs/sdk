@@ -134,7 +134,7 @@ async fn task_bound_canonical_private_summary_recovers_without_journal_read_gran
                 b"history",
                 "text/plain",
                 "history.txt",
-                None,
+                crate::conversation::ContentAccess::default(),
             )?
             .await?
             .0;

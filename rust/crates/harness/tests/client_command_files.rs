@@ -44,7 +44,7 @@ fn snapshot() -> CommandFileSnapshot {
 async fn source(fixture: &Fixture, path: &str) -> Result<PinnedContextPath> {
     let page = fixture
         .reader
-        .list_private_directory(&fixture.root.volume, "", "", None, None, 128, None)?
+        .list_private_directory(&fixture.root.volume, "", "", None, None, 128, None, None)?
         .await?;
     Ok(PinnedContextPath {
         root: fixture.root.clone(),

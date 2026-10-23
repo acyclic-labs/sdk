@@ -34,7 +34,7 @@ impl FuseProjection {
             match target {
                 AttributeTarget::Handle(open_file) => {
                     open_file
-                        .file(work)?
+                        .file()
                         .write_attribute(name.as_bytes(), value, mode, work)?;
                 }
                 AttributeTarget::Path(path) => {
@@ -60,7 +60,7 @@ impl FuseProjection {
                 .attributes_to_read(self.core.source.as_ref(), inode, work)?;
         let value = match target {
             Some(AttributeTarget::Handle(open_file)) => {
-                open_file.file(work)?.read_attribute(name.as_bytes(), work)
+                open_file.file().read_attribute(name.as_bytes(), work)
             }
             Some(AttributeTarget::Path(path)) => {
                 self.core
@@ -100,17 +100,18 @@ impl FuseProjection {
             let cursor = previous
                 .as_ref()
                 .and_then(|(page, _)| page.next_cursor.as_deref());
-            let page = match &target {
-                AttributeTarget::Handle(open_file) => open_file
-                    .file(work)?
-                    .list_attributes_with_meter(cursor, ATTRIBUTE_PAGE_SIZE, work),
-                AttributeTarget::Path(path) => self.core.source.list_attributes_with_meter(
-                    path,
-                    cursor,
-                    ATTRIBUTE_PAGE_SIZE,
-                    work,
-                ),
-            }?;
+            let page =
+                match &target {
+                    AttributeTarget::Handle(open_file) => open_file
+                        .file()
+                        .list_attributes_with_meter(cursor, ATTRIBUTE_PAGE_SIZE, work),
+                    AttributeTarget::Path(path) => self.core.source.list_attributes_with_meter(
+                        path,
+                        cursor,
+                        ATTRIBUTE_PAGE_SIZE,
+                        work,
+                    ),
+                }?;
             for name in &page.0.names {
                 work.charge(Items.delta(1))?;
                 let required = name.len().checked_add(1).ok_or(libc::EOVERFLOW)?;
@@ -150,9 +151,9 @@ impl FuseProjection {
         };
         self.source_write(work, || {
             match target {
-                AttributeTarget::Handle(open_file) => open_file
-                    .file(work)?
-                    .remove_attribute(name.as_bytes(), work),
+                AttributeTarget::Handle(open_file) => {
+                    open_file.file().remove_attribute(name.as_bytes(), work)
+                }
                 AttributeTarget::Path(path) => {
                     self.core
                         .source

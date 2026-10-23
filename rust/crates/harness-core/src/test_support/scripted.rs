@@ -280,7 +280,7 @@ pub async fn read_request_files(
             let (reader, maximum) = reader.ok_or_else(|| {
                 Error::Unauthorized("scripted provider has no content reader".into())
             })?;
-            reader.read(file, maximum, None)?.await?;
+            reader.read(file, maximum, None, None)?.await?;
         }
     }
     Ok(())

@@ -326,7 +326,7 @@ impl PinnedContextPath {
                 &self.path,
                 Some(&self.generation),
                 maximum_bytes,
-                None,
+                crate::conversation::ContentAccess::default(),
             )?
             .await?;
         if file.volume() != &self.root.volume

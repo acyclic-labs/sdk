@@ -150,6 +150,8 @@ macro_rules! records {
     ($($record:ty => $schema:ident),* $(,)?) => {$(impl PreparationRecord for $record { fn json_value_schema() -> &'static Schema { Schema::$schema } })*};
 }
 records!(
+    acyclic_fs::access::Policy => None, acyclic_fs::access::Capability => None,
+    crate::Capabilities => None,
     crate::context::Context => Context, crate::context::SummarySource => SummarySource, crate::context::CanonicalContextCheckpoint => None, crate::context::CompactionReference => None,
     crate::executor::ResponseProjection => ResponseProjection, crate::model::ModelEvent => ModelEvent,
     crate::model::ModelRequest => ModelRequest, crate::model::ModelContent => ModelContent, crate::model::ModelContentPart => ModelContentPart,
@@ -245,6 +247,11 @@ impl UploadRecord for FileRef {
         FileRef::logical_owned_bytes(self)
     }
 }
+impl PreparationRecord for (FileRef, Option<crate::resources::GenerationRef>) {
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        self.logical_owned_bytes().map(Some)
+    }
+}
 impl UploadRecord for (FileRef, Option<crate::resources::GenerationRef>) {
     fn logical_owned_bytes(&self) -> Result<u64> {
         self.0
@@ -257,5 +264,11 @@ impl UploadRecord for (FileRef, Option<crate::resources::GenerationRef>) {
                     .unwrap_or(0),
             )
             .ok_or_else(|| Error::Invalid("upload generation ownership overflow".into()))
+    }
+}
+
+impl PreparationRecord for crate::resources::GenerationRef {
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        self.logical_owned_bytes().map(Some)
     }
 }

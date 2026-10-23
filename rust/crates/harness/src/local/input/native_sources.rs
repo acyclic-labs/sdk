@@ -176,7 +176,7 @@ async fn publish(
             bytes,
             "text/plain",
             source_display_name(path)?,
-            None,
+            crate::conversation::ContentAccess::default(),
         )?
         .await?;
     Ok(())

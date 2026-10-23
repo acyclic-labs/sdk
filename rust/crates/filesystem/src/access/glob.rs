@@ -93,6 +93,13 @@ pub(super) enum Symbol {
     Any,
 }
 
+pub(super) fn folded_question_states() -> usize {
+    CASE_FOLD_EXPANSIONS
+        .iter()
+        .map(|expansion| expansion.chars().count().saturating_sub(1))
+        .sum()
+}
+
 impl Symbol {
     pub(super) fn matches(self, ch: char) -> bool {
         match self {

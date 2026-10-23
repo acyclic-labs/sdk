@@ -709,9 +709,9 @@ async fn worker_restart(command: WorkerCommand) -> Result<()> {
 }
 
 #[inline(never)]
-fn boxed_restart_phase<F: std::future::Future>(
+fn boxed_restart_phase<'a, F: std::future::Future + 'a>(
     create: impl FnOnce() -> F,
-) -> std::pin::Pin<Box<F>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = F::Output> + 'a>> {
     Box::pin(create())
 }
 

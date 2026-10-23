@@ -309,7 +309,10 @@ pub(crate) async fn register(
         .fs
         .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
             &journal_name.0,
-            VolumeConfig::portable(Lifecycle::Durable),
+            acyclic_fs::VolumeInitialization {
+                config: VolumeConfig::portable(Lifecycle::Durable),
+                access_policy: Some(acyclic_harness::filesystem::INITIAL_ACCESS_POLICY),
+            },
             OperationId::from_bytes(identity("journal", session, work)?),
             work,
             work.cancellation(),

@@ -13,10 +13,7 @@
 ))]
 pub(crate) const OPERATION: u16 = 10;
 pub(crate) const VIEW: u16 = 20;
-#[cfg(all(
-    feature = "native-mount",
-    any(target_os = "linux", target_os = "macos")
-))]
+#[cfg(all(feature = "native-mount", target_os = "macos"))]
 pub(crate) const FILE: u16 = 30;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub(crate) const OBSERVERS: u16 = 35;

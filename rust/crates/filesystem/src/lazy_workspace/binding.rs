@@ -9,14 +9,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         name: &str,
         source: Arc<D>,
         store: S,
-        config: VolumeConfig,
+        initialization: crate::VolumeInitialization<'_>,
         operation: crate::OperationId,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Self, crate::Generation<A, O>), LazyWorkspaceError> {
         let original = source.reference();
         let generation = accounted!(ctx, |work, cancel| fs
             .create_workspace_with_operation::<_, (), WorkspaceError>(
-                name, config, operation, work, cancel, None
+                name,
+                initialization,
+                operation,
+                work,
+                cancel,
+                None
             ))?;
         let lazy = Self::bind(generation.workspace().clone(), source, store, ctx).await?;
         lazy.state(ctx)

@@ -128,14 +128,21 @@ async fn fixture() -> Result<(
 )> {
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
+        .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
             "session-fs",
+            acyclic_fs::VolumeInitialization::new(
+                acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+                Some(acyclic_fs::access::INITIAL_POLICY),
+            ),
+            acyclic_fs::OperationId::new(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
+            None,
         )
         .await
         .map_err(|failure| failure.error)?
-        .value;
+        .value
+        .workspace();
     let (stream, _) = fs.authority_records(workspace.id().volume_id())?;
     Ok((fs, workspace, stream))
 }

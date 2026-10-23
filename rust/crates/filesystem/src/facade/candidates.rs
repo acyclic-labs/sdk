@@ -88,7 +88,7 @@ impl<A, O> Checkout<A, O> {
             && self.authority_head == base.authority_head
             && self.authored_operation_id == base.authored_operation_id
             && self.live_operation_id == base.live_operation_id
-            && self.last_commit == base.last_commit
+            && self.observed_generation == base.observed_generation
             && self.prepared_merge_parent == base.prepared_merge_parent
             && self.mode == base.mode
     }
@@ -162,7 +162,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self.replica(dependencies, self.mode, accounting)
     }
 
-    pub(crate) fn logical_owned_bytes(&self) -> u64 {
+    /// Retained proof and generation metadata owned by this checkout.
+    #[must_use]
+    pub fn logical_owned_bytes(&self) -> u64 {
         self.proof_owned_bytes
             + crate::foundation::usize_to_u64(
                 self.base_root.parents.capacity() * size_of::<GenerationId>(),
@@ -380,9 +382,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             base_root,
             root,
             authority_head: self.authority_head,
+            observed_generation: self.observed_generation,
             authored_operation_id: self.authored_operation_id,
             live_operation_id: self.live_operation_id,
-            last_commit: self.last_commit,
             publication_closure: None,
             prepared_merge_parent: self.prepared_merge_parent,
             proof_owned_bytes: dependencies.data_custody.logical_owned_bytes()

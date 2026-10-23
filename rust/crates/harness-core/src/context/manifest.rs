@@ -206,7 +206,7 @@ impl ContextManifest {
                 &bytes,
                 "application/json",
                 "context-manifest.json",
-                None,
+                crate::conversation::ContentAccess::default(),
             )?
             .await?;
         reference.descriptor().verify(&bytes, &mut None)?;

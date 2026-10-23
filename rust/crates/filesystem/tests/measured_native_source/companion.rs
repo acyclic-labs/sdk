@@ -113,7 +113,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
         let prior = Fs::memory()
             .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
                 "companion-fault",
-                config,
+                acyclic_fs::VolumeInitialization::new(config, None),
                 operation,
                 budget,
                 &CancellationToken::new(),
@@ -130,7 +130,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
                 "companion-fault",
                 source.clone(),
                 store.clone(),
-                config,
+                acyclic_fs::VolumeInitialization::new(config, None),
                 operation,
                 &mut accounting,
             )
@@ -194,7 +194,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
                 "companion-fault",
                 source.clone(),
                 store.clone(),
-                config,
+                acyclic_fs::VolumeInitialization::new(config, None),
                 operation,
                 &mut accounting,
             )

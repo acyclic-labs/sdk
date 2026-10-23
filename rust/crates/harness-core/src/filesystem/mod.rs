@@ -134,9 +134,16 @@ pub use mailbox_machine::MailboxModelMachine;
 pub(crate) use native_execution::journal::preparation_owner;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_execution::{
-    BorrowedNativeVolumeBinding, NativeMountedVolume, NativePreparationRoot,
-    NativeViewPublicationError, NativeVolumeView,
+    BorrowedNativeVolumeBinding, NativeAccessAuthority, NativeMountedVolume, NativePreparationRoot,
+    NativeViewPublicationError, NativeVolumeView, authenticated_mount_options, owner_mount_options,
+    require_unrestricted_volume_access, require_unrestricted_workspace_read,
 };
+#[cfg(all(
+    feature = "native-execution",
+    feature = "filesystem-local",
+    not(target_arch = "wasm32")
+))]
+pub use native_execution::{local_owner_mount_options, local_owner_workspace};
 pub use recursive::{
     ForkPreparationLimits, ForkPreparationMachine, ForkToolArguments, RecursiveForkConfig,
     RecursiveSourceSnapshot, RetainedSourceBinding, fork_preparation_request,
@@ -162,7 +169,12 @@ mod host;
 pub(crate) use host::file_publication;
 pub(crate) use host::map_error;
 use host::*;
-pub use host::{FilesystemHost, filesystem_key, workspace_ref};
+pub use host::{FilesystemHost, VolumeImportPlan, filesystem_key, workspace_ref};
+pub(crate) mod access;
+pub use access::INITIAL_POLICY as INITIAL_ACCESS_POLICY;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use access::check_access_record;
 mod content_verifier;
 pub use content_verifier::FilesystemContentVerifier;
 mod file_query;
@@ -196,27 +208,6 @@ pub async fn retain_published_generation<A: AsyncAuthorityStore, O: AsyncObjectS
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
-    async fn content_for_operation_impl(
-        &self,
-        volume: &VolumeRef,
-        grant: &ContentGrant,
-        key: &IdempotencyKey,
-        expected_path: Option<&str>,
-        maximum_bytes: u64,
-        io: Option<&PreparationIo>,
-    ) -> Result<Option<FileRef>> {
-        grant.require(volume, VolumeOperation::Write, io)?;
-        let observed = self
-            .content_for_operation_record_io(volume, key, expected_path, maximum_bytes, None, io)
-            .await?;
-        let Some((file, bytes)) = observed else {
-            return Ok(None);
-        };
-        let hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
-        drop(bytes);
-        drop(hold);
-        Ok(Some(file))
-    }
     #[allow(
         clippy::too_many_arguments,
         clippy::too_many_lines,
@@ -234,6 +225,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         idempotency_key: &IdempotencyKey,
         internal_class: Option<InternalContentClass>,
         expected_generation: Option<&GenerationRef>,
+        ceiling: Option<&crate::Capabilities>,
         io: Option<&fork_preparer_io::PreparationIo>,
     ) -> Result<FileRef>
     where
@@ -242,6 +234,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     {
         let bytes = input.as_ref();
         grant.require(volume, VolumeOperation::Write, io)?;
+        if let Some(grants) = ceiling
+            && !crate::executor::with_history_io(io, |work| {
+                crate::core::volume_write_granted_with_work(grants, volume, work)
+            })?
+        {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "content caller lacks a filesystem write grant",
+            ));
+        }
         if volume.provider() != &self.provider || bytes.len() as u64 > maximum_bytes {
             return Err(stock_boundary(
                 io,
@@ -299,6 +302,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             None => {}
         }
+        let workspace = fork_preparer_io::content_workspace(&self.provider, volume, io)?;
         let receipt_identity = if internal_class.is_some() {
             provisional.path()
         } else {
@@ -325,8 +329,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 expected_generation,
             ))?),
         };
-        let workspace = fork_preparer_io::content_workspace(&self.provider, volume, io)?;
-        let prior = crate::conversation::BoundedContentFuture::new(io, || async {
+        let (opened, prior) = crate::conversation::BoundedContentFuture::new(io, || async {
             let owned;
             let io = if let Some(io) = io {
                 io
@@ -335,13 +338,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 &owned
             };
             let opened = self.open(&workspace, Some(io)).await?;
-            io.sdk(
+            let prior = io.sdk(
                 opened
                     .operation_generation(operation, io, io.cancellation())
                     .await,
-            )
+            )?;
+            Ok::<_, Error>((opened, prior))
         })?
         .await?;
+        let (authorized_generation, policy_fence) = self
+            .authorize_content_write(
+                &opened,
+                grant,
+                provisional.path(),
+                prior.is_some(),
+                ceiling,
+                io,
+            )
+            .await?;
+        let generation_hold = io
+            .map(|io| io.guard_owned(authorized_generation.logical_owned_bytes()?))
+            .transpose()?;
+        let authorized_generation = (authorized_generation, generation_hold);
         if let Some(prior) = prior {
             let generation = (self).generation_ref_id(prior.id(), io)?;
             fork_preparer_io::retain(&prior, io).await?;
@@ -403,6 +421,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             return Ok(reference);
         }
+        if expected_generation.is_some_and(|expected| expected != &authorized_generation.0) {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Conflict,
+                "workspace generation changed before content authorization",
+            ));
+        }
+        let policy_fence = if expected_generation.is_some() {
+            policy_fence.pin_generation()
+        } else {
+            policy_fence
+        };
         let absolute = crate::executor::with_history_io(io, |work| {
             crate::executor::preparation_format(format_args!("/{}", provisional.path()), work)
         })?;
@@ -438,9 +468,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             bytes: receipt_bytes,
         });
         let generation = self
-            .apply_generation(
+            .apply_authorized_generation(
                 &workspace,
-                expected_generation,
+                policy_fence,
                 &mutations,
                 IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?),
                 io,
@@ -791,3 +821,5 @@ mod checkout_publication;
     not(target_arch = "wasm32")
 ))]
 pub use checkout_publication::CheckoutPublication;
+
+pub use host::DirectoryOptions;

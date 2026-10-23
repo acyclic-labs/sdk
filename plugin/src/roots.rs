@@ -413,21 +413,15 @@ pub(crate) struct LocalMount {
 
 impl LocalMount {
     pub(crate) async fn mount(
-        routes: impl IntoIterator<Item = (String, LocalLazyWorkspace)>,
+        routes: impl IntoIterator<Item = (String, LocalLazyWorkspace, MountOptions)>,
         destination: &Path,
     ) -> Result<Self, String> {
         fs::create_dir_all(destination).map_err(display)?;
         let mut mounted = BTreeMap::new();
-        for (name, workspace) in routes {
+        for (name, workspace, options) in routes {
             let path = destination.join(&name);
             fs::create_dir_all(&path).map_err(display)?;
-            match workspace
-                .mount(
-                    &path,
-                    MountOptions::read_write().publication(acyclic_fs::MountPublication::Manual),
-                )
-                .await
-            {
+            match workspace.mount(&path, options).await {
                 Ok(mount) => {
                     mounted.insert(name, mount);
                 }

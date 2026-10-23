@@ -55,6 +55,7 @@ async fn child_view_projects_volumes_outside_itself() -> Result<()> {
         harness.workspace.as_ref().unwrap().clone(),
         &harness.project,
         Arc::new(acyclic_stream::SystemUnixMillisClock),
+        &harness.signed,
         Arc::clone(&harness.task_files),
     )
     .await?;

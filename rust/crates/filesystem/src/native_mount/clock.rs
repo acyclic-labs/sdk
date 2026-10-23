@@ -100,6 +100,11 @@ pub fn capture_mount_clock_callbacks() -> impl FnOnce(u64, bool) -> Vec<u8> + Se
             }
         };
         bytes.extend_from_slice(&timestamp.to_le_bytes());
+        bytes.extend_from_slice(
+            &super::adapter::access::access_time(&callback_clock)
+                .expect("captured access clock")
+                .to_le_bytes(),
+        );
         bytes
     }
 }

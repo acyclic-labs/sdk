@@ -88,26 +88,93 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
         journal.staged_ref_with_io(operation, key, None).await,
         Err(Error::Unauthorized(_))
     ));
-    // Broken authorization control: bypassing the grant check exposes the same
-    // retained payload, so the denial above cannot pass because it is absent.
+    // The original authenticated reader still sees the retained payload, so
+    // the writer's denial above cannot pass because the payload is absent.
     let (identity, path) = journal.stage_identity_with_io(operation, key, None)?;
     assert_eq!(
         journal
             .host
             .content_for_operation_record_io(
-                &volume,
-                &identity,
-                Some(&path),
-                4096,
-                Some(InternalContentClass::Execution),
+                super::super::super::PublicationLookup {
+                    volume: &volume,
+                    key: &identity,
+                    expected_path: Some(&path),
+                    maximum_bytes: 4096,
+                    internal_class: Some(InternalContentClass::Execution),
+                    read_content: true,
+                    scope: &scope,
+                    ceiling: None,
+                },
                 None,
             )
             .await?
             .map(|(file, body)| {
-                assert_eq!(body.as_ref(), bytes);
+                assert_eq!(body.expect("authorized payload").as_ref(), bytes);
                 file
             }),
         Some(expected)
     );
+    // Projection cannot return payload bytes through a metadata-only request,
+    // and asking for payload independently requires Read in the same compiler.
+    use acyclic_fs::access::{Action, Capability, Generations, Grant, ResourcePattern};
+    for read in [false, true] {
+        let capability = Capability {
+            layers: vec![vec![Grant {
+                actions: [Action::List, Action::ReadHistory]
+                    .into_iter()
+                    .chain(read.then_some(Action::Read))
+                    .collect(),
+                resource: ResourcePattern {
+                    lineage_root: None,
+                    volume: None,
+                    generations: Generations::All,
+                    path: "**".into(),
+                },
+            }]],
+            expires_at: None,
+        };
+        let scoped = issuer.issue(
+            "projection",
+            &crate::Capabilities::new([
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                capability
+                    .to_scope_label()
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+            ]),
+            Some(agent),
+            None,
+            &mut None,
+        )?;
+        for read_content in [false, true] {
+            let result = journal
+                .host
+                .content_for_operation_record_io(
+                    super::super::super::PublicationLookup {
+                        volume: &volume,
+                        key: &identity,
+                        expected_path: Some(&path),
+                        maximum_bytes: 4096,
+                        internal_class: Some(InternalContentClass::Execution),
+                        read_content,
+                        scope: &scoped,
+                        ceiling: None,
+                    },
+                    None,
+                )
+                .await;
+            if read_content && !read {
+                assert_eq!(
+                    result.unwrap_err().code(),
+                    crate::wire::ErrorCode::Unauthorized
+                );
+            } else {
+                let (_, payload) = result?.expect("original publication");
+                assert_eq!(
+                    payload.as_ref().map(AsRef::as_ref),
+                    read_content.then_some(bytes)
+                );
+            }
+        }
+    }
     Ok(())
 }

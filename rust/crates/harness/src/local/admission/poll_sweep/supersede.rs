@@ -72,7 +72,10 @@ pub(super) async fn recover(
     match (fixture.scenario, reopened.resume(task).await) {
         // The replacement is admitted normally, then reaches the fixture's
         // bounded active-goal stop just like its uncut baseline.
-        (Scenario::EffectAndContinuation, Err(Error::GoalBlocked(crate::goal::GoalBlockedReason::Declared))) => {}
+        (
+            Scenario::EffectAndContinuation,
+            Err(Error::GoalBlocked(crate::goal::GoalBlockedReason::Declared)),
+        ) => {}
         (_, Ok(output)) => assert_eq!(output.text, REPLACED),
         (_, Err(error)) => return Err(error),
     }

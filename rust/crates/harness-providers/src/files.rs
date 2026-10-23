@@ -106,7 +106,8 @@ fn validate(file: &FileRef, policy: &FileProjectionPolicy, maximum: u64) -> Resu
 // Every projection, including native media, pays through the same pre-I/O
 // subtraction. Work is admitted source bytes (framed bytes for instructions).
 fn charge(remaining: &mut u64, bytes: u64, kind: &str) -> Result<()> {
-    *remaining = remaining.checked_sub(bytes)
+    *remaining = remaining
+        .checked_sub(bytes)
         .ok_or_else(|| invalid(&format!("model files exceed projection {kind} limit")))?;
     Ok(())
 }
@@ -149,7 +150,11 @@ pub(crate) async fn resolve(
         for (file, policy) in message.content.file_parts() {
             validate(file, policy, files.maximum_bytes)?;
             if !matches!(policy, FileProjectionPolicy::Reference) {
-                charge(&mut remaining, projected_bytes(file, policy)?, "aggregate byte")?;
+                charge(
+                    &mut remaining,
+                    projected_bytes(file, policy)?,
+                    "aggregate byte",
+                )?;
             }
         }
     }
@@ -160,13 +165,22 @@ pub(crate) async fn resolve(
             if matches!(policy, FileProjectionPolicy::Reference) {
                 continue;
             }
-            charge(&mut remaining, projected_bytes(file, policy)?, "aggregate byte")?;
+            charge(
+                &mut remaining,
+                projected_bytes(file, policy)?,
+                "aggregate byte",
+            )?;
             let reader = files.reader.as_ref().ok_or_else(|| {
                 Error::Unsupported("model file byte resolution is unavailable".into())
             })?;
-            let (bytes, hold) =
-                verified_content_bytes(reader.as_ref(), file, file.descriptor().byte_length(), io)
-                    .await?;
+            let (bytes, hold) = verified_content_bytes(
+                reader.as_ref(),
+                file,
+                file.descriptor().byte_length(),
+                None,
+                io,
+            )
+            .await?;
             if let FileProjectionPolicy::ProjectInstructions(source) = policy {
                 let value =
                     acyclic_harness_core::model::InstructionSource::with_identity(file, source)
@@ -185,6 +199,7 @@ pub(crate) async fn resolve(
                 drop(hold);
                 continue;
             }
+
             let bytes = bytes
                 .try_into_ordinary_vec()
                 .unwrap_or_else(|bytes| bytes.as_slice().to_vec());

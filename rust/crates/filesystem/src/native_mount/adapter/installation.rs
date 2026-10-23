@@ -90,6 +90,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 operation,
                 epoch,
                 stamp,
+                deadline,
                 _publication,
                 _file_mutation,
             } = candidate;
@@ -116,6 +117,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 operation,
                 epoch,
                 stamp,
+                deadline,
                 _publication,
                 _file_mutation,
             };
@@ -129,9 +131,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             };
             carrier.check(cancellation, lifetime)?;
             let operation = candidate.operation;
+            let deadline = candidate.deadline;
+            check_mutation_deadline(deadline, &self.clock)?;
             if !commit(&mut state.checkout, candidate, prepared)? {
                 return Ok(None);
             }
+            state.pending_deadline = earliest_deadline(state.pending_deadline, deadline);
             if let Some(operation) = operation {
                 state.retain_operation_id(operation)?;
             }
@@ -142,4 +147,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         notify();
         result
     }
+}
+
+pub(in crate::native_mount) fn earliest_deadline(
+    first: Option<u64>,
+    second: Option<u64>,
+) -> Option<u64> {
+    match (first, second) {
+        (Some(first), Some(second)) => Some(first.min(second)),
+        (first, second) => first.or(second),
+    }
+}
+
+fn check_mutation_deadline(
+    deadline: Option<u64>,
+    clock: &crate::native_mount::clock::Clock,
+) -> Result<(), MountSourceError> {
+    #[cfg(test)]
+    if tests::return_fence::omitted_deadline() {
+        return Ok(());
+    }
+    if let Some(deadline) = deadline
+        && access::access_time(clock)? >= deadline
+    {
+        return Err(MountSourceError::AccessDenied);
+    }
+    Ok(())
 }

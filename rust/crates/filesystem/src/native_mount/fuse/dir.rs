@@ -62,6 +62,42 @@ pub(super) struct DirectoryStream {
     pub(super) parked: u64,
 }
 
+impl DirectoryStream {
+    pub(super) fn needs_page(&self) -> bool {
+        self.page.as_ref().is_none_or(|page| {
+            self.entry_position == page.entries().len() && page.next_cursor().is_some()
+        })
+    }
+}
+
+// Cached rows retain namespace facts, not permission to disclose them. Return
+// the already-funded child used by emission, without copying its path twice.
+pub(super) fn next_visible_child(
+    source: &dyn MountFilesystem,
+    stream: &mut DirectoryStream,
+    work: &crate::NativeMaterializationWork,
+) -> Result<Option<ChildName>, NativeMountError> {
+    loop {
+        let Some(entry) = stream
+            .page
+            .as_ref()
+            .and_then(|page| page.entries().get(stream.entry_position))
+        else {
+            return Ok(None);
+        };
+        work.charge(Items.delta(1))?;
+        let child = ChildName::new(
+            source,
+            fuse_child_path(&stream.path, &entry.name, work)?,
+            work,
+        )?;
+        if crate::native_mount::filesystem::can_disclose(source, &child.spelled, work)? {
+            return Ok(Some(child));
+        }
+        stream.entry_position += 1;
+    }
+}
+
 #[derive(Default)]
 pub(super) struct DirectoryStreams {
     pub(super) waiting: HashMap<(u64, u64), (DirectoryStream, crate::NativeAllocation)>,
@@ -115,14 +151,14 @@ impl DirectoryStreams {
             .insert((inode, stream.emitted), (stream, storage));
     }
 
-    pub(super) fn rename_prefix(
-        &mut self,
+    pub(super) fn prepare_rename_prefix(
+        &self,
         source: &MountPath,
         destination: &MountPath,
         parent_inode: u64,
         nodes: &HashMap<u64, InodeEntry>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
+    ) -> Result<impl FnOnce(&mut Self) + use<>, NativeMountError> {
         let mut replacements = fuse_vec(0, work)?;
         for (key, (stream, _)) in &self.waiting {
             work.charge(Items.delta(1))?;
@@ -140,29 +176,20 @@ impl DirectoryStreams {
                 ));
             }
         }
-        for (key, path, parent_inode) in replacements.drain(..) {
-            let stream = &mut self.waiting.get_mut(&key).ok_or(libc::EIO)?.0;
-            stream.path = path;
-            if let Some(parent_inode) = parent_inode {
-                stream.parent_inode = parent_inode;
+        Ok(move |streams: &mut Self| {
+            for (key, path, parent_inode) in replacements.drain(..) {
+                if let Some((stream, _)) = streams.waiting.get_mut(&key) {
+                    stream.path = path;
+                    if let Some(parent_inode) = parent_inode {
+                        stream.parent_inode = parent_inode;
+                    }
+                }
             }
-        }
-        Ok(())
+        })
     }
 }
 
 impl ProjectionState {
-    pub(super) fn directory_open_flags(
-        source: &dyn MountFilesystem,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<FopenFlags, NativeMountError> {
-        Ok(if source.view_stamp_with_meter(work)?.is_some() {
-            FopenFlags::FOPEN_CACHE_DIR | FopenFlags::FOPEN_KEEP_CACHE
-        } else {
-            FopenFlags::empty()
-        })
-    }
-
     pub(super) fn directory_stream(
         &mut self,
         source: &dyn MountFilesystem,
@@ -209,6 +236,7 @@ impl ProjectionState {
         inode: u64,
         stream: &mut DirectoryStream,
         listing: &mut Option<DirectoryReply>,
+        mut first: Option<ChildName>,
         work: &crate::NativeMaterializationWork,
     ) -> (Result<(), NativeMountError>, bool) {
         let mut listed = false;
@@ -216,8 +244,7 @@ impl ProjectionState {
         self.listing_replies = self.listing_replies.wrapping_add(1);
         let reply = self.listing_replies;
         let result = (|| -> Result<(), NativeMountError> {
-            let counts_lookups =
-                matches!(listing.as_ref().ok_or(libc::EIO)?, DirectoryReply::Plus(_));
+            let counts_lookups = listing.as_ref().ok_or(libc::EIO)?.counts_lookups();
             if stream.emitted < 2 {
                 let lookup = self.by_inode.get(&inode).ok_or(libc::ESTALE)?.lookup;
                 let attr = self.attr(inode, &lookup)?;
@@ -246,20 +273,19 @@ impl ProjectionState {
             }
             self.admit_listing(source, inode, stream.entries_stamp, work)?;
             loop {
+                let child = match first.take() {
+                    Some(child) => Some(child),
+                    None => next_visible_child(source, stream, work)?,
+                };
+                let Some(child) = child else {
+                    return Ok(());
+                };
                 let next = stream.emitted.saturating_add(1);
-                let Some(entry) = stream
+                let entry = stream
                     .page
                     .as_ref()
                     .and_then(|page| page.entries().get(stream.entry_position))
-                else {
-                    return Ok(());
-                };
-                work.charge(Items.delta(1))?;
-                let child = ChildName::new(
-                    source,
-                    fuse_child_path(&stream.path, &entry.name, work)?,
-                    work,
-                )?;
+                    .ok_or(libc::EIO)?;
                 let current = match stream.entries_stamp {
                     Some(stamp)
                         if source.unchanged_since_with_meter(
@@ -371,9 +397,22 @@ impl ProjectionState {
 pub(super) enum DirectoryReply {
     Basic(ReplyDirectory),
     Plus(ReplyDirectoryPlus),
+    #[cfg(test)]
+    Capture(CapturedDirectory),
 }
 
+#[cfg(test)]
+pub(super) type CapturedDirectory = std::rc::Rc<std::cell::RefCell<Vec<(Vec<u8>, FileAttr)>>>;
+
 impl DirectoryReply {
+    fn counts_lookups(&self) -> bool {
+        match self {
+            Self::Basic(_) => false,
+            Self::Plus(_) => true,
+            #[cfg(test)]
+            Self::Capture(_) => true,
+        }
+    }
     pub(super) fn push(
         &mut self,
         offset: u64,
@@ -384,23 +423,69 @@ impl DirectoryReply {
         match self {
             Self::Basic(reply) => reply.add(attr.ino, offset, attr.kind, name),
             Self::Plus(reply) => reply.add(attr.ino, offset, name, ttl, attr, Generation(0)),
+            #[cfg(test)]
+            Self::Capture(entries) => {
+                entries.borrow_mut().push((name.as_bytes().to_vec(), *attr));
+                false
+            }
         }
     }
     pub(super) fn ok(self) {
         match self {
             Self::Basic(reply) => reply.ok(),
             Self::Plus(reply) => reply.ok(),
+            #[cfg(test)]
+            Self::Capture(_) => (),
         }
     }
     pub(super) fn error(self, error: Errno) {
         match self {
             Self::Basic(reply) => reply.error(error),
             Self::Plus(reply) => reply.error(error),
+            #[cfg(test)]
+            Self::Capture(_) => panic!("unexpected directory error: {error:?}"),
         }
     }
 }
 
 impl FuseProjection {
+    pub(super) fn open_directory(
+        &self,
+        inode: u64,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<FopenFlags, NativeMountError> {
+        work.charge(Items.delta(1))?;
+        let state = self.core.state()?;
+        let entry = state.by_inode.get(&inode).ok_or(libc::ESTALE)?;
+        if entry.lookup.node.kind != MountNodeKind::Directory {
+            return Err(libc::ENOTDIR.into());
+        }
+        let binding = entry.bindings.first().ok_or(libc::ESTALE)?;
+        self.core.source.authorize_with_meter(
+            &[(crate::access::Action::List, binding.native_path())],
+            work,
+        )?;
+        // Directory pages depend on current policy, so a new open cannot reuse
+        // the kernel's listing from an earlier open. Parked rows are checked.
+        Ok(FopenFlags::empty())
+    }
+
+    pub(super) fn next_directory_child(
+        &self,
+        stream: &mut DirectoryStream,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Option<ChildName>, NativeMountError> {
+        loop {
+            if let Some(child) = next_visible_child(self.core.source.as_ref(), stream, work)? {
+                return Ok(Some(child));
+            }
+            if !stream.needs_page() {
+                return Ok(None);
+            }
+            self.position_directory_stream(stream, stream.emitted, work)?;
+        }
+    }
+
     pub(super) fn list_directory(
         &self,
         inode: u64,
@@ -415,6 +500,7 @@ impl FuseProjection {
             .state()?
             .directory_stream(source, inode, offset, work)?;
         self.position_directory_stream(&mut stream, offset, work)?;
+        let first = self.next_directory_child(&mut stream, work)?;
         let expected = stream.binding_epoch;
         let _lease = source.acquire_binding_lease_with_meter(expected, work)?;
         if !source.view_is_stable_with_meter(work)?
@@ -424,7 +510,11 @@ impl FuseProjection {
         }
         let mut state = self.core.state()?;
         let parking = state.streams.prepare_park(work)?;
-        let (result, partial) = state.list_directory(source, inode, &mut stream, listing, work);
+        // Advance hidden pages before emission, then emit one page under this
+        // state lock. One request cannot reset its reply identity between pages
+        // or lose inode markers to an interleaved listing.
+        let (result, partial) =
+            state.list_directory(source, inode, &mut stream, listing, first, work);
         state.streams.park(inode, stream, parking);
         drop(state);
         if result.is_ok() || partial {
@@ -440,6 +530,7 @@ impl FuseProjection {
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         let source = self.core.source.as_ref();
+        source.authorize_with_meter(&[(crate::access::Action::List, &stream.path)], work)?;
         stream.emitted = stream.emitted.max(offset.min(2));
         loop {
             work.charge(Items.delta(1))?;
@@ -448,8 +539,10 @@ impl FuseProjection {
                     if stream.emitted >= offset {
                         return Ok(());
                     }
-                    stream.entry_position += 1;
-                    stream.emitted += 1;
+                    if next_visible_child(source, stream, work)?.is_some() {
+                        stream.entry_position += 1;
+                        stream.emitted += 1;
+                    }
                     continue;
                 }
                 if page.next_cursor().is_none() {

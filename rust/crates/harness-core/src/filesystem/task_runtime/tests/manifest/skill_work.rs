@@ -13,7 +13,7 @@ fn selected_skill_reads_obey_original_allowance_and_cancellation() -> Result<()>
     let reader = reader(&fixture)?;
     let skill = executor.block_on(async {
         let reference = recovery::publish_sources(&fixture).await?;
-        let bytes = reader.read(&reference, 65_536, None)?.await?;
+        let bytes = reader.read(&reference, 65_536, None, None)?.await?;
         Ok::<_, Error>(
             ContextManifest::decode(&bytes, Limits::default())?
                 .discovery

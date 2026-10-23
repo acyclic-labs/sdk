@@ -5,7 +5,7 @@ use crate::native_mount::NativeMountStartupAdmissionError;
 #[derive(Clone)]
 pub(in crate::native_mount) struct CallbackRuntime {
     handle: tokio::runtime::Handle,
-    pub(super) clock: super::super::clock::Clock,
+    pub(in crate::native_mount) clock: super::super::clock::Clock,
 }
 
 static CALLBACK_RUNTIME: OnceLock<Result<tokio::runtime::Runtime, Arc<std::io::Error>>> =

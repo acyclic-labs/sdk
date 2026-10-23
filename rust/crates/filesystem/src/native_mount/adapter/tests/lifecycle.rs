@@ -28,7 +28,11 @@ fn a_detached_write_that_cannot_stamp_changes_nothing() -> Result<(), Box<dyn st
             .await
             .map(|receipt| receipt.value)
     })?;
-    let source = CheckoutMountSource::new(Arc::new(SharedCheckout::new(checkout)), config)?;
+    let source = bind_test_access(
+        CheckoutMountSource::new(Arc::new(SharedCheckout::new(checkout)), config)?,
+        vec![],
+        None,
+    )?;
     let path = native_test_path("stamped.bin");
     let timed = FileMetadata {
         modified_ns: crate::kernel::MetadataField::Value(1),
@@ -173,7 +177,13 @@ fn publication_policy_and_subtree_cases() -> Result<(), Box<dyn std::error::Erro
                 ..VolumeConfig::portable(Lifecycle::Ephemeral)
             };
             let root = source.path(&directory)?;
-            let subtree = CheckoutMountSource::new_at(source.checkout.clone(), config, root)?;
+            let subtree = CheckoutMountSource::new_at(source.checkout.clone(), config, root)?
+                .with_access_view(Arc::clone(
+                    source
+                        .access_view
+                        .as_ref()
+                        .ok_or("missing fixture access")?,
+                ))?;
             let nested = native_test_path("nested.bin");
             subtree.create_file(&nested, metadata(), None, &work)?;
             assert!(source.lookup(&nested)?.is_none());

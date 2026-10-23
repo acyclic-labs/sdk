@@ -235,11 +235,13 @@ where
     }
     pub(in crate::native_mount::lazy) async fn install_publication(
         &self,
-        candidate: CheckoutCandidate<'_, A, O>,
+        mut candidate: CheckoutCandidate<'_, A, O>,
         installed: &ViewEffect,
         carrier: &mut adapter::NativeDemandCarrier<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), MountSourceError> {
+        candidate.deadline =
+            adapter::earliest_deadline(candidate.deadline, self.authored.mutation_deadline()?);
         if self
             .authored
             .shared_checkout()

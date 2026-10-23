@@ -64,6 +64,7 @@ impl LocalHarness {
                 publisher,
             )
             .await?;
+
         let manifest = captured.boundary.manifest;
         let mut context = captured.context;
         self.retain_settings(operation, &json!({"model":captured.boundary.model}))
@@ -123,7 +124,7 @@ impl LocalHarness {
                 &bytes,
                 "application/json",
                 "summary command",
-                None,
+                crate::conversation::ContentAccess::default(),
             )?
             .await?
             .0;
@@ -153,7 +154,11 @@ impl LocalHarness {
         publisher: &dyn ContentPublisher,
     ) -> Result<(crate::conversation::FileRef, crate::context::SummarySource)> {
         let (retained, _) = publisher
-            .observe_staged_once(staged, self.limits.file_bytes, None)?
+            .observe_staged_once(
+                staged,
+                self.limits.file_bytes,
+                crate::conversation::ContentAccess::default(),
+            )?
             .await?;
         let (source, captured) = match retained {
             Some(file) => {
@@ -180,7 +185,7 @@ impl LocalHarness {
                         &bytes,
                         "application/json",
                         "summary source",
-                        None,
+                        crate::conversation::ContentAccess::default(),
                     )?
                     .await?
                     .0;
@@ -233,7 +238,7 @@ impl LocalHarness {
                 history.as_bytes(),
                 "text/plain",
                 "conversation history",
-                None,
+                crate::conversation::ContentAccess::default(),
             )?
             .await?
             .0;

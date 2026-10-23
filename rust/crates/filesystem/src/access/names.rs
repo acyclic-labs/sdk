@@ -17,6 +17,11 @@ pub(super) fn encoded_len(text: &str, config: VolumeConfig) -> usize {
 // Paths are lossless Unicode projections of the profile's native names. Native
 // byte/UTF-16 keys remain exact; only UTF-8 logical names use full case folding.
 pub(super) fn key(path: &str, config: VolumeConfig) -> Result<Cow<'_, str>, InvalidPolicy> {
+    validate(path, config)?;
+    Ok(fold(path, config))
+}
+
+pub(super) fn validate(path: &str, config: VolumeConfig) -> Result<(), InvalidPolicy> {
     let encoding = encoding(config);
     if !super::glob::valid_path(path)
         || (encoding == NameEncoding::Utf8
@@ -37,7 +42,19 @@ pub(super) fn key(path: &str, config: VolumeConfig) -> Result<Cow<'_, str>, Inva
     {
         return Err(InvalidPolicy("path violates volume name semantics"));
     }
-    Ok(fold(path, config))
+    Ok(())
+}
+
+pub(super) fn write_key(
+    text: &str,
+    config: VolumeConfig,
+    sink: &mut impl std::fmt::Write,
+) -> std::fmt::Result {
+    if config.case_sensitivity == CaseSensitivity::ProfileFolded {
+        encoding(config).write_unicode_case_fold_key(text, sink)
+    } else {
+        sink.write_str(text)
+    }
 }
 
 pub(super) fn fold(text: &str, config: VolumeConfig) -> Cow<'_, str> {

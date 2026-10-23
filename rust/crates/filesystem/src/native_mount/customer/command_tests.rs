@@ -39,7 +39,11 @@ async fn publish_command(
     let destination = tempfile::tempdir()?;
     let working = original
         .prepare_native_working_set(
-            &MountOptions::read_write().publication(MountPublication::Manual),
+            &super::tests::fixture_options(
+                &workspace,
+                MountOptions::read_write().publication(MountPublication::Manual),
+            )
+            .await?,
             &crate::MaterializeOptions::native(destination.path()),
             crate::WorkBudget::UNBOUNDED,
             &cancellation,

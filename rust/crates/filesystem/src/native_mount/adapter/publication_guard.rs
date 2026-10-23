@@ -7,14 +7,18 @@ type SourcePublicationFuture = futures::future::Either<
 >;
 
 fn publication_result(result: Result<(), NativeMountError>) -> Result<(), MountSourceError> {
-    result.map_err(|error| match error {
+    result.map_err(publication_error)
+}
+
+fn publication_error(error: NativeMountError) -> MountSourceError {
+    match error {
         NativeMountError::CallbackDenied { source, custody } => {
             MountSourceError::NativeCallbackDenied { source, custody }
         }
         NativeMountError::Materialization(error) => MountSourceError::NativeWork(error),
         NativeMountError::Source(error) => error,
         error => engine_error(error),
-    })
+    }
 }
 
 pub(super) fn source_publication_guard(

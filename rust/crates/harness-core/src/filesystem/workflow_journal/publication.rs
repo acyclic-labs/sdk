@@ -105,6 +105,7 @@ where
                 &key,
                 Some(InternalContentClass::Workflow),
                 None,
+                None,
                 io,
             )
             .await

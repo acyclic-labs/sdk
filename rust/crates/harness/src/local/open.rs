@@ -245,12 +245,17 @@ impl Opening {
             store,
             processes: Some(fence_stale_processes(directory.join("processes")).await?),
         };
+        let issuer = AuthorityIssuer::new(
+            "acyclic.local", owner.key,
+            Authority { kind: AggregateKind::Task, id: owner.task.to_string() },
+        );
         let attach = workspace::Attach {
             volume: &owner.project,
             scratch,
             directory,
             operation: workspace::attach_operation(owner.task),
             native_mounts: self.native_mounts,
+            authority: Some((&issuer, owner.agent)),
         };
         let workspace = match &self.config.project {
             LocalProject::Workspace(_) => {

@@ -172,7 +172,7 @@ where
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         if let Some(lookup) = self
             .authored
-            .lookup_async(path, owner, &mut carrier)
+            .lookup_identity(path, owner, &mut carrier, false)
             .await?
         {
             return Ok(if self.removed_identity(text, lookup.node.file_id)? {

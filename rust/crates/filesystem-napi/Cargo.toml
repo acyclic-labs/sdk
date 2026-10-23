@@ -14,6 +14,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", features = ["native-mount", "napi-types"] }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+acyclic-harness = { version = "=0.2.0", path = "../harness", features = ["filesystem-local", "native-execution"] }
 bytes.workspace = true
 napi.workspace = true
 napi-derive.workspace = true

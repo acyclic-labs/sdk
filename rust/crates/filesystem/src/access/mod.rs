@@ -8,22 +8,41 @@
 mod capability;
 mod compilation;
 mod decision;
+mod disclosure;
+mod policy_fence;
+pub use policy_fence::PolicyFence;
+mod retry;
+pub(crate) use retry::{RetryError, observe_policy};
+#[cfg(test)]
+pub(crate) mod fixtures;
 mod glob;
 mod mount;
 mod names;
+pub(crate) mod projection;
+mod view;
+pub use view::AccessView;
 mod trie;
 
 pub use capability::{
     Capability, DIRECTORY_READ_PREFIX, FILE_READ_PREFIX, Grant, SCOPE_PREFIX, VolumeOperation,
+    is_filesystem_capability,
 };
 pub use decision::{Decision, Denial, decide};
 pub use mount::MountMode;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-pub use trie::{PathTrie, PreparedPath};
+pub use trie::{PathTrie, PinnedPath, PreparedPath};
 
 /// Current policy encoding, stored in volume metadata rather than user files.
 pub const POLICY_SCHEMA_VERSION: u32 = 1;
+
+/// Explicit creation policy; never substituted for a missing stored record.
+pub const INITIAL_POLICY: &[u8] = include_bytes!("initial.json");
+
+/// Versioned policy record in the root directory's authenticated metadata.
+pub const POLICY_METADATA_KEY: &[u8] = b"security.acyclic.access.v1";
+/// Bound checked before materializing a stored policy record.
+pub const MAXIMUM_POLICY_RECORD_BYTES: u64 = 1_048_576;
 
 /// Independently grantable filesystem operations.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]

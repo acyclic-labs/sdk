@@ -5,6 +5,41 @@ use crate::conversation::{ContentIo, content_error};
 use crate::wire::ErrorCode;
 use acyclic_stream::OwnedBytes;
 
+// An admitted reader's grants can only be retained or narrowed. In particular,
+// range and full reads cannot pass an arbitrary replacement to authorization.
+pub(super) struct ReadGrants<'a> {
+    scope: &'a RuntimeScope,
+    grants: &'a crate::Capabilities,
+}
+
+impl<'a> ReadGrants<'a> {
+    fn bound(scope: &'a RuntimeScope) -> Self {
+        Self {
+            scope,
+            grants: scope.grants(),
+        }
+    }
+
+    fn intersect(
+        self,
+        request: Option<&'a crate::Capabilities>,
+        io: Option<&ContentIo>,
+    ) -> Result<Self> {
+        let grants = request.unwrap_or(self.grants);
+        if !grants.is_subset_of(self.grants) {
+            return Err(content_error(
+                io,
+                ErrorCode::Unauthorized,
+                "content caller cannot widen the bound task scope",
+            ));
+        }
+        Ok(Self {
+            scope: self.scope,
+            grants,
+        })
+    }
+}
+
 // Journals fence the entire command and authenticate each referenced input against
 // its admission. Reuse the issued context for content reads, including its grants,
 // immutable descriptor verification and original native accounting.
@@ -21,6 +56,7 @@ impl ContentResidencyVerifier for TaskContext {
         &'a self,
         reference: &'a FileRef,
         maximum_bytes: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {
         BoundedContentFuture::new(io, || async move {
@@ -31,7 +67,14 @@ impl ContentResidencyVerifier for TaskContext {
                     "content exceeds the callback byte bound",
                 ));
             }
-            self.read_file(reference, io).await
+            self.read_bound_file(
+                self.content_binding(Some(reference.volume())),
+                reference,
+                &self.scope,
+                ceiling,
+                io,
+            )
+            .await
         })
     }
 }
@@ -111,6 +154,7 @@ where
         &'a self,
         reference: &'a FileRef,
         maximum_bytes: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {
         BoundedContentFuture::new(io, || async move {
@@ -128,7 +172,16 @@ where
                 .map(|history| history as &mut dyn crate::store::HistoryIo);
             self.owner.validate_input_file(reference, io)?;
             self.owner.verify_read_access(&mut history).await?;
-            let bytes = self.context.read_file(reference, io).await?;
+            let bytes = self
+                .context
+                .read_bound_file(
+                    self.context.content_binding(Some(reference.volume())),
+                    reference,
+                    &self.context.scope,
+                    ceiling,
+                    io,
+                )
+                .await?;
             self.owner.validate_input_file(reference, io)?;
             self.owner.verify_read_access(&mut history).await?;
             Ok(bytes)
@@ -138,6 +191,7 @@ where
         &'a self,
         reference: &'a FileRef,
         range: acyclic_fs::ByteRange,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {
         BoundedContentFuture::new(io, || async move {
@@ -150,7 +204,13 @@ where
             self.owner.verify_read_access(&mut history).await?;
             let bytes = self
                 .context
-                .read_bound_range(reference, range, self.context.scope(), io)
+                .read_bound_range(
+                    reference,
+                    range,
+                    self.context.scope(),
+                    ceiling.unwrap_or(self.context.scope().grants()),
+                    io,
+                )
                 .await?;
             self.owner.validate_input_file(reference, io)?;
             self.owner.verify_read_access(&mut history).await?;
@@ -186,19 +246,20 @@ impl TaskContext {
     }
 
     /// Reads an immutable file under this task's scope and caller IO limits.
+    ///
+    /// Effective read grants have no public constructor or replacement field:
+    /// ```compile_fail
+    /// use acyclic_harness::runtime::ReadGrants;
+    /// fn replace<'a>(view: &mut ReadGrants<'a>, grants: &'a acyclic_harness::Capabilities) {
+    ///     view.grants = grants;
+    /// }
+    /// ```
     pub async fn read_file(&self, file: &FileRef, io: Option<&ContentIo>) -> Result<OwnedBytes> {
-        #[cfg(feature = "filesystem")]
-        let original = if io.is_none() {
-            self.preparation_io()?
-        } else {
-            None
-        };
-        #[cfg(feature = "filesystem")]
-        let io = io.or(original.as_ref());
         self.read_bound_file(
             self.content_binding(Some(file.volume())),
             file,
             &self.scope,
+            None,
             io,
         )
         .await
@@ -209,6 +270,7 @@ impl TaskContext {
         file: &FileRef,
         range: acyclic_fs::ByteRange,
         scope: &RuntimeScope,
+        grants: &crate::Capabilities,
         io: Option<&ContentIo>,
     ) -> Result<OwnedBytes> {
         #[cfg(feature = "filesystem")]
@@ -219,7 +281,7 @@ impl TaskContext {
         };
         #[cfg(feature = "filesystem")]
         let io = io.or(original.as_ref());
-        self.authorize_file_read(file, scope, io)?;
+        let grants = self.authorize_file_read(file, scope, grants, io)?;
         if range
             .offset
             .checked_add(range.length)
@@ -244,7 +306,9 @@ impl TaskContext {
             .ok_or_else(|| {
                 content_error(io, ErrorCode::Unsupported, "content reader is not bound")
             })?;
-        let bytes = reader.read_range(file, range, io)?.await?;
+        let bytes = reader
+            .read_range(file, range, Some(grants.grants), io)?
+            .await?;
         if bytes.len() as u64 != range.length {
             return Err(content_error(
                 io,
@@ -255,15 +319,17 @@ impl TaskContext {
         Ok(bytes)
     }
 
-    pub(super) fn authorize_file_read(
+    pub(super) fn authorize_file_read<'a>(
         &self,
         file: &FileRef,
-        scope: &RuntimeScope,
+        scope: &'a RuntimeScope,
+        request: &'a crate::Capabilities,
         io: Option<&ContentIo>,
-    ) -> Result<()> {
+    ) -> Result<ReadGrants<'a>> {
+        let grants = ReadGrants::bound(scope).intersect(Some(request), io)?;
         crate::executor::with_history_io(io, |work| {
-            scope.limits.validate_file(file, work)?;
-            if !read_granted_with_work(&scope.grants, file, work)? {
+            grants.scope.limits.validate_file(file, work)?;
+            if !read_granted_with_work(grants.grants, file, work)? {
                 return Err(content_error(
                     io,
                     ErrorCode::Unauthorized,
@@ -271,7 +337,8 @@ impl TaskContext {
                 ));
             }
             Ok(())
-        })
+        })?;
+        Ok(grants)
     }
 
     /// Lists one authenticated private directory page.
@@ -302,6 +369,7 @@ impl TaskContext {
                 expected_generation,
                 after,
                 maximum_entries,
+                Some(self.scope.grants()),
                 None,
             )?
             .await?;
@@ -349,7 +417,10 @@ impl TaskContext {
                 path,
                 expected_generation,
                 self.scope.limits.file_bytes,
-                None,
+                crate::conversation::ContentAccess {
+                    ceiling: Some(self.scope.grants()),
+                    io: None,
+                },
             )?
             .await?;
         self.scope.limits.validate_file(&file, &mut None)?;
@@ -379,9 +450,12 @@ impl TaskContext {
                 "private directory path or volume is invalid".into(),
             ));
         }
-        let exact = volume.directory_read_capability(granted_prefix, &mut None)?;
-        let full = volume.capability(VolumeOperation::Read, &mut None)?;
-        if !self.scope.grants().contains(&exact) && !self.scope.grants().contains(&full) {
+        if !crate::core::directory_read_granted_with_work(
+            self.scope.grants(),
+            volume,
+            granted_prefix,
+            &mut None,
+        )? {
             return Err(Error::Unauthorized(
                 "task scope cannot discover this directory".into(),
             ));
@@ -389,14 +463,24 @@ impl TaskContext {
         Ok(())
     }
 
-    pub(super) async fn read_bound_file(
+    pub(crate) async fn read_bound_file(
         &self,
         binding: Option<&ContentBindings>,
         file: &FileRef,
         scope: &RuntimeScope,
+        ceiling: Option<&crate::Capabilities>,
         io: Option<&ContentIo>,
     ) -> Result<OwnedBytes> {
-        self.authorize_file_read(file, scope, io)?;
+        #[cfg(feature = "filesystem")]
+        let original = if io.is_none() {
+            self.preparation_io()?
+        } else {
+            None
+        };
+        #[cfg(feature = "filesystem")]
+        let io = io.or(original.as_ref());
+        let grants =
+            self.authorize_file_read(file, scope, ceiling.unwrap_or(scope.grants()), io)?;
         #[cfg(feature = "filesystem")]
         let created = self.scope.created_reference(file);
         #[cfg(not(feature = "filesystem"))]
@@ -407,8 +491,14 @@ impl TaskContext {
             .ok_or_else(|| {
                 content_error(io, ErrorCode::Unsupported, "content reader is not bound")
             })?;
-        let (bytes, hold) =
-            verified_content_bytes(reader, file, file.descriptor().byte_length(), io).await?;
+        let (bytes, hold) = verified_content_bytes(
+            reader,
+            file,
+            file.descriptor().byte_length(),
+            Some(grants.grants),
+            io,
+        )
+        .await?;
         #[cfg(feature = "filesystem")]
         if let Some(hold) = hold {
             hold.into_retained()?;
@@ -440,7 +530,14 @@ impl TaskContext {
             self.scope.verify_created_write(writer.volume(), io).await?;
         }
         let (file, hold) = writer
-            .observe_staged_once(operation_id, scope.limits.file_bytes, io)?
+            .observe_staged_once(
+                operation_id,
+                scope.limits.file_bytes,
+                crate::conversation::ContentAccess {
+                    ceiling: Some(scope.grants()),
+                    io,
+                },
+            )?
             .await?;
         if io.is_some() {
             self.scope.verify_created_write(writer.volume(), io).await?;

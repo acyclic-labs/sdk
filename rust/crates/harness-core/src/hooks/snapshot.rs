@@ -26,7 +26,7 @@ impl Hooks {
                 &bytes,
                 Self::MEDIA_TYPE,
                 "hooks.json",
-                None,
+                crate::conversation::ContentAccess::default(),
             )?
             .await?
             .0)

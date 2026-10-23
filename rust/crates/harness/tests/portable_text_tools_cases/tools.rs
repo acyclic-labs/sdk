@@ -69,7 +69,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             b"one two",
             "text/plain",
             "source.txt",
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )?
         .await?
         .0;
@@ -155,7 +155,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             b"user edit",
             "text/plain",
             "source.txt",
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )?
         .await?
         .0;
@@ -238,7 +238,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             b"later user edit",
             "text/plain",
             "second.txt",
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )?
         .await?
         .0;

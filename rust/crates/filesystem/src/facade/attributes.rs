@@ -15,10 +15,11 @@ pub enum NamedAttributeWriteMode {
     Replace,
 }
 
-async fn read_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(super) async fn read_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     volume: &Volume<A, O>,
     metadata: FileMetadata,
     name: &AttributeName,
+    maximum_bytes: u64,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<Option<OwnedSourceChunk>, FsError> {
@@ -49,7 +50,7 @@ async fn read_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let Some((value, length)) = value else {
             return Ok(None);
         };
-        if length > volume.config.limits.maximum_read_bytes {
+        if length > maximum_bytes.min(volume.config.limits.maximum_read_bytes) {
             return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
         }
         let read = read_blob_range_with_accounting(
@@ -113,7 +114,7 @@ async fn list_attributes<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
 }
 
-async fn change_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(super) async fn change_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     volume: &Volume<A, O>,
     mut metadata: FileMetadata,
     name: &AttributeName,
@@ -123,29 +124,14 @@ async fn change_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     cancellation: &CancellationToken,
 ) -> Result<FileMetadata, FsError> {
     let limits = DecodeLimits::for_volume(volume.config);
-    let root = match metadata.named_attributes {
-        MetadataField::Value(root) => root,
-        MetadataField::Unavailable if value.is_none() => return Err(FsError::NotFound),
-        MetadataField::Unavailable => {
-            let encoded = crate::kernel::codec::encode_owned(accounting, |observe, reserve| {
-                encode_attribute_page(
-                    &AttributePage::Leaf(Vec::new()),
-                    limits.maximum_page_items,
-                    observe,
-                    reserve,
-                )
-            })?;
-            volume
-                .fs
-                .put_encoded_with_accounting(
-                    ObjectKind::AttributePage,
-                    encoded,
-                    accounting,
-                    cancellation,
-                )
-                .await?
-        }
-    };
+    let root = attribute_root(
+        volume,
+        metadata.named_attributes,
+        value.map(|(_, mode)| mode),
+        accounting,
+        cancellation,
+    )
+    .await?;
     let (entry, allocation) = lookup_attribute_async_with_accounting(
         &volume.fs.inner.objects,
         root,
@@ -160,14 +146,7 @@ async fn change_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .map_or(0, |entry| usize_to_u64(entry.name.retained_bytes()));
     let mut current = Owned::new(entry, allocation, bytes);
     let result = async {
-        match (value.map(|(_, mode)| mode), current.value.is_some()) {
-            (Some(NamedAttributeWriteMode::Create), true)
-            | (Some(NamedAttributeWriteMode::Replace), false) => {
-                return Err(FsError::CreationRejected);
-            }
-            (None, false) => return Err(FsError::NotFound),
-            _ => {}
-        }
+        require_attribute_mode(value.map(|(_, mode)| mode), current.value.is_some())?;
         let blob = if let Some((bytes, _)) = value {
             let length = usize_to_u64(bytes.len());
             if length > maximum_value_bytes {
@@ -237,6 +216,21 @@ async fn change_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     .await;
     current.retire(accounting)?;
     result
+}
+
+fn require_attribute_mode(
+    mode: Option<NamedAttributeWriteMode>,
+    present: bool,
+) -> Result<(), FsError> {
+    match (mode, present) {
+        (Some(NamedAttributeWriteMode::Create), true)
+        | (Some(NamedAttributeWriteMode::Replace), false) => {
+            return Err(FsError::CreationRejected);
+        }
+        (None, false) => return Err(FsError::NotFound),
+        _ => {}
+    }
+    Ok(())
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
@@ -337,7 +331,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             let metadata = self
                 .read_metadata_with_accounting(file, &mut accounting, cancellation)
                 .await?;
-            read_attribute(&self.volume, metadata, name, &mut accounting, cancellation).await
+            read_attribute(
+                &self.volume,
+                metadata,
+                name,
+                self.volume.config.limits.maximum_read_bytes,
+                &mut accounting,
+                cancellation,
+            )
+            .await
         }
         .await;
         budget.finish(result, &accounting)
@@ -460,7 +462,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
                 cancellation,
             )
             .await?;
-            read_attribute(&self.volume, metadata, name, &mut accounting, cancellation).await
+            read_attribute(
+                &self.volume,
+                metadata,
+                name,
+                self.volume.config.limits.maximum_read_bytes,
+                &mut accounting,
+                cancellation,
+            )
+            .await
         }
         .await;
         budget.finish(result, &accounting)
@@ -545,4 +555,42 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
         .await;
         budget.finish(result, &accounting)
     }
+}
+
+async fn attribute_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    volume: &Volume<A, O>,
+    attributes: MetadataField<ObjectId>,
+    mode: Option<NamedAttributeWriteMode>,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<ObjectId, FsError> {
+    let limits = DecodeLimits::for_volume(volume.config);
+    let root = match attributes {
+        MetadataField::Value(root) => root,
+        MetadataField::Unavailable if mode.is_none() => return Err(FsError::NotFound),
+        MetadataField::Unavailable if matches!(mode, Some(NamedAttributeWriteMode::Replace)) => {
+            return Err(FsError::CreationRejected);
+        }
+        MetadataField::Unavailable => {
+            let encoded = crate::kernel::codec::encode_owned(accounting, |observe, reserve| {
+                encode_attribute_page(
+                    &AttributePage::Leaf(Vec::new()),
+                    limits.maximum_page_items,
+                    observe,
+                    reserve,
+                )
+            })?;
+            volume
+                .fs
+                .put_encoded_with_accounting(
+                    ObjectKind::AttributePage,
+                    encoded,
+                    accounting,
+                    cancellation,
+                )
+                .await?
+        }
+    };
+
+    Ok(root)
 }

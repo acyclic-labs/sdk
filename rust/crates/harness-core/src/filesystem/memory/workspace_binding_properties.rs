@@ -99,7 +99,7 @@ async fn check(text: &[String; 3], fault: Fault) -> TestCaseResult {
                 first.as_bytes(),
                 "text/plain",
                 "left",
-                None,
+                crate::conversation::ContentAccess::default(),
             )
             .unwrap()
             .await
@@ -109,7 +109,7 @@ async fn check(text: &[String; 3], fault: Fault) -> TestCaseResult {
     let right_bytes = read_workspace(&right, &path).await;
     let initial_bytes = left
         .content_verifier
-        .read(&initial, 65536, None)
+        .read(&initial, 65536, None, None)
         .unwrap()
         .await
         .ok()

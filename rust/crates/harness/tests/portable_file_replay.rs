@@ -262,7 +262,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             text.as_bytes(),
             "text/plain",
             "source.txt",
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )?
         .await?
         .0;
@@ -741,7 +741,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                     b"later destination edit",
                     "text/plain",
                     "destination.txt",
-                    None,
+                    acyclic_harness::conversation::ContentAccess::default(),
                 )?
                 .await?
                 .0;
@@ -753,7 +753,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                     b"later user edit",
                     "text/plain",
                     "source.txt",
-                    None,
+                    acyclic_harness::conversation::ContentAccess::default(),
                 )?
                 .await?
                 .0;

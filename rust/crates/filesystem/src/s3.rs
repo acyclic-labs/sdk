@@ -180,6 +180,20 @@ impl<A, O> Workspace<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
+    async fn disclose<T>(&self, result: Result<T, S3Error>) -> Result<T, S3Error> {
+        #[cfg(test)]
+        if access_tests::omitted() {
+            return result;
+        }
+        use crate::facade::FsWork as _;
+        let cancellation = CancellationToken::new();
+        let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+        self.workspace
+            .check_current_access(&mut accounting, &cancellation)
+            .await?;
+        result
+    }
+
     /// Starts one unpublished multipart object transaction.
     pub async fn create_multipart_upload(
         &self,
@@ -235,31 +249,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
         generation: crate::Generation<A, O>,
         key: &str,
     ) -> Result<S3ObjectHead, S3Error> {
-        let mut checkout = self
-            .workspace
-            .checkout(
-                GenerationSelector::Exact(generation.id()),
-                CheckoutMode::read_only_pinned(),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map_err(|failure| failure.error)?
-            .value;
-        let path = key_path(key, checkout.volume_config())?;
-        let record = checkout
-            .lookup_no_follow(&path, WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map_err(WorkspaceError::engine)?
-            .value
-            .record
-            .ok_or(S3Error::NotFound)?;
-        let content_length = regular_bytes(&record.payload)?;
-        Ok(S3ObjectHead {
-            key: key.to_owned(),
-            content_length,
-            etag: etag(generation.id().digest().as_bytes(), key),
-        })
+        let result = async {
+            let mut checkout = self
+                .workspace
+                .checkout(
+                    GenerationSelector::Exact(generation.id()),
+                    CheckoutMode::read_only_pinned(),
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .await
+                .map_err(|failure| failure.error)?
+                .value;
+            let path = key_path(key, checkout.volume_config())?;
+            let record = checkout
+                .lookup_no_follow(&path, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await
+                .map_err(WorkspaceError::engine)?
+                .value
+                .record
+                .ok_or(S3Error::NotFound)?;
+            let content_length = regular_bytes(&record.payload)?;
+            Ok(S3ObjectHead {
+                key: key.to_owned(),
+                content_length,
+                etag: etag(generation.id().digest().as_bytes(), key),
+            })
+        }
+        .await;
+        self.disclose(result).await
     }
 
     /// Reads one complete object under a caller byte bound.
@@ -313,28 +331,32 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
         key: &str,
         range: ByteRange,
     ) -> Result<OwnedBytes, S3Error> {
-        let mut checkout = self
-            .workspace
-            .checkout(
-                GenerationSelector::Exact(generation.id()),
-                CheckoutMode::read_only_pinned(),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map_err(|failure| failure.error)?
-            .value;
-        let path = key_path(key, checkout.volume_config())?;
-        checkout
-            .read_file_range(
-                &path,
-                range,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value.bytes)
-            .map_err(|failure| S3Error::Workspace(WorkspaceError::engine(failure)))
+        let result = async {
+            let mut checkout = self
+                .workspace
+                .checkout(
+                    GenerationSelector::Exact(generation.id()),
+                    CheckoutMode::read_only_pinned(),
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .await
+                .map_err(|failure| failure.error)?
+                .value;
+            let path = key_path(key, checkout.volume_config())?;
+            checkout
+                .read_file_range(
+                    &path,
+                    range,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value.bytes)
+                .map_err(|failure| S3Error::Workspace(WorkspaceError::engine(failure)))
+        }
+        .await;
+        self.disclose(result).await
     }
 
     /// Atomically creates or replaces one object.
@@ -596,6 +618,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
         selected: Option<crate::Generation<A, O>>,
         options: S3ListOptions,
     ) -> Result<S3List, S3Error> {
+        let result = self.list_objects_selected(selected, options).await;
+        self.disclose(result).await
+    }
+
+    async fn list_objects_selected(
+        &self,
+        selected: Option<crate::Generation<A, O>>,
+        options: S3ListOptions,
+    ) -> Result<S3List, S3Error> {
         validate_list_options(&options)?;
         let query = list_query_digest(&options);
         let generation = match options.continuation.as_ref() {
@@ -662,6 +693,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
         .await
     }
 }
+
+#[cfg(test)]
+#[path = "s3/access_tests.rs"]
+mod access_tests;
 
 enum ListingTask {
     Directory {

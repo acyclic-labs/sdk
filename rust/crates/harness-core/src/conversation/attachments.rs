@@ -203,6 +203,7 @@ pub async fn verified_content_bytes<'a, V: ContentResidencyVerifier + ?Sized>(
     verifier: &'a V,
     reference: &'a FileRef,
     maximum_bytes: u64,
+    ceiling: Option<&'a crate::Capabilities>,
     io: Option<&'a ContentIo>,
 ) -> Result<(acyclic_stream::OwnedBytes, Option<ContentHold<'a>>)> {
     if reference.descriptor().byte_length() > maximum_bytes {
@@ -213,7 +214,9 @@ pub async fn verified_content_bytes<'a, V: ContentResidencyVerifier + ?Sized>(
         ));
     }
     let hold;
-    let bytes = verifier.read(reference, maximum_bytes, io)?.await?;
+    let bytes = verifier
+        .read(reference, maximum_bytes, ceiling, io)?
+        .await?;
     #[cfg(feature = "filesystem")]
     {
         hold = match io {
@@ -250,7 +253,7 @@ pub async fn load_manifest<'a, V: ContentResidencyVerifier + ?Sized>(
     }
     let _bytes_hold;
     let bytes = verifier
-        .read(reference, reference.descriptor().byte_length(), io)?
+        .read(reference, reference.descriptor().byte_length(), None, io)?
         .await?;
     #[cfg(feature = "filesystem")]
     {
@@ -309,7 +312,7 @@ pub async fn verified_attachment_manifest<'a, V: ContentResidencyVerifier + ?Siz
             }
             limits.validate_file(&item.file, work)
         })?;
-        verified_content_bytes(verifier, &item.file, limits.file_bytes, io).await?;
+        verified_content_bytes(verifier, &item.file, limits.file_bytes, None, io).await?;
     }
     Ok(output)
 }

@@ -426,7 +426,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
             1_024,
             &IdempotencyKey::new("wide-resolved-notice")?,
             None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let receipt = controller

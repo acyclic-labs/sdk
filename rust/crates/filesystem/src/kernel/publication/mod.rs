@@ -132,6 +132,12 @@ pub enum PublicationError {
         /// Volume authenticated by the generation root.
         actual: VolumeId,
     },
+    /// A physical projection still holds the prior policy revision.
+    #[error("policy metadata cannot change while a native projection is active")]
+    ActiveProjection,
+    /// The current or candidate policy metadata could not be authenticated.
+    #[error("projection policy validation failed: {0}")]
+    ProjectionValidation(#[source] Box<crate::FsError>),
     /// Whole-generation authentication failed.
     #[error(transparent)]
     Closure(#[from] ClosureError),
@@ -156,6 +162,7 @@ mod construction;
 pub(crate) use construction::contextual_publication_fingerprint;
 use construction::*;
 mod engine;
+mod projection;
 use engine::*;
 mod api;
 pub use api::publish_generation;

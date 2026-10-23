@@ -81,6 +81,7 @@ impl ProjFsSession {
         if out.is_some() {
             return Err(NativeMountError::ControlPending);
         }
+        let policy_lease = source.projection_policy_lease(request.writable, work)?;
         let original_work = source.native_original_work()?;
         let callback_guard = source.native_callback_guard();
         if callback_guard.is_some() && original_work.is_none()
@@ -115,6 +116,7 @@ impl ProjFsSession {
             return Err(NativeMountError::InvalidDestination);
         }
         let runtime = Arc::new(Runtime {
+            _policy_lease: policy_lease,
             source,
             work: Mutex::new(work.clone()),
             active_work: Mutex::new(Default::default()),
@@ -190,17 +192,15 @@ impl ProjFsSession {
         );
         let root_name = HSTRING::from(runtime.root.as_os_str());
         let mut mapping = PRJ_NOTIFICATION_MAPPING {
-            NotificationBitMask: FILE_NOTIFICATIONS,
+            NotificationBitMask: open_notifications(request.writable),
             NotificationRoot: PCWSTR::from_raw(NOTIFICATION_ROOT.as_ptr()),
         };
         let mut options = PRJ_STARTVIRTUALIZING_OPTIONS {
             Flags: PRJ_FLAG_USE_NEGATIVE_PATH_CACHE,
             ..Default::default()
         };
-        if request.writable {
-            options.NotificationMappings = &raw mut mapping;
-            options.NotificationMappingsCount = 1;
-        }
+        options.NotificationMappings = &raw mut mapping;
+        options.NotificationMappingsCount = 1;
         if warm.is_none() {
             (&mut &*work).attempt_io(WriteOperations.delta(1), || {
                 // SAFETY: the authenticated empty root and GUID remain resident.
@@ -686,6 +686,8 @@ impl ProjFsSession {
 
 pub(super) fn source_hresult(error: &MountSourceError) -> HRESULT {
     match error.semantic_error() {
+        MountSourceError::AccessDenied => HRESULT::from_win32(5),
+        MountSourceError::ReadOnly => HRESULT::from_win32(19),
         MountSourceError::NotFound => HR_FILE_NOT_FOUND,
         MountSourceError::AlreadyExists => HR_ALREADY_EXISTS,
         // The statuses NTFS gives a rename across kinds or over a

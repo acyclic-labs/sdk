@@ -27,7 +27,12 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_open(
         address,
         flags & libc::O_ACCMODE != libc::O_RDONLY,
         |context, work| {
-            let opened = context.open(&*mount_path(path, work)?, 0, work)?;
+            let access = match flags & libc::O_ACCMODE {
+                libc::O_RDONLY => super::super::MountOpenAccess::Read,
+                libc::O_WRONLY => super::super::MountOpenAccess::Write,
+                _ => super::super::MountOpenAccess::ReadWrite,
+            };
+            let opened = context.open(&*mount_path(path, work)?, access, 0, work)?;
             work.charge(copy_work(std::mem::size_of::<u64>() as u64))?;
             // SAFETY: the bridge supplies a writable handle.
             unsafe { handle.write(opened) };
@@ -48,7 +53,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_create(
 ) -> c_int {
     ffi(address, true, |context, work| {
         let path = mount_path(path, work)?;
-        context.mutate(
+        let created = context.mutate(
             || {
                 context.source.create_file(
                     &path,
@@ -59,7 +64,12 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_create(
             },
             work,
         )?;
-        let opened = context.open(&path, context.completed.load(Ordering::Acquire), work)?;
+        let opened = context.open_created(
+            &path,
+            &created,
+            context.completed.load(Ordering::Acquire),
+            work,
+        )?;
         work.charge(copy_work(std::mem::size_of::<u64>() as u64))?;
         // SAFETY: the bridge supplies a writable handle.
         unsafe { handle.write(opened) };

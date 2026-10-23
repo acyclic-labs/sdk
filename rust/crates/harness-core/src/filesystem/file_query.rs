@@ -10,6 +10,7 @@ use acyclic_stream::{BoxProviderFuture, ReadRequest, Record, StreamPath, StreamP
 use futures::StreamExt as _;
 use std::sync::Arc;
 
+mod policy;
 mod projection;
 use projection::{Selection, generation};
 
@@ -18,6 +19,7 @@ pub struct FilesystemFileQuery<P, O> {
     reader: Arc<FilesystemContentVerifier<StreamAuthorityStore<P>, O>>,
     volume: VolumeRef,
     budget: WorkBudget,
+    policy: Arc<acyclic_fs::access::AccessView>,
 }
 
 impl<P, O> Clone for FilesystemFileQuery<P, O> {
@@ -26,13 +28,16 @@ impl<P, O> Clone for FilesystemFileQuery<P, O> {
             reader: self.reader.clone(),
             volume: self.volume.clone(),
             budget: self.budget,
+            policy: Arc::clone(&self.policy),
         }
     }
 }
 
-impl<P, O> FilesystemContentVerifier<StreamAuthorityStore<P>, O> {
+impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static>
+    FilesystemContentVerifier<StreamAuthorityStore<P>, O>
+{
     /// Binds the existing file reader and a finite per-revision query allowance.
-    pub fn file_query(
+    pub async fn file_query(
         self: &Arc<Self>,
         volume: &VolumeRef,
         budget: WorkBudget,
@@ -48,10 +53,20 @@ impl<P, O> FilesystemContentVerifier<StreamAuthorityStore<P>, O> {
                 "file query requires an agent or project volume and finite work".into(),
             ));
         }
+        let io = PreparationIo::from_budget(budget, &acyclic_fs::CancellationToken::new())?;
+        let reference =
+            workspace_ref(self.host.provider.clone(), &volume.storage_name(&mut None)?)?;
+        let workspace = self.host.open(&reference, Some(&io)).await?;
+        let view = policy::compile(self, &workspace, &io).await?;
+        let bytes = (std::mem::size_of::<acyclic_fs::access::AccessView>()
+            + 2 * std::mem::size_of::<usize>()) as u64;
+        io.retain_owned(bytes)?;
+        io.allocation_attempt(bytes)?;
         Ok(FilesystemFileQuery {
             reader: self.clone(),
             volume: volume.clone(),
             budget,
+            policy: Arc::new(acyclic_fs::access::AccessView::new(view)),
         })
     }
 }
@@ -135,6 +150,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FileQuerySource
                 &self.volume.storage_name(&mut None)?,
             )?;
             let workspace = self.reader.host.open(&reference, Some(&io)).await?;
+            let permissions = self.authorize_policy(&workspace, &io).await?;
             let (provider, path) = self
                 .reader
                 .host
@@ -146,37 +162,12 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FileQuerySource
             if watermarks.accepted < 2 || watermarks.durable > watermarks.accepted {
                 return Err(task_volume::Error::ResetRequired);
             }
-            let mut identity = blake3::Hasher::new();
-            identity.update(path.as_str().as_bytes());
-            identity.update(genesis.commit_id.as_bytes());
-            identity.update(
-                &serde_json::to_vec(&self.volume)
-                    .map_err(|_| task_volume::Error::InvalidSegment)?,
-            );
-            let volume = *identity.finalize().as_bytes();
-            let epoch = uuid::Uuid::from_bytes(
-                genesis.commit_id.as_bytes()[..16]
-                    .try_into()
-                    .map_err(|_| task_volume::Error::InvalidSegment)?,
-            );
-            let query_id = *blake3::hash(
-                &serde_json::to_vec(&query).map_err(|_| task_volume::Error::InvalidSegment)?,
-            )
-            .as_bytes();
             let supplied = cursor.is_some();
-            let head = Cursor {
-                volume,
-                epoch,
-                schema: SCHEMA,
-                query: query_id,
-                position: watermarks.accepted,
-                accepted: watermarks.accepted,
-                durable: watermarks.durable,
-                commit: [0; 32],
-            };
+            let head = query_head(&path, &genesis, &self.volume, &query, watermarks)?;
             let (cursor, anchor, valid_resume) =
                 cut(provider.as_ref(), &path, cursor, head).await?;
             let current = generation(&workspace, &anchor, &io).await?;
+            self.require_snapshot(&permissions, &current, &io).await?;
             let selection = Selection::read(
                 &current,
                 &self.volume,
@@ -189,8 +180,8 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FileQuerySource
             let snapshot = (!valid_resume).then(|| Snapshot {
                 files: selection.files.values().cloned().collect(),
                 generation: task_volume::Generation {
-                    volume,
-                    epoch,
+                    volume: cursor.volume,
+                    epoch: cursor.epoch,
                     position: cursor.position,
                     commit: cursor.commit,
                 },
@@ -203,6 +194,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FileQuerySource
                     acyclic_stream::CommitId::from_bytes(cursor.commit),
                 )
                 .await?;
+            super::access::require_current(&workspace, &permissions, &io).await?;
             let changes = self.changes(
                 query,
                 current,
@@ -248,7 +240,9 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
                         &acyclic_fs::CancellationToken::new(),
                     )?;
                     source.authorize(&query, &io).await?;
+                    let permissions = source.authorize_policy(&current.workspace(), &io).await?;
                     let next = generation(&current.workspace(), &record, &io).await?;
+                    source.require_snapshot(&permissions, &next, &io).await?;
                     let maximum = u32::try_from(source.budget.items_returned)
                         .map_err(|_| task_volume::Error::LimitExceeded)?;
                     let (diff, _allocation) = io.sdk(
@@ -274,6 +268,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
                         removed,
                         cursor: cursor.clone(),
                     };
+                    super::access::require_current(&current.workspace(), &permissions, &io).await?;
                     Ok(Some((change, (records, source, next, cursor, selection))))
                 }
             },
@@ -304,4 +299,37 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
         )?;
         Ok(())
     }
+}
+
+fn query_head(
+    path: &StreamPath,
+    genesis: &Record,
+    volume_ref: &VolumeRef,
+    query: &Query,
+    watermarks: acyclic_stream::StreamWatermarks,
+) -> task_volume::Result<Cursor> {
+    let mut identity = blake3::Hasher::new();
+    identity.update(path.as_str().as_bytes());
+    identity.update(genesis.commit_id.as_bytes());
+    identity
+        .update(&serde_json::to_vec(volume_ref).map_err(|_| task_volume::Error::InvalidSegment)?);
+    let volume = *identity.finalize().as_bytes();
+    let epoch = uuid::Uuid::from_bytes(
+        genesis.commit_id.as_bytes()[..16]
+            .try_into()
+            .map_err(|_| task_volume::Error::InvalidSegment)?,
+    );
+    let query_id =
+        *blake3::hash(&serde_json::to_vec(query).map_err(|_| task_volume::Error::InvalidSegment)?)
+            .as_bytes();
+    Ok(Cursor {
+        volume,
+        epoch,
+        schema: SCHEMA,
+        query: query_id,
+        position: watermarks.accepted,
+        accepted: watermarks.accepted,
+        durable: watermarks.durable,
+        commit: [0; 32],
+    })
 }

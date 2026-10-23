@@ -116,7 +116,7 @@ impl LocalHarness {
                 HEAD,
                 Some(&generation),
                 self.limits.file_bytes,
-                None,
+                crate::conversation::ContentAccess::default(),
             )
             .await
         {
@@ -262,7 +262,7 @@ impl LocalHarness {
                     limit,
                     &key,
                     Some(&generation),
-                    None,
+                    crate::conversation::ContentAccess::default(),
                 )
                 .await
                 .map(drop)
@@ -435,68 +435,15 @@ impl LocalHarness {
             )
             .map(Some);
         }
-        // Disabling automatic admissions must not make an unrelated turn
-        // depend on a goal body outside the configured readable domain.
-        // Valid blocked goals still determine the terminal result.
-        let goal_generation = if self.goal_continuations.is_none() {
-            let workspace = crate::filesystem::workspace_ref(
-                self.scratch.provider().clone(),
-                &self.scratch.storage_name(&mut None)?,
-            )?;
-            let generation = self.files.resolve(&workspace, None).await?.generation;
-            match self
-                .files
-                .stat(&workspace, Some(&generation), "/GOAL.md")
-                .await
-            {
-                Ok(stat)
-                    if stat.kind == acyclic_fs::kernel::FileKind::Regular
-                        && stat
-                            .logical_bytes
-                            .is_some_and(|bytes| bytes <= self.limits.file_bytes) => {}
-                Ok(_) | Err(Error::NotFound(_)) => return Ok(None),
-                Err(error) => return Err(error),
-            }
-            Some(generation)
-        } else {
-            None
-        };
-        let (source, bytes, publication) = match self
-            .files
-            .read_private_path_indexed(
-                &self.scratch,
-                &self.read_grant(&self.scratch)?,
-                "GOAL.md",
-                goal_generation.as_ref(),
-                self.limits.file_bytes,
-                None,
-            )
-            .await
-        {
-            Ok(file) => file,
-            Err(Error::NotFound(_)) => return Ok(None),
-            Err(error) => return Err(error),
-        };
-        let goal = match GoalView::from_file(source, &bytes, self.limits.file_bytes) {
-            Ok(goal) => goal,
-            Err(Error::Invalid(_)) if self.goal_continuations.is_none() => return Ok(None),
-            Err(error) => return Err(error),
+        let Some((goal, publication)) = self.read_continuation_goal().await? else {
+            return Ok(None);
         };
         if goal.status == GoalStatus::Blocked {
             self.record_goal_revision(&current, &generation, &goal.source, publication)
                 .await?;
         }
+        require_continuable_goal(&goal)?;
         let unreachable = GoalBlockedReason::TaskViewUnreachable;
-        if goal.status == GoalStatus::Blocked
-            && goal.reason.as_deref() == Some(unreachable.to_string().as_str())
-        {
-            return Err(Error::GoalBlocked(unreachable));
-        }
-        // A goal whose final state is blocked is the loop's result, so a
-        // headless caller reports it instead of a completed turn.
-        if goal.status == GoalStatus::Blocked {
-            return Err(Error::GoalBlocked(GoalBlockedReason::Declared));
-        }
         let Some(policy) = self.goal_continuations else {
             return Ok(None);
         };
@@ -542,6 +489,58 @@ impl LocalHarness {
         }
     }
 
+    async fn read_continuation_goal(&self) -> Result<Option<(GoalView, Option<OperationId>)>> {
+        // Disabling automatic admissions must not make an unrelated turn
+        // depend on a goal body outside the configured readable domain.
+        // Valid blocked goals still determine the terminal result.
+        let goal_generation = if self.goal_continuations.is_none() {
+            let workspace = crate::filesystem::workspace_ref(
+                self.scratch.provider().clone(),
+                &self.scratch.storage_name(&mut None)?,
+            )?;
+            let generation = self.files.resolve(&workspace, None).await?.generation;
+            match self
+                .files
+                .stat(&workspace, Some(&generation), "/GOAL.md")
+                .await
+            {
+                Ok(stat)
+                    if stat.kind == acyclic_fs::kernel::FileKind::Regular
+                        && stat
+                            .logical_bytes
+                            .is_some_and(|bytes| bytes <= self.limits.file_bytes) => {}
+                Ok(_) | Err(Error::NotFound(_)) => return Ok(None),
+                Err(error) => return Err(error),
+            }
+            Some(generation)
+        } else {
+            None
+        };
+        let (source, bytes, publication) = match self
+            .files
+            .read_private_path_indexed(
+                &self.scratch,
+                &self.read_grant(&self.scratch)?,
+                "GOAL.md",
+                goal_generation.as_ref(),
+                self.limits.file_bytes,
+                crate::conversation::ContentAccess::default(),
+            )
+            .await
+        {
+            Ok(file) => file,
+            Err(Error::NotFound(_)) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let goal = match GoalView::from_file(source, &bytes, self.limits.file_bytes) {
+            Ok(goal) => goal,
+            Err(Error::Invalid(_)) if self.goal_continuations.is_none() => return Ok(None),
+            Err(error) => return Err(error),
+        };
+
+        Ok(Some((goal, publication)))
+    }
+
     pub(super) async fn loop_root(&self, task: TaskId) -> Result<OperationId> {
         let operation = OperationId::from_bytes(task.into_bytes());
         let grant = ContentGrant::verify(
@@ -562,7 +561,7 @@ impl LocalHarness {
                 &crate::IdempotencyKey::new(format!("local-turn:{operation}"))?,
                 HEAD,
                 self.limits.file_bytes,
-                None,
+                crate::conversation::ContentAccess::default(),
             )
             .await?
         else {
@@ -576,7 +575,7 @@ impl LocalHarness {
                 HEAD,
                 Some(&self.files.file_generation(&file, None)?),
                 self.limits.file_bytes,
-                None,
+                crate::conversation::ContentAccess::default(),
             )
             .await?;
         let turn = record::decode(&bytes).map_err(storage)?;
@@ -638,4 +637,19 @@ impl LocalHarness {
         }
         Ok(())
     }
+}
+
+fn require_continuable_goal(goal: &GoalView) -> Result<()> {
+    let unreachable = GoalBlockedReason::TaskViewUnreachable;
+    if goal.status == GoalStatus::Blocked
+        && goal.reason.as_deref() == Some(unreachable.to_string().as_str())
+    {
+        return Err(Error::GoalBlocked(unreachable));
+    }
+    // A goal whose final state is blocked is the loop's result, so a
+    // headless caller reports it instead of a completed turn.
+    if goal.status == GoalStatus::Blocked {
+        return Err(Error::GoalBlocked(GoalBlockedReason::Declared));
+    }
+    Ok(())
 }

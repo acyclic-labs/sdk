@@ -314,7 +314,9 @@ impl<'d> Settled<'d> {
         accounting: &mut super::allocation::KernelAccounting<'_>,
     ) -> Result<Option<CheckoutDependencies>, crate::FsError> {
         // Deferred regions settle after the ledger pass; restore its order.
-        self.regions.value.sort_unstable_by_key(|(region, _)| *region);
+        self.regions
+            .value
+            .sort_unstable_by_key(|(region, _)| *region);
         dependencies.followed_with_accounting(&self.regions.value, Some(owner), accounting)
     }
 
@@ -464,8 +466,14 @@ pub(crate) async fn classify_rebase_settling_with_accounting<'d, P: AccountingRe
         .map_err(ClassifyRebaseFailure::Accounting)?;
     let ledger = dependencies.len();
     let result = async {
-        work.ledger_pass(probe, [base, candidate], dependencies, accounting, cancellation)
-            .await?;
+        work.ledger_pass(
+            probe,
+            [base, candidate],
+            dependencies,
+            accounting,
+            cancellation,
+        )
+        .await?;
         work.deferred_regions(probe, candidate, ledger, accounting, cancellation)
             .await
     }
@@ -479,15 +487,19 @@ pub(crate) async fn classify_rebase_settling_with_accounting<'d, P: AccountingRe
     let retired = pairs.retire(accounting).and(deferred.retire(accounting));
     if let Err(error) = result.and_then(|()| retired.map_err(ClassifyRebaseFailure::Accounting)) {
         let retired = conflicts.conflicts.retire(accounting);
-        settled.retire(accounting).and(retired).map_err(ClassifyRebaseFailure::Accounting)?;
+        settled
+            .retire(accounting)
+            .and(retired)
+            .map_err(ClassifyRebaseFailure::Accounting)?;
         return Err(error);
     }
     let ConflictSink {
-        conflicts: Owned {
-            value: mut conflicts,
-            allocation,
-            ..
-        },
+        conflicts:
+            Owned {
+                value: mut conflicts,
+                allocation,
+                ..
+            },
         truncated,
         ..
     } = conflicts;
@@ -704,8 +716,14 @@ impl<'d> Classification<'d> {
                 file: replacement,
                 expected: actual,
             });
-            self.record(region, (usage, expected, actual), settlement, ledger, accounting)
-                .map_err(ClassifyRebaseFailure::Accounting)?;
+            self.record(
+                region,
+                (usage, expected, actual),
+                settlement,
+                ledger,
+                accounting,
+            )
+            .map_err(ClassifyRebaseFailure::Accounting)?;
         }
         Ok(())
     }
@@ -720,7 +738,14 @@ impl<'d> Classification<'d> {
         accounting: &mut super::allocation::KernelAccounting<'_>,
     ) -> Result<(), crate::FsError> {
         match settlement {
-            Some(settlement) => settle(&mut self.settled, region, states, settlement, ledger, accounting),
+            Some(settlement) => settle(
+                &mut self.settled,
+                region,
+                states,
+                settlement,
+                ledger,
+                accounting,
+            ),
             None => self.conflicts.push(region, states, accounting),
         }
     }

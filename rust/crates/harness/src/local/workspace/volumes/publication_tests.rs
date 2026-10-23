@@ -254,6 +254,10 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
         &workspace.store,
         &acyclic_fs::hold_root(task.path()).map_err(storage)?,
         &mut rebound,
+        (
+            harness.issuer.as_ref().unwrap(),
+            harness.signed.agent().unwrap(),
+        ),
     )
     .await?;
     let rebound = rebound.named(Some("scratch"))?.1;
@@ -346,6 +350,7 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
     let blocked = Arc::new(MountedVolume {
         workspace: crate::tools::git::OwnedView::Volume(scratch.workspace.workspace().clone()),
         destination: mounts.root.join(".volumes/zzz"),
+        options: scratch.options.clone(),
         native: StateArc::new(AsyncMutex::new(None)),
         users: StateArc::new(crate::sync::SyncMutex::new(0)),
         execution: StateArc::new(AsyncMutex::new(())),
@@ -419,6 +424,7 @@ async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> 
     let busy = Arc::new(MountedVolume {
         workspace: crate::tools::git::OwnedView::Volume(scratch.workspace.workspace().clone()),
         destination: mounts.root.join(".volumes/aaa"),
+        options: scratch.options.clone(),
         native: StateArc::new(AsyncMutex::new(None)),
         users: StateArc::new(crate::sync::SyncMutex::new(1)),
         execution: StateArc::new(AsyncMutex::new(())),
@@ -478,6 +484,7 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
     let second = Arc::new(MountedVolume {
         workspace: crate::tools::git::OwnedView::Volume(first.workspace.workspace().clone()),
         destination: other.path().join(SCRATCH_PATH),
+        options: first.options.clone(),
         native: StateArc::new(AsyncMutex::new(None)),
         users: StateArc::new(crate::sync::SyncMutex::new(0)),
         execution: StateArc::new(AsyncMutex::new(())),

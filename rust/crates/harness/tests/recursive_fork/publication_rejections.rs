@@ -194,7 +194,7 @@ pub(super) async fn publication_rejections(
         1_024,
         &IdempotencyKey::new("rogue-scratch")?,
         None,
-        None,
+        acyclic_harness::conversation::ContentAccess::default(),
     )
     .await?;
     let mut rogue_seed = seed.clone();

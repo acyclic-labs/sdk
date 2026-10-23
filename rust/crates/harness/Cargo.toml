@@ -26,6 +26,11 @@ path = "tests/main.rs"
 name = "e2e-progress-model"
 path = "tests/e2e_progress_model.rs"
 
+[[test]]
+name = "filesystem_access"
+path = "tests/filesystem_access.rs"
+required-features = ["filesystem", "test-support"]
+
 [lib]
 crate-type = ["rlib", "cdylib"]
 

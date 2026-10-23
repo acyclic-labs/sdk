@@ -73,6 +73,7 @@ impl AgentHarness {
                 file,
                 (file).descriptor().byte_length(),
                 None,
+                None,
             )
             .await
             .map(|(bytes, _)| bytes)

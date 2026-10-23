@@ -5,6 +5,21 @@ fn archive_path(name: &str, bytes: &[u8]) -> String {
 }
 
 impl LocalHarness {
+    async fn authorize_checkout_context(
+        &self,
+        workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
+        io: &crate::filesystem::PreparationIo,
+    ) -> Result<()> {
+        crate::filesystem::require_unrestricted_workspace_read(
+            workspace,
+            &self.verifier,
+            &self.signed,
+            io,
+            "checkout context",
+        )
+        .await
+    }
+
     pub(super) async fn checkout_instructions(
         &self,
         workspace: &LocalWorkspace,
@@ -38,8 +53,11 @@ impl LocalHarness {
             work: &work,
             cancellation: &cancellation,
         };
+        let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
         let mut discovery = DiscoveredContext::default();
         for name in names {
+            self.authorize_checkout_context(view.workspace(), &io)
+                .await?;
             let bytes = match view
                 .read_latest(&format!("/{name}"), maximum, &mut accounting)
                 .await
@@ -52,6 +70,8 @@ impl LocalHarness {
             if let Some(observer) = self.context_read_observer {
                 observer(self, name).await?;
             }
+            self.authorize_checkout_context(view.workspace(), &io)
+                .await?;
             ContextDiscoveryLimits {
                 instruction_bytes: maximum,
                 ..Default::default()
@@ -69,7 +89,7 @@ impl LocalHarness {
                     bytes.bytes.as_ref(),
                     "text/markdown",
                     name,
-                    None,
+                    crate::conversation::ContentAccess::default(),
                 )?
                 .await?
                 .0;
@@ -91,6 +111,76 @@ impl LocalHarness {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[tokio::test]
+    async fn checkout_instructions_reject_restrictive_authority_before_disclosing_bytes()
+    -> Result<()> {
+        use acyclic_fs::access::{Action, Capability, Generations, Grant, ResourcePattern};
+        let directory = tempfile::tempdir().map_err(storage)?;
+        let project = crate::local::tests::volume(directory.path()).await?;
+        let provider = Arc::new(crate::test_support::ScriptedModelProvider::new([]));
+        let mut harness = LocalHarness::open(
+            crate::local::tests::volume_config(directory.path(), project, provider)?
+                .without_default_tools(),
+        )
+        .await?;
+        let workspace = harness
+            .workspace
+            .as_ref()
+            .expect("fixture workspace")
+            .clone();
+        std::fs::write(workspace.path.join("AGENTS.md"), b"private instructions")
+            .map_err(storage)?;
+        let names = ["AGENTS.md".to_owned()];
+        let found = harness
+            .checkout_instructions(
+                &workspace,
+                &names,
+                1024,
+                harness.input_publisher()?.as_ref(),
+            )
+            .await?;
+        assert_eq!(found.instructions.len(), 1);
+        let label = Capability {
+            layers: vec![vec![Grant {
+                actions: Action::ALL.into_iter().collect(),
+                resource: ResourcePattern {
+                    lineage_root: None,
+                    volume: None,
+                    generations: Generations::All,
+                    path: "public/**".into(),
+                },
+            }]],
+            expires_at: None,
+        }
+        .to_scope_label()
+        .map_err(storage)?;
+        let issuer = AuthorityIssuer::new(
+            "context-test",
+            [19; 32],
+            harness.verifier.audience().clone(),
+        );
+        harness.signed = issuer.issue(
+            "context-test",
+            &Capabilities::new(harness.signed.capabilities().iter().chain([label.as_str()])),
+            harness.signed.agent(),
+            None,
+            &mut None,
+        )?;
+        harness.verifier = issuer.verifier(&mut None)?;
+        assert!(matches!(
+            harness
+                .checkout_instructions(
+                    &workspace,
+                    &names,
+                    1024,
+                    harness.input_publisher()?.as_ref(),
+                )
+                .await,
+            Err(Error::FilesystemAccessConfiguration("checkout context"))
+        ));
+        Ok(())
+    }
 
     proptest! {
         // Property: archives depend only on the selected name and exact bytes;

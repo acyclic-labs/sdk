@@ -1,0 +1,3 @@
+# SDK receipts settle deferred proof-accounting retirement before custody assertions.
+cc 3db89793c3723c982223e89eb809b7dfc64fb178412c27c785566de0f732b81a # mask = [false; 8], page_size = 1, refuse_at = 3
+cc 2a5ea1b9cde2ebf76b72b717e4a632703bb139c831fb3d34cd19e5a84feb74b6 # mask = [false; 8], page_size = 1, refuse_at = 0

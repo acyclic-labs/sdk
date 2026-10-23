@@ -232,7 +232,10 @@ async fn selected_child_authored_skill_loads_with_native_work_from_its_retained_
             &skill.source.path,
             Some(&skill.source.generation),
             4096,
-            Some(&io),
+            crate::conversation::ContentAccess {
+                ceiling: None,
+                io: Some(&io),
+            },
         )?
         .await?;
     assert_eq!(bytes.as_ref(), body.as_bytes());

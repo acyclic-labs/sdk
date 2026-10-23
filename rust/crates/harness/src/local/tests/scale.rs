@@ -85,7 +85,7 @@ impl ScaleProvider {
             .ok_or_else(|| Error::Unauthorized("no bound reader".into()))?;
         for content in user_contents(request) {
             for (file, _) in content.file_parts() {
-                let bytes = reader.read(file, *maximum, None)?.await?;
+                let bytes = reader.read(file, *maximum, None, None)?.await?;
                 let text = String::from_utf8_lossy(&bytes);
                 if let Some((_, prompt)) = text.split_once("scale agent ") {
                     let agent = prompt

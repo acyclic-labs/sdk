@@ -129,13 +129,18 @@ impl ContentPublisher for TestPayloadStore {
         bytes: &'a [u8],
         media_type: &'a str,
         display_name: &'a str,
-        io: Option<&'a crate::executor::PreparationIo>,
+        access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<
         crate::conversation::BoundedContentFuture<
             'a,
             (FileRef, Option<crate::conversation::ContentHold<'a>>),
         >,
     > {
+        let crate::conversation::ContentAccess {
+            ceiling: _ceiling,
+            io,
+        } = access;
+
         crate::conversation::BoundedContentFuture::new(io, || async move {
             let reference = FileRef::new(
                 self.volume.clone(),
@@ -175,6 +180,7 @@ impl ContentResidencyVerifier for TestPayloadStore {
         &'a self,
         file: &'a FileRef,
         _maximum_bytes: u64,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {

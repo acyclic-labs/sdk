@@ -275,7 +275,7 @@ async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_resto
             format!("canonical-{sequence}").as_bytes(),
             "text/plain",
             "message.txt",
-            None,
+            crate::conversation::ContentAccess::default(),
         )?
         .await?
         .0;

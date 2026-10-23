@@ -233,7 +233,7 @@ async fn check(
         .into());
     }
     for (file, expected) in files.into_iter().zip(&expected.attachments) {
-        let bytes = reader.read(file, 65_536, None)?.await?;
+        let bytes = reader.read(file, 65_536, None, None)?.await?;
         if bytes.as_ref() != expected.as_bytes() {
             return Err(format!(
                 "attachment {}: expected {expected:?}, got {:?}",

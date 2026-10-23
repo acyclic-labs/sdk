@@ -206,10 +206,7 @@ fn foreign_fence_keeps_deferred_cleanup_storage_on_the_watch_owner()
     assert!(watch.admit_with_work(Path::new("before"), &mut birth)?);
     // Block the background consumer before producing events. The public fence
     // must perform this drain with the unrelated invocation's work context.
-    watch
-        .shared
-        .reading()
-        .blocked = true;
+    watch.shared.reading().blocked = true;
     let owner_before = original.lock().receipt();
     std::fs::rename(root.path().join("before"), root.path().join("after"))?;
     let incoming = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
@@ -222,13 +219,7 @@ fn foreign_fence_keeps_deferred_cleanup_storage_on_the_watch_owner()
     assert!(incoming.lock().receipt().source_bytes_read > 0);
     assert!(incoming.lock().receipt().bytes_copied > 0);
     assert_eq!(incoming.lock().live_allocation_bytes(), 0);
-    assert!(
-        watch
-            .shared
-            .reading()
-            .cleanup
-            .is_empty()
-    );
+    assert!(watch.shared.reading().cleanup.is_empty());
     watch.stop_accepted_cleanup()?;
     assert!(watch.shared.physically_cleared());
     Ok(())
@@ -707,16 +698,11 @@ fn original_late_callback_cancellation_retains_the_driver_until_admitted_quiesce
 
     // The foreground fence owns this callback. Keep the background reader
     // parked until the test explicitly admits terminal cleanup below.
-    watch
-        .shared
-        .reading()
-        .blocked = true;
+    watch.shared.reading().blocked = true;
     std::fs::write(root.path().join("reported"), b"changed")?;
     let _ = watch.fence_events_with_work(std::time::Duration::MAX, &mut work);
     {
-        let reading = watch
-            .shared
-            .reading();
+        let reading = watch.shared.reading();
         assert!(reading.filled > reading.cursor);
         assert_eq!(reading.alias_cursor, 0);
     }
@@ -939,11 +925,7 @@ fn watches_share_the_queue_and_route_ancestor_records_by_name()
     // records other tests' activity routed earlier stay out of the comparison.
     let mut paused = watches
         .iter()
-        .map(|watch| {
-            watch
-                .shared
-                .reading()
-        })
+        .map(|watch| watch.shared.reading())
         .collect::<Vec<_>>();
     let pending = || {
         watches

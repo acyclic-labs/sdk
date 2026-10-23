@@ -274,7 +274,10 @@ async fn a_lazy_workspace_lists_through_the_projection() -> Result<(), Box<dyn s
         "listed-projfs",
         Arc::new(demand),
         crate::LocalCoreStateStore::open_owned(root.path().join("core"))?,
-        VolumeConfig::native(Lifecycle::Ephemeral),
+        crate::VolumeInitialization {
+            config: VolumeConfig::native(Lifecycle::Ephemeral),
+            access_policy: None,
+        },
         crate::OperationId::new(),
         &mut KernelAccounting::native(&work, work.cancellation()),
     )

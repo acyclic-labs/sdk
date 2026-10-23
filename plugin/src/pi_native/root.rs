@@ -201,17 +201,43 @@ impl PiNativeRoot {
             }
             std::fs::create_dir_all(&path.0)
                 .map_err(|error| Error::from(meter.runtime_error(error)))?;
-            let options = if writable {
-                acyclic_fs::MountOptions::read_write()
-            } else {
-                acyclic_fs::MountOptions::read_only()
-            }
-            .publication(acyclic_fs::MountPublication::Manual)
-            .native_context(
-                original_volume_work,
-                Some(Arc::clone(&callback_guard)),
-                Some(original_volume_work),
-            );
+            let io = PreparationIo::from_native_work(original_volume_work)?;
+            let host = acyclic_harness::filesystem::FilesystemHost::new(
+                self.filesystem.clone(),
+                volume.provider(),
+                Some(&io),
+            )?;
+            let binding = BorrowedNativeVolumeBinding {
+                host: &host,
+                volume,
+                generation: original_generation,
+                namespace: &NativeVolumeNamespace::MaterializedDirectory,
+                mounted: None,
+                path: &route.0,
+                writable,
+                verifier: &authority.0,
+                scope: &authority.1,
+                publication: acyclic_fs::PublicationPermit::Unrestricted,
+            };
+            let selected = workspace
+                .workspace()
+                .head(original_volume_work, cancellation)
+                .await?
+                .id();
+            let options = binding
+                .mount_options(
+                    workspace.workspace(),
+                    selected,
+                    shared,
+                    original_volume_work,
+                )
+                .await?
+                .publication(acyclic_fs::MountPublication::Manual)
+                .native_context(
+                    original_volume_work,
+                    Some(Arc::clone(&callback_guard)),
+                    Some(original_volume_work),
+                );
             let mut allocation = original_volume_work.claim(
                 std::mem::size_of::<crate::LocalSingleMount>() as u64,
                 1,

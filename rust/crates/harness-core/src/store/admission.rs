@@ -41,6 +41,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                         reference,
                         reference.descriptor().byte_length(),
                         None,
+                        None,
                     )
                     .await?;
                 }
@@ -101,7 +102,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         match work.as_deref_mut() {
             Some(io) => history::read_content_with_work(io, verifier, reference).await,
             None => verifier
-                .read(reference, reference.descriptor().byte_length(), None)?
+                .read(reference, reference.descriptor().byte_length(), None, None)?
                 .await
                 .map(|bytes| (bytes, 0)),
         }
@@ -156,7 +157,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 Error::Unsupported("extension content verifier is not bound".into())
             })?;
             let bytes = verifier
-                .read(content, (content).descriptor().byte_length(), None)?
+                .read(content, (content).descriptor().byte_length(), None, None)?
                 .await?;
             self.reducer
                 .schemas()
@@ -167,7 +168,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 Error::Unsupported("extension content verifier is not bound".into())
             })?;
             let bytes = verifier
-                .read(content, (content).descriptor().byte_length(), None)?
+                .read(content, (content).descriptor().byte_length(), None, None)?
                 .await?;
             self.reducer
                 .schemas()
@@ -197,6 +198,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 &message.content,
                 message.content.descriptor().byte_length(),
                 None,
+                None,
             )
             .await?;
             match &message.attachments {
@@ -206,6 +208,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                             verifier.as_ref(),
                             &attachment.file,
                             attachment.file.descriptor().byte_length(),
+                            None,
                             None,
                         )
                         .await?;
@@ -230,6 +233,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     verifier.as_ref(),
                     reference,
                     (reference).descriptor().byte_length(),
+                    None,
                     None,
                 )
                 .await?;

@@ -127,7 +127,7 @@ impl LocalHarness {
                         body,
                         "text/plain",
                         "message.md",
-                        None,
+                        crate::conversation::ContentAccess::default(),
                     )?
                     .await?;
                 self.runtime

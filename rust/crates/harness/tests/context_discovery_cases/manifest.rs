@@ -137,7 +137,7 @@ async fn assert_request(
             vec![&**pinned]
         );
         assert_eq!(
-            reader.read(pinned, 32_768, None)?.await?.as_ref(),
+            reader.read(pinned, 32_768, None, None)?.await?.as_ref(),
             expected.as_bytes()
         );
     }
@@ -164,7 +164,7 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
             limits,
         )
         .await?;
-    let stored = reader.read(&reference, 32_768, None)?.await?;
+    let stored = reader.read(&reference, 32_768, None, None)?.await?;
     assert_eq!(ContextManifest::decode(&stored, limits)?, manifest);
     assert!(!String::from_utf8_lossy(&stored).contains("SELECTED BODY"));
     let replacement = ContextManifest::default()

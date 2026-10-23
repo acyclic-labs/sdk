@@ -1,6 +1,7 @@
 //! Exhaustive schedules through the production native directory cache.
 #![cfg(acyclic_fs_loom)]
-use acyclic_fs::{Digest, ObjectId, ObjectKind};
+use acyclic_fs::kernel;
+use acyclic_fs::{CancellationToken, Digest, FsError, ObjectId, ObjectKind, VolumeId, WorkError};
 
 #[path = "../../src/sync.rs"]
 mod sync;
@@ -58,6 +59,12 @@ mod cache {
         }
     }
 }
+
+mod retry;
+mod view;
+
+#[path = "../../src/access/projection.rs"]
+mod projection;
 
 #[test]
 fn immutable_directory_results_are_never_torn_or_lost() {

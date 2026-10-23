@@ -458,11 +458,13 @@ impl NativeWorkspace {
                 ));
             }
         };
-        let mount_options = if options.writable {
-            MountOptions::read_write()
-        } else {
-            MountOptions::read_only()
-        }
+        let mount_options = acyclic_harness::filesystem::local_owner_mount_options(
+            &self.inner,
+            "embedded-workspace-owner",
+            options.writable,
+        )
+        .await
+        .map_err(napi_error)?
         .subdirectory(options.subdirectory)
         .publication(publication);
         let mount = self

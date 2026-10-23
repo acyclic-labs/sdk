@@ -1,5 +1,9 @@
 use super::*;
 
+pub(super) fn authorization_changed(authorized: GenerationId, observed: GenerationId) -> bool {
+    authorized != observed
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     /// Opens an authored private or immutable checkout.
     pub async fn checkout<W: crate::facade::FsWork>(
@@ -97,57 +101,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             if generation.workspace.id != self.id {
                 return Err(WorkspaceError::ForeignGeneration);
             }
-            let head = self
+            // The root and authority head come from the same writable checkout.
+            // A separate read followed by Exact could pair an old candidate with
+            // a newer head and publish across a policy/data change.
+            let current = self
                 .checkout_accounted(
                     GenerationSelector::Head,
-                    CheckoutMode::read_only_pinned(),
+                    CheckoutMode::tracking_transaction(),
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?;
+            let stale = authorization_changed(generation.id, current.generation_id());
+            let checkout = if stale {
+                drop(current);
+                self.checkout_accounted(
+                    GenerationSelector::Exact(generation.id),
+                    CheckoutMode::tracking_transaction(),
                     &mut accounting,
                     cancellation,
                 )
                 .await?
-                .generation_id();
-            let checkout = self
-                .checkout_accounted(
-                    GenerationSelector::Exact(generation.id),
-                    CheckoutMode::tracking_transaction(),
-                    &mut accounting,
-                    cancellation,
-                )
-                .await?;
-            Ok(Transaction::from_checkout(
-                self,
-                checkout,
-                key,
-                head != generation.id,
-            ))
-        }
-        .await;
-        work.finish(result, &accounting)
-    }
-
-    /// Opens an exact transaction without consulting the mutable head.
-    pub async fn begin_pinned_transaction<W: crate::facade::FsWork>(
-        &self,
-        generation: &Generation<A, O>,
-        key: IdempotencyKey,
-        work: W,
-        cancellation: &CancellationToken,
-    ) -> W::Output<Transaction<A, O>, WorkspaceError> {
-        let mut accounting = work.accounting(cancellation);
-        let result = async {
-            accounting.check()?;
-            if generation.workspace.id != self.id {
-                return Err(WorkspaceError::ForeignGeneration);
-            }
-            let checkout = self
-                .checkout_accounted(
-                    GenerationSelector::Exact(generation.id),
-                    CheckoutMode::tracking_transaction(),
-                    &mut accounting,
-                    cancellation,
-                )
-                .await?;
-            Ok(Transaction::from_checkout(self, checkout, key, false))
+            } else {
+                current
+            };
+            Ok(Transaction::from_checkout(self, checkout, key, stale))
         }
         .await;
         work.finish(result, &accounting)
@@ -163,11 +141,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         accounting.check()?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
-            return self
+            let mut checkout = self
                 .volume
                 .checkout(selector, mode, original, cancellation)
                 .await
-                .map_err(WorkspaceError::from);
+                .map_err(WorkspaceError::from)?;
+            self.check_access(&mut checkout, accounting, cancellation)
+                .await?;
+            return Ok(checkout);
         }
         let opened = self
             .volume
@@ -176,8 +157,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         let (allocations, work, budget, _) = accounting
             .standalone_parts()
             .ok_or(crate::WorkError::Overflow)?;
-        let checkout = merge_workspace_backend(opened, work, allocations.live_bytes())?.value;
+        let mut checkout = merge_workspace_backend(opened, work, allocations.live_bytes())?.value;
         work.verify(budget)?;
+        self.check_access(&mut checkout, accounting, cancellation)
+            .await?;
         Ok(checkout)
     }
 

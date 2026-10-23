@@ -23,12 +23,21 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         bytes: &'a [u8],
         media_type: &'a str,
         display_name: &'a str,
-        io: Option<&'a crate::filesystem::PreparationIo>,
+        access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+        let crate::conversation::ContentAccess { ceiling, io } = access;
+
         BoundedContentFuture::new(io, || async move {
             let (persisted, hold) = self
                 .files
-                .stage_once(operation_id, path, bytes, media_type, display_name, io)?
+                .stage_once(
+                    operation_id,
+                    path,
+                    bytes,
+                    media_type,
+                    display_name,
+                    crate::conversation::ContentAccess { ceiling, io },
+                )?
                 .await?;
             self.retain(&persisted, bytes, io)?;
             Ok((persisted, hold))
@@ -39,10 +48,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         &'a self,
         operation_id: OperationId,
         maximum_bytes: u64,
-        io: Option<&'a crate::filesystem::PreparationIo>,
+        access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
-        self.files
-            .observe_staged_once(operation_id, maximum_bytes, io)
+        let crate::conversation::ContentAccess { ceiling, io } = access;
+
+        self.files.observe_staged_once(
+            operation_id,
+            maximum_bytes,
+            crate::conversation::ContentAccess { ceiling, io },
+        )
     }
 
     fn stage_at<'a>(
@@ -50,12 +64,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         operation_id: OperationId,
         source: &'a FileRef,
         bytes: &'a [u8],
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a crate::filesystem::PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
         BoundedContentFuture::new(io, || async move {
             let (persisted, hold) = self
                 .files
-                .stage_at(operation_id, source, bytes, io)?
+                .stage_at(operation_id, source, bytes, ceiling, io)?
                 .await?;
             self.retain(&persisted, bytes, io)?;
             Ok((persisted, hold))
@@ -69,12 +84,21 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         bytes: &'a [u8],
         media_type: &'a str,
         display_name: &'a str,
-        io: Option<&'a crate::filesystem::PreparationIo>,
+        access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+        let crate::conversation::ContentAccess { ceiling, io } = access;
+
         BoundedContentFuture::new(io, || async move {
             let (persisted, hold) = self
                 .files
-                .stage(operation_id, path, bytes, media_type, display_name, io)?
+                .stage(
+                    operation_id,
+                    path,
+                    bytes,
+                    media_type,
+                    display_name,
+                    crate::conversation::ContentAccess { ceiling, io },
+                )?
                 .await?;
             self.retain(&persisted, bytes, io)?;
             Ok((persisted, hold))

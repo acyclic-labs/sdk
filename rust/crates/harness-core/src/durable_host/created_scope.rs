@@ -29,12 +29,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "created scope changes extension selection".into(),
             ));
         }
+        let inherited = admission.grants.is_subset_of(self.root_scope.grants());
         for grant in admission.grants.iter() {
             crate::core::inspect_metadata(grant, work)?;
-            if !self.root_scope.grants().contains(grant)
-                && !access
-                    .as_ref()
-                    .is_some_and(|access| access.grants.contains(grant))
+            if !inherited
+                && !access.as_ref().is_some_and(|access| {
+                    self.root_scope.grants().contains(grant) || access.grants.contains(grant)
+                })
             {
                 return Err(Error::Unauthorized(
                     "created scope widens ancestor authority".into(),
@@ -101,3 +102,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok((scope, held))
     }
 }
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[path = "created_scope_tests.rs"]
+mod tests;

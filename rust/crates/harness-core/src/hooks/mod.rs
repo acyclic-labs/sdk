@@ -8,11 +8,11 @@ use std::{future::Future, sync::Arc};
 pub(crate) mod imports;
 pub(crate) use imports::Document;
 mod budget;
-#[cfg(test)]
-mod mcp_identity_tests;
 #[cfg(feature = "filesystem")]
 #[doc(hidden)]
 pub mod effects;
+#[cfg(test)]
+mod mcp_identity_tests;
 mod plan;
 mod snapshot;
 mod spec;

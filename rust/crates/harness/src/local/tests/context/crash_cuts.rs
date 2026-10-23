@@ -1,5 +1,5 @@
 use super::*;
-use crate::conversation::{BoundedContentFuture, ContentHold, ContentIo};
+use crate::conversation::{BoundedContentFuture, ContentHold};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(in crate::local::tests) struct Interrupted<'a> {
@@ -33,9 +33,15 @@ impl ContentPublisher for Interrupted<'_> {
         &'a self,
         operation: OperationId,
         maximum: u64,
-        io: Option<&'a ContentIo>,
+        access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
-        self.publisher.observe_staged_once(operation, maximum, io)
+        let crate::conversation::ContentAccess { ceiling, io } = access;
+
+        self.publisher.observe_staged_once(
+            operation,
+            maximum,
+            crate::conversation::ContentAccess { ceiling, io },
+        )
     }
 
     fn stage_once<'a>(
@@ -45,8 +51,10 @@ impl ContentPublisher for Interrupted<'_> {
         bytes: &'a [u8],
         media: &'a str,
         display: &'a str,
-        io: Option<&'a ContentIo>,
+        access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+        let crate::conversation::ContentAccess { ceiling, io } = access;
+
         BoundedContentFuture::new(io, || async move {
             let selected = self.calls.fetch_add(1, Ordering::Relaxed) == self.cut;
             let interrupted = || Error::Storage("injected publication interruption".into());
@@ -55,7 +63,14 @@ impl ContentPublisher for Interrupted<'_> {
             }
             let file = self
                 .publisher
-                .stage_once(operation, path, bytes, media, display, io)?
+                .stage_once(
+                    operation,
+                    path,
+                    bytes,
+                    media,
+                    display,
+                    crate::conversation::ContentAccess { ceiling, io },
+                )?
                 .await?;
             if selected {
                 // The real provider has committed the bytes and retry receipt;
@@ -161,7 +176,7 @@ async fn sweep_case(checkout: bool, cut: usize, after: bool, publications: usize
     for file in &manifest.discovery.instructions {
         contents.push(
             reader
-                .read(file, reopened.limits.file_bytes, None)?
+                .read(file, reopened.limits.file_bytes, None, None)?
                 .await?
                 .as_ref()
                 .to_vec(),

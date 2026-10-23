@@ -9,6 +9,39 @@ pub struct Transaction<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
+    /// Observe an authorized policy cut as a transaction dependency. A rebase
+    /// across a policy edit then conflicts even when the data paths are disjoint.
+    /// The caller must recheck the fence's time interval before publication.
+    pub async fn observe_policy_fence<W: crate::facade::FsWork>(
+        &mut self,
+        fence: crate::access::PolicyFence,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<(), WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = async {
+            accounting.check()?;
+            let metadata = self
+                .checkout
+                .read_metadata_with_accounting(
+                    self.checkout.root().root_file_id,
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?;
+            if !fence.matches(
+                self.checkout.generation_id(),
+                metadata.named_attributes,
+                super::access::access_time()?,
+            ) {
+                return Err(WorkspaceError::AccessDenied);
+            }
+            Ok(())
+        }
+        .await;
+        work.finish(result, &accounting)
+    }
+
     pub(crate) fn from_checkout(
         workspace: &Workspace<A, O>,
         mut checkout: Checkout<A, O>,

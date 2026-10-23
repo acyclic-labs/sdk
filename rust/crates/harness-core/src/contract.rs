@@ -368,18 +368,53 @@ impl Capabilities {
     /// Returns whether this set attenuates an ancestor set.
     #[must_use]
     pub fn is_subset_of(&self, ancestor: &Self) -> bool {
-        self.0.iter().all(|value| {
-            if ancestor.0.contains(value) {
-                return true;
-            }
-            let Ok(Some(child)) = acyclic_fs::access::Capability::from_scope_label(value) else {
-                return false;
-            };
-            ancestor.0.iter().any(|value| {
-                acyclic_fs::access::Capability::from_scope_label(value).is_ok_and(|parent| {
-                    parent.is_some_and(|parent| child.is_attenuation_of(&parent))
+        if std::ptr::eq(self, ancestor) || self == ancestor {
+            return true;
+        }
+        self.preserves_filesystem_ceiling(ancestor)
+            && self.0.iter().all(|value| {
+                value.starts_with(acyclic_fs::access::SCOPE_PREFIX) || ancestor.0.contains(value)
+            })
+    }
+
+    fn preserves_filesystem_ceiling(&self, ancestor: &Self) -> bool {
+        use acyclic_fs::access::{Capability, SCOPE_PREFIX, is_filesystem_capability};
+        if !self.iter().any(is_filesystem_capability) {
+            return true;
+        }
+        let mut parents = ancestor
+            .iter()
+            .filter(|label| label.starts_with(SCOPE_PREFIX));
+        let Some(parent) = parents.next() else {
+            return !self.iter().any(|label| label.starts_with(SCOPE_PREFIX));
+        };
+        if parents.next().is_some() {
+            return false;
+        }
+        let mut children = self.iter().filter(|label| label.starts_with(SCOPE_PREFIX));
+        let Some(child) = children.next() else {
+            return false;
+        };
+        children.next().is_none()
+            && Capability::from_scope_label(parent).is_ok_and(|parent| {
+                parent.is_some_and(|parent| {
+                    Capability::from_scope_label(child).is_ok_and(|child| {
+                        child.is_some_and(|child| child.is_attenuation_of(&parent))
+                    })
                 })
             })
+    }
+
+    fn includes(&self, value: &str) -> bool {
+        if self.0.contains(value) {
+            return true;
+        }
+        let Ok(Some(child)) = acyclic_fs::access::Capability::from_scope_label(value) else {
+            return false;
+        };
+        self.0.iter().any(|value| {
+            acyclic_fs::access::Capability::from_scope_label(value)
+                .is_ok_and(|parent| parent.is_some_and(|parent| child.is_attenuation_of(&parent)))
         })
     }
 
@@ -391,13 +426,40 @@ impl Capabilities {
     /// Returns the deterministic intersection of two grants.
     #[must_use]
     pub fn intersect(&self, other: &Self) -> Self {
-        Self(self.0.intersection(&other.0).cloned().collect())
+        let mut intersection = Self(
+            self.0
+                .iter()
+                .chain(&other.0)
+                .filter(|value| self.includes(value) && other.includes(value))
+                .cloned()
+                .collect(),
+        );
+        if !intersection.preserves_filesystem_ceiling(self)
+            || !intersection.preserves_filesystem_ceiling(other)
+        {
+            intersection
+                .0
+                .retain(|label| !acyclic_fs::access::is_filesystem_capability(label));
+        }
+        intersection
     }
 
     /// Removes explicit denials from this grant.
     #[must_use]
     pub fn without(&self, denied: &Self) -> Self {
-        Self(self.0.difference(&denied.0).cloned().collect())
+        let mut remaining = Self(
+            self.0
+                .iter()
+                .filter(|value| !denied.includes(value))
+                .cloned()
+                .collect(),
+        );
+        if !remaining.preserves_filesystem_ceiling(self) {
+            remaining
+                .0
+                .retain(|label| !acyclic_fs::access::is_filesystem_capability(label));
+        }
+        remaining
     }
 }
 

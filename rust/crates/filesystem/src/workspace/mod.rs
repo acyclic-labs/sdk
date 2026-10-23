@@ -29,6 +29,9 @@ use unicode_normalization::UnicodeNormalization;
 const WORKSPACE_ID_DOMAIN: &[u8] = b"acyclic-fs-workspace-id-v1\0";
 const MAXIMUM_WORKSPACE_NAME_BYTES: usize = 255;
 
+pub(crate) mod access;
+#[cfg(all(test, feature = "memory"))]
+mod access_tests;
 mod checkout;
 mod commit;
 mod content;
@@ -132,3 +135,8 @@ fn item_work(items: u64) -> crate::WorkCounters {
 pub(crate) use reverse_traversal::{
     namespace_records_bytes, namespace_records_to_file_root_with_accounting,
 };
+
+#[cfg(all(test, acyclic_fs_loom))]
+mod access_read_model;
+#[cfg(all(test, acyclic_fs_loom))]
+mod access_write_model;

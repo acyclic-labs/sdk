@@ -67,10 +67,13 @@ pub(super) async fn windows_checkout_source_with_files(
             .apply_authored_transaction(mutations, WorkBudget::UNBOUNDED, &cancellation)
             .await?;
     }
-    Ok(Arc::new(CheckoutMountSource::new(
-        Arc::new(SharedCheckout::new(checkout)),
-        config,
-    )?))
+    Ok(Arc::new(
+        crate::native_mount::adapter::tests::access::bind_test_access(
+            CheckoutMountSource::new(Arc::new(SharedCheckout::new(checkout)), config)?,
+            vec![],
+            None,
+        )?,
+    ))
 }
 
 pub(super) fn mount_source(
@@ -145,7 +148,10 @@ pub(super) async fn writes_only_promised_content(
         "pinned-projfs",
         Arc::new(demand),
         crate::MemoryLazyWorkspaceStore::default(),
-        VolumeConfig::native(Lifecycle::Ephemeral),
+        crate::VolumeInitialization {
+            config: VolumeConfig::native(Lifecycle::Ephemeral),
+            access_policy: None,
+        },
         crate::OperationId::new(),
         &mut KernelAccounting::native(&work, work.cancellation()),
     )

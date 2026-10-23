@@ -41,6 +41,7 @@ impl TaskContext {
                     &binding.configuration.content,
                     binding.configuration.content.descriptor().byte_length(),
                     None,
+                    None,
                 )?
                 .await?;
             schemas.verify_configuration_binding(

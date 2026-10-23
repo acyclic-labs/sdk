@@ -133,7 +133,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
             128,
             &IdempotencyKey::new("base")?,
             None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
         let controller = ParentProjectController::new(
@@ -388,7 +388,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
                 128,
                 &IdempotencyKey::new("concurrent")?,
                 None,
-                None,
+                acyclic_harness::conversation::ContentAccess::default(),
             )
             .await?;
         }

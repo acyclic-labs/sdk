@@ -1,0 +1,1 @@
+["volume:read:volume","filesystem:{\"layers\":[[{\"actions\":[\"list\",\"read\",\"read-history\"],\"resource\":{\"lineage_root\":null,\"volume\":null,\"generations\":\"all\",\"path\":\"**\"}}]],\"expires_at\":null}"]

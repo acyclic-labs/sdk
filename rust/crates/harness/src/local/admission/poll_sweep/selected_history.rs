@@ -72,7 +72,7 @@ pub(super) async fn initialize(harness: &Harness) -> Result<SelectedModelContext
                 text.as_bytes(),
                 "text/plain",
                 "history.txt",
-                None,
+                crate::conversation::ContentAccess::default(),
             )?
             .await?
             .0;
@@ -188,7 +188,7 @@ pub(super) async fn run(
                 &bytes,
                 "application/json",
                 "model input",
-                None,
+                crate::conversation::ContentAccess::default(),
             )?
             .await?
             .0;

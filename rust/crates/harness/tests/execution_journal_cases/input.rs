@@ -52,7 +52,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             4_096,
             &IdempotencyKey::new("chart-upload")?,
             None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let foreign_issuer = AuthorityIssuer::new(
@@ -102,7 +102,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             4_096,
             &IdempotencyKey::new("foreign-upload")?,
             None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let stream = Arc::new(MemoryStream::default());

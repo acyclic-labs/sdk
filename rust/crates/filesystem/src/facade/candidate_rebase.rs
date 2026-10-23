@@ -22,13 +22,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             || self.base_root != base.base_root
             || self.authority_head != base.authority_head
             || self.live_operation_id != base.live_operation_id
-            || self.last_commit != base.last_commit
+            || self.observed_generation != base.observed_generation
             || self.prepared_merge_parent != base.prepared_merge_parent
             || candidate.generation_root != base.generation_root
             || candidate.base_root != base.base_root
             || candidate.authority_head != base.authority_head
             || candidate.live_operation_id != base.live_operation_id
-            || candidate.last_commit != base.last_commit
+            || candidate.observed_generation != base.observed_generation
             || candidate.prepared_merge_parent != base.prepared_merge_parent
             || candidate.mode != base.mode
             || self.mode != base.mode

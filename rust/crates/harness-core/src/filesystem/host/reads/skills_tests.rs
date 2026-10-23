@@ -98,6 +98,14 @@ async fn fixture() -> Result<Fixture> {
 
 impl Fixture {
     async fn read(&self, host: &Host) -> Result<acyclic_stream::OwnedBytes> {
+        self.read_with_ceiling(host, None).await
+    }
+
+    async fn read_with_ceiling(
+        &self,
+        host: &Host,
+        ceiling: Option<&Capabilities>,
+    ) -> Result<acyclic_stream::OwnedBytes> {
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::performance::BOUNDARY_BUDGET,
@@ -112,7 +120,10 @@ impl Fixture {
             &source.path,
             Some(&source.generation),
             4096,
-            Some(&io),
+            crate::conversation::ContentAccess {
+                ceiling,
+                io: Some(&io),
+            },
         )
         .await
         .map(|(_, bytes)| bytes)
@@ -194,7 +205,10 @@ async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Resul
         &skills[0].source.path,
         Some(&skills[0].source.generation),
         4096,
-        Some(&io_a),
+        crate::conversation::ContentAccess {
+            ceiling: None,
+            io: Some(&io_a),
+        },
     );
     tokio::pin!(first);
     tokio::select! {
@@ -217,7 +231,10 @@ async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Resul
         &skills[1].source.path,
         Some(&skills[1].source.generation),
         4096,
-        Some(&io_b),
+        crate::conversation::ContentAccess {
+            ceiling: None,
+            io: Some(&io_b),
+        },
     );
     tokio::pin!(second);
     // Poll the other task while the first is paused after pinning HEAD. With
@@ -247,5 +264,46 @@ async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Resul
             .materialized(&skills[1].source.generation)?
             .is_some()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn denied_skill_body_never_materializes_the_host_source() -> Result<()> {
+    use acyclic_fs::access::{Action, Capability, Generations, Grant, ResourcePattern};
+    for (path, expires_at) in [("public/**", None), ("**", Some(0))] {
+        let fixture = fixture().await?;
+        let ceiling = Capabilities::new([Capability {
+            layers: vec![vec![Grant {
+                actions: [Action::List, Action::Read, Action::ReadHistory]
+                    .into_iter()
+                    .collect(),
+                resource: ResourcePattern {
+                    lineage_root: None,
+                    volume: None,
+                    generations: Generations::All,
+                    path: path.into(),
+                },
+            }]],
+            expires_at,
+        }
+        .to_scope_label()
+        .map_err(|error| Error::Invalid(error.to_string()))?]);
+        assert_eq!(
+            fixture
+                .read_with_ceiling(&fixture.host, Some(&ceiling))
+                .await
+                .unwrap_err()
+                .code(),
+            crate::wire::ErrorCode::Unauthorized
+        );
+        // Without the admission check ahead of materialization, the final read
+        // still refuses disclosure but the host body has already been copied.
+        assert!(
+            fixture
+                .sources
+                .materialized(&fixture.skills[0].source.generation)?
+                .is_none()
+        );
+    }
     Ok(())
 }

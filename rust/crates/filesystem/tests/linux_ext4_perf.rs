@@ -2,6 +2,9 @@
 
 #![cfg(all(target_os = "linux", feature = "native-mount"))]
 
+#[path = "support/native_access.rs"]
+mod native_access;
+
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
@@ -64,11 +67,14 @@ async fn attach(
         name,
         source,
         MemoryLazyWorkspaceStore::default(),
-        VolumeConfig::portable(if fs.capabilities().durable {
-            Lifecycle::Durable
-        } else {
-            Lifecycle::Ephemeral
-        }),
+        acyclic_fs::VolumeInitialization {
+            config: VolumeConfig::portable(if fs.capabilities().durable {
+                Lifecycle::Durable
+            } else {
+                Lifecycle::Ephemeral
+            }),
+            access_policy: None,
+        },
         OperationId::new(),
         &mut KernelAccounting::NativeOriginal {
             work: &work,
@@ -141,7 +147,12 @@ async fn mounted_workflow(
     let demand = open_source(source).await?;
     let lazy = attach(fs, name, demand).await?;
     let view = tempfile::tempdir()?;
-    let mount = lazy.mount(view.path(), MountOptions::read_write()).await?;
+    let mount = lazy
+        .mount(
+            view.path(),
+            native_access::options(lazy.workspace(), MountOptions::read_write()).await?,
+        )
+        .await?;
     let mounted = (|| {
         if program == "cargo" {
             let pristine = view.path().join("promoted-pristine.txt");
@@ -248,7 +259,10 @@ async fn qualify_linux_lazy_source_promotion() -> Result<(), Box<dyn std::error:
     let lazy = attach(&fs, "linux-source-promotion", demand).await?;
     let view = tempfile::tempdir()?;
     let mount = lazy
-        .mount(view.path(), MountOptions::read_write())
+        .mount(
+            view.path(),
+            native_access::options(lazy.workspace(), MountOptions::read_write()).await?,
+        )
         .await
         .map_err(|error| format!("mount lazy source: {error}"))?;
     let result = async {
@@ -343,7 +357,12 @@ async fn qualify_linux_write_unlink_visibility() -> Result<(), Box<dyn std::erro
     let demand = open_source(source.path()).await?;
     let lazy = attach(&fs, "linux-write-unlink", demand).await?;
     let view = tempfile::tempdir()?;
-    let mount = lazy.mount(view.path(), MountOptions::read_write()).await?;
+    let mount = lazy
+        .mount(
+            view.path(),
+            native_access::options(lazy.workspace(), MountOptions::read_write()).await?,
+        )
+        .await?;
     let result = async {
         (|| -> Result<(), Box<dyn std::error::Error>> {
             let path = view.path().join("victim.txt");
@@ -431,7 +450,12 @@ async fn qualify_linux_open_hardlink_unlink() -> Result<(), Box<dyn std::error::
     let demand = open_source(source.path()).await?;
     let lazy = attach(&fs, "linux-open-hardlink-unlink", demand).await?;
     let view = tempfile::tempdir()?;
-    let mount = lazy.mount(view.path(), MountOptions::read_write()).await?;
+    let mount = lazy
+        .mount(
+            view.path(),
+            native_access::options(lazy.workspace(), MountOptions::read_write()).await?,
+        )
+        .await?;
     let result = async {
         let a = view.path().join("a");
         let b = view.path().join("b");
@@ -499,7 +523,12 @@ async fn qualify_linux_ancestor_whiteout() -> Result<(), Box<dyn std::error::Err
     let demand = open_source(source.path()).await?;
     let lazy = attach(&fs, "linux-ancestor-whiteout", demand).await?;
     let view = tempfile::tempdir()?;
-    let mount = lazy.mount(view.path(), MountOptions::read_write()).await?;
+    let mount = lazy
+        .mount(
+            view.path(),
+            native_access::options(lazy.workspace(), MountOptions::read_write()).await?,
+        )
+        .await?;
     let result = async {
         let retained = cap_std::fs::Dir::open_ambient_dir(
             view.path().join("dir"),
@@ -547,7 +576,12 @@ async fn qualify_linux_source_rename_visibility() -> Result<(), Box<dyn std::err
     let demand = open_source(source.path()).await?;
     let lazy = attach(&fs, "linux-source-rename", demand).await?;
     let view = tempfile::tempdir()?;
-    let mount = lazy.mount(view.path(), MountOptions::read_write()).await?;
+    let mount = lazy
+        .mount(
+            view.path(),
+            native_access::options(lazy.workspace(), MountOptions::read_write()).await?,
+        )
+        .await?;
     let result = async {
         let old = view.path().join("old.txt");
         let new = view.path().join("new.txt");
@@ -674,7 +708,12 @@ async fn report_linux_lazy_mount_read_costs() -> Result<(), Box<dyn std::error::
     let attach_us = started.elapsed().as_micros();
     let view = tempfile::tempdir()?;
     let started = Instant::now();
-    let mount = lazy.mount(view.path(), MountOptions::read_write()).await?;
+    let mount = lazy
+        .mount(
+            view.path(),
+            native_access::options(lazy.workspace(), MountOptions::read_write()).await?,
+        )
+        .await?;
     let mount_us = started.elapsed().as_micros();
     let read_tree = |root: &std::path::Path| -> Result<usize, Box<dyn std::error::Error>> {
         let mut bytes = 0;
@@ -882,7 +921,13 @@ async fn report_linux_working_set_costs() -> Result<(), Box<dyn std::error::Erro
     let started = Instant::now();
     let working_set = lazy
         .prepare_native_working_set(
-            "/hot",
+            native_access::options(
+                lazy.workspace(),
+                acyclic_fs::MountOptions::read_write()
+                    .publication(acyclic_fs::MountPublication::Manual)
+                    .subdirectory("/hot"),
+            )
+            .await?,
             &MaterializeOptions::native(view.path()),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),

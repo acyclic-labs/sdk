@@ -87,7 +87,7 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
             64,
             &IdempotencyKey::new("source")?,
             None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let ordinary = OrdinaryPublisher {
@@ -95,7 +95,7 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
         calls: AtomicUsize::new(0),
     };
     assert!(matches!(
-        ordinary.stage_at(OperationId::new(), &source, b"replacement", None),
+        ordinary.stage_at(OperationId::new(), &source, b"replacement", None, None),
         Err(Error::Unsupported(_))
     ));
     assert_eq!(ordinary.calls.load(Ordering::SeqCst), 0);
@@ -140,7 +140,7 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
             64,
             &IdempotencyKey::new("user")?,
             None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let host = FilesystemHost::new(filesystem, &provider, None)?;
@@ -185,7 +185,7 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
             64,
             &key,
             Some(&head),
-            None
+            acyclic_harness::conversation::ContentAccess::default()
         )
         .await,
         Err(Error::Conflict(_))

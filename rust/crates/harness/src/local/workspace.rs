@@ -20,6 +20,7 @@ pub(super) use crate::sync::owned::{Arc as StateArc, Mutex as AsyncMutex};
 pub(super) struct MountedVolume {
     pub(super) workspace: crate::tools::git::OwnedView,
     pub(super) destination: PathBuf,
+    pub(super) options: acyclic_fs::MountOptions,
     pub(super) native: StateArc<AsyncMutex<Option<projection::Native>>>,
     /// Native execution scopes currently using `native`.
     pub(super) users: StateArc<crate::sync::SyncMutex<usize>>,
@@ -53,6 +54,7 @@ pub struct LocalWorkspace {
     >,
     pub(super) filesystem: acyclic_fs::LocalFs,
     pub(super) store: LocalCoreStateStore,
+    pub(super) mount_authority: Option<(Arc<AuthorityIssuer>, AgentId)>,
     pub(super) identity: acyclic_fs::NativeRootIdentity,
     // Lock order: view state -> volume projection -> coordinator -> command-local
     // cache or native completion, then task-file index -> provider visibility -> provider state.
@@ -80,6 +82,22 @@ pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
 }
 
 impl LocalWorkspace {
+    pub(super) async fn mount_options(
+        &self,
+        workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
+    ) -> Result<acyclic_fs::MountOptions> {
+        let (issuer, agent) = self
+            .mount_authority
+            .as_ref()
+            .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        crate::filesystem::owner_mount_options(workspace, issuer, Some(*agent), true, &work)
+            .await
+            .map(|options| options.publication(acyclic_fs::MountPublication::Manual))
+    }
+
     pub(super) async fn mounts_at(&self, path: &Path) -> Result<Arc<Mounts>> {
         let primary = self.mounts.named(None)?.1;
         let mut mounts = mounts::owner(
@@ -100,13 +118,21 @@ impl LocalWorkspace {
         #[cfg(any(target_os = "linux", windows))]
         volumes::link(path, &mut mounts)?;
         #[cfg(not(any(target_os = "linux", windows)))]
-        volumes::attach(
-            &self.filesystem,
-            &self.store,
-            &acyclic_fs::hold_root(path).map_err(storage)?,
-            &mut mounts,
-        )
-        .await?;
+        {
+            let (issuer, agent) = self
+                .mount_authority
+                .as_ref()
+                .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?;
+            volumes::attach(
+                &self.filesystem,
+                &self.store,
+                &acyclic_fs::hold_root(path).map_err(storage)?,
+                &mut mounts,
+                (issuer, *agent),
+            )
+            .await?;
+        }
+
         Ok(Arc::new(mounts))
     }
 
@@ -126,7 +152,7 @@ impl LocalWorkspace {
         &self,
         project: &VolumeRef,
         context: &crate::runtime::ToolContext,
-    ) -> Result<Arc<Mounts>> {
+    ) -> Result<(Arc<Mounts>, Scope)> {
         let access = context
             .task()
             .scope()
@@ -152,6 +178,30 @@ impl LocalWorkspace {
                 ));
             }
         }
+        let private = private.ok_or(Error::FilesystemAccessConfiguration("child mount owner"))?;
+        let crate::conversation::VolumeOwner::Agent(agent) = private.owner() else {
+            return Err(Error::FilesystemAccessConfiguration("child mount owner"));
+        };
+        let agent = *agent;
+        let (issuer, _) = self
+            .mount_authority
+            .as_ref()
+            .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?;
+        // The authenticated allocation and live task owner authorize these new
+        // volumes. Retain exactly the caller's ceiling in their signed binding.
+        let owner = context
+            .task()
+            .owned_mailbox
+            .as_ref()
+            .ok_or(Error::FilesystemAccessConfiguration("child mount owner"))?;
+        owner.validate_scope(context.effective_scope(), None)?;
+        let signed = issuer.issue(
+            "child-checkout",
+            context.effective_scope().grants(),
+            Some(agent),
+            None,
+            &mut None,
+        )?;
         // Bind auxiliary volumes outside the sparse projection. Linux's
         // elevated mount helper cannot traverse an owner-only FUSE parent.
         let root = self
@@ -162,11 +212,18 @@ impl LocalWorkspace {
             &root,
             project,
             None,
-            private.map(|volume| ("scratch".into(), volume, None)),
+            Some(("scratch".into(), private, None)),
         )?;
         let root = acyclic_fs::hold_root(&root).map_err(storage)?;
-        volumes::attach(&self.filesystem, &self.store, &root, &mut mounts).await?;
-        Ok(Arc::new(mounts))
+        volumes::attach(
+            &self.filesystem,
+            &self.store,
+            &root,
+            &mut mounts,
+            (issuer, agent),
+        )
+        .await?;
+        Ok((Arc::new(mounts), signed))
     }
 
     #[cfg(test)]
@@ -191,11 +248,18 @@ impl LocalWorkspace {
         self: &Arc<Self>,
         project: &VolumeRef,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+        signed: &Scope,
         task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     ) -> Result<Arc<dyn crate::tool::ToolExecutor>> {
         Ok(Arc::new(
-            super::checkout_tools::CheckoutTools::new(Arc::clone(self), project, clock, task_files)
-                .await?,
+            super::checkout_tools::CheckoutTools::new(
+                Arc::clone(self),
+                project,
+                clock,
+                signed,
+                task_files,
+            )
+            .await?,
         ))
     }
     pub(super) async fn checkout_selection(
@@ -275,6 +339,7 @@ pub(super) struct Attach<'a> {
     pub(super) directory: &'a Path,
     pub(super) operation: acyclic_fs::OperationId,
     pub(super) native_mounts: bool,
+    pub(super) authority: Option<(&'a AuthorityIssuer, AgentId)>,
 }
 
 pub(super) async fn open(
@@ -321,7 +386,10 @@ pub(super) async fn open(
         native_mounts.then(|| ("scratch".into(), scratch.clone(), None)),
     )?;
     if let Some(setup) = &setup {
-        volumes::attach(filesystem, &store, setup, &mut mounts).await?;
+        volumes::attach(
+            filesystem, &store, setup, &mut mounts,
+            attach.authority.ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?,
+        ).await?;
         Box::pin(volumes::parents::bind(&view, setup, &mounts, &cancellation)).await?;
     }
     let context_line = mounts.context_line();
@@ -342,6 +410,7 @@ pub(super) async fn open(
         mounted: None,
         filesystem: filesystem.clone(),
         store,
+        mount_authority: attach.authority.map(|(issuer, agent)| (Arc::new(issuer.clone()), agent)),
         identity,
         state,
         context_line,
@@ -414,7 +483,10 @@ async fn lazy_view(
             &name,
             source,
             store.clone(),
-            acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
+            acyclic_fs::VolumeInitialization {
+                config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
+                access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
+            },
             operation,
             &mut accounting,
         )

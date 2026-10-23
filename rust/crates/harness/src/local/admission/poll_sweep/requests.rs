@@ -66,7 +66,7 @@ pub(super) async fn check(harness: &Harness, fixture: &Fixture) -> Result<()> {
             )?;
             assert_eq!(
                 reader
-                    .read(prompt, harness.limits.file_bytes, None)?
+                    .read(prompt, harness.limits.file_bytes, None, None)?
                     .await?
                     .as_ref(),
                 PROMPT.as_bytes()

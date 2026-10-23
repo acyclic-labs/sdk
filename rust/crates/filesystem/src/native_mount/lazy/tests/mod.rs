@@ -10,3 +10,5 @@ mod live_mount;
 mod publication;
 mod source_changes;
 use fixtures::*;
+
+mod access;

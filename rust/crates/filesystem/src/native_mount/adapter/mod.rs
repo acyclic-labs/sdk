@@ -4,9 +4,9 @@ use super::view_gate::{CallbackOwner, ViewGate, ViewReadLease, ViewWriteLease};
 use super::view_ledger::{ViewChange, ViewEffect, ViewLedger, ViewStamp};
 use super::{
     CaptureOptions, MountAttributePage, MountAttributeWriteMode, MountDirectoryEntry,
-    MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
-    MountPath, MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError,
-    MountSparseRange, NativeMountError, ViewObserver, capture_root_identity,
+    MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenAccess,
+    MountOpenFile, MountPath, MountPublication, MountRangeAllocation, MountSeekTarget,
+    MountSourceError, MountSparseRange, NativeMountError, ViewObserver, capture_root_identity,
 };
 use crate::kernel::{
     AttributeClass, AttributeName, ExtentSeekTarget, FileKind, FileMetadata, FilePayload,
@@ -61,8 +61,9 @@ pub(super) struct CaptureSourceGate {
 pub struct CheckoutMountSource<A, O> {
     checkout: Arc<SharedCheckout<A, O>>,
     root: NamespacePath,
-    limits: VolumeLimits,
-    profile: FilesystemProfile,
+    config: VolumeConfig,
+    access_view: Option<Arc<crate::access::AccessView>>,
+    access_refresh: Option<Arc<dyn super::NativeAccessOwner>>,
     folds_names: bool,
     folded_directories: folded_cache::FoldedDirectoryCache<folded_names::FoldedKeys>,
     cancellation: CancellationToken,
@@ -170,7 +171,11 @@ include!("bindings.rs");
 include!("namespace.rs");
 include!("history.rs");
 include!("source.rs");
+pub(in crate::native_mount) mod access;
+mod authorized_file;
+mod handle_policy;
 mod source_factory;
+pub(in crate::native_mount) use authorized_file::retarget_file;
 include!("work.rs");
 include!("locks.rs");
 include!("file_leases.rs");
@@ -188,4 +193,4 @@ mod records;
 mod sparse;
 use records::mount_node;
 #[cfg(test)]
-mod tests;
+pub(in crate::native_mount) mod tests;

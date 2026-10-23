@@ -310,7 +310,7 @@ impl Fixture {
                 b"finish the objective",
                 "text/markdown",
                 "GOAL.md",
-                None,
+                crate::conversation::ContentAccess::default(),
             )?
             .await?;
         }
@@ -570,7 +570,10 @@ async fn case_with(
                 None,
             )?;
             use crate::conversation::ContentResidencyVerifier;
-            assert_eq!(reader.read(summary, 32, None)?.await?.as_ref(), b"summary");
+            assert_eq!(
+                reader.read(summary, 32, None, None)?.await?.as_ref(),
+                b"summary"
+            );
         }
         let observations = invariants::observe(&reopened, &fixture, root).await?;
         tracing::trace!(target: "acyclic_harness::read_profile", phase = "case:observed");

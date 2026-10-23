@@ -308,7 +308,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let bytes = self
             .reader
-            .read(reference, reference.descriptor().byte_length(), io)?
+            .read(reference, reference.descriptor().byte_length(), None, io)?
             .await?;
         reference.descriptor().verify(&bytes, &mut work)?;
         decode_payload(&bytes, reference.descriptor().byte_length(), io)

@@ -58,12 +58,16 @@ impl LocalHarness {
             if mentions.is_empty() {
                 let (saved, _) = self
                     .input_publisher()?
-                    .observe_staged_once(prompt_operation(operation), self.limits.file_bytes, None)?
+                    .observe_staged_once(
+                        prompt_operation(operation),
+                        self.limits.file_bytes,
+                        crate::conversation::ContentAccess::default(),
+                    )?
                     .await?;
                 if let Some(saved) = saved {
                     let bytes = self
                         .client_reader()?
-                        .read(&saved, self.limits.file_bytes, None)?
+                        .read(&saved, self.limits.file_bytes, None, None)?
                         .await?;
                     let saved: PromptInput = serde_json::from_slice(&bytes).map_err(storage)?;
                     if saved.text != *text {
@@ -107,7 +111,7 @@ impl LocalHarness {
                 &bytes,
                 "application/json",
                 "composer input",
-                None,
+                crate::conversation::ContentAccess::default(),
             )?
             .await?;
         Ok(text)
@@ -120,7 +124,11 @@ impl LocalHarness {
         publisher: &dyn ContentPublisher,
     ) -> Result<ModelContent> {
         let (retained, _) = publisher
-            .observe_staged_once(prompt_operation(operation), self.limits.file_bytes, None)?
+            .observe_staged_once(
+                prompt_operation(operation),
+                self.limits.file_bytes,
+                crate::conversation::ContentAccess::default(),
+            )?
             .await?;
         let Some(retained) = retained else {
             return Ok(ModelContent::Text(prompt.into()));
@@ -132,7 +140,7 @@ impl LocalHarness {
         }
         let reader = self.client_reader()?;
         let bytes = reader
-            .read(&retained, self.limits.file_bytes, None)?
+            .read(&retained, self.limits.file_bytes, None, None)?
             .await?;
         let mut input: PromptInput = serde_json::from_slice(&bytes).map_err(storage)?;
         match &mut input.content {
@@ -248,7 +256,11 @@ impl ComposerInput {
         let path = format!("inputs/{operation}.resolution.json");
         let reader = Arc::clone(&self.reader);
         let (saved, _) = publisher
-            .observe_staged_once(identity, self.maximum_bytes, None)?
+            .observe_staged_once(
+                identity,
+                self.maximum_bytes,
+                crate::conversation::ContentAccess::default(),
+            )?
             .await?;
         if let Some(saved) = saved {
             if saved.path() != path {
@@ -256,7 +268,7 @@ impl ComposerInput {
                     "resolved input has another identity".into(),
                 ));
             }
-            let bytes = reader.read(&saved, self.maximum_bytes, None)?.await?;
+            let bytes = reader.read(&saved, self.maximum_bytes, None, None)?.await?;
             let saved: ResolvedInput = serde_json::from_slice(&bytes).map_err(storage)?;
             if saved.text != text {
                 return Err(Error::Conflict("operation input changed".into()));
@@ -276,7 +288,7 @@ impl ComposerInput {
                 &bytes,
                 "application/json",
                 "resolved composer input",
-                None,
+                crate::conversation::ContentAccess::default(),
             )?
             .await?;
         Ok(resolution)
@@ -397,7 +409,7 @@ impl ComposerInput {
                 b"",
                 "text/plain",
                 "composer root",
-                None,
+                crate::conversation::ContentAccess::default(),
             )?
             .await?;
         let root = ContextRoot {
@@ -632,7 +644,7 @@ async fn copy_checkout_file(
             chunk.bytes.as_ref(),
             crate::model::image_media_type(chunk.bytes.as_ref()).unwrap_or("text/plain"),
             source_display_name(path)?,
-            None,
+            crate::conversation::ContentAccess::default(),
         )?
         .await?;
     Ok(chunk.bytes.len() as u64)

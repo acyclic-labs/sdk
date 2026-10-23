@@ -60,7 +60,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
             options_bytes,
             "application/json",
             "options.json",
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )?
         .await?
         .0;
@@ -167,7 +167,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
                     body,
                     "application/x-harness-native-fixture",
                     "native.bin",
-                    None,
+                    acyclic_harness::conversation::ContentAccess::default(),
                 )?
                 .await?
                 .0,
@@ -652,7 +652,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
             next_bytes,
             "application/json",
             "options.json",
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )?
         .await?
         .0;
@@ -784,7 +784,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
             malformed_bytes,
             "application/json",
             "malformed-options.json",
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )?
         .await?
         .0;
