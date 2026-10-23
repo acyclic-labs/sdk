@@ -354,6 +354,19 @@ impl VerifiedCapability {
         authority::permits_children(&self.blocks, request, policy).map_err(VerifyError::Denied)
     }
 
+    /// Admit filesystem change discovery. Record filters and pins are deferred
+    /// to the owning provider; each returned full path still needs `authorize`
+    /// with the current volume policy. This method cannot authorize content.
+    pub fn authorize_resource_follow(
+        &self,
+        trust: &(impl Trust + ?Sized),
+        request: &authority::Request<'_>,
+        policy: authority::PolicyDecision,
+    ) -> Result<(), VerifyError> {
+        self.check(trust, request.now_unix_seconds)?;
+        authority::permits_resource_follow(&self.blocks, request, policy).map_err(VerifyError::Denied)
+    }
+
     /// Append a conjunctive block. The caller supplies fresh cryptographic entropy;
     /// reusing any ancestor key is rejected, including the account's online leaf.
     pub fn attenuate(

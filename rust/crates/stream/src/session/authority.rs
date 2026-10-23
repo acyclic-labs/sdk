@@ -33,9 +33,9 @@ pub trait AuthorityState: crate::ProviderPlatform {
 /// Authenticated recipient and holder binding for one session host.
 /// The runtime supplies public trust; the host never receives a root signer.
 pub struct Authority {
-    state: Arc<dyn AuthorityState>,
-    audience: String,
-    holder: Option<String>,
+    pub(super) state: Arc<dyn AuthorityState>,
+    pub(super) audience: String,
+    pub(super) holder: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,6 +80,7 @@ pub(super) struct Binding {
     resource: String,
     requested: wire::SessionFilter,
     filter_digest: [u8; 32],
+    resource_authorization: Option<ResourceAuthorization>,
 }
 
 fn stream_resource(path: Option<&StreamPath>) -> String {
@@ -199,6 +200,8 @@ impl Authority {
             target: Target::Resource {
                 action: if binding.children {
                     "streams/list"
+                } else if binding.resource_authorization.is_some() {
+                    "fs/list"
                 } else {
                     "streams/follow"
                 },
@@ -215,6 +218,8 @@ impl Authority {
         };
         if binding.children {
             capability.authorize_children(snapshot.trust.as_ref(), &request, PolicyDecision::Allow)
+        } else if binding.resource_authorization.is_some() {
+            capability.authorize_resource_follow(snapshot.trust.as_ref(), &request, PolicyDecision::Allow)
         } else {
             capability.authorize_follow(snapshot.trust.as_ref(), &request, PolicyDecision::Allow)
         }
@@ -253,10 +258,38 @@ impl Authority {
             resource: stream_resource(Some(path)),
             requested,
             filter_digest: [0; 32],
+            resource_authorization: None,
         };
         let filter = self.filter(slots, &binding, channels)?;
         binding.filter_digest = filter.digest();
         Ok((binding, filter))
+    }
+    pub(super) fn bind_resource(
+        self: &Arc<Self>,
+        slots: &Slots,
+        slot: u32,
+        resource: String,
+        requested: wire::SessionFilter,
+        channels: usize,
+    ) -> Result<(Binding, crate::FollowFilter, ResourceAuthorization), Rejection> {
+        if !resource.starts_with("fs:/") || !acyclic_auth::valid_resource(&resource) {
+            return Err(Rejection::Forbidden);
+        }
+        let (revision, _, credential) = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
+        let capability = credential.as_ref().map_err(|error| *error)?;
+        let authorization = ResourceAuthorization::new(Arc::clone(self), resource.clone(), Arc::clone(capability));
+        let mut binding = Binding {
+            children: false,
+            credential_revision: *revision,
+            slot,
+            resource,
+            requested,
+            filter_digest: [0; 32],
+            resource_authorization: Some(authorization.clone()),
+        };
+        let filter = self.filter(slots, &binding, channels)?;
+        binding.filter_digest = filter.digest();
+        Ok((binding, filter, authorization))
     }
     pub(super) fn bind_children(
         &self,
@@ -273,6 +306,7 @@ impl Authority {
             resource: stream_resource(parent),
             requested,
             filter_digest: [0; 32],
+            resource_authorization: None,
         };
         binding.filter_digest = self.filter(slots, &binding, channels)?.digest();
         Ok(binding)
@@ -292,6 +326,7 @@ impl Authority {
             resource: stream_resource(Some(child)),
             requested: binding.requested.clone(),
             filter_digest: binding.filter_digest,
+            resource_authorization: None,
         };
         match self.filter(slots, &child_binding, channels) {
             Ok(filter) => {
@@ -319,6 +354,10 @@ impl Authority {
         }
         if self.filter(slots, binding, channels)?.digest() != binding.filter_digest {
             return Err(Rejection::Forbidden);
+        }
+        if let Some(authorization) = &binding.resource_authorization {
+            let capability = slots.entries.get(&binding.slot).ok_or(Rejection::Forbidden)?.2.as_ref().map_err(|error| *error)?;
+            authorization.renew(Arc::clone(capability))?;
         }
         binding.credential_revision = revision;
         Ok(())

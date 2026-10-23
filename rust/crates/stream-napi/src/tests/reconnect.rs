@@ -305,6 +305,7 @@ impl Fixture {
             &self.client,
             Buffer::from(
                 wire::FollowRequest {
+                    filter: None,
                     path: path.into(),
                     from: 0,
                 }

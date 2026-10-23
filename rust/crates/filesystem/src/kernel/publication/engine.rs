@@ -180,6 +180,7 @@ where
             authority,
             request,
             &output.0.root,
+            &_projection_fence,
             closure_limits.decode,
             accounting,
             cancellation,

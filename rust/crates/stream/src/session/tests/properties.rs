@@ -11,6 +11,7 @@ pub(super) fn empty_session(latest: bool) -> Session<MemoryStream> {
         provider: Arc::new(MemoryStream::default()),
         executor: Arc::new(runtime::PlatformExecutor),
         publications: None,
+        resources: None,
         limits: Limits::default(),
         node: "node".into(),
         hello: true,

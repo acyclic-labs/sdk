@@ -76,3 +76,13 @@ pub(in crate::session) fn binding() -> Binding {
         .unwrap()
         .0
 }
+
+/// Verifies a deterministic test credential through the real session admission
+/// path. Product-provider tests receive the same unforgeable context as hosts.
+pub fn resource_authorization(credential: &[u8], resource: &str) -> Result<ResourceAuthorization, StreamError> {
+    let authority = authority();
+    let mut slots = Slots::default();
+    authority.register(&mut slots, 0, credential, Limits::default().channels)?;
+    authority.bind_resource(&slots, 0, resource.into(), Default::default(), 1)
+        .map(|(_, _, authorization)| authorization).map_err(|_| StreamError::AccessDenied)
+}

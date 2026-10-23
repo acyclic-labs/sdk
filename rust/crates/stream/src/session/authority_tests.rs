@@ -499,3 +499,69 @@ fn canonical_resource_bindings_preserve_reserved_names_and_literal_escapes()
     }
     Ok(())
 }
+
+fn fs_token(resource: &str, change: impl Fn(&mut Block)) -> Vec<u8> {
+    signed::root(|block| {
+        block.certificates.as_mut().unwrap().keys[0].key.grants = GrantSet { grants: vec![Grant {
+            kind: GrantKind::Resource(ResourceGrant { resource: ResourcePattern { name: resource.into(), prefix: true }, actions: vec!["fs/list".into()] }),
+        }] };
+        change(block);
+    })
+}
+#[test]
+fn filesystem_discovery_defers_only_list_and_checks_full_paths_and_deny_wins() {
+    let auth = Arc::new(authority(State::new()));
+    let mut slots = Slots::default();
+    let bytes = fs_token("fs:/volume/public", |_| {});
+    auth.register(&mut slots, 0, &bytes, 2).unwrap();
+    let (_, filter, context) = auth.bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1).unwrap();
+    let attributes = RecordAttributes::try_new(vec![]).unwrap();
+    assert!(context.authorize("fs:/volume/public/file", &[], &attributes, PolicyDecision::Allow).is_ok());
+    for name in ["fs:/volume/private", "fs:/volume/public-other", "fs:/other/public"] {
+        assert!(context.authorize(name, &[], &attributes, PolicyDecision::Allow).is_err());
+    }
+    assert!(context.authorize("fs:/volume/public", &[], &attributes, PolicyDecision::Deny).is_err());
+    let indexed = context.filter_paths("fs:/volume", filter).unwrap();
+    for key in [b"public".as_slice(), b"public/file"] {
+        assert!(indexed.matches(&crate::RecordHeaders::new(vec![key.to_vec().into()], vec![]).unwrap()));
+    }
+    for key in [b"private".as_slice(), b"public-other", b"public0"] {
+        assert!(!indexed.matches(&crate::RecordHeaders::new(vec![key.to_vec().into()], vec![]).unwrap()));
+    }
+    let cap = verify::verify(&bytes, &signed::Snapshot::default(), signed::NOW).unwrap();
+    let usage = signed::limits(None);
+    assert!(cap.authorize_resource_follow(&signed::Snapshot::default(), &signed::request("fs:/volume/public", &attributes, &usage), PolicyDecision::Allow).is_err(), "fs/read cannot use discovery deferral");
+}
+#[test]
+fn filesystem_context_rechecks_revocation_expiry_and_renewal_before_disclosure() {
+    for revoke in [false, true] {
+        let state = State::new();
+        let auth = Arc::new(authority(state.clone()));
+        let mut slots = Slots::default();
+        let bytes = fs_token("fs:/volume/public", |_| {});
+        auth.register(&mut slots, 0, &bytes, 2).unwrap();
+        let (_, _, context) = auth.bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1).unwrap();
+        let attributes = RecordAttributes::try_new(vec![]).unwrap();
+        assert!(context.authorize("fs:/volume/public", &[], &attributes, PolicyDecision::Allow).is_ok());
+        let cap = verify::verify(&bytes, &signed::Snapshot::default(), signed::NOW).unwrap();
+        state.publish(signed::Snapshot { revoked_blocks: if revoke { vec![cap.block_ids()[0]] } else { vec![] }, ..Default::default() }, if revoke { signed::NOW } else { 1000 });
+        assert!(context.authorize("fs:/volume/public", &[], &attributes, PolicyDecision::Allow).is_err());
+    }
+    let auth = Arc::new(authority(State::new()));
+    let mut slots = Slots::default();
+    auth.register(&mut slots, 0, &fs_token("fs:/volume", |_| {}), 2).unwrap();
+    let (mut binding, _, _) = auth.bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1).unwrap();
+    auth.register(&mut slots, 0, &fs_token("fs:/volume/public", |_| {}), 2).unwrap();
+    assert!(matches!(auth.validate(&slots, &mut binding, 1), Err(Rejection::Forbidden)), "queued entries must not retain the former grant ceiling");
+}
+#[test]
+fn filesystem_context_rejects_forged_expired_and_wrong_audience_credentials() {
+    let auth = Arc::new(authority(State::new()));
+    let mut slots = Slots::default();
+    let valid = fs_token("fs:/volume", |_| {});
+    let mut forged = valid.clone(); forged[20] ^= 1;
+    for bytes in [forged, fs_token("fs:/volume", |block| block.caveats.push(Caveat { kind: CaveatKind::ExpiresAtUnixSeconds(signed::NOW) })), fs_token("fs:/volume", |block| block.caveats.push(Caveat { kind: CaveatKind::Audience(ResourcePattern { name: "workers:/other".into(), prefix: false }) }))] {
+        auth.register(&mut slots, 0, &bytes, 2).unwrap();
+        assert!(auth.bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1).is_err());
+    }
+}

@@ -97,7 +97,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             Some(Kind::Children(_) | Kind::FsPublications(_))
         );
         let binding;
-        let terminal = None;
+        let mut terminal = None;
         let (latest, source, revalidate) = match subscription.kind {
             Some(Kind::Follow(follow)) => {
                 let preceding = wire_codec::session::preceding_follow(&follow, &resume)?;
@@ -109,6 +109,25 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     Ok(wire::SessionDelivery::Latest) => true,
                     _ => return Err(StreamError::InvalidArgument),
                 };
+                if follow.resource.starts_with("fs:/") {
+                    // Filesystem changes are typed records, never latest-value
+                    // application payloads. Missing owner routing fails closed.
+                    if latest { return Err(StreamError::InvalidArgument); }
+                    let (authorization, filter, context) = match self.authority.bind_resource(
+                        &self.slots, subscription.credential, follow.resource.clone(),
+                        subscription.filter.unwrap_or_default(), channels,
+                    ) {
+                        Ok(binding) => binding,
+                        Err(reason) => return Ok(Admission::Denied(identity, reason)),
+                    };
+                    let prepared = self.resources.as_ref().ok_or(StreamError::Unsupported)?.follow(ResourceFollowRequest {
+                        resource: follow.resource, from: resume.next, preceding, filter,
+                        authorization: context,
+                    })?;
+                    binding = Some(authorization);
+                    terminal = Some(publications::terminal(prepared.terminal, identity));
+                    (false, resources::source(prepared.open, identity, preceding), Some(prepared.revalidate))
+                } else {
                 let path = wire_codec::session::stream_path(&follow.resource)?;
                 let (authorization, filter) = match self.authority.bind(
                     &self.slots,
@@ -131,6 +150,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     self.executor.clone(),
                 );
                 (latest, source, None)
+                }
             }
             Some(Kind::Children(request)) => {
                 if self.limits.pending_bytes < CHILD_FRAME_BYTES {

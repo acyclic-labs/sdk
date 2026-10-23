@@ -168,12 +168,14 @@ pub(super) async fn open_follow(
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<NativeStreamFollow, NativeStreamErrorMetadata> {
     let request = decode::<wire::FollowRequest>(&request, "follow")?;
+    let filter = acyclic_stream::FollowFilter::new(request.filter.unwrap_or_default())
+        .map_err(|error| stream_error(&error))?;
     let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(client), request.path)
         .map_err(|error| stream_error(&error))?;
     let records = run_with_cancellation(
         async move {
             stream
-                .follow(request.from)
+                .follow(request.from, filter)
                 .await
                 .map_err(|error| stream_error(&error))
         },

@@ -23,6 +23,8 @@ mod sources;
 pub use sources::model::{verify_source_recheck, verify_source_wakes};
 mod children;
 mod publications;
+mod resources;
+pub use resources::{ResourceAuthorization, ResourceFollowRequest, ResourceProvider, ResourceSubscription};
 pub use publications::{
     PublicationProvider, PublicationRevalidation, PublicationStream, PublicationSubscription,
 };
@@ -122,6 +124,7 @@ struct Session<P: ?Sized> {
     deadline: Option<u64>,
     provider: Arc<P>,
     publications: Option<Arc<dyn PublicationProvider>>,
+    resources: Option<Arc<dyn ResourceProvider>>,
     executor: Arc<dyn runtime::Executor>,
     limits: Limits,
     node: String,
@@ -193,6 +196,35 @@ fn serve_on_with_publications<P: StreamProvider + ?Sized>(
     incoming: transport::Responses,
     executor: Arc<dyn runtime::Executor>,
 ) -> Result<transport::Responses, StreamError> {
+    serve_on_with_products(provider, authority, ProductProviders { publications, resources: None }, node, limits, incoming, executor)
+}
+
+struct ProductProviders {
+    publications: Option<Arc<dyn PublicationProvider>>,
+    resources: Option<Arc<dyn ResourceProvider>>,
+}
+
+/// Opens a session whose product follows are resolved by their owning provider.
+pub fn serve_with_resources<P: StreamProvider + ?Sized>(
+    provider: Arc<P>,
+    authority: Arc<Authority>,
+    resources: Arc<dyn ResourceProvider>,
+    node: String,
+    limits: Limits,
+    incoming: transport::Responses,
+) -> Result<transport::Responses, StreamError> {
+    serve_on_with_products(provider, authority, ProductProviders { publications: None, resources: Some(resources) }, node, limits, incoming, Arc::new(runtime::PlatformExecutor))
+}
+
+fn serve_on_with_products<P: StreamProvider + ?Sized>(
+    provider: Arc<P>,
+    authority: Arc<Authority>,
+    products: ProductProviders,
+    node: String,
+    limits: Limits,
+    incoming: transport::Responses,
+    executor: Arc<dyn runtime::Executor>,
+) -> Result<transport::Responses, StreamError> {
     if node.is_empty()
         || limits.channels == 0
         || limits.pending_frames == 0
@@ -210,7 +242,8 @@ fn serve_on_with_publications<P: StreamProvider + ?Sized>(
         trust_revision,
         deadline: None,
         provider,
-        publications,
+        publications: products.publications,
+        resources: products.resources,
         executor,
         node,
         limits,

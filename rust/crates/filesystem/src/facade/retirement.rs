@@ -38,11 +38,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         operation_id: OperationId,
     ) -> Result<crate::workspace::WorkspaceDelete, WorkspaceError> {
         let cancellation = CancellationToken::new();
+        let (policy_retirement, _) = crate::access::projection::publication(
+            self.operation_claims(), volume.id,
+        ).map_err(WorkspaceError::engine)?;
         let authority_id = volume_authority_id(volume.id);
         let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let head = match self.inner.authority.head(authority_id, &mut work).await {
             Ok(head) => head,
             Err(AuthorityStoreError::Retired) => {
+                policy_retirement.retire_policy().map_err(WorkspaceError::engine)?;
                 return Ok(crate::workspace::WorkspaceDelete::AlreadyDeleted);
             }
             Err(failure) => return Err(WorkspaceError::engine(failure)),
@@ -72,6 +76,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             if deleted != volume.id {
                 return Err(WorkspaceError::engine(FsError::VolumeMismatch));
             }
+            policy_retirement.retire_policy().map_err(WorkspaceError::engine)?;
             // A retry after the tombstone finishes what the delete began.
             self.retire_deleted_authority(authority_id, &cancellation)
                 .await?;
@@ -91,6 +96,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .map_err(WorkspaceError::engine)?;
         let commit = creation_commit(operation_id, encoded, &mut accounting)
             .map_err(WorkspaceError::engine)?;
+        policy_retirement.retire_policy().map_err(WorkspaceError::engine)?;
         let appended = self
             .inner
             .authority

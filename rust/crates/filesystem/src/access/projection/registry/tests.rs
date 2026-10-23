@@ -20,7 +20,8 @@ fn invariant(tree: &Tree, lower: Option<Key>, upper: Option<Key>) -> (usize, Sta
     let height = 1 + left_height.max(right_height);
     let total = State {
         projections: left.projections + right.projections + usize::from(node.projection),
-        editors: left.editors + right.editors + usize::from(!node.projection),
+        editors: left.editors + right.editors + usize::from(!node.projection && node.observer.is_none()),
+        observers: left.observers + right.observers + usize::from(node.observer.is_some()),
     };
     assert_eq!((node.height, node.total), (height, total));
     (height, total)

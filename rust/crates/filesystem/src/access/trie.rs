@@ -612,7 +612,7 @@ impl PathTrie {
         }
     }
 
-    pub(super) fn valid_at(&self, now: u64) -> bool {
+    pub(crate) fn valid_at(&self, now: u64) -> bool {
         now >= self.valid_from && self.valid_until.is_none_or(|expiry| now < expiry)
     }
 

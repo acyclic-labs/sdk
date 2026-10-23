@@ -6,6 +6,7 @@ pub(super) async fn check<O: crate::AsyncObjectStore, A: crate::AsyncAuthoritySt
     authority: &A,
     request: PublishGenerationRequest,
     candidate: &GenerationRoot,
+    lease: &crate::access::projection::Lease,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -20,6 +21,7 @@ pub(super) async fn check<O: crate::AsyncObjectStore, A: crate::AsyncAuthoritySt
         authority,
         request,
         candidate,
+        lease,
         limits,
         accounting,
         cancellation,
@@ -46,6 +48,7 @@ async fn check_inner<O: crate::AsyncObjectStore, A: crate::AsyncAuthorityStore>(
     authority: &A,
     request: PublishGenerationRequest,
     candidate: &GenerationRoot,
+    lease: &crate::access::projection::Lease,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -100,7 +103,7 @@ async fn check_inner<O: crate::AsyncObjectStore, A: crate::AsyncAuthorityStore>(
         .await?;
     let old = revision(objects, &current, limits, accounting, cancellation).await?;
     let new = revision(objects, candidate, limits, accounting, cancellation).await?;
-    crate::access::projection::check_policy(true, old != new)
+    lease.policy_changed(old != new)
 }
 
 async fn revision<O: crate::AsyncObjectStore>(

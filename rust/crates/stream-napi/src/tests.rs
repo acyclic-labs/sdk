@@ -406,6 +406,7 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
         );
         let client = connected.client.expect("connect result omitted client");
         let request = wire::FollowRequest {
+                    filter: None,
             path: "accounts/events".to_owned(),
             from: 0,
         };

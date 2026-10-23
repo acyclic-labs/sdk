@@ -1,4 +1,5 @@
-use super::State;
+use super::{State, ObservationSignal};
+use crate::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct Volume {
@@ -22,6 +23,7 @@ pub(super) struct Registry {
 pub(super) struct Node {
     key: Key,
     projection: bool,
+    observer: Option<Arc<ObservationSignal>>,
     height: usize,
     total: State,
     left: Tree,
@@ -35,6 +37,7 @@ impl Registry {
         State {
             projections: upper.projections - lower.projections,
             editors: upper.editors - lower.editors,
+            observers: upper.observers - lower.observers,
         }
     }
 
@@ -43,22 +46,56 @@ impl Registry {
         volume: Volume,
         projection: bool,
     ) -> Result<Key, crate::FsError> {
+        self.insert_kind(volume, projection, None)
+    }
+
+    pub(super) fn insert_observer(&mut self, volume: Volume, observer: Arc<ObservationSignal>) -> Result<Key, crate::FsError> {
+        self.insert_kind(volume, false, Some(observer))
+    }
+
+    fn insert_kind(&mut self, volume: Volume, projection: bool, observer: Option<Arc<ObservationSignal>>) -> Result<Key, crate::FsError> {
         let next = self.next.checked_add(1).ok_or(crate::WorkError::Overflow)?;
         let key = (volume, self.next);
         let node = Box::new(Node {
             key,
             projection,
-            height: 1,
             total: State {
                 projections: usize::from(projection),
-                editors: usize::from(!projection),
+                editors: usize::from(!projection && observer.is_none()),
+                observers: usize::from(observer.is_some()),
             },
+            observer,
+            height: 1,
             left: None,
             right: None,
         });
         self.root = Some(insert(self.root.take(), node));
         self.next = next;
         Ok(key)
+    }
+
+    pub(super) fn invalidate_observers(&self, volume: Volume) {
+        fn invalidate(tree: &Tree, volume: Volume) {
+            let Some(node) = tree else { return; };
+            if node.key.0 >= volume { invalidate(&node.left, volume); }
+            if node.key.0 == volume && let Some(observer) = &node.observer {
+                observer.invalid.store(true, crate::sync::atomic::Ordering::Release);
+            }
+            if node.key.0 <= volume { invalidate(&node.right, volume); }
+        }
+        invalidate(&self.root, volume);
+    }
+
+    pub(super) fn next_observer(&self, volume: Volume, after: Option<Key>) -> Option<(Key, Arc<ObservationSignal>)> {
+        fn next(tree: &Tree, volume: Volume, after: Option<Key>) -> Option<(Key, Arc<ObservationSignal>)> {
+            let node = tree.as_ref()?;
+            if node.key.0 < volume || after.is_some_and(|after| node.key <= after) { return next(&node.right, volume, after); }
+            if let Some(found) = next(&node.left, volume, after) { return Some(found); }
+            if node.key.0 == volume && let Some(observer) = &node.observer { return Some((node.key, Arc::clone(observer))); }
+            if node.key.0 > volume { return None; }
+            next(&node.right, volume, after)
+        }
+        next(&self.root, volume, after)
     }
 
     // Drop the detached node after the registry lock has been released.
@@ -90,7 +127,8 @@ impl Node {
         // nodes, so neither their sum nor the height can overflow usize.
         self.total = State {
             projections: left.projections + right.projections + usize::from(self.projection),
-            editors: left.editors + right.editors + usize::from(!self.projection),
+            editors: left.editors + right.editors + usize::from(!self.projection && self.observer.is_none()),
+            observers: left.observers + right.observers + usize::from(self.observer.is_some()),
         };
         self.height = 1 + height(&self.left).max(height(&self.right));
     }
@@ -199,7 +237,8 @@ fn prefix(tree: &Tree, volume: Volume, inclusive: bool) -> State {
         if node.key.0 < volume || inclusive && node.key.0 == volume {
             let left = totals(&node.left);
             sum.projections += left.projections + usize::from(node.projection);
-            sum.editors += left.editors + usize::from(!node.projection);
+            sum.editors += left.editors + usize::from(!node.projection && node.observer.is_none());
+            sum.observers += left.observers + usize::from(node.observer.is_some());
             current = &node.right;
         } else {
             current = &node.left;

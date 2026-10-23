@@ -180,7 +180,7 @@ fn grants_allow(set: &GrantSet, r: &Request<'_>, record_facts: bool) -> bool {
         };
         grant.actions.iter().any(|a| a == action)
             && (resource_matches(&grant.resource, resource)
-                || !record_facts && action == "streams/list"
+                || !record_facts && matches!(action, "streams/list" | "fs/list")
                     && resource_matches(&ResourcePattern { name: resource.into(), prefix: true }, &grant.resource.name))
     })
 }
@@ -292,6 +292,20 @@ pub(crate) fn permits_children(
             ..
         }
     ) {
+        return Err(Deny::Capability);
+    }
+    permits_operation(blocks, r, policy, false)
+}
+
+/// Filesystem change discovery admits an ancestor resource only for `fs/list`.
+/// Its owning provider must check every full metadata path with `permits` and
+/// intersect the volume policy before exposing the corresponding change entry.
+pub(crate) fn permits_resource_follow(
+    blocks: &[Block],
+    r: &Request<'_>,
+    policy: PolicyDecision,
+) -> Result<(), Deny> {
+    if !matches!(r.target, Target::Resource { action: "fs/list", resource } if resource.starts_with("fs:/")) {
         return Err(Deny::Capability);
     }
     permits_operation(blocks, r, policy, false)
