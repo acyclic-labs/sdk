@@ -9,6 +9,9 @@ from pathlib import Path
 
 
 CONTROLS = [
+    ("unchecked runner bootstrap", "bootstrap.py",
+     "if hashlib.sha256(payload).hexdigest() != UV_SHA256:", "if False:",
+     "test_contracts.BenchmarkContracts.test_bootstrap_rejects_unpinned_bytes_before_archive_parsing"),
     ("unframed shell arguments", "contracts.py", "shlex.join(arguments)", '" ".join(arguments)',
      "test_contracts.BenchmarkContracts.test_shell_metacharacters_roundtrip_as_prompt_data_and_env_is_empty"),
     ("unchecked artifact construction", "contracts.py",

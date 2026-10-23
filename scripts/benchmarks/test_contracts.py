@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from .contracts import Artifact, catalog, run_command
+from .bootstrap import verified_uv
 from .plan import STAGES, inventory, manifest, paired_plan
 
 
@@ -61,6 +62,12 @@ class BenchmarkContracts(unittest.TestCase):
                 catalog("openai/fixture", "http://localhost/v1", context, output)
         self.assertEqual(catalog("openai/fixture", "http://localhost/v1", 100, 10)
                          ["benchmark"]["authentication"], "optional")
+
+    def test_bootstrap_rejects_unpinned_bytes_before_archive_parsing(self):
+        with patch("scripts.benchmarks.bootstrap.zipfile.ZipFile",
+                   side_effect=AssertionError("unverified archive parsed")):
+            with self.assertRaisesRegex(ValueError, "wheel hash mismatch"):
+                verified_uv(b"untrusted replacement; not a zip archive")
 
     def test_all_stages_pair_identical_pinned_tasks_without_execution(self):
         # Unexpected calls turn a dry plan into a test failure, including auth

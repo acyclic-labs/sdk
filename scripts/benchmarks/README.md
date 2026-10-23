@@ -15,7 +15,17 @@ dedicated environment with pinned uv 0.13.5 (`uv venv`, then
 `uv pip sync --require-hashes --python ENV/bin/python scripts/benchmarks/requirements.lock`).
 The bb2 system Python lacks ensurepip; `python3 -m venv` with pip bootstrapping
 is not a prerequisite. Keep tools, caches and environments in the lane target
-directory. Run `bash scripts/qualify-benchmarks.sh ENV/bin/python` before use.
+directory. Buildbox target directories are disposable per job: do not assume
+an environment from an earlier job still exists. The self-contained bb2 setup
+downloads a SHA256-pinned public uv wheel, creates the environment without
+ensurepip and installs only the hashed dependency lock:
+
+```sh
+python3 -m scripts.benchmarks.bootstrap --directory "$CARGO_TARGET_DIR/benchmark-tools"
+bash scripts/qualify-benchmarks.sh "$CARGO_TARGET_DIR/benchmark-tools/environment/bin/python"
+```
+
+Setup network/install time is separate from the offline qualification suite.
 
 Inventory an already available public dataset checkout at its immutable Git
 commit. The inventory reads Git tree metadata only; it does not fetch tasks:
