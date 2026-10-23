@@ -301,7 +301,9 @@ async fn live_sessions_close_idle_and_queued_follows_before_disclosure() {
                             credential: 0,
                             filter: None,
                             kind: Some(Kind::Follow(wire::SessionFollow {
-                                path: path.to_string(),
+                                resource: crate::wire_codec::session::stream_resource(
+                                    path.as_str(),
+                                ),
                                 delivery: wire::SessionDelivery::All as i32,
                                 ..Default::default()
                             })),

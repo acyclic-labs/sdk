@@ -2,7 +2,7 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
 import { ChildrenRequestSchema, ChildrenResponseSchema } from "../generated/proto/stream/v1/stream_pb.js";
 import { WasmSession, type WasmFollow } from "../generated/wasm/acyclic_stream_wasm.js";
-import { ensureStreamWasm, validateSequenceValue } from "./contract.js";
+import { ensureStreamWasm, validateSequenceValue, streamResource } from "./contract.js";
 import { streamError } from "./wasm-error.js";
 import { commitId, type EncodedRecord, type FollowOptions, type ChildrenRequest, type StreamChild } from "./types.js";
 
@@ -34,7 +34,7 @@ export class StreamSessions {
   }
 
   async *follow(path: string, options: FollowOptions): AsyncGenerator<EncodedRecord> {
-    for await (const data of this.followData(create(wire.SessionFollowSchema, { path, delivery: wire.SessionDelivery.ALL }), options)) {
+    for await (const data of this.followData(create(wire.SessionFollowSchema, { resource: streamResource(path), delivery: wire.SessionDelivery.ALL }), options)) {
       if (data.item.case !== "record") throw new Error("Rust ALL cursor returned a non-record item");
       const record = data.item.value;
       yield { sequence: record.sequence, value: record.value, commitId: commitId(record.commitId), committedAtMicros: record.committedAtMicros };

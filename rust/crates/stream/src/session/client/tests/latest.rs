@@ -7,7 +7,7 @@ use crate::{
 
 fn subscription(path: &str, latest: bool) -> wire::SessionFollow {
     wire::SessionFollow {
-        path: path.into(),
+        resource: crate::wire_codec::session::stream_resource(path),
         delivery: if latest {
             wire::SessionDelivery::Latest
         } else {
@@ -242,7 +242,7 @@ async fn invalid_follow_modes_and_checked_latest_are_rejected_before_session_rpc
             ..subscription("status", true)
         },
         wire::SessionFollow {
-            path: "../bad".into(),
+            resource: crate::wire_codec::session::stream_resource("../bad"),
             ..subscription("status", true)
         },
         wire::SessionFollow {
@@ -278,6 +278,7 @@ async fn latest_moves_and_reconnects_resume_consumed_cursors_and_keep_attention(
         None,
         connect,
     );
+    client.register_credential(0, crate::session::testing::credential())?;
     let mut raw = client
         .follow_data(
             subscription("status", true),

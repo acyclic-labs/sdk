@@ -33,7 +33,7 @@ pub fn verify_follow_data(broken: u8) {
         route.records = records;
         route.raw = broken != 2;
         route.kind = Kind::Follow(wire::SessionFollow {
-            path: "healthy".into(),
+            resource: crate::wire_codec::session::stream_resource("healthy"),
             delivery: wire::SessionDelivery::Latest as i32,
             ..Default::default()
         });

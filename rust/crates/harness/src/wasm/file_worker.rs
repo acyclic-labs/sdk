@@ -73,6 +73,8 @@ async fn publications(
             let cursor = volume.volume.cut(&Query::Root).await.map_err(error)?;
             let frames = session
                 .subscribe(wire::SessionSubscription {
+                    credential: 0,
+                    filter: None,
                     channel: None,
                     resume: Some(wire::SessionCursor {
                         next: cursor.position,
@@ -80,7 +82,9 @@ async fn publications(
                     }),
                     kind: Some(wire::session_subscription::Kind::Follow(
                         wire::SessionFollow {
-                            path: volume.volume.path().to_string(),
+                            resource: acyclic_stream::wire_codec::session::stream_resource(
+                                volume.volume.path().as_str(),
+                            ),
                             delivery: wire::SessionDelivery::All as i32,
                             preceding_commit_id: if cursor.position == 0 {
                                 Default::default()

@@ -48,8 +48,8 @@ function initializeStreamWasmSync(): boolean {
   return true;
 }
 
-function verifyExports(instance: { readonly decodeHttpResponse: unknown; readonly decodeReadResponse: unknown; readonly encodeHttpRequest: unknown; readonly is_stream_error_code: unknown; readonly normalizeCommitRequest: unknown; readonly projectMemoryResponse: unknown; readonly publicHttpErrorCode: unknown; readonly validateAppendRequest: unknown; readonly validatePath: unknown; readonly validateRequest: unknown; readonly validateSequence: unknown; readonly __wbindgen_free: unknown }): void {
-  if (typeof instance.decodeHttpResponse !== "function" || typeof instance.decodeReadResponse !== "function" || typeof instance.encodeHttpRequest !== "function" || typeof instance.is_stream_error_code !== "function" || typeof instance.validateAppendRequest !== "function" || typeof instance.normalizeCommitRequest !== "function" || typeof instance.projectMemoryResponse !== "function" || typeof instance.publicHttpErrorCode !== "function" || typeof instance.validatePath !== "function" || typeof instance.validateRequest !== "function" || typeof instance.validateSequence !== "function" || typeof instance.__wbindgen_free !== "function") {
+function verifyExports(instance: { readonly decodeHttpResponse: unknown; readonly decodeReadResponse: unknown; readonly encodeHttpRequest: unknown; readonly is_stream_error_code: unknown; readonly normalizeCommitRequest: unknown; readonly projectMemoryResponse: unknown; readonly publicHttpErrorCode: unknown; readonly validateAppendRequest: unknown; readonly validatePath: unknown; readonly validateRequest: unknown; readonly validateSequence: unknown; readonly streamResource: unknown; readonly streamResourcePath: unknown; readonly __wbindgen_free: unknown }): void {
+  if (typeof instance.decodeHttpResponse !== "function" || typeof instance.decodeReadResponse !== "function" || typeof instance.encodeHttpRequest !== "function" || typeof instance.is_stream_error_code !== "function" || typeof instance.validateAppendRequest !== "function" || typeof instance.normalizeCommitRequest !== "function" || typeof instance.projectMemoryResponse !== "function" || typeof instance.publicHttpErrorCode !== "function" || typeof instance.validatePath !== "function" || typeof instance.validateRequest !== "function" || typeof instance.validateSequence !== "function" || typeof instance.streamResource !== "function" || typeof instance.streamResourcePath !== "function" || typeof instance.__wbindgen_free !== "function") {
     throw new StreamError("configuration", "stream WASM exports do not match the packaged contract");
   }
 }
@@ -299,3 +299,6 @@ export async function normalizeWireCommit(request: ProviderCommitRequest, option
     }),
   };
 }
+
+// Resource spelling stays in the same Rust codec as node admission.
+export { streamResource, streamResourcePath } from "../generated/wasm/acyclic_stream_wasm.js";

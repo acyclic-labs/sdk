@@ -637,3 +637,18 @@ mod http {
         }
     }
 }
+
+/// Encodes a validated Streams path using the shared canonical resource grammar.
+#[wasm_bindgen(js_name = streamResource)]
+pub fn stream_resource_wire(path: &str) -> Result<String, JsValue> {
+    let path = crate::StreamPath::new(path).map_err(js_error)?;
+    Ok(wire_codec::session::stream_resource(path.as_str()))
+}
+
+/// Decodes a canonical Streams resource through its owning path parser.
+#[wasm_bindgen(js_name = streamResourcePath)]
+pub fn stream_resource_path_wire(resource: &str) -> Result<String, JsValue> {
+    wire_codec::session::stream_path(resource)
+        .map(|path| path.to_string())
+        .map_err(js_error)
+}

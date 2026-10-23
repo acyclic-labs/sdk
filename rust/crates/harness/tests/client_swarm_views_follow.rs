@@ -30,7 +30,7 @@ async fn selected(
     while let Some(frame) = sent.next().await {
         if let Some(wire::session_frame::Body::Interest(update)) = frame.body {
             if let Some(sub) = update.upsert.into_iter().find(|sub| matches!(&sub.kind,
-                Some(wire::session_subscription::Kind::Follow(follow)) if follow.delivery == wire::SessionDelivery::All as i32 && follow.path == format!("{agent}/files"))) { return sub; }
+                Some(wire::session_subscription::Kind::Follow(follow)) if follow.delivery == wire::SessionDelivery::All as i32 && follow.resource == format!("streams:/{agent}/files"))) { return sub; }
         }
     }
     panic!("interest stream ended before selecting {agent}")

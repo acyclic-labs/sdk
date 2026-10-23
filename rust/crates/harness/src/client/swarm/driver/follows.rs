@@ -147,6 +147,8 @@ fn follow(
     let path = StreamPath::new(format!("{}/{suffix}", agent.as_str()))
         .map_err(|error| Error::Invalid(error.to_string()))?;
     Ok(wire::SessionSubscription {
+        credential: 0,
+        filter: None,
         channel: None,
         resume: Some(wire::SessionCursor {
             next: cursor.map_or(0, |cursor| cursor.position),
@@ -154,7 +156,7 @@ fn follow(
         }),
         kind: Some(wire::session_subscription::Kind::Follow(
             wire::SessionFollow {
-                path: path.to_string(),
+                resource: acyclic_stream::wire_codec::session::stream_resource(path.as_str()),
                 delivery: delivery as i32,
                 preceding_commit_id: cursor
                     .filter(|cursor| cursor.position > 0)

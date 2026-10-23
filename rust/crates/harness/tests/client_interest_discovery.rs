@@ -32,13 +32,13 @@ fn status_paths(updates: &[wire::SessionInterest]) -> Option<BTreeSet<String>> {
     for update in updates {
         for subscription in &update.upsert {
             if let Some(wire::session_subscription::Kind::Follow(follow)) = &subscription.kind {
-                if follow.path == "swarm/files" {
+                if follow.resource == "streams:/swarm/files" {
                     assert_eq!(follow.delivery, wire::SessionDelivery::All as i32);
                     assert_eq!(follow.preceding_commit_id.len(), 32);
                     continue;
                 }
                 if follow.delivery != wire::SessionDelivery::Latest as i32
-                    || !found.insert(follow.path.clone())
+                    || !found.insert(follow.resource.strip_prefix("streams:/")?.to_owned())
                 {
                     return None;
                 }

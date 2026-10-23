@@ -215,7 +215,7 @@ fn observe(routes: &mut Routes, progress: &Host, frame: &wire::SessionFrame) {
                     let next = subscription.resume.as_ref().map_or(0, |cursor| cursor.next);
                     routes.insert(
                         channel.channel_id,
-                        (channel.generation, follow.path.clone(), false, next),
+                        (channel.generation, follow.resource.clone(), false, next),
                     );
                 }
             }
@@ -225,8 +225,8 @@ fn observe(routes: &mut Routes, progress: &Host, frame: &wire::SessionFrame) {
                 if *opened {
                     *next += u64::from(window.frames);
                     let consumed = match path.as_str() {
-                        "durable/files" => Some(&progress.consumed),
-                        "remote-outbox/files" => Some(&progress.outbox_consumed),
+                        "streams:/durable/files" => Some(&progress.consumed),
+                        "streams:/remote-outbox/files" => Some(&progress.outbox_consumed),
                         _ => None,
                     };
                     if let Some(consumed) = consumed {

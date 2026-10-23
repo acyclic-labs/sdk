@@ -3,6 +3,9 @@
 use crate::{CommitId, RecordStream, StreamError, StreamPath, StreamProvider, wire};
 use prost::Message as _;
 
+mod resource;
+pub use resource::{stream_path, stream_resource, validate_resource};
+
 /// Decodes a bounded physical session message; protocol validation remains in the pool.
 pub fn decode_frame(bytes: &[u8]) -> Result<wire::SessionFrame, StreamError> {
     if bytes.len() > crate::MAX_COMMAND_BYTES {
@@ -16,7 +19,7 @@ pub fn validate_follow(
     follow: &wire::SessionFollow,
     resume: &wire::SessionCursor,
 ) -> Result<(), StreamError> {
-    StreamPath::validate(&follow.path)?;
+    validate_resource(&follow.resource)?;
     if !resume.opaque.is_empty()
         || !matches!(
             wire::SessionDelivery::try_from(follow.delivery),
@@ -102,7 +105,7 @@ pub async fn follow_records<P: StreamProvider + ?Sized>(
     if follow.delivery != wire::SessionDelivery::All as i32 {
         return Err(StreamError::InvalidArgument);
     }
-    let path = StreamPath::new(&follow.path)?;
+    let path = stream_path(&follow.resource)?;
     match record_anchor(cursor)? {
         Some(anchor) => {
             provider

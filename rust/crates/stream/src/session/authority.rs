@@ -83,16 +83,10 @@ pub(super) struct Binding {
 }
 
 fn stream_resource(path: Option<&StreamPath>) -> String {
-    let mut resource = String::from("streams:/");
-    if let Some(path) = path {
-        for (index, component) in path.as_str().split('/').enumerate() {
-            if index != 0 {
-                resource.push('/');
-            }
-            resource.push_str(&acyclic_auth::encode_component(component.as_bytes()));
-        }
-    }
-    resource
+    path.map_or_else(
+        || String::from("streams:/"),
+        |path| wire_codec::session::stream_resource(path.as_str()),
+    )
 }
 impl Authority {
     /// Binds a canonical authenticated audience and presenting account.

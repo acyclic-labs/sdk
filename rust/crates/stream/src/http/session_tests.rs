@@ -61,7 +61,7 @@ async fn latest_overview(
     let mut overview = client
         .follow_data(
             wire::SessionFollow {
-                path: "status".into(),
+                resource: crate::wire_codec::session::stream_resource("status"),
                 delivery: wire::SessionDelivery::Latest as i32,
                 ..Default::default()
             },

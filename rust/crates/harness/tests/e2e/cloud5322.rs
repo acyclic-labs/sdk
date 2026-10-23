@@ -295,7 +295,7 @@ async fn latest_payload_matches_exactly() -> TestResult {
     let mut data = remote
         .follow_data(
             wire::SessionFollow {
-                path: path.as_str().into(),
+                resource: acyclic_stream::wire_codec::session::stream_resource(path.as_str()),
                 delivery: wire::SessionDelivery::Latest as i32,
                 preceding_commit_id: Default::default(),
             },
@@ -440,7 +440,7 @@ async fn raw_session_closed_frames_use_stream_error_codes() -> TestResult {
             opaque: Default::default(),
         }),
         kind: Some(Kind::Follow(wire::SessionFollow {
-            path: path.into(),
+            resource: acyclic_stream::wire_codec::session::stream_resource(path),
             delivery: wire::SessionDelivery::All as i32,
             preceding_commit_id: preceding.into(),
         })),

@@ -123,7 +123,7 @@ pub fn exercise(next: u64, gap: u16, payload: &[u8], broken: bool) {
     let next = next % (u64::MAX - u64::from(u16::MAX) - 1);
     let gap = u64::from(gap) + 1;
     let mut follow = wire::SessionFollow {
-        path: "agents/status".into(),
+        resource: acyclic_stream::wire_codec::session::stream_resource("agents/status"),
         delivery: wire::SessionDelivery::Latest as i32,
         ..Default::default()
     };

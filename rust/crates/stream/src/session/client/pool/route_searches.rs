@@ -101,7 +101,7 @@ fn add_route(state: &mut State, index: usize, kind: u8) {
         "good",
         Kind::Follow(wire::SessionFollow {
             delivery: wire::SessionDelivery::All as i32,
-            path: format!("route/{id}"),
+            resource: crate::wire_codec::session::stream_resource(&format!("route/{id}")),
             preceding_commit_id: if checked {
                 vec![7; 32].into()
             } else {

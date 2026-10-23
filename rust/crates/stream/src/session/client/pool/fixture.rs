@@ -83,7 +83,7 @@ pub(in crate::session::client) fn fixture(
             "good",
             Kind::Follow(wire::SessionFollow {
                 delivery: wire::SessionDelivery::All as i32,
-                path: "healthy".into(),
+                resource: crate::wire_codec::session::stream_resource("healthy"),
                 ..Default::default()
             }),
             records,

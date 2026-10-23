@@ -392,7 +392,7 @@ impl Client {
         filter: crate::FollowFilter,
     ) -> Result<RecordStream, StreamError> {
         let follow = wire::SessionFollow {
-            path: path.to_string(),
+            resource: crate::wire_codec::session::stream_resource(path.as_str()),
             delivery: wire::SessionDelivery::All as i32,
             preceding_commit_id: preceding
                 .map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
@@ -426,7 +426,7 @@ impl Client {
         filter: crate::FollowFilter,
     ) -> Result<crate::FollowStream, StreamError> {
         let kind = Kind::Follow(wire::SessionFollow {
-            path: path.to_string(),
+            resource: crate::wire_codec::session::stream_resource(path.as_str()),
             delivery: wire::SessionDelivery::All as i32,
             preceding_commit_id: preceding
                 .map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
@@ -492,7 +492,7 @@ impl Client {
         impl futures::Stream<Item = Result<wire::SessionData, StreamError>> + 'static + use<>,
         StreamError,
     > {
-        StreamPath::validate(&follow.path)?;
+        wire_codec::session::validate_resource(&follow.resource)?;
         if !matches!(
             wire::SessionDelivery::try_from(follow.delivery),
             Ok(wire::SessionDelivery::All | wire::SessionDelivery::Latest)

@@ -47,7 +47,7 @@ pub fn verify_abandoned_reconnect(broken: bool) {
                         acknowledge: false,
                         kind: Kind::Follow(wire::SessionFollow {
                             delivery: wire::SessionDelivery::All as i32,
-                            path: "healthy".into(),
+                            resource: crate::wire_codec::session::stream_resource("healthy"),
                             ..Default::default()
                         }),
                         progress,
@@ -152,7 +152,7 @@ pub fn verify_pool_lifetime(fault: u8) {
                 acknowledge: false,
                 kind: Kind::Follow(wire::SessionFollow {
                     delivery: wire::SessionDelivery::All as i32,
-                    path: "healthy".into(),
+                    resource: crate::wire_codec::session::stream_resource("healthy"),
                     ..Default::default()
                 }),
                 progress,
@@ -383,7 +383,7 @@ pub fn verify_link_isolation(broken: bool) {
             acknowledge: false,
             kind: Kind::Follow(wire::SessionFollow {
                 delivery: wire::SessionDelivery::All as i32,
-                path: "later".into(),
+                resource: crate::wire_codec::session::stream_resource("later"),
                 ..Default::default()
             }),
             progress: Arc::new(Progress::new(0)),

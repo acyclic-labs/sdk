@@ -55,7 +55,7 @@ const sessions = new StreamSessions(async (node, signal) => {
       yield frame;
     }
   } }, async send(input, writeSignal) {
-    const subscription = input.body.case === "interest" && input.body.value.upsert.some(value => value.kind.case === "follow" && value.kind.value.path === "events" || value.kind.case === "children" && value.kind.value.parent === "events");
+    const subscription = input.body.case === "interest" && input.body.value.upsert.some(value => value.kind.case === "follow" && value.kind.value.resource === "streams:/events" || value.kind.case === "children" && value.kind.value.parent === "events");
     const acknowledgement = input.body.case === "ack";
     if (!writesReleased && ((scenario === "deadline-subscription" && subscription) || (scenario === "deadline-ack" && acknowledgement))) {
       blocked = true;

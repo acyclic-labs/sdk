@@ -113,7 +113,7 @@ impl Counts {
                             self.children += 1;
                             self.always_followed.insert(id);
                         }
-                        Some(Kind::Follow(follow)) if follow.path == "swarm/files" => {
+                        Some(Kind::Follow(follow)) if follow.resource == "streams:/swarm/files" => {
                             if follow.delivery != wire::SessionDelivery::All as i32
                                 || follow.preceding_commit_id.len() != 32
                                 || self.membership_follows != 0
@@ -126,8 +126,8 @@ impl Counts {
                         Some(Kind::Follow(follow))
                             if follow.delivery == wire::SessionDelivery::Latest as i32 =>
                         {
-                            if !follow.path.ends_with("/status")
-                                || !self.statuses.insert(follow.path.clone())
+                            if !follow.resource.ends_with("/status")
+                                || !self.statuses.insert(follow.resource.clone())
                             {
                                 return Err(acyclic_stream::StreamError::InvalidArgument);
                             }
@@ -136,7 +136,7 @@ impl Counts {
                         Some(Kind::Follow(follow))
                             if follow.delivery == wire::SessionDelivery::All as i32 =>
                         {
-                            if !follow.path.ends_with("/files") || !self.full.insert(id) {
+                            if !follow.resource.ends_with("/files") || !self.full.insert(id) {
                                 return Err(acyclic_stream::StreamError::InvalidArgument);
                             }
                             self.content_follows += 1;

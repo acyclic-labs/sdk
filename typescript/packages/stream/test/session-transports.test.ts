@@ -19,7 +19,7 @@ test("public gRPC follows and unaries share one physical HTTP/2 session", async 
   try {
     const provider = new GrpcStreamProvider(options);
     expect(await provider.tail("unary")).toBe(0n);
-    const latest = provider.followData(create(SessionFollowSchema, { path: "status", delivery: SessionDelivery.LATEST }), { from: 0n })[Symbol.asyncIterator]();
+    const latest = provider.followData(create(SessionFollowSchema, { resource: "streams:/status", delivery: SessionDelivery.LATEST }), { from: 0n })[Symbol.asyncIterator]();
     const firstStatus = latest.next();
     const follows = Array.from({ length: 64 }, (_, id) => provider.follow(`agent/${id}`, { from: 0n })[Symbol.asyncIterator]());
     const children = provider.children({ parent: "agent", limit: 1 })[Symbol.asyncIterator]();
@@ -121,7 +121,7 @@ test("public browser follows use one authenticated binary WebSocket without fetc
       fetcher: async () => { fetches += 1; throw new Error("follow issued an HTTP poll"); },
       webSocketFactory: (url, protocols) => { sockets += 1; return new WebSocket(url, { protocols, tls: { ca: cert } }); },
     });
-    const latest = provider.followData(create(SessionFollowSchema, { path: "status", delivery: SessionDelivery.LATEST }), { from: 0n })[Symbol.asyncIterator]();
+    const latest = provider.followData(create(SessionFollowSchema, { resource: "streams:/status", delivery: SessionDelivery.LATEST }), { from: 0n })[Symbol.asyncIterator]();
     const firstStatus = latest.next();
     const follows = Array.from({ length: 64 }, (_, id) => provider.follow(`agent/${id}`, { from: 0n })[Symbol.asyncIterator]());
     const children = provider.children({ parent: "agent", limit: 1 })[Symbol.asyncIterator]();

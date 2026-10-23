@@ -329,7 +329,7 @@ pub fn session_registration_and_recovery_never_splice(omit_anchor: bool) {
         });
         block_on(async {
             let follow = wire::SessionFollow {
-                path: path.as_str().into(),
+                resource: crate::wire_codec::session::stream_resource(path.as_str()),
                 delivery: wire::SessionDelivery::All as i32,
                 ..Default::default()
             };

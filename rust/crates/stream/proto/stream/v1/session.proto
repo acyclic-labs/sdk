@@ -73,7 +73,7 @@ enum SessionDelivery {
   SESSION_DELIVERY_LATEST = 2;
 }
 message SessionFollow {
-  string path = 1;
+  string resource = 1; // canonical streams:/path, fs:/volume, or another product resource
   SessionDelivery delivery = 2;
   // Optional 32-byte commit at resume.next - 1; requires ALL and next > 0.
   // The provider must check this anchor and register the follow atomically,

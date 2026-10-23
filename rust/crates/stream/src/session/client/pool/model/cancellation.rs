@@ -30,7 +30,7 @@ pub fn verify_cancel_before_open(broken: bool) {
                     attempt_epoch: 0,
                     acknowledge: false,
                     kind: Kind::Follow(wire::SessionFollow {
-                        path: "replacement".into(),
+                        resource: crate::wire_codec::session::stream_resource("replacement"),
                         delivery: wire::SessionDelivery::All as i32,
                         ..Default::default()
                     }),

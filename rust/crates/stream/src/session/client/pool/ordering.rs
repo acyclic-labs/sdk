@@ -147,7 +147,7 @@ fn open(
         raw: false,
         progress,
         kind: Kind::Follow(wire::SessionFollow {
-            path: format!("view/{id}"),
+            resource: crate::wire_codec::session::stream_resource(&format!("view/{id}")),
             delivery: wire::SessionDelivery::All as i32,
             ..Default::default()
         }),

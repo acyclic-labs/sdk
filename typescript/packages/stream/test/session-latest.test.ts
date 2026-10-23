@@ -1,10 +1,11 @@
+import { streamResource } from "../src/contract.js";
 import { expect, test } from "bun:test";
 import { create, equals } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
 import { StreamSessions } from "../src/session.js";
 import { SessionNode, checkpoint } from "./session-node.js";
 
-const latest = (path = "status") => create(wire.SessionFollowSchema, { path, delivery: wire.SessionDelivery.LATEST });
+const latest = (path = "status") => create(wire.SessionFollowSchema, { resource: streamResource(path), delivery: wire.SessionDelivery.LATEST });
 
 test("LATEST keeps jumps, attention and watermarks while a full follow progresses", async () => {
   const peer = new SessionNode();
@@ -62,11 +63,11 @@ test("raw ALL data retains metadata and invalid modes fail before opening a sess
   const peer = new SessionNode();
   const client = new StreamSessions(peer.connect);
   for (const [delivery, from, guard] of [[wire.SessionDelivery.UNSPECIFIED, 0n, 0], [wire.SessionDelivery.LATEST, 1n, 32], [wire.SessionDelivery.ALL, 1n, 31]] as const) {
-    await expect(client.followData(create(wire.SessionFollowSchema, { path: "events", delivery, precedingCommitId: new Uint8Array(guard) }), { from }).next()).rejects.toBeDefined();
+    await expect(client.followData(create(wire.SessionFollowSchema, { resource: "streams:/events", delivery, precedingCommitId: new Uint8Array(guard) }), { from }).next()).rejects.toBeDefined();
   }
   expect(peer.connections.length).toBe(0);
   peer.append("events");
-  const records = client.followData(create(wire.SessionFollowSchema, { path: "events", delivery: wire.SessionDelivery.ALL }), { from: 0n });
+  const records = client.followData(create(wire.SessionFollowSchema, { resource: "streams:/events", delivery: wire.SessionDelivery.ALL }), { from: 0n });
   const data = (await records.next()).value!;
   expect(data.after?.next).toBe(1n);
   expect(data.accepted).toBe(1n);
@@ -79,7 +80,7 @@ test("checked ALL confirms its anchor and reconnects with the last yielded commi
   const peer = new SessionNode();
   peer.append("events", 3);
   const client = new StreamSessions(peer.connect);
-  const follow = create(wire.SessionFollowSchema, { path: "events", delivery: wire.SessionDelivery.ALL, precedingCommitId: peer.history.get("events")![0]!.commitId });
+  const follow = create(wire.SessionFollowSchema, { resource: "streams:/events", delivery: wire.SessionDelivery.ALL, precedingCommitId: peer.history.get("events")![0]!.commitId });
   const data = client.followData(follow, { from: 1n });
   expect((await data.next()).value?.after?.next).toBe(2n);
   peer.disconnect();
@@ -106,7 +107,7 @@ test("missing or mismatched checked confirmation removes only its channel withou
     const healthy = client.follow("healthy", { from: 0n });
     const pending = healthy.next();
     await peer.until(() => peer.active === 1);
-    const checked = client.followData(create(wire.SessionFollowSchema, { path: "events", delivery: wire.SessionDelivery.ALL, precedingCommitId: new Uint8Array(32).fill(7) }), { from: 1n });
+    const checked = client.followData(create(wire.SessionFollowSchema, { resource: "streams:/events", delivery: wire.SessionDelivery.ALL, precedingCommitId: new Uint8Array(32).fill(7) }), { from: 1n });
     await expect(checked.next()).rejects.toMatchObject({ code: "unsupported" });
     await peer.until(() => peer.active === 1);
     expect(peer.received.some(input => input.channelId === 3n && input.body.case === "window")).toBe(false);

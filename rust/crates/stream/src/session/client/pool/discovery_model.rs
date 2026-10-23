@@ -15,7 +15,9 @@ pub fn verify_discovery_admission(live: bool, bypass_delivery: bool) {
         for (id, route) in &mut pool.routes {
             route.node = "good".into();
             route.kind = Kind::Follow(wire::SessionFollow {
-                path: format!("swarm/a{id}/status"),
+                resource: crate::wire_codec::session::stream_resource(&format!(
+                    "swarm/a{id}/status"
+                )),
                 delivery: wire::SessionDelivery::Latest as i32,
                 ..Default::default()
             });
@@ -24,7 +26,7 @@ pub fn verify_discovery_admission(live: bool, bypass_delivery: bool) {
         // parent-volume follow. Both deliver before a status Open is admitted.
         pool.routes.get_mut(&1).unwrap().kind = if live {
             Kind::Follow(wire::SessionFollow {
-                path: "swarm/files".into(),
+                resource: crate::wire_codec::session::stream_resource("swarm/files"),
                 delivery: wire::SessionDelivery::All as i32,
                 preceding_commit_id: vec![0; 32].into(),
             })

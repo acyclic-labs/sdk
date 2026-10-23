@@ -29,7 +29,7 @@ async fn reviewed_follow(client: &Client, path: StreamPath) -> Result<RecordStre
     let received = client
         .open_kind(
             Kind::Follow(wire::SessionFollow {
-                path: path.to_string(),
+                resource: crate::wire_codec::session::stream_resource(path.as_str()),
                 delivery: wire::SessionDelivery::All as i32,
                 ..Default::default()
             }),

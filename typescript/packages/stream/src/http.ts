@@ -47,7 +47,6 @@ export class HttpStreamProvider implements StreamProvider {
   async *followData(follow: SessionFollow, options: FollowOptions): AsyncIterable<SessionData> {
     const authored = structuredClone(follow);
     const { from, signal } = options;
-    await validateWireRequest({ kind: "follow", path: authored.path, from });
     yield* this.#sessions.followData(authored, { from, ...(signal === undefined ? {} : { signal }) });
   }
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {

@@ -6,7 +6,7 @@ fn subscription(path: &str, delivery: wire::SessionDelivery) -> wire::SessionSub
         filter: None,
         resume: Some(wire::SessionCursor::default()),
         kind: Some(Kind::Follow(wire::SessionFollow {
-            path: path.into(),
+            resource: crate::wire_codec::session::stream_resource(path),
             delivery: delivery as i32,
             ..Default::default()
         })),
@@ -41,7 +41,7 @@ async fn raw_follow_keeps_checked_anchors_and_standalone_watermarks() -> TestRes
         filter: None,
         resume: data.after,
         kind: Some(Kind::Follow(wire::SessionFollow {
-            path: "events".into(),
+            resource: crate::wire_codec::session::stream_resource("events"),
             delivery: wire::SessionDelivery::All as i32,
             preceding_commit_id: value.commit_id,
         })),

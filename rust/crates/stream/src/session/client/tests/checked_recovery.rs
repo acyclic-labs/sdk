@@ -163,7 +163,7 @@ async fn run(actions: &[bool], boundary: usize, moved: bool, broken: bool) -> Te
     let mut data = client
         .follow_data(
             wire::SessionFollow {
-                path: "events".into(),
+                resource: crate::wire_codec::session::stream_resource("events"),
                 delivery: wire::SessionDelivery::All as i32,
                 preceding_commit_id: Bytes::copy_from_slice(
                     ledger.first().ok_or("empty ledger")?.as_bytes(),

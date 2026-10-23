@@ -33,7 +33,7 @@ fn subscribe(id: u64, path: &str, from: u64, latest: bool) -> wire::SessionSubsc
         }),
         resume: Some(cursor(from)),
         kind: Some(Kind::Follow(wire::SessionFollow {
-            path: path.into(),
+            resource: crate::wire_codec::session::stream_resource(path),
             delivery: if latest {
                 wire::SessionDelivery::Latest
             } else {

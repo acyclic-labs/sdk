@@ -109,7 +109,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     Ok(wire::SessionDelivery::Latest) => true,
                     _ => return Err(StreamError::InvalidArgument),
                 };
-                let path = StreamPath::new(follow.path)?;
+                let path = wire_codec::session::stream_path(&follow.resource)?;
                 let (authorization, filter) = match self.authority.bind(
                     &self.slots,
                     subscription.credential,
