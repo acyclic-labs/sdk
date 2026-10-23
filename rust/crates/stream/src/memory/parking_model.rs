@@ -1,5 +1,5 @@
 use super::*;
-use crate::{snapshot::park, verification::block_on};
+use crate::verification::{block_on, park};
 use std::{
     mem::ManuallyDrop,
     task::{Context, Waker},

@@ -54,13 +54,11 @@ pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
     // Waker reference counting belongs to the executor, not the provider model.
     // A single driver keeps every lock, registration and wake scheduled by Loom
     // without multiplying schedules by modeled Arc clones of its own waker.
-    crate::snapshot::park(future)
+    crate::snapshot::park(Box::pin(future))
 }
 
 /// Drives adapter models with the same parked-thread waker as snapshot workers.
-pub fn park<F: std::future::Future>(future: F) -> F::Output {
-    crate::snapshot::park(future)
-}
+pub use block_on as park;
 
 /// Applies the production recovery path to the existing provider object.
 pub async fn recover(

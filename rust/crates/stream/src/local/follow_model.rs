@@ -125,9 +125,7 @@ pub(crate) fn cancellation(retain: bool) {
 
 // Keep the executor's parker outside Loom-managed allocations so a deliberately
 // deadlocked negative control can unwind without dropping a Loom Notify guard.
-pub(super) fn park<F: Future>(future: F) -> F::Output {
-    crate::snapshot::park(future)
-}
+pub(super) use crate::verification::park;
 
 // Exercise the real visibility/failure lock ordering in both directions.
 // The mutant retains the real failure-watch borrow across publication's await;

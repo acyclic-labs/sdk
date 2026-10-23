@@ -82,7 +82,7 @@ async fn read_owned<S: Snapshot>(
 }
 
 #[cfg(acyclic_loom)]
-pub(crate) fn park<F: Future>(future: F) -> F::Output {
+pub(crate) fn park<F: Future + ?Sized>(future: std::pin::Pin<Box<F>>) -> F::Output {
     use std::{
         mem::ManuallyDrop,
         sync::Arc,
@@ -98,7 +98,9 @@ pub(crate) fn park<F: Future>(future: F) -> F::Output {
         }
     }
     let waker = Waker::from(Arc::new(Thread(loom::thread::current())));
-    let mut future = ManuallyDrop::new(Box::pin(future));
+    // The caller pins before entering this driver. Passing a large async state
+    // machine by value through another frame can exhaust a model coroutine.
+    let mut future = ManuallyDrop::new(future);
     loop {
         if let Poll::Ready(value) = future.as_mut().poll(&mut Context::from_waker(&waker)) {
             drop(ManuallyDrop::into_inner(future));

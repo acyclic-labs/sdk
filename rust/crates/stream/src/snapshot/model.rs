@@ -67,6 +67,7 @@ pub(super) fn spawn(worker: impl Future<Output = ()> + Send + 'static) {
         }
     });
     if let Some(worker) = worker {
+        let worker = Box::pin(worker);
         loom::thread::spawn(move || super::park(worker));
     }
 }
@@ -126,7 +127,7 @@ pub(crate) fn depart<H>(
             );
             assert!(worker.as_mut().poll(&mut cx).is_ready());
             woken.take();
-            assert_eq!(super::park(follow.next()), Some(Ok(())));
+            assert_eq!(super::park(Box::pin(follow.next())), Some(Ok(())));
             drop(follow);
             assert!(!woken.take(), "a completed job was woken for cancellation");
             assert!(available());
