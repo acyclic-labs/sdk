@@ -1,9 +1,10 @@
 //! seed fork protocol.
 use super::*;
+use crate::core::OwnedBytes;
 pub(crate) fn copy_seed(source: &ForkSeed, quota: &mut CodecQuota<'_, '_>) -> Result<ForkSeed> {
     crate::core::copy(source, quota, |source, work| {
         source.validate(work)?;
-        crate::core::owned_bytes(source)
+        source.owned_heap_bytes()
     })
 }
 /// Immutable, validated child environment published by the parent aggregate.
@@ -487,3 +488,27 @@ impl ForkSeed {
         Ok(Capabilities::new(values))
     }
 }
+
+crate::core::ownership::owned_struct!(ForkSeed {
+    operation_id,
+    parent,
+    parent_revision,
+    authorized_source,
+    child,
+    child_agent,
+    attached_agents,
+    resources,
+    omissions,
+    child_private_volume,
+    child_private_generation,
+    child_result_volume,
+    child_result_generation,
+    inherited_context,
+    summary,
+    inherited_through_sequence,
+    shared_grants,
+    reference_grants,
+    history_witness,
+    attachment_manifests,
+    boundary
+});

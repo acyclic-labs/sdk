@@ -548,3 +548,26 @@ impl TaskAdmissionRecord {
         ))
     }
 }
+
+crate::core::ownership::owned_struct!(ExecutionPlacement {
+    provider,
+    build,
+    environment,
+    readiness_revision
+});
+crate::core::ownership::owned_struct!(TaskAdmissionRecord {
+    operation_id,
+    task,
+    machine,
+    input,
+    input_schema,
+    output_schema,
+    parent,
+    resource_proofs,
+    grants,
+    limits,
+    run_limits,
+    policy,
+    extensions,
+    execution
+});

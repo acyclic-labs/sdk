@@ -1,5 +1,7 @@
 //! Selected provider revisions and fork preparation.
 use super::*;
+#[cfg(feature = "filesystem")]
+use crate::core::OwnedBytes;
 /// One exact retained resource revision selected for a child.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "reference", rename_all = "snake_case")]
@@ -153,7 +155,7 @@ impl ResourceRevision {
         CodecQuota::produce(work, |quota| {
             crate::core::copy(self, quota, |source, work| {
                 source.validate(work)?;
-                crate::core::owned_bytes(source)
+                source.owned_heap_bytes()
             })
         })
     }
@@ -371,3 +373,31 @@ pub trait ForkCaptureProvider: acyclic_stream::ProviderPlatform {
         selection: &'a ForkSelection,
     ) -> BoxFuture<'a, Result<Option<Capture>>>;
 }
+
+crate::core::ownership::owned_enum!(ResourceRevision {
+    History(field0),
+    Project { volume, generation },
+    PrivateVolume { volume, generation, paths },
+    Context(field0),
+    Process(field0),
+    Artifact(field0),
+    SharedVolume(field0),
+    Extension { name, version, implementation_digest, reference },
+});
+crate::core::ownership::owned_struct!(ForkSelection { required, revision });
+crate::core::ownership::owned_struct!(AttestedBoundary { provider, evidence });
+crate::core::ownership::owned_enum!(ForkHistoryPolicy {
+    Fork,
+    Fresh,
+    Summary(field0),
+});
+crate::core::ownership::owned_struct!(ForkPreparation {
+    child_project_volume,
+    child_private_volume,
+    child_result_volume,
+    inherited_through_sequence,
+    maximum_inherited_messages,
+    maximum_inherited_bytes,
+    maximum_inherited_references,
+    summary
+});

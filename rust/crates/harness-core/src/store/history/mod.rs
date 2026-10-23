@@ -484,3 +484,8 @@ mod follow;
 mod forks;
 mod pages;
 pub(in crate::store) use pages::project_effect;
+
+crate::core::ownership::owned_struct!(HistoryReadLimits {
+    maximum_events,
+    maximum_bytes
+});

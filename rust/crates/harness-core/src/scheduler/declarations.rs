@@ -389,3 +389,8 @@ fn copy_resources(
     }
     Ok(output)
 }
+
+crate::core::ownership::owned_struct!(LeaseFence {
+    reservation_id,
+    placement
+});

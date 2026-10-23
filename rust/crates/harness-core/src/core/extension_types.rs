@@ -135,7 +135,7 @@ impl ExtensionAdmission {
             ownership::owned_vector(&self.selected, |extension| {
                 Ok(extension.name.capacity() as u64)
             })?,
-            ownership::owned_vector(&self.configurations, ownership::owned_bytes)?,
+            ownership::owned_vector(&self.configurations, OwnedBytes::owned_heap_bytes)?,
         ])
     }
 
@@ -261,3 +261,29 @@ impl ExtensionConfiguration {
         self.content.validate(&mut None)
     }
 }
+
+crate::core::ownership::owned_enum!(ExtensionForkPolicy {
+    Inherit,
+    Reset,
+    Reject,
+});
+crate::core::ownership::owned_struct!(ExtensionDependency { name, version });
+crate::core::ownership::owned_struct!(ExtensionRecord {
+    name,
+    version,
+    schema_digest,
+    implementation_digest,
+    fork_policy,
+    content
+});
+crate::core::ownership::owned_struct!(ExtensionConfiguration {
+    extension,
+    schema_digest,
+    content
+});
+crate::core::ownership::owned_struct!(ExtensionStateMigration { previous, record });
+crate::core::ownership::owned_struct!(ExtensionAdmission {
+    source,
+    selected,
+    configurations
+});

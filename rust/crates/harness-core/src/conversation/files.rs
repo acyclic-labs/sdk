@@ -383,3 +383,16 @@ impl FileRef {
         })
     }
 }
+
+crate::core::ownership::owned_struct!(FileDescriptor {
+    sha256,
+    byte_length,
+    media_type
+});
+crate::core::ownership::owned_struct!(FileRef {
+    volume,
+    path,
+    version,
+    descriptor,
+    display_name
+});

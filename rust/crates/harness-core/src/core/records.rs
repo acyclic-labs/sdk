@@ -152,14 +152,6 @@ pub struct RecordedScope {
 }
 
 impl RecordedScope {
-    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        let capabilities = self.capabilities.logical_owned_bytes()?;
-        (self.id.capacity() as u64)
-            .checked_add(self.issuer.capacity() as u64)
-            .and_then(|bytes| bytes.checked_add(capabilities))
-            .ok_or_else(|| Error::Invalid("recorded scope ownership overflows".into()))
-    }
-
     /// Capabilities authenticated for this one committed event.
     #[must_use]
     pub const fn capabilities(&self) -> &Capabilities {
@@ -541,3 +533,73 @@ pub(in crate::core) fn validate_lifecycle(from: LifecycleState, to: LifecycleSta
         Err(Error::Conflict("invalid lifecycle transition".into()))
     }
 }
+
+crate::core::ownership::owned_enum!(LifecycleState {
+    Pending,
+    Active,
+    Waiting,
+    Completed,
+    Failed,
+    Cancelled,
+});
+crate::core::ownership::owned_enum!(EventPayload {
+    LifecycleTransitioned { from, to, reason },
+    Custom { record },
+    ExtensionStateMigrated { migration },
+    ExtensionsSelected { previous, selected, configurations },
+    ExtensionConfigured { previous, record },
+    EffectPlanned { effect_id, provider, guarantee, effect_kind, request, request_digest, result_schema, result_schema_digest },
+    EffectDispatched { effect_id, attempt_id },
+    EffectResolved { observation },
+    ForkPublished { seed },
+    ProjectMergePublished { receipt },
+    ConversationBound { agent },
+    ConversationMessageAppended { message },
+    ModelContextSelected { selection },
+    InteractionOpened { ticket },
+    InteractionResolved { resolution },
+});
+crate::core::ownership::owned_struct!(EventReference {
+    authority,
+    revision
+});
+crate::core::ownership::owned_struct!(RecordedScope {
+    id,
+    capabilities,
+    issuer,
+    agent
+});
+crate::core::ownership::owned_struct!(Event {
+    revision,
+    operation_id,
+    intent_digest,
+    scope,
+    attestation,
+    causal_parent,
+    payload
+});
+crate::core::ownership::owned_struct!(Command {
+    operation_id,
+    idempotency_key,
+    expected_revision,
+    scope,
+    causal_parent,
+    action
+});
+crate::core::ownership::owned_enum!(Action {
+    TransitionLifecycle { to, reason },
+    AppendCustom { schema, version, content },
+    MigrateExtensionState { name, previous, to_version, content },
+    SelectExtensions { roots },
+    ConfigureExtension { extension, content },
+    PlanEffect { effect_id, provider, guarantee, effect_kind, request, result_schema },
+    MarkEffectDispatched { effect_id, attempt_id },
+    ResolveEffect { observation },
+    PublishFork { seed },
+    PublishProjectMerge { receipt },
+    BindConversation { agent },
+    AppendConversationMessage { message },
+    SelectModelContext { selection },
+    OpenInteraction { ticket },
+    ResolveInteraction { resolution },
+});

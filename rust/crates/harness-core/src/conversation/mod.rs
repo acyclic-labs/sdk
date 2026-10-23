@@ -514,3 +514,19 @@ mod identity;
 pub use identity::assistant_message_id;
 #[cfg(feature = "filesystem")]
 pub(crate) use identity::derived_operation_id;
+
+crate::core::ownership::owned_struct!(Limits {
+    file_bytes,
+    path_bytes,
+    attachments,
+    render_bytes,
+    model_steps,
+    model_events_per_step,
+    tool_calls_per_step,
+    context_messages
+});
+crate::core::ownership::owned_struct!(ModelContextSelection {
+    conversation_revision,
+    message_ids,
+    checkpoint
+});

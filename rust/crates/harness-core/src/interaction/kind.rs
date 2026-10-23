@@ -13,3 +13,10 @@ pub enum InteractionKind {
     /// Approval of one exact operation intent.
     Approval,
 }
+
+crate::core::ownership::owned_enum!(InteractionKind {
+    Question,
+    Choice,
+    Form,
+    Approval,
+});

@@ -181,7 +181,7 @@ impl Reducer {
                     quota,
                     |value: &ExtensionConfiguration, work| {
                         value.content.validate(work)?;
-                        owned_bytes(value)
+                        value.owned_heap_bytes()
                     },
                 )?);
             }

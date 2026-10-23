@@ -168,6 +168,7 @@ macro_rules! uuid_id {
         )]
         #[serde(transparent)]
         pub struct $name(Uuid);
+        crate::core::ownership::owned_tuple!($name, (value));
 
         impl $name {
             /// Creates a fresh identity.
@@ -234,6 +235,7 @@ uuid_id!(InteractionId, "Identity of one typed open interaction.");
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct IdempotencyKey(pub String);
+crate::core::ownership::owned_tuple!(IdempotencyKey, (value));
 
 impl IdempotencyKey {
     /// Creates a bounded non-empty caller retry identity.
@@ -311,6 +313,7 @@ pub struct ProtocolIdentity {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Capabilities(pub(crate) BTreeSet<String>);
+crate::core::ownership::owned_tuple!(Capabilities, (values));
 
 impl Capabilities {
     /// Copies borrowed grants on the original native ledger.

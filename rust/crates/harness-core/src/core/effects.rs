@@ -70,7 +70,7 @@ impl EffectAttestation {
                 if let EffectStatus::Succeeded { result } = &value.status {
                     result.validate(work)?;
                 }
-                owned_bytes(value)
+                value.owned_heap_bytes()
             })
         })
     }
@@ -184,3 +184,38 @@ pub(in crate::core) fn validate_effect_observation(
     }
     validate_effect_result(&observation.status)
 }
+
+crate::core::ownership::owned_enum!(EffectGuarantee {
+    ExactlyOnce,
+    IdempotentRetry,
+    AtMostOnce,
+});
+crate::core::ownership::owned_enum!(EffectStatus {
+    Planned,
+    Dispatched,
+    Succeeded { result },
+    Failed { message },
+    Indeterminate,
+});
+crate::core::ownership::owned_struct!(EffectAttestation {
+    provider,
+    effect_id,
+    attempt_id,
+    request_digest,
+    guarantee,
+    result_schema_digest,
+    status,
+    proof
+});
+crate::core::ownership::owned_struct!(EffectState {
+    provider,
+    guarantee,
+    effect_kind,
+    request,
+    request_digest,
+    result_schema,
+    result_schema_digest,
+    status,
+    planning,
+    attempts
+});

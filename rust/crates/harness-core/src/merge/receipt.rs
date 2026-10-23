@@ -137,3 +137,16 @@ impl ProjectMergeReceipt {
         })
     }
 }
+
+crate::core::ownership::owned_struct!(ProjectMergeReceipt {
+    operation_id,
+    child,
+    source_project,
+    source_generation,
+    target_project,
+    expected_target_generation,
+    result_generation,
+    provider_operation_id,
+    provider_proof,
+    notice
+});

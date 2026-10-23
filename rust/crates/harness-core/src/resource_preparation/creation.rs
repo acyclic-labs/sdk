@@ -119,3 +119,14 @@ pub(crate) trait CreatedTaskLease: acyclic_stream::ProviderPlatform {
         io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>>;
 }
+
+crate::core::ownership::owned_struct!(ResourceCreationOrigin {
+    owner,
+    parent_task,
+    preparation_task,
+    intended_child,
+    admission_digest,
+    source_grants,
+    request_digest,
+    creation_fence
+});

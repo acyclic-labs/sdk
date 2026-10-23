@@ -34,13 +34,15 @@ pub(crate) use filesystem_access::{
     contains_content_grant_with_work, directory_read_granted_with_work, filesystem_scope_label,
     volume_write_granted_with_work,
 };
-mod ownership;
+pub(crate) mod ownership;
 mod records;
 mod reducer;
 mod registry;
 mod snapshot;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod wire_layout;
 pub(in crate::core) use crate::fork::copy_seed;
 pub(crate) use copying::{
     copy, copy_authority, copy_boxed, copy_copy_vector, copy_event, copy_provider, copy_resource,
@@ -50,7 +52,7 @@ pub(crate) use ownership::inspect_metadata;
 #[cfg(feature = "filesystem")]
 pub(crate) use ownership::resource_creation_clone_reservation;
 pub(crate) use ownership::{
-    event_owned_bytes, owned_buffer, owned_bytes, owned_effect, owned_sum, owned_vector,
+    OwnedBytes, event_owned_bytes, owned_buffer, owned_effect, owned_sum, owned_vector,
 };
 pub use snapshot::Snapshot;
 

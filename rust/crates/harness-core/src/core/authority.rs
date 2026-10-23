@@ -1071,3 +1071,21 @@ fn effect_attestation_digest(
     drop(bytes);
     Ok(proof)
 }
+
+crate::core::ownership::owned_enum!(AggregateKind {
+    Agent,
+    Conversation,
+    Session,
+    Turn,
+    Task,
+});
+crate::core::ownership::owned_struct!(Authority { kind, id });
+crate::core::ownership::owned_struct!(Scope {
+    id,
+    capabilities,
+    agent,
+    issuer,
+    parent_proof,
+    proof,
+    workload
+});

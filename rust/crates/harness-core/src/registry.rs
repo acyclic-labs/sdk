@@ -14,3 +14,9 @@ pub struct ComponentIdentity {
     /// Implementation/schema digest.
     pub digest: [u8; 32],
 }
+
+crate::core::ownership::owned_struct!(ComponentIdentity {
+    name,
+    version,
+    digest
+});

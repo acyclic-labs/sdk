@@ -1,5 +1,6 @@
 //! report fork protocol.
 use super::*;
+use crate::core::OwnedBytes;
 /// Prepared capture report; no child is visible until its seed is published.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -180,7 +181,7 @@ impl ForkReport {
         CodecQuota::produce(work, |quota| {
             crate::core::copy(self, quota, |source, work| {
                 source.validate(work)?;
-                crate::core::owned_bytes(source)
+                source.owned_heap_bytes()
             })
         })
     }
@@ -214,3 +215,19 @@ impl ForkReport {
         Ok(())
     }
 }
+
+crate::core::ownership::owned_struct!(ForkReport {
+    request,
+    captures,
+    child_private_volume,
+    child_private_generation,
+    child_result_volume,
+    child_result_generation,
+    inherited_context,
+    summary,
+    inherited_through_sequence,
+    shared_grants,
+    reference_grants,
+    history_witness,
+    attachment_manifests
+});

@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "filesystem")]
+use crate::core::OwnedBytes;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) type LiveHandler<I, O> =
@@ -120,7 +122,7 @@ impl<I, O> TaskDefinition<I, O> {
                 Self::resumable_with_io(machine.clone(), input, output, Some(&io))?;
             definition.requirements = task_copy_with_io(Some(&io), |quota| {
                 crate::core::copy(&self.requirements, quota, |value, _| {
-                    crate::core::owned_bytes(value)
+                    value.owned_heap_bytes()
                 })
             })?;
             let retained = io.owned_bytes()?;

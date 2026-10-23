@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::OwnedBytes;
 use crate::{
     core::{copy_boxed, copy_text, copy_vector},
     wire_codec::CodecQuota,
@@ -253,7 +254,7 @@ impl FileProjectionPolicy {
                                     quota,
                                     |value: &crate::core::ExtensionConfiguration, work| {
                                         value.content.validate(work)?;
-                                        crate::core::owned_bytes(value)
+                                        value.owned_heap_bytes()
                                     },
                                 )?,
                                 implementation_digest: binding.implementation_digest,

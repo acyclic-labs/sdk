@@ -185,3 +185,22 @@ impl CapturedResource {
         }
     }
 }
+
+crate::core::ownership::owned_enum!(Capture {
+    Captured(field0),
+    Unsupported(field0),
+    InFlight(field0),
+    Indeterminate(field0),
+});
+crate::core::ownership::owned_struct!(CapturedResource { source, revision });
+crate::core::ownership::owned_struct!(ForkOmission { selection, outcome });
+crate::core::ownership::owned_struct!(SharedGrant {
+    volume,
+    child_agent,
+    operations
+});
+crate::core::ownership::owned_struct!(ReferenceGrant {
+    file,
+    reader,
+    attachment_manifest
+});

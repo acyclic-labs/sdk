@@ -122,3 +122,17 @@ impl ResourcePreparationRequest {
         Ok(())
     }
 }
+
+crate::core::ownership::owned_struct!(ResourcePreparationRequest {
+    provider,
+    child,
+    creation_grant,
+    maximum_resources,
+    maximum_work,
+    maximum_bytes,
+    payload,
+    command,
+    source_checkpoint,
+    input_files,
+    read_authorization
+});

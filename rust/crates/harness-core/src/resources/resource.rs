@@ -118,3 +118,20 @@ impl ResourceRef {
         self.version.as_deref()
     }
 }
+
+crate::core::ownership::owned_enum!(ResourceKind {
+    Workspace,
+    Generation,
+    Artifact,
+    Sandbox,
+    Checkpoint,
+    Stream,
+    Context,
+    Run,
+});
+crate::core::ownership::owned_struct!(ResourceRef {
+    kind,
+    provider,
+    key,
+    version
+});

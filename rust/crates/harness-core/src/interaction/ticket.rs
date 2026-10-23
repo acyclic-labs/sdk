@@ -201,3 +201,11 @@ impl InteractionTicket {
         }
     }
 }
+
+crate::core::ownership::owned_struct!(InteractionTicket {
+    id,
+    kind,
+    request,
+    deadline_unix_ms,
+    approval
+});

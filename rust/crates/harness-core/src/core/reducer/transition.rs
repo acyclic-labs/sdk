@@ -166,7 +166,7 @@ impl Reducer {
                         .map(|record| {
                             copy(record, quota, |value: &ExtensionConfiguration, work| {
                                 value.content.validate(work)?;
-                                owned_bytes(value)
+                                value.owned_heap_bytes()
                             })
                         })
                         .transpose()?
@@ -254,7 +254,7 @@ impl Reducer {
                                 if let EffectStatus::Succeeded { result } = &value.status {
                                     result.validate(work)?;
                                 }
-                                owned_bytes(value)
+                                value.owned_heap_bytes()
                             })
                         },
                     )?,
@@ -314,7 +314,7 @@ impl Reducer {
                             if let Some(file) = &value.checkpoint {
                                 file.validate(work)?;
                             }
-                            owned_bytes(value)
+                            value.owned_heap_bytes()
                         })
                     })?,
                 })
@@ -331,7 +331,7 @@ impl Reducer {
                     ticket: copying::copy_boxed(ticket.as_ref(), quota, |source, quota| {
                         copy(source, quota, |value: &InteractionTicket, work| {
                             value.request.validate(work)?;
-                            owned_bytes(value)
+                            value.owned_heap_bytes()
                         })
                     })?,
                 })
@@ -355,7 +355,7 @@ impl Reducer {
                                 if let Some(file) = &value.detail {
                                     file.validate(work)?;
                                 }
-                                owned_bytes(value)
+                                value.owned_heap_bytes()
                             })
                         },
                     )?,

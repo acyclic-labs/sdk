@@ -17,6 +17,7 @@ macro_rules! typed_reference {
         #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
         #[serde(transparent)]
         pub struct $name(pub(super) ResourceRef);
+        crate::core::ownership::owned_tuple!($name, (resource));
 
         impl $name {
             $($constructor)*

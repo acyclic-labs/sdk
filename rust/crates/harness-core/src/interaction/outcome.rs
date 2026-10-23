@@ -33,3 +33,13 @@ impl InteractionOutcome {
         !matches!(self, Self::Indeterminate { .. })
     }
 }
+
+crate::core::ownership::owned_enum!(InteractionOutcome {
+    Answered { answer },
+    Approved {  },
+    Declined {  },
+    Cancelled {  },
+    Expired {  },
+    Denied {  },
+    Indeterminate { operation_id },
+});

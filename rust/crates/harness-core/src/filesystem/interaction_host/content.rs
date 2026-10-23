@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::OwnedBytes;
 use crate::executor::with_history_io;
 use crate::wire_codec::CodecQuota;
 
@@ -92,12 +93,12 @@ where
         with_history_io(io, |work| {
             CodecQuota::produce(work, |quota| {
                 Ok((
-                    crate::core::copy(ticket, quota, |value, _| crate::core::owned_bytes(value))?,
+                    crate::core::copy(ticket, quota, |value, _| value.owned_heap_bytes())?,
                     resolution
                         .as_ref()
                         .map(|resolution| {
                             crate::core::copy(resolution, quota, |value, _| {
-                                crate::core::owned_bytes(value)
+                                value.owned_heap_bytes()
                             })
                         })
                         .transpose()?,
@@ -123,7 +124,7 @@ where
         with_history_io(io, |work| {
             CodecQuota::produce(work, |quota| {
                 crate::core::copy(&resolution.outcome, quota, |value, _| {
-                    crate::core::owned_bytes(value)
+                    value.owned_heap_bytes()
                 })
             })
         })

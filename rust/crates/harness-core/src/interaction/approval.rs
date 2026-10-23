@@ -21,3 +21,8 @@ impl ApprovalBinding {
         Ok(())
     }
 }
+
+crate::core::ownership::owned_struct!(ApprovalBinding {
+    operation_id,
+    action_digest
+});

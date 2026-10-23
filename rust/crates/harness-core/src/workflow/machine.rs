@@ -451,3 +451,9 @@ impl MachineRegistry {
         Ok((result?.0, None))
     }
 }
+
+crate::core::ownership::owned_struct!(MachineIdentity {
+    name,
+    version,
+    digest
+});

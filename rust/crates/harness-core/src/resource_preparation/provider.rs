@@ -108,3 +108,10 @@ pub trait ScratchCreationIdentity: acyclic_stream::ProviderPlatform {
 /// Shared authenticated scratch allocation.
 #[cfg(feature = "filesystem")]
 pub type ChildScratchCreationProof = std::sync::Arc<dyn ScratchCreationIdentity>;
+
+crate::core::ownership::owned_struct!(ResourceCreationProofRef {
+    provider,
+    preparation,
+    resource,
+    evidence
+});

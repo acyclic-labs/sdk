@@ -1,5 +1,7 @@
 //! request fork protocol.
 use super::*;
+#[cfg(feature = "filesystem")]
+use crate::core::OwnedBytes;
 /// Idempotent request to capture selected resources for a new child.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -179,7 +181,7 @@ impl ForkRequest {
         CodecQuota::produce(work, |quota| {
             crate::core::copy(self, quota, |source, work| {
                 source.validate(work)?;
-                crate::core::owned_bytes(source)
+                source.owned_heap_bytes()
             })
         })
     }
@@ -223,3 +225,16 @@ pub(in crate::fork) fn history_selections(
         _ => Err(work.invalid("fork must link conversations or history-free tasks")),
     }
 }
+
+crate::core::ownership::owned_struct!(ForkRequest {
+    operation_id,
+    parent,
+    parent_revision,
+    child,
+    child_agent,
+    attached_agents,
+    preparation,
+    selections,
+    boundary,
+    authorized_source
+});

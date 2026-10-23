@@ -289,3 +289,9 @@ impl MachineTransition {
         ])
     }
 }
+
+crate::core::ownership::owned_struct!(WorkflowCommand {
+    operation_id,
+    kind,
+    payload
+});

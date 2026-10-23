@@ -56,3 +56,10 @@ impl InteractionResolution {
         }
     }
 }
+
+crate::core::ownership::owned_struct!(InteractionResolution {
+    id,
+    expected_version,
+    outcome,
+    detail
+});

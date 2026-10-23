@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::OwnedBytes;
 use crate::{executor::with_history_io, store::history::HistoryIo, wire_codec::CodecQuota};
 
 impl<P, A, O> FilesystemInteractionHost<P, A, O>
@@ -24,7 +25,7 @@ where
                         quota,
                         |value: &crate::interaction::InteractionTicket, work| {
                             value.request.validate(work)?;
-                            crate::core::owned_bytes(value)
+                            value.owned_heap_bytes()
                         },
                     )
                 })

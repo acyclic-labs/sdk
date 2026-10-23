@@ -154,3 +154,25 @@ impl ConversationMessage {
         })
     }
 }
+
+crate::core::ownership::owned_enum!(MessageKind {
+    User,
+    Assistant,
+    System,
+    ToolCall,
+    ToolResult,
+    Interaction,
+    Permission,
+    Fork,
+    Merge,
+});
+crate::core::ownership::owned_struct!(ConversationMessage {
+    id,
+    sequence,
+    kind,
+    content,
+    attachments,
+    reply_to,
+    tool_call_id,
+    extensions
+});

@@ -1,5 +1,9 @@
 //! Logical ownership of the main reducer's records.
 use super::*;
+mod walk;
+pub(crate) use walk::{OwnedBytes, owned_enum, owned_struct, owned_tuple};
+#[cfg(test)]
+mod tests;
 
 pub(crate) fn owned_sum(parts: impl IntoIterator<Item = u64>) -> Result<u64> {
     parts.into_iter().try_fold(0_u64, |sum, bytes| {
@@ -24,70 +28,12 @@ pub(crate) fn owned_vector<T>(
         })
 }
 
-/// Conservative closed-DTO admission without building a second DTO.
-pub(crate) fn owned_bytes<T: Serialize + ?Sized>(value: &T) -> Result<u64> {
-    use crate::executor::json::{JsonBounds, JsonCodecCharge, count_json_bytes_trusted};
-    let mut nodes = 0_u64;
-    let bytes = count_json_bytes_trusted(
-        value,
-        JsonBounds {
-            maximum_bytes: u64::MAX,
-            maximum_items: u64::MAX,
-            maximum_depth: 256,
-        },
-        None,
-        &mut |charge| {
-            if let JsonCodecCharge::Work { items, .. } = charge {
-                nodes = owned_sum([nodes, items])?;
-            }
-            Ok(())
-        },
-    )?;
-    bytes
-        .checked_mul(2)
-        .and_then(|bytes| {
-            nodes
-                .checked_mul(Snapshot::LOGICAL_SCHEMA_SLOT_BYTES)
-                .and_then(|slots| bytes.checked_add(slots))
-        })
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of_val(value) as u64))
-        .ok_or_else(|| Error::Invalid("record ownership overflows".into()))
-}
-
 pub(crate) fn owned_effect(effect: &EffectState) -> Result<u64> {
-    owned_sum([
-        effect.provider.capacity() as u64,
-        effect.effect_kind.capacity() as u64,
-        std::mem::size_of::<FileRef>() as u64,
-        effect.request.logical_owned_bytes()?,
-        effect.planning.as_ref().map_or(Ok(0), |event| {
-            owned_sum([
-                std::mem::size_of::<Event>() as u64,
-                event_owned_bytes(event)?,
-            ])
-        })?,
-        effect.result_schema.logical_owned_bytes()?,
-        owned_bytes(&effect.status)?,
-        owned_buffer::<EffectAttemptId>(effect.attempts.capacity())?,
-    ])
+    effect.owned_heap_bytes()
 }
 /// Retained scope, causal parent and payload storage.
 pub(crate) fn event_owned_bytes(event: &Event) -> Result<u64> {
-    owned_sum([
-        event.scope.logical_owned_bytes()?,
-        event.attestation.capacity() as u64,
-        event
-            .causal_parent
-            .as_ref()
-            .map_or(0, |reference| reference.authority.id.capacity() as u64),
-        owned_bytes(&event.payload)?,
-    ])
-}
-
-fn owned_records<T: Serialize>(values: impl IntoIterator<Item = T>) -> Result<u64> {
-    values
-        .into_iter()
-        .try_fold(0, |sum, value| owned_sum([sum, owned_bytes(&value)?]))
+    event.owned_heap_bytes()
 }
 
 impl<B> snapshot::Projection<ConversationState, B> {
@@ -95,21 +41,42 @@ impl<B> snapshot::Projection<ConversationState, B> {
     pub(in crate::core) fn owned_bytes<'a>(
         &self,
         authority: &Authority,
-        events: impl Iterator<Item = &'a Event>,
+        mut events: impl ExactSizeIterator<Item = &'a Event>,
     ) -> Result<u64> {
+        let Self {
+            lifecycle: _,
+            active_extensions,
+            active_extension_revision: _,
+            extension_states,
+            configured_extensions,
+            active_configurations,
+            effects,
+            indexed_terminal_effects,
+            effects_archived: _,
+            forks,
+            published_merges,
+            conversation: _,
+            latest_context_checkpoint,
+            interactions,
+            bindings: _,
+        } = self;
+        let event_slots = owned_buffer::<Event>(events.len())?;
+        let event_bytes = events.try_fold(event_slots, |sum, event| {
+            owned_sum([sum, event.owned_heap_bytes()?])
+        })?;
         [
-            owned_bytes(authority),
-            owned_bytes(&self.active_extensions),
-            owned_bytes(&self.active_configurations),
-            owned_bytes(&self.indexed_terminal_effects),
-            owned_records(self.effects.iter()),
-            owned_records(self.extension_states.iter()),
-            owned_records(self.configured_extensions.iter()),
-            owned_records(self.forks.iter()),
-            owned_records(self.published_merges.iter()),
-            owned_bytes(&self.latest_context_checkpoint),
-            owned_records(self.interactions.iter()),
-            owned_records(events),
+            authority.owned_heap_bytes(),
+            active_extensions.owned_heap_bytes(),
+            active_configurations.owned_heap_bytes(),
+            indexed_terminal_effects.owned_heap_bytes(),
+            effects.owned_heap_bytes(),
+            extension_states.owned_heap_bytes(),
+            configured_extensions.owned_heap_bytes(),
+            forks.owned_heap_bytes(),
+            published_merges.owned_heap_bytes(),
+            latest_context_checkpoint.owned_heap_bytes(),
+            interactions.owned_heap_bytes(),
+            Ok(event_bytes),
         ]
         .into_iter()
         .try_fold(0, |sum, part| owned_sum([sum, part?]))

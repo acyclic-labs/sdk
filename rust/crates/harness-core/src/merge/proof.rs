@@ -114,3 +114,9 @@ pub(super) fn provider_operation_has_nonzero(
     }
     Ok(false)
 }
+
+crate::core::ownership::owned_struct!(ProviderJoinProof {
+    provider,
+    format,
+    statement
+});

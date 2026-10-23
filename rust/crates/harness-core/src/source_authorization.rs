@@ -357,3 +357,19 @@ impl ProjectSourceReadHandle {
         Ok(())
     }
 }
+
+crate::core::ownership::owned_struct!(ProjectSourceAuthorization {
+    owner,
+    caller_task,
+    caller_admission_digest,
+    caller_fence,
+    operation_id,
+    source_task,
+    project,
+    generation,
+    native_snapshot,
+    graph_root,
+    maximum_work,
+    maximum_bytes,
+    policy_scope
+});

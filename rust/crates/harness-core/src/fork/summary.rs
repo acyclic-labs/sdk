@@ -300,3 +300,15 @@ pub(crate) async fn prepare_summary_fork_context_with_io<P: StreamProvider>(
         context,
     })
 }
+
+crate::core::ownership::owned_struct!(SummaryForkSelection {
+    checkpoint,
+    limits,
+    history_limits
+});
+crate::core::ownership::owned_struct!(SummaryForkCapture {
+    selection,
+    context,
+    payloads,
+    references
+});

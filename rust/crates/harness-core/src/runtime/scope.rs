@@ -592,3 +592,9 @@ impl RuntimeScope {
         self.limits
     }
 }
+
+crate::core::ownership::owned_struct!(TaskRunLimits {
+    concurrency,
+    max_steps,
+    deadline_epoch_ms
+});

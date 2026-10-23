@@ -720,3 +720,20 @@ fn path_below(path: &str, prefix: &str) -> bool {
             .strip_prefix(prefix)
             .is_some_and(|tail| tail.starts_with('/'))
 }
+
+crate::core::ownership::owned_enum!(VolumeClass {
+    Project,
+    AgentPrivate,
+    SessionShared,
+});
+crate::core::ownership::owned_enum!(VolumeOwner {
+    Project(field0),
+    Agent(field0),
+    Session(field0),
+});
+crate::core::ownership::owned_struct!(VolumeRef {
+    provider,
+    id,
+    class,
+    owner
+});

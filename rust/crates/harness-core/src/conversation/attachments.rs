@@ -369,3 +369,9 @@ impl ReferencedAttachments {
         Ok(())
     }
 }
+
+crate::core::ownership::owned_struct!(Attachment { file, label });
+crate::core::ownership::owned_enum!(ReferencedAttachments {
+    Inline { items },
+    Manifest { manifest, item_count },
+});

@@ -89,3 +89,9 @@ impl<'de> Deserialize<'de> for ProviderRef {
             .map_err(serde::de::Error::custom)
     }
 }
+
+crate::core::ownership::owned_struct!(ProviderRef {
+    namespace,
+    family,
+    version
+});
