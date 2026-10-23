@@ -17,6 +17,7 @@ struct ChangeData {
     root: ObjectId,
     config: VolumeConfig,
     paths: Vec<ChangedPath>,
+    standalone_bytes: u64,
     _allocation: KernelOwnedAllocation,
 }
 
@@ -65,6 +66,19 @@ impl PublicationChanges {
         &self.0.paths
     }
 
+    pub(crate) fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+        if let Ok(data) = Arc::try_unwrap(self.0) {
+            let bytes = data.standalone_bytes;
+            drop(data);
+            if let Some((allocations, _, _, _)) = accounting.standalone_parts() {
+                allocations.release(bytes).map_err(|_| WorkError::Overflow)?;
+            }
+        }
+        // An adapter retaining a seal also retains its paid physical storage.
+        // Keep the standalone claim until this operation ends in that case.
+        Ok(())
+    }
+
     async fn prepare<O: AsyncObjectStore>(
         endpoints: [Option<NamespaceView<'_, O>>; 2],
         base: Option<Head>,
@@ -73,6 +87,7 @@ impl PublicationChanges {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Self, FsError> {
+        let before = accounting.standalone_parts().map(|(a, _, _, _)| a.live_bytes());
         let volume = endpoints
             .last()
             .and_then(Option::as_ref)
@@ -89,12 +104,19 @@ impl PublicationChanges {
                 .map_err(|_| WorkError::Overflow)? as u64;
         let mut control = accounting.claim_owned(control_bytes, 1)?;
         allocation.absorb(&mut control)?;
+        let standalone_bytes = if let Some(before) = before {
+            let (allocations, _, _, _) = accounting.standalone_parts().ok_or(WorkError::Overflow)?;
+            allocations.live_bytes().checked_sub(before).ok_or(WorkError::Overflow)?
+        } else {
+            0
+        };
         Ok(Self(Arc::new(ChangeData {
             volume,
             base,
             root,
             config,
             paths,
+            standalone_bytes,
             _allocation: allocation,
         })))
     }
@@ -147,80 +169,15 @@ impl PublicationChanges {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Option<Self>, FsError> {
-        let mut work = match &*accounting {
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelAccounting::NativeOriginal { work, .. } => {
-                crate::AuthorityWork::native(work, cancellation)
-            }
-            _ => crate::AuthorityWork::new(accounting.remaining()?, cancellation),
-        };
-        let observed = authority
-            .head_payload(
-                request.authority_id,
-                acyclic_stream::MAX_RECORD_BYTES as u64,
-                &mut work,
-            )
-            .await;
-        let spent = work.spent();
-        drop(work);
-        merge_backend(accounting, spent)?;
-        let ((head, payload), _head_custody) = observed?;
-        if head != request.expected {
+        let Some((head, current_root, config)) = authority::facts(
+            authority, request, accounting, cancellation,
+        ).await? else {
             return Ok(None);
-        }
-        let mut work = match &*accounting {
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelAccounting::NativeOriginal { work, .. } => {
-                crate::AuthorityWork::native(work, cancellation)
-            }
-            _ => crate::AuthorityWork::new(accounting.remaining()?, cancellation),
         };
-        let observed = authority
-            .replay(
-                request.authority_id,
-                crate::Sequence::GENESIS,
-                crate::ReplayLimit {
-                    records: 1,
-                    payload_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
-                },
-                &mut work,
-            )
-            .await;
-        let spent = work.spent();
-        drop(work);
-        merge_backend(accounting, spent)?;
-        let (records, _record_custody) = observed?;
-        let first = records.first().ok_or(FsError::InvalidDiff)?;
-        let mut decode = crate::kernel::OriginalReadAccounting::new(accounting)?;
-        let creation = crate::kernel::decode_volume_created(
-            &first.payload,
-            acyclic_stream::MAX_RECORD_BYTES as u64,
-            &mut |s| decode.observe(s),
-        )?;
-        let payload = payload.ok_or(FsError::InvalidDiff)?;
-        let (current_volume, current_root) = if head.sequence == crate::Sequence::new(1) {
-            let value = crate::kernel::decode_volume_created(
-                &payload,
-                acyclic_stream::MAX_RECORD_BYTES as u64,
-                &mut |s| decode.observe(s),
-            )?;
-            (value.volume_id, value.initial_generation_root)
-        } else {
-            let value = crate::kernel::decode_published_generation(
-                &payload,
-                acyclic_stream::MAX_RECORD_BYTES as u64,
-                &mut |s| decode.observe(s),
-            )?;
-            (value.volume_id, value.generation_root)
-        };
-        let _decoded = decode.into_allocation();
-        if creation.volume_id != request.volume_id
-            || candidate.volume_id != request.volume_id
-            || current_volume != request.volume_id
-        {
+        if candidate.volume_id != request.volume_id {
             return Err(FsError::InvalidDiff);
         }
-        let limits = DecodeLimits::for_volume(creation.config);
+        let limits = DecodeLimits::for_volume(config);
         let (before, guard) = crate::kernel::read_generation_root_with_limits_and_accounting(
             objects,
             current_root,
@@ -238,18 +195,18 @@ impl PublicationChanges {
             [
                 Some(NamespaceView {
                     objects,
-                    config: creation.config,
+                    config,
                     root: &before.value,
                 }),
                 Some(NamespaceView {
                     objects,
-                    config: creation.config,
+                    config,
                     root: candidate,
                 }),
             ],
             Some(head),
             request.generation_root,
-            creation.config,
+            config,
             accounting,
             cancellation,
         )
@@ -258,6 +215,8 @@ impl PublicationChanges {
         result.map(Some)
     }
 }
+
+mod authority;
 
 fn change_error(error: crate::WorkspaceError) -> FsError {
     match error {

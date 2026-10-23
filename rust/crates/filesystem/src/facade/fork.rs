@@ -317,6 +317,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             accounting,
             cancellation,
         ).await?);
+        let changes = creation.publication.clone();
         let fork = crate::WorkspaceForkCommit {
             lineage,
             destination: volume_authority_id(volume_id),
@@ -341,7 +342,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .authority
             .fork_workspace(fork, permit, &mut authority, guard)
             .await;
-        record_authority_work(accounting, &authority)?;
+        let recorded = record_authority_work(accounting, &authority);
+        if let Some(changes) = changes {
+            changes.retire(accounting)?;
+        }
+        recorded?;
         if readonly_standalone_live(accounting).is_some() {
             accounting.release_owned(&mut KernelOwnedAllocation::Standalone, payload_bytes)?;
         }

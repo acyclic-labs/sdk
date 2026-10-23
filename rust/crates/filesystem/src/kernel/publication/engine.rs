@@ -242,7 +242,12 @@ where
         KernelAccounting::NativeOriginal { .. } => None,
         _ => Some(accounting.remaining().map_err(E::from)?),
     };
-    let appended = accept_step(accounting, dispatch(append, allowance).await)?;
+    let changes = append.commit.publication.clone();
+    let appended = accept_step(accounting, dispatch(append, allowance).await);
+    if let Some(changes) = changes {
+        changes.retire(accounting).map_err(E::from)?;
+    }
+    let appended = appended?;
     // Only a durable generation's proof may stand in for its closure later.
     if let Some(pending) = pending {
         pending.publish(&appended);

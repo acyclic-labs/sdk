@@ -144,61 +144,50 @@ fn metadata(
     Ok(output)
 }
 
-fn encode_entry(
-    context: &[u8],
-    entry: ChangeEntryRef<'_>,
-    work: &mut AuthorityWork<'_>,
-) -> Result<AppendRecord, AuthorityStoreError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if work.is_native() {
-        return AppendRecord::changes_native(context, &[entry], &work.native_meter()?)
-            .map_err(|error| work.native_io_failure(error))?
-            .map_err(Into::into);
+mod encoding;
+
+struct PreparedEntry {
+    key: Bytes,
+    operation: &'static str,
+    metadata: Vec<u8>,
+}
+impl PreparedEntry {
+    fn borrowed(&self) -> ChangeEntryRef<'_> {
+        ChangeEntryRef { key: &self.key, operation: self.operation, metadata: &self.metadata }
     }
-    let mut keys = work.vec(1)?;
-    let key = work.bytes(entry.key)?;
-    keys.push(key.clone().into());
-    let mut entries = work.vec(1)?;
-    // The String owns an admitted buffer rather than an unaccounted copy.
-    let mut operation_text = work.vec(entry.operation.len())?;
-    operation_text.extend_from_slice(entry.operation.as_bytes());
-    entries.push(acyclic_stream::wire::ChangeEntry {
-        key,
-        operation: String::from_utf8(operation_text).map_err(|_| crate::WorkError::Overflow)?,
-        metadata: work.bytes(entry.metadata)?,
-    });
-    let change = acyclic_stream::wire::ChangeRecord {
-        context: work.bytes(context)?,
-        entries,
-    };
-    let encoded_len = change.encoded_len();
-    if encoded_len + entry.key.len() + b"acyclic.recordchanges/v1".len()
-        > acyclic_stream::MAX_RECORD_BYTES
-    {
+
+    fn record_bytes(&self) -> usize {
+        fn field_len(length: usize) -> usize {
+            if length == 0 { 0 } else {
+                1 + prost::encoding::encoded_len_varint(length as u64) + length
+            }
+        }
+        let body = field_len(self.key.len()) + field_len(self.operation.len())
+            + field_len(self.metadata.len());
+        // Entry field plus its indexed header key; the fixed context and marker
+        // are accounted for once by chunk_end.
+        1 + prost::encoding::encoded_len_varint(body as u64) + body + self.key.len()
+    }
+}
+
+fn chunk_end(entries: &[PreparedEntry]) -> Result<usize, AuthorityStoreError> {
+    let mut bytes = 1 + 1 + 56 + b"acyclic.recordchanges/v1".len();
+    let mut previous: Option<&[u8]> = None;
+    let mut count = 0;
+    for entry in entries.iter().take(acyclic_stream::MAX_RECORD_KEYS) {
+        let next = bytes.checked_add(entry.record_bytes()).ok_or(crate::WorkError::Overflow)?;
+        if next > acyclic_stream::MAX_RECORD_BYTES
+            || previous.is_some_and(|key| key == entry.key.as_ref()) {
+            break;
+        }
+        bytes = next;
+        previous = Some(&entry.key);
+        count += 1;
+    }
+    if count == 0 {
         return Err(acyclic_stream::StreamError::LimitExceeded.into());
     }
-    let mut value = work.vec(encoded_len)?;
-    let writes = codec_work(encoded_len as u64, encoded_len as u64, 0);
-    work.admit(writes)?;
-    change
-        .encode(&mut value)
-        .map_err(|_| crate::WorkError::Overflow)?;
-    work.charge(writes)?;
-    let mut attributes = work.vec(1)?;
-    let mut name = work.vec(b"acyclic.record".len())?;
-    name.extend_from_slice(b"acyclic.record");
-    attributes.push(Attribute {
-        name: String::from_utf8(name).map_err(|_| crate::WorkError::Overflow)?,
-        value: b"changes/v1".as_slice().into(),
-    });
-    work.accounting()
-        .claim_owned(RecordHeaders::control_bytes() as u64, 1)
-        .map_err(authority_error)?;
-    let headers = RecordHeaders::new(keys, attributes)?;
-    Ok(AppendRecord {
-        value: work.plain_bytes(value)?.into(),
-        headers,
-    })
+    Ok(count)
 }
 
 fn records(
@@ -207,48 +196,62 @@ fn records(
     work: &mut AuthorityWork<'_>,
 ) -> Result<Vec<AppendRecord>, AuthorityStoreError> {
     let mut context = [0; 56];
-    context
-        .get_mut(..16)
-        .ok_or(crate::WorkError::Overflow)?
+    context.get_mut(..16).ok_or(crate::WorkError::Overflow)?
         .copy_from_slice(&seal.volume().into_bytes());
-    context
-        .get_mut(16..48)
-        .ok_or(crate::WorkError::Overflow)?
+    context.get_mut(16..48).ok_or(crate::WorkError::Overflow)?
         .copy_from_slice(seal.root().digest.as_bytes());
-    context
-        .get_mut(48..)
-        .ok_or(crate::WorkError::Overflow)?
+    context.get_mut(48..).ok_or(crate::WorkError::Overflow)?
         .copy_from_slice(&sequence.get().to_le_bytes());
-    let mut output = work.vec(seal.paths().len().max(1))?;
+    let mut entries = work.vec(seal.paths().len().max(1))?;
     for change in seal.paths() {
         work.check()?;
         let key = path_key(&change.path, seal.config());
-        let metadata = metadata(change, work)?;
-        let operation = match (change.before.is_some(), change.after.is_some()) {
-            (false, true) => "create",
-            (true, false) => "remove",
-            _ => "update",
-        };
-        output.push(encode_entry(
-            &context,
-            ChangeEntryRef {
-                key: key.slice(),
-                operation,
-                metadata: &metadata,
+        entries.push(PreparedEntry {
+            key: work.bytes(key.slice())?,
+            operation: match (change.before.is_some(), change.after.is_some()) {
+                (false, true) => "create",
+                (true, false) => "remove",
+                _ => "update",
             },
-            work,
-        )?);
+            metadata: metadata(change, work)?,
+        });
     }
-    if output.is_empty() {
-        output.push(encode_entry(
-            &context,
-            ChangeEntryRef {
-                key: &[],
-                operation: "publish",
-                metadata: &[],
-            },
-            work,
+    if entries.is_empty() {
+        entries.push(PreparedEntry {
+            key: Bytes::new(), operation: "publish", metadata: Vec::new(),
+        });
+    }
+    // Native encoding/folding can change byte order. Equal bounded keys cannot
+    // share one typed record, so their complete path facts use adjacent chunks.
+    entries.sort_unstable_by(|a, b| a.key.cmp(&b.key).then(a.metadata.cmp(&b.metadata)));
+    encode_chunks(&context, &entries, work)
+}
+
+fn encode_chunks(
+    context: &[u8],
+    entries: &[PreparedEntry],
+    work: &mut AuthorityWork<'_>,
+) -> Result<Vec<AppendRecord>, AuthorityStoreError> {
+    let mut remaining = entries;
+    let mut chunks = 0;
+    while !remaining.is_empty() {
+        remaining = remaining.get(chunk_end(remaining)?..).ok_or(crate::WorkError::Overflow)?;
+        chunks += 1;
+    }
+    let mut output = work.vec(chunks)?;
+    let mut remaining = entries;
+    while !remaining.is_empty() {
+        let count = chunk_end(remaining)?;
+        let (selected, next) = remaining.split_at(count);
+        let mut references: [ChangeEntryRef<'_>; acyclic_stream::MAX_RECORD_KEYS] =
+            std::array::from_fn(|_| ChangeEntryRef { key: &[], operation: "", metadata: &[] });
+        for (slot, entry) in references.iter_mut().zip(selected) {
+            *slot = entry.borrowed();
+        }
+        output.push(encoding::entries(
+            context, references.get(..count).ok_or(crate::WorkError::Overflow)?, work,
         )?);
+        remaining = next;
     }
     Ok(output)
 }

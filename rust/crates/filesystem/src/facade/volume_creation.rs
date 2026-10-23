@@ -234,6 +234,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .await?;
         accounting.check()?;
         let mut authority = authority_work(accounting, cancellation)?;
+        let changes = commit.publication.clone();
         let result = self
             .inner
             .authority
@@ -244,7 +245,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 guard,
             )
             .await;
-        record_authority_work(accounting, &authority)?;
+        let recorded = record_authority_work(accounting, &authority);
+        if let Some(changes) = changes {
+            changes.retire(accounting)?;
+        }
+        recorded?;
         if readonly_standalone_live(accounting).is_some() {
             accounting.release_owned(&mut KernelOwnedAllocation::Standalone, capacity)?;
         }
