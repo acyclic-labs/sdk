@@ -127,6 +127,9 @@ sys.stdout.buffer.write(bytes(range(256)))
         self.assertEqual(result['remaining'],3)
         result=pruner.prune(root,mirror,locks,max_count=1,active=set(),now=now)
         self.assertEqual(result['remaining'],1);self.assertTrue(recent_git.exists())
+        result=pruner.prune(root,mirror,locks,max_count=0,active={str(recent_git)},now=now)
+        self.assertTrue(result['over_cap']);self.assertEqual(result['held'],['recent-git'])
+        self.assertTrue(recent_git.exists()) # count pressure never evicts active work
     def test_pruner_removes_unreadable_targets_without_following_symlinks(self):
         self.assertFalse(pruner.prune(self.d/'missing',self.d/'mirror',self.d/'locks',active=set())['over_cap'])
         root=self.d/'wt-sdk';root.mkdir();p=root/'old';(p/'target/deep').mkdir(parents=True)
