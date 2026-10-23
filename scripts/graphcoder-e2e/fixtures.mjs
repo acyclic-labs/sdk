@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 
 export function expand(value, bindings) {
-  if (typeof value === "string") return value.replace(/\{\{(support|workspace|url|repository|shell_tool)\}\}/g,
+  if (typeof value === "string") return value.replace(/\{\{(support|workspace|url|repository)\}\}/g,
     (token, key) => bindings[key] ?? token);
   if (Array.isArray(value)) return value.map(item => expand(item, bindings));
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value)

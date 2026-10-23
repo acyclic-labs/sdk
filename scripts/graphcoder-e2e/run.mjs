@@ -57,7 +57,6 @@ const timeout = setTimeout(() => { processes.close(); }, 9000);
 const json = (path, value) => writeFile(path, JSON.stringify(value, null, 2) + "\n");
 function expand(value, fixture) {
   return expandFixture(value, { support: directory.replaceAll("\\", "/"),
-    shell_tool: process.platform === "win32" ? "powershell" : "bash",
     repository: resolve(directory, "../..").replaceAll("\\", "/"),
     workspace: fixture.workspace.replaceAll("\\", "/"),
     ...(port ? { url: `http://127.0.0.1:${port}/${fixture.id}/v1` } : {}) });

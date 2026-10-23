@@ -3,11 +3,10 @@ import test from "node:test";
 import { seed, expand } from "./fixtures.mjs";
 
 test("fixture expansion reaches nested model arguments without evaluating runtime request templates", () => {
-  const model = { steps: [{ tools: [{ name: "{{shell_tool}}", arguments: { command: 'node "{{support}}/orphan.mjs"',
+  const model = { steps: [{ tools: [{ name: "shell", arguments: { command: 'node "{{support}}/orphan.mjs"',
     path: "{{workspace}}/file", request: "{{request:/input/0}}" } }] }] };
-  const actual = expand(model, { support: "/support", workspace: "/workspace", shell_tool: "powershell" });
-  assert.equal(actual.steps[0].tools[0].name, "powershell");
-  assert.equal(expand(model, { shell_tool: "bash" }).steps[0].tools[0].name, "bash");
+  const actual = expand(model, { support: "/support", workspace: "/workspace" });
+  assert.equal(actual.steps[0].tools[0].name, "shell");
   assert.equal(actual.steps[0].tools[0].arguments.command, 'node "/support/orphan.mjs"');
   assert.equal(actual.steps[0].tools[0].arguments.path, "/workspace/file");
   assert.equal(actual.steps[0].tools[0].arguments.request, "{{request:/input/0}}");

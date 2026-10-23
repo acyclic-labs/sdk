@@ -13,7 +13,7 @@
         "tools": [
           {
             "id": "native-tree",
-            "name": "{{shell_tool}}",
+            "name": "shell",
             "arguments": {
               "command": "node \"{{support}}/orphan.mjs\" tree"
             }

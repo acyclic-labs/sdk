@@ -11,7 +11,7 @@
         "tools": [
           {
             "id": "bash",
-            "name": "{{shell_tool}}",
+            "name": "shell",
             "arguments": {
               "command": "node \"{{support}}/capture.mjs\""
             }
