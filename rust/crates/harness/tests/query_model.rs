@@ -645,7 +645,10 @@ fn snapshot_follow_and_publish_are_one_coherent_cut_without_deadlock() {
 #[test]
 fn competing_writers_cannot_tear_the_shared_projection() {
     competing_writers(Fault::None, Some(4));
-    assert_negative_control(2, 4, "competing publication escaped its fence", |bound| {
+    // One preemption between validating the original generation and resampling
+    // the tail lets the other writer commit. Certify that first witness as well
+    // as the unchanged suite bound; zero preemptions must still pass.
+    assert_negative_control(1, 4, "competing publication escaped its fence", |bound| {
         competing_writers(Fault::ResamplePublicationFence, bound)
     });
 }
