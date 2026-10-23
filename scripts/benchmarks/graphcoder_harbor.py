@@ -32,10 +32,10 @@ class GraphCoder(BaseInstalledAgent):
         self.provider_catalog = catalog(self.model_name, base_url, context_tokens, output_tokens)
         self.state = "/installed-agent/graphcoder-" + uuid.uuid4().hex
         self.binary = self.state + "/graphcoder"
-        self._installed = False
+        self._installed_environment = None
 
     async def install(self, environment):
-        self._installed = False
+        self._installed_environment = None
         # Task images must provide the native mount prerequisites. Never alter
         # the task image, relax its isolation, or build a different executable.
         await self.exec_as_agent(environment, command=(
@@ -69,11 +69,11 @@ class GraphCoder(BaseInstalledAgent):
             "runner": "harbor==0.24.0", "native_mount_prerequisite": "checked",
             "model_calls": "not part of setup",
         }, indent=2) + "\n")
-        self._installed = True
+        self._installed_environment = environment
 
     @with_prompt_template
     async def run(self, instruction, environment, context):
-        if not self._installed:
+        if self._installed_environment is not environment:
             raise RuntimeError("GraphCoder artifact was not installed and verified")
         await self.exec_as_agent(environment, command=run_command(
             self.binary, self.state, str(self.environment_logs_dir), self.model_name, instruction))

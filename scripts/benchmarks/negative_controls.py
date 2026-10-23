@@ -24,8 +24,12 @@ CONTROLS = [
      'str(PurePosixPath(logs) / "graphcoder.stderr")) + " ; true")',
      "test_contracts.BenchmarkContracts.test_log_redirection_preserves_agent_failure_status"),
     ("failed reinstall retains authority", "graphcoder_harbor.py",
-     "async def install(self, environment):\n        self._installed = False",
+     "async def install(self, environment):\n        self._installed_environment = None",
      "async def install(self, environment):",
+     "test_harbor.HarborContracts.test_install_run_and_failed_reinstall_fence_execution"),
+    ("installation authority crosses environments", "graphcoder_harbor.py",
+     "if self._installed_environment is not environment:",
+     "if self._installed_environment is None:",
      "test_harbor.HarborContracts.test_install_run_and_failed_reinstall_fence_execution"),
 ]
 

@@ -54,6 +54,10 @@ class HarborContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(agent.version(), "a" * 40)
         await agent.run("hello ; $(false)", environment, None)
         self.assertIn("--prompt=hello ; $(false)", environment.commands[-1])
+        other_environment = Environment()
+        with self.assertRaisesRegex(RuntimeError, "not installed"):
+            await agent.run("hello", other_environment, None)
+        self.assertEqual(other_environment.commands, [])
         environment.reject = True
         with self.assertRaises(RuntimeError):
             await agent.install(environment)
