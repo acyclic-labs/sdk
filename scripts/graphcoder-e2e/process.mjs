@@ -24,6 +24,13 @@ export class Processes {
     const outputDecoder = new StringDecoder("utf8"), errorDecoder = new StringDecoder("utf8");
     child.stdout.on("data", bytes => { stdout += outputDecoder.write(bytes); });
     child.stderr.on("data", bytes => { stderr += errorDecoder.write(bytes); });
+    // Exit is the owner-death barrier. Close may wait for inherited pipes in
+    // surviving descendants, which recovery must be allowed to fence first.
+    const exited = new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", (code, signal) => resolve({ code, signal }));
+    });
+    exited.catch(() => {});
     const closed = new Promise((resolve, reject) => {
       child.on("error", reject);
       child.on("close", (code, signal) => {
@@ -34,7 +41,7 @@ export class Processes {
     });
     // The caller may be waiting for a ready/screen event instead of exit.
     closed.catch(() => {});
-    return { child, closed, get stdout() { return stdout; } };
+    return { child, exited, closed, get stdout() { return stdout; } };
   }
   async run(program, args, options, input = "") {
     const process = this.start(program, args, options);

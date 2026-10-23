@@ -83,7 +83,7 @@ async function execute(test, gitOrigin) {
   const begin = performance.now();
   const fixture = { id: test.id, workspace: join(test.root, test.id, "workspace"), settings: join(test.root, test.id, "settings"), catalog: join(test.root, test.id, "catalog.json") };
   const artifact = join(output, test.id); await mkdir(artifact, { recursive: true });
-  const captures = [];
+  const captures = [], interrupted = [];
   try {
     await mkdir(dirname(fixture.workspace), { recursive: true });
     if (test.workspace?.kind === "git") {
@@ -123,13 +123,16 @@ async function execute(test, gitOrigin) {
       if (input.kill_on) {
         await Promise.race([events.wait(event => event.case === test.id && event.path === input.kill_on.path && event.step === input.kill_on.step), running.closed.then(result => { throw new Error(`exited before kill point: ${JSON.stringify(result)}`); })]);
         running.child.kill("SIGKILL");
+        const result = await running.exited;
+        assert.ok(result.signal || result.code !== 0);
+        interrupted.push(running.closed.then(capture => captures.push(capture)));
+        continue;
       } else if (input.mode === "jsonl") {
         const request = { key: { Session: { session: op, file: { Request: op } } }, channel: null,
           bytes: { text: JSON.stringify(input.resolution ?? { kind: "prompt", text: input.text ?? "hello", source: null, mentions: [] }) } };
         running.child.stdin.end(input.stdin ?? (input.reopen ? "" : JSON.stringify(request) + "\n"));
       } else running.child.stdin.end();
       const result = await running.closed; captures.push(result);
-      if (input.kill_on) { assert.ok(result.signal || result.code !== 0); continue; }
       assert.equal(result.code, input.exit ?? 0, result.stderr + `\nstdout tail: ${result.stdout.slice(-1500)}`);
       if (input.stdout_contains) for (const text of input.stdout_contains) assert.ok(result.stdout.includes(text), `missing stdout ${text}`);
       if (input.stderr_contains) for (const text of input.stderr_contains) assert.ok(result.stderr.includes(text), `missing stderr ${text}`);
@@ -149,7 +152,10 @@ async function execute(test, gitOrigin) {
   } catch (error) {
     try { checkTree(test); } catch (treeError) { error = new Error(`${error.stack}\n${treeError.stack}`); }
     return { case: test.id, platform: process.platform, status: "fail", seconds: (performance.now() - begin) / 1000, error: error.stack, workspace: fixture.workspace };
-  } finally { await json(join(artifact, "captures.json"), captures); }
+  } finally {
+    await Promise.all(interrupted);
+    await json(join(artifact, "captures.json"), captures);
+  }
 }
 async function verify(result, allRecords) {
   const records = allRecords.filter(record => record.case === result.case);

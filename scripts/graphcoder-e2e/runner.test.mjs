@@ -8,6 +8,30 @@ import { requests, subset, toolResults } from "./assertions.mjs";
 import { matches } from "./pty.mjs";
 import { Terminal } from "../graphcoder-pty/screen.mjs";
 
+test("owner exit permits recovery before a live descendant releases inherited pipes", async () => {
+  const processes = new Processes();
+  let descendant;
+  try {
+    const leaf = "console.log(JSON.stringify({pid:process.pid}));process.stdin.resume()";
+    const parent = `const {spawn}=require('node:child_process');spawn(process.execPath,['-e',${JSON.stringify(leaf)}],{stdio:'inherit',windowsHide:true})`;
+    const owner = processes.start(process.execPath, ["-e", parent]);
+    descendant = (await new Events(owner.child.stdout, owner.closed).wait(event => event.pid)).pid;
+    let pipesClosed = false;
+    owner.closed.then(() => { pipesClosed = true; });
+    owner.child.kill("SIGKILL");
+    const exit = await owner.exited;
+    assert.ok(exit.signal || exit.code !== 0);
+    process.kill(descendant, 0);
+    assert.equal(pipesClosed, false, "negative control: waiting for close would prevent recovery");
+    process.kill(descendant, "SIGKILL");
+    await owner.closed;
+    descendant = undefined;
+  } finally {
+    if (descendant) { try { process.kill(descendant, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; } }
+    await processes.close();
+  }
+});
+
 test("case selection rejects misspellings before starting either executable", async () => {
   const processes = new Processes();
   try {
