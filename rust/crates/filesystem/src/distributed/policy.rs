@@ -143,11 +143,13 @@ mod tests {
                     path: StreamPath::new("policy/destination")?,
                     records: vec![acyclic_stream::OwnedBytes::from_static(b"published").into()],
                 }],
-                idempotency_key: acyclic_stream::IdempotencyKey::new(),
+                idempotency_key: acyclic_stream::IdempotencyKey::new(
+                    acyclic_stream::OwnedBytes::from_static(b"policy-conditions"),
+                )?,
             })
             .await;
         assert!(
-            outcome.is_ok(),
+            matches!(outcome, Ok(CommitOutcome::Committed(_))),
             "compatible policy conditions prevented publication: {outcome:?}"
         );
         Ok(())
