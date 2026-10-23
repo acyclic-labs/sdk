@@ -63,6 +63,22 @@ variables. Do not supply real credentials. Missing binaries, empty selections,
 ignored tests and skipped tests fail acceptance. The alloy component case does
 not qualify mixed-provider shipping reasoning; that gap remains in the manifest.
 
+For each build job, select executables from that job's Cargo JSON and stage them
+before running cases:
+
+```sh
+node scripts/graphcoder-e2e/artifacts.mjs specification.json /absolute/fresh-job-bundle
+```
+
+The specification is a JSON array of `{name, target, test, cargo_json}` entries.
+`target` is the exact Cargo target name, `test` is its `profile.test` boolean,
+and `cargo_json` names the producer's `--message-format=json` output. The tool
+requires exactly one executable for every entry and a new destination directory.
+It opens each source once, streams it into the owned bundle and publishes a
+manifest with paths and SHA-256 only after all copies complete. Execute those
+bundle paths in the same job. A previous job's Cargo path is not an artifact
+handoff: target caches can be retired between jobs.
+
 The orphan case waits for an acknowledged HTTP barrier from a real native-tool
 descendant, kills the shipping owner and reopens the workspace. It checks both
 process identities while the mock's held response remains open. Closing the
