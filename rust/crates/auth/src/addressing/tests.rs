@@ -22,9 +22,20 @@ proptest! {
     }
     #[test]
     fn distinct_pairs_have_distinct_encodings(left in pair(), right in pair()) {
-        prop_assume!(left != right);
+        let mut right = right;
+        if left == right {
+            right.1.push(0);
+        }
+        prop_assert_ne!(&left, &right);
         prop_assert_ne!(ResourceIdentity::new(&left.0, &left.1)?.encode(),
                         ResourceIdentity::new(&right.0, &right.1)?.encode());
+    }
+    #[test]
+    fn hostname_retains_direct_components(account in "[a-z][a-z0-9]{0,62}", id in "[a-z][a-z0-9]{0,62}") {
+        let identity = ResourceIdentity::new(account.as_bytes(), id.as_bytes())?;
+        let host = identity.hostname("example.com")?;
+        prop_assert_eq!(host.as_str(), format!("{id}.{account}.example.com"));
+        prop_assert_eq!(CanonicalHost::parse(host.as_str())?, host);
     }
     #[test]
     fn parser_accepts_only_canonical_bytes(bytes in prop::collection::vec(any::<u8>(), 0..10000)) {
@@ -122,6 +133,34 @@ fn rejects_tls_and_signature_aliases() -> Result<(), DnsError> {
         "0x7f000001",
     ] {
         assert!(CanonicalHost::parse(alias).is_err(), "{alias:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn canonical_host_bytes_are_the_signature_input() -> Result<(), Box<dyn std::error::Error>> {
+    use ed25519_dalek::{Signer, SigningKey};
+
+    let host = ResourceIdentity::new(b"account", b"worker")?.hostname("example.com")?;
+    let signer = SigningKey::from_bytes(&[7; 32]);
+    // This is a byte-preservation control, not a new HTTP signing protocol.
+    let signature = signer.sign(host.as_str().as_bytes());
+    crate::crypto::verify_signature(
+        &signer.verifying_key(),
+        b"worker.account.example.com",
+        &signature.to_bytes(),
+    )?;
+    // Bypassing the canonical host boundary changes the signed bytes.
+    for alias in ["Worker.account.example.com", "worker.account.example.com."] {
+        assert!(CanonicalHost::parse(alias).is_err());
+        assert!(
+            crate::crypto::verify_signature(
+                &signer.verifying_key(),
+                alias.as_bytes(),
+                &signature.to_bytes(),
+            )
+            .is_err()
+        );
     }
     Ok(())
 }

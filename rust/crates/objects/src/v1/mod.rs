@@ -70,6 +70,8 @@ pub const HTTP_ROUTES: &[(&str, &str, &str)] = &[
 ];
 pub use memory::{MemoryObjects, MemoryOptions};
 
+#[cfg(all(test, feature = "grpc", not(target_arch = "wasm32")))]
+mod addressing_tls_tests;
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub mod grpc;
 #[cfg(test)]
