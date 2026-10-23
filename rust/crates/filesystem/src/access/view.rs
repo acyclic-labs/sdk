@@ -17,7 +17,7 @@ pub struct AccessView {
     // Terminal lock: callers never receive a guard. Compilation, allocation,
     // destruction and backend operations run outside it; it acquires no locks.
     pub(super) current: RwLock<Arc<PathTrie>>,
-    #[cfg(all(not(target_arch = "wasm32"), not(acyclic_fs_loom)))]
+    #[cfg(not(target_arch = "wasm32"))]
     _custody: Option<crate::NativeAllocation>,
 }
 
@@ -27,13 +27,13 @@ impl AccessView {
     pub fn new(view: PathTrie) -> Self {
         Self {
             current: RwLock::new(Arc::new(view)),
-            #[cfg(all(not(target_arch = "wasm32"), not(acyclic_fs_loom)))]
+            #[cfg(not(target_arch = "wasm32"))]
             _custody: None,
         }
     }
 
     /// Retain the original native allocation for the view and its compiled data.
-    #[cfg(all(not(target_arch = "wasm32"), not(acyclic_fs_loom)))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new_native(
         view: PathTrie,
         custody: crate::NativeAllocation,
@@ -51,7 +51,7 @@ impl AccessView {
     }
 
     /// Publish a freshly authenticated revision, retaining every pinned old view.
-    #[cfg(all(not(target_arch = "wasm32"), not(acyclic_fs_loom)))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn publish_native(
         &self,
         view: PathTrie,
@@ -108,7 +108,7 @@ impl AccessView {
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(acyclic_fs_loom)))]
+#[cfg(not(target_arch = "wasm32"))]
 fn native_trie(
     mut view: PathTrie,
     mut custody: crate::NativeAllocation,

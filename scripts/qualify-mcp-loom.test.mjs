@@ -3,10 +3,48 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { qualificationMain, qualifySkillMaterializerLoom } from "./qualify-mcp-loom.mjs";
+import { harnessModelSuites, qualifyHarnessModelsLoom, qualifyChildViewsLoom, qualifyQueryModelLoom } from "./qualify-mcp-loom.mjs";
 import { gateQualifications, qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom, qualifyHookEffectsLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyOwnershipLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
+
+test("gate runs every harness model suite and rejects an absent suite or a stale model build", () => {
+  const suites = Object.values(harnessModelSuites).flat();
+  for (const missing of [null, ...suites.map(([prefix]) => prefix), "query-model"]) {
+    let target;
+    let executed = 0;
+    const run = (command, args, options) => {
+      if (command === "cargo") {
+        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_harness_loom/);
+        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_loom/);
+        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_fs_loom/);
+        const crate = args[args.indexOf("-p") + 1];
+        target = args.includes("--lib") ? crate.replaceAll("-", "_") : "query-model";
+        return { status: 0, stdout: JSON.stringify({ ...artifact, target: { name: target } }) };
+      }
+      assert.equal(options.timeout, undefined);
+      executed++;
+      const passed = args.length ? suites.find(([prefix]) => prefix === args[0])[1] : 22;
+      return { status: 0, stdout: summary(missing === (args[0] ?? target) ? 0 : passed, 0, args.length ? 10 : 0) };
+    };
+    qualifyOrReject(missing, () => {
+      qualifyHarnessModelsLoom(undefined, run);
+      qualifyChildViewsLoom(undefined, run);
+      qualifyQueryModelLoom(undefined, run);
+    });
+    if (missing === null) assert.equal(executed, suites.length + 1);
+  }
+  assert.throws(() => qualifyHarnessModelsLoom(undefined, () => ({ status: 101, stdout: "", stderr: "stale record constructor" })), /build failed.*stale record constructor/s);
+  assertGateStep(["--harness-models", "--all-features"]);
+  assertGateStep(["--child-views", "--all-features"]);
+  assertGateStep(["--query-model", "--all-features"]);
+});
+
+function qualifyOrReject(missing, qualify) {
+  if (missing === null) qualify();
+  else assert.throws(qualify, /requires a nonzero/);
+}
 
 test("skill materializer qualification requires the production owner model and its negative control", () => {
   for (const missing of [null, 1, 2]) {

@@ -2,9 +2,6 @@
 use super::*;
 use std::cell::Cell;
 
-mod journal;
-pub(crate) use journal::Journal;
-
 /// Mutations present only in the dedicated harness model build.
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
 pub enum Fault {

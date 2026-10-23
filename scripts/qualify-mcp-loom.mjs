@@ -16,6 +16,9 @@ export const gateQualifications = [
   { args: ["--memory-accounting"], rustflags: "-Dwarnings" },
   { args: ["--session-fs"] }, { args: ["--ownership"] },
   { args: ["--skill-materializer"] },
+  { args: ["--harness-models", "--all-features"] },
+  { args: ["--child-views", "--all-features"] },
+  { args: ["--query-model", "--all-features"] },
 ];
 const planOnly = Symbol("qualification plan");
 
@@ -191,13 +194,69 @@ export function qualifyOwnershipLoom(run = spawnSync) {
   });
 }
 
+// These suites previously compiled only incidentally when another model opted
+// into the harness cfg. In particular, ordinary --all-features never runs the
+// child-view publication models. Require every suite, including its controls.
+export const harnessModelSuites = {
+  "acyclic-harness-core": [
+    ["task_volume::files::models::", 7],
+    ["task_volume::page::models::", 2],
+    ["task_volume::publication::models::", 2],
+    ["distributed::tests::model_checking::", 3],
+    ["distributed::tests::scheduler_model::", 1],
+  ],
+  "acyclic-harness": [
+    ["local::admission::model::", 3],
+    ["local::inheritance::model::", 7],
+    ["local::routing::model::", 3],
+    ["local::orphans::model::", 4],
+    ["local::workspace::bootstrap::loom_tests::", 1],
+    ["local::children::preparation::models::", 1],
+    ["local::children::controller::inputs::models::", 1],
+    ["local::children::controller::follow::models::", 1],
+    ["local::children::controller::drive::models::", 1],
+    ["local::children::controller::draining::models::", 2],
+    ["local::children::controller::stopping::models::", 1],
+    ["client::file_submit::model::", 3],
+    ["client::commands::session::init_models::", 7],
+    ["client::commands::session::models::", 4],
+    ["client::commands::control::models::", 8],
+    ["client::commands::sources::models::", 2],
+    ["client::commands::session::confirmation::tests::", 2],
+  ],
+};
+
+export function qualifyHarnessModelsLoom(features = ["--all-features"], run = spawnSync) {
+  return qualifyHarnessSuite("acyclic-harness", "acyclic_harness", features, run, {
+    kind: "--lib", suites: harnessModelSuites["acyclic-harness"],
+  });
+}
+
+export function qualifyChildViewsLoom(features = ["--all-features"], run = spawnSync) {
+  return qualifyHarnessSuite("acyclic-harness-core", "acyclic_harness_core", features, run, {
+    kind: "--lib", suites: harnessModelSuites["acyclic-harness-core"],
+  });
+}
+
+export function qualifyQueryModelLoom(features = ["--all-features"], run = spawnSync) {
+  return qualifyHarnessSuite("acyclic-harness", "query-model", features, run);
+}
+
+function qualifyHarnessSuite(crate, target, features, run, options = {}) {
+  return qualifyLoom(crate, target, [...features, "--features", "model-checking"], run, {
+    ...options,
+    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom --cfg acyclic_fs_loom` },
+    targetCfg: [],
+  });
+}
+
 function qualifyLoom(crate, target, features, run, options = {}) {
   const args = [
     options.kind === "--lib" ? "test" : "rustc", "--locked", "--message-format=json", "-p", crate,
     ...(options.kind === "--lib" ? ["--lib", "--no-run"] : ["--test", target]),
     ...features, ...(options.targetCfg ?? ["--", "--cfg", "loom"]),
   ];
-  const tests = (options.filters ?? [options.filter]).map(filter => ({
+  const tests = options.suites?.map(([filter, passed]) => ({ args: [filter], passed })) ?? (options.filters ?? [options.filter]).map(filter => ({
     args: filter ? [filter, ...(options.exact === false ? [] : ["--exact"])] : [],
     passed: options.exact === false ? (options.passed ?? 4) : filter ? 1 : null,
   }));
@@ -249,6 +308,9 @@ const selectableModels = {
   "--e2e-progress": qualifyE2eProgressLoom, "--hook-effects": qualifyHookEffectsLoom, "--hook-lifecycle": qualifyHookLifecycleLoom,
   "--coordinator-origins": qualifyCoordinatorOriginsLoom, "--summary-checkpoints": qualifySummaryCheckpointsLoom,
   "--fs-binding": qualifyFsBindingLoom,
+  "--harness-models": qualifyHarnessModelsLoom,
+  "--child-views": qualifyChildViewsLoom,
+  "--query-model": qualifyQueryModelLoom,
 };
 
 function featureSelection(args) {
