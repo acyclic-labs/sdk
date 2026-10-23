@@ -5,6 +5,20 @@ use super::*;
 pub struct WorkspaceName(Arc<(String, KernelOwnedAllocation)>);
 
 impl WorkspaceName {
+    /// Global address of this workspace's retained name in the supplied account.
+    /// This does not replace the deployment-internal volume identity.
+    pub fn address(
+        &self,
+        account: &[u8],
+    ) -> Result<acyclic_auth::addressing::ResourceAddress, acyclic_auth::addressing::AddressError>
+    {
+        acyclic_auth::addressing::ResourceAddress::new(
+            account,
+            acyclic_auth::addressing::ResourceKind::FsWorkspace,
+            self.as_str().as_bytes(),
+        )
+    }
+
     /// Canonicalizes a name under the supplied work limits.
     pub fn new<W: crate::facade::FsWork>(
         name: impl AsRef<str>,

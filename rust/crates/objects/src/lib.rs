@@ -1,4 +1,6 @@
 #![doc = include_str!("../README.md")]
+/// Shared canonical account-relative resource addressing.
+pub use acyclic_auth::addressing;
 #[cfg(test)]
 acyclic_test_support::counting_allocator!();
 mod body;

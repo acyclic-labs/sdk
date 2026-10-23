@@ -77,13 +77,7 @@ fn identifier(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 fn label(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 63
-        && !value.starts_with('-')
-        && !value.ends_with('-')
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    acyclic_auth::addressing::validate_dns_label(value.as_bytes()).is_ok()
 }
 pub(crate) fn hostname(value: &str) -> bool {
     value.len() <= 253

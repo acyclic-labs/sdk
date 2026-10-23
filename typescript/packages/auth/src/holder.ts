@@ -1,14 +1,6 @@
 import { create, fromBinary, toBinary, type MessageInitShape } from "@bufbuild/protobuf";
 import { CaveatSchema, FilterSchema, GrantSetSchema, LimitsSchema, PrincipalSchema } from "../generated/proto/auth/v1/auth_pb.js";
-import initialize, { Capability as RustCapability, TrustSnapshot as RustTrustSnapshot, type FilterClause } from "../generated/wasm/acyclic_auth_wasm.js";
-
-const wasm = new URL("../generated/wasm/acyclic_auth_wasm_bg.wasm", import.meta.url);
-if (wasm.protocol === "file:") {
-  const { readFile } = await import("node:fs/promises");
-  await initialize({ module_or_path: Uint8Array.from(await readFile(wasm)) });
-} else {
-  await initialize({ module_or_path: wasm });
-}
+import { Capability as RustCapability, TrustSnapshot as RustTrustSnapshot, type FilterClause } from "./wasm.js";
 
 export interface TrustState {
   readonly environment: string;

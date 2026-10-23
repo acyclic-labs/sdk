@@ -77,6 +77,18 @@ impl From<std::convert::Infallible> for DomainError {
 }
 
 impl ActorId {
+    /// Global address of the exact actor id bytes in the supplied account.
+    pub fn address(
+        &self,
+        account: &[u8],
+    ) -> Result<crate::addressing::ResourceAddress, crate::addressing::AddressError> {
+        crate::addressing::ResourceAddress::new(
+            account,
+            crate::addressing::ResourceKind::Actor,
+            self.as_str().as_bytes(),
+        )
+    }
+
     /// Constructs an Actor identity using the existing `is_empty` contract rule.
     pub fn new(value: String) -> Result<Self, DomainError> {
         if value.is_empty() {

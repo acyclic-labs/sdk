@@ -89,6 +89,7 @@ dependencies = [
  "acyclic-contract-derive",
  "acyclic-proto-build",
  "acyclic-test-support",
+ "blake3",
  "ed25519-dalek",
  "futures",
  "proptest",
@@ -96,6 +97,7 @@ dependencies = [
  "prost-reflect",
  "prost-types",
  "protoc-bin-vendored",
+ "serde_json",
  "sha2 0.11.0",
  "syn 3.0.6",
  "tempfile",
@@ -1029,6 +1031,7 @@ name = "acyclic-workers"
 version = "0.2.0"
 dependencies = [
  "acyclic-actors",
+ "acyclic-auth",
  "acyclic-manifest",
  "acyclic-objects",
  "axum",

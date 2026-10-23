@@ -2,6 +2,7 @@
 #[cfg(any(test, feature = "test-support"))]
 extern crate self as acyclic_auth;
 pub mod admission;
+pub mod addressing;
 pub mod authority;
 pub mod contract;
 pub mod credential;

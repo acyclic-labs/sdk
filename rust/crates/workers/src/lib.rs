@@ -1,4 +1,6 @@
 #![doc = include_str!("../README.md")]
+/// Shared canonical account-relative resource addressing.
+pub use acyclic_auth::addressing;
 
 /// Cloud stateless Worker deployment through Objects and Actors.
 #[cfg(not(target_arch = "wasm32"))]

@@ -1,6 +1,45 @@
 use super::*;
 
 #[tokio::test]
+async fn addressing_preserves_explicit_create_already_exists_and_recreation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = MemoryObjects::new(MemoryOptions::default())?;
+    let reference = wire::BucketRef {
+        name: "addressing-fixture".into(),
+    };
+    let address = reference.address(b"account-a")?;
+    assert_ne!(address, reference.address(b"account-b")?);
+    let request = wire::CreateBucketRequest {
+        name: reference.name.clone(),
+        mutation: None,
+    };
+    provider.create_bucket(request.clone()).await?;
+    assert_eq!(
+        provider
+            .create_bucket(request.clone())
+            .await
+            .err()
+            .map(|error| error.code),
+        Some(wire::ErrorCode::AlreadyExists)
+    );
+    provider
+        .delete_bucket(wire::DeleteBucketRequest {
+            bucket: Some(reference.clone()),
+            mutation: None,
+        })
+        .await?;
+    let recreated = provider.create_bucket(request).await?;
+    assert_eq!(
+        recreated
+            .bucket
+            .ok_or("missing bucket")?
+            .address(b"account-a")?,
+        address
+    );
+    Ok(())
+}
+
+#[tokio::test]
 #[allow(
     clippy::too_many_lines,
     reason = "one ordered scenario keeps each step next to the state it checks"

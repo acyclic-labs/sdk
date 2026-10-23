@@ -13,6 +13,7 @@ description = "Shared capability chain contract and verification"
 test-support = []
 
 [dependencies]
+blake3.workspace = true
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 ed25519-dalek = { version = "=3.0.0", features = ["zeroize"] }
 prost.workspace = true
@@ -22,6 +23,7 @@ zeroize.workspace = true
 ts-rs = "=12.0.1"
 
 [dev-dependencies]
+serde_json.workspace = true
 acyclic-test-support = { path = "../test-support" }
 futures.workspace = true
 syn = { version = "3", features = ["full"] }

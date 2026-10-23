@@ -10,6 +10,19 @@ mod memory;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(crate) use memory::persistence::Publication;
 pub mod request;
+impl wire::BucketRef {
+    /// Global address of the exact logical bucket name in the supplied account.
+    pub fn address(
+        &self,
+        account: &[u8],
+    ) -> Result<crate::addressing::ResourceAddress, crate::addressing::AddressError> {
+        crate::addressing::ResourceAddress::new(
+            account,
+            crate::addressing::ResourceKind::Bucket,
+            self.name.as_bytes(),
+        )
+    }
+}
 pub mod response;
 #[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
 mod upload;

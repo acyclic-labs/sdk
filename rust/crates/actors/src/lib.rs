@@ -1,4 +1,6 @@
 #![doc = include_str!("../README.md")]
+/// Shared canonical account-relative resource addressing.
+pub use acyclic_auth::addressing;
 
 /// Rust-owned semantic projections for generated SDK metadata.
 pub use contract::{

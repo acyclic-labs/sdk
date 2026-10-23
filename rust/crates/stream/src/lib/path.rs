@@ -49,6 +49,19 @@ impl<'de> serde::Deserialize<'de> for StreamPath {
 }
 
 impl StreamPath {
+    /// Global address of this complete path in the supplied account, independent
+    /// of creation, deletion, recreation, commits and provider incarnation.
+    pub fn address(
+        &self,
+        account: &[u8],
+    ) -> Result<crate::addressing::ResourceAddress, crate::addressing::AddressError> {
+        crate::addressing::ResourceAddress::new(
+            account,
+            crate::addressing::ResourceKind::Stream,
+            self.as_str().as_bytes(),
+        )
+    }
+
     /// Validates and owns one path.
     pub fn new(path: impl AsRef<str>) -> Result<Self, StreamError> {
         let path = path.as_ref();

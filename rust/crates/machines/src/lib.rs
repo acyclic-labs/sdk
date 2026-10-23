@@ -5,6 +5,8 @@
 )]
 
 use async_trait::async_trait;
+/// Shared canonical account-relative resource addressing.
+pub use acyclic_auth::addressing;
 use futures::{Stream, StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};

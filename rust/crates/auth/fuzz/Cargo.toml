@@ -8,6 +8,7 @@ edition = "2024"
 cargo-fuzz = true
 
 [dependencies]
+blake3 = "1.8.2"
 syn = { version = "3", features = ["full"] }
 libfuzzer-sys = "0.4"
 prost = "0.14.4"
@@ -30,6 +31,13 @@ doc = false
 bench = false
 
 [workspace]
+
+[[bin]]
+name = "addressing"
+path = "fuzz_targets/addressing.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "verifier"
