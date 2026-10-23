@@ -53,7 +53,7 @@ impl FuseSessionState {
             }
             Ok(())
         };
-        if self.mount.pending() {
+        if self.mount.needs_unmount() {
             started(WriteOperations.delta(1))?;
             core.stop();
             let path = std::ffi::CStr::from_bytes_with_nul(&self.path)
@@ -62,7 +62,7 @@ impl FuseSessionState {
         }
         if let Some(device) = self.device.as_ref() {
             started(ReadOperations.delta(1))?;
-            if !self.mount.device_detached(device)? {
+            if !self.mount.wait_device_detached(device)? {
                 return Err(NativeMountError::FuseShutdownFailed);
             }
         } else if let Some(before) = self.before {

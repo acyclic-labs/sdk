@@ -164,18 +164,41 @@ fn accepting_the_first_of_two_descriptors_fails_the_same_reply_property() {
     }
 }
 
+#[test]
+fn only_a_successful_helper_admits_waiting_for_device_acknowledgment() -> io::Result<()> {
+    for (program, succeeds) in [(c"/usr/bin/false", false), (c"/usr/bin/true", true)] {
+        let mut mount = Mount {
+            program: Some(program),
+            phase: MountPhase::Mounted,
+            ..Mount::default()
+        };
+        let result = mount.attempt_unmount(|_| Ok(false), |mount| mount.unmount_helper(c"/unused"));
+        assert_eq!(result.is_ok(), succeeds);
+        if let Err(error) = result {
+            assert_eq!(error.kind(), io::ErrorKind::Other);
+        }
+        assert_eq!(mount.needs_unmount(), !succeeds);
+        assert!(mount.pending(), "helper exit is not device acknowledgment");
+        assert!(mount.observe_detachment(|| Ok(true))?);
+        assert!(!mount.pending());
+    }
+    Ok(())
+}
+
 fn retry_history(failures: &[bool], broken: bool) -> io::Result<bool> {
     let _restore = Restore(&FORGET_PENDING, FORGET_PENDING.replace(broken));
     let mut mount = Mount {
-        pending: true,
+        phase: MountPhase::Mounted,
         ..Mount::default()
     };
     let mut attempts = 0;
     let mut actual = Vec::new();
     let mut expected = Vec::new();
-    // Always include an exited helper that returned no syscall error but did
-    // not detach. Execute the whole history, even when the control diverges.
-    for (index, fails) in failures.iter().copied().chain([false]).enumerate() {
+    let mut accepted = false;
+    let mut expected_attempts = 0;
+    // Acceptance and device destruction are distinct events. Refusals permit
+    // another attempt; acceptance admits only waiting for acknowledgment.
+    for fails in failures.iter().copied().chain([false]) {
         let result = mount.attempt_unmount(
             |mount| mount.observe_detachment(|| Ok(false)),
             |_| {
@@ -190,15 +213,19 @@ fn retry_history(failures: &[bool], broken: bool) -> io::Result<bool> {
         let error = result
             .err()
             .map(|error| (error.kind(), error.raw_os_error(), error.to_string()));
-        let expected_error = fails.then(|| {
+        let expected_error = (!accepted && fails).then(|| {
             let error = io::Error::from_raw_os_error(libc::EIO);
             (error.kind(), error.raw_os_error(), error.to_string())
         });
+        if !accepted {
+            expected_attempts += 1;
+            accepted = !fails;
+        }
         // The kernel has not signalled device destruction. The same production
         // transition consumes this external observation; helper exit is not it.
         let detached = mount.observe_detachment(|| Ok(false))?;
         actual.push((error, mount.pending(), attempts, detached));
-        expected.push((expected_error, true, index + 1, false));
+        expected.push((expected_error, true, expected_attempts, false));
     }
     mount.attempt_unmount(
         |mount| mount.observe_detachment(|| Ok(true)),
@@ -206,14 +233,14 @@ fn retry_history(failures: &[bool], broken: bool) -> io::Result<bool> {
     )?;
     assert!(mount.observe_detachment(|| Ok(true))?);
     assert!(!mount.pending());
-    Ok(actual == expected && attempts == failures.len() + 1)
+    Ok(actual == expected && attempts == expected_attempts)
 }
 
 #[test]
 fn unsuccessful_unmounts_remain_retryable_at_n_and_two_n() -> io::Result<()> {
     for count in [1, 2] {
         for broken in [false, true] {
-            let equal = retry_history(&vec![false; count - 1], broken)?;
+            let equal = retry_history(&vec![true; count], broken)?;
             assert_eq!(std::panic::catch_unwind(|| assert!(equal)).is_ok(), !broken);
         }
     }

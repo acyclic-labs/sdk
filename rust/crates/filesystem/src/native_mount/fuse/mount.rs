@@ -18,10 +18,21 @@ mod tests;
 // These controls are owned by the existing FuseSessionState lock. A received
 // device is published there before helper completion or the FUSE handshake.
 #[derive(Default)]
+enum MountPhase {
+    #[default]
+    Detached,
+    Mounted,
+    // The request succeeded; only device acknowledgment can finish retirement.
+    Unmounting,
+}
+
+#[derive(Default)]
 pub(super) struct Mount {
     helper: Option<Child>,
     program: Option<&'static CStr>,
-    pending: bool,
+    phase: MountPhase,
+    #[cfg(test)]
+    detachment_poll: Option<Box<dyn FnMut(i32) -> io::Result<bool> + Send>>,
 }
 
 impl Mount {
@@ -56,7 +67,7 @@ impl Mount {
         ) {
             Ok(()) => {
                 *device = Some(file.into());
-                self.pending = true;
+                self.phase = MountPhase::Mounted;
                 return Ok(());
             }
             Err(nix::errno::Errno::EPERM) => {}
@@ -92,14 +103,14 @@ impl Mount {
         drop(receive);
         if let Ok(fd) = received {
             *device = Some(fd);
-            self.pending = true;
+            self.phase = MountPhase::Mounted;
         }
         self.helper
             .as_mut()
             .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?
             .wait()?;
         self.helper.take();
-        if !self.pending {
+        if matches!(self.phase, MountPhase::Detached) {
             diagnostic.seek(SeekFrom::Start(0))?;
             let mut text = Vec::new();
             diagnostic.read_to_end(&mut text)?;
@@ -127,26 +138,32 @@ impl Mount {
             |mount| {
                 unmount_with(
                     |flags| nix::mount::umount2(path, flags),
-                    || {
-                        let program = mount.program.unwrap_or(c"fusermount3");
-                        let mut command = helper_command(program);
-                        command
-                            .args(["-u", "-q", "-z", "--"])
-                            .arg(std::ffi::OsStr::from_bytes(path.to_bytes()));
-                        mount.helper = Some(command.spawn()?);
-                        drop(command);
-                        mount
-                            .helper
-                            .as_mut()
-                            .ok_or(io::ErrorKind::NotFound)?
-                            .wait()?;
-                        mount.helper.take();
-                        // Helper exit alone cannot establish device destruction.
-                        Ok(())
-                    },
+                    || mount.unmount_helper(path),
                 )
             },
         )
+    }
+
+    fn unmount_helper(&mut self, path: &CStr) -> io::Result<()> {
+        let program = self.program.unwrap_or(c"fusermount3");
+        let mut command = helper_command(program);
+        command
+            .args(["-u", "-q", "-z", "--"])
+            .arg(std::ffi::OsStr::from_bytes(path.to_bytes()));
+        self.helper = Some(command.spawn()?);
+        drop(command);
+        let status = self
+            .helper
+            .as_mut()
+            .ok_or(io::ErrorKind::NotFound)?
+            .wait()?;
+        self.helper.take();
+        if !status.success() {
+            // A refusal admits no device-acknowledgment wait.
+            return Err(io::ErrorKind::Other.into());
+        }
+        // Helper exit alone cannot establish device destruction.
+        Ok(())
     }
 
     fn attempt_unmount(
@@ -154,23 +171,43 @@ impl Mount {
         detached: impl FnOnce(&mut Self) -> io::Result<bool>,
         unmount: impl FnOnce(&mut Self) -> io::Result<()>,
     ) -> io::Result<()> {
-        if !self.pending {
+        if matches!(self.phase, MountPhase::Detached) {
             return Ok(());
         }
         if detached(self)? {
             return Ok(());
         }
+        if matches!(self.phase, MountPhase::Unmounting) {
+            return Ok(());
+        }
         unmount(self)?;
+        self.phase = MountPhase::Unmounting;
         #[cfg(test)]
         if tests::forget_pending() {
-            self.pending = false;
+            self.phase = MountPhase::Detached;
         }
         Ok(())
     }
 
-    // This is the sole production transition that clears pending. A failed
-    // helper or an unsuccessful device check must leave the next retry enabled.
+    // Only a device acknowledgment can finish an accepted unmount. A refused
+    // request remains mounted and permits another explicitly admitted attempt.
     pub(super) fn device_detached(&mut self, device: &OwnedFd) -> io::Result<bool> {
+        self.poll_detachment(device, 0)
+    }
+
+    pub(super) fn wait_device_detached(&mut self, device: &OwnedFd) -> io::Result<bool> {
+        // Unmount can return before the last kernel reference releases the
+        // connection. Wait for its acknowledgment instead of treating a probe
+        // in that interval as a failed retirement.
+        self.poll_detachment(device, -1)
+    }
+
+    fn poll_detachment(&mut self, device: &OwnedFd, timeout: i32) -> io::Result<bool> {
+        #[cfg(test)]
+        if let Some(poll) = self.detachment_poll.as_mut() {
+            let result = poll(timeout);
+            return self.observe_detachment(|| result);
+        }
         self.observe_detachment(|| {
             let mut poll = libc::pollfd {
                 fd: device.as_raw_fd(),
@@ -178,7 +215,7 @@ impl Mount {
                 revents: 0,
             };
             // SAFETY: one initialized record; the state owner retains its descriptor.
-            if unsafe { libc::poll(&mut poll, 1, 0) } < 0 {
+            if unsafe { libc::poll(&mut poll, 1, timeout) } < 0 {
                 return Err(io::Error::last_os_error());
             }
             Ok(poll.revents & libc::POLLERR != 0)
@@ -188,12 +225,29 @@ impl Mount {
     fn observe_detachment(&mut self, query: impl FnOnce() -> io::Result<bool>) -> io::Result<bool> {
         let detached = query()?;
         if detached {
-            self.pending = false;
+            self.phase = MountPhase::Detached;
         }
         Ok(detached)
     }
     pub(super) fn pending(&self) -> bool {
-        self.pending || self.helper.is_some()
+        !matches!(self.phase, MountPhase::Detached) || self.helper.is_some()
+    }
+
+    pub(super) fn needs_unmount(&self) -> bool {
+        self.helper.is_some() || matches!(self.phase, MountPhase::Mounted)
+    }
+
+    #[cfg(test)]
+    pub(super) fn accepted_unmount(
+        poll: impl FnMut(i32) -> io::Result<bool> + Send + 'static,
+    ) -> io::Result<Self> {
+        let mut mount = Self {
+            phase: MountPhase::Mounted,
+            detachment_poll: Some(Box::new(poll)),
+            ..Self::default()
+        };
+        mount.attempt_unmount(|_| Ok(false), |_| Ok(()))?;
+        Ok(mount)
     }
 }
 
