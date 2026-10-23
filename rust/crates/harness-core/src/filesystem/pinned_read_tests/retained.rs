@@ -4,13 +4,18 @@ use std::cell::Cell;
 
 thread_local! {
     static REOPEN: Cell<bool> = const { Cell::new(false) };
-    static ITEMS: Cell<[u64; 2]> = const { Cell::new([0; 2]) };
+    static ITEMS: Cell<Option<(bool, [u64; 2])>> = const { Cell::new(None) };
 }
 
 pub(in crate::filesystem) fn sample_items(finished: bool, io: Option<&PreparationIo>) {
-    let mut items = ITEMS.get();
-    items[usize::from(finished)] = io.map_or(0, |io| io.receipt().items_examined);
-    ITEMS.set(items);
+    let Some(io) = io else {
+        ITEMS.set(None);
+        return;
+    };
+    let native = io.original_native_work().is_some();
+    let (_, mut items) = ITEMS.get().unwrap_or((native, [0; 2]));
+    items[usize::from(finished)] = io.receipt().items_examined;
+    ITEMS.set(Some((native, items)));
 }
 
 pub(in crate::filesystem) fn reopen() -> bool {
@@ -202,7 +207,7 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
                         },
                         |(host, source, grant)| {
                             with_reopen(old, || {
-                                ITEMS.set([0; 2]);
+                                ITEMS.set(None);
                                 let mut result = None;
                                 let mut receipt = WorkCounters::default();
                                 let allocations = acyclic_test_support::measure(|| {
@@ -240,6 +245,7 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
                                         }
                                     });
                                 });
+                                let sampled = ITEMS.get();
                                 differential::record(("publication verified", 0_u64));
                                 let value = result.unwrap();
                                 assert!(value.is_ok(), "{entry:?} {mode:?}: {value:?}");
@@ -273,9 +279,13 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
                                         .as_ref(),
                                     b"later head"
                                 );
-                                let primitive_items = match mode {
+                                // Recovery may introduce an internal ledger even
+                                // when its caller omitted one. Compare its read
+                                // against the primitive on the ledger actually
+                                // sampled, rather than assuming it did no work.
+                                let primitive_items = match sampled {
                                     None => 0,
-                                    Some(native) => {
+                                    Some((native, _)) => {
                                         let opened =
                                             runtime.block_on(host.open(&workspace, None)).unwrap();
                                         let pinned = runtime
@@ -297,13 +307,14 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
                                         .items_examined
                                     }
                                 };
-                                let [start, end] = ITEMS.get();
+                                let [start, end] = sampled.map_or([0; 2], |(_, items)| items);
                                 (
                                     (file, actual.as_ref().to_vec()),
                                     allocations,
                                     receipt,
                                     end.checked_sub(start).unwrap(),
                                     primitive_items,
+                                    u64::from(sampled.is_some_and(|(native, _)| !native)) * 2,
                                 )
                             })
                         },
@@ -430,7 +441,7 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
         // Tree searches charge actual comparisons, which vary with
         // history. Independently meter the necessary generation read;
         // the retained wrapper must add only its path formatting.
-        let overhead = u64::from(mode == Some(false)) * 2;
+        let overhead = after.0.5;
         assert_eq!(
             after.0.3,
             after.0.4 + overhead,

@@ -1,5 +1,7 @@
-use crate::sync::{Arc, Mutex};
-use std::collections::BTreeMap;
+#[cfg(test)]
+use crate::sync::Arc;
+use crate::sync::Mutex;
+mod registry;
 
 // A volume id denotes one authority. Distinct embedded stores reusing an id
 // conservatively share exclusion. Remote authorities need a distributed lease
@@ -8,27 +10,27 @@ use std::collections::BTreeMap;
 struct ProjectionPolicies {
     // Terminal lock: neither backend I/O nor another lock runs under it.
     // Leases retain registration, never this lock, across publication/retirement.
-    entries: Mutex<BTreeMap<crate::VolumeId, State>>,
+    entries: Mutex<registry::Registry>,
 }
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct State {
     projections: usize,
     editors: usize,
 }
-pub(crate) struct Lease {
-    owner: Arc<ProjectionPolicies>,
-    volume: crate::VolumeId,
-    projection: bool,
+pub(crate) type Lease = Registration<'static>;
+pub(crate) struct Registration<'a> {
+    owner: &'a ProjectionPolicies,
+    key: registry::Key,
 }
 
 #[cfg(not(acyclic_fs_loom))]
-static POLICIES: std::sync::OnceLock<Arc<ProjectionPolicies>> = std::sync::OnceLock::new();
+static POLICIES: std::sync::OnceLock<ProjectionPolicies> = std::sync::OnceLock::new();
 #[cfg(acyclic_fs_loom)]
-loom::lazy_static! { static ref POLICIES: Arc<ProjectionPolicies> = Arc::new(ProjectionPolicies::default()); }
+loom::lazy_static! { static ref POLICIES: ProjectionPolicies = ProjectionPolicies::default(); }
 
 fn register(volume: crate::VolumeId, projection: bool) -> Result<(Lease, bool), crate::FsError> {
     #[cfg(not(acyclic_fs_loom))]
-    let policies = POLICIES.get_or_init(|| Arc::new(ProjectionPolicies::default()));
+    let policies = POLICIES.get_or_init(ProjectionPolicies::default);
     #[cfg(acyclic_fs_loom)]
     let policies = &*POLICIES;
     ProjectionPolicies::enter(policies, volume, projection)
@@ -52,61 +54,34 @@ pub(crate) fn check_policy(projected: bool, changed: bool) -> Result<(), crate::
 }
 impl ProjectionPolicies {
     fn enter(
-        owner: &Arc<Self>,
+        owner: &Self,
         volume: crate::VolumeId,
         projection: bool,
-    ) -> Result<(Lease, bool), crate::FsError> {
+    ) -> Result<(Registration<'_>, bool), crate::FsError> {
         let mut entries = owner
             .entries
             .lock()
             .map_err(|_| crate::FsError::MutationNotAllowed)?;
-        if projection && entries.get(&volume).is_some_and(|state| state.editors != 0) {
+        let state = entries.counts(volume);
+        if projection && state.editors != 0 {
             return Err(crate::FsError::MutationNotAllowed);
         }
-        let state = entries.entry(volume).or_default();
-        let count = if projection {
-            &mut state.projections
-        } else {
-            &mut state.editors
-        };
-        *count = count.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+        let key = entries.insert(volume, projection)?;
         Ok((
-            Lease {
-                owner: Arc::clone(owner),
-                volume,
-                projection,
-            },
-            state.projections != 0,
+            Registration { owner, key },
+            projection || state.projections != 0,
         ))
     }
 }
-impl Drop for Lease {
+impl Drop for Registration<'_> {
     fn drop(&mut self) {
-        let mut entries = self
+        let removed = self
             .owner
             .entries
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // An inconsistent registry must keep exclusion, rather than unwind or
-        // permit a publication while a projection may still be live.
-        let Some(state) = entries.get_mut(&self.volume) else {
-            return;
-        };
-        let count = if self.projection {
-            &mut state.projections
-        } else {
-            &mut state.editors
-        };
-        let Some(remaining) = count.checked_sub(1) else {
-            return;
-        };
-        *count = remaining;
-        if state.projections == 0 && state.editors == 0 {
-            entries.remove(&self.volume);
-        }
-        if entries.is_empty() {
-            *entries = BTreeMap::new();
-        }
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(self.key);
+        drop(removed);
     }
 }
 #[cfg(all(test, acyclic_fs_loom))]
