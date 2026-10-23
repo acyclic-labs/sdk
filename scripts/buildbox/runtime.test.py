@@ -126,6 +126,24 @@ sys.stdout.buffer.write(bytes(range(256)))
                 self.assertEqual(tar.getnames(),['debug/tool']);self.assertEqual(tar.extractfile('debug/tool').read(),b'linux-binary')
         finally:Path(str(prefix)+'.t0').unlink();shutil.rmtree(str(prefix)+'.exports',ignore_errors=True)
 
+    def test_glibc_pinned_whole_target_directory_export(self):
+        prefix=Path('/mnt/bb/jobs')/('r19-whole-target-'+str(os.getpid()));Path(str(prefix)+'.t0').touch()
+        target=self.d/'target';p=target/'x86_64-unknown-linux-gnu/debug/tool';p.parent.mkdir(parents=True);p.write_bytes(b'linux-binary')
+        spec={'prefix':str(prefix),'cwd':str(self.d),'paths':['/work/target/'],'build':True,'targetMapping':{'triple':'x86_64-unknown-linux-gnu','profiles':['debug','release']}}
+        try:
+            # A whole-root fetch retains the actual triple directory, unlike
+            # a named debug/tool request that maps back to the caller's layout.
+            old=(HERE/'job_exports.py').read_text().replace('relative.parts and relative.parts[0]', 'relative.parts[0]')
+            namespace={};exec(old,namespace)
+            with self.assertRaises(IndexError):namespace['prepare'](spec,str(target))
+            exports.prepare(spec,str(target))
+            import tarfile
+            manifest=json.loads(Path(str(prefix)+'.exports/manifest.json').read_text())
+            with tarfile.open(manifest[0]['archive']) as tar:
+                self.assertEqual(tar.getnames(),['x86_64-unknown-linux-gnu/debug/tool'])
+                self.assertEqual(tar.extractfile('x86_64-unknown-linux-gnu/debug/tool').read(),b'linux-binary')
+        finally:Path(str(prefix)+'.t0').unlink();shutil.rmtree(str(prefix)+'.exports',ignore_errors=True)
+
     def test_cleanup_failure_has_infra_status_and_retains_child_output(self):
         result,runtime=self.run_job([sys.executable,'-c','print("child output",end="")'],cleanup_failure=True)
         try:
@@ -252,6 +270,7 @@ sys.stdout.buffer.write(bytes(range(256)))
         for negative in [False,True]:
             prefix=Path('/mnt/bb/jobs')/f'r19-wrapper-{os.getpid()}-{negative}'
             marker=self.d/f'wrapper-ready-{negative}'
+            meta=self.d/f'wrapper-{negative}.receipt-meta.v2.json'
             probe=self.d/'generate-wrapper.mjs'
             probe.write_text('''import {launchScript} from './generator.mjs';import fs from 'node:fs';
 const prefix=process.argv[2];
@@ -260,17 +279,18 @@ const script=launchScript('/mnt/bb/wt-sdk/fixture.0','sdk/fixture','.', ['true']
 const wrapped=[...script.matchAll(/echo ([A-Za-z0-9+/=]+) \\| base64 -d > \\$J\\.(sh|wrap|admitted)\\b/g)].find(m=>m[2]==='wrap');
 let body=Buffer.from(wrapped[1],'base64').toString();
 body=body.slice(0,body.indexOf('mkdir -p /mnt/bb/locks/wt-sdk')).replace('recover /mnt/bb/jobs','recover '+process.argv[3]);
+body=body.replaceAll('$J.receipt-meta.v2.json',process.argv[4]);
 fs.writeFileSync(prefix+'.wrap',body);
 const meta=script.match(/echo ([A-Za-z0-9+/=]+) \\| base64 -d > \\$J\\.receipt-meta\\.v2\\.json/);
-fs.writeFileSync(prefix+'.receipt-meta.v2.json',Buffer.from(meta[1],'base64'));
+fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
 ''')
-            subprocess.run([job.NODE,str(probe),str(prefix),str(self.d)],check=True,capture_output=True)
+            subprocess.run([job.NODE,str(probe),str(prefix),str(self.d),str(meta)],check=True,capture_output=True)
             source=receipt_source.replace("if (m.side === 'bb2' && m.job_prefix) {",'if (false) {') if negative else receipt_source
             Path(str(prefix)+'.receipt-tool.mjs').write_text(source)
             code=f'from pathlib import Path;import time;Path({str(marker)!r}).touch();time.sleep(60)'
             import shlex
             with Path(str(prefix)+'.wrap').open('a') as wrapper:
-                wrapper.write(f'\nmkdir -p "$J.targets" "$J.tmp"\nprintf scratch > "$J.targets/object"\nprintf scratch > "$J.tmp/object"\nexport BUILD_SLOT_RECEIPT_META="$J.receipt-meta.v2.json"\nsetsid {shlex.join([sys.executable,str(worker),sys.executable,"-c",code])} &\npayload=$!\nnode "$J.receipt-tool.mjs" job "$J.receipt-meta.v2.json" "$payload"\nwait "$payload"\n')
+                wrapper.write(f'\nmkdir -p "$J.targets" "$J.tmp"\nprintf scratch > "$J.targets/object"\nprintf scratch > "$J.tmp/object"\nexport BUILD_SLOT_RECEIPT_META={shlex.quote(str(meta))}\nsetsid {shlex.join([sys.executable,str(worker),sys.executable,"-c",code])} &\npayload=$!\nnode "$J.receipt-tool.mjs" job {shlex.quote(str(meta))} "$payload"\nwait "$payload"\n')
             process=subprocess.Popen(['bash',str(prefix)+'.wrap'],env={**os.environ,'PATH':str(Path(job.NODE).parent)+':'+os.environ['PATH']},stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
             try:
                 until=time.monotonic()+4

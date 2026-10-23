@@ -18,7 +18,7 @@ def prepare(spec, target):
         base=Path(target) if is_target else Path(spec['cwd'])
         relative=Path(raw.removeprefix('/work/target/')) if is_target else p
         mapping=spec.get('targetMapping')
-        if is_target and mapping and relative.parts[0] in mapping['profiles']:
+        if is_target and mapping and relative.parts and relative.parts[0] in mapping['profiles']:
             triple=mapping['triple']
             if not triple or '/' in triple or triple in ['.','..']:raise ValueError('invalid target triple')
             base/=triple
