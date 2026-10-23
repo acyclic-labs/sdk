@@ -8,27 +8,11 @@ const _: fn(acyclic_stream::query_sync::SyncMutex<()>) -> loom::sync::Mutex<()> 
 
 fn schedule<const CLAIM: bool>() {
     let path = StreamPath::new("hook-effects-model").unwrap();
-    // Seed a real encoded header, then bound the provider topology to one
-    // journal. The actual task-volume index, codecs, capture and CAS remain.
-    let seed = Arc::new(MemoryStream::default());
-    loom::future::block_on(TaskVolume::open(seed.clone(), path.clone())).unwrap();
-    let records = loom::future::block_on(async {
-        use futures::TryStreamExt;
-        seed.read(acyclic_stream::ReadRequest {
-            path: path.clone(),
-            from: 0,
-            limit: 1,
-        })
-        .await
-        .unwrap()
-        .try_collect()
-        .await
-        .unwrap()
-    });
-    let provider = Arc::new(crate::task_volume::model_checking::Journal::new(
-        path.clone(),
-        records,
-    ));
+    // The same production provider owns bootstrap, reads and competing CAS.
+    // Keeping one implementation makes provider interface drift a model-build
+    // error rather than allowing a substitute journal to diverge silently.
+    let provider = Arc::new(MemoryStream::default());
+    loom::future::block_on(TaskVolume::open(provider.clone(), path.clone())).unwrap();
     let volumes: Vec<_> = (0..2)
         .map(|_| {
             Arc::new(

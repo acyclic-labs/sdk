@@ -204,6 +204,7 @@ export const harnessModelSuites = {
     ["task_volume::publication::models::", 2],
     ["distributed::tests::model_checking::", 3],
     ["distributed::tests::scheduler_model::", 1],
+    ["hooks::effects::models::", 1],
   ],
   "acyclic-harness": [
     ["local::admission::model::", 3],

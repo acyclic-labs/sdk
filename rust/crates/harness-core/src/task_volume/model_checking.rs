@@ -60,7 +60,8 @@ pub fn set_fault(fault: Fault) {
     FAULT.with(|current| current.set(fault));
 }
 
-pub(crate) fn enabled(fault: Fault) -> bool {
+/// Whether the selected fault is enabled on the current modeled actor.
+pub fn enabled(fault: Fault) -> bool {
     FAULT.with(|current| current.get() == fault)
 }
 
@@ -86,5 +87,7 @@ pub async fn assert_index_matches<P: StreamProvider + ?Sized>(
     );
 }
 
-#[cfg(test)]
-pub(crate) use super::files::model_files as files;
+// The local controller models live in the facade crate. Its dependency is
+// compiled without cfg(test), even when the facade's unit tests are built.
+#[doc(hidden)]
+pub use super::files::model_files as files;

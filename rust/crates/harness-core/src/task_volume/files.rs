@@ -192,9 +192,9 @@ mod fixtures;
 #[cfg(acyclic_harness_loom)]
 mod models;
 
-#[cfg(test)]
 #[cfg(acyclic_harness_loom)]
-pub(crate) async fn model_files(
+#[doc(hidden)]
+pub async fn model_files(
     provider: Arc<dyn StreamProvider>,
     path: StreamPath,
     volume: VolumeRef,
