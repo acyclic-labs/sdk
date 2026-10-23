@@ -67,7 +67,7 @@ test("WASM event bytes match the native cross-language fixture", async () => {
   expect(retained.revision).toBe(nativeEvent.revision);
   expect(new Uint8Array(retained.intent_digest)).toEqual(nativeEvent.intentDigest);
   expect(new Uint8Array(Buffer.from(retained.attestation, "base64"))).toEqual(nativeEvent.attestation);
-  expect(retained.payload).toEqual(first.event.payload);
+  expect(harness.contracts.canonicalEqual(retained.payload, first.event.payload)).toBe(true);
   expect(restored.head()).toEqual([authority, 2n]);
   expect(restored.conversation()).toEqual(harness.conversation());
   restored.free();

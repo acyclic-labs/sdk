@@ -113,15 +113,17 @@ impl PiRootProvider {
         else {
             return Ok(None);
         };
-        self.authenticate_with_native_work(attempt, true, work)
+        // Refuse a replaced native source before replaying the effect history.
+        // No observation is returned until the original output is authenticated.
+        let actual = self
+            .observe_resources_with_native_work(effect, attempt, work)
+            .await?;
+        self.authenticate_with_native_work(attempt, true, Some(&reference.0), work)
             .await?;
         let mut recorded = self
             .read_with_native_work::<PiRootAllocation>(&reference.0, work)
             .await?;
-        let Some(actual) = self
-            .observe_resources_with_native_work(effect, attempt, work)
-            .await?
-        else {
+        let Some(actual) = actual else {
             return Ok(None);
         };
         if !same_allocation(&recorded.0, &actual.0)
@@ -151,7 +153,7 @@ impl PiRootProvider {
         else {
             return Ok(None);
         };
-        self.authenticate_with_native_work(attempt, true, work)
+        self.authenticate_with_native_work(attempt, true, Some(&output.0), work)
             .await?;
         let recorded = self
             .read_with_native_work::<PiRootAllocation>(&output.0, work)

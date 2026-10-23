@@ -353,7 +353,7 @@ impl Fixture {
         let attempt = EffectAttemptId::from_bytes(id.into_bytes());
         let state = self
             .provider
-            .authenticate_with_native_work(attempt, false, &self.startup)
+            .authenticate_with_native_work(attempt, false, None, &self.startup)
             .await
             .unwrap();
         EffectDispatch {
@@ -1239,7 +1239,8 @@ async fn output_replay_uses_original_content_after_mutable_path_replacement() {
             "result.json",
             fixture.owner.policy().maximum_payload_bytes,
             &IdempotencyKey::new("different-output-operation").unwrap(),
-            None, acyclic_harness::conversation::ContentAccess::default(),
+            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await
         .unwrap();

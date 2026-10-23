@@ -109,6 +109,7 @@ impl PiRootProvider {
         &self,
         attempt: EffectAttemptId,
         require_success: bool,
+        original_output: Option<&FileRef>,
         work: &NativeMaterializationWork,
     ) -> Result<(EffectState, NativeAllocation)> {
         self.check_native_ledger(work)?;
@@ -168,10 +169,18 @@ impl PiRootProvider {
         }
         // The preparation loader authenticates its immutable plan, request and schema once.
         if let EffectStatus::Succeeded { result } = &state.0.status {
-            let canonical = self
-                .original_artifact_with_native_work(effect, attempt, "result", work)
-                .await?;
-            if canonical.as_ref().map(|reference| &reference.0) != Some(result) {
+            // Callers that just resolved the immutable output operation retain
+            // that exact receipt while authenticating its committed effect.
+            let resolved;
+            let canonical = if let Some(original) = original_output {
+                Some(original)
+            } else {
+                resolved = self
+                    .original_artifact_with_native_work(effect, attempt, "result", work)
+                    .await?;
+                resolved.as_ref().map(|reference| &reference.0)
+            };
+            if canonical != Some(result) {
                 return Err(Self::native_failure(
                     "root success differs from its original immutable output operation",
                 ));
@@ -310,7 +319,7 @@ impl EffectProvider for PiRootProvider {
             let work = &window;
             let mut state = self.state.lock().await;
             let original = self
-                .authenticate_with_native_work(request.attempt_id, false, work)
+                .authenticate_with_native_work(request.attempt_id, false, None, work)
                 .await?;
             let effect = self.effect_id_with_native_work(work)?;
             if request.effect_id != effect
@@ -379,7 +388,7 @@ impl EffectProvider for PiRootProvider {
                 )
                 .await?;
             let original = self
-                .authenticate_with_native_work(attempt, false, work)
+                .authenticate_with_native_work(attempt, false, None, work)
                 .await?;
             let effect = self.effect_id_with_native_work(work)?;
             if let Some(observation) = self
