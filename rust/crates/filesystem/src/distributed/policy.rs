@@ -1,9 +1,20 @@
 use super::*;
 
 impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
+    pub(super) async fn publish_with_policy<G: AuthorityGuard>(
+        &self,
+        request: CommitRequest,
+        deadline: Option<u64>,
+        work: &mut AuthorityWork<'_>,
+        guard: Option<&mut G>,
+    ) -> Result<(CommitOutcome, ProviderAllocation), AuthorityError<G::Error>> {
+        let request = self.fence_policy(request, work)?;
+        self.commit(request, deadline, work, guard).await
+    }
+
     /// Every disclosure publication checks its source in the same Streams
     /// transaction. No earlier check, writer-local registry or lease can replace it.
-    pub(super) fn fence_policy(
+    fn fence_policy(
         &self,
         mut request: CommitRequest,
         work: &mut AuthorityWork<'_>,
@@ -18,22 +29,34 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         }
         let mut conditions = work.vec(request.conditions.len() + 3)?;
         conditions.append(&mut request.conditions);
-        conditions.push(CommitCondition::Tail {
-            path: work.path(cut.authority, "/records", None)?,
-            expected: cut
-                .head
-                .sequence
-                .get()
-                .checked_add(1)
-                .ok_or(crate::WorkError::Overflow)?,
-        });
-        conditions.push(CommitCondition::Tail {
-            path: work.path(cut.authority, "/epochs", None)?,
-            expected: cut.epoch_tail,
-        });
-        conditions.push(CommitCondition::Absent {
-            path: work.path(cut.authority, "/retirement", None)?,
-        });
+        merge_policy_condition(
+            &mut conditions,
+            CommitCondition::Tail {
+                path: work.path(cut.authority, "/records", None)?,
+                expected: cut
+                    .head
+                    .sequence
+                    .get()
+                    .checked_add(1)
+                    .ok_or(crate::WorkError::Overflow)?,
+            },
+            work,
+        )?;
+        merge_policy_condition(
+            &mut conditions,
+            CommitCondition::Tail {
+                path: work.path(cut.authority, "/epochs", None)?,
+                expected: cut.epoch_tail,
+            },
+            work,
+        )?;
+        merge_policy_condition(
+            &mut conditions,
+            CommitCondition::Absent {
+                path: work.path(cut.authority, "/retirement", None)?,
+            },
+            work,
+        )?;
         request.conditions = conditions;
         // A rejected stale cut cannot consume a later freshly authorized attempt.
         request.idempotency_key = work.key(
@@ -47,5 +70,101 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             ],
         )?;
         Ok(request)
+    }
+}
+
+fn condition_path(condition: &CommitCondition) -> &StreamPath {
+    match condition {
+        CommitCondition::Head { path, .. }
+        | CommitCondition::Tail { path, .. }
+        | CommitCondition::Absent { path } => path,
+    }
+}
+
+fn merge_policy_condition(
+    conditions: &mut Vec<CommitCondition>,
+    policy: CommitCondition,
+    work: &mut AuthorityWork<'_>,
+) -> Result<(), AuthorityStoreError> {
+    for existing in conditions.iter() {
+        work.admit(WorkCounters {
+            items_examined: 1,
+            ..WorkCounters::UNCHARGED
+        })?;
+        if condition_path(existing) != condition_path(&policy) {
+            continue;
+        }
+        let compatible = match (existing, &policy) {
+            (
+                CommitCondition::Head {
+                    expected: actual, ..
+                },
+                CommitCondition::Tail { expected, .. },
+            ) => actual == expected,
+            _ => existing == &policy,
+        };
+        if !compatible {
+            return Err(AuthorityStoreError::RejectedStatic(
+                "policy cut conflicts with the publication condition",
+            ));
+        }
+        work.release(condition_path(&policy).as_str().len() as u64)?;
+        return Ok(());
+    }
+    conditions.push(policy);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acyclic_stream::StreamProvider;
+
+    async fn duplicate_condition_control(
+        omit_merge: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let provider = acyclic_stream::MemoryStream::default();
+        let token = CancellationToken::new();
+        let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
+        let path = StreamPath::new("policy/source")?;
+        let mut conditions = vec![CommitCondition::Absent { path: path.clone() }];
+        let candidate = CommitCondition::Absent { path };
+        if omit_merge {
+            conditions.push(candidate);
+        } else {
+            // Model the funded candidate path which the production fence owns.
+            work.hold_opaque(condition_path(&candidate).as_str().len() as u64)?;
+            merge_policy_condition(&mut conditions, candidate, &mut work)?;
+        }
+        let outcome = provider
+            .commit(CommitRequest {
+                conditions,
+                mutations: vec![CommitMutation::Append {
+                    path: StreamPath::new("policy/destination")?,
+                    records: vec![acyclic_stream::OwnedBytes::from_static(b"published").into()],
+                }],
+                idempotency_key: acyclic_stream::IdempotencyKey::new(),
+            })
+            .await;
+        assert!(
+            outcome.is_ok(),
+            "compatible policy conditions prevented publication: {outcome:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn matching_policy_conditions_publish_once() -> Result<(), Box<dyn std::error::Error>> {
+        duplicate_condition_control(false).await
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "compatible policy conditions prevented publication")]
+    async fn duplicate_policy_conditions_negative_control() {
+        let outcome = duplicate_condition_control(true).await;
+        assert!(
+            outcome.is_ok(),
+            "control failed before its publication oracle: {outcome:?}"
+        );
     }
 }

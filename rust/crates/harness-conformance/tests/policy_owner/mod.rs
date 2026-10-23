@@ -81,7 +81,7 @@ impl Substrate for Streams {
             );
             let filesystem = acyclic_fs::Fs::new(
                 authority,
-                acyclic_fs::Fs::memory().objects().clone(),
+                Arc::new(acyclic_fs::MemoryObjectStore::default()),
                 acyclic_fs::EmbeddedCapabilities::MEMORY,
             );
             acyclic_harness_conformance::collect_on(recipe, paths, filesystem, session).await
@@ -126,7 +126,7 @@ async fn stream_policy_revocation_survives_durable_provider_restart()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use acyclic_fs::{CancellationToken, Fs, WorkBudget};
     let directory = tempfile::tempdir()?;
-    let objects = Fs::memory().objects().clone();
+    let objects = Arc::new(acyclic_fs::MemoryObjectStore::default());
     {
         let durable = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
         let session = Arc::new(Session(durable, OperationClaims::default()));

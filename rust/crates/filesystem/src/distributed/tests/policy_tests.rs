@@ -324,3 +324,70 @@ async fn a_policy_cut_cannot_authorize_another_streams_owner() -> TestResult {
     assert_eq!(second.head(authority, &mut work).await?, head);
     Ok(())
 }
+
+async fn same_authority_publication(change_head: bool) -> TestResult {
+    let store = StreamAuthorityStore::new(Arc::new(MemoryStream::default()));
+    let token = CancellationToken::new();
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
+    let authority = AuthorityId::from_bytes([96; 16]);
+    store
+        .create_authority(authority, Epoch::GENESIS, &mut work, None::<&mut ()>)
+        .await?;
+    let cut = store.policy_cut(authority, &mut work).await?;
+    let mut head = store.head(authority, &mut work).await?;
+    if change_head {
+        let outcome = store
+            .compare_and_append(
+                crate::GuardedAppend {
+                    authority_id: authority,
+                    epoch: head.epoch,
+                    expected: head,
+                    commit: proposed(97),
+                    permit: PublicationPermit::Unrestricted,
+                },
+                &mut work,
+                None::<&mut ()>,
+            )
+            .await?;
+        assert!(matches!(outcome, FsAppendOutcome::Committed(_)));
+        head = store.head(authority, &mut work).await?;
+    }
+    let outcome = cut
+        .scope(store.compare_and_append(
+            crate::GuardedAppend {
+                authority_id: authority,
+                epoch: head.epoch,
+                expected: head,
+                commit: proposed(98),
+                permit: PublicationPermit::Unrestricted,
+            },
+            &mut work,
+            None::<&mut ()>,
+        ))
+        .await;
+    if change_head {
+        assert!(matches!(
+            outcome,
+            Err(AuthorityError::Authority(
+                AuthorityStoreError::RejectedStatic(
+                    "policy cut conflicts with the publication condition"
+                )
+            ))
+        ));
+        assert_eq!(store.head(authority, &mut work).await?, head);
+    } else {
+        assert!(matches!(outcome?, FsAppendOutcome::Committed(_)));
+        assert_ne!(store.head(authority, &mut work).await?, head);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn same_authority_policy_cut_preserves_publication_conditions() -> TestResult {
+    same_authority_publication(false).await
+}
+
+#[tokio::test]
+async fn conflicting_same_authority_policy_cut_rejects_without_publication() -> TestResult {
+    same_authority_publication(true).await
+}

@@ -252,15 +252,12 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             ],
         )?;
         let result = self
-            .commit(
-                self.fence_policy(
-                    CommitRequest {
-                        conditions,
-                        mutations,
-                        idempotency_key,
-                    },
-                    work,
-                )?,
+            .publish_with_policy(
+                CommitRequest {
+                    conditions,
+                    mutations,
+                    idempotency_key,
+                },
                 deadline,
                 work,
                 guard.as_deref_mut(),
