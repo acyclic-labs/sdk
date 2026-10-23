@@ -136,25 +136,35 @@ impl NativeFs {
                 ));
             }
         };
+        let options = SourceOptions {
+            mode,
+            maximum_paths: options.maximum_paths.into_inner(),
+            maximum_extent_spans: options.maximum_extent_spans.into_inner(),
+            maximum_queued_changes: options.maximum_queued_changes.into_inner(),
+            excluded_paths: options
+                .excluded_paths
+                .unwrap_or_default()
+                .into_iter()
+                .map(|path| PortablePath::parse(&path, VolumeLimits::default()).map_err(napi_error))
+                .collect::<Result<Vec<_>>>()?,
+        };
+        if options.maximum_paths == 0
+            || options.maximum_extent_spans == 0
+            || options.maximum_queued_changes == 0
+        {
+            return Err(Error::new(
+                Status::InvalidArg,
+                "source bounds must be nonzero",
+            ));
+        }
+        // Only the explicit local owner route initializes policy. Existing
+        // workspaces retain their persisted policy, including an absent policy.
+        acyclic_harness::filesystem::local_owner_workspace(&self.inner, &name)
+            .await
+            .map_err(napi_error)?;
         Box::pin(
-            self.inner.attach_directory(
-                name,
-                PathBuf::from(path),
-                SourceOptions {
-                    mode,
-                    maximum_paths: options.maximum_paths.into_inner(),
-                    maximum_extent_spans: options.maximum_extent_spans.into_inner(),
-                    maximum_queued_changes: options.maximum_queued_changes.into_inner(),
-                    excluded_paths: options
-                        .excluded_paths
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|path| {
-                            PortablePath::parse(&path, VolumeLimits::default()).map_err(napi_error)
-                        })
-                        .collect::<Result<Vec<_>>>()?,
-                },
-            ),
+            self.inner
+                .attach_directory(name, PathBuf::from(path), options),
         )
         .await
         .map(|inner| NativeWorkspace { inner })

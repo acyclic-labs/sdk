@@ -885,3 +885,139 @@ fn private_policy_staging_does_not_hold_a_publication_lease()
     assert!(source.projection_policy_lease(true, &work).is_ok());
     Ok(())
 }
+
+#[test]
+fn native_relocations_cannot_disclose_denied_files_or_descendants()
+-> Result<(), Box<dyn std::error::Error>> {
+    for directory in [false, true] {
+        for action in [Action::Read, Action::Write, Action::List] {
+            let source = source(FilesystemProfile::Portable)?;
+            let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+            let protected = if directory {
+                source.create_directory(&native_test_path("private"), metadata(), &work)?;
+                "private/key"
+            } else {
+                "private"
+            };
+            seed(&source, protected, b"secret")?;
+            let source =
+                bind_test_access(source, vec![deny("private", &[action], protected)], None)?;
+            assert!(matches!(
+                source.rename(
+                    &native_test_path("private"),
+                    &native_test_path("public"),
+                    false,
+                    &work
+                ),
+                Err(MountSourceError::AccessDenied)
+            ));
+            assert!(source.lookup(&native_test_path("public"))?.is_none());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn native_hard_links_cannot_widen_source_permissions() -> Result<(), Box<dyn std::error::Error>> {
+    let source = source(FilesystemProfile::Portable)?;
+    seed(&source, "private", b"secret")?;
+    let source = bind_test_access(
+        source,
+        vec![deny("private", &[Action::Read], "private")],
+        None,
+    )?;
+    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+    assert!(matches!(
+        source.hard_link(
+            &native_test_path("private"),
+            &native_test_path("public"),
+            &work
+        ),
+        Err(MountSourceError::AccessDenied)
+    ));
+    assert!(source.lookup(&native_test_path("public"))?.is_none());
+    Ok(())
+}
+
+#[test]
+fn native_relocations_preserve_uniform_and_equivalent_suffix_permissions()
+-> Result<(), Box<dyn std::error::Error>> {
+    for restricted in [false, true] {
+        let source = source(FilesystemProfile::Portable)?;
+        let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+        source.create_directory(&native_test_path("from"), metadata(), &work)?;
+        seed(&source, "from/key", b"retained")?;
+        let rules = if restricted {
+            vec![deny("elsewhere", &[Action::Read], "unrelated/**")]
+        } else {
+            vec![]
+        };
+        let source = bind_test_access(source, rules, None)?;
+        source.rename(
+            &native_test_path("from"),
+            &native_test_path("to"),
+            false,
+            &work,
+        )?;
+        assert_eq!(
+            source
+                .read_range(&native_test_path("to/key"), 0, 8)?
+                .as_ref(),
+            b"retained"
+        );
+        source.hard_link(
+            &native_test_path("to/key"),
+            &native_test_path("alias"),
+            &work,
+        )?;
+        assert_eq!(
+            source
+                .read_range(&native_test_path("alias"), 0, 8)?
+                .as_ref(),
+            b"retained"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn native_relocations_intersect_capability_path_limits() -> Result<(), Box<dyn std::error::Error>> {
+    let source = source(FilesystemProfile::Portable)?;
+    seed(&source, "private", b"secret")?;
+    let cap = Capability {
+        layers: vec![vec![
+            Grant {
+                actions: Action::ALL
+                    .into_iter()
+                    .filter(|action| *action != Action::Read)
+                    .collect(),
+                resource: pattern("private"),
+            },
+            Grant {
+                actions: Action::ALL.into_iter().collect(),
+                resource: pattern("public"),
+            },
+        ]],
+        expires_at: None,
+    };
+    let source = bind_test_access(source, vec![], Some(cap))?;
+    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+    assert!(matches!(
+        source.rename(
+            &native_test_path("private"),
+            &native_test_path("public"),
+            false,
+            &work
+        ),
+        Err(MountSourceError::AccessDenied)
+    ));
+    assert!(matches!(
+        source.hard_link(
+            &native_test_path("private"),
+            &native_test_path("public"),
+            &work
+        ),
+        Err(MountSourceError::AccessDenied)
+    ));
+    Ok(())
+}

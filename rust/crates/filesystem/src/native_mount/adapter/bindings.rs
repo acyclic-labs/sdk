@@ -95,12 +95,20 @@ where
                 &mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()),
                 work.cancellation(),
             )?;
-            let moved = inspector
+            let record = inspector
                 .lookup_no_follow(&source, work, work.cancellation())
                 .await?
                 .record
-                .ok_or(MountSourceError::NotFound)?
-                .file_id;
+                .ok_or(MountSourceError::NotFound)?;
+            if !view.permits_relocation(
+                &source,
+                &destination,
+                record.kind == FileKind::Directory,
+                now,
+            ) {
+                return Err(MountSourceError::AccessDenied);
+            }
+            let moved = record.file_id;
             let replaced = inspector
                 .lookup_no_follow(&destination, work, work.cancellation())
                 .await?
@@ -139,9 +147,26 @@ where
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let source = self.namespace_inputs(source, &mut inputs)?;
             let destination = self.namespace_inputs(destination, &mut inputs)?;
+            let view = self.access_snapshot(work).await?;
+            let now = access::access_time(&self.runtime.clock)?;
             let actions = crate::native_mount::actions::Mutation::HardLink.actions();
-            self.require_access(&source, actions.0, work).await?;
-            self.require_access(&destination, actions.1, work).await?;
+            access::require(
+                &view
+                    .pin(&source)
+                    .map_err(|_| MountSourceError::AccessDenied)?,
+                actions.0,
+                now,
+            )?;
+            access::require(
+                &view
+                    .pin(&destination)
+                    .map_err(|_| MountSourceError::AccessDenied)?,
+                actions.1,
+                now,
+            )?;
+            if !view.permits_relocation(&source, &destination, false, now) {
+                return Err(MountSourceError::AccessDenied);
+            }
             let candidate = self
                 .checkout
                 .candidate(

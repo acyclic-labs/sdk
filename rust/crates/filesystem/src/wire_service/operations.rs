@@ -441,30 +441,51 @@ where
         self.admit(&request)?;
         let request = request.into_inner();
         let idempotency_key = operation(request.operation)?;
-        let source = self.generation(request.source).await?;
+        let source_reference = request.source;
+        let source = self.generation(source_reference.clone()).await?;
         let source_workspace = source.workspace.clone();
-        let options = ForkOptions::from_generation(source, idempotency_key);
-        let options = match request.selection {
-            Some(selection) => options.inherit_paths(selection.paths),
-            None => options,
-        };
         let destination = source_workspace
-            .fork::<_, _, WorkspaceError>(
-                request.destination_name,
-                options,
-                crate::PublicationPermit::Unrestricted,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-                &mut |_| {
-                    std::future::ready(Ok(crate::OperationReceipt {
-                        value: (),
-                        work: crate::WorkCounters::UNCHARGED,
-                    }))
-                },
-            )
+            .with_stable_policy(|| async {
+                // Rebind after lease admission: the first lookup may have raced a
+                // policy edit. The lease freezes policy, but cannot freeze time.
+                let source = self.generation(source_reference).await?;
+                if source
+                    .workspace
+                    .access
+                    .as_ref()
+                    .is_none_or(|(view, _)| view.valid_until().is_some())
+                {
+                    return Err(Status::permission_denied(
+                        "fork requires nonexpiring source authority",
+                    ));
+                }
+                let options = ForkOptions::from_generation(source, idempotency_key);
+                let options = match request.selection {
+                    Some(selection) => options.inherit_paths(selection.paths),
+                    None => options,
+                };
+                #[cfg(test)]
+                tests::fork_policy_cut(&source_workspace).await;
+                source_workspace
+                    .fork::<_, _, WorkspaceError>(
+                        request.destination_name,
+                        options,
+                        crate::PublicationPermit::Unrestricted,
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                        &mut |_| {
+                            std::future::ready(Ok(crate::OperationReceipt {
+                                value: (),
+                                work: crate::WorkCounters::UNCHARGED,
+                            }))
+                        },
+                    )
+                    .await
+                    .map_err(|failure| status(&failure.error))
+                    .map(|receipt| receipt.value)
+            })
             .await
-            .map_err(|failure| status(&failure.error))?
-            .value;
+            .map_err(|error| status(&error))??;
         Ok(Response::new(wire::WorkspaceResponse {
             workspace: Some(workspace_message(&destination).await?),
             status: wire::MutationStatus::Committed as i32,

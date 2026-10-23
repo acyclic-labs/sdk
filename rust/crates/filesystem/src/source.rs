@@ -638,6 +638,31 @@ fn reconcile_outcome_from_fact<A, O>(
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
+    async fn open_source_workspace(&self, name: &str) -> Result<Workspace<A, O>, SourceError> {
+        let cancellation = crate::CancellationToken::new();
+        match self
+            .open_workspace(name, crate::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+        {
+            Ok(receipt) => Ok(receipt.value),
+            Err(failure)
+                if matches!(
+                    failure.error,
+                    crate::WorkspaceError::Filesystem(crate::FsError::Authority(
+                        crate::AuthorityStoreError::Missing
+                    ))
+                ) =>
+            {
+                Ok(self
+                    .create_workspace(name, crate::WorkBudget::UNBOUNDED, &cancellation)
+                    .await
+                    .map_err(|failure| engine(failure.error))?
+                    .value)
+            }
+            Err(failure) => Err(engine(failure.error)),
+        }
+    }
+
     /// Creates or opens one workspace and attaches an exact native directory.
     pub async fn attach_directory(
         &self,
@@ -651,16 +676,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         {
             return Err(SourceError::InvalidOptions);
         }
-        let workspace = self
-            .create_workspace(
-                name,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(engine)?;
+        let workspace = self.open_source_workspace(name.as_ref()).await?;
         let watcher = NativeWatch::open_with_profile(
             path.as_ref(),
             workspace.volume.config().profile,

@@ -172,6 +172,8 @@ async fn attached_workspace_rescans_and_seals_one_source()
         .await?
         .attach_directory("attached".to_owned(), source_path, options)
         .await?;
+    acyclic_harness::filesystem::local_owner_mount_options(&workspace.inner, "attached-test", true)
+        .await?;
     assert_eq!(workspace.source_state().await.status, "clean");
     std::fs::write(source.path().join("value.bin"), [4_u8, 5])?;
     assert_eq!(workspace.rescan_source().await?.status, "clean");
@@ -310,6 +312,44 @@ async fn materialization_writes_checkout_bytes()
     assert_eq!(
         std::fs::read(destination.path().join("value.bin"))?,
         [0, 1, 255]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn attachment_never_invents_policy_for_an_existing_workspace()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let source = tempfile::tempdir()?;
+    let fs = open(&root).await?;
+    fs.inner
+        .create_workspace(
+            "policy-absent",
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
+    let attached = fs
+        .attach_directory(
+            "policy-absent".into(),
+            source.path().to_string_lossy().into_owned(),
+            NativeSourceOptions {
+                mode: "pinned".into(),
+                maximum_paths: NapiU32(128),
+                maximum_extent_spans: NapiU32(128),
+                maximum_queued_changes: NapiU32(128),
+                excluded_paths: None,
+            },
+        )
+        .await?;
+    assert!(
+        acyclic_harness::filesystem::local_owner_mount_options(
+            &attached.inner,
+            "absent-policy-test",
+            true
+        )
+        .await
+        .is_err()
     );
     Ok(())
 }

@@ -510,6 +510,45 @@ impl PathTrie {
         })
     }
 
+    /// Prove that relocating data cannot grant any new action. Directory moves
+    /// require identical compiled suffix states; policies whose equivalence
+    /// cannot be proved without walking data fail closed. No native allocation
+    /// or namespace traversal is needed for this proof.
+    pub(crate) fn permits_relocation(
+        &self,
+        source: &crate::kernel::NamespacePath,
+        destination: &crate::kernel::NamespacePath,
+        descendants: bool,
+        now: u64,
+    ) -> bool {
+        let (Ok(source), Ok(destination)) = (
+            self.prepare_namespace(source),
+            self.prepare_namespace(destination),
+        ) else {
+            return false;
+        };
+        if !self.valid_at(now) || destination.action_mask(now) & !source.action_mask(now) != 0 {
+            return false;
+        }
+        if !descendants {
+            return true;
+        }
+        let suffix = |path: PreparedPath<'_>| {
+            if path.depth == 0 {
+                Ok(path.state)
+            } else {
+                self.step(path.state, '/')
+            }
+        };
+        match (suffix(source), suffix(destination)) {
+            (Ok(from), Ok(to)) if from == to => true,
+            _ => self
+                .states
+                .iter()
+                .all(|state| state.actions == source.action_mask(now)),
+        }
+    }
+
     /// Whether moving between generations can change this view's decisions.
     #[must_use]
     pub const fn generation_sensitive(&self) -> bool {

@@ -234,3 +234,129 @@ async fn export_checks_manifest_objects_and_resumed_streams_after_revocation()
 async fn removed_export_fence_negative_control() {
     export_revocation_cut(1, false, true).await.unwrap();
 }
+
+thread_local! {
+    static REVOKE_DURING_FORK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(super) async fn fork_policy_cut<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    source: &Workspace<A, O>,
+) {
+    if !REVOKE_DURING_FORK.replace(false) {
+        return;
+    }
+    let policy = crate::access::fixtures::denied(crate::access::Action::Read, "**");
+    assert!(
+        crate::access::fixtures::publish_policy(source, &policy)
+            .await
+            .is_err(),
+        "wire fork allowed source revocation before destination publication"
+    );
+}
+
+#[tokio::test]
+async fn wire_fork_freezes_source_policy_through_publication()
+-> Result<(), Box<dyn std::error::Error>> {
+    let service = FilesystemWireService::new(Fs::memory(), FilesystemWireLimits::default())?;
+    let created = service
+        .create_workspace(Request::new(wire::CreateWorkspaceRequest {
+            name: "fork-policy-cut".into(),
+            profile: wire::FilesystemProfile::Portable as i32,
+            operation: operation(1),
+        }))
+        .await?
+        .into_inner()
+        .workspace
+        .ok_or("workspace")?;
+    REVOKE_DURING_FORK.set(true);
+    let forked = service
+        .fork_workspace(Request::new(wire::ForkWorkspaceRequest {
+            source: created.head.clone(),
+            destination_name: "forked-policy-cut".into(),
+            selection: None,
+            operation: operation(2),
+        }))
+        .await?
+        .into_inner()
+        .workspace
+        .ok_or("fork")?;
+    assert_eq!(
+        forked.workspace.ok_or("reference")?.name,
+        "forked-policy-cut"
+    );
+    let owner = service
+        .filesystem
+        .open_workspace(
+            "fork-policy-cut",
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?
+        .value;
+    crate::access::fixtures::publish_policy(
+        &owner,
+        &crate::access::fixtures::denied(crate::access::Action::Read, "**"),
+    )
+    .await?;
+    let denied = service
+        .fork_workspace(Request::new(wire::ForkWorkspaceRequest {
+            source: created.head,
+            destination_name: "revoked-fork".into(),
+            selection: None,
+            operation: operation(3),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+    assert!(
+        service
+            .filesystem
+            .open_workspace(
+                "revoked-fork",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn wire_fork_rejects_expiring_source_authority() -> Result<(), Box<dyn std::error::Error>> {
+    let service = FilesystemWireService::new(Fs::memory(), FilesystemWireLimits::default())?;
+    let created = service
+        .create_workspace(Request::new(wire::CreateWorkspaceRequest {
+            name: "expiring-fork".into(),
+            profile: wire::FilesystemProfile::Portable as i32,
+            operation: operation(1),
+        }))
+        .await?
+        .into_inner()
+        .workspace
+        .ok_or("workspace")?;
+    let owner = service
+        .filesystem
+        .open_workspace(
+            "expiring-fork",
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?
+        .value;
+    let mut policy: crate::access::Policy = serde_json::from_slice(crate::access::INITIAL_POLICY)?;
+    policy.version += 1;
+    policy.layers[0][0].conditions.expires_at = Some(u64::MAX);
+    crate::access::fixtures::publish_policy(&owner, &policy).await?;
+    let result = service
+        .fork_workspace(Request::new(wire::ForkWorkspaceRequest {
+            source: created.head,
+            destination_name: "expired-fork-target".into(),
+            selection: None,
+            operation: operation(2),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(result.code(), tonic::Code::PermissionDenied);
+    Ok(())
+}
