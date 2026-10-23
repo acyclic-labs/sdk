@@ -53,7 +53,8 @@ async fn raw_follow_keeps_checked_anchors_and_standalone_watermarks() -> TestRes
         Body::Watermark(wire::SessionWatermark {
             accepted: 1,
             durable: 1,
-        }),
+        ..Default::default()
+}),
     )))?;
     let mark = tokio::time::timeout(Duration::from_secs(1), all.next())
         .await?
@@ -62,8 +63,9 @@ async fn raw_follow_keeps_checked_anchors_and_standalone_watermarks() -> TestRes
         mark.body,
         Some(Body::Watermark(wire::SessionWatermark {
             accepted: 1,
-            durable: 1
-        }))
+            durable: 1,
+        ..
+}))
     ));
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
     Ok(())

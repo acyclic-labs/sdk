@@ -484,6 +484,12 @@ impl StreamProvider for BrowserStream {
     ) -> Result<RecordStream, StreamError> {
         self.follow_from(path, from, None, filter).await
     }
+    async fn follow_updates(
+        &self, path: StreamPath, from: u64, preceding: Option<crate::CommitId>,
+        filter: crate::FollowFilter,
+    ) -> Result<crate::FollowStream, StreamError> {
+        self.progress_from(path, from, preceding, filter).await
+    }
     async fn follow_checked(
         &self,
         path: StreamPath,

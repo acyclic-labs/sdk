@@ -46,7 +46,8 @@ pub fn verify_follow_data(broken: u8) {
                     Body::Watermark(wire::SessionWatermark {
                         accepted,
                         durable: accepted,
-                    })
+                    ..Default::default()
+})
                 )
             ));
         }

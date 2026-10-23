@@ -109,6 +109,27 @@ impl StreamProvider for Arc<Counted> {
             })
             .boxed())
     }
+    async fn follow_updates(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: Option<crate::CommitId>,
+        filter: crate::FollowFilter,
+    ) -> Result<crate::FollowStream, StreamError> {
+        let status = path.as_str() == "status";
+        let counted = Arc::clone(self);
+        Ok(self
+            .memory
+            .follow_updates(path, from, preceding, filter)
+            .await?
+            .inspect(move |_| {
+                if status {
+                    counted.pulled.fetch_add(1, Ordering::Relaxed);
+                    counted.changed.notify_one();
+                }
+            })
+            .boxed())
+    }
 }
 
 #[tokio::test]

@@ -172,6 +172,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 opaque_cursor,
                 revalidate,
                 pending: VecDeque::new(),
+                progress: None,
                 indexed: None,
                 credit: wire::SessionWindow::default(),
                 sent: resume.clone(),
@@ -218,7 +219,7 @@ fn follow_source<P: StreamProvider + ?Sized>(
         from,
         preceding,
         filter,
-        None::<crate::RecordStream>,
+        None::<crate::FollowStream>,
         false,
         0_u8,
     );
@@ -238,14 +239,9 @@ fn follow_source<P: StreamProvider + ?Sized>(
             )| async move {
                 loop {
                     if records.is_none() {
-                        records = Some(match preceding {
-                            Some(anchor) => {
-                                provider
-                                    .follow_checked(path.clone(), next, anchor, filter.clone())
-                                    .await?
-                            }
-                            None => provider.follow(path.clone(), next, filter.clone()).await?,
-                        });
+                        records = Some(provider.follow_updates(
+                            path.clone(), next, preceding, filter.clone(),
+                        ).await?);
                         if !opened {
                             opened = true;
                             return Ok(Some((
@@ -257,21 +253,31 @@ fn follow_source<P: StreamProvider + ?Sized>(
                             )));
                         }
                     }
-                    if let Some(record) = records
+                    if let Some(update) = records
                         .as_mut()
                         .ok_or(StreamError::Unavailable)?
                         .next()
                         .await
                         .transpose()?
                     {
-                        next = record
-                            .sequence
-                            .checked_add(1)
-                            .ok_or(StreamError::OutOfRange)?;
+                        let event = match update {
+                            crate::FollowUpdate::Record(record) => {
+                                next = record.sequence.checked_add(1).ok_or(StreamError::OutOfRange)?;
+                                preceding = preceding.map(|_| record.commit_id);
+                                Event::Record(record)
+                            }
+                            crate::FollowUpdate::Progress { next: cut, preceding: anchor } => {
+                                next = cut;
+                                preceding = preceding.map(|_| anchor);
+                                Event::Progress(wire::SessionWatermark {
+                                    accepted: cut, durable: 0, after: Some(cursor(cut)),
+                                    preceding_commit_id: Bytes::copy_from_slice(anchor.as_bytes()),
+                                })
+                            }
+                        };
                         ended = 0;
-                        preceding = preceding.map(|_| record.commit_id);
                         return Ok(Some((
-                            Event::Record(record),
+                            event,
                             (
                                 provider, executor, path, next, preceding, filter, records, opened,
                                 ended,

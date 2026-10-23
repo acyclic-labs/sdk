@@ -74,7 +74,7 @@ pub(super) struct Slots {
 }
 
 pub(super) struct Binding {
-    children: bool,
+    pub(super) children: bool,
     credential_revision: u64,
     pub(super) slot: u32,
     resource: String,

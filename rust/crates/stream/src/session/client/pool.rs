@@ -414,7 +414,15 @@ impl Pool {
                 }
             }
             Some(Body::Watermark(mark)) if mark.durable <= mark.accepted => {
-                if route.raw {
+                if let Some(after) = &mark.after {
+                    if !matches!(route.kind, Kind::Follow(_)) || !after.opaque.is_empty()
+                        || after.next < route.received || after.next > mark.accepted
+                        || mark.preceding_commit_id.len() != 32 || after.next == 0 {
+                        return Err(StreamError::Unavailable);
+                    }
+                    route.received = after.next;
+                }
+                if route.raw || mark.after.is_some() {
                     route.watermark = Some(frame(id, input.generation, Body::Watermark(mark)));
                     self.flush_watermark(id)
                 } else {
@@ -500,6 +508,8 @@ impl Pool {
         length: u64,
         epoch: u64,
     ) -> Result<(), StreamError> {
+        // Pending skipped progress belongs before the next data delivery.
+        self.flush_watermark(id)?;
         let route = self.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
         let after = data.after.as_ref().ok_or(StreamError::Unavailable)?;
         let sequence = match (&route.kind, data.item.as_ref()) {
@@ -566,7 +576,7 @@ impl Pool {
         };
         // Reserve slots for every data frame already granted to the peer.
         // Control-only durability updates occupy at most one additional pending value.
-        if route.records.capacity() <= route.credit.frames as usize {
+        if route.records.capacity() <= 2 * route.credit.frames as usize {
             return Ok(());
         }
         let Some(value) = route.watermark.take() else {

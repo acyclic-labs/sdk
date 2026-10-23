@@ -9,6 +9,52 @@ use std::{
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+async fn qualify_progress(provider: &impl StreamProvider) -> TestResult {
+    let path = StreamPath::new("filtered")?;
+    let first = append(provider, record("z", "alice")).await?;
+    let mut updates = provider.follow_updates(path.clone(), 1, Some(first), filter()).await?;
+    assert!(futures::poll!(updates.next()).is_pending());
+    let skipped = append(provider, record("z", "alice")).await?;
+    let update = updates.next().await.ok_or("missing idle progress")??;
+    assert!(matches!(update, FollowUpdate::Progress { next: 2, preceding } if preceding == skipped));
+    assert!(futures::poll!(updates.next()).is_pending());
+    let matched = append(provider, record("b", "alice")).await?;
+    assert!(matches!(updates.next().await.ok_or("missing match")??,
+        FollowUpdate::Record(Record { sequence: 2, commit_id, .. }) if commit_id == matched));
+    let request = AppendRequest {
+        path: path.clone(), records: vec![record("z", "alice"), record("b", "alice"),
+            record("b", "bob"), record("a", "alice")], if_tail: None, idempotency_key: None,
+    };
+    provider.append(request).await?;
+    for expected in [4, 6] {
+        let update = updates.next().await.ok_or("missing skipped prefix")??;
+        let FollowUpdate::Progress { next, preceding } = update else { panic!("disclosed a filtered value"); };
+        assert_eq!(next, expected);
+        // A checked resume at a skipped cut must lead to exactly the same match.
+        let mut resumed = provider.follow_updates(path.clone(), next, Some(preceding), filter()).await?;
+        for source in [&mut updates, &mut resumed] {
+            assert!(matches!(source.next().await.ok_or("missing resumed match")??,
+                FollowUpdate::Record(Record { sequence, .. }) if sequence == expected));
+        }
+        assert!(matches!(provider.follow_updates(path.clone(), next,
+            Some(CommitId::from_bytes([0x55; 32])), filter()).await, Err(StreamError::PrefixNotRetained)));
+    }
+    assert!(futures::poll!(updates.next()).is_pending());
+    Ok(())
+}
+
+#[tokio::test]
+async fn memory_filtered_progress_orders_skips_matches_and_checked_resume() -> TestResult {
+    qualify_progress(&MemoryStream::default()).await
+}
+#[cfg(feature = "local")]
+#[tokio::test]
+async fn local_filtered_progress_orders_skips_matches_and_checked_resume() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+    qualify_progress(&provider).await
+}
 #[derive(Default)]
 struct Wakes(AtomicUsize);
 impl Wake for Wakes {

@@ -94,6 +94,7 @@ struct Channel {
     opaque_cursor: bool,
     revalidate: Option<PublicationRevalidation>,
     pending: VecDeque<Pending>,
+    progress: Option<wire::SessionWatermark>,
     indexed: Option<usize>,
     credit: wire::SessionWindow,
     sent: wire::SessionCursor,
@@ -107,6 +108,7 @@ struct Pending {
 enum Event {
     Opened(Option<crate::CommitId>),
     Record(crate::Record),
+    Progress(wire::SessionWatermark),
     Child(crate::Child, wire::SessionCursor),
     Publication(wire::SessionData),
 }

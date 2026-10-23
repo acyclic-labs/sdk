@@ -8,24 +8,7 @@ impl MemoryStream {
     ) -> Result<(crate::follow_index::FollowInterest, HistoryCursor), StreamError> {
         let mut state = self.state.write().await;
         let path = state.paths.get_mut(path).ok_or(StreamError::NotFound)?;
-        if from > path.tail {
-            return Err(StreamError::OutOfRange);
-        }
-        let mut cursor = HistoryCursor::new(
-            path,
-            path.tail,
-            if anchor.is_some() {
-                from.checked_sub(1).ok_or(StreamError::InvalidArgument)?
-            } else {
-                from
-            },
-        );
-        if let Some(anchor) = anchor {
-            let record = cursor.next_record().ok_or(StreamError::PrefixNotRetained)?;
-            if record.sequence != from - 1 || record.commit_id != anchor {
-                return Err(StreamError::PrefixNotRetained);
-            }
-        }
+        let cursor = HistoryCursor::prepare(path, from, anchor)?;
         let index = path.follows.get_or_insert_with(|| {
             Arc::new(crate::query_sync::SyncMutex::new(
                 crate::follow_index::FollowIndex::default(),

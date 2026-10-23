@@ -25,6 +25,7 @@ pub(super) fn empty_session(latest: bool) -> Session<MemoryStream> {
                 generation: 1,
                 latest,
                 pending: VecDeque::new(),
+                progress: None,
                 indexed: None,
                 credit: wire::SessionWindow::default(),
                 sent: cursor(0),

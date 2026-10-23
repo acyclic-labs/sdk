@@ -134,7 +134,8 @@ fn add_route(state: &mut State, index: usize, kind: u8) {
                     Body::Watermark(wire::SessionWatermark {
                         accepted: 1,
                         durable: 1,
-                    }),
+                    ..Default::default()
+}),
                 )),
                 sequence: 0,
                 opaque: Bytes::new(),

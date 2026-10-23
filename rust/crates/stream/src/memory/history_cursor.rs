@@ -6,6 +6,26 @@ pub(crate) struct HistoryCursor {
     next: u64,
 }
 impl HistoryCursor {
+    fn prepare(path: &PathState, from: u64, anchor: Option<CommitId>) -> Result<Self, StreamError> {
+        if from > path.tail {
+            return Err(StreamError::OutOfRange);
+        }
+        let start = if anchor.is_some() {
+            from.checked_sub(1).ok_or(StreamError::InvalidArgument)?
+        } else { from };
+        let mut cursor = Self::new(path, path.tail, start);
+        if let Some(anchor) = anchor {
+            let record = cursor.next_record().ok_or(StreamError::PrefixNotRetained)?;
+            if record.sequence != from - 1 || record.commit_id != anchor {
+                return Err(StreamError::PrefixNotRetained);
+            }
+        }
+        Ok(cursor)
+    }
+    fn peek_record(&self) -> Option<&Record> {
+        let window = self.first.as_ref()?;
+        window.records.records.get(window.start)
+    }
     fn check_anchor(&self, path: &PathState, anchor: CommitId) -> Result<(), StreamError> {
         if let Some(root) = &self.root
             && HistoryWalk::new(path.history.as_ref(), path.tail, 0)

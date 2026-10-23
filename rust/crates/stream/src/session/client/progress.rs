@@ -94,6 +94,16 @@ impl Progress {
             .generation
             == generation)
     }
+    pub(super) fn consume_progress(
+        &self, generation: u64, next: u64, preceding: [u8; 32],
+    ) -> Result<bool, StreamError> {
+        let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+        if generation != state.generation || next < state.position.next { return Ok(false); }
+        state.position.next = next;
+        state.position.opaque.clear();
+        if state.position.preceding.is_some() { state.position.preceding = Some(preceding); }
+        Ok(true)
+    }
     pub(super) fn consume_opaque(
         &self,
         generation: u64,

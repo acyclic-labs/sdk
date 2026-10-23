@@ -123,9 +123,13 @@ impl Delivery {
                 progress.consume_opaque(self.generation, self.sequence, &self.opaque)
             }
             Received::Frame(wire::SessionFrame {
-                body: Some(Body::Watermark(_)),
+                body: Some(Body::Watermark(mark)),
                 ..
-            }) => progress.current(self.generation),
+            }) => match &mark.after {
+                Some(after) => progress.consume_progress(self.generation, after.next,
+                    mark.preceding_commit_id.as_ref().try_into().map_err(|_| StreamError::Unavailable)?),
+                None => progress.current(self.generation),
+            },
             _ => Err(StreamError::Unavailable),
         }
     }
@@ -373,6 +377,36 @@ impl Client {
                 }),
         ))
     }
+    /// Follows projected records and ordered skipped-prefix cuts on the shared session.
+    pub async fn follow_updates(
+        &self, path: StreamPath, from: u64, preceding: Option<crate::CommitId>,
+        filter: crate::FollowFilter,
+    ) -> Result<crate::FollowStream, StreamError> {
+        self.follow_updates_with_ack(path, from, preceding, true, filter).await
+    }
+    pub(crate) async fn follow_updates_with_ack(
+        &self, path: StreamPath, from: u64, preceding: Option<crate::CommitId>,
+        acknowledge: bool, filter: crate::FollowFilter,
+    ) -> Result<crate::FollowStream, StreamError> {
+        let kind = Kind::Follow(wire::SessionFollow {
+            path: path.to_string(), delivery: wire::SessionDelivery::All as i32,
+            preceding_commit_id: preceding.map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
+        });
+        let source = self.open_subscription(kind, cursor(from), acknowledge, true,
+            Some(filter.transport_filter()?), 0).await?;
+        Ok(super::runtime::boxed(source.filter_map(|item| future::ready(match item {
+            Ok(Received::Frame(wire::SessionFrame { body: Some(Body::Data(data)), .. })) => Some(
+                match data.item {
+                    Some(Item::Record(record)) => wire_codec::record(record).map(crate::FollowUpdate::Record),
+                    _ => Err(StreamError::Unavailable),
+                }),
+            Ok(Received::Frame(wire::SessionFrame { body: Some(Body::Watermark(mark)), .. })) =>
+                mark.after.map(|after| wire_codec::commit_id(&mark.preceding_commit_id)
+                    .map(|preceding| crate::FollowUpdate::Progress { next: after.next, preceding })),
+            Ok(_) => Some(Err(StreamError::Unavailable)),
+            Err(error) => Some(Err(error)),
+        }))))
+    }
     /// Follows ALL records or LATEST values on the shared per-node session,
     /// retaining the exact data cursor and accepted/durable watermarks.
     pub async fn follow_data(
@@ -412,10 +446,12 @@ impl Client {
                 Some(filter.transport_filter()?),
             )
             .await?
-            .map(|item| match item? {
-                Received::Data(data) => Ok(data),
-                _ => Err(StreamError::Unavailable),
-            }))
+            .filter_map(|item| future::ready(match item {
+                Ok(Received::Data(data)) => Some(Ok(data)),
+                Ok(Received::Frame(wire::SessionFrame { body: Some(Body::Watermark(_)), .. })) => None,
+                Ok(_) => Some(Err(StreamError::Unavailable)),
+                Err(error) => Some(Err(error)),
+            })))
     }
     /// Discovers direct children on the same per-node session as record follows.
     pub async fn children(
@@ -512,7 +548,9 @@ impl Client {
         impl futures::Stream<Item = Result<Received, StreamError>> + 'static + use<>,
         StreamError,
     > {
-        let (records, receiver) = mpsc::channel(QUEUE + usize::from(raw));
+        // Reserve one skipped-prefix cut per granted data frame and one idle
+        // progress slot. The data window stays at QUEUE.
+        let (records, receiver) = mpsc::channel(2 * QUEUE + 1);
         let (ready, opened) = oneshot::channel();
         let preceding = match &kind {
             Kind::Follow(follow) => {

@@ -139,6 +139,10 @@ message SessionMoved {
 message SessionWatermark {
   uint64 accepted = 1;
   uint64 durable = 2;
+  // Ordered skipped-prefix cut; absent for durability-only observations.
+  // It never passes an earlier matching data frame on this channel.
+  SessionCursor after = 3;
+  bytes preceding_commit_id = 4; // commit at after.next - 1
 }
 message SessionLatestValue {
   bytes key = 1;

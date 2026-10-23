@@ -449,5 +449,23 @@ pub struct IdempotencyObservation {
 
 /// Backpressured finite read or long-lived follow.
 pub type RecordStream = BoxProviderStream<'static, Result<Record, StreamError>>;
+
+/// An ordered filtered follow observation. Skipped records carry only a cursor
+/// and an immutable history anchor, never their values or indexed headers.
+#[derive(Debug)]
+pub enum FollowUpdate {
+    /// A matching record after provider-side projection.
+    Record(Record),
+    /// A contiguous skipped prefix before the next matching record.
+    Progress {
+        /// Exclusive offset of the examined prefix.
+        next: u64,
+        /// Commit at `next - 1`, including filtered-out records.
+        preceding: CommitId,
+    },
+}
+
+/// Ordered records and skipped-prefix observations from one atomic follow.
+pub type FollowStream = BoxProviderStream<'static, Result<FollowUpdate, StreamError>>;
 /// Backpressured fixed-snapshot direct-child listing.
 pub type ChildStream = BoxProviderStream<'static, Result<Child, StreamError>>;

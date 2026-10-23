@@ -131,6 +131,36 @@ impl StreamProvider for EndingFollow {
         }
         self.inner.follow(path, from, filter).await
     }
+    async fn follow_updates(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: Option<crate::CommitId>,
+        filter: crate::FollowFilter,
+    ) -> Result<crate::FollowStream, StreamError> {
+        let attempt = self.follows.fetch_add(1, Ordering::SeqCst);
+        if self.finite {
+            return if attempt == 0 {
+                self.inner
+                    .read(ReadRequest {
+                        path,
+                        from,
+                        limit: u32::try_from(crate::MAX_ITEMS)
+                            .map_err(|_| StreamError::LimitExceeded)?,
+                    })
+                    .await.map(|records| records.map(|record| record.map(crate::FollowUpdate::Record)).boxed())
+            } else {
+                Ok(stream::empty().boxed())
+            };
+        }
+        if attempt == 0 {
+            return Ok(stream::empty().boxed());
+        }
+        if self.deny {
+            return Err(StreamError::AccessDenied);
+        }
+        self.inner.follow_updates(path, from, preceding, filter).await
+    }
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
         if self.deny {
             return Err(StreamError::AccessDenied);

@@ -202,6 +202,7 @@ fn every_local_and_global_credit_combination_matches_the_admission_contract() {
                                 latest,
                                 opaque_cursor: false,
                                 revalidate: None,
+                                progress: None,
                                 pending: (0..pending)
                                     .map(|_| Pending {
                                         frame: Default::default(),

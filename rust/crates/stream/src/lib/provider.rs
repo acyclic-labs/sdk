@@ -84,6 +84,19 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         let _ = (path, from, preceding, filter);
         Err(StreamError::Unsupported)
     }
+    /// Atomically opens a filtered follow with ordered skipped-prefix progress.
+    /// Progress must never pass an earlier matching record. Metadata-only wakes
+    /// belong to this stream; ordinary record-only follows remain indexed.
+    async fn follow_updates(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: Option<CommitId>,
+        filter: crate::FollowFilter,
+    ) -> Result<crate::FollowStream, StreamError> {
+        let _ = (path, from, preceding, filter);
+        Err(StreamError::Unsupported)
+    }
     /// Replays direct children and pushes each newly created child once, without a handoff gap.
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError>;
     /// Traverses arbitrarily large direct-child sets without silently

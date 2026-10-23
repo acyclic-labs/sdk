@@ -238,6 +238,12 @@ impl StreamProvider for Remote {
     ) -> Result<RecordStream, StreamError> {
         self.sessions.follow(path, from, filter).await
     }
+    async fn follow_updates(
+        &self, path: StreamPath, from: u64, preceding: Option<crate::CommitId>,
+        filter: crate::FollowFilter,
+    ) -> Result<crate::FollowStream, StreamError> {
+        self.sessions.follow_updates(path, from, preceding, filter).await
+    }
     async fn follow_checked(
         &self,
         path: StreamPath,
