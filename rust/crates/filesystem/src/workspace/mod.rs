@@ -36,7 +36,6 @@ mod checkout;
 mod commit;
 mod content;
 mod diff;
-mod namespace_view;
 mod errors;
 mod extents;
 mod fork_options;
@@ -53,6 +52,7 @@ mod join_resolution;
 mod lifecycle;
 mod materialize;
 mod metadata;
+mod namespace_view;
 mod outcomes;
 mod path_apply;
 mod paths;
@@ -69,6 +69,7 @@ mod transaction_write;
 mod writes;
 
 pub use commit::{TransactionCommit, TransactionRebase};
+pub(crate) use diff::complete_changed_paths;
 pub use diff::{ChangeSet, ChangedPath};
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub(crate) use errors::workspace_bounded_error;
@@ -88,6 +89,7 @@ use join_helpers::{
     namespace_path_text, record_conflict_view, resolution_matches_conflict, side_resolution,
 };
 pub use metadata::{WorkspaceMetadata, WorkspaceStat};
+pub(crate) use namespace_view::NamespaceView;
 pub use outcomes::{
     ApplyOptions, JoinApplication, JoinOutcome, WorkspaceDelete, WorkspacePathApply,
     WorkspacePathConflict, WorkspaceRebase, WorkspaceRestore,

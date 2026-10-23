@@ -38,7 +38,7 @@ impl<O: AsyncObjectStore> NamespaceView<'_, O> {
         }
         matches.0.complete = super::reverse_traversal::collect_namespace(
             self,
-            ids,
+            Some(ids),
             maximum_entries,
             &mut matches,
             accounting,
@@ -46,6 +46,34 @@ impl<O: AsyncObjectStore> NamespaceView<'_, O> {
         )
         .await?;
         super::reverse_traversal::reverse_sort(&mut matches.0.records, accounting)?;
+        Ok(matches)
+    }
+
+    pub(super) async fn all_records(
+        &self,
+        maximum_entries: u32,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(NamespaceRecordSearch, KernelOwnedAllocation), FsError> {
+        let mut matches = (
+            NamespaceRecordSearch {
+                records: Vec::new(),
+                complete: false,
+            },
+            accounting.claim_owned(0, 0)?,
+        );
+        if maximum_entries == 0 {
+            return Ok(matches);
+        }
+        matches.0.complete = super::reverse_traversal::collect_namespace(
+            self,
+            None,
+            maximum_entries,
+            &mut matches,
+            accounting,
+            cancellation,
+        )
+        .await?;
         Ok(matches)
     }
 

@@ -173,7 +173,7 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
     };
     if !collect_namespace(
         &view,
-        ids,
+        Some(ids),
         maximum_entries,
         &mut matches,
         accounting,
@@ -292,7 +292,7 @@ async fn answer_from_cache<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 
 pub(crate) async fn collect_namespace<O: AsyncObjectStore>(
     view: &super::namespace_view::NamespaceView<'_, O>,
-    ids: &[FileId],
+    ids: Option<&[FileId]>,
     maximum_entries: u32,
     matches: &mut (NamespaceRecordSearch, KernelOwnedAllocation),
     accounting: &mut KernelAccounting<'_>,
@@ -311,7 +311,7 @@ pub(crate) async fn collect_namespace<O: AsyncObjectStore>(
     )
     .await?
     .record
-        && binary_search_with_accounting(ids, accounting, |id| id.cmp(&record.file_id))?.is_ok()
+        && namespace_selected(ids, record.file_id, accounting)?
     {
         let allocation = accounting.claim_owned(0, 0)?;
         reverse_insert(
@@ -341,7 +341,7 @@ pub(crate) async fn collect_namespace<O: AsyncObjectStore>(
 /// `maximum_entries` before examining every entry.
 async fn walk_namespace<O: AsyncObjectStore>(
     view: &super::namespace_view::NamespaceView<'_, O>,
-    ids: &[FileId],
+    ids: Option<&[FileId]>,
     maximum_entries: u32,
     matches: &mut (NamespaceRecordSearch, KernelOwnedAllocation),
     accounting: &mut KernelAccounting<'_>,
@@ -380,10 +380,7 @@ async fn walk_namespace<O: AsyncObjectStore>(
                     return Ok(false);
                 }
                 examined += 1;
-                let found = binary_search_with_accounting(ids, accounting, |id| {
-                    id.cmp(&entry.record.file_id)
-                })?
-                .is_ok();
+                let found = namespace_selected(ids, entry.record.file_id, accounting)?;
                 let is_directory = entry.record.kind == FileKind::Directory;
                 if !found && !is_directory {
                     continue;
@@ -442,6 +439,18 @@ async fn walk_namespace<O: AsyncObjectStore>(
     let pending_bytes = workspace_vec_bytes(&pending.0);
     reverse_drop(pending, pending_bytes, accounting)?;
     Ok(true)
+}
+
+fn namespace_selected(
+    ids: Option<&[FileId]>,
+    file_id: FileId,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<bool, FsError> {
+    match ids {
+        Some(ids) => binary_search_with_accounting(ids, accounting, |id| id.cmp(&file_id))
+            .map(|position| position.is_ok()),
+        None => Ok(true),
+    }
 }
 
 /// Releases one listed directory page.

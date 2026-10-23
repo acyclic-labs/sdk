@@ -7,6 +7,17 @@ async fn raw_changed_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     original: &crate::NativeMaterializationWork,
     cancellation: &CancellationToken,
 ) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
+    raw_endpoint_paths(changes, maximum_entries, false, original, cancellation).await
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn raw_endpoint_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    changes: &ChangeSet<A, O>,
+    maximum_entries: u32,
+    complete: bool,
+    original: &crate::NativeMaterializationWork,
+    cancellation: &CancellationToken,
+) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
     let mut accounting = KernelAccounting::native(original, cancellation);
     let from = changes
         .from
@@ -28,28 +39,106 @@ async fn raw_changed_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             cancellation,
         )
         .await?;
-    let result = super::super::diff::changed_paths_in_roots(
-        [
-            super::super::namespace_view::NamespaceView {
-                objects: changes.from.workspace.volume.fs.objects(),
-                config: changes.from.workspace.volume.config(),
-                root: from.value.root(),
-            },
-            super::super::namespace_view::NamespaceView {
-                objects: changes.to.workspace.volume.fs.objects(),
-                config: changes.to.workspace.volume.config(),
-                root: to.value.root(),
-            },
-        ],
-        &changes.changes,
-        maximum_entries,
-        &mut accounting,
-        cancellation,
-    )
-    .await;
+    let endpoints = [
+        super::super::namespace_view::NamespaceView {
+            objects: changes.from.workspace.volume.fs.objects(),
+            config: changes.from.workspace.volume.config(),
+            root: from.value.root(),
+        },
+        super::super::namespace_view::NamespaceView {
+            objects: changes.to.workspace.volume.fs.objects(),
+            config: changes.to.workspace.volume.config(),
+            root: to.value.root(),
+        },
+    ];
+    let result = if complete {
+        crate::workspace::complete_changed_paths(
+            endpoints.map(Some),
+            maximum_entries,
+            &mut accounting,
+            cancellation,
+        )
+        .await
+    } else {
+        super::super::diff::changed_paths_in_roots(
+            endpoints,
+            &changes.changes,
+            maximum_entries,
+            &mut accounting,
+            cancellation,
+        )
+        .await
+    };
     to.retire(&mut accounting)?;
     from.retire(&mut accounting)?;
     result
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn complete_publication_delta_includes_unchanged_descendants_of_a_rename()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = unbounded!(fs, create_workspace("renamed-publication"))?;
+    let mut initial = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(initial, create_dir_all("/before/nested"))?;
+    unbounded!(
+        initial,
+        write("/before/nested/file", OwnedBytes::from_static(b"same"))
+    )?;
+    unbounded!(
+        initial,
+        hard_link("/before/nested/file", "/unchanged-alias")
+    )?;
+    let TransactionCommit::Committed(before) = commit(&mut initial).await? else {
+        return Err("initial namespace was not committed".into());
+    };
+    let mut renamed = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(renamed, rename("/before", "/after", true))?;
+    let TransactionCommit::Committed(after) = commit(&mut renamed).await? else {
+        return Err("renamed namespace was not committed".into());
+    };
+    let changes = unbounded!(before, diff_to(&after, 64))?.0;
+    let cancellation = CancellationToken::new();
+    let original =
+        crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
+            .map_err(|(error, _)| error)?;
+    let (paths, guard) = raw_endpoint_paths(&changes, 64, true, &original, &cancellation).await?;
+    let names: Vec<_> = paths
+        .iter()
+        .map(|change| super::namespace_path_text(&change.path))
+        .collect::<Result<_, _>>()?;
+    assert_eq!(
+        names,
+        [
+            "/after",
+            "/after/nested",
+            "/after/nested/file",
+            "/before",
+            "/before/nested",
+            "/before/nested/file"
+        ]
+    );
+    assert!(
+        paths
+            .iter()
+            .all(|change| change.before.is_some() != change.after.is_some())
+    );
+    drop(paths);
+    drop(guard);
+    // Selecting only changed file IDs loses descendants whose records did not
+    // change. Such a producer would miss both narrow-prefix watch notifications.
+    let (incomplete, guard) = raw_changed_paths(&changes, 64, &original, &cancellation).await?;
+    assert!(!incomplete.iter().any(|change| {
+        super::namespace_path_text(&change.path).is_ok_and(|path| path.ends_with("/nested/file"))
+    }));
+    drop(incomplete);
+    drop(guard);
+    assert!(matches!(
+        raw_endpoint_paths(&changes, 1, true, &original, &cancellation).await,
+        Err(WorkspaceError::ChangedPathLimit)
+    ));
+    Ok(())
 }
 
 #[tokio::test]

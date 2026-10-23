@@ -167,6 +167,45 @@ pub(crate) async fn changed_paths_in_roots<O: AsyncObjectStore>(
     .await
 }
 
+/// Complete path delta, including descendants whose unchanged file records move
+/// when an ancestor is renamed. The supplied scan bound never truncates an
+/// accepted publication's visible change list.
+pub(crate) async fn complete_changed_paths<O: AsyncObjectStore>(
+    endpoints: [Option<super::namespace_view::NamespaceView<'_, O>>; 2],
+    maximum_entries: u32,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
+    let mut paths = (Vec::new(), accounting.claim_owned(0, 0)?);
+    for (index, view) in endpoints.into_iter().enumerate() {
+        let Some(view) = view else {
+            continue;
+        };
+        let search = view
+            .all_records(maximum_entries, accounting, cancellation)
+            .await?;
+        if !search.0.complete {
+            return Err(WorkspaceError::ChangedPathLimit);
+        }
+        for (_, records) in &search.0.records {
+            for (path, record) in records {
+                accounting.charge_items(1)?;
+                merge_changed_record(
+                    &mut paths,
+                    path,
+                    Some(*record),
+                    index == 0,
+                    accounting,
+                    cancellation,
+                )?;
+            }
+        }
+        let bytes = namespace_records_bytes(&search.0.records);
+        reverse_drop(search, bytes, accounting)?;
+    }
+    retain_changed_paths(paths, accounting)
+}
+
 async fn resolve_changed_paths(
     endpoints: &impl NamespaceEndpoints,
     changes: &GenerationDiff,
