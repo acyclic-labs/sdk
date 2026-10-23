@@ -8,6 +8,10 @@ WSL's `/home/var/bin`. `coordinator/pr-gate.sh` installs as `Q:/lanes/pr-gate.sh
 `../pr-gate-checks.sh` installs as `Q:/lanes/pr-gate-checks.sh`.
 `coordinator/gate-checks.sh` installs as `Q:/lanes/gate-checks.sh`, and
 `../gate-test-runner.sh` installs as `Q:/lanes/gate-test-runner.sh`.
+`coordinator/gate-test-baseline.py` and `coordinator/failed-tests.sh` install
+under `Q:/lanes` with their existing names. Focused main qualification uses
+the same all-targets/doc coverage and fuzz helper as PR dispatch; non-libtest
+failures retain package/target identity for comparison.
 Both main and PR dispatch verify the linked libFuzzer driver before replacing
 libtest arguments, so an ordinary test with the same basename stays a test.
 
@@ -46,6 +50,7 @@ Run tooling tests **on bb2**, without compiling Rust:
 
 ```sh
 python3 scripts/buildbox/runtime.test.py
+python3 scripts/buildbox/baseline.test.py
 node --test scripts/buildbox/generated.test.mjs scripts/pr-gate-checks.test.mjs scripts/gate-test-runner.test.mjs
 ```
 
