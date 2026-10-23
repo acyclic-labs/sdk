@@ -57,7 +57,7 @@ impl LocalHarness {
                 drained: drained.clone(),
             };
             let parent = async {
-                self.advance_while(task, &scoped, || async {
+                crate::package::harness::worker::advance_while(self, task, &scoped, || async {
                     if cancellation.is_cancelled()
                         || commands
                             .invocation_cancellation()

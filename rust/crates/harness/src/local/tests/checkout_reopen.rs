@@ -25,9 +25,12 @@ pub(super) async fn run(harness: &LocalHarness) -> Result<()> {
         return Err(Error::Conflict("checkout turn was not admitted".into()));
     };
     let commands = harness.commands()?;
-    harness
-        .advance(task, &super::checked_commands::Checked(&commands))
-        .await?;
+    crate::package::harness::worker::advance(
+        harness,
+        task,
+        &super::checked_commands::Checked(&commands),
+    )
+    .await?;
     assert_eq!(harness.resume(task).await?.text, "done");
     Ok(())
 }

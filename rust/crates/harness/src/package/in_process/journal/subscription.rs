@@ -1,12 +1,54 @@
 use super::*;
 use acyclic_stream::{ChildrenRequest, ReadRequest};
 use futures::{TryStreamExt, future::Either};
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+};
+
+/// Observation of a runtime-owned subscription. Dropping this observation
+/// releases no handler claim and never cancels actor work. Use durable actor
+/// cancellation to stop work and drain effects.
+pub struct ActorSubscription {
+    completion: futures::channel::oneshot::Receiver<Result<Snapshot>>,
+}
+
+impl Future for ActorSubscription {
+    type Output = Result<Snapshot>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match Pin::new(&mut self.completion).poll(cx) {
+            Poll::Ready(Ok(result)) => Poll::Ready(result),
+            Poll::Ready(Err(_)) => Poll::Ready(Err(Error::Storage(
+                "actor runtime stopped before subscription settlement".into(),
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
 
 impl<P: StreamProvider> InProcessRuntime<P> {
+    /// Starts independently scheduled subscription work. The executor owns the
+    /// complete handler/effect lifetime; the returned value observes settlement.
+    pub fn subscribe(
+        self: &Arc<Self>,
+        executor: &dyn acyclic_stream::session::runtime::Executor,
+        placement: Placement,
+    ) -> ActorSubscription {
+        let runtime = self.clone();
+        let (settled, completion) = futures::channel::oneshot::channel();
+        executor.spawn(Box::pin(async move {
+            let result = runtime.run(placement).await;
+            let _ = settled.send(result);
+        }));
+        ActorSubscription { completion }
+    }
+
     /// Runs the package subscription until this actor settles or loses placement.
     /// The runtime owner polls this future independently of attached clients.
     /// Idle actors wait on provider follows; no timer or request polling is used.
-    pub fn run(&self, placement: Placement) -> BoxProviderFuture<'_, Result<Snapshot>> {
+    pub(crate) fn run(&self, placement: Placement) -> BoxProviderFuture<'_, Result<Snapshot>> {
         Box::pin(async move {
             let (_, journal) = self
                 .checked(AdmissionAction::Recover, &placement, None)

@@ -11,6 +11,7 @@ use std::sync::Mutex;
 mod journal;
 #[cfg(test)]
 mod tests;
+pub use journal::subscription::ActorSubscription;
 use journal::{Bootstrap, Entry, Journal};
 
 /// Host operation being authorized, independent of caller-controlled input.
@@ -45,7 +46,7 @@ pub trait AdmissionPolicy: ProviderPlatform {
 #[derive(Clone)]
 struct Installed {
     manifest: Manifest,
-    machine: Arc<dyn ResumableMachine>,
+    machines: Vec<Arc<dyn ResumableMachine>>,
     registry: MachineRegistry,
 }
 
@@ -280,7 +281,7 @@ impl<P: StreamProvider> InProcessRuntime<P> {
 impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
     fn install(&self, package: Arc<dyn ActorPackage>) -> BoxProviderFuture<'_, Result<()>> {
         Box::pin(async move {
-            let machine = validate_package(package.as_ref())?;
+            let machines = validate_package(package.as_ref())?;
             let manifest = package.manifest().clone();
             if manifest.bindings != self.bindings {
                 return Err(Error::Conflict(
@@ -293,7 +294,9 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
                 .authorize(AdmissionAction::Install, &manifest, None, None)
                 .await?;
             let mut registry = MachineRegistry::default();
-            registry.register(machine.clone(), &mut None)?;
+            for machine in &machines {
+                registry.register(machine.clone(), &mut None)?;
+            }
             let mut installed = self
                 .installed
                 .lock()
@@ -307,7 +310,7 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
             } else {
                 *installed = Some(Installed {
                     manifest,
-                    machine,
+                    machines,
                     registry,
                 });
             }
@@ -315,11 +318,21 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
         })
     }
 
-    fn place(&self, placement: Placement, input: Value) -> BoxProviderFuture<'_, Result<Snapshot>> {
+    fn place(
+        &self,
+        placement: Placement,
+        machine: MachineIdentity,
+        input: Value,
+    ) -> BoxProviderFuture<'_, Result<Snapshot>> {
         Box::pin(async move {
             let (package, journal) = self
                 .checked(AdmissionAction::Place, &placement, None)
                 .await?;
+            let handler = package
+                .machines
+                .iter()
+                .find(|handler| handler.identity() == &machine)
+                .ok_or_else(|| Error::Conflict("actor handler is not installed".into()))?;
             let _claim = self
                 .authorize_claim(
                     journal.claim_handler().await?,
@@ -331,6 +344,7 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
             if let Some(current) = journal.load_optional().await? {
                 if current.bootstrap.input != input
                     || current.bootstrap.manifest != package.manifest
+                    || current.bootstrap.admission.initial.machine != machine
                 {
                     return Err(Error::Conflict("actor admission is already bound".into()));
                 }
@@ -355,11 +369,11 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
                 return self.finish_move(&journal, &placement).await;
             }
             let initial = MachineCheckpoint {
-                machine: package.manifest.agent.clone(),
+                machine,
                 revision: 0,
-                state: package.machine.initialize(&input)?,
+                state: handler.initialize(&input)?,
             };
-            if !jsonschema::validator_for(package.machine.state_schema())
+            if !jsonschema::validator_for(handler.state_schema())
                 .map_err(|error| Error::Invalid(error.to_string()))?
                 .is_valid(&initial.state)
             {
@@ -370,7 +384,7 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
             let admission = WorkflowAdmission {
                 operation_id: OperationId::from_bytes(placement.actor.into_bytes()),
                 request_digest: *blake3::hash(
-                    &serde_json::to_vec(&(&package.manifest, &input))
+                    &serde_json::to_vec(&(&package.manifest, &initial.machine, &input))
                         .map_err(|error| journal::codec_error(&error))?,
                 )
                 .as_bytes(),

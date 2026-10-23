@@ -23,7 +23,9 @@ impl AdmissionPolicy for SelectivePolicy {
 async fn waiting_handler_actions_recheck_revoked_authority_before_publication() {
     let (stream, _, policy, effects, host) = fixture().await;
     let owner = placement();
-    host.place(owner.clone(), json!(0)).await.unwrap();
+    host.place(owner.clone(), counter_identity(), json!(0))
+        .await
+        .unwrap();
     let journal = host.journal(&host.package().unwrap(), &owner).unwrap();
     for action in [
         AdmissionAction::Place,
@@ -32,7 +34,7 @@ async fn waiting_handler_actions_recheck_revoked_authority_before_publication() 
     ] {
         let claim = journal.claim_handler().await.unwrap();
         let mut work = match action {
-            AdmissionAction::Place => host.place(owner.clone(), json!(0)),
+            AdmissionAction::Place => host.place(owner.clone(), counter_identity(), json!(0)),
             AdmissionAction::Deliver => host.deliver(owner.clone(), event(2, json!(1))),
             AdmissionAction::Cancel => host.cancel(owner.clone(), event(3, Value::Null)),
             _ => unreachable!(),
@@ -62,7 +64,9 @@ async fn waiting_recovery_intents_recheck_revoked_authority_before_fencing() {
     for cancellation in [false, true] {
         let (_, _, policy, effects, host) = fixture().await;
         let mut owner = placement();
-        host.place(owner.clone(), json!(0)).await.unwrap();
+        host.place(owner.clone(), counter_identity(), json!(0))
+            .await
+            .unwrap();
         if cancellation {
             assert!(
                 host.cancel(owner.clone(), event(2, Value::Null))
@@ -71,7 +75,11 @@ async fn waiting_recovery_intents_recheck_revoked_authority_before_fencing() {
             );
         } else {
             owner.epoch += 1;
-            assert!(host.place(owner.clone(), json!(0)).await.is_err());
+            assert!(
+                host.place(owner.clone(), counter_identity(), json!(0))
+                    .await
+                    .is_err()
+            );
         }
         let journal = host.journal(&host.package().unwrap(), &owner).unwrap();
         let before = journal.load().await.unwrap();
@@ -103,7 +111,9 @@ async fn every_entry_point_authorizes_its_own_runtime_supplied_action() {
     );
     host.install(package.clone()).await.unwrap();
     let owner = placement();
-    host.place(owner.clone(), json!(0)).await.unwrap();
+    host.place(owner.clone(), counter_identity(), json!(0))
+        .await
+        .unwrap();
     for action in [
         AdmissionAction::Install,
         AdmissionAction::Place,
@@ -114,7 +124,10 @@ async fn every_entry_point_authorizes_its_own_runtime_supplied_action() {
         *policy.0.lock().unwrap() = Some(action);
         let result = match action {
             AdmissionAction::Install => host.install(package.clone()).await,
-            AdmissionAction::Place => host.place(owner.clone(), json!(0)).await.map(|_| ()),
+            AdmissionAction::Place => host
+                .place(owner.clone(), counter_identity(), json!(0))
+                .await
+                .map(|_| ()),
             AdmissionAction::Deliver => host
                 .deliver(owner.clone(), event(2, json!(1)))
                 .await
@@ -144,7 +157,9 @@ async fn every_entry_point_authorizes_its_own_runtime_supplied_action() {
 async fn runtime_subscription_recovers_an_inbox_after_the_attached_client_is_dropped() {
     let (_, _, _, _, host) = fixture().await;
     let owner = placement();
-    host.place(owner.clone(), json!(10)).await.unwrap();
+    host.place(owner.clone(), counter_identity(), json!(10))
+        .await
+        .unwrap();
     let host = Arc::new(host);
     // The deployed runtime retains its owner independently of a client handle.
     let runner = host.clone();
@@ -179,7 +194,9 @@ async fn runtime_subscription_recovers_an_inbox_after_the_attached_client_is_dro
 async fn subscription_waits_for_a_live_handler_and_recovers_after_it_is_dropped() {
     let (_, _, _, _, host) = fixture().await;
     let owner = placement();
-    host.place(owner.clone(), json!(0)).await.unwrap();
+    host.place(owner.clone(), counter_identity(), json!(0))
+        .await
+        .unwrap();
     let host = Arc::new(host);
     let journal = host.journal(&host.package().unwrap(), &owner).unwrap();
     let handler = journal.claim_handler().await.unwrap();
@@ -231,14 +248,20 @@ async fn a_failed_move_is_recoverable_and_fences_all_old_owner_entry_points() {
     );
     host.install(package.clone()).await.unwrap();
     let old = placement();
-    host.place(old.clone(), json!(10)).await.unwrap();
+    host.place(old.clone(), counter_identity(), json!(10))
+        .await
+        .unwrap();
     let new = Placement {
         epoch: 2,
         node: "node-2".into(),
         ..old.clone()
     };
     effects.unavailable.store(true, Ordering::SeqCst);
-    assert!(host.place(new.clone(), json!(10)).await.is_err());
+    assert!(
+        host.place(new.clone(), counter_identity(), json!(10))
+            .await
+            .is_err()
+    );
     assert!(host.recover(old.clone()).await.is_err());
     assert!(host.deliver(old.clone(), event(2, json!(1))).await.is_err());
     assert!(host.cancel(old, event(3, Value::Null)).await.is_err());
@@ -275,13 +298,19 @@ async fn a_node_local_volume_rejects_placement_on_another_node_before_publicatio
     );
     host.install(package).await.unwrap();
     let old = placement();
-    host.place(old.clone(), json!(0)).await.unwrap();
+    host.place(old.clone(), counter_identity(), json!(0))
+        .await
+        .unwrap();
     let new = Placement {
         epoch: 2,
         node: "node-2".into(),
         ..old.clone()
     };
-    assert!(host.place(new.clone(), json!(0)).await.is_err());
+    assert!(
+        host.place(new.clone(), counter_identity(), json!(0))
+            .await
+            .is_err()
+    );
     assert!(host.deliver(new.clone(), event(2, json!(1))).await.is_err());
     assert!(host.recover(new.clone()).await.is_err());
     assert!(host.cancel(new, event(3, Value::Null)).await.is_err());
@@ -293,7 +322,9 @@ async fn a_node_local_volume_rejects_placement_on_another_node_before_publicatio
 async fn later_deliveries_cannot_overtake_an_admitted_input() {
     let (_, _, _, _, host) = fixture().await;
     let owner = placement();
-    host.place(owner.clone(), json!(0)).await.unwrap();
+    host.place(owner.clone(), counter_identity(), json!(0))
+        .await
+        .unwrap();
     let journal = host.journal(&host.package().unwrap(), &owner).unwrap();
     journal
         .admit_event(event(2, json!(3)), false)
@@ -341,13 +372,18 @@ async fn a_node_local_actor_can_recover_a_new_epoch_on_its_own_node() {
     );
     host.install(package).await.unwrap();
     let old = placement();
-    host.place(old.clone(), json!(0)).await.unwrap();
+    host.place(old.clone(), counter_identity(), json!(0))
+        .await
+        .unwrap();
     host.deliver(old.clone(), event(2, json!(5))).await.unwrap();
     let next = Placement {
         epoch: 2,
         ..old.clone()
     };
-    let recovered = host.place(next.clone(), json!(0)).await.unwrap();
+    let recovered = host
+        .place(next.clone(), counter_identity(), json!(0))
+        .await
+        .unwrap();
     assert_eq!(recovered.placement, next);
     assert_eq!(recovered.checkpoint.state, json!(5));
     assert_eq!(effects.fences.load(Ordering::SeqCst), 1);

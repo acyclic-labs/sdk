@@ -49,11 +49,7 @@ pub(crate) use session::ComposerResolver;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub(crate) use local::run_local_command_files;
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub use local::{
-    consume_local_command, run_local_command, run_local_commands, with_local_commands,
-};
+pub use local::{consume_local_command, with_local_commands};
 
 /// Skills share the context loader's validation, metadata and lazy pinned body.
 pub use crate::command_request::{

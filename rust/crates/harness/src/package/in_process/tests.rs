@@ -3,6 +3,7 @@ use acyclic_stream::MemoryStream;
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+mod handlers;
 mod histories;
 mod outbox;
 mod ownership;
@@ -16,16 +17,16 @@ impl ActorPackage for Counter {
     fn manifest(&self) -> &Manifest {
         &self.manifest
     }
-    fn machine(&self) -> Arc<dyn ResumableMachine> {
-        Arc::new(Self {
+    fn machines(&self) -> Vec<Arc<dyn ResumableMachine>> {
+        vec![Arc::new(Self {
             manifest: self.manifest.clone(),
             schema: self.schema.clone(),
-        })
+        })]
     }
 }
 impl ResumableMachine for Counter {
     fn identity(&self) -> &MachineIdentity {
-        &self.manifest.agent
+        &self.manifest.actors[0]
     }
     fn state_schema(&self) -> &Value {
         &self.schema
@@ -92,11 +93,11 @@ impl EffectHost for Effects {
 fn package() -> Arc<Counter> {
     Arc::new(Counter {
         manifest: Manifest {
-            agent: MachineIdentity {
+            actors: vec![MachineIdentity {
                 name: "test.actor.counter".into(),
                 version: "1".into(),
                 digest: [1; 32],
-            },
+            }],
             effects: Vec::new(),
             bindings: Bindings {
                 streams: "runtime".into(),
@@ -109,6 +110,9 @@ fn package() -> Arc<Counter> {
         },
         schema: json!({"type":"integer","minimum":0}),
     })
+}
+fn counter_identity() -> MachineIdentity {
+    package().manifest.actors[0].clone()
 }
 fn placement() -> Placement {
     Placement {
@@ -152,7 +156,9 @@ async fn fixture() -> (
 async fn retry_returns_original_checkpoint_and_reopen_replays_the_pinned_machine() {
     let (stream, package, policy, effects, host) = fixture().await;
     let owner = placement();
-    host.place(owner.clone(), json!(10)).await.unwrap();
+    host.place(owner.clone(), counter_identity(), json!(10))
+        .await
+        .unwrap();
     let first = host
         .deliver(owner.clone(), event(2, json!(3)))
         .await
@@ -184,7 +190,12 @@ async fn retry_returns_original_checkpoint_and_reopen_replays_the_pinned_machine
             .unwrap(),
         2
     );
-    assert!(reopened.place(owner, json!(11)).await.is_err());
+    assert!(
+        reopened
+            .place(owner, counter_identity(), json!(11))
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -204,14 +215,18 @@ async fn move_fences_old_owner_before_recovery_and_rejects_stale_writes() {
     );
     host.install(package).await.unwrap();
     let old = placement();
-    host.place(old.clone(), json!(0)).await.unwrap();
+    host.place(old.clone(), counter_identity(), json!(0))
+        .await
+        .unwrap();
     host.deliver(old.clone(), event(2, json!(5))).await.unwrap();
     let new = Placement {
         epoch: 2,
         node: "node-2".into(),
         ..old.clone()
     };
-    host.place(new.clone(), json!(0)).await.unwrap();
+    host.place(new.clone(), counter_identity(), json!(0))
+        .await
+        .unwrap();
     assert_eq!(effects.fences.load(Ordering::SeqCst), 1);
     let actions = [
         conformance::Action::Recover(old.clone()),
@@ -244,7 +259,9 @@ async fn cancellation_request_survives_failed_drain_and_recovery_settles_it() {
     );
     host.install(package.clone()).await.unwrap();
     let owner = placement();
-    host.place(owner.clone(), json!(0)).await.unwrap();
+    host.place(owner.clone(), counter_identity(), json!(0))
+        .await
+        .unwrap();
     effects.unavailable.store(true, Ordering::SeqCst);
     assert!(
         host.cancel(owner.clone(), event(2, json!({"cancel":true})))
@@ -287,7 +304,9 @@ async fn cancellation_request_survives_failed_drain_and_recovery_settles_it() {
 async fn unconfirmed_cancellation_does_not_fence_live_effects() {
     let (_, _, _, effects, host) = fixture().await;
     let owner = placement();
-    host.place(owner.clone(), json!(0)).await.unwrap();
+    host.place(owner.clone(), counter_identity(), json!(0))
+        .await
+        .unwrap();
     assert!(
         host.cancel(owner, event(2, json!({"cancel":true})))
             .await
@@ -302,7 +321,8 @@ async fn admission_revocation_and_binding_mismatch_publish_nothing() {
     let owner = placement();
     policy.0.store(false, Ordering::SeqCst);
     assert!(matches!(
-        host.place(owner.clone(), json!(0)).await,
+        host.place(owner.clone(), counter_identity(), json!(0))
+            .await,
         Err(Error::Unauthorized(_))
     ));
     assert!(matches!(
@@ -319,7 +339,9 @@ async fn admission_revocation_and_binding_mismatch_publish_nothing() {
         schema: package.schema.clone(),
     });
     assert!(host.install(other).await.is_err());
-    host.place(owner.clone(), json!(0)).await.unwrap();
+    host.place(owner.clone(), counter_identity(), json!(0))
+        .await
+        .unwrap();
     policy.0.store(false, Ordering::SeqCst);
     assert!(host.deliver(owner, event(2, json!(1))).await.is_err());
 }
@@ -328,21 +350,29 @@ async fn admission_revocation_and_binding_mismatch_publish_nothing() {
 async fn invalid_initial_state_never_creates_an_actor() {
     let (stream, _, _, _, host) = fixture().await;
     let owner = placement();
-    assert!(host.place(owner.clone(), json!("invalid")).await.is_err());
+    assert!(
+        host.place(owner.clone(), counter_identity(), json!("invalid"))
+            .await
+            .is_err()
+    );
     assert!(matches!(
         stream
             .tail(StreamPath::new(format!("runtime/{}", Manifest::workflow(owner.actor))).unwrap())
             .await,
         Err(acyclic_stream::StreamError::NotFound)
     ));
-    host.place(owner, json!(0)).await.unwrap();
+    host.place(owner, counter_identity(), json!(0))
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
 async fn completed_actor_accepts_only_exact_retries() {
     let (_, _, _, _, host) = fixture().await;
     let owner = placement();
-    host.place(owner.clone(), json!(7)).await.unwrap();
+    host.place(owner.clone(), counter_identity(), json!(7))
+        .await
+        .unwrap();
     let terminal = host
         .deliver(owner.clone(), event(2, Value::Null))
         .await
@@ -364,7 +394,9 @@ async fn completed_actor_accepts_only_exact_retries() {
 async fn admitted_inbox_input_survives_a_crash_before_checkpoint_commit() {
     let (stream, package, policy, effects, host) = fixture().await;
     let owner = placement();
-    host.place(owner.clone(), json!(10)).await.unwrap();
+    host.place(owner.clone(), counter_identity(), json!(10))
+        .await
+        .unwrap();
     let journal = host.journal(&host.package().unwrap(), &owner).unwrap();
     journal
         .admit_event(event(2, json!(3)), false)

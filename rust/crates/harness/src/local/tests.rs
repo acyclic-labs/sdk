@@ -735,7 +735,10 @@ async fn assert_pending_command_returns_control(harness: &LocalHarness) -> Resul
         return Err(Error::Conflict("stock admission rejected".into()));
     };
     let commands = PendingCommand(std::sync::atomic::AtomicUsize::new(0));
-    Box::pin(harness.advance(task, &commands)).await?;
+    Box::pin(crate::package::harness::worker::advance(
+        harness, task, &commands,
+    ))
+    .await?;
     assert_eq!(commands.0.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert!(harness.runtime.task_host().outcome(task).await?.is_none());
     let suspension = harness
@@ -829,3 +832,7 @@ mod task_files;
 #[cfg(all(feature = "tui", feature = "terminal"))]
 #[path = "tests/live_ui.rs"]
 mod live_ui;
+
+mod package_subscription;
+
+mod package_idle;

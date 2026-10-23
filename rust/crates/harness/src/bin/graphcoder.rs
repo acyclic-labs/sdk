@@ -76,7 +76,8 @@ async fn open(
     let provider = Arc::new(registry.resolve(&selection)?);
     let mut config = LocalHarnessConfig::new(&args.workspace, (provider.model().clone(), provider));
     config = config.settings(settings).web_tools();
-    Ok(Arc::new(phase(|| LocalHarness::open(config)).await?))
+    let code = acyclic_harness::package::harness::HarnessCode::new()?;
+    Ok(Arc::new(phase(|| code.open_local(config)).await?))
 }
 
 // Own native phase futures separately from the CLI orchestration frame.

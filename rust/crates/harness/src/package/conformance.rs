@@ -1,11 +1,20 @@
 //! Reusable event-history driver for in-process and deployed hosts.
 
 use super::{ActorRuntime, Event, Placement, Snapshot};
-use crate::Result;
+use crate::{Result, workflow::MachineIdentity};
 
 /// One host-independent history action, including explicit recovery cuts.
 #[derive(Clone, Debug)]
 pub enum Action {
+    /// Create or move an actor without changing its pinned implementation.
+    Place {
+        /// Proposed owner and epoch.
+        placement: Placement,
+        /// Exact handler declared by the installed package.
+        machine: MachineIdentity,
+        /// Immutable initialization input.
+        input: serde_json::Value,
+    },
     /// Deliver an admitted input.
     Deliver {
         /// Owner attempting this delivery, including stale-owner probes.
@@ -30,6 +39,15 @@ pub async fn history(runtime: &dyn ActorRuntime, actions: &[Action]) -> Vec<Resu
     let mut observations = Vec::with_capacity(actions.len());
     for action in actions {
         observations.push(match action {
+            Action::Place {
+                placement,
+                machine,
+                input,
+            } => {
+                runtime
+                    .place(placement.clone(), machine.clone(), input.clone())
+                    .await
+            }
             Action::Deliver { placement, event } => {
                 runtime.deliver(placement.clone(), event.clone()).await
             }
@@ -64,6 +82,7 @@ mod tests {
         fn place(
             &self,
             _: super::Placement,
+            _: MachineIdentity,
             _: Value,
         ) -> acyclic_stream::BoxProviderFuture<'_, Result<super::Snapshot>> {
             Box::pin(async {
@@ -90,7 +109,7 @@ mod tests {
                 Ok(super::Snapshot {
                     placement,
                     checkpoint: crate::workflow::MachineCheckpoint {
-                        machine: manifest().agent,
+                        machine: manifest().actors[0].clone(),
                         revision: 0,
                         state: Value::Null,
                     },
@@ -157,11 +176,11 @@ mod tests {
         fn manifest(&self) -> &Manifest {
             &self.manifest
         }
-        fn machine(&self) -> Arc<dyn ResumableMachine> {
-            Arc::new(Self {
+        fn machines(&self) -> Vec<Arc<dyn ResumableMachine>> {
+            vec![Arc::new(Self {
                 manifest: self.manifest.clone(),
                 identity: self.identity.clone(),
-            })
+            })]
         }
     }
 
@@ -184,11 +203,11 @@ mod tests {
 
     fn manifest() -> Manifest {
         Manifest {
-            agent: MachineIdentity {
+            actors: vec![MachineIdentity {
                 name: "acyclic.agent".into(),
                 version: "1".into(),
                 digest: [1; 32],
-            },
+            }],
             effects: vec!["model.https".into(), "compute".into()],
             bindings: Bindings {
                 streams: "swarm".into(),
@@ -222,7 +241,7 @@ mod tests {
     fn package_handler_must_match_manifest() {
         let manifest = manifest();
         let mut fixture = Fixture {
-            identity: manifest.agent.clone(),
+            identity: manifest.actors[0].clone(),
             manifest,
         };
         assert!(validate_package(&fixture).is_ok());

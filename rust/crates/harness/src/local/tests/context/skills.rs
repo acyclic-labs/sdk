@@ -135,8 +135,9 @@ async fn binding_an_existing_runtime_discovers_checkout_and_user_skills() -> Res
         );
     // bind() composes one authenticated volume. Build that composition rather
     // than reusing open()'s runtime scope for three distinct private volumes.
-    let (runtime, signed, _) =
-        super::super::super::runtime::open(super::super::super::runtime::Configuration {
+    let (runtime, signed, _) = super::super::super::runtime::open(
+        &crate::package::harness::HarnessCode::new()?,
+        super::super::super::runtime::Configuration {
             files: files.clone(),
             workspace: None,
             stream: stream.clone(),
@@ -155,8 +156,9 @@ async fn binding_an_existing_runtime_discovers_checkout_and_user_skills() -> Res
             session_limits: config.session_limits,
             concurrency: config.concurrency,
             clock: config.clock.clone(),
-        })
-        .await?;
+        },
+    )
+    .await?;
     let runtime = Arc::try_unwrap(runtime)
         .map_err(|_| Error::Conflict("fixture runtime is still shared".into()))?;
     let bound = LocalHarness::bind(

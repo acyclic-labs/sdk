@@ -63,7 +63,7 @@ async fn streaming(bound: bool) -> Result<()> {
         client::TaskFileClient::observe(local.task_files().as_ref(), &authority, 4096, 65_536)
             .await?;
     {
-        let run = client::run_local_command(&mut owner, &local, &request);
+        let run = crate::package::harness::execute_request(&mut owner, &local, &request);
         futures::pin_mut!(run);
         tokio::select! {
             result = &mut run => panic!("turn ended before streaming: {result:?}"),
@@ -211,7 +211,7 @@ async fn edited_prompt_is_an_immutable_replacement_branch() -> Result<()> {
     )
     .await?;
     let request = owner.next_request().await?;
-    client::run_local_command(&mut owner, &local, &request).await?;
+    crate::package::harness::execute_request(&mut owner, &local, &request).await?;
     ui.refresh_files().await?;
     client::apply_tui_input(
         &mut ui,
@@ -224,7 +224,7 @@ async fn edited_prompt_is_an_immutable_replacement_branch() -> Result<()> {
     )
     .await?;
     let replacement = owner.next_request().await?;
-    let output = client::run_local_command(&mut owner, &local, &replacement)
+    let output = crate::package::harness::execute_request(&mut owner, &local, &replacement)
         .await?
         .unwrap();
     assert_eq!(output["text"], "replacement");

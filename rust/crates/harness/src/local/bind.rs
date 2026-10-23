@@ -2,16 +2,6 @@ use super::*;
 use crate::conversation::ContentGrant;
 
 impl LocalHarness {
-    /// Registers request-file tool execution in an existing composition.
-    pub fn register_commands(
-        tasks: &mut TaskRegistry,
-        machines: &mut MachineRegistry,
-    ) -> Result<()> {
-        let direct = Arc::new(command_machine::DirectTool::new());
-        tasks.register(direct.definition()?)?;
-        machines.register(direct, &mut None)
-    }
-
     /// Binds command files to an existing runtime and its authenticated volume.
     pub async fn bind(
         mut config: LocalHarnessConfig,

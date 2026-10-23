@@ -3,13 +3,35 @@ use super::*;
 use acyclic_harness::package::Snapshot;
 use futures::{
     FutureExt,
-    future::{BoxFuture, Shared},
+    future::{AbortHandle, AbortRegistration, Abortable, BoxFuture, Shared},
 };
 
 type Completion = Shared<BoxFuture<'static, std::result::Result<Snapshot, String>>>;
 struct Worker {
     completion: Completion,
-    abort: tokio::task::AbortHandle,
+    abort: AbortHandle,
+}
+
+struct HostExecutor(Mutex<Option<AbortRegistration>>);
+impl acyclic_stream::session::runtime::Executor for HostExecutor {
+    fn spawn(&self, future: BoxProviderFuture<'static, ()>) {
+        if let Some(registration) = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            tokio::spawn(async move {
+                let _ = Abortable::new(future, registration).await;
+            });
+        }
+    }
+    fn sleep(&self, milliseconds: u32) -> BoxProviderFuture<'static, ()> {
+        acyclic_stream::session::runtime::Executor::sleep(
+            &acyclic_stream::session::runtime::PlatformExecutor,
+            milliseconds,
+        )
+    }
 }
 
 /// Owns reference runtime workers until actor settlement or host shutdown.
@@ -38,13 +60,11 @@ impl<P: StreamProvider> Supervised<P> {
             workers.remove(&key);
         }
         let worker = workers.entry(key).or_insert_with(|| {
-            let runtime = self.runtime.clone();
-            let task =
-                tokio::spawn(
-                    async move { runtime.run(placement).await.map_err(|e| e.to_string()) },
-                );
-            let abort = task.abort_handle();
-            let completion = async move { task.await.map_err(|e| e.to_string())? }
+            let (abort, registration) = AbortHandle::new_pair();
+            let subscription = self
+                .runtime
+                .subscribe(&HostExecutor(Mutex::new(Some(registration))), placement);
+            let completion = async move { subscription.await.map_err(|e| e.to_string()) }
                 .boxed()
                 .shared();
             Worker { completion, abort }
@@ -65,9 +85,17 @@ impl<P: StreamProvider> ActorRuntime for Supervised<P> {
     fn install(&self, package: Arc<dyn ActorPackage>) -> BoxProviderFuture<'_, Result<()>> {
         self.runtime.install(package)
     }
-    fn place(&self, placement: Placement, input: Value) -> BoxProviderFuture<'_, Result<Snapshot>> {
+    fn place(
+        &self,
+        placement: Placement,
+        machine: MachineIdentity,
+        input: Value,
+    ) -> BoxProviderFuture<'_, Result<Snapshot>> {
         Box::pin(async move {
-            let snapshot = self.runtime.place(placement.clone(), input).await?;
+            let snapshot = self
+                .runtime
+                .place(placement.clone(), machine, input)
+                .await?;
             let _completion = self.supervise(placement)?;
             Ok(snapshot)
         })

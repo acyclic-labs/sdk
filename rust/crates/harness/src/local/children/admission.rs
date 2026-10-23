@@ -136,11 +136,15 @@ impl LocalHarness {
                 ));
             }
         };
-        let signed = self.runtime.fork_source_scope(parent, fence.clone()).await?;
-        if signed.agent() != Some(source_agent)
-            || signed.capabilities() != context.scope().grants()
+        let signed = self
+            .runtime
+            .fork_source_scope(parent, fence.clone())
+            .await?;
+        if signed.agent() != Some(source_agent) || signed.capabilities() != context.scope().grants()
         {
-            return Err(Error::Unauthorized("child source differs from its retained admission".into()));
+            return Err(Error::Unauthorized(
+                "child source differs from its retained admission".into(),
+            ));
         }
         let verifier = self.verifier.clone();
         let reducer = Reducer::new(
@@ -446,7 +450,8 @@ impl LocalHarness {
             workspace,
             io: &io,
         };
-        self.advance(
+        crate::package::harness::worker::advance(
+            self,
             TaskId::from_bytes(preparation_operation.into_bytes()),
             &commands,
         )

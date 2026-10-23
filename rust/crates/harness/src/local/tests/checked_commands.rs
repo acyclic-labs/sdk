@@ -53,7 +53,7 @@ pub(super) async fn advance_until_idle(
     const IDLE: std::time::Duration = std::time::Duration::from_secs(20);
     let commands = harness.commands()?;
     let checked = Checked(&commands);
-    let advance = harness.advance(task, &checked);
+    let advance = crate::package::harness::worker::advance(harness, task, &checked);
     tokio::pin!(advance);
     let mut requests = provider.request_count();
     loop {

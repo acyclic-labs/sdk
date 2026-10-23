@@ -1,7 +1,8 @@
 //! The local owner consumes actual authorized request files through stock turns.
 use super::*;
 use crate::{
-    client::{CommandResolution, CommandSession, run_local_command as consume_local_command},
+    client::{CommandResolution, CommandSession},
+    package::harness::execute_request as consume_local_command,
     task_volume::{Component, FileKey, FileValue, Query, TaskFile},
 };
 

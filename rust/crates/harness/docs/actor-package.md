@@ -5,7 +5,8 @@ is an actor running a pinned `ResumableMachine`. Installing the package is one
 `ActorRuntime::install` call. Local and deployed hosts install the same package;
 neither a `HarnessService` nor a gateway is part of this contract.
 
-The manifest declares its agent implementation, stream namespace, volume,
+The manifest declares every pinned actor implementation (root agent, child agent
+and task handlers), stream namespace, volume,
 inbox subscription, checkpoint/outbox location, and model HTTPS, compute and
 secret bindings. Paths are relative to the declared stream namespace. Each actor
 owns `agents/<id>/inbox` and `agents/<id>/workflow`; the latter contains the
@@ -29,6 +30,9 @@ status and complete command outbox commit atomically under the placement fence
 and expected revision, using the Streams provider transaction. A rejected commit
 publishes none of them. Immutable volume payloads may be staged first; their
 publication reference joins the transaction. No handler performs external I/O.
+Placement names the exact declared handler; an actor's initialization input and
+handler identity are immutable across recovery and ownership transfer. Installation
+rejects missing, duplicate and undeclared handlers before publishing any actor.
 Terminal transitions emit no new effects and settle all earlier outbox commands.
 
 After commit, the runtime dispatches outbox commands through explicit bindings.
@@ -76,17 +80,38 @@ a manifest or implementing a trait alone is not runtime conformance.
 
 `package::in_process::InProcessRuntime` installs one package over a supplied
 Streams provider and reuses `DurableWorkflowHost` for deterministic execution.
-The embedding runtime polls `run` independently of attached clients. Its host
+The runtime schedules `subscribe` on its executor independently of attached clients.
+The returned subscription is only a settlement observation: dropping it cannot
+drop a handler or effect future. Explicit cancellation still fences and drains.
+Its host
 must supply `AdmissionPolicy` and `EffectHost`; these hooks do not themselves
 implement capability verification, secret resolution or native effect custody.
 The memory provider reports a zero durable watermark, so this host rejects
 effect dispatch, cancellation fencing and ownership transfer there. Disk-backed
 qualification uses `LocalStream` and its confirmed durable watermark.
 
-The runtime's package tests exercise a shared history on memory and local-disk
-providers, plus interrupted inbox, outbox, cancellation and placement recovery.
-`GraphCoder` and `LocalHarness` still use their existing native composition;
-migrating those entry points through the package remains required.
+`package::harness::HarnessCode` is the stock code bundle: root turns, child
+mailbox turns, fork preparation and direct tools. It builds each handler and
+its typed admission schema together. `HarnessCode::bind` produces the manifest
+and implementations installed by `ActorRuntime::install`.
+
+`HarnessCode::open_local` installs those same definitions on the native
+filesystem workflow engine. Both `GraphCoder` and `LocalHarness::open` enter
+there. Native execution retains its original task journal, lease fence and
+materialization ledger; it does not add a second checkpoint journal. The sole
+stock worker lives in the package. Its command subscription runs on the host
+executor. Interactive and headless clients publish request files and observe
+results; neither client owns the worker future. Detachment stops idle request
+admission, while an already selected request drains its effects and publications
+before the last owner retires native mounts.
+
+The package tests exercise shared histories on memory and local-disk providers,
+interrupted inbox/outbox/cancellation/placement recovery, and the stock bundle
+with recovery before every action. Native request-file tests detach during an
+actual blocked tool effect. Their negative control drops the former borrowed
+execution future at the same boundary and loses that effect. The native
+filesystem journal and the reference Streams journal remain separate provider
+implementations of the workflow engine; this is not deployed-runtime evidence.
 
 SDK inventory (2026-10-22): `rust/crates/actors` contains the client and guest ABI,
 but no server binary; no local-cloud server binary exists under `rust/crates`.

@@ -1,6 +1,7 @@
 use super::*;
 
 struct Opening {
+    code: crate::package::harness::HarnessCode,
     config: LocalHarnessConfig,
     state_location: config::StateLocation,
     tools: ToolRegistry,
@@ -27,14 +28,20 @@ struct Storage {
     workspace: Option<Arc<workspace::LocalWorkspace>>,
 }
 
-pub(super) async fn open(config: LocalHarnessConfig) -> Result<LocalHarness> {
-    let opening = Opening::configure(config).await?;
+pub(crate) async fn open(
+    code: crate::package::harness::HarnessCode,
+    config: LocalHarnessConfig,
+) -> Result<LocalHarness> {
+    let opening = Opening::configure(code, config).await?;
     let storage = opening.storage().await?;
     opening.finish(storage).await
 }
 
 impl Opening {
-    async fn configure(config: LocalHarnessConfig) -> Result<Self> {
+    async fn configure(
+        code: crate::package::harness::HarnessCode,
+        config: LocalHarnessConfig,
+    ) -> Result<Self> {
         config.limits.validate(&mut None)?;
         config.session_limits.validate(&mut None)?;
         if config.concurrency == 0 {
@@ -93,6 +100,7 @@ impl Opening {
             checkout_tools::shell::executable()?;
         }
         Ok(Self {
+            code,
             config,
             state_location,
             tools,
@@ -313,27 +321,30 @@ impl Opening {
             .map_err(storage)?,
         );
         let verifier = issuer.verifier(&mut None)?;
-        let (runtime, signed, task_files) = runtime::open(runtime::Configuration {
-            files: files.clone(),
-            #[cfg(feature = "native-execution")]
-            workspace: workspace.as_ref().map(Arc::clone),
-            stream,
-            task_volume: &task_volume,
-            issuer: &issuer,
-            verifier: &verifier,
-            agent: owner.agent,
-            project: &owner.project,
-            scratch: &scratch,
-            journal: &journal,
-            tools: &self.tools,
-            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-            capabilities: &self.capabilities,
-            limits: self.config.limits,
-            run_limits: self.config.run_limits,
-            session_limits: self.config.session_limits,
-            concurrency: self.config.concurrency,
-            clock: Arc::clone(&self.config.clock),
-        })
+        let (runtime, signed, task_files) = runtime::open(
+            &self.code,
+            runtime::Configuration {
+                files: files.clone(),
+                #[cfg(feature = "native-execution")]
+                workspace: workspace.as_ref().map(Arc::clone),
+                stream,
+                task_volume: &task_volume,
+                issuer: &issuer,
+                verifier: &verifier,
+                agent: owner.agent,
+                project: &owner.project,
+                scratch: &scratch,
+                journal: &journal,
+                tools: &self.tools,
+                #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+                capabilities: &self.capabilities,
+                limits: self.config.limits,
+                run_limits: self.config.run_limits,
+                session_limits: self.config.session_limits,
+                concurrency: self.config.concurrency,
+                clock: Arc::clone(&self.config.clock),
+            },
+        )
         .await?;
         let local = LocalHarness {
             files,

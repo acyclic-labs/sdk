@@ -18,7 +18,12 @@ impl DirectTool {
             identity: MachineIdentity {
                 name: "acyclic.direct_tool".into(),
                 version: "1".into(),
-                digest: *blake3::hash(include_bytes!("command_machine.rs")).as_bytes(),
+                digest: *blake3::hash(
+                    include_str!("command_machine.rs")
+                        .replace("\r\n", "\n")
+                        .as_bytes(),
+                )
+                .as_bytes(),
             },
             schema: json!({"type":"object","required":["command","sent"],"properties":{"command":{"type":"object"},"sent":{"type":"boolean"}},"additionalProperties":false}),
         }

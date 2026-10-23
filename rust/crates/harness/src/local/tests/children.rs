@@ -171,7 +171,7 @@ async fn child_pre_tool_hook_uses_its_own_checkout_and_grants() -> Result<()> {
         .await?;
     host.send_mail(parent, &fence, child, message, payload, None)
         .await?;
-    harness.advance(child, &harness.commands()?).await?;
+    crate::package::harness::worker::advance(&harness, child, &harness.commands()?).await?;
     assert_eq!(provider.requests().len(), 2);
     for (path, expected) in [
         ("/hook.txt", b"pre".as_slice()),
@@ -471,7 +471,7 @@ async fn child_request_prepares_a_replayable_lazy_fork_and_runs_under_its_origin
         .await?;
     host.send_mail(parent, &fence, child, message, payload, None)
         .await?;
-    harness.advance(child, &harness.commands()?).await?;
+    crate::package::harness::worker::advance(&harness, child, &harness.commands()?).await?;
     assert_eq!(provider.requests().len(), 1);
     assert!(host.outcome(child).await?.is_none());
     let (replayed, reopened) = harness.admit_child_request(files, &request).await?;
@@ -574,7 +574,7 @@ async fn child_agent_keeps_its_admission_and_waits_after_each_received_turn() ->
             .await?;
         host.send_mail(parent, &fence, child, message, payload, None)
             .await?;
-        harness.advance(child, &harness.commands()?).await?;
+        crate::package::harness::worker::advance(&harness, child, &harness.commands()?).await?;
         let outcome = host.outcome(child).await?;
         assert!(
             outcome.is_none(),
@@ -636,7 +636,7 @@ async fn child_agent_keeps_its_admission_and_waits_after_each_received_turn() ->
                 Some((slot.revision, serde_json::json!(1)))
             );
         }
-        harness.advance(child, &harness.commands()?).await?;
+        crate::package::harness::worker::advance(&harness, child, &harness.commands()?).await?;
         assert_eq!(provider.requests().len(), index);
     }
     host.cancel(child).await?;

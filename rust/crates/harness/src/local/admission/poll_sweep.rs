@@ -188,36 +188,40 @@ impl Fixture {
                 None,
             )?;
         }
-        let (runtime, signed, task_files) = runtime::open(runtime::Configuration {
-            files: files.clone(),
-            #[cfg(feature = "native-execution")]
-            workspace: None,
-            stream: stream.clone(),
-            task_volume: &self.volumes[3],
-            issuer: &self.issuer,
-            verifier: &verifier,
-            agent: AgentId::from_bytes([1; 16]),
-            project: if matches!(self.scenario, Scenario::EffectAndContinuation) {
-                &self.volumes[1]
-            } else {
-                &self.volumes[0]
+        let code = crate::package::harness::HarnessCode::new()?;
+        let (runtime, signed, task_files) = runtime::open(
+            &code,
+            runtime::Configuration {
+                files: files.clone(),
+                #[cfg(feature = "native-execution")]
+                workspace: None,
+                stream: stream.clone(),
+                task_volume: &self.volumes[3],
+                issuer: &self.issuer,
+                verifier: &verifier,
+                agent: AgentId::from_bytes([1; 16]),
+                project: if matches!(self.scenario, Scenario::EffectAndContinuation) {
+                    &self.volumes[1]
+                } else {
+                    &self.volumes[0]
+                },
+                scratch: &self.volumes[1],
+                journal: &self.volumes[2],
+                tools: &tools,
+                #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+                capabilities: &Capabilities::default(),
+                limits: Limits::default(),
+                run_limits: TaskRunLimits::default(),
+                session_limits: SessionLimits {
+                    active_tasks: 2,
+                    total_tasks: 2,
+                    depth: 1,
+                    model_steps: 4,
+                },
+                concurrency: 1,
+                clock: Arc::new(Clock),
             },
-            scratch: &self.volumes[1],
-            journal: &self.volumes[2],
-            tools: &tools,
-            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-            capabilities: &Capabilities::default(),
-            limits: Limits::default(),
-            run_limits: TaskRunLimits::default(),
-            session_limits: SessionLimits {
-                active_tasks: 2,
-                total_tasks: 2,
-                depth: 1,
-                model_steps: 4,
-            },
-            concurrency: 1,
-            clock: Arc::new(Clock),
-        })
+        )
         .await?;
         tracing::trace!(target: "acyclic_harness::read_profile", phase = "open:runtime");
         let compact = matches!(self.scenario, Scenario::Compaction);

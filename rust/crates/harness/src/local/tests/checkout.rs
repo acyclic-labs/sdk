@@ -145,9 +145,12 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
         return Err(Error::Conflict("stock checkout was not admitted".into()));
     };
     let commands = harness.commands()?;
-    harness
-        .advance(task, &super::checked_commands::Checked(&commands))
-        .await?;
+    crate::package::harness::worker::advance(
+        &harness,
+        task,
+        &super::checked_commands::Checked(&commands),
+    )
+    .await?;
     let output = harness.resume(task).await;
     if let Err(error) = &output {
         let requests = provider.requests();

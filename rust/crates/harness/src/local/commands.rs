@@ -427,7 +427,10 @@ impl LocalHarness {
         self.advance_with_children(task, &commands, self.task_files.clone(), None)
             .await?;
         #[cfg(not(feature = "native-execution"))]
-        Box::pin(self.advance(task, &commands)).await?;
+        Box::pin(crate::package::harness::worker::advance(
+            self, task, &commands,
+        ))
+        .await?;
         match handle.result().await? {
             crate::Outcome::Succeeded(result) => Ok(result.value),
             crate::Outcome::Failed { message } => Err(Error::TaskFailed { task, message }),

@@ -112,8 +112,9 @@ impl LocalFileClient {
         )
         .await?;
         Ok(Self {
-            host: Box::pin(super::commands::run_local_command_files(
+            host: Box::pin(crate::package::harness::CommandSubscription::start(
                 local.clone(),
+                &acyclic_stream::session::runtime::PlatformExecutor,
                 operation,
                 true,
             )),

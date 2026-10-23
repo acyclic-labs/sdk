@@ -11,15 +11,15 @@ impl ActorPackage for Machine {
     fn manifest(&self) -> &Manifest {
         &self.package.manifest
     }
-    fn machine(&self) -> Arc<dyn ResumableMachine> {
-        Arc::new(Self {
+    fn machines(&self) -> Vec<Arc<dyn ResumableMachine>> {
+        vec![Arc::new(Self {
             package: self.package.clone(),
-        })
+        })]
     }
 }
 impl ResumableMachine for Machine {
     fn identity(&self) -> &MachineIdentity {
-        &self.package.manifest.agent
+        &self.package.manifest.actors[0]
     }
     fn state_schema(&self) -> &Value {
         &self.package.schema
@@ -105,6 +105,81 @@ fn machine() -> Arc<Machine> {
     })
 }
 
+#[derive(Default)]
+struct RuntimeExecutor(std::sync::Mutex<Option<BoxProviderFuture<'static, ()>>>);
+
+impl acyclic_stream::session::runtime::Executor for RuntimeExecutor {
+    fn spawn(&self, future: BoxProviderFuture<'static, ()>) {
+        assert!(self.0.lock().unwrap().replace(future).is_none());
+    }
+    fn sleep(&self, _: u32) -> BoxProviderFuture<'static, ()> {
+        panic!("actor subscription must use push follows")
+    }
+}
+
+#[derive(Default)]
+struct FinalHost(AtomicUsize);
+
+impl EffectHost for FinalHost {
+    fn execute(
+        &self,
+        _: Placement,
+        command: WorkflowCommand,
+    ) -> BoxProviderFuture<'_, Result<Event>> {
+        Box::pin(async move {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(Event {
+                operation_id: effect_result_operation(command.operation_id),
+                idempotency_key: IdempotencyKey::new("final-effect")?,
+                input: Value::Null,
+            })
+        })
+    }
+    fn fence(&self, _: Placement) -> BoxProviderFuture<'_, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[tokio::test]
+async fn dropped_subscription_observer_cannot_drop_runtime_owned_work() {
+    let directory = tempfile::tempdir().unwrap();
+    let stream = Arc::new(
+        acyclic_stream::LocalStream::open(directory.path(), Default::default())
+            .await
+            .unwrap(),
+    );
+    let package = machine();
+    let effects = Arc::new(FinalHost::default());
+    let host = Arc::new(InProcessRuntime::new(
+        stream,
+        package.manifest().bindings.clone(),
+        Arc::new(Policy(AtomicBool::new(true))),
+        effects.clone(),
+    ));
+    host.install(package).await.unwrap();
+    let owner = placement();
+    host.place(owner.clone(), counter_identity(), json!(10))
+        .await
+        .unwrap();
+    host.deliver(owner.clone(), event(2, json!({"command":command()})))
+        .await
+        .unwrap();
+    // Old shape: the attachment owned this future; dropping it left its outbox
+    // suspended. This control uses the production subscription driver.
+    drop(host.run(owner.clone()));
+    assert_eq!(effects.0.load(Ordering::SeqCst), 0);
+    let executor = RuntimeExecutor::default();
+    let observation = host.subscribe(&executor, owner.clone());
+    drop(observation);
+    let work = executor.0.lock().unwrap().take().unwrap();
+    work.await;
+    assert_eq!(effects.0.load(Ordering::SeqCst), 1);
+    let snapshot = host.recover(owner).await.unwrap();
+    assert!(matches!(snapshot.status, MachineStatus::Completed { .. }));
+    assert!(snapshot.pending.is_empty());
+    assert_eq!((snapshot.checkpoint.revision, snapshot.consumed), (2, 2));
+}
+
 #[tokio::test]
 async fn subscription_resumes_cancellation_admitted_while_waiting_for_the_last_effect() {
     let directory = tempfile::tempdir().unwrap();
@@ -126,7 +201,9 @@ async fn subscription_resumes_cancellation_admitted_while_waiting_for_the_last_e
     );
     host.install(package).await.unwrap();
     let owner = placement();
-    host.place(owner.clone(), json!(0)).await.unwrap();
+    host.place(owner.clone(), counter_identity(), json!(0))
+        .await
+        .unwrap();
     host.deliver(owner.clone(), event(2, json!({"command":command()})))
         .await
         .unwrap();
@@ -175,7 +252,9 @@ async fn waiting_effect_recovery_rechecks_revoked_authority_before_dispatch() {
     );
     host.install(package).await.unwrap();
     let owner = placement();
-    host.place(owner.clone(), json!(0)).await.unwrap();
+    host.place(owner.clone(), counter_identity(), json!(0))
+        .await
+        .unwrap();
     let before = host
         .deliver(owner.clone(), event(2, json!({"command":command()})))
         .await
@@ -212,7 +291,9 @@ async fn caller_inputs_cannot_acknowledge_a_runtime_effect_or_reserve_its_result
     );
     host.install(package).await.unwrap();
     let owner = placement();
-    host.place(owner.clone(), json!(0)).await.unwrap();
+    host.place(owner.clone(), counter_identity(), json!(0))
+        .await
+        .unwrap();
     host.deliver(owner.clone(), event(2, json!({"command":command()})))
         .await
         .unwrap();
@@ -262,7 +343,9 @@ async fn command_results_cannot_reuse_an_earlier_input_identity() {
     );
     host.install(package).await.unwrap();
     let owner = placement();
-    host.place(owner.clone(), json!(0)).await.unwrap();
+    host.place(owner.clone(), counter_identity(), json!(0))
+        .await
+        .unwrap();
     let mut earlier = event(2, json!(1));
     earlier.operation_id = effect_result_operation(command().operation_id);
     host.deliver(owner.clone(), earlier).await.unwrap();
@@ -298,7 +381,9 @@ async fn committed_outbox_survives_uncertain_effect_and_reopen_without_reexecuti
     );
     host.install(package.clone()).await.unwrap();
     let owner = placement();
-    host.place(owner.clone(), json!(10)).await.unwrap();
+    host.place(owner.clone(), counter_identity(), json!(10))
+        .await
+        .unwrap();
     let admitted = host
         .deliver(owner.clone(), event(2, json!({"command":command()})))
         .await
@@ -386,7 +471,9 @@ async fn unconfirmed_outbox_never_dispatches_and_undeclared_effect_never_commits
     );
     host.install(package).await.unwrap();
     let owner = placement();
-    host.place(owner.clone(), json!(0)).await.unwrap();
+    host.place(owner.clone(), counter_identity(), json!(0))
+        .await
+        .unwrap();
     let mut undeclared = command();
     undeclared.kind = "not-declared".into();
     assert!(
@@ -419,7 +506,9 @@ async fn reused_effect_identity_is_rejected_before_it_can_poison_the_inbox() {
     );
     host.install(package).await.unwrap();
     let owner = placement();
-    host.place(owner.clone(), json!(0)).await.unwrap();
+    host.place(owner.clone(), counter_identity(), json!(0))
+        .await
+        .unwrap();
     host.deliver(owner.clone(), event(2, json!({"command":command()})))
         .await
         .unwrap();
@@ -455,7 +544,9 @@ async fn cancellation_can_close_an_inbox_with_an_unprocessable_earlier_input() {
     );
     host.install(package).await.unwrap();
     let owner = placement();
-    host.place(owner.clone(), json!(0)).await.unwrap();
+    host.place(owner.clone(), counter_identity(), json!(0))
+        .await
+        .unwrap();
     let journal = host.journal(&host.package().unwrap(), &owner).unwrap();
     journal
         .admit_event(event(2, json!({"command":"invalid"})), false)
@@ -494,7 +585,9 @@ async fn cancellation_inbox_admission_survives_a_crash_before_effect_drain() {
     );
     host.install(package.clone()).await.unwrap();
     let owner = placement();
-    host.place(owner.clone(), json!(0)).await.unwrap();
+    host.place(owner.clone(), counter_identity(), json!(0))
+        .await
+        .unwrap();
     let journal = host.journal(&host.package().unwrap(), &owner).unwrap();
     journal
         .admit_event(event(2, json!({"command":"invalid"})), false)

@@ -94,7 +94,7 @@ fn write_tree(root: &Path, files: &BTreeMap<String, String>) -> TestResult {
 
 #[cfg(feature = "tui")]
 async fn tui(
-    harness: &LocalHarness,
+    harness: &Arc<LocalHarness>,
     reader: &dyn ContentResidencyVerifier,
     prompt: &str,
 ) -> TestResult {
@@ -123,10 +123,15 @@ async fn tui(
         4096,
     )
     .await?;
-    let request = owner.next_request().await?;
-    Box::pin(client::run_local_command(&mut owner, harness, &request))
-        .await?
-        .ok_or("TUI request was not consumed")?;
+    client::with_local_commands(harness.clone(), session, async {
+        loop {
+            if owner.output_page(0)?.is_some() {
+                return Ok::<(), Box<dyn std::error::Error + Send + Sync>>(());
+            }
+            owner.observe_change().await?;
+        }
+    })
+    .await?;
     Ok(())
 }
 

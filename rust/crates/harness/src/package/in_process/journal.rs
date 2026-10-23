@@ -14,7 +14,7 @@ use futures::TryStreamExt;
 const PAGE: u32 = 64;
 mod admission;
 mod replay;
-mod subscription;
+pub(super) mod subscription;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct Bootstrap {

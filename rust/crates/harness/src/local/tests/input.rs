@@ -208,7 +208,7 @@ async fn native_tui_submission_uses_the_same_pinned_composer_resolution() -> Res
     )
     .await?;
     let request = owner.next_request().await?;
-    client::run_local_command(&mut owner, &harness, &request).await?;
+    crate::package::harness::execute_request(&mut owner, &harness, &request).await?;
     let requests = provider.requests();
     assert_eq!(requests.len(), 1);
     let sent = serde_json::to_string(&requests[0]).map_err(super::super::storage)?;

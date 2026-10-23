@@ -50,9 +50,12 @@ async fn recover(continues: bool) -> Result<()> {
         panic!("durable admission")
     };
     let commands = harness.commands()?;
-    harness
-        .advance(task_id, &super::checked_commands::Checked(&commands))
-        .await?;
+    crate::package::harness::worker::advance(
+        &harness,
+        task_id,
+        &super::checked_commands::Checked(&commands),
+    )
+    .await?;
     assert_eq!(harness.resume(task_id).await?.text, "done");
     let requests = provider.requests();
     let results: std::collections::BTreeMap<_, _> = requests

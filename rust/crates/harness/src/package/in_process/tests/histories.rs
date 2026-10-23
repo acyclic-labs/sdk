@@ -10,7 +10,9 @@ async fn trace<P: StreamProvider>(stream: Arc<P>) -> Vec<std::result::Result<Sna
     );
     host.install(package).await.unwrap();
     let owner = placement();
-    host.place(owner.clone(), json!(10)).await.unwrap();
+    host.place(owner.clone(), counter_identity(), json!(10))
+        .await
+        .unwrap();
     let stale = Placement {
         epoch: 2,
         ..owner.clone()

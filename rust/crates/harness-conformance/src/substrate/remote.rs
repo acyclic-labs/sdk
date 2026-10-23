@@ -16,6 +16,8 @@ pub enum Request {
     Place {
         /// Explicit owning epoch.
         placement: Placement,
+        /// Exact declared handler identity.
+        machine: MachineIdentity,
         /// Initial machine input.
         input: Value,
     },
@@ -69,8 +71,12 @@ impl Request {
                 runtime.install(Arc::new(package)).await?;
                 Ok(Value::Null)
             }
-            Self::Place { placement, input } => {
-                serde_json::to_value(runtime.place(placement, input).await?).map_err(codec)
+            Self::Place {
+                placement,
+                machine,
+                input,
+            } => {
+                serde_json::to_value(runtime.place(placement, machine, input).await?).map_err(codec)
             }
             Self::Deliver { placement, event } => {
                 serde_json::to_value(runtime.deliver(placement, event).await?).map_err(codec)
@@ -139,8 +145,17 @@ impl ActorRuntime for Http {
             manifest: package.manifest().clone(),
         }))
     }
-    fn place(&self, placement: Placement, input: Value) -> BoxProviderFuture<'_, Result<Snapshot>> {
-        Box::pin(self.call(Request::Place { placement, input }))
+    fn place(
+        &self,
+        placement: Placement,
+        machine: MachineIdentity,
+        input: Value,
+    ) -> BoxProviderFuture<'_, Result<Snapshot>> {
+        Box::pin(self.call(Request::Place {
+            placement,
+            machine,
+            input,
+        }))
     }
     fn deliver(
         &self,

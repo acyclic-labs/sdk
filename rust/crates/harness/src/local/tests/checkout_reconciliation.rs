@@ -282,9 +282,12 @@ async fn projected_merge_conflicts_are_visible_and_resolvable_in_the_same_stock_
         panic!("durable admission")
     };
     let commands = harness.commands()?;
-    harness
-        .advance(task_id, &super::checked_commands::Checked(&commands))
-        .await?;
+    crate::package::harness::worker::advance(
+        &harness,
+        task_id,
+        &super::checked_commands::Checked(&commands),
+    )
+    .await?;
     assert_eq!(harness.resume(task_id).await?.text, "resolved");
     assert_eq!(
         std::fs::read(directory.path().join("renamed.txt")).map_err(super::super::storage)?,

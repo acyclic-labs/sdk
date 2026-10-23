@@ -155,22 +155,25 @@ fn fixture_digest(sources: &[(&str, &str)]) -> [u8; 32] {
 /// handler emits a compute command; all executor I/O stays in the effect host.
 #[derive(Clone)]
 pub struct HarnessPackage {
+    identity: MachineIdentity,
     manifest: Manifest,
     schema: Value,
 }
 impl HarnessPackage {
     /// Pins the fixture implementation and its explicit resource bindings.
     pub fn new(bindings: Bindings) -> Self {
+        let identity = MachineIdentity {
+            name: "harness.scenario".into(),
+            version: "1".into(),
+            digest: fixture_digest(FIXTURE_SOURCES),
+        };
         Self {
             manifest: Manifest {
-                agent: MachineIdentity {
-                    name: "harness.scenario".into(),
-                    version: "1".into(),
-                    digest: fixture_digest(FIXTURE_SOURCES),
-                },
+                actors: vec![identity.clone()],
                 effects: vec!["harness.scenario.compute".into()],
                 bindings,
             },
+            identity,
             schema: json!({"type":"object"}),
         }
     }
@@ -182,10 +185,7 @@ mod identity_tests {
 
     #[test]
     fn pinned_parsing_and_discovery_changes_change_package_identity() -> TestResult {
-        let expected = HarnessPackage::new(fixture_bindings())
-            .manifest
-            .agent
-            .digest;
+        let expected = HarnessPackage::new(fixture_bindings()).identity.digest;
         for critical in [
             "scenario",
             "discovery",
@@ -214,13 +214,13 @@ impl ActorPackage for HarnessPackage {
     fn manifest(&self) -> &Manifest {
         &self.manifest
     }
-    fn machine(&self) -> Arc<dyn ResumableMachine> {
-        Arc::new(self.clone())
+    fn machines(&self) -> Vec<Arc<dyn ResumableMachine>> {
+        vec![Arc::new(self.clone())]
     }
 }
 impl ResumableMachine for HarnessPackage {
     fn identity(&self) -> &MachineIdentity {
-        &self.manifest.agent
+        &self.identity
     }
     fn state_schema(&self) -> &Value {
         &self.schema
@@ -274,7 +274,7 @@ impl<R: ActorRuntime, V: Volume> Substrate for Actors<R, V> {
     ) -> BoxProviderFuture<'_, TestResult<CaseObservation>> {
         Box::pin(async move {
             let package = Arc::new(HarnessPackage::new(self.bindings.clone()));
-            let identity = package.manifest().agent.clone();
+            let identity = package.identity().clone();
             self.runtime.install(package).await?;
             let operation = OperationId::new();
             let placement = Placement {
@@ -293,7 +293,11 @@ impl<R: ActorRuntime, V: Volume> Substrate for Actors<R, V> {
             };
             let placed = self
                 .runtime
-                .place(placement.clone(), json!({"command":command}))
+                .place(
+                    placement.clone(),
+                    identity.clone(),
+                    json!({"command":command}),
+                )
                 .await?;
             validate_snapshot(&placed, &placement, &identity, 0, "placement")?;
             if placed.status != MachineStatus::Suspended || !placed.pending.is_empty() {

@@ -12,7 +12,7 @@ use acyclic_harness::{
 };
 use libfuzzer_sys::fuzz_target;
 
-#[path = "../../harness/src/local/command_machine.rs"]
+#[path = "../../harness/src/package/harness/command_machine.rs"]
 mod command_machine;
 #[path = "../command_oracle.rs"]
 mod command_oracle;

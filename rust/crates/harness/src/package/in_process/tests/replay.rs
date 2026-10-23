@@ -4,7 +4,9 @@ use super::*;
 async fn replay_seeks_to_a_revision_after_interleaved_non_workflow_publications() {
     let (_, _, _, _, host) = fixture().await;
     let owner = placement();
-    host.place(owner.clone(), json!(0)).await.unwrap();
+    host.place(owner.clone(), counter_identity(), json!(0))
+        .await
+        .unwrap();
     let journal = host.journal(&host.package().unwrap(), &owner).unwrap();
     for id in 2..152 {
         host.deliver(owner.clone(), event(id, json!(1)))

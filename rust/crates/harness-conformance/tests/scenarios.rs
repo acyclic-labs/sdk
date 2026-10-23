@@ -96,9 +96,10 @@ impl<R: ActorRuntime> ActorRuntime for DropCompletion<R> {
     fn place(
         &self,
         placement: Placement,
+        machine: acyclic_harness::workflow::MachineIdentity,
         input: Value,
     ) -> BoxProviderFuture<'_, HarnessResult<Snapshot>> {
-        self.0.place(placement, input)
+        self.0.place(placement, machine, input)
     }
     fn deliver(
         &self,

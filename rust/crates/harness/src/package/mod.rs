@@ -16,6 +16,8 @@ use serde_json::Value;
 use std::sync::Arc;
 
 pub mod conformance;
+#[cfg(feature = "filesystem")]
+pub mod harness;
 pub mod in_process;
 
 /// Whether the volume can follow an actor to another node.
@@ -47,8 +49,9 @@ pub struct Bindings {
 /// Deployable package metadata; code is pinned by the machine digest.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
-    /// Agent actor implementation and schema identity.
-    pub agent: MachineIdentity,
+    /// Exhaustive actor implementations and schema identities, including tasks
+    /// spawned by another actor in this package.
+    pub actors: Vec<MachineIdentity>,
     /// Exhaustive command kinds this package may emit to runtime effect bindings.
     pub effects: Vec<String>,
     /// Explicit platform bindings.
@@ -58,7 +61,18 @@ pub struct Manifest {
 impl Manifest {
     /// Validates the executable contract before a runtime installs any code.
     pub fn validate(&self) -> Result<()> {
-        self.agent.validate(&mut None)?;
+        if self.actors.is_empty() {
+            return Err(crate::Error::Invalid("package declares no actors".into()));
+        }
+        let mut actors = std::collections::BTreeSet::new();
+        for actor in &self.actors {
+            actor.validate(&mut None)?;
+            if !actors.insert((&actor.name, &actor.version)) {
+                return Err(crate::Error::Invalid(
+                    "duplicate package actor name and version".into(),
+                ));
+            }
+        }
         let mut effects = std::collections::BTreeSet::new();
         for effect in &self.effects {
             if !crate::is_valid_component_label(effect) || !effects.insert(effect) {
@@ -134,23 +148,31 @@ impl Manifest {
 
 /// The same immutable code artifact is installed by each runtime.
 pub trait ActorPackage: ProviderPlatform {
-    /// Resources, subscription layout and pinned actor identity.
+    /// Resources, subscription layout and pinned actor identities.
     fn manifest(&self) -> &Manifest;
-    /// Deterministic handler. Its identity must equal the manifest's agent.
-    fn machine(&self) -> Arc<dyn ResumableMachine>;
+    /// Deterministic handlers, exactly one for each declared actor identity.
+    fn machines(&self) -> Vec<Arc<dyn ResumableMachine>>;
 }
 
 /// Validates the manifest and pins the handler before installation. Runtimes
 /// retain this returned handler rather than looking it up again after admission.
-pub fn validate_package(package: &dyn ActorPackage) -> Result<Arc<dyn ResumableMachine>> {
+pub fn validate_package(package: &dyn ActorPackage) -> Result<Vec<Arc<dyn ResumableMachine>>> {
     package.manifest().validate()?;
-    let machine = package.machine();
-    if machine.identity() != &package.manifest().agent {
+    let machines = package.machines();
+    let mut missing: std::collections::BTreeSet<_> = package.manifest().actors.iter().collect();
+    for machine in &machines {
+        if !missing.remove(machine.identity()) {
+            return Err(crate::Error::Conflict(
+                "package handler is undeclared or registered twice".into(),
+            ));
+        }
+    }
+    if !missing.is_empty() {
         return Err(crate::Error::Conflict(
-            "package handler identity differs from manifest".into(),
+            "package is missing a declared handler".into(),
         ));
     }
-    Ok(machine)
+    Ok(machines)
 }
 
 /// Runtime-owned fencing identity, checked on every commit and effect result.
@@ -197,8 +219,14 @@ pub struct Snapshot {
 pub trait ActorRuntime: ProviderPlatform {
     /// One deployment operation; rejects identity or binding mismatches.
     fn install(&self, package: Arc<dyn ActorPackage>) -> BoxProviderFuture<'_, Result<()>>;
-    /// Admits an actor's initial checkpoint with explicit placement.
-    fn place(&self, placement: Placement, input: Value) -> BoxProviderFuture<'_, Result<Snapshot>>;
+    /// Admits an actor's initial checkpoint with explicit placement and pinned
+    /// handler. An existing actor cannot change implementation during a move.
+    fn place(
+        &self,
+        placement: Placement,
+        machine: MachineIdentity,
+        input: Value,
+    ) -> BoxProviderFuture<'_, Result<Snapshot>>;
     /// Admits and handles one event; conflicting retries and stale owners fail.
     fn deliver(
         &self,

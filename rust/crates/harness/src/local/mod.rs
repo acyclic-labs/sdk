@@ -8,13 +8,13 @@ use crate::{
     core::{AggregateKind, Authority, AuthorityIssuer, AuthorityVerifier, Scope},
     filesystem::{
         FilesystemContentPublisher, FilesystemHost, FilesystemResourceCreationProvider,
-        FilesystemTaskRuntime, ForkPreparationMachine, StockTurnMachine,
+        FilesystemTaskRuntime,
     },
     model::{Model, ModelContent, ModelProvider},
-    runtime::{RuntimeScope, RuntimeTask, TaskRegistry, TaskRunLimits},
+    runtime::{RuntimeScope, RuntimeTask, TaskRunLimits},
     scheduler::SessionLimits,
     tool::{Tool, ToolRegistry},
-    workflow::{MachineRegistry, WorkflowCommand},
+    workflow::WorkflowCommand,
 };
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
 use acyclic_stream::LocalStream;
@@ -28,7 +28,6 @@ mod bind;
 #[cfg(feature = "native-execution")]
 mod checkout_tools;
 mod children;
-mod command_machine;
 mod command_views;
 mod commands;
 mod compact;
@@ -38,7 +37,7 @@ pub(crate) mod context;
 mod files;
 mod inheritance;
 mod input;
-mod open;
+pub(crate) mod open;
 mod orphans;
 mod owner;
 mod owner_record;
@@ -119,7 +118,11 @@ impl LocalHarness {
     pub fn open(
         config: LocalHarnessConfig,
     ) -> acyclic_stream::BoxProviderFuture<'static, Result<Self>> {
-        Box::pin(open::open(config))
+        Box::pin(async move {
+            crate::package::harness::HarnessCode::new()?
+                .open_local(config)
+                .await
+        })
     }
 
     /// Trusted host's task-file volume; clients render its bounded live queries.
