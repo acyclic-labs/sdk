@@ -25,7 +25,8 @@
 //! ```
 //!
 //! Catalog `base_url`: `http://127.0.0.1:PORT/example/v1`. Adapters `responses`,
-//! `chat`, `anthropic` select `/responses`, `/chat/completions`, `/messages`.
+//! `chat`, `anthropic`, `gemini` select `/responses`, `/chat/completions`,
+//! `/messages`, `/models/MODEL:streamGenerateContent`.
 //! All emit native streaming SSE, including function argument deltas. Configure
 //! `token_counter` with `path: "count"`, `adapter` matching the provider adapter,
 //! `response_field: "input_tokens"`, `framing_tokens: 0`. Token requests are
@@ -170,16 +171,38 @@ pub struct CustomTool {
     pub namespace: Option<String>,
 }
 
-/// Last user/tool content, consistently across the three supported APIs.
+/// Last user/tool content, consistently across the four supported APIs.
 pub fn last_content(body: &Value, tool: bool) -> String {
     let Some(messages) = body
         .get("input")
         .or_else(|| body.get("messages"))
+        .or_else(|| body.get("contents"))
         .and_then(Value::as_array)
     else {
         return String::new();
     };
     for message in messages.iter().rev() {
+        if let Some(parts) = message["parts"].as_array() {
+            if tool {
+                if let Some(response) = parts.iter().rev().find_map(|part| {
+                    part.get("functionResponse")
+                        .and_then(|call| call.get("response"))
+                }) {
+                    return response
+                        .get("output")
+                        .map_or_else(|| response.to_string(), content_text);
+                }
+            } else if message["role"] == "user" {
+                let text: Vec<_> = parts
+                    .iter()
+                    .filter_map(|part| part["text"].as_str())
+                    .collect();
+                if !text.is_empty() {
+                    return text.join("\n");
+                }
+            }
+            continue;
+        }
         if tool
             && (message["type"] == "function_call_output"
                 || message["type"] == "custom_tool_call_output")
@@ -304,3 +327,6 @@ pub fn events(path: &str, step: &Step) -> Option<Vec<String>> {
 pub fn events_with_usage(path: &str, step: &Step, input_tokens: u64) -> Option<Vec<String>> {
     wire::events(path, step, input_tokens)
 }
+
+#[cfg(test)]
+mod gemini_tests;

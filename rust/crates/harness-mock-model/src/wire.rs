@@ -104,7 +104,28 @@ pub(crate) fn events(path: &str, step: &Step, input_tokens: u64) -> Option<Vec<S
                 output.push(sse(json!({"type":"message_stop"})));
             }
         }
+        path if gemini_path(path) => gemini(&mut output, step, input_tokens, total_tokens),
         _ => return None,
     }
     Some(output)
+}
+
+fn gemini_path(path: &str) -> bool {
+    path.strip_prefix("models/")
+        .and_then(|model| model.strip_suffix(":streamGenerateContent"))
+        .is_some_and(|model| !model.is_empty() && !model.contains('/'))
+}
+
+fn gemini(output: &mut Vec<String>, step: &Step, input_tokens: u64, total_tokens: u64) {
+    for text in &step.text {
+        output.push(sse(
+            json!({"candidates":[{"content":{"role":"model","parts":[{"text":text}]}}]}),
+        ));
+    }
+    for tool in &step.tools {
+        output.push(sse(json!({"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":tool.id,"name":tool.name,"args":tool.arguments}}]}}]})));
+    }
+    if !step.hold {
+        output.push(sse(json!({"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":input_tokens,"candidatesTokenCount":2,"totalTokenCount":total_tokens}})));
+    }
 }

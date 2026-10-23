@@ -32,7 +32,12 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     for case in script.cases.values() {
         for step in &case.steps {
             let _ = bind_result(step, &serde_json::json!({"input":[]}));
-            for path in ["responses", "chat/completions", "messages"] {
+            for path in [
+                "responses",
+                "chat/completions",
+                "messages",
+                "models/tiny:streamGenerateContent",
+            ] {
                 for event in events(path, step).into_iter().flatten() {
                     for data in event.lines().filter_map(|line| line.strip_prefix("data: ")) {
                         if data != "[DONE]" {
