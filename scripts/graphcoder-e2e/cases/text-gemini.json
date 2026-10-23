@@ -1,0 +1,29 @@
+{
+  "id": "text-gemini",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "text": [
+          "hé λ 🙂 ",
+          "**streamed answer**",
+          "\n"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "hello",
+      "answer": "hé λ 🙂 **streamed answer**\n"
+    }
+  ],
+  "assert": {
+    "requests": 1
+  },
+  "adapter": "gemini"
+}

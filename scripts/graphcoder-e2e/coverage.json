@@ -1,0 +1,268 @@
+{
+  "version": 1,
+  "source": "Q:/lanes/roadmap-swarm.md, Target A (2026-10-22)",
+  "rows": {
+    "A1": {
+      "target": "Local composition and thin CLI",
+      "owner": "e2e-gate",
+      "cases": [
+        "cli-help",
+        "cli-invalid-option",
+        "text-responses"
+      ]
+    },
+    "A2": {
+      "target": "Native shell and checkout tools",
+      "owner": "tool-latency",
+      "cases": [
+        "bash-capture",
+        "file-tools-responses",
+        "file-tools-chat",
+        "file-tools-anthropic"
+      ]
+    },
+    "A3": {
+      "target": "Root and nested child lifecycle",
+      "owner": "children-controller",
+      "cases": [
+        "child-fork-message-merge",
+        "child-discard",
+        "nested-children"
+      ]
+    },
+    "A4": {
+      "target": "Lazy forks and merge",
+      "owner": "stack (#1388)",
+      "cases": [
+        "child-conflict",
+        "child-disjoint",
+        "fs-branch-merge-git",
+        "fs-branch-merge-plain"
+      ]
+    },
+    "A5": {
+      "target": "Checkout/git consistency and namespace isolation",
+      "owner": "filesystem",
+      "cases": [
+        "fs-status-git",
+        "fs-status-plain",
+        "fs-conflict-continue-git",
+        "fs-conflict-continue-plain"
+      ]
+    },
+    "A6": {
+      "target": "Client death, effect fencing and recovery",
+      "owner": "recovery",
+      "cases": [
+        "kill-and-resume",
+        "pty-kill-and-resume",
+        "orphan-fencing"
+      ]
+    },
+    "A7": {
+      "target": "Sessions, resume, rewind, Escape and diffs",
+      "owner": "sessions (#1318)",
+      "cases": [
+        "jsonl-reopen",
+        "pty-quit-resume",
+        "pty-checkpoint-rewind",
+        "pty-cancel-escape",
+        "pty-diff",
+        "pty-diff-modified"
+      ]
+    },
+    "A8": {
+      "target": "Compaction and continuation",
+      "owner": "b-substrate",
+      "cases": [
+        "auto-compaction",
+        "pty-manual-compaction"
+      ]
+    },
+    "A9": {
+      "target": "Instructions, skill descriptors and lazy bodies",
+      "owner": "skills-context",
+      "cases": [
+        "instructions-and-skills",
+        "file-mention",
+        "pty-mention",
+        "custom-slash-command"
+      ]
+    },
+    "A10": {
+      "target": "Task-bound environment context",
+      "owner": "e2e-gate",
+      "cases": [
+        "task-environment"
+      ]
+    },
+    "A11": {
+      "target": "Human allow/deny and durable approvals",
+      "owner": "approvals (#880/#977)",
+      "cases": [
+        "pty-approval-policy",
+        "pty-approval-deny"
+      ]
+    },
+    "A12": {
+      "target": "Rule, model and parent approval composition",
+      "owner": "approvals",
+      "cases": [
+        "rule-approval-allow",
+        "rule-approval-deny"
+      ],
+      "gaps": [
+        "Separate approver-model, parent inbox and escalation paths need shipping acceptance entry points."
+      ]
+    },
+    "A13": {
+      "target": "MCP and five hooks",
+      "owner": "e2e-gate",
+      "cases": [
+        "mcp-tool",
+        "hooks-all-events"
+      ]
+    },
+    "A14": {
+      "target": "Configured web search",
+      "owner": "sessions (#1318)",
+      "cases": [
+        "web-search"
+      ]
+    },
+    "A15": {
+      "target": "Provider support and terminal outcomes",
+      "owner": "providers / sessions (#1056)",
+      "cases": [
+        "text-responses",
+        "text-chat",
+        "text-anthropic",
+        "file-tools-responses",
+        "file-tools-chat",
+        "file-tools-anthropic",
+        "image-headless",
+        "image-headless-chat",
+        "image-headless-anthropic",
+        "provider-error",
+        "text-gemini"
+      ],
+      "gaps": [
+        "Gemini shipping-binary cases require native Gemini support in the shared mock."
+      ]
+    },
+    "A16": {
+      "target": "JSONL and authoritative final answer/exit",
+      "owner": "sessions (#1088/#1056)",
+      "cases": [
+        "jsonl-input",
+        "jsonl-malformed",
+        "jsonl-other-session",
+        "jsonl-prompt-replacement",
+        "text-responses",
+        "provider-error"
+      ]
+    },
+    "A17": {
+      "target": "TUI input, rendering and navigation",
+      "owner": "client-perf",
+      "cases": [
+        "pty-conversation",
+        "pty-help",
+        "pty-markdown",
+        "pty-image-attach",
+        "pty-notification",
+        "pty-slash",
+        "pty-cancel-ctrl-c"
+      ]
+    },
+    "A18": {
+      "target": "Source-anchored viewport and bounded transcripts",
+      "owner": "client-perf (#1002)",
+      "cases": [
+        "pty-scrolling"
+      ],
+      "gaps": [
+        "A 50-line scroll screenshot does not prove large-transcript bounds, source anchors or resize stability."
+      ]
+    },
+    "A19": {
+      "target": "Recovery, durability and accounting proof closure",
+      "owner": "b-substrate",
+      "cases": [
+        "kill-and-resume",
+        "jsonl-reopen"
+      ],
+      "gaps": [
+        "Stable-cut crash/reopen and budget/cancellation proof suites must run alongside the shipping cases."
+      ]
+    },
+    "A20": {
+      "target": "One-SHA qualification on Linux, macOS and Windows",
+      "owner": "e2e-gate",
+      "cases": [
+        "cli-help",
+        "text-responses"
+      ],
+      "gaps": [
+        "Require complete matrix receipts at the same SHA on all three OSes; individual case passes do not close this row."
+      ]
+    },
+    "A21": {
+      "target": "Installed Codex plugin parity",
+      "owner": "plugins",
+      "cases": [
+        "installed-codex"
+      ],
+      "gaps": [
+        "Run actual_codex_binary_executes_the_scripted_scenario through the installed host, with fixture CODEX_HOME."
+      ]
+    },
+    "A22": {
+      "target": "Installed Claude Code plugin parity",
+      "owner": "plugins",
+      "cases": [
+        "installed-claude"
+      ],
+      "gaps": [
+        "Run actual_claude_binary_executes_the_scripted_scenario through the installed host with isolated settings."
+      ]
+    },
+    "A23": {
+      "target": "Plugins become thin harness clients",
+      "owner": "plugins (#515)",
+      "cases": [
+        "plugin-client-lifecycle"
+      ],
+      "gaps": [
+        "Exercise the common harness through each host; enforce <=300-line shims and >=70% plugin/src reduction against a pinned baseline."
+      ]
+    },
+    "A24": {
+      "target": "Installed Pi recursive parity",
+      "owner": "plugins",
+      "cases": [
+        "installed-pi-recursive"
+      ],
+      "gaps": [
+        "Pinned Pi root/recursive child, compaction, isolated checkout, cancellation and merge through the shared harness."
+      ]
+    },
+    "A25": {
+      "target": "File-backed goals and retained continuation replay",
+      "owner": "b-substrate",
+      "cases": [
+        "goal-and-plan-files"
+      ]
+    },
+    "A26": {
+      "target": "Canonical reasoning and model alloys",
+      "owner": "providers",
+      "cases": [
+        "provider-alloys"
+      ],
+      "gaps": [
+        "Provider alloy selection is component coverage; mixed-provider shipping reasoning across compaction/replay remains unqualified."
+      ]
+    }
+  }
+}

@@ -3,22 +3,25 @@
 // Build graphcoder and harness-mock-model ahead of time, then run:
 //   node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL [case-id...]
 // Install scripts/graphcoder-pty's pinned @xterm/headless before timing.
-// On Windows, compile prepare-conpty.ps1 -Executable with Windows PowerShell
-// and set E2E_CONPTY_HOST to its EXE. E2E_WORKSPACE_ROOT=Q:/wt selects ReFS;
+// On Windows, cross-build the ConPTY transport on bb2 and set E2E_CONPTY_HOST
+// to its EXE. Use serial.mjs for the full matrix. E2E_WORKSPACE_ROOT=Q:/wt selects ReFS;
 // designated cases also run under E2E_NTFS_ROOT (default: local C: temp).
 // E2E_OUTPUT selects the matrix/capture directory; roots are retained on failure.
 // Unix requires python3 and a controlling PTY; no alternate GraphCoder runtime.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
-import { Processes, Events } from "./process.mjs";
+import { Processes, Events, schedule } from "./process.mjs";
 import { pty } from "./pty.mjs";
 import { requests, subset, recordedRequests } from "./assertions.mjs";
-import { seed } from "./fixtures.mjs";
+import { seed, expand as expandFixture } from "./fixtures.mjs";
+import { inventory, readCoverage } from "./coverage.mjs";
+import { fenced } from "./orphan-check.mjs";
+import { qualification } from "./qualification.mjs";
 
 const [binaryArg, mockArg, ...selected] = process.argv.slice(2);
 assert.ok(binaryArg && mockArg, "usage: node run.mjs GRAPHCODER MOCK_MODEL [case-id...]");
@@ -32,10 +35,12 @@ if (process.platform === "win32") {
   mkdirSync(ntfs, { recursive: true });
   roots.push(mkdtempSync(join(ntfs, "graphcoder-e2e-ntfs-")));
 }
-const scripts = readdirSync(join(directory, "cases")).filter(name => name.endsWith(".json"))
-  .map(name => JSON.parse(readFileSync(join(directory, "cases", name), "utf8")));
+const scripts = inventory();
+const coverage = readCoverage(scripts);
 const identities = new Set(scripts.map(test => test.id));
 for (const id of selected) assert.ok(identities.has(id), `unknown case ${id}`);
+assert.ok(process.platform !== "win32" || selected.length === 1,
+  "Windows requires one case suite at a time; use serial.mjs for the complete matrix");
 const cases = scripts
   .filter(test => !selected.length || selected.includes(test.id))
   .flatMap(test => roots.filter((_, index) => index === 0 || test.ntfs).map((root, index) => ({ ...test, id: test.id + (index ? "-ntfs" : ""), root })));
@@ -49,10 +54,11 @@ const started = performance.now();
 const timeout = setTimeout(() => { processes.close(); }, 9000);
 const json = (path, value) => writeFile(path, JSON.stringify(value, null, 2) + "\n");
 function expand(value, fixture) {
-  if (typeof value === "string") return value.replaceAll("{{support}}", directory.replaceAll("\\", "/")).replaceAll("{{workspace}}", fixture.workspace.replaceAll("\\", "/")).replaceAll("{{url}}", `http://127.0.0.1:${port}/${fixture.id}/v1`);
-  if (Array.isArray(value)) return value.map(item => expand(item, fixture));
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, expand(item, fixture)]));
-  return value;
+  return expandFixture(value, { support: directory.replaceAll("\\", "/"),
+    shell_tool: process.platform === "win32" ? "powershell" : "bash",
+    repository: resolve(directory, "../..").replaceAll("\\", "/"),
+    workspace: fixture.workspace.replaceAll("\\", "/"),
+    ...(port ? { url: `http://127.0.0.1:${port}/${fixture.id}/v1` } : {}) });
 }
 function environment(settings) {
   const env = { ...process.env, TERM: "xterm-256color", HOME: settings, USERPROFILE: settings,
@@ -66,6 +72,12 @@ function files(frames) {
 }
 function outcomes(frames, operation) {
   return files(frames).filter(file => file.key.Session?.file.ExecutionResult === operation).map(file => JSON.parse(file.bytes.text));
+}
+function checkTree(test) {
+  if (test.assert.dead_tree) {
+    const records = recordedRequests(readFileSync(join(output, "requests.jsonl"), "utf8"), events.seen);
+    fenced(records.filter(record => record.case === test.id), test.assert.dead_tree);
+  }
 }
 async function execute(test, gitOrigin) {
   const begin = performance.now();
@@ -87,6 +99,8 @@ async function execute(test, gitOrigin) {
       token_counter: { path: "count", adapter: test.adapter ?? "responses", response_field: "input_tokens", framing_tokens: 0 } };
     await json(fixture.catalog, { e2e: provider });
     fixture.env = environment(fixture.settings);
+    fixture.env.E2E_MOCK_URL = `http://127.0.0.1:${port}/${test.id}/v1`;
+    fixture.env.ACYCLIC_TEST_SOURCE_ROOT = resolve(directory, "../..");
     fixture.requests = events.seen.filter(event => event.case === test.id);
     fixture.onRequest = listener => events.subscribe(event => {
       if (event.case === test.id) { fixture.requests.push(event); listener(event); }
@@ -95,6 +109,10 @@ async function execute(test, gitOrigin) {
     const operation = "00000000-0000-0000-0000-000000000001";
     for (const raw of test.inputs) {
       const input = expand(raw, fixture);
+      if (input.mode === "qualification") {
+        await qualification(processes, input, fixture, capture => captures.push(capture));
+        continue;
+      }
       if (input.mode === "pty") {
         await pty(processes, binary, fixture, input, capture => captures.push(capture));
         continue;
@@ -123,9 +141,13 @@ async function execute(test, gitOrigin) {
         if (input.answer !== undefined) assert.equal(outcome.ok.text, input.answer);
       }
     }
+    // Check while the mock's held response is still open. Killing the mock
+    // first would let an unfenced descendant exit and produce a false pass.
+    checkTree(test);
     contexts.set(test.id, { test, fixture, captures, artifact });
     return { case: test.id, platform: process.platform, status: "pass", seconds: (performance.now() - begin) / 1000 };
   } catch (error) {
+    try { checkTree(test); } catch (treeError) { error = new Error(`${error.stack}\n${treeError.stack}`); }
     return { case: test.id, platform: process.platform, status: "fail", seconds: (performance.now() - begin) / 1000, error: error.stack, workspace: fixture.workspace };
   } finally { await json(join(artifact, "captures.json"), captures); }
 }
@@ -151,7 +173,8 @@ async function verify(result, allRecords) {
 }
 let results;
 try {
-  const scripts = Object.fromEntries(cases.map(test => [test.id, test.model]));
+  const scripts = Object.fromEntries(cases.map(test => [test.id, expand(test.model,
+    { id: test.id, workspace: join(test.root, test.id, "workspace") })]));
   await json(join(output, "script.json"), { cases: scripts });
   server = processes.start(mock, ["--script", join(output, "script.json"), "--record", join(output, "requests.jsonl")]);
   events = new Events(server.child.stdout, server.closed);
@@ -162,9 +185,9 @@ try {
     ["-C", origin, "-c", "user.name=e2e", "-c", "user.email=e2e@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "seed"]]) {
     const git = await processes.run("git", args); assert.equal(git.code, 0, git.stderr);
   }
-  // All cases start together. Only the dependent steps inside one conversation
-  // are sequential. There is one mock server for the entire platform run.
-  results = await Promise.all(cases.map(test => execute(test, origin)));
+  // Unix cases share one mock. Windows runs every case and filesystem variant
+  // serially; serial.mjs gives each case its own unchanged ten-second budget.
+  results = await schedule(cases, process.platform, test => execute(test, origin));
 } finally {
   clearTimeout(timeout);
   await processes.close();
@@ -174,7 +197,9 @@ try {
 const allRecords = recordedRequests(readFileSync(join(output, "requests.jsonl"), "utf8"), events.seen);
 results = await Promise.all(results.map(result => verify(result, allRecords)));
 const seconds = (performance.now() - started) / 1000;
-const report = { platform: process.platform, seconds, limit_seconds: 10, results, output, roots };
+const report = { platform: process.platform, seconds, limit_seconds: 10, results, output, roots,
+  selected, qualification: !selected.length, coverage };
 await json(join(output, "matrix.json"), report);
 console.log(JSON.stringify(report, null, 2));
-process.exitCode = results?.every(result => result.status === "pass") && seconds < 10 ? 0 : 1;
+process.exitCode = results?.every(result => result.status === "pass") && seconds < 10
+  && (selected.length > 0 || coverage.pass) ? 0 : 1;

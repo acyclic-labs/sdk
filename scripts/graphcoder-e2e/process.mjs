@@ -2,6 +2,13 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { StringDecoder } from "node:string_decoder";
 
+export async function schedule(items, platform, execute) {
+  if (platform !== "win32") return Promise.all(items.map(execute));
+  const results = [];
+  for (const item of items) results.push(await execute(item));
+  return results;
+}
+
 // Event-driven subprocesses: no polling or readiness delays. Every child is
 // owned by the suite and is reaped even when another case fails.
 export class Processes {

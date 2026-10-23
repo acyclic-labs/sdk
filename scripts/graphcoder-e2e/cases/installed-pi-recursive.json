@@ -1,0 +1,30 @@
+{
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "inputs": [
+    {
+      "args": [
+        "test",
+        "{{repository}}/plugin/tests/hosts/pi-native-recursive.test.ts",
+        "--test-name-pattern",
+        "required pinned Pi recursively launches original native effects and reopens without repeating work",
+        "--timeout",
+        "9000"
+      ],
+      "mode": "qualification",
+      "format": "bun",
+      "binary_env": "E2E_BUN",
+      "fixture_binary_env": "E2E_PLUGIN_BINARY",
+      "minimum_tests": 1
+    }
+  ],
+  "model": {
+    "steps": []
+  },
+  "id": "installed-pi-recursive",
+  "assert": {
+    "requests": 0
+  }
+}

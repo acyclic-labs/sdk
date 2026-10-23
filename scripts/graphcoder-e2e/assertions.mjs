@@ -26,7 +26,8 @@ export function subset(actual, expected) {
 export function toolResults(records) {
   const results = [];
   for (const { body } of records) {
-    for (const item of body.input ?? body.messages ?? []) {
+    for (const item of body.input ?? body.messages ?? body.contents ?? []) {
+      for (const part of item.parts ?? []) if (part.functionResponse) results.push(JSON.stringify(part.functionResponse.response));
       if (item.type === "function_call_output") results.push(item.output);
       else if (item.role === "tool") results.push(item.content);
       else if (Array.isArray(item.content)) for (const part of item.content) if (part.type === "tool_result") results.push(typeof part.content === "string" ? part.content : JSON.stringify(part.content));
@@ -36,7 +37,8 @@ export function toolResults(records) {
 }
 
 export function requests(test, records) {
-  const generations = records.filter(record => ["responses", "messages", "chat/completions"].includes(record.path));
+  const generations = records.filter(record => ["responses", "messages", "chat/completions"].includes(record.path)
+    || /^models\/[^/]+:streamGenerateContent(?:\?alt=sse)?$/.test(record.path));
   assert.equal(generations.length, test.assert.requests, "generation count");
   const expected = test.assert.steps ?? test.model.steps.map((_, index) => index);
   assert.deepEqual(records.filter(record => record.step !== null).map(record => record.step).sort((a,b) => a-b), [...expected].sort((a,b) => a-b), "each expected script step consumed exactly once");
@@ -49,5 +51,9 @@ export function requests(test, records) {
   for (const text of test.assert.last_model_absent ?? []) assert.ok(!last.includes(text), `final model input contains forbidden ${text}`);
   const outputs = toolResults(records).map(value => { try { return JSON.parse(value); } catch { return value; } });
   for (const text of test.assert.tool_contains ?? []) assert.ok(outputs.some(value => JSON.stringify(value).includes(text)), `actual tool result missing ${text}`);
-  for (const value of outputs) if (value && typeof value === "object" && value.error) assert.ok((test.assert.tool_errors ?? []).some(text => JSON.stringify(value.error).includes(text)), `unexpected tool error ${JSON.stringify(value.error)}`);
+  for (const value of outputs) {
+    const error = value && typeof value === "object" ? value.error
+      : typeof value === "string" && value.startsWith("tool executor rejected the admitted call (") ? value : null;
+    if (error) assert.ok((test.assert.tool_errors ?? []).some(text => JSON.stringify(error).includes(text)), `unexpected tool error ${JSON.stringify(error)}`);
+  }
 }

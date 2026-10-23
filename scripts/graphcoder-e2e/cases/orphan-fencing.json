@@ -1,0 +1,62 @@
+{
+  "id": "orphan-fencing",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "ORPHAN_START"
+        },
+        "tools": [
+          {
+            "id": "native-tree",
+            "name": "{{shell_tool}}",
+            "arguments": {
+              "command": "node \"{{support}}/orphan.mjs\" tree"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "path": "orphan-ready"
+        },
+        "json": {
+          "ok": true
+        },
+        "hold": true
+      },
+      {
+        "when": {
+          "user": "ORPHAN_RECOVER"
+        },
+        "text": [
+          "ORPHAN_RECOVERED"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "ORPHAN_START",
+      "kill_on": {
+        "path": "orphan-ready",
+        "step": 1
+      }
+    },
+    {
+      "mode": "headless",
+      "operation": "00000000-0000-0000-0000-000000000002",
+      "text": "ORPHAN_RECOVER",
+      "answer": "ORPHAN_RECOVERED"
+    }
+  ],
+  "assert": {
+    "requests": 2,
+    "dead_tree": "orphan-ready"
+  }
+}

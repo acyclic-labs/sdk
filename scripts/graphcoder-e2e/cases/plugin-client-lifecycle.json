@@ -1,0 +1,27 @@
+{
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "inputs": [
+    {
+      "mode": "qualification",
+      "format": "libtest",
+      "args": [
+        "immutable_package_command_runs_the_real_service_lifecycle",
+        "--exact",
+        "--test-threads=1"
+      ],
+      "minimum_tests": 1,
+      "fixture_binary_env": "E2E_PLUGIN_BINARY",
+      "binary_env": "E2E_PLUGIN_TEST_BINARY"
+    }
+  ],
+  "model": {
+    "steps": []
+  },
+  "id": "plugin-client-lifecycle",
+  "assert": {
+    "requests": 0
+  }
+}

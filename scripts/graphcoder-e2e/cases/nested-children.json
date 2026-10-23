@@ -1,0 +1,15 @@
+{
+  "id": "nested-children",
+  "workspace": {"kind":"plain", "files":{}},
+  "model": {"steps":[
+    {"when":{"user":"NESTED_ROOT"},"tools":[{"id":"spawn-worker","name":"spawn","arguments":{"name":"worker","task":"NESTED_WORKER"}}]},
+    {"when":{"user":"NESTED_WORKER"},"tools":[{"id":"spawn-leaf","name":"spawn","arguments":{"name":"leaf","task":"NESTED_LEAF"}}]},
+    {"when":{"user":"NESTED_LEAF"},"text":["NESTED_LEAF_DONE"]},
+    {"when":{"user":"NESTED_WORKER","tool_result":"leaf"},"tools":[{"id":"wait-leaf","name":"wait","arguments":{"agents":["leaf"],"mode":"all"}}]},
+    {"when":{"user":"NESTED_WORKER"},"text":["NESTED_WORKER_DONE"]},
+    {"when":{"user":"NESTED_ROOT","tool_result":"worker"},"tools":[{"id":"wait-worker","name":"wait","arguments":{"agents":["worker"],"mode":"all"}}]},
+    {"when":{"user":"NESTED_ROOT"},"text":["NESTED_ROOT_DONE"]}
+  ]},
+  "inputs":[{"mode":"headless","text":"NESTED_ROOT","answer":"NESTED_ROOT_DONE"}],
+  "assert":{"requests":7,"tool_contains":["NESTED_LEAF_DONE","NESTED_WORKER_DONE"]}
+}

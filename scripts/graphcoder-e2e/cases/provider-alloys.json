@@ -1,0 +1,25 @@
+{
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "inputs": [
+    {
+      "args": [
+        "alloy_tests::",
+        "--test-threads=1"
+      ],
+      "mode": "qualification",
+      "format": "libtest",
+      "binary_env": "E2E_PROVIDER_TEST_BINARY",
+      "minimum_tests": 1
+    }
+  ],
+  "model": {
+    "steps": []
+  },
+  "id": "provider-alloys",
+  "assert": {
+    "requests": 0
+  }
+}

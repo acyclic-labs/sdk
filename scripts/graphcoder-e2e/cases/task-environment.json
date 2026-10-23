@@ -1,0 +1,37 @@
+{
+  "id": "task-environment",
+  "workspace": {
+    "kind": "git",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "text": [
+          "ENVIRONMENT_E2E_DONE"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "answer": "ENVIRONMENT_E2E_DONE",
+      "text": "inspect the task environment"
+    }
+  ],
+  "assert": {
+    "requests": 1,
+    "model_contains": [
+      "<environment_context>",
+      "<cwd>",
+      "<shell>",
+      "<os>",
+      "<current_date>",
+      "<timezone>",
+      "<git_status>",
+      "<model>tiny</model>"
+    ]
+  },
+  "adapter": "responses"
+}

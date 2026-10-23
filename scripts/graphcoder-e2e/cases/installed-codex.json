@@ -1,0 +1,28 @@
+{
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "inputs": [
+    {
+      "mode": "qualification",
+      "format": "libtest",
+      "args": [
+        "actual_codex_binary_executes_the_scripted_scenario",
+        "--exact",
+        "--ignored",
+        "--test-threads=1"
+      ],
+      "minimum_tests": 1,
+      "fixture_binary_env": "E2E_PLUGIN_BINARY",
+      "binary_env": "E2E_PLUGIN_TEST_BINARY"
+    }
+  ],
+  "model": {
+    "steps": []
+  },
+  "id": "installed-codex",
+  "assert": {
+    "requests": 0
+  }
+}

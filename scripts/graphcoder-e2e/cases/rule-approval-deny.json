@@ -1,0 +1,61 @@
+{
+  "id": "rule-approval-deny",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "write",
+            "name": "write",
+            "arguments": {
+              "path": "approved.txt",
+              "text": "APPROVED_E2E\n",
+              "media_type": "text/plain",
+              "display_name": "approved.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "text": [
+          "RULE_E2E_DONE"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "answer": "RULE_E2E_DONE",
+      "text": "apply deny policy"
+    }
+  ],
+  "assert": {
+    "requests": 2,
+    "absent_files": [
+      "approved.txt"
+    ],
+    "jsonl": {
+      "hooks.jsonl": [
+        {
+          "hook_event_name": "PreToolUse"
+        }
+      ]
+    },
+    "tool_errors": [
+      "E2E approval policy"
+    ],
+    "tool_contains": [
+      "E2E approval policy"
+    ]
+  },
+  "settings": {
+    ".claude/settings.json": "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" deny\"}]}]}}"
+  }
+}
