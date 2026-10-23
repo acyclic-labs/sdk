@@ -1,6 +1,20 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { StringDecoder } from "node:string_decoder";
+import assert from "node:assert/strict";
+import { isAbsolute } from "node:path";
+import { fileURLToPath } from "node:url";
+
+async function drainGroup(pid) {
+  const watcher = spawn("python3", [fileURLToPath(new URL("./drain-group.py", import.meta.url)), String(pid)],
+    { stdio: ["ignore", "ignore", "pipe"] });
+  let stderr = "";
+  watcher.stderr.setEncoding("utf8").on("data", text => { stderr += text; });
+  await new Promise((resolve, reject) => {
+    watcher.once("error", reject);
+    watcher.once("close", code => code === 0 ? resolve() : reject(new Error(`process group drain failed: ${stderr}`)));
+  });
+}
 
 export async function schedule(items, platform, execute) {
   if (platform !== "win32") return Promise.all(items.map(execute));
@@ -16,10 +30,15 @@ export class Processes {
   stopping = false;
   start(program, args, options = {}) {
     if (this.stopping) throw new Error("suite process scope is closed (deadline or cleanup)");
-    const { scopeKillSignal = "SIGKILL", ...spawnOptions } = options;
+    const { scopeKillSignal = "SIGKILL", scopeProcessGroup = false, scopeTreeControl = false, ...spawnOptions } = options;
     const child = spawn(program, args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"], ...spawnOptions });
     child.stdin.on("error", error => { if (error.code !== "EPIPE") child.emit("error", error); });
-    this.children.set(child, scopeKillSignal);
+    const kill = () => {
+      if (scopeTreeControl) { child.stdin.end(); return; }
+      if (!scopeProcessGroup) { child.kill(scopeKillSignal); return; }
+      if (!child.pid) return;
+      try { process.kill(-child.pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+    };
     let stdout = "", stderr = "";
     const outputDecoder = new StringDecoder("utf8"), errorDecoder = new StringDecoder("utf8");
     child.stdout.on("data", bytes => { stdout += outputDecoder.write(bytes); });
@@ -28,12 +47,18 @@ export class Processes {
     // surviving descendants, which recovery must be allowed to fence first.
     const exited = new Promise((resolve, reject) => {
       child.once("error", reject);
-      child.once("exit", (code, signal) => resolve({ code, signal }));
+      child.once("exit", async (code, signal) => {
+        try {
+          if (scopeProcessGroup) { kill(); await drainGroup(child.pid); }
+          resolve({ code, signal });
+        } catch (error) { reject(error); }
+      });
     });
     exited.catch(() => {});
     const closed = new Promise((resolve, reject) => {
       child.on("error", reject);
-      child.on("close", (code, signal) => {
+      child.on("close", async (code, signal) => {
+        try { if (scopeProcessGroup && child.pid) await exited; } catch (error) { reject(error); }
         this.children.delete(child);
         stdout += outputDecoder.end(); stderr += errorDecoder.end();
         resolve({ code, signal, stdout, stderr });
@@ -41,6 +66,7 @@ export class Processes {
     });
     // The caller may be waiting for a ready/screen event instead of exit.
     closed.catch(() => {});
+    this.children.set(child, { kill, closed });
     return { child, exited, closed, get stdout() { return stdout; } };
   }
   async run(program, args, options, input = "") {
@@ -48,12 +74,26 @@ export class Processes {
     process.child.stdin.end(input);
     return process.closed;
   }
+  startOwned(program, args, options = {}) {
+    if (process.platform === "win32") {
+      const host = options.env?.E2E_PROCESS_HOST ?? process.env.E2E_PROCESS_HOST;
+      assert.ok(host && isAbsolute(host), "E2E_PROCESS_HOST must name the cross-built process-tree host");
+      return this.start(host, [program, ...args], { ...options, scopeTreeControl: true });
+    }
+    return this.start(program, args, { ...options, detached: true, scopeProcessGroup: true });
+  }
+  async runOwned(program, args, options, input = "") {
+    assert.equal(input, "", "external acceptance commands receive empty stdin");
+    const running = this.startOwned(program, args, options);
+    if (process.platform !== "win32") running.child.stdin.end();
+    const [, result] = await Promise.all([running.exited, running.closed]);
+    return result;
+  }
   async close() {
     this.stopping = true;
-    const children = [...this.children.keys()];
-    const exits = children.map(child => new Promise(resolve => child.once("close", resolve)));
-    for (const child of children) child.kill(this.children.get(child));
-    await Promise.all(exits);
+    const children = [...this.children.values()];
+    for (const child of children) child.kill();
+    await Promise.all(children.map(child => child.closed));
   }
 }
 

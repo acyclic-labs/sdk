@@ -19,7 +19,7 @@ test("installed-host entry points receive the same prebuilt plugin and fixture p
   const fixture = { workspace: "fixture-workspace", env: { E2E_BUN: process.execPath,
     E2E_PLUGIN_BINARY: process.execPath, CODEX_HOME: "fixture-profile" } };
   let calls = 0, captures = 0;
-  const processes = { async run(binary, args, options) {
+  const processes = { async runOwned(binary, args, options) {
     calls++;
     assert.equal(binary, process.execPath);
     assert.equal(options.cwd, fixture.workspace);

@@ -2,6 +2,13 @@
 
 Build `graphcoder` and `harness-mock-model` on the target OS ahead of timing.
 Windows MSVC executables must be cross-built on bb2; run Windows suites serially.
+The Windows `owned-process.cs` host must also be cross-compiled on bb2 and
+its absolute executable supplied as `E2E_PROCESS_HOST`. External acceptance
+commands run in a lifetime-owned process group or Windows Job Object. Normal
+exit and suite cancellation drain their service descendants before returning.
+POSIX cleanup requires Python 3 and `ps`; exit waits use Linux pidfds or macOS
+kqueue notifications. Shipping GraphCoder processes retain their own recovery
+oracle so an external-test cleanup boundary cannot hide orphan-fencing failures.
 Install `scripts/graphcoder-pty` with its frozen Bun lockfile and lifecycle scripts disabled.
 
 ```sh

@@ -31,7 +31,7 @@ export async function qualification(processes, input, fixture, capture) {
     env.ACYCLIC_TEST_BINARY = env[input.fixture_binary_env];
     env.ACYCLIC_BINARY = env[input.fixture_binary_env];
   }
-  const result = await processes.run(binary, input.args, { cwd: fixture.workspace, env });
+  const result = await processes.runOwned(binary, input.args, { cwd: fixture.workspace, env });
   capture(result);
   qualified(result, input.format, input.minimum_tests);
 }
