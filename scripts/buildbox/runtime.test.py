@@ -127,6 +127,18 @@ sys.stdout.buffer.write(bytes(range(256)))
         self.assertEqual(result['remaining'],3)
         result=pruner.prune(root,mirror,locks,max_count=1,active=set(),now=now)
         self.assertEqual(result['remaining'],1);self.assertTrue(recent_git.exists())
+    def test_pruner_removes_unreadable_targets_without_following_symlinks(self):
+        root=self.d/'wt-sdk';root.mkdir();p=root/'old';(p/'target/deep').mkdir(parents=True)
+        (p/'target/deep/object').write_bytes(b'x');(p/'target').chmod(0)
+        outside=self.d/'keep';outside.mkdir();(outside/'object').write_bytes(b'keep')
+        (p/'link').symlink_to(outside,target_is_directory=True)
+        try:
+            with self.assertRaises(PermissionError):shutil.rmtree(p)
+            result=pruner.prune(root,self.d/'mirror',self.d/'locks',max_count=0,active=set())
+            self.assertEqual(result['removed'],['old']);self.assertEqual((outside/'object').read_bytes(),b'keep')
+        finally:
+            if p.exists():job.remove_home(p)
+
     def test_admission_disk_refusal_is_stderr_with_stdout_negative(self):
         source=(HERE/'bb-admit.py').read_text().replace("if ROOT==Path('/mnt/bb/admit'):", 'if True:')
         source=source.replace('space=os.statvfs(path)', 'space=type("Space",(),{"f_bavail":9,"f_blocks":100,"f_frsize":4096})()')
@@ -158,7 +170,10 @@ sys.stdout.buffer.write(bytes(range(256)))
             bad=subprocess.run([sys.executable,str(negative),'lane','cloud','--','true'],env=env,capture_output=True,timeout=2)
             self.assertEqual(bad.returncode,0)
         second.communicate(timeout=2);self.assertEqual(second.returncode,0);self.assertTrue(marker.exists())
-        os.kill(json.loads((root/'daemon.json').read_text())['pid'],15)
+        daemon=json.loads((root/'daemon.json').read_text())
+        import hashlib
+        self.assertEqual(daemon['source_sha256'],hashlib.sha256((HERE/'bb-admit.py').read_bytes()).hexdigest())
+        os.kill(daemon['pid'],15)
 
     def test_killed_job_receipt_cleans_ephemeral_targets(self):
         worker=self.worker();receipt=self.d/'receipt.mjs';receipts=self.d/'receipts'

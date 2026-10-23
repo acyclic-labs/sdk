@@ -10,6 +10,16 @@ import subprocess
 import sys
 import time
 
+def remove_tree(path):
+    # Test fixtures and tools can leave unreadable directories. Make each
+    # directory traversable before descending; never follow a directory link.
+    path.chmod(path.stat().st_mode | 0o700)
+    for base,dirs,_ in os.walk(path,followlinks=False):
+        for name in dirs:
+            child=Path(base)/name
+            if not child.is_symlink():child.chmod(child.stat().st_mode | 0o700)
+    shutil.rmtree(path)
+
 def active_sources(proc=Path('/proc')):
     active=set()
     for p in proc.iterdir():
@@ -35,6 +45,9 @@ def prune(root,mirror,locks,max_age=43200,max_count=128,active=None,now=None):
         rows=[]
         for name,paths in groups.items():
             metadata=mirror/'worktrees'/name
+            # A legacy manual pruner may have removed a copy meanwhile.
+            paths=[p for p in paths if p.exists()]
+            if not paths:continue
             stamps=[p.stat().st_mtime for p in paths]
             for file in [metadata/'index',metadata/'HEAD']:
                 try:stamps.append(file.stat().st_mtime)
@@ -52,7 +65,9 @@ def prune(root,mirror,locks,max_age=43200,max_count=128,active=None,now=None):
                     # Only immediate, resolved children can be renamed/deleted.
                     if p.parent!=root or p.resolve().parent!=root:raise ValueError('unsafe source path')
                     tomb=root/('.prune-'+p.name+'-'+str(os.getpid()))
-                    p.rename(tomb);shutil.rmtree(tomb)
+                    try:p.rename(tomb)
+                    except FileNotFoundError:continue
+                    remove_tree(tomb)
                 count-=1;removed.append(name)
         return {'removed':removed,'remaining':count,'held':held,'over_cap':count>max_count}
 

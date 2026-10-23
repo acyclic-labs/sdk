@@ -8,6 +8,7 @@ client is killed. A daemon restart adopts journaled live leases before admitting
 import array
 from collections import defaultdict, deque
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,7 @@ import uuid
 
 ROOT = Path(os.environ.get('BB_ADMIT_ROOT', '/mnt/bb/admit'))
 SOCKET = ROOT/'admit.sock'
+SOURCE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 
 def identity(pid):
@@ -133,7 +135,7 @@ def serve():
         except ProcessLookupError: t['journal'].unlink(); continue
         t['pidfd']=fd;jobs[fd]=t;sel.register(fd,selectors.EVENT_READ,'done')
         sched.running['compile']+=1;sched.shares[('compile',tenant)]+=1
-    atomic(ROOT/'daemon.json',{'pid':os.getpid(),'identity':identity(os.getpid()),'limits':limits,'caps':caps})
+    atomic(ROOT/'daemon.json',{'pid':os.getpid(),'identity':identity(os.getpid()),'limits':limits,'caps':caps,'source_sha256':SOURCE_SHA256})
     ready=os.environ.get('BB_ADMIT_READY_FD')
     if ready:
         os.write(int(ready),b'ready'); os.close(int(ready))
@@ -162,6 +164,7 @@ def serve():
         env['CARGO_BUILD_JOBS']=str(min(cpus,max(16,2*cpus//live)))
         env['BUILD_SLOT_ADMISSION_START']=t['admission_start']
         env['BB_ADMIT_WAIT_SECONDS']=str(round(time.time()-t['at'],6))
+        env['BB_ADMIT_SOURCE_SHA256']=SOURCE_SHA256
         env['BB_ADMIT_TIER']=str(t['tier']); env['BB_ADMIT_TENANT']=t['tenant']
         try:
             if ROOT==Path('/mnt/bb/admit'):
