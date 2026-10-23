@@ -104,6 +104,14 @@ impl FollowIndex {
         }
     }
 
+    /// A failed durable refresh must wake readers to observe the failure.
+    #[cfg(all(target_arch = "wasm32", feature = "wasm"))]
+    pub(crate) fn invalidate(&self) {
+        for entry in self.entries.values() {
+            entry.changed.send_replace(entry.notified);
+        }
+    }
+
     fn remove(&mut self, id: u64) {
         let Some(entry) = self.entries.remove(&id) else {
             return;
@@ -283,6 +291,7 @@ mod tests {
         let mut followed = FollowIndex::subscribe(
             &index,
             FollowFilter::new(wire::SessionFilter {
+                    all_of: vec![],
                 keys: vec![wire::KeyRange {
                     start: b"a".as_slice().into(),
                     end: b"c".as_slice().into(),

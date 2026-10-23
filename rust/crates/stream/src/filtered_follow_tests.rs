@@ -106,6 +106,7 @@ fn record(key: &'static str, owner: &'static str) -> AppendRecord {
 }
 fn filter() -> FollowFilter {
     FollowFilter::new(wire::SessionFilter {
+                    all_of: vec![],
         keys: vec![wire::KeyRange {
             start: b"a".as_slice().into(),
             end: b"c".as_slice().into(),

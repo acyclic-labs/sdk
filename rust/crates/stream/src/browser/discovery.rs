@@ -6,6 +6,7 @@ use wasm_bindgen::closure::Closure;
 pub(super) struct Publications {
     channel: web_sys::BroadcastChannel,
     pub(super) interests: crate::interest::Interests<Key>,
+    pub(super) follows: RefCell<std::collections::BTreeMap<StreamPath, Arc<crate::query_sync::SyncMutex<crate::follow_index::FollowIndex>>>>,
     target: Rc<RefCell<Weak<Inner>>>,
     refresh: Rc<crate::interest::Refresh>,
     _receive: Closure<dyn FnMut(web_sys::MessageEvent)>,
@@ -28,10 +29,20 @@ impl Publications {
         Ok(Self {
             channel,
             interests: crate::interest::Interests::new(),
+            follows: RefCell::new(std::collections::BTreeMap::new()),
             target,
             refresh,
             _receive: receive,
         })
+    }
+    pub(super) fn follow_index(&self, path: &StreamPath) -> Arc<crate::query_sync::SyncMutex<crate::follow_index::FollowIndex>> {
+        self.follows.borrow_mut().entry(path.clone()).or_default().clone()
+    }
+    pub(super) fn invalidate_follows(&self) {
+        let indices: Vec<_> = self.follows.borrow().values().cloned().collect();
+        for index in indices {
+            index.lock().unwrap_or_else(std::sync::PoisonError::into_inner).invalidate();
+        }
     }
     pub(super) fn publish(&self) -> Result<(), StreamError> {
         self.wake(false)?;
@@ -66,12 +77,14 @@ fn wake(
                 Ok(None) => break,
                 Err(_) => {
                     let _ = inner.publications.interests.notify_all();
+                    inner.publications.invalidate_follows();
                     break;
                 }
             };
             let provider = BrowserStream { inner };
             if provider.refresh_publication(force).await.is_err() {
                 let _ = provider.inner.publications.interests.notify_all();
+                provider.inner.publications.invalidate_follows();
             }
         }
     });

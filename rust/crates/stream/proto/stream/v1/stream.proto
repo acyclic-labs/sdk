@@ -122,9 +122,17 @@ message FollowRequest {
 // Ranges are OR; named attribute clauses are AND. Empty end is unbounded.
 message KeyRange { bytes start = 1; bytes end = 2; }
 message AttributeMatch { string name = 1; repeated bytes any_of = 2; }
+// Flat conjunction keeps every authority ceiling intact across provider hops.
+// all_keys applies to opaque records; typed changes project individual entries.
+message SessionFilterClause {
+  repeated KeyRange keys = 1;
+  repeated AttributeMatch attributes = 2;
+  bool all_keys = 3;
+}
 message SessionFilter {
   repeated KeyRange keys = 1;
   repeated AttributeMatch attributes = 2;
+  repeated SessionFilterClause all_of = 3;
 }
 
 // Encoding of one read frame's data.

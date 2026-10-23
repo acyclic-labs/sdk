@@ -44,6 +44,7 @@ async fn published_changes_share_the_authority_commit_and_filter_before_follow()
         acyclic_stream::CommittedMutation::Append(append) if append.path == authority_path))
     );
     let filter = FollowFilter::new(acyclic_stream::wire::SessionFilter {
+                    all_of: vec![],
         keys: vec![acyclic_stream::wire::KeyRange {
             start: Bytes::from_static(b"public-"),
             end: Bytes::from_static(b"public."),

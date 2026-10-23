@@ -23,6 +23,7 @@ async fn idle_skips_need_no_credit_and_never_pass_a_queued_match() -> TestResult
     sender.unbounded_send(Ok(hello(1_000_000, 0)))?;
     let mut subscription = subscribe(1, "progress", 1, false);
     subscription.filter = Some(wire::SessionFilter {
+                    all_of: vec![],
         keys: vec![wire::KeyRange {
             start: b"public".as_slice().into(),
             end: b"publid".as_slice().into(),

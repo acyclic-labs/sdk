@@ -9,7 +9,7 @@ async fn append(provider: &BrowserStream, path: &str) -> Result<AppendOutcome, S
     provider
         .append(AppendRequest {
             path: StreamPath::new(path)?,
-            records: vec![OwnedBytes::from_static(b"value")],
+            records: vec![OwnedBytes::from_static(b"value").into()],
             if_tail: None,
             idempotency_key: None,
         })
@@ -242,7 +242,7 @@ async fn follow_pushes_every_record_after_its_initial_snapshot() {
     };
     let write = provider.append(AppendRequest {
         path: StreamPath::new("events").expect("path"),
-        records: vec![OwnedBytes::from_static(b"delta"); 3],
+        records: vec![OwnedBytes::from_static(b"delta").into(); 3],
         if_tail: Some(1),
         idempotency_key: None,
     });
@@ -361,4 +361,45 @@ async fn browser_append_follow_latency() {
         measured[15],
         measured[31]
     );
+}
+
+#[wasm_bindgen_test]
+async fn filtered_publications_survive_cache_rebuild_without_waking_unrelated_follows() {
+    use futures::Stream;
+    use std::{sync::atomic::{AtomicUsize, Ordering}, task::{Wake, Waker, Context}, pin::Pin};
+    struct Count(AtomicUsize);
+    impl Wake for Count {
+        fn wake(self: Arc<Self>) { self.0.fetch_add(1, Ordering::SeqCst); }
+        fn wake_by_ref(self: &Arc<Self>) { self.0.fetch_add(1, Ordering::SeqCst); }
+    }
+    let database = name();
+    let writer = BrowserStream::open(&database, BrowserStreamLimits::default()).await.unwrap();
+    append(&writer, "events").await.unwrap();
+    let reader = BrowserStream::open(&database, BrowserStreamLimits::default()).await.unwrap();
+    let filter = crate::FollowFilter::new(wire::SessionFilter {
+                    all_of: vec![],
+        keys: vec![wire::KeyRange { start: b"a".as_slice().into(), end: b"c".as_slice().into() }], attributes: vec![],
+    }).unwrap();
+    let mut follow = reader.follow(StreamPath::new("events").unwrap(), 1, filter).await.unwrap();
+    let count = Arc::new(Count(AtomicUsize::new(0)));
+    let waker = Waker::from(count.clone());
+    let mut context = Context::from_waker(&waker);
+    assert!(Pin::new(&mut follow).poll_next(&mut context).is_pending());
+    for cycle in 0..2 {
+        reader.inner.cache.lock().await.valid = false;
+        let record = |key: &'static str| crate::AppendRecord {
+            value: "body".into(), headers: RecordHeaders::new(vec![key.into()], vec![]).unwrap(),
+        };
+        writer.append(AppendRequest { path: StreamPath::new("events").unwrap(), records: vec![record("z")], if_tail: None, idempotency_key: None }).await.unwrap();
+        // Complete the cross-opener publication refresh without polling follow.
+        reader.refresh_publication(true).await.unwrap();
+        assert_eq!(count.0.load(Ordering::SeqCst), cycle, "an unrelated key woke the follow");
+        writer.append(AppendRequest { path: StreamPath::new("events").unwrap(), records: vec![record("b")], if_tail: None, idempotency_key: None }).await.unwrap();
+        reader.refresh_publication(true).await.unwrap();
+        assert_eq!(count.0.load(Ordering::SeqCst), cycle + 1, "matching key did not wake the stable index");
+        let record = follow.next().await.unwrap().unwrap();
+        assert_eq!(record.sequence, 2 * cycle as u64 + 2);
+        assert_eq!(record.headers.keys()[0].as_ref(), b"b");
+        assert!(Pin::new(&mut follow).poll_next(&mut context).is_pending());
+    }
 }
