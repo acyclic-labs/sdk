@@ -238,6 +238,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 None,
                 None,
                 [0; 32],
+                Vec::new(),
             ),
         };
         // The policy label authenticates a descriptor; it grants no volume access.

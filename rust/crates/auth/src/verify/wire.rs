@@ -83,13 +83,8 @@ pub(super) fn decode(mut input: &[u8]) -> Result<Envelope, VerifyError> {
     })
 }
 
-pub(super) fn encode(
-    blocks: &[SignedBlockProto],
-    proof_tag: u64,
-    proof: &[u8],
-    version: u32,
-) -> Zeroizing<Vec<u8>> {
-    let len = blocks
+pub(super) fn encoded_len(blocks: &[SignedBlockProto], proof_len: usize, version: u32) -> usize {
+    blocks
         .iter()
         .map(|block| {
             let len = block.encoded_len();
@@ -97,13 +92,22 @@ pub(super) fn encode(
         })
         .sum::<usize>()
         + 1
-        + encoded_len_varint(proof.len() as u64)
-        + proof.len()
+        + encoded_len_varint(proof_len as u64)
+        + proof_len
         + if version == 0 {
             0
         } else {
             1 + encoded_len_varint(u64::from(version))
-        };
+        }
+}
+
+pub(super) fn encode(
+    blocks: &[SignedBlockProto],
+    proof_tag: u64,
+    proof: &[u8],
+    version: u32,
+) -> Zeroizing<Vec<u8>> {
+    let len = encoded_len(blocks, proof.len(), version);
     let mut output = Zeroizing::new(Vec::with_capacity(len));
     for block in blocks {
         encode_varint(10, &mut *output);

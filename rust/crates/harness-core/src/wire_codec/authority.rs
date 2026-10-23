@@ -87,6 +87,7 @@ pub(crate) fn decode_scope(scope: wire::Scope) -> Result<Scope> {
             .proof
             .try_into()
             .map_err(|_| Error::Invalid("invalid scope proof".into()))?,
+        scope.workload,
     ))
 }
 pub(super) fn parse_scope_agent(

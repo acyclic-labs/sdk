@@ -27,7 +27,7 @@ async fn unpolled_streams_do_not_block_appends() {
                 .await
                 .unwrap()
                 .map(|item| item.map(|_| ()))
-                .boxed()
+                .boxed_local()
         } else {
             let follow = if checked {
                 provider
@@ -45,7 +45,7 @@ async fn unpolled_streams_do_not_block_appends() {
                     .await
                     .unwrap()
             };
-            follow.map(|item| item.map(|_| ())).boxed()
+            follow.map(|item| item.map(|_| ())).boxed_local()
         };
         let held = provider.state.write().await;
         assert!(
@@ -98,14 +98,14 @@ async fn dropped_consumers_leave_no_queued_snapshot_reservation() {
                 .await
                 .unwrap()
                 .map(|item| item.map(|_| ()))
-                .boxed()
+                .boxed_local()
         } else {
             provider
                 .follow(path, 0, crate::FollowFilter::default())
                 .await
                 .unwrap()
                 .map(|item| item.map(|_| ()))
-                .boxed()
+                .boxed_local()
         };
         let held = provider.state.write().await;
         assert!(

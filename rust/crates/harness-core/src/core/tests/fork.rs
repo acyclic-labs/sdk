@@ -207,9 +207,9 @@ fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
     let agent = Some(AgentId::from_bytes([2; 16]));
     let scope = issuer().issue("foreign", &capabilities, agent, None, &mut None)?;
     foreign.scope = RecordedScope {
-        id: scope.id,
-        capabilities: scope.capabilities,
-        issuer: scope.issuer,
+        id: scope.id.clone(),
+        capabilities: scope.capabilities.clone(),
+        issuer: scope.issuer.clone(),
         agent: scope.agent,
     };
     foreign.attestation = issuer()

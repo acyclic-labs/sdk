@@ -441,7 +441,13 @@ impl VerifiedCapability {
         Ok(self)
     }
 
-    /// Sensitive transport bytes. The returned buffer is scrubbed when dropped.
+    /// Exact encoded length, without allocating or exposing the append secret.
+    pub fn encoded_len(&self) -> usize {
+        let proof_len = match &self.proof { Proof::Append(_) => 32, Proof::Sealed(_) => 64 };
+        wire::encoded_len(&self.signed, proof_len, VERSION)
+    }
+
+    /// Encodes this capability, zeroizing the returned append secret on drop.
     pub fn encode(&self) -> Zeroizing<Vec<u8>> {
         match &self.proof {
             Proof::Append(key) => {

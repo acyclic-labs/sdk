@@ -67,7 +67,7 @@ proptest! {
             if let Ok(child) = result {
                 prop_assert!(verifier.verify(&child, &mut None).is_ok());
                 prop_assert_eq!(child.agent(), agent);
-                prop_assert_eq!(child.parent_proof, Some(parent.proof));
+                prop_assert_eq!(child.parent_proof, Some(*parent.proof));
                 prop_assert!(child.capabilities().is_subset_of(&capabilities(root)));
                 parent = child;
             }

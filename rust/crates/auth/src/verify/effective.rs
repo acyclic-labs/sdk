@@ -37,10 +37,15 @@ impl<'a> ScopedFilter<'a> {
 
 /// A mandatory attribute pin with its declaring-block identity.
 pub struct ScopedPin<'a> {
+    declaring_block: usize,
     pin: &'a Pin,
     subject_id: &'a str,
 }
 impl<'a> ScopedPin<'a> {
+    /// Zero-based declaring block index, authenticated by the chain signature.
+    pub fn declaring_block(&self) -> usize {
+        self.declaring_block
+    }
     /// Attribute constraint declared by this block.
     pub fn pin(&self) -> &'a Pin {
         self.pin
@@ -122,8 +127,9 @@ impl<'a> Effective<'a> {
     /// deferring record facts at channel admission.
     pub fn pins(&self) -> impl Iterator<Item = ScopedPin<'a>> {
         self.scoped_caveats()
-            .filter_map(|(_, caveat, visible_lineage)| match &caveat.kind {
+            .filter_map(|(index, caveat, visible_lineage)| match &caveat.kind {
                 CaveatKind::Pin(pin) => Some(ScopedPin {
+                    declaring_block: index,
                     pin,
                     subject_id: visible_lineage.checked_sub(1)
                         .and_then(|index| self.capability.principal.lineage.get(index))

@@ -10,6 +10,7 @@ export {
   WasmClientViews as ClientViews,
   WasmTaskVolume as TaskVolume,
   WasmStream,
+  WasmSessionAuthority,
   type Channel,
   type Cursor,
   type FileKey,

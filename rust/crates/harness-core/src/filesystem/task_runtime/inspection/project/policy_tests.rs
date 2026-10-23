@@ -221,6 +221,7 @@ impl Source {
                 None,
                 None,
                 [0; 32],
+                Vec::new(),
             ),
         };
         let label = authorization.scope_label(&mut None)?;

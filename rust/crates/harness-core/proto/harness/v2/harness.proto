@@ -118,6 +118,7 @@ message Scope {
   bytes proof = 5;
   // Host-attested acting agent; absent scopes cannot write agent-private files.
   string agent_id = 6;
+  bytes workload = 7;
 }
 
 // Non-bearer metadata for a committed event. The event attestation is bound

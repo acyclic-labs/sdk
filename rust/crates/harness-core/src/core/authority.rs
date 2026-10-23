@@ -1,5 +1,6 @@
 //! Aggregate identity and host-issued authorization.
 use super::*;
+mod workload;
 /// Kind of independently ordered durable aggregate.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -101,8 +102,17 @@ pub struct Scope {
     /// Parent proof, present for attenuated scopes.
     #[cfg_attr(feature = "wasm", tsify(type = "number[] | null"))]
     pub(in crate::core) parent_proof: Option<[u8; 32]>,
-    /// Keyed proof over the complete grant.
-    pub(in crate::core) proof: [u8; 32],
+    /// Public identity of the authenticated workload tip.
+    pub(in crate::core) proof: Box<[u8; 32]>,
+    /// Ed25519 workload chain, including only its restricted append tip.
+    #[cfg_attr(feature = "wasm", tsify(type = "number[]"))]
+    pub(in crate::core) workload: Vec<u8>,
+}
+
+impl Drop for Scope {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.workload);
+    }
 }
 
 impl std::fmt::Debug for Scope {
@@ -144,6 +154,30 @@ impl Scope {
         &self.issuer
     }
 
+    /// Verifies the workload using only independently authenticated public trust.
+    /// The owner supplies its current revocation snapshot and trusted UTC time.
+    pub fn verify_workload(
+        &self, trust: &dyn acyclic_auth::verify::Trust, audience: &Authority,
+        now_unix_seconds: u64, work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        workload::verify_trusted(trust, audience, self, now_unix_seconds, work).map(|_| ())
+    }
+
+    /// Attenuates this workload offline; possession of a runtime root is unnecessary.
+    pub fn attenuate_workload(
+        &self, id: impl Into<String>, capabilities: &Capabilities,
+        trust: &dyn acyclic_auth::verify::Trust, audience: &Authority, now_unix_seconds: u64,
+    ) -> Result<Self> {
+        if !capabilities.is_subset_of(&self.capabilities) {
+            return Err(Error::Unauthorized("child scope cannot widen ancestor capabilities".into()));
+        }
+        let capability = workload::verify_trusted(trust, audience, self, now_unix_seconds, &mut None)?;
+        let mut scope = Self { id: id.into(), capabilities: capabilities.clone(), agent: self.agent,
+            issuer: self.issuer.clone(), parent_proof: Some(*self.proof), proof: Box::new([0; 32]), workload: Vec::new() };
+        workload::append(&capability, &mut scope)?;
+        Ok(scope)
+    }
+
     /// Copies the immutable grant under the caller's optional ledger.
     pub fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
         CodecQuota::produce(work, |quota| {
@@ -156,6 +190,8 @@ impl Scope {
         let capabilities = self.capabilities.logical_owned_bytes()?;
         (self.id.capacity() as u64)
             .checked_add(self.issuer.capacity() as u64)
+            .and_then(|bytes| bytes.checked_add(self.workload.capacity() as u64))
+            .and_then(|bytes| bytes.checked_add(32))
             .and_then(|bytes| bytes.checked_add(capabilities))
             .ok_or_else(|| Error::Invalid("scope owned byte count overflows".into()))
     }
@@ -167,6 +203,7 @@ impl Scope {
         agent: Option<AgentId>,
         parent_proof: Option<[u8; 32]>,
         proof: [u8; 32],
+        workload: Vec<u8>,
     ) -> Self {
         Self {
             id,
@@ -174,7 +211,8 @@ impl Scope {
             issuer,
             agent,
             parent_proof,
-            proof,
+            proof: Box::new(proof),
+            workload,
         }
     }
 }
@@ -229,6 +267,13 @@ impl AuthorityIssuer {
         Ok(AuthorityVerifier { id, key, audience })
     }
 
+    /// Public local account anchors. Callers must authenticate keyring updates
+    /// independently before using a changed snapshot for workload verification.
+    #[must_use]
+    pub fn public_workload_trust(&self) -> acyclic_auth::trust::Snapshot {
+        workload::trust(&self.id, &self.key)
+    }
+
     /// Signs one grant using the caller's optional ledger.
     pub fn issue(
         &self,
@@ -244,15 +289,18 @@ impl AuthorityIssuer {
             value.logical_owned_bytes()
         })?;
         let issuer = copying::copy_text(&self.id, &mut quota)?;
+        quota.replace(ownership::owned_sum([quota.retained(), 32])?)?;
         let mut scope = Scope {
             id,
             capabilities,
             issuer,
             agent,
             parent_proof,
-            proof: [0; 32],
+            proof: Box::new([0; 32]),
+            workload: Vec::new(),
         };
-        scope.proof = scope_proof(&self.key, &self.audience, &scope, quota.work())?;
+        workload::issue(self, &mut scope, quota.work())?;
+        quota.adopt(scope.workload.capacity() as u64)?;
         quota.transfer();
         Ok(scope)
     }
@@ -264,19 +312,7 @@ impl AuthorityIssuer {
         id: impl Into<String>,
         capabilities: &Capabilities,
     ) -> Result<Scope> {
-        self.verifier(&mut None)?.verify(parent, &mut None)?;
-        if !capabilities.is_subset_of(&parent.capabilities) {
-            return Err(Error::Unauthorized(
-                "child scope cannot widen ancestor capabilities".into(),
-            ));
-        }
-        self.issue(
-            &id.into(),
-            capabilities,
-            parent.agent,
-            Some(parent.proof),
-            &mut None,
-        )
+        parent.attenuate_workload(id, capabilities, &self.public_workload_trust(), &self.audience, workload::now())
     }
 
     /// Delegates one pinned private file to another agent without a fork or
@@ -299,7 +335,7 @@ impl AuthorityIssuer {
             &id.into(),
             &Capabilities::new([file.read_capability(&mut None)?]),
             Some(reader),
-            Some(owner_scope.proof),
+            Some(*owner_scope.proof),
             &mut None,
         )
     }
@@ -318,7 +354,7 @@ impl AuthorityIssuer {
             &id.into(),
             &Capabilities::new([volume.directory_read_capability(prefix, &mut None)?]),
             Some(reader),
-            Some(owner_scope.proof),
+            Some(*owner_scope.proof),
             &mut None,
         )
     }
@@ -425,23 +461,7 @@ impl AuthorityVerifier {
         scope: &Scope,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let recheck = work
-            .as_deref()
-            .and_then(|io| io.original_native_work())
-            .map(|work| crate::executor::PreparationIo::from_native_work(&work.recheck_admitted()))
-            .transpose()?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let expected = match recheck.as_ref() {
-            Some(io) => scope_proof(&self.key, audience, scope, &mut Some(&mut io.history_io()))?,
-            None => scope_proof(&self.key, audience, scope, work)?,
-        };
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let expected = scope_proof(&self.key, audience, scope, work)?;
-        if scope.issuer != self.id || scope.proof != expected {
-            return Err(Error::Unauthorized("scope proof is invalid".into()));
-        }
-        Ok(())
+        workload::verify(self, audience, scope, workload::now(), work).map(|_| ())
     }
 
     pub(in crate::core) fn canonical_proof<T: Serialize>(
@@ -667,58 +687,6 @@ impl AuthorityVerifier {
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[path = "effect_root_tests.rs"]
 pub(crate) mod effect_root_tests;
-
-fn scope_proof(
-    key: &[u8; 32],
-    audience: &Authority,
-    scope: &Scope,
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<[u8; 32]> {
-    let Scope {
-        id,
-        capabilities,
-        issuer,
-        agent,
-        parent_proof,
-        ..
-    } = scope;
-    let strings = || {
-        [audience.id.as_str(), issuer.as_str(), id.as_str()]
-            .into_iter()
-            .chain(capabilities.iter())
-    };
-    if let Some(work) = work.as_deref_mut() {
-        let fixed = 3 + u64::from(agent.is_some()) * 16 + u64::from(parent_proof.is_some()) * 32;
-        let bytes = strings().try_fold(fixed, |total, text| {
-            total
-                .checked_add(8)
-                .and_then(|total| total.checked_add(text.len() as u64))
-                .ok_or_else(|| Error::Invalid("scope hash byte count overflows".into()))
-        })?;
-        work.hashed_bytes(bytes)?;
-    }
-    let mut hasher = blake3::Hasher::new_keyed(key);
-    hasher.update(&[match audience.kind {
-        AggregateKind::Agent => 1,
-        AggregateKind::Conversation => 2,
-        AggregateKind::Session => 3,
-        AggregateKind::Turn => 4,
-        AggregateKind::Task => 5,
-    }]);
-    for value in strings() {
-        hasher.update(&(value.len() as u64).to_le_bytes());
-        hasher.update(value.as_bytes());
-    }
-    hasher.update(&[u8::from(agent.is_some())]);
-    if let Some(agent) = agent {
-        hasher.update(&agent.into_bytes());
-    }
-    hasher.update(&[u8::from(parent_proof.is_some())]);
-    if let Some(parent) = parent_proof {
-        hasher.update(parent);
-    }
-    Ok(*hasher.finalize().as_bytes())
-}
 
 fn effect_attestation_proof(
     key: &[u8; 32],

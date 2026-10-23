@@ -47,7 +47,7 @@ pub(super) fn run(
         (
             shared_bits(&matrix, request),
             Some(matrix.readers[1]),
-            Some(parent_scope.proof),
+            Some(*parent_scope.proof),
             true,
         )
     });
@@ -59,7 +59,7 @@ pub(super) fn run(
                     "child",
                     &requested,
                     parent_scope.agent(),
-                    Some(parent_scope.proof),
+                    Some(*parent_scope.proof),
                     &mut None,
                 )
             } else {

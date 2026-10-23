@@ -321,6 +321,7 @@ mod tests {
             capabilities: vec!["operation:observe".into(), "operation:cancel".into()],
             issuer: "runtime".into(),
             parent_proof: Vec::new(),
+            workload: Vec::new(),
             proof: vec![1; 32],
             agent_id: String::new(),
         };

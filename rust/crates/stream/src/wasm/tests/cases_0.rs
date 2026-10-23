@@ -42,7 +42,10 @@ fn hosted_http_errors_use_the_public_route_aware_vocabulary() {
 fn append_validation_uses_domain_limits() {
     let request = wire::AppendRequest {
         path: "events".to_owned(),
-        records: vec![bytes::Bytes::from_static(b"value")],
+        records: vec![wire::AppendRecord {
+            value: bytes::Bytes::from_static(b"value"),
+            ..Default::default()
+        }],
         if_tail: None,
         idempotency_key: None,
     };
@@ -89,7 +92,7 @@ fn commit_normalization_is_canonical_and_shape_checked() -> Result<(), StreamErr
         conditions: vec![CommitCondition::Absent { path: path.clone() }],
         mutations: vec![CommitMutation::Append {
             path,
-            records: vec![Bytes::from_static(b"value")],
+            records: vec![Bytes::from_static(b"value").into()],
         }],
         idempotency_key: key,
     };

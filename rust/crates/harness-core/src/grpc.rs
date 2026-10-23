@@ -268,7 +268,7 @@ mod tests {
                 expected_revision: revision,
                 scope: Some(wire::Scope {
                     id: "scope".into(), issuer: "runtime".into(), agent_id: "agent".into(),
-                    capabilities, parent_proof: proof.clone(), proof,
+                    capabilities, parent_proof: proof.clone(), workload: proof.clone(), proof,
                 }),
                 causal_parent: Some(wire::EventReference {
                     authority: Some(authority), revision: revision.wrapping_add(1),
@@ -532,6 +532,7 @@ mod tests {
             issuer: "runtime".into(),
             agent_id: String::new(),
             parent_proof: Vec::new(),
+            workload: Vec::new(),
             proof: vec![1; 32],
         };
         let observed = service

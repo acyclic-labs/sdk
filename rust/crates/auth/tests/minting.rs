@@ -13,6 +13,21 @@ fn certificates() -> Result<CertificateChain, Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn encoded_lengths_cover_append_and_sealed_chain_envelopes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let trust = Snapshot::default();
+    let mut cap = verify(&root(|_| {}), &trust, NOW)?;
+    for seed in 20..28 {
+        assert_eq!(cap.encoded_len(), cap.encode().len());
+        let sealed = verify(&cap.encode(), &trust, NOW)?.seal()?;
+        assert_eq!(sealed.encoded_len(), sealed.encode().len());
+        assert_eq!(sealed.encoded_len(), cap.encoded_len() + 32);
+        cap = cap.attenuate(vec![], &[seed; 32])?;
+    }
+    Ok(())
+}
+
+#[test]
 fn minted_workloads_keep_certificate_grants_audience_expiry_and_revocation()
 -> Result<(), Box<dyn std::error::Error>> {
     let trust = Snapshot::default();
