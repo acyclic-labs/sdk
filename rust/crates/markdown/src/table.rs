@@ -60,7 +60,7 @@ impl Table {
                 {
                     return;
                 }
-                #[cfg(test)]
+                #[cfg(any(test, feature = "audit-work"))]
                 crate::work::event(event);
                 self.cell.push(event.clone().into_static());
             }
@@ -92,7 +92,7 @@ impl Table {
             .enumerate()
             .skip(start)
             .map(|(index, cells)| {
-                #[cfg(test)]
+                #[cfg(any(test, feature = "audit-work"))]
                 crate::work::copy(
                     cells
                         .iter()
@@ -121,12 +121,12 @@ impl Table {
 
 pub(super) fn width(line: &Line) -> usize {
     if let [span] = line.spans.as_slice() {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "audit-work"))]
         crate::work::scan(span.text.len());
         UnicodeWidthStr::width(span.text.as_str())
     } else {
         let text = cell_text(line);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "audit-work"))]
         crate::work::scan(text.len());
         UnicodeWidthStr::width(text.as_str())
     }
@@ -134,7 +134,7 @@ pub(super) fn width(line: &Line) -> usize {
 
 fn cell_text(line: &Line) -> String {
     let length = line.spans.iter().map(|span| span.text.len()).sum();
-    #[cfg(test)]
+    #[cfg(any(test, feature = "audit-work"))]
     crate::work::copy(length);
     let mut text = String::with_capacity(length);
     for span in &line.spans {
@@ -188,7 +188,7 @@ fn trim(mut cell: Line, size: usize) -> Line {
     let mut used = 0;
     let mut remaining = 0;
     for (offset, cluster) in text.grapheme_indices(true) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "audit-work"))]
         crate::work::scan(cluster.len());
         let columns = UnicodeWidthStr::width(cluster);
         if used + columns > limit {

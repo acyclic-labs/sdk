@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(any(test, feature = "audit-work"))]
 use crate::work;
 use std::ops::Range;
 
@@ -47,7 +47,7 @@ pub(super) struct State {
 
 impl Clone for State {
     fn clone(&self) -> Self {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "audit-work"))]
         work::copy(self.openers.len() * std::mem::size_of::<Opener>());
         Self {
             openers: self.openers.clone(),
@@ -77,7 +77,7 @@ impl State {
             .filter(|(_, candidate)| candidate.end <= end)
         {
             let opener = &candidate.opener;
-            #[cfg(test)]
+            #[cfg(any(test, feature = "audit-work"))]
             work::scan(1);
             // The reopened span closes inside the reparse without a crossing
             // match, which removes its opener and children. Later closers then
@@ -88,7 +88,7 @@ impl State {
                 && *seen & bit == 0
             {
                 *seen |= bit;
-                #[cfg(test)]
+                #[cfg(any(test, feature = "audit-work"))]
                 {
                     work::copy(std::mem::size_of::<Opener>());
                     work::grow(std::mem::size_of::<Opener>());
@@ -102,7 +102,7 @@ impl State {
         }
         state.reverse();
         kept.reverse();
-        #[cfg(test)]
+        #[cfg(any(test, feature = "audit-work"))]
         work::copy(3 * (state.len() / 2) * std::mem::size_of::<Opener>());
         (
             Self {
@@ -134,7 +134,7 @@ impl State {
             prefix.push_str(if opener.both { ". " } else { "a " });
         }
         prefix.push_str(context.get(usize::from(leading)..).unwrap_or_default());
-        #[cfg(test)]
+        #[cfg(any(test, feature = "audit-work"))]
         work::grow(runs.len() * std::mem::size_of::<Range<usize>>());
         (prefix, runs)
     }
@@ -164,7 +164,7 @@ pub(super) fn scan(
         .take_while(|next| *next == byte)
         .count();
     let end = start + count;
-    #[cfg(test)]
+    #[cfg(any(test, feature = "audit-work"))]
     work::scan(position - start + count);
     let before = source.get(..start)?.chars().next_back().unwrap_or(' ');
     let after = source.get(end..)?.chars().next().unwrap_or(' ');

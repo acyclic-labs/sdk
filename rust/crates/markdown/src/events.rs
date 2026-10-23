@@ -5,7 +5,7 @@ type OwnedEvents = Vec<(Event<'static>, Range<usize>)>;
 type Charges = Vec<(usize, usize)>;
 
 fn frontier(source: &str, references: &crate::References) -> (OwnedEvents, Option<Charges>) {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "audit-work"))]
     crate::references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
     let mut calls = Vec::new();
     let mut callback = |link: BrokenLink<'_>| {
@@ -42,8 +42,11 @@ fn frontier(source: &str, references: &crate::References) -> (OwnedEvents, Optio
                 *dest_url = "".into();
                 *title = "".into();
             }
-            #[cfg(test)]
-            crate::work::event(&event);
+            #[cfg(any(test, feature = "audit-work"))]
+            {
+                crate::work::node();
+                crate::work::event(&event);
+            }
             (event.into_static(), range)
         })
         .collect();
@@ -63,7 +66,7 @@ pub(crate) fn scoped(
     options: pulldown_cmark::Options,
     mut budget: usize,
 ) -> (OwnedEvents, Charges) {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "audit-work"))]
     crate::references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
     let mut calls = Vec::new();
     let mut exhausted = false;
@@ -88,12 +91,15 @@ pub(crate) fn scoped(
     let events = Parser::new_with_broken_link_callback(source, options, Some(&mut callback))
         .into_offset_iter()
         .map(|(event, range)| {
-            #[cfg(test)]
-            crate::work::event(&event);
+            #[cfg(any(test, feature = "audit-work"))]
+            {
+                crate::work::node();
+                crate::work::event(&event);
+            }
             (event.into_static(), range)
         })
         .collect();
-    #[cfg(test)]
+    #[cfg(any(test, feature = "audit-work"))]
     crate::work::copy(calls.len() * std::mem::size_of::<(usize, usize)>() * 2);
     (events, calls)
 }
@@ -164,7 +170,7 @@ fn inline(event: &Event<'_>) -> bool {
 
 impl crate::Markdown {
     pub(super) fn parse_frontier(&mut self, source: &str) -> (OwnedEvents, Option<Charges>) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "audit-work"))]
         {
             crate::work::copy(source.len());
             self.parsed_bytes += source.len();

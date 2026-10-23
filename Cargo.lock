@@ -750,6 +750,7 @@ dependencies = [
 name = "acyclic-markdown"
 version = "0.2.0"
 dependencies = [
+ "acyclic-markdown",
  "proptest",
  "pulldown-cmark",
  "syntect",

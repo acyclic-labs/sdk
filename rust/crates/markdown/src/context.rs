@@ -133,7 +133,7 @@ pub(super) fn container(source: &str, position: usize, tag: &Tag<'_>) -> Contain
 }
 
 fn columns(source: &str, start: usize) -> usize {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "audit-work"))]
     work::scan(source.len());
     source.bytes().fold(start, |column, byte| {
         column + if byte == b'\t' { 4 - column % 4 } else { 1 }
@@ -186,14 +186,18 @@ pub(super) fn html_closed(source: &str, range: &Range<usize>, parents: &[Contain
     let raw = source.get(range.clone()).unwrap_or_default();
     let end = prefix.len() + row.len() + raw.len();
     let probe = format!("{prefix}{row}{raw}{row}x\n");
-    #[cfg(test)]
+    #[cfg(any(test, feature = "audit-work"))]
     {
         work::copy(probe.len());
         references::PARSED_BYTES.with(|work| work.set(work.get() + probe.len()));
     }
     Parser::new_ext(&probe, options())
         .into_offset_iter()
-        .any(|(event, range)| matches!(event, Event::End(TagEnd::HtmlBlock)) && range.end <= end)
+        .any(|(event, range)| {
+            #[cfg(any(test, feature = "audit-work"))]
+            work::node();
+            matches!(event, Event::End(TagEnd::HtmlBlock)) && range.end <= end
+        })
 }
 
 pub(super) fn context_prefix(context: &[Container]) -> String {

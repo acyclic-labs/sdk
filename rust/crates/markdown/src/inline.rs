@@ -137,7 +137,7 @@ impl Markdown {
             let sentinel = prefix.len();
             let tail = self.source.get(attempt.offset..).unwrap_or_default();
             let source = format!("{prefix}{tail}");
-            #[cfg(test)]
+            #[cfg(any(test, feature = "audit-work"))]
             work::copy(source.len() + prefix.len());
             let (events, calls) = events::scoped(
                 &source,
@@ -225,7 +225,7 @@ impl Markdown {
             sentinel,
             (&cuts, mark),
         );
-        #[cfg(test)]
+        #[cfg(any(test, feature = "audit-work"))]
         {
             let count = renderer.lines.len() + 1;
             work::copy(count * std::mem::size_of::<Line>());
@@ -472,7 +472,7 @@ impl Builder<'_> {
                 .iter()
                 .filter(|(position, _)| *position <= end),
         );
-        #[cfg(test)]
+        #[cfg(any(test, feature = "audit-work"))]
         work::grow(fallbacks.len() * std::mem::size_of::<Fallback>());
         Checkpoint {
             offset: self.attempt.offset + end - self.parse.sentinel,
@@ -733,12 +733,12 @@ fn table_candidate(source: &str) -> bool {
 // break. Keep its source text in the rendered checkpoint, not in parser input.
 fn row_prefix(source: &str) -> String {
     let row = source.rsplit('\n').next().unwrap_or_default();
-    #[cfg(test)]
+    #[cfg(any(test, feature = "audit-work"))]
     work::scan(row.len() * 2);
     if !row.contains('|') {
         return left_context(source);
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "audit-work"))]
     work::scan(row.len());
     let (mut escaped, mut content) = (false, false);
     let mut prefix = String::new();
@@ -821,7 +821,7 @@ fn boundary(
     sentinel: usize,
 ) -> (usize, Option<Cut>, Vec<Candidate>) {
     let mut scan = LimitScan::new(source);
-    #[cfg(test)]
+    #[cfg(any(test, feature = "audit-work"))]
     work::scan(source.len() * 2);
     for (event, range) in events {
         scan.event(event, range);
@@ -1108,7 +1108,7 @@ impl Cut {
     // Top-level openers all precede a reopened span, so they come first. The
     // span's own opener follows them.
     fn candidates(&self, top: &[Candidate]) -> (Vec<Candidate>, Option<usize>) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "audit-work"))]
         work::copy((top.len() + self.openers.len()) * std::mem::size_of::<Candidate>());
         let marked = (!self.openers.is_empty()).then_some(top.len());
         ([top, &self.openers].concat(), marked)
@@ -1198,7 +1198,7 @@ impl render::Renderer {
             self.lines
                 .iter()
                 .rposition(|line| {
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "audit-work"))]
                     work::visibility(1);
                     !line.spans.is_empty()
                 })

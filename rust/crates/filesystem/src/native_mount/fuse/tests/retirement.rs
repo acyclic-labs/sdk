@@ -110,16 +110,16 @@ fn interleaving(meter: bool) -> Result<(), Box<dyn std::error::Error>> {
             acknowledge.send(())?;
         }
         Event::Retired(result) => {
-            worker.join().unwrap();
+            worker.join().map_err(|_| "retirement worker panicked")?;
             panic!("retirement returned before the kernel acknowledgment: {result:?}");
         }
     }
     let Event::Retired(result) = observed.recv()? else {
         panic!("retirement polled again instead of awaiting acknowledgment");
     };
-    worker.join().unwrap();
+    worker.join().map_err(|_| "retirement worker panicked")?;
     result?;
-    assert!(state.lock().unwrap().is_retired());
+    assert!(state.lock().map_err(|_| "retirement state poisoned")?.is_retired());
     let receipt = original.receipt();
     assert_eq!(receipt.backend_write_operations, 1);
     assert_eq!(receipt.backend_read_operations, 1);

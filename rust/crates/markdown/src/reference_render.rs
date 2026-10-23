@@ -49,7 +49,7 @@ impl Markdown {
         if !cache.lines.is_empty()
             && let Some(line) = out.lines.get_mut(cache.lines.start - self.lines.len())
         {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "audit-work"))]
             work::copy(std::mem::size_of::<Line>());
             replacement.reuse_line(std::mem::take(line));
         }
@@ -105,7 +105,7 @@ impl Markdown {
                 complete = false;
                 break;
             }
-            #[cfg(test)]
+            #[cfg(any(test, feature = "audit-work"))]
             {
                 self.reference_cache_visits += 1;
             }
@@ -121,7 +121,7 @@ impl Markdown {
                 if !cache.lines.is_empty()
                     && let Some(line) = self.lines.get_mut(cache.lines.start)
                 {
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "audit-work"))]
                     work::copy(std::mem::size_of::<Line>());
                     renderer.reuse_line(std::mem::take(line));
                 }
@@ -158,7 +158,7 @@ impl Markdown {
             self.replace_reference_lines(replacements, length);
         } else {
             for (index, lines) in replacements {
-                #[cfg(test)]
+                #[cfg(any(test, feature = "audit-work"))]
                 {
                     self.reference_cache_visits += 1;
                     self.reference_moved_lines += lines.len();
@@ -195,18 +195,18 @@ impl Markdown {
             .map_or(0, |cache| cache.lines.start);
         let previous_length = self.lines.len();
         let previous_stable = self.stable_lines;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "audit-work"))]
         work::copy((previous_length - first_line) * std::mem::size_of::<Line>());
         let mut previous = self.lines.split_off(first_line).into_iter();
         let mut cursor = first_line;
         let mut lines = std::mem::take(&mut self.lines);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "audit-work"))]
         work::grow(length.saturating_sub(previous_length) * std::mem::size_of::<Line>());
         lines.reserve(length.saturating_sub(lines.len()));
         // Caches are appended in source order. Walk them once while consuming
         // each old line once; neither splice a suffix nor rescan cache ranges.
         for (index, cache) in self.cached.iter_mut().enumerate().skip(first_cache) {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "audit-work"))]
             {
                 self.reference_cache_visits += 1;
             }
@@ -224,7 +224,7 @@ impl Markdown {
             }
         }
         lines.extend(previous);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "audit-work"))]
         {
             self.reference_moved_lines += lines.len() - first_line;
             work::copy((lines.len() - first_line) * std::mem::size_of::<Line>());

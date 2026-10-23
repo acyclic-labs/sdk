@@ -14,8 +14,9 @@ mod stream_table;
 mod style;
 mod table;
 mod visibility;
-#[cfg(test)]
-mod work;
+#[cfg(any(test, feature = "audit-work"))]
+#[doc(hidden)]
+pub mod work;
 
 use context::{container, context_event, context_prefix};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
@@ -53,15 +54,15 @@ pub struct Markdown {
     plain_heading: bool,
     plain_spaces: usize,
     cr: bool,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "audit-work"))]
     parsed_bytes: usize,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "audit-work"))]
     reference_cache_visits: usize,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "audit-work"))]
     reference_moved_lines: usize,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "audit-work"))]
     boundary_work: usize,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "audit-work"))]
     visible_work: std::cell::Cell<usize>,
 }
 
@@ -186,10 +187,11 @@ impl Markdown {
                     self.plain_spaces += appended.len();
                 } else {
                     if let Some(span) = line.spans.last_mut() {
-                        #[cfg(test)]
+                        #[cfg(any(test, feature = "audit-work"))]
                         {
                             work::copy(self.plain_spaces + visible.len());
                             work::grow(self.plain_spaces + visible.len());
+                            work::span_copy(self.plain_spaces + visible.len());
                         }
                         span.text
                             .extend(std::iter::repeat_n(' ', self.plain_spaces));
@@ -233,7 +235,7 @@ impl Markdown {
             let tail = self.source.get(self.offset..).unwrap_or_default();
             let prefix = context_prefix(&self.context);
             let source = format!("{prefix}{tail}");
-            #[cfg(test)]
+            #[cfg(any(test, feature = "audit-work"))]
             work::copy(source.len());
             let keys = self.references.update(&source, self.offset, prefix.len());
             changed = changed.min(self.resolve(&keys));
@@ -257,7 +259,7 @@ impl Markdown {
             .unwrap_or_default()
             .iter()
             .rposition(|line| {
-                #[cfg(test)]
+                #[cfg(any(test, feature = "audit-work"))]
                 self.visible_work.set(self.visible_work.get() + 1);
                 !line.spans.is_empty()
             })
@@ -275,7 +277,7 @@ impl Markdown {
     }
 
     fn index_visible(&mut self, index: usize) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "audit-work"))]
         self.visible_work.set(self.visible_work.get() + 1);
         self.visibility.set(
             index,
@@ -303,10 +305,10 @@ impl Markdown {
     }
 
     fn append(&mut self, delta: &str) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "audit-work"))]
         work::copy(delta.len());
         if !self.cr && !delta.contains('\r') {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "audit-work"))]
             if delta.len() > self.source.capacity() - self.source.len() {
                 work::grow_source(self.source.len());
             }
@@ -328,10 +330,11 @@ impl Markdown {
         source: &str,
         events: &[(Event<'_>, Range<usize>)],
     ) -> Vec<bool> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "audit-work"))]
         {
             // Charge the full newline-search input and each reverse-sweep event.
             self.boundary_work += source.len() + events.len();
+            work::scan(source.len());
         }
         let newline = source.rfind('\n');
         let mut next = false;
@@ -553,7 +556,7 @@ impl Markdown {
                 .unwrap_or_default()
                 .split_inclusive('\n')
                 .take_while(|row| {
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "audit-work"))]
                     work::scan(row.len() * 2);
                     row.ends_with('\n')
                         && row.bytes().all(|byte| matches!(byte, b' ' | b'\t' | b'\n'))

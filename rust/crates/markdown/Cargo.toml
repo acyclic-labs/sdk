@@ -8,6 +8,11 @@ license.workspace = true
 repository.workspace = true
 description = "Incremental Markdown presentation as renderer-independent styled lines"
 
+[features]
+# Work instrumentation is enabled by the development dependency for tests and
+# benches; ordinary consumers do not pay for counters.
+audit-work = []
+
 [[test]]
 name = "streaming"
 path = "tests/streaming.rs"
@@ -28,6 +33,7 @@ unicode-segmentation = "1.13"
 unicase = "2.10"
 
 [dev-dependencies]
+acyclic-markdown = { path = ".", features = ["audit-work"] }
 proptest.workspace = true
 
 [lints]

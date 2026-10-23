@@ -1,76 +1,99 @@
-//! Checks that ordinary appends do not scale with finalized content or references.
+//! Checks append work independently of completed history and machine load.
 
-use acyclic_markdown::Markdown;
+use acyclic_markdown::{
+    Markdown,
+    work::{self, Counts},
+};
 use std::{
     hint::black_box,
     time::{Duration, Instant},
 };
 
-fn measure(small: &str, large: &str, delta: impl Fn(usize) -> String) -> (Duration, Duration) {
+fn bounded(small: Counts, large: Counts) -> bool {
+    large.rescanned_bytes <= small.rescanned_bytes
+        && large.reparsed_nodes <= small.reparsed_nodes
+        && large.span_copy_bytes <= small.span_copy_bytes
+}
+
+fn append(markdown: &mut Markdown, delta: &str) -> (Counts, Duration) {
+    let before = work::snapshot();
+    let started = Instant::now();
+    black_box(markdown.push(black_box(delta)));
+    (work::snapshot() - before, started.elapsed())
+}
+
+// Execute an actual document-start parser variant, rather than inventing a
+// larger counter value. The same production parsing and copying hooks see it.
+fn reparse(markdown: &mut Markdown, delta: &str) -> Counts {
+    let mut source = std::mem::take(markdown).into_source();
+    source.push_str(delta);
+    let before = work::snapshot();
+    markdown.push(&source);
+    work::snapshot() - before
+}
+
+fn p99(times: &mut [Duration]) -> Duration {
+    times.sort_unstable();
+    times
+        .get(times.len() * 99 / 100)
+        .copied()
+        .unwrap_or_default()
+}
+
+fn check(name: &str, small: &str, large: &str, delta: impl Fn(usize) -> String) {
     let mut small_markdown = Markdown::default();
     let mut large_markdown = Markdown::default();
     small_markdown.push(small);
     large_markdown.push(large);
-    for index in 0..32 {
-        let delta = delta(index);
-        small_markdown.push(&delta);
-        large_markdown.push(&delta);
-    }
     let mut small_times = Vec::new();
     let mut large_times = Vec::new();
-    for index in 32..544 {
+    for index in 0..544 {
         let delta = delta(index);
-        let sample = |markdown: &mut Markdown, times: &mut Vec<Duration>| {
-            let before = Instant::now();
-            black_box(markdown.push(black_box(&delta)));
-            times.push(before.elapsed());
-        };
-        if index % 2 == 0 {
-            sample(&mut small_markdown, &mut small_times);
-            sample(&mut large_markdown, &mut large_times);
+        let (small, large) = if index % 2 == 0 {
+            let small = append(&mut small_markdown, &delta);
+            (small, append(&mut large_markdown, &delta))
         } else {
-            sample(&mut large_markdown, &mut large_times);
-            sample(&mut small_markdown, &mut small_times);
+            let large = append(&mut large_markdown, &delta);
+            (append(&mut small_markdown, &delta), large)
+        };
+        assert!(
+            bounded(small.0, large.0),
+            "{name} push {index}: append work scales with history: {:?} -> {:?}",
+            small.0,
+            large.0
+        );
+        if index == 543 {
+            println!("{name}: final append work {:?} / {:?}", small.0, large.0);
+        }
+        if index >= 32 {
+            small_times.push(small.1);
+            large_times.push(large.1);
         }
     }
-    let p99 = |times: &mut Vec<Duration>| {
-        times.sort_unstable();
-        times
-            .get(times.len() * 99 / 100)
-            .copied()
-            .unwrap_or_default()
-    };
-    (p99(&mut small_times), p99(&mut large_times))
-}
-
-fn check(name: &str, small: &str, large: &str, delta: impl Fn(usize) -> String + Copy) -> bool {
-    // Warm both instances, then interleave appends to compare under the same load.
-    let mut small_times = Vec::new();
-    let mut large_times = Vec::new();
-    for _ in 0..3 {
-        let (small, large) = measure(small, large, delta);
-        small_times.push(small);
-        large_times.push(large);
-    }
-    small_times.sort_unstable();
-    large_times.sort_unstable();
-    let small = small_times.get(1).copied().unwrap_or_default();
-    let large = large_times.get(1).copied().unwrap_or_default();
+    let small = p99(&mut small_times);
+    let large = p99(&mut large_times);
     println!(
-        "{name}: p99 {:.3} / {:.3} us, ratio {:.2}",
+        "{name}: p99 {:.3} / {:.3} us, ratio {:.2} (information only)",
         small.as_secs_f64() * 1e6,
         large.as_secs_f64() * 1e6,
         large.as_secs_f64() / small.as_secs_f64()
     );
-    large <= small.mul_f64(1.5)
+    let delta = delta(544);
+    let small = reparse(&mut small_markdown, &delta);
+    let large = reparse(&mut large_markdown, &delta);
+    assert!(
+        !bounded(small, large),
+        "{name}: document-start negative control escaped the work assertion"
+    );
+    println!("{name}: document-start negative control rejected: {small:?} -> {large:?}");
 }
 
 fn main() {
     let fence = |lines| format!("```rust\n{}```\n\n", "let x = 1;\n".repeat(lines));
-    // Initialize shared syntax tables before timing any append.
+    // Initialize shared syntax tables before collecting informational timings.
     let mut warm = Markdown::default();
     warm.push(&fence(1));
-    let mut passed = check(
+    check(
         "unused definitions (100 / 10000 code lines)",
         &fence(100),
         &fence(10_000),
@@ -82,19 +105,19 @@ fn main() {
             "  let x = 1;\n".repeat(lines)
         )
     };
-    passed &= check(
+    check(
         "nested fence (100 / 10000 code lines)",
         &nested(100),
         &nested(10_000),
         |_| "- next\n".into(),
     );
-    passed &= check(
+    check(
         "paragraph (1 / 100 KiB)",
         &"x".repeat(1024),
         &"x".repeat(100 * 1024),
         |_| "x".into(),
     );
-    passed &= check(
+    check(
         "punctuation (1 / 100 KiB)",
         &"x".repeat(1024),
         &"x".repeat(100 * 1024),
@@ -106,13 +129,13 @@ fn main() {
             "- earlier\n".repeat(count)
         )
     };
-    passed &= check(
+    check(
         "lazy list references (100 / 10000 items)",
         &lazy(100),
         &lazy(10_000),
         |_| "u".into(),
     );
-    passed &= check(
+    check(
         "indented code (100 / 10000 lines)",
         &"    indented\n".repeat(100),
         &"    indented\n".repeat(10_000),
@@ -126,11 +149,17 @@ fn main() {
         source.push_str("a *unfinished ");
         source
     };
-    passed &= check(
+    check(
         "references (100 / 10000 definitions)",
         &definitions(100),
         &definitions(10_000),
         |_| "x".into(),
     );
-    assert!(passed, "append p99 scales with completed history");
+    let emphasis = |count| format!("{}a *unfinished ", "*completed*\n\n".repeat(count));
+    check(
+        "emphasis (100 / 10000 completed blocks)",
+        &emphasis(100),
+        &emphasis(10_000),
+        |_| "x".into(),
+    );
 }
