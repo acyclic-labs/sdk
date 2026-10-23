@@ -18,7 +18,11 @@ import subprocess
 def baseline_complete(output):
     marker = re.search(r'^GATE_TEST_BASELINE_COMPLETE rc=(\d+)$', output, re.M)
     build_failed = re.search(r'^error: (?:could not compile|failed to |the lock file|no matching|package ID)', output, re.M)
-    return bool(marker and not build_failed and (marker[1] == '0' or re.search(r'^test result:|^error: test failed, to rerun pass ', output, re.M)))
+    executor = re.search(r'^GATE_TEST_BASELINE_EXECUTOR rc=(\d+)$', output, re.M)
+    isolation_failed = re.search(r'^error: GATE_HOME_LEAK |^BB_DISK_LOW |^\[buildbox\] (?:cleanup|export) INFRA:', output, re.M)
+    if marker and marker[1] == '0' and executor and executor[1] != '0':
+        return False
+    return bool(marker and not build_failed and not isolation_failed and (marker[1] == '0' or re.search(r'^test result:|^error: test failed, to rerun pass ', output, re.M)))
 
 
 def main():
@@ -163,7 +167,9 @@ exit 0
             (args.worktree / '.gate-test-baseline.sh').write_text(script, encoding='utf-8', newline='\n')
             with log.open('w', encoding='utf-8', newline='\n') as output:
                 env = dict(os.environ, BUILD_SLOT_TIER='merge', WSLENV='BUILD_SLOT_TIER')
-                subprocess.run([shutil.which('pwsh'), '-NoProfile', '-File', 'Q:/lanes/bs.ps1', '--env', 'BUILD_SLOT_BUILDBOX_HOST=bb2', '--env', 'BUILD_SLOT_TIER=merge', '--env', 'BUILD_SLOT_LABEL=pr-gate-baseline', '--env', 'BUILD_SLOT_PHASE=pr-baseline', '--env', 'BUILD_SLOT_PR=' + os.environ.get('GATE_BASELINE_PRS', ''), '--env', 'BUILD_SLOT_GATE_LOG=' + log.as_posix(), 'bash', '.gate-test-baseline.sh'], cwd=args.worktree, env=env, stdout=output, stderr=subprocess.STDOUT)
+                result = subprocess.run([shutil.which('pwsh'), '-NoProfile', '-File', 'Q:/lanes/bs.ps1', '--env', 'BUILD_SLOT_BUILDBOX_HOST=bb2', '--env', 'BUILD_SLOT_TIER=merge', '--env', 'BUILD_SLOT_LABEL=pr-gate-baseline', '--env', 'BUILD_SLOT_PHASE=pr-baseline', '--env', 'BUILD_SLOT_PR=' + os.environ.get('GATE_BASELINE_PRS', ''), '--env', 'BUILD_SLOT_GATE_LOG=' + log.as_posix(), 'bash', '.gate-test-baseline.sh'], cwd=args.worktree, env=env, stdout=output, stderr=subprocess.STDOUT)
+            with log.open('a', encoding='utf-8', newline='\n') as output:
+                output.write(f'GATE_TEST_BASELINE_EXECUTOR rc={result.returncode}\n')
     if not complete(log):
         raise RuntimeError('baseline did not complete: ' + log.as_posix())
     print(log.as_posix())

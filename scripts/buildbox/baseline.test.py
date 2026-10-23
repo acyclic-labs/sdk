@@ -7,7 +7,7 @@ class BaselineTests(unittest.TestCase):
  def setUp(self):
   self.temp=tempfile.TemporaryDirectory(dir='/mnt/bb/tmp',prefix='r19-baseline-');self.d=Path(self.temp.name)
  def tearDown(self):self.temp.cleanup()
- def qualify(self,negative=False):
+ def qualify(self,negative=False,executor=None):
   root=self.d;work=root/'work';work.mkdir();(root/'bin').mkdir()
   (root/'hangs').write_text('');(root/'gate-baseline.py').write_text('def coverage(text,packages):return set()\n')
   shutil.copyfile(HERE.parent/'gate-test-runner.sh',root/'gate-test-runner.sh')
@@ -39,7 +39,8 @@ esac
   def run(argv,**kw):
    if argv[0]=='git':return subprocess.CompletedProcess(argv,0)
    env={**kw['env'],'PATH':str(root/'bin')+':'+os.environ['PATH'],'GATE_MAIN_TARGET_DIR':str(root/'cache')}
-   return subprocess.run(['bash',str(work/'.gate-test-baseline.sh')],cwd=work,env=env,stdout=kw['stdout'],stderr=kw['stderr'])
+   result=subprocess.run(['bash',str(work/'.gate-test-baseline.sh')],cwd=work,env=env,stdout=kw['stdout'],stderr=kw['stderr'])
+   return result if executor is None else subprocess.CompletedProcess(result.args,executor)
   module.subprocess=types.SimpleNamespace(DEVNULL=subprocess.DEVNULL,STDOUT=subprocess.STDOUT,run=run,check_output=lambda *a,**k:json.dumps(metadata).encode())
   module.shutil=types.SimpleNamespace(copyfile=shutil.copyfile,which=lambda name:name)
   argv=sys.argv;sys.argv=['baseline',str(root),'a'*40,str(pr),'--scope',str(scope),'--baseline-log',str(baseline),'--worktree',str(work),'--results',str(results)]
@@ -59,6 +60,12 @@ esac
  def test_old_default_target_selection_misses_the_main_benchmark(self):
   text,calls,_=self.qualify(True);self.assertNotIn(' --all-targets ',calls)
   self.assertIn('GATE_TEST_BASELINE_COMPLETE rc=0',text);self.assertNotIn('runtime signing custody is closed',text)
+ def test_executor_failure_cannot_qualify_a_passing_main_payload(self):
+  with self.assertRaisesRegex(RuntimeError,'baseline did not complete'):
+   self.qualify(negative=True,executor=224)
+  logs=[p for p in (self.d/'results').glob('*.log') if p.name!='old.log']
+  self.assertEqual(len(logs),1)
+  self.assertIn('GATE_TEST_BASELINE_EXECUTOR rc=224',logs[0].read_text())
  def test_actual_verdict_qualifies_non_libtest_targets_without_hiding_new_failures(self):
   root=self.d;(root/'.codex-fleet').mkdir();(root/'flakes').write_text('')
   helper=root/'failed-tests.sh';source=(HERE/'coordinator/failed-tests.sh').read_text()
