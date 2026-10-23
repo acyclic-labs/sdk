@@ -104,7 +104,7 @@ impl Before {
                     records.1 = after;
                     let mut next = before.unwrap_or(0);
                     while next < after {
-                        let mut batch = provider.read(ReadRequest { path: path.clone(), from: next, limit: crate::MAX_ITEMS }).await?;
+                        let mut batch = provider.read(ReadRequest { path: path.clone(), from: next, limit: crate::wire::StreamLimit::MaxItems as u32 }).await?;
                         let initial = next;
                         while let Some(record) = batch.next().await {
                             let record = record?;
