@@ -238,7 +238,9 @@ async fn active_home_replacement_rediscovers_and_resumes_over_tls() -> TestResul
     provider
         .append(AppendRequest {
             path: StreamPath::new("events")?,
-            records: (0..6).map(|index| OwnedBytes::from(vec![index])).collect(),
+            records: (0..6)
+                .map(|index| OwnedBytes::from(vec![index]).into())
+                .collect(),
             if_tail: None,
             idempotency_key: None,
         })
@@ -260,7 +262,13 @@ async fn active_home_replacement_rediscovers_and_resumes_over_tls() -> TestResul
     )
     .await?;
     let client = fixture.client()?;
-    let mut records = client.follow(StreamPath::new("events")?, 0).await?;
+    let mut records = client
+        .follow(
+            StreamPath::new("events")?,
+            0,
+            crate::FollowFilter::default(),
+        )
+        .await?;
     for _ in 0..2 {
         assert_eq!(next(&mut records).await?, next(&mut expected).await?);
     }
@@ -283,7 +291,13 @@ async fn active_home_replacement_rediscovers_and_resumes_over_tls() -> TestResul
     for _ in 2..6 {
         assert_eq!(next(&mut records).await?, next(&mut expected).await?);
     }
-    let mut later = client.follow(StreamPath::new("events")?, 6).await?;
+    let mut later = client
+        .follow(
+            StreamPath::new("events")?,
+            6,
+            crate::FollowFilter::default(),
+        )
+        .await?;
     append(&provider, "events", 1).await?;
     let mut tail = provider
         .read(crate::ReadRequest {

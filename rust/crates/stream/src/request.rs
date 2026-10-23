@@ -13,6 +13,7 @@ pub(crate) fn validate_records(records: &[AppendRecord]) -> Result<(), StreamErr
         if record.payload_bytes() > MAX_RECORD_BYTES {
             return Err(StreamError::LimitExceeded);
         }
+        crate::changes::validate(&record.value, &record.headers)?;
     }
     Ok(())
 }

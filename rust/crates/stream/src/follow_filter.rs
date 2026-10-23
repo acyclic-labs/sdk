@@ -101,7 +101,46 @@ impl FollowFilter {
 
     /// Returns whether opaque record headers satisfy the full intersection.
     pub fn matches(&self, headers: &RecordHeaders) -> bool {
+        if crate::changes::marked(headers) {
+            return headers
+                .keys()
+                .iter()
+                .any(|key| self.matches_entry(key, headers));
+        }
         self.0.iter().all(|clause| clause.matches(headers))
+    }
+
+    fn matches_entry(&self, key: &[u8], headers: &RecordHeaders) -> bool {
+        self.0.iter().all(|clause| {
+            (clause.filter.keys.is_empty() || clause.contains(key))
+                && clause.matches_attributes(headers)
+        })
+    }
+
+    /// Projects typed provider changes before delivery. Opaque values retain
+    /// the stronger rule that every key must satisfy every authority ceiling.
+    pub fn project(&self, mut record: crate::Record) -> Result<Option<crate::Record>, StreamError> {
+        if !self.matches(&record.headers) {
+            return Ok(None);
+        }
+        if crate::changes::marked(&record.headers) {
+            let mut changes = crate::changes::decode(&record.value, &record.headers)?;
+            changes
+                .entries
+                .retain(|entry| self.matches_entry(&entry.key, &record.headers));
+            if changes.entries.len() != record.headers.keys().len() {
+                record.headers = RecordHeaders::new(
+                    changes
+                        .entries
+                        .iter()
+                        .map(|entry| entry.key.clone().into())
+                        .collect(),
+                    record.headers.attributes().to_vec(),
+                )?;
+                record.value = changes.encode_to_vec().into();
+            }
+        }
+        Ok(Some(record))
     }
 
     pub(crate) fn transport_filter(&self) -> Result<wire::SessionFilter, StreamError> {
@@ -143,17 +182,36 @@ impl FollowFilter {
 }
 
 impl Clause {
-    fn matches(&self, headers: &RecordHeaders) -> bool {
-        let in_range = |key: &crate::OwnedBytes| {
-            let index = self
-                .filter
+    fn contains(&self, key: &[u8]) -> bool {
+        let index = self
+            .filter
+            .keys
+            .partition_point(|range| range.start.as_ref() <= key);
+        index.checked_sub(1).is_some_and(|index| {
+            self.filter
                 .keys
-                .partition_point(|range| range.start.as_ref() <= key.as_ref());
-            index.checked_sub(1).is_some_and(|index| {
-                let end = &self.filter.keys[index].end;
-                end.is_empty() || key.as_ref() < end.as_ref()
-            })
-        };
+                .get(index)
+                .is_some_and(|range| range.end.is_empty() || key < range.end.as_ref())
+        })
+    }
+
+    fn matches_attributes(&self, headers: &RecordHeaders) -> bool {
+        self.filter.attributes.iter().all(|clause| {
+            headers
+                .attributes()
+                .binary_search_by(|attribute| attribute.name.cmp(&clause.name))
+                .ok()
+                .and_then(|index| headers.attributes().get(index))
+                .is_some_and(|attribute| {
+                    clause
+                        .any_of
+                        .binary_search_by(|value| value.as_ref().cmp(attribute.value.as_ref()))
+                        .is_ok()
+                })
+        })
+    }
+    fn matches(&self, headers: &RecordHeaders) -> bool {
+        let in_range = |key: &crate::OwnedBytes| self.contains(key);
         (self.filter.keys.is_empty()
             || !headers.keys().is_empty()
                 && if self.all_keys {
@@ -161,22 +219,7 @@ impl Clause {
                 } else {
                     headers.keys().iter().any(in_range)
                 })
-            && self.filter.attributes.iter().all(|clause| {
-                headers
-                    .attributes()
-                    .binary_search_by(|attribute| attribute.name.cmp(&clause.name))
-                    .ok()
-                    .is_some_and(|index| {
-                        clause
-                            .any_of
-                            .binary_search_by(|value| {
-                                value
-                                    .as_ref()
-                                    .cmp(headers.attributes()[index].value.as_ref())
-                            })
-                            .is_ok()
-                    })
-            })
+            && self.matches_attributes(headers)
     }
 }
 
@@ -221,7 +264,7 @@ fn canonical(mut filter: wire::SessionFilter) -> Result<wire::SessionFilter, Str
     if filter
         .attributes
         .windows(2)
-        .any(|pair| pair[0].name == pair[1].name)
+        .any(|pair| matches!(pair, [left, right] if left.name == right.name))
     {
         return Err(StreamError::InvalidArgument);
     }

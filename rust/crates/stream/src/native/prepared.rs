@@ -40,7 +40,7 @@ impl PreparedNativeCommit {
         } else if record.payload_bytes() > self.maximum_record_bytes {
             Err(StreamError::LimitExceeded)
         } else {
-            Ok(record)
+            crate::changes::validate(&record.value, &record.headers).map(|()| record)
         };
         self.record.supply(record);
         std::mem::replace(

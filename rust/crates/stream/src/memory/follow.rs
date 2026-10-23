@@ -57,7 +57,7 @@ impl MemoryStream {
             if anchor.is_some() {
                 *anchor = Some(record.commit_id);
             }
-            if filter.matches(&record.headers) {
+            if let Some(record) = filter.project(record)? {
                 return Ok(Some(record));
             }
         }

@@ -244,3 +244,182 @@ fn rotation_cannot_drop_pins_filters_or_rebind_the_declaring_subject() {
         "record deferral cannot authorize another action"
     );
 }
+
+#[tokio::test]
+async fn live_sessions_close_idle_and_queued_follows_before_disclosure() {
+    use crate::{AppendRequest, MemoryStream};
+    use futures::channel::mpsc;
+    for queued in [false, true] {
+        for reason in ["revoked", "credential_expired", "rotation", "drop"] {
+            let state = State::new();
+            let provider = Arc::new(MemoryStream::default());
+            let path = StreamPath::new("allowed/events").unwrap();
+            let append = |value: &'static [u8]| {
+                let provider = provider.clone();
+                let path = path.clone();
+                async move {
+                    provider
+                        .append(AppendRequest {
+                            path,
+                            records: vec![Bytes::from_static(value).into()],
+                            if_tail: None,
+                            idempotency_key: None,
+                        })
+                        .await
+                        .unwrap();
+                }
+            };
+            append(b"seed").await;
+            let bytes = token("allowed", |_| {});
+            let (sender, receiver) = mpsc::unbounded();
+            sender
+                .unbounded_send(Ok(frame(
+                    0,
+                    0,
+                    Body::Hello(wire::SessionHello {
+                        version: 1,
+                        client_id: Bytes::from_static(b"authority-control"),
+                        destination_node: "node".into(),
+                        receive_bytes: 1_000_000,
+                        receive_frames: 100,
+                        credentials: vec![bytes.clone().into()],
+                    }),
+                )))
+                .unwrap();
+            sender
+                .unbounded_send(Ok(frame(
+                    0,
+                    0,
+                    Body::Interest(wire::SessionInterest {
+                        revision: 1,
+                        upsert: vec![wire::SessionSubscription {
+                            channel: Some(wire::SessionChannel {
+                                channel_id: 1,
+                                generation: 1,
+                            }),
+                            resume: Some(cursor(1)),
+                            credential: 0,
+                            filter: None,
+                            kind: Some(Kind::Follow(wire::SessionFollow {
+                                path: path.to_string(),
+                                delivery: wire::SessionDelivery::All as i32,
+                                ..Default::default()
+                            })),
+                        }],
+                        remove: vec![],
+                    }),
+                )))
+                .unwrap();
+            let mut output = serve(
+                provider.clone(),
+                Arc::new(authority(state.clone())),
+                "node".into(),
+                crate::session::Limits::default(),
+                receiver.boxed(),
+            )
+            .unwrap();
+            let mut opened = false;
+            for _ in 0..3 {
+                let message =
+                    tokio::time::timeout(std::time::Duration::from_secs(1), output.next())
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .unwrap();
+                opened |= matches!(message.body, Some(Body::Opened(_)));
+            }
+            assert!(opened);
+            sender
+                .unbounded_send(Ok(frame(
+                    1,
+                    1,
+                    Body::Window(wire::SessionWindow {
+                        bytes: 1_000_000,
+                        frames: 1,
+                    }),
+                )))
+                .unwrap();
+            append(b"positive control").await;
+            let permitted = tokio::time::timeout(std::time::Duration::from_secs(1), output.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(permitted.body, Some(Body::Data(_))),
+                "unrevoked follow must deliver"
+            );
+            if queued {
+                append(b"must remain private").await;
+            }
+            assert!(futures::poll!(output.next()).is_pending());
+            match reason {
+                "revoked" => {
+                    let capability =
+                        verify::verify(&bytes, &signed::Snapshot::default(), signed::NOW).unwrap();
+                    state.publish(
+                        signed::Snapshot {
+                            revoked_blocks: vec![capability.block_ids()[0]],
+                            ..Default::default()
+                        },
+                        signed::NOW,
+                    );
+                }
+                "credential_expired" => state.publish(signed::Snapshot::default(), 1000),
+                _ => {
+                    let replacement = if reason == "drop" {
+                        vec![]
+                    } else {
+                        token("other", |_| {})
+                    };
+                    sender
+                        .unbounded_send(Ok(frame(
+                            0,
+                            0,
+                            Body::Credential(wire::SessionCredential {
+                                slot: 0,
+                                credential: replacement.into(),
+                            }),
+                        )))
+                        .unwrap();
+                }
+            }
+            let closed = tokio::time::timeout(std::time::Duration::from_secs(1), output.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(closed.channel_id, 1);
+            let Some(Body::Closed(closed)) = closed.body else {
+                panic!("disclosed data after {reason}, queued={queued}");
+            };
+            assert_eq!(
+                closed.code,
+                if matches!(reason, "rotation" | "drop") {
+                    "forbidden"
+                } else {
+                    reason
+                }
+            );
+            sender
+                .unbounded_send(Ok(frame(
+                    1,
+                    1,
+                    Body::Window(wire::SessionWindow {
+                        bytes: 1_000_000,
+                        frames: 1,
+                    }),
+                )))
+                .unwrap();
+            // A closed generation cannot be revived by delayed credit.
+            let result = futures::poll!(output.next());
+            assert!(!matches!(
+                result,
+                std::task::Poll::Ready(Some(Ok(wire::SessionFrame {
+                    body: Some(Body::Data(_)),
+                    ..
+                })))
+            ));
+        }
+    }
+}

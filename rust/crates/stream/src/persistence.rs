@@ -176,6 +176,7 @@ fn validate_records(
         {
             return Err(StreamError::InvalidArgument);
         }
+        crate::changes::validate(&record.value, &record.headers)?;
         *time = Some(record.committed_at_micros);
     }
     Ok(())

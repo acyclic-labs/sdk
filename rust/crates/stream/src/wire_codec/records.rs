@@ -74,6 +74,7 @@ pub fn append_record(value: wire::AppendRecord) -> Result<crate::AppendRecord, S
     if record.payload_bytes() > crate::MAX_RECORD_BYTES {
         return Err(StreamError::LimitExceeded);
     }
+    crate::changes::validate(&record.value, &record.headers)?;
     Ok(record)
 }
 

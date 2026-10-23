@@ -52,16 +52,17 @@ impl StreamProvider for Provider {
         }
         self.memory.read(request).await
     }
-    async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        self.memory.follow(path, from).await
+    async fn follow(&self, path: StreamPath, from: u64, filter: FollowFilter) -> Result<RecordStream, StreamError> {
+        self.memory.follow(path, from, filter).await
     }
     async fn follow_checked(
         &self,
         path: StreamPath,
         from: u64,
         preceding: CommitId,
+        filter: FollowFilter,
     ) -> Result<RecordStream, StreamError> {
-        self.memory.follow_checked(path, from, preceding).await
+        self.memory.follow_checked(path, from, preceding, filter).await
     }
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
         self.memory.children(request).await

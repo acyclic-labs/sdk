@@ -23,7 +23,7 @@ required-features = ["http"]
 
 [[example]]
 name = "browser-test-host"
-required-features = ["grpc"]
+required-features = ["grpc", "test-support"]
 
 [features]
 test-support = ["acyclic-native-runtime/test-support", "acyclic-auth/test-support"]

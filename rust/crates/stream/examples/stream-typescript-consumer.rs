@@ -12,7 +12,7 @@ use serde_json::json;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let provider = MemoryStream::default();
     let path = StreamPath::new("typescript/events")?;
-    let values = vec![
+    let values = [
         Bytes::from_static(br#"{"kind":"created"}"#),
         Bytes::from_static(br#"{"kind":"ready"}"#),
     ];
@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let append = provider
         .append(AppendRequest {
             path: path.clone(),
-            records: values.clone(),
+            records: values.iter().cloned().map(Into::into).collect(),
             if_tail: None,
             idempotency_key: Some(idempotency_key.clone()),
         })

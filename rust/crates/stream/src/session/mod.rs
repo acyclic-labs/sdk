@@ -243,13 +243,18 @@ fn serve_on_with_publications<P: StreamProvider + ?Sized>(
                     let changed = session
                         .authority
                         .changed(session.trust_revision, session.deadline);
-                    match future::select(session.incoming.next(), Box::pin(changed)).await {
-                        future::Either::Left((Some(frame), _)) => session.receive(frame?)?,
-                        future::Either::Left((None, _)) => return Ok(None),
-                        future::Either::Right(((), pending)) => {
-                            drop(pending);
-                            session.revalidate(None)?;
-                        }
+                    let input =
+                        match future::select(session.incoming.next(), Box::pin(changed)).await {
+                            future::Either::Left((input, _)) => Some(input),
+                            future::Either::Right(((), pending)) => {
+                                drop(pending);
+                                None
+                            }
+                        };
+                    match input {
+                        Some(Some(frame)) => session.receive(frame?)?,
+                        Some(None) => return Ok(None),
+                        None => session.revalidate(None)?,
                     }
                     continue;
                 }
@@ -286,12 +291,15 @@ fn serve_on_with_publications<P: StreamProvider + ?Sized>(
                     }
                 };
                 let event = match future::select(Box::pin(event), changed).await {
-                    future::Either::Left((event, _)) => event,
+                    future::Either::Left((event, _)) => Some(event),
                     future::Either::Right(((), pending)) => {
                         drop(pending);
-                        session.revalidate(None)?;
-                        continue;
+                        None
                     }
+                };
+                let Some(event) = event else {
+                    session.revalidate(None)?;
+                    continue;
                 };
                 session.prefer_control = !session.prefer_control;
                 match event {

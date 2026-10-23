@@ -281,6 +281,7 @@ async fn serve(host: Host, socket: WebSocket) {
         .boxed();
     let Ok(mut frames) = session::serve(
         host.streams.clone(),
+        session::testing::authority(),
         "browser-test".into(),
         session::Limits::default(),
         incoming,
