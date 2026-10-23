@@ -61,7 +61,7 @@
     },
     "A7": {
       "target": "Sessions, resume, rewind, Escape and diffs",
-      "owner": "sessions (#1318)",
+      "owner": "sessions (#1427)",
       "cases": [
         "jsonl-reopen",
         "pty-quit-resume",
@@ -98,7 +98,7 @@
     },
     "A11": {
       "target": "Human allow/deny and durable approvals",
-      "owner": "approvals (#880/#977)",
+      "owner": "approvals (#1421)",
       "cases": [
         "pty-approval-policy",
         "pty-approval-deny"
@@ -106,7 +106,7 @@
     },
     "A12": {
       "target": "Rule, model and parent approval composition",
-      "owner": "approvals",
+      "owner": "approvals (#1421)",
       "cases": [
         "rule-approval-allow",
         "rule-approval-deny"
@@ -125,14 +125,14 @@
     },
     "A14": {
       "target": "Configured web search",
-      "owner": "sessions (#1318)",
+      "owner": "sessions (#1427)",
       "cases": [
         "web-search"
       ]
     },
     "A15": {
       "target": "Provider support and terminal outcomes",
-      "owner": "providers / sessions (#1056)",
+      "owner": "providers / sessions (#1427)",
       "cases": [
         "text-responses",
         "text-chat",
@@ -145,14 +145,11 @@
         "image-headless-anthropic",
         "provider-error",
         "text-gemini"
-      ],
-      "gaps": [
-        "Gemini shipping-binary cases require native Gemini support in the shared mock."
       ]
     },
     "A16": {
       "target": "JSONL and authoritative final answer/exit",
-      "owner": "sessions (#1088/#1056)",
+      "owner": "sessions (#1427)",
       "cases": [
         "jsonl-input",
         "jsonl-malformed",
@@ -177,7 +174,7 @@
     },
     "A18": {
       "target": "Source-anchored viewport and bounded transcripts",
-      "owner": "client-perf (#1002)",
+      "owner": "client-perf (#1425)",
       "cases": [
         "pty-scrolling"
       ],
@@ -209,7 +206,7 @@
     },
     "A21": {
       "target": "Installed Codex plugin parity",
-      "owner": "plugins",
+      "owner": "plugins (#1407)",
       "cases": [
         "installed-codex"
       ],
@@ -219,7 +216,7 @@
     },
     "A22": {
       "target": "Installed Claude Code plugin parity",
-      "owner": "plugins",
+      "owner": "plugins (#1407)",
       "cases": [
         "installed-claude"
       ],
@@ -229,7 +226,7 @@
     },
     "A23": {
       "target": "Plugins become thin harness clients",
-      "owner": "plugins (#515)",
+      "owner": "plugins (#1407)",
       "cases": [
         "plugin-client-lifecycle"
       ],
@@ -239,7 +236,7 @@
     },
     "A24": {
       "target": "Installed Pi recursive parity",
-      "owner": "plugins",
+      "owner": "plugins (#1407)",
       "cases": [
         "installed-pi-recursive"
       ],
