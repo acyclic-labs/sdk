@@ -9,7 +9,8 @@ pub(super) async fn facts<A: AsyncAuthorityStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<Option<(Head, ObjectId, VolumeConfig)>, FsError> {
-    let Some((head, root, config)) = base(authority, request, accounting, cancellation).await? else {
+    let Some((head, root, config)) = base(authority, request, accounting, cancellation).await?
+    else {
         return Ok(None);
     };
     let config = match config {
@@ -28,7 +29,10 @@ fn backend_work<'a>(
         KernelAccounting::NativeOriginal { work, .. } => {
             Ok(crate::AuthorityWork::native(work, cancellation))
         }
-        _ => Ok(crate::AuthorityWork::new(accounting.remaining()?, cancellation)),
+        _ => Ok(crate::AuthorityWork::new(
+            accounting.remaining()?,
+            cancellation,
+        )),
     }
 }
 
@@ -39,9 +43,13 @@ async fn base<A: AsyncAuthorityStore>(
     cancellation: &CancellationToken,
 ) -> Result<Option<Base>, FsError> {
     let mut work = backend_work(accounting, cancellation)?;
-    let observed = authority.head_payload(
-        request.authority_id, acyclic_stream::MAX_RECORD_BYTES as u64, &mut work,
-    ).await;
+    let observed = authority
+        .head_payload(
+            request.authority_id,
+            acyclic_stream::MAX_RECORD_BYTES as u64,
+            &mut work,
+        )
+        .await;
     let spent = work.spent();
     drop(work);
     merge_backend(accounting, spent)?;
@@ -53,12 +61,20 @@ async fn base<A: AsyncAuthorityStore>(
     let mut decode = crate::kernel::OriginalReadAccounting::new(accounting)?;
     let (volume, root, config) = if head.sequence == crate::Sequence::new(1) {
         let created = crate::kernel::decode_volume_created(
-            &payload, acyclic_stream::MAX_RECORD_BYTES as u64, &mut |s| decode.observe(s),
+            &payload,
+            acyclic_stream::MAX_RECORD_BYTES as u64,
+            &mut |s| decode.observe(s),
         )?;
-        (created.volume_id, created.initial_generation_root, Some(created.config))
+        (
+            created.volume_id,
+            created.initial_generation_root,
+            Some(created.config),
+        )
     } else {
         let published = crate::kernel::decode_published_generation(
-            &payload, acyclic_stream::MAX_RECORD_BYTES as u64, &mut |s| decode.observe(s),
+            &payload,
+            acyclic_stream::MAX_RECORD_BYTES as u64,
+            &mut |s| decode.observe(s),
         )?;
         (published.volume_id, published.generation_root, None)
     };
@@ -78,11 +94,17 @@ async fn creation_config<A: AsyncAuthorityStore>(
     cancellation: &CancellationToken,
 ) -> Result<VolumeConfig, FsError> {
     let mut work = backend_work(accounting, cancellation)?;
-    let observed = authority.replay(
-        request.authority_id, crate::Sequence::GENESIS,
-        crate::ReplayLimit { records: 1, payload_bytes: acyclic_stream::MAX_RECORD_BYTES as u64 },
-        &mut work,
-    ).await;
+    let observed = authority
+        .replay(
+            request.authority_id,
+            crate::Sequence::GENESIS,
+            crate::ReplayLimit {
+                records: 1,
+                payload_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
+            },
+            &mut work,
+        )
+        .await;
     let spent = work.spent();
     drop(work);
     merge_backend(accounting, spent)?;
@@ -90,7 +112,9 @@ async fn creation_config<A: AsyncAuthorityStore>(
     let first = records.first().ok_or(FsError::InvalidDiff)?;
     let mut decode = crate::kernel::OriginalReadAccounting::new(accounting)?;
     let creation = crate::kernel::decode_volume_created(
-        &first.payload, acyclic_stream::MAX_RECORD_BYTES as u64, &mut |s| decode.observe(s),
+        &first.payload,
+        acyclic_stream::MAX_RECORD_BYTES as u64,
+        &mut |s| decode.observe(s),
     )?;
     let _decoded = decode.into_allocation();
     if creation.volume_id != request.volume_id {

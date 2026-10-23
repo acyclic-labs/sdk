@@ -128,14 +128,15 @@ fn add_route(state: &mut State, index: usize, kind: u8) {
         route
             .records
             .try_send(Ok(Delivery {
+                before: None,
                 item: Received::Frame(frame(
                     id,
                     1,
                     Body::Watermark(wire::SessionWatermark {
                         accepted: 1,
                         durable: 1,
-                    ..Default::default()
-}),
+                        ..Default::default()
+                    }),
                 )),
                 sequence: 0,
                 opaque: Bytes::new(),

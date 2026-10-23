@@ -239,9 +239,11 @@ fn follow_source<P: StreamProvider + ?Sized>(
             )| async move {
                 loop {
                     if records.is_none() {
-                        records = Some(provider.follow_updates(
-                            path.clone(), next, preceding, filter.clone(),
-                        ).await?);
+                        records = Some(
+                            provider
+                                .follow_updates(path.clone(), next, preceding, filter.clone())
+                                .await?,
+                        );
                         if !opened {
                             opened = true;
                             return Ok(Some((
@@ -262,15 +264,23 @@ fn follow_source<P: StreamProvider + ?Sized>(
                     {
                         let event = match update {
                             crate::FollowUpdate::Record(record) => {
-                                next = record.sequence.checked_add(1).ok_or(StreamError::OutOfRange)?;
+                                next = record
+                                    .sequence
+                                    .checked_add(1)
+                                    .ok_or(StreamError::OutOfRange)?;
                                 preceding = preceding.map(|_| record.commit_id);
                                 Event::Record(record)
                             }
-                            crate::FollowUpdate::Progress { next: cut, preceding: anchor } => {
+                            crate::FollowUpdate::Progress {
+                                next: cut,
+                                preceding: anchor,
+                            } => {
                                 next = cut;
                                 preceding = preceding.map(|_| anchor);
                                 Event::Progress(wire::SessionWatermark {
-                                    accepted: cut, durable: 0, after: Some(cursor(cut)),
+                                    accepted: cut,
+                                    durable: 0,
+                                    after: Some(cursor(cut)),
                                     preceding_commit_id: Bytes::copy_from_slice(anchor.as_bytes()),
                                 })
                             }

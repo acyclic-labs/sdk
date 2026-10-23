@@ -148,7 +148,12 @@ impl StreamProvider for EndingFollow {
                         limit: u32::try_from(crate::MAX_ITEMS)
                             .map_err(|_| StreamError::LimitExceeded)?,
                     })
-                    .await.map(|records| records.map(|record| record.map(crate::FollowUpdate::Record)).boxed())
+                    .await
+                    .map(|records| {
+                        records
+                            .map(|record| record.map(crate::FollowUpdate::Record))
+                            .boxed()
+                    })
             } else {
                 Ok(stream::empty().boxed())
             };
@@ -159,7 +164,9 @@ impl StreamProvider for EndingFollow {
         if self.deny {
             return Err(StreamError::AccessDenied);
         }
-        self.inner.follow_updates(path, from, preceding, filter).await
+        self.inner
+            .follow_updates(path, from, preceding, filter)
+            .await
     }
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
         if self.deny {

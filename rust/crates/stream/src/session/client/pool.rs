@@ -269,6 +269,7 @@ impl Pool {
                         credential,
                         raw,
                         watermark: None,
+                        buffered_data: 0,
                         generation: 1,
                         placement_epoch: 0,
                         received: from,
@@ -309,6 +310,16 @@ impl Pool {
         } = released;
         if bytes != 0 {
             self.release(&node, epoch, bytes)?;
+        }
+        // A route owns buffered deliveries across reconnect generations. Old
+        // deliveries still occupy its window until their actual credit retires.
+        if bytes != 0
+            && let Some(route) = self.routes.get_mut(&id)
+        {
+            route.buffered_data = route
+                .buffered_data
+                .checked_sub(1)
+                .ok_or(StreamError::Unavailable)?;
         }
         self.flush_watermark(id)?;
         let Some(route) = self.routes.get_mut(&id) else {
@@ -413,16 +424,34 @@ impl Pool {
                     Ok(())
                 }
             }
-            Some(Body::Watermark(mark)) if mark.durable <= mark.accepted => {
+            Some(Body::Watermark(mut mark))
+                if mark.durable <= mark.accepted && mark.accepted >= route.received =>
+            {
                 if let Some(after) = &mark.after {
-                    if !matches!(route.kind, Kind::Follow(_)) || !after.opaque.is_empty()
-                        || after.next < route.received || after.next > mark.accepted
-                        || mark.preceding_commit_id.len() != 32 || after.next == 0 {
+                    if !matches!(route.kind, Kind::Follow(_))
+                        || !after.opaque.is_empty()
+                        || after.next < route.received
+                        || after.next > mark.accepted
+                        || mark.preceding_commit_id.len() != 32
+                        || after.next == 0
+                    {
                         return Err(StreamError::Unavailable);
                     }
                     route.received = after.next;
                 }
                 if route.raw || mark.after.is_some() {
+                    // A durability-only update cannot erase an unconsumed
+                    // skipped-prefix cut. Both describe the same channel order.
+                    if mark.after.is_none()
+                        && let Some(wire::SessionFrame {
+                            body: Some(Body::Watermark(previous)),
+                            ..
+                        }) = &route.watermark
+                    {
+                        mark.after.clone_from(&previous.after);
+                        mark.preceding_commit_id
+                            .clone_from(&previous.preceding_commit_id);
+                    }
                     route.watermark = Some(frame(id, input.generation, Body::Watermark(mark)));
                     self.flush_watermark(id)
                 } else {
@@ -508,8 +537,7 @@ impl Pool {
         length: u64,
         epoch: u64,
     ) -> Result<(), StreamError> {
-        // Pending skipped progress belongs before the next data delivery.
-        self.flush_watermark(id)?;
+        // Pending skipped progress shares the next data envelope in wire order.
         let route = self.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
         let after = data.after.as_ref().ok_or(StreamError::Unavailable)?;
         let sequence = match (&route.kind, data.item.as_ref()) {
@@ -547,7 +575,13 @@ impl Pool {
         } else {
             return Err(StreamError::Unavailable);
         };
+        route.buffered_data = route
+            .buffered_data
+            .checked_add(1)
+            .filter(|count| *count <= QUEUE as u32)
+            .ok_or(StreamError::Capacity)?;
         let delivery = Delivery {
+            before: route.watermark.take(),
             item,
             sequence,
             opaque,
@@ -576,7 +610,7 @@ impl Pool {
         };
         // Reserve slots for every data frame already granted to the peer.
         // Control-only durability updates occupy at most one additional pending value.
-        if route.records.capacity() <= 2 * route.credit.frames as usize {
+        if route.records.capacity() <= route.credit.frames as usize {
             return Ok(());
         }
         let Some(value) = route.watermark.take() else {
@@ -588,6 +622,7 @@ impl Pool {
             .ok_or(StreamError::Unavailable)?
             .epoch;
         let delivery = Delivery {
+            before: None,
             item: Received::Frame(value),
             sequence: route.received,
             opaque: route.received_opaque.clone(),
@@ -680,3 +715,7 @@ pub(super) fn poll_dials(
     }
     std::task::Poll::Pending
 }
+
+#[cfg(test)]
+#[cfg(all(not(acyclic_stream_loom), not(target_arch = "wasm32")))]
+mod filtered_credit_tests;

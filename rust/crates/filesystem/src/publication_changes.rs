@@ -71,7 +71,9 @@ impl PublicationChanges {
             let bytes = data.standalone_bytes;
             drop(data);
             if let Some((allocations, _, _, _)) = accounting.standalone_parts() {
-                allocations.release(bytes).map_err(|_| WorkError::Overflow)?;
+                allocations
+                    .release(bytes)
+                    .map_err(|_| WorkError::Overflow)?;
             }
         }
         // An adapter retaining a seal also retains its paid physical storage.
@@ -87,7 +89,9 @@ impl PublicationChanges {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Self, FsError> {
-        let before = accounting.standalone_parts().map(|(a, _, _, _)| a.live_bytes());
+        let before = accounting
+            .standalone_parts()
+            .map(|(a, _, _, _)| a.live_bytes());
         let volume = endpoints
             .last()
             .and_then(Option::as_ref)
@@ -105,8 +109,12 @@ impl PublicationChanges {
         let mut control = accounting.claim_owned(control_bytes, 1)?;
         allocation.absorb(&mut control)?;
         let standalone_bytes = if let Some(before) = before {
-            let (allocations, _, _, _) = accounting.standalone_parts().ok_or(WorkError::Overflow)?;
-            allocations.live_bytes().checked_sub(before).ok_or(WorkError::Overflow)?
+            let (allocations, _, _, _) =
+                accounting.standalone_parts().ok_or(WorkError::Overflow)?;
+            allocations
+                .live_bytes()
+                .checked_sub(before)
+                .ok_or(WorkError::Overflow)?
         } else {
             0
         };
@@ -169,9 +177,9 @@ impl PublicationChanges {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Option<Self>, FsError> {
-        let Some((head, current_root, config)) = authority::facts(
-            authority, request, accounting, cancellation,
-        ).await? else {
+        let Some((head, current_root, config)) =
+            authority::facts(authority, request, accounting, cancellation).await?
+        else {
             return Ok(None);
         };
         if candidate.volume_id != request.volume_id {

@@ -136,7 +136,10 @@ impl StreamProvider for MemoryStream {
     }
 
     async fn follow_updates(
-        &self, path: StreamPath, from: u64, preceding: Option<crate::CommitId>,
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: Option<crate::CommitId>,
         filter: crate::FollowFilter,
     ) -> Result<crate::FollowStream, StreamError> {
         self.progress_from(path, from, preceding, filter).await

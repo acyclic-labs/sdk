@@ -1,5 +1,5 @@
-mod properties;
 mod filtered_progress;
+mod properties;
 mod queue_scaling;
 
 use super::*;

@@ -25,6 +25,7 @@ async fn raw_follow_keeps_checked_anchors_and_standalone_watermarks() -> TestRes
         None,
         Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
     );
+    client.register_credential(0, crate::session::testing::credential())?;
     let mut all = client
         .subscribe(subscription("events", wire::SessionDelivery::All))
         .await?;
@@ -53,8 +54,8 @@ async fn raw_follow_keeps_checked_anchors_and_standalone_watermarks() -> TestRes
         Body::Watermark(wire::SessionWatermark {
             accepted: 1,
             durable: 1,
-        ..Default::default()
-}),
+            ..Default::default()
+        }),
     )))?;
     let mark = tokio::time::timeout(Duration::from_secs(1), all.next())
         .await?
@@ -64,8 +65,8 @@ async fn raw_follow_keeps_checked_anchors_and_standalone_watermarks() -> TestRes
         Some(Body::Watermark(wire::SessionWatermark {
             accepted: 1,
             durable: 1,
-        ..
-}))
+            ..
+        }))
     ));
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
     Ok(())
@@ -100,6 +101,7 @@ async fn latest_follows_keep_attention_and_resume_the_consumed_cut() -> TestResu
         None,
         Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
     );
+    client.register_credential(0, crate::session::testing::credential())?;
     let mut latest = client
         .subscribe(subscription("status", wire::SessionDelivery::Latest))
         .await?;
@@ -141,5 +143,20 @@ async fn latest_follows_keep_attention_and_resume_the_consumed_cut() -> TestResu
         }
     })
     .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn filtered_loopback_preserves_idle_cuts_matches_and_checked_resume() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let fixture = Fixture::open(provider, "filtered-node").await?;
+    let client = fixture.client()?;
+    tokio::time::timeout(
+        Duration::from_secs(4),
+        crate::filtered_follow_tests::qualify_progress(&client),
+    )
+    .await??;
+    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
+    assert_eq!(fixture.counts.actors.load(Ordering::Relaxed), 0);
     Ok(())
 }

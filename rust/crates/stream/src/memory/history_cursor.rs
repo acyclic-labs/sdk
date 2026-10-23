@@ -12,7 +12,9 @@ impl HistoryCursor {
         }
         let start = if anchor.is_some() {
             from.checked_sub(1).ok_or(StreamError::InvalidArgument)?
-        } else { from };
+        } else {
+            from
+        };
         let mut cursor = Self::new(path, path.tail, start);
         if let Some(anchor) = anchor {
             let record = cursor.next_record().ok_or(StreamError::PrefixNotRetained)?;

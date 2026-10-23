@@ -241,10 +241,15 @@ impl StreamProvider for Client {
     }
 
     async fn follow_updates(
-        &self, path: StreamPath, from: u64, preceding: Option<crate::CommitId>,
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: Option<crate::CommitId>,
         filter: crate::FollowFilter,
     ) -> Result<crate::FollowStream, StreamError> {
-        self.session()?.follow_updates_with_ack(path, from, preceding, self.acknowledge_deliveries, filter).await
+        self.session()?
+            .follow_updates_with_ack(path, from, preceding, self.acknowledge_deliveries, filter)
+            .await
     }
     async fn follow_checked(
         &self,

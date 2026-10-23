@@ -83,7 +83,11 @@ impl StreamProvider for Owners {
             .ok_or(StreamError::InvalidPath)?;
         match &self.nodes[index % NODES] {
             Some(node) => node.follow_updates(path, from, preceding, filter).await,
-            None => self.memory.follow_updates(path, from, preceding, filter).await,
+            None => {
+                self.memory
+                    .follow_updates(path, from, preceding, filter)
+                    .await
+            }
         }
     }
 }

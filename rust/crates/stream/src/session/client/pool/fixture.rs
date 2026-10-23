@@ -103,6 +103,7 @@ pub(in crate::session::client) fn route(
         credential: 0,
         raw: false,
         watermark: None,
+        buffered_data: 0,
         node: node.into(),
         attempt_epoch: 0,
         kind,

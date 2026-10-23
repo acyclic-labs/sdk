@@ -153,16 +153,23 @@ struct PreparedEntry {
 }
 impl PreparedEntry {
     fn borrowed(&self) -> ChangeEntryRef<'_> {
-        ChangeEntryRef { key: &self.key, operation: self.operation, metadata: &self.metadata }
+        ChangeEntryRef {
+            key: &self.key,
+            operation: self.operation,
+            metadata: &self.metadata,
+        }
     }
 
     fn record_bytes(&self) -> usize {
         fn field_len(length: usize) -> usize {
-            if length == 0 { 0 } else {
+            if length == 0 {
+                0
+            } else {
                 1 + prost::encoding::encoded_len_varint(length as u64) + length
             }
         }
-        let body = field_len(self.key.len()) + field_len(self.operation.len())
+        let body = field_len(self.key.len())
+            + field_len(self.operation.len())
             + field_len(self.metadata.len());
         // Entry field plus its indexed header key; the fixed context and marker
         // are accounted for once by chunk_end.
@@ -175,9 +182,12 @@ fn chunk_end(entries: &[PreparedEntry]) -> Result<usize, AuthorityStoreError> {
     let mut previous: Option<&[u8]> = None;
     let mut count = 0;
     for entry in entries.iter().take(acyclic_stream::MAX_RECORD_KEYS) {
-        let next = bytes.checked_add(entry.record_bytes()).ok_or(crate::WorkError::Overflow)?;
+        let next = bytes
+            .checked_add(entry.record_bytes())
+            .ok_or(crate::WorkError::Overflow)?;
         if next > acyclic_stream::MAX_RECORD_BYTES
-            || previous.is_some_and(|key| key == entry.key.as_ref()) {
+            || previous.is_some_and(|key| key == entry.key.as_ref())
+        {
             break;
         }
         bytes = next;
@@ -196,11 +206,17 @@ fn records(
     work: &mut AuthorityWork<'_>,
 ) -> Result<Vec<AppendRecord>, AuthorityStoreError> {
     let mut context = [0; 56];
-    context.get_mut(..16).ok_or(crate::WorkError::Overflow)?
+    context
+        .get_mut(..16)
+        .ok_or(crate::WorkError::Overflow)?
         .copy_from_slice(&seal.volume().into_bytes());
-    context.get_mut(16..48).ok_or(crate::WorkError::Overflow)?
+    context
+        .get_mut(16..48)
+        .ok_or(crate::WorkError::Overflow)?
         .copy_from_slice(seal.root().digest.as_bytes());
-    context.get_mut(48..).ok_or(crate::WorkError::Overflow)?
+    context
+        .get_mut(48..)
+        .ok_or(crate::WorkError::Overflow)?
         .copy_from_slice(&sequence.get().to_le_bytes());
     let mut entries = work.vec(seal.paths().len().max(1))?;
     for change in seal.paths() {
@@ -218,7 +234,9 @@ fn records(
     }
     if entries.is_empty() {
         entries.push(PreparedEntry {
-            key: Bytes::new(), operation: "publish", metadata: Vec::new(),
+            key: Bytes::new(),
+            operation: "publish",
+            metadata: Vec::new(),
         });
     }
     // Native encoding/folding can change byte order. Equal bounded keys cannot
@@ -235,7 +253,9 @@ fn encode_chunks(
     let mut remaining = entries;
     let mut chunks = 0;
     while !remaining.is_empty() {
-        remaining = remaining.get(chunk_end(remaining)?..).ok_or(crate::WorkError::Overflow)?;
+        remaining = remaining
+            .get(chunk_end(remaining)?..)
+            .ok_or(crate::WorkError::Overflow)?;
         chunks += 1;
     }
     let mut output = work.vec(chunks)?;
@@ -244,12 +264,18 @@ fn encode_chunks(
         let count = chunk_end(remaining)?;
         let (selected, next) = remaining.split_at(count);
         let mut references: [ChangeEntryRef<'_>; acyclic_stream::MAX_RECORD_KEYS] =
-            std::array::from_fn(|_| ChangeEntryRef { key: &[], operation: "", metadata: &[] });
+            std::array::from_fn(|_| ChangeEntryRef {
+                key: &[],
+                operation: "",
+                metadata: &[],
+            });
         for (slot, entry) in references.iter_mut().zip(selected) {
             *slot = entry.borrowed();
         }
         output.push(encoding::entries(
-            context, references.get(..count).ok_or(crate::WorkError::Overflow)?, work,
+            context,
+            references.get(..count).ok_or(crate::WorkError::Overflow)?,
+            work,
         )?);
         remaining = next;
     }

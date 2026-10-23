@@ -444,10 +444,15 @@ impl StreamProvider for HttpStream {
         self.session_client()?.follow(path, from, filter).await
     }
     async fn follow_updates(
-        &self, path: StreamPath, from: u64, preceding: Option<crate::CommitId>,
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: Option<crate::CommitId>,
         filter: crate::FollowFilter,
     ) -> Result<crate::FollowStream, StreamError> {
-        self.session_client()?.follow_updates(path, from, preceding, filter).await
+        self.session_client()?
+            .follow_updates(path, from, preceding, filter)
+            .await
     }
     async fn follow_checked(
         &self,

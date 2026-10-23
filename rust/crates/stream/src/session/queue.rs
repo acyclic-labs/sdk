@@ -48,7 +48,9 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 return Ok(());
             }
             Ok(Event::Progress(mark)) => {
-                let channel = self.channels.get_mut(&identity.channel_id)
+                let channel = self
+                    .channels
+                    .get_mut(&identity.channel_id)
                     .ok_or(StreamError::Unavailable)?;
                 channel.progress = Some(mark);
                 self.flush_progress(identity.channel_id)?;
@@ -277,13 +279,20 @@ impl<P: StreamProvider + ?Sized> Session<P> {
     }
 
     fn flush_progress(&mut self, id: u64) -> Result<(), StreamError> {
-        let Some(channel) = self.channels.get_mut(&id) else { return Ok(()); };
-        if !channel.pending.is_empty() { return Ok(()); }
+        let Some(channel) = self.channels.get_mut(&id) else {
+            return Ok(());
+        };
+        if !channel.pending.is_empty() {
+            return Ok(());
+        }
         if let Some(mark) = channel.progress.take() {
             let after = mark.after.as_ref().ok_or(StreamError::Unavailable)?;
-            if after.next <= channel.sent.next { return Err(StreamError::Unavailable); }
+            if after.next <= channel.sent.next {
+                return Err(StreamError::Unavailable);
+            }
             channel.sent = after.clone();
-            self.controls.push_back(frame(id, channel.generation, Body::Watermark(mark)));
+            self.controls
+                .push_back(frame(id, channel.generation, Body::Watermark(mark)));
         }
         Ok(())
     }
