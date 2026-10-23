@@ -81,6 +81,25 @@ async fn open(
 
 // Own native phase futures separately from the CLI orchestration frame.
 async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
+    if args.host_workspace {
+        let directory = args
+            .host_state_directory
+            .as_ref()
+            .ok_or("host state directory absent")?;
+        let local = Arc::new(
+            phase(|| {
+                LocalHarness::open(
+                    LocalHarnessConfig::native_host(&args.workspace).state_directory(directory),
+                )
+            })
+            .await?,
+        );
+        tokio::select! {
+            result = phase(|| acyclic_harness::local::host_files::serve(local)) => result?,
+            result = workspace_shutdown() => result?,
+        }
+        return Ok(0);
+    }
     let operation = args
         .operation
         .as_deref()
@@ -125,6 +144,22 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
             .await
     };
     Ok(phase(|| connection.finish(outcome)).await?.exit_code())
+}
+
+// Drop the workspace owner while the runtime is still available so its native
+// mounts retire before process exit. The library does not install signal handlers.
+async fn workspace_shutdown() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result,
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await
 }
 
 #[cfg(test)]

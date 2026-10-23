@@ -62,11 +62,13 @@ for (const path of [
   join(plugin, ".codex-plugin", "plugin.json"),
   join(plugin, ".mcp.json"),
   join(plugin, "hooks", "hooks.json"),
+  join(plugin, "claude", ".claude-plugin", "plugin.json"),
 ]) {
   if (!existsSync(path) || !statSync(path).isFile()) fail(`missing package asset: ${path}`);
   assets[path] = JSON.parse(readFileSync(path, "utf8"));
 }
-for (const path of [join(plugin, "plugin.json"), join(plugin, ".codex-plugin", "plugin.json")]) {
+for (const path of [join(plugin, "plugin.json"), join(plugin, ".codex-plugin", "plugin.json"),
+  join(plugin, "claude", ".claude-plugin", "plugin.json")]) {
   if (assets[path].version !== packageManifest.version) {
     fail(`host plugin manifest version mismatch: ${path}`);
   }
@@ -82,7 +84,6 @@ const expectedMcp = {
       command: "./bin/acyclic",
       args: ["__mcp"],
       cwd: ".",
-      env_vars: ["XDG_STATE_HOME"],
       required: true,
     },
   },

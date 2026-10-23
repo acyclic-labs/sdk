@@ -335,7 +335,10 @@ pub(in crate::local) async fn retire(mounts: &Mounts) -> Result<()> {
     retired
 }
 
-fn projection_root<'a>(destination: &'a Path, relative: &str) -> Result<&'a Path> {
+pub(in crate::local) fn projection_root<'a>(
+    destination: &'a Path,
+    relative: &str,
+) -> Result<&'a Path> {
     destination
         .ancestors()
         .nth(Path::new(relative).components().count())
@@ -377,7 +380,7 @@ mod binding_paths {
 // start a virtualization root at a placeholder in another projection. Retain
 // the already bound volume instead of mounting again below the task view.
 #[cfg(any(target_os = "linux", windows))]
-pub(super) fn link(root: &Path, mounts: &mut Mounts) -> Result<()> {
+pub(super) fn link(root: &Path, mounts: &mut Mounts, inherited: Option<&Mounts>) -> Result<()> {
     for (relative, mount) in mounts.mounts_mut() {
         if relative.is_empty() {
             continue;
@@ -388,6 +391,11 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts) -> Result<()> {
             .as_ref()
             .ok_or_else(|| Error::NotFound("volume mount is not bound".into()))?;
         let target = source.destination.as_path();
+        let previous = inherited
+            .into_iter()
+            .flat_map(Mounts::mounts)
+            .find(|(previous, _)| previous == &relative)
+            .and_then(|(_, mount)| mount.view.source.as_ref());
         let relative = Path::new(relative);
         if let Some(parent) = relative.parent() {
             create_mount_directory(root, parent)?;
@@ -401,7 +409,19 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts) -> Result<()> {
                     .ok_or_else(|| Error::Invalid("volume alias has no parent".into()))?
                     .join(linked);
                 if canonical_destination(&linked)? != canonical_destination(target)? {
-                    return Err(Error::Conflict("volume alias names another binding".into()));
+                    let expected = previous.ok_or_else(|| {
+                        Error::Conflict("volume alias names another binding".into())
+                    })?;
+                    if canonical_destination(&linked)?
+                        != canonical_destination(&expected.destination)?
+                    {
+                        return Err(Error::Conflict("volume alias names another binding".into()));
+                    }
+                    // A fork inherits the parent's SDK alias in its authored
+                    // cut. Before exposing this new view, replace only that
+                    // exact authenticated binding with the child's volume.
+                    unlink_directory_alias(&path).map_err(mount_io)?;
+                    link_directory(target, &path).map_err(mount_io)?;
                 }
             }
             Ok(metadata) if metadata.is_dir() => {
@@ -423,6 +443,16 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts) -> Result<()> {
         mount.native_root = Some(target.to_path_buf());
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn unlink_directory_alias(path: &Path) -> std::io::Result<()> {
+    std::fs::remove_file(path)
+}
+
+#[cfg(windows)]
+fn unlink_directory_alias(path: &Path) -> std::io::Result<()> {
+    std::fs::remove_dir(path)
 }
 
 // A command retires its physical projection. Resolve its held parent rather

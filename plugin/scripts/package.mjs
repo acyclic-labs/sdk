@@ -88,6 +88,7 @@ for (const name of ["plugin.json", ".mcp.json", "package.json", "README.md", "CH
 cpSync(join(root, ".codex-plugin"), join(plugin, ".codex-plugin"), { recursive: true });
 cpSync(join(root, ".agents"), join(plugin, ".agents"), { recursive: true });
 cpSync(join(root, "hooks"), join(plugin, "hooks"), { recursive: true });
+cpSync(join(root, "claude"), join(plugin, "claude"), { recursive: true });
 cpSync(join(root, "pi"), join(plugin, "pi"), { recursive: true });
 
 const targetSchema = JSON.parse(readFileSync(join(root, "bin", "targets.json"), "utf8"));
@@ -121,7 +122,7 @@ const marketplace = {
   plugins: [{
     name: "acyclic",
     source: { source: "local", path: "./plugin" },
-    policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
+    policy: { installation: "AVAILABLE" },
     category: "Developer Tools",
   }],
 };

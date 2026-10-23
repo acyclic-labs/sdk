@@ -266,6 +266,12 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
     std::fs::rename(&alias, task.path().join("original-alias")).map_err(storage)?;
     link_directory(blocked.path(), &alias).map_err(storage)?;
     assert!(workspace.mounts_at(task.path()).await.is_err());
+    assert!(
+        workspace
+            .mounts_at_from(task.path(), Some(&workspace.mounts))
+            .await
+            .is_err()
+    );
     assert_eq!(
         canonical_destination(&std::fs::read_link(&alias).map_err(storage)?)?,
         canonical_destination(blocked.path())?

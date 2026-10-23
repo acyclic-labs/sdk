@@ -264,7 +264,7 @@ async fn oversized_current_hooks(explicit_override: bool) -> Result<()> {
     }
     let reopened = LocalHarness::open(selected).await?;
     assert!(
-        crate::native_settings::NativeSettings::load_hooks(Arc::clone(&reopened.settings))
+        crate::native_settings::NativeSettings::load_hooks(Arc::clone(reopened.settings()?))
             .await?
             .encode(limits.file_bytes)
             .is_err(),

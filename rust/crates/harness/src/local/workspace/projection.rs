@@ -96,6 +96,20 @@ impl MountedVolume {
         relative: &str,
         read_only: bool,
     ) -> Result<Entered> {
+        let options = if read_only {
+            acyclic_fs::MountOptions::read_only()
+        } else {
+            acyclic_fs::MountOptions::read_write().publication(acyclic_fs::MountPublication::Manual)
+        };
+        self.enter_with_options(root, relative, options).await
+    }
+
+    pub(in crate::local) async fn enter_with_options(
+        &self,
+        root: &Path,
+        relative: &str,
+        options: acyclic_fs::MountOptions,
+    ) -> Result<Entered> {
         enter(&self.native, &self.users, async || {
             #[cfg(windows)]
             volumes::recover_volume_after_crash(
@@ -104,12 +118,6 @@ impl MountedVolume {
                 self.workspace.workspace().id().volume_id(),
             )?;
             volumes::prepare_mount_directory(root, Path::new(relative))?;
-            let options = if read_only {
-                acyclic_fs::MountOptions::read_only()
-            } else {
-                acyclic_fs::MountOptions::read_write()
-                    .publication(acyclic_fs::MountPublication::Manual)
-            };
             self.workspace
                 .workspace()
                 .mount(&self.destination, options)
@@ -130,7 +138,7 @@ impl MountedVolume {
         .await
     }
 
-    pub(super) async fn prepare_command(&self) -> Result<()> {
+    pub(in crate::local) async fn prepare_command(&self) -> Result<()> {
         let mut slot = self.native().await;
         if let Some(native) = slot.as_ref() {
             if native.discard {

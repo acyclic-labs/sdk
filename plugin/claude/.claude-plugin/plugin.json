@@ -1,0 +1,122 @@
+{
+  "name": "acyclic",
+  "version": "0.2.0",
+  "description": "Coordinate native subagent workspaces with the shared harness.",
+  "author": {
+    "name": "Acyclic Labs"
+  },
+  "license": "Apache-2.0",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\" __hook claude-code SessionStart",
+            "timeout": 120,
+            "statusMessage": "Acyclic is routing the workspace"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\" __hook claude-code PreToolUse",
+            "timeout": 120,
+            "statusMessage": "Acyclic is routing the workspace"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\" __hook claude-code PostToolUse",
+            "timeout": 120,
+            "statusMessage": "Acyclic is routing the workspace"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\" __hook claude-code PostToolUseFailure",
+            "timeout": 120,
+            "statusMessage": "Acyclic is routing the workspace"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\" __hook claude-code SubagentStart",
+            "timeout": 120,
+            "statusMessage": "Acyclic is routing the workspace"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\" __hook claude-code SubagentStop",
+            "timeout": 120,
+            "statusMessage": "Acyclic is routing the workspace"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\" __hook claude-code SessionEnd",
+            "timeout": 3,
+            "statusMessage": "Acyclic is routing the workspace"
+          }
+        ]
+      }
+    ],
+    "WorktreeCreate": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\" __hook claude-code WorktreeCreate",
+            "timeout": 120,
+            "statusMessage": "Acyclic is routing the workspace"
+          }
+        ]
+      }
+    ],
+    "WorktreeRemove": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\" __hook claude-code WorktreeRemove",
+            "timeout": 120,
+            "statusMessage": "Acyclic is routing the workspace"
+          }
+        ]
+      }
+    ]
+  }
+}

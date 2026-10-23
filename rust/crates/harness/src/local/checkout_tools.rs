@@ -8,7 +8,7 @@ use crate::{
 use acyclic_fs::{NativeWatch, PublicationPermit};
 use acyclic_stream::BoxProviderFuture;
 
-mod capture;
+pub(super) mod capture;
 mod children;
 mod git;
 #[cfg(test)]
@@ -51,9 +51,11 @@ pub(super) struct CheckoutTools {
 
 pub(in crate::local) struct State {
     pub(in crate::local) active: Option<workspace::View>,
-    initial_view: acyclic_fs::WorkspaceId,
-    workspace: Option<(acyclic_fs::WorkspaceId, Arc<LocalWorkspace>)>,
-    children: std::collections::BTreeMap<TaskId, Arc<CheckoutTools>>,
+    pub(in crate::local) initial_view: acyclic_fs::WorkspaceId,
+    pub(in crate::local) workspace: Option<(acyclic_fs::WorkspaceId, Arc<LocalWorkspace>)>,
+    pub(in crate::local) children: std::collections::BTreeMap<TaskId, Arc<CheckoutTools>>,
+    pub(in crate::local) allocated_mounts:
+        std::collections::BTreeMap<String, std::sync::Weak<workspace::Mounts>>,
     pub(in crate::local) watcher: Option<capture::Cursor>,
     pub(in crate::local) mounts: Arc<workspace::Mounts>,
     pub(in crate::local) initialized: bool,
@@ -69,6 +71,7 @@ impl State {
             initial_view,
             workspace: None,
             children: Default::default(),
+            allocated_mounts: Default::default(),
             watcher: None,
             mounts,
             initialized: false,

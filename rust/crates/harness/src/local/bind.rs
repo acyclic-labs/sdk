@@ -51,11 +51,11 @@ impl LocalHarness {
         #[cfg(feature = "hooks")]
         let settings =
             settings::configuration(&config.project, config.settings.take(), config.hermetic)?;
-        config.model.0.validate()?;
+        let (model, provider) = bound_model(&config)?;
         let compaction = compaction::select(
             config.compaction.take(),
-            &config.model.0,
-            config.model.1.as_ref(),
+            &model,
+            provider.as_ref(),
             runtime.tool_registry(),
             config.limits,
         )
@@ -123,6 +123,16 @@ impl LocalHarness {
     pub fn task_runtime(&self) -> &Arc<LocalTaskRuntime> {
         &self.runtime
     }
+}
+
+fn bound_model(config: &LocalHarnessConfig) -> Result<(Model, Arc<dyn ModelProvider>)> {
+    let binding = config.model.as_ref().ok_or_else(|| {
+        Error::Invalid(
+            "bind requires an agent binding; use open for native host coordination".into(),
+        )
+    })?;
+    binding.0.validate()?;
+    Ok(binding.clone())
 }
 
 #[cfg(feature = "native-execution")]
@@ -212,7 +222,6 @@ impl BoundComposition {
             #[cfg(feature = "native-execution")]
             checkout_context,
         } = self;
-        let (model, provider) = config.model;
         LocalHarness {
             files,
             runtime: Arc::new(runtime),
@@ -223,12 +232,11 @@ impl BoundComposition {
             verifier,
             issuer: None,
             signed,
-            model,
-            provider,
+            agent: config.model,
             context_manifest: config.context_manifest,
             skill_cache: context::skills::cache(),
             #[cfg(feature = "hooks")]
-            settings,
+            settings: Some(settings),
             #[cfg(test)]
             context_read_observer: None,
             limits: config.limits,

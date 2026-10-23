@@ -32,9 +32,16 @@ pub use acyclic_harness_search::url_fetch;
 pub mod build_metadata;
 
 pub mod client;
-pub mod package;
+pub mod host_hooks;
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub use local::host_workspace;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub mod local;
+pub mod package;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 #[cfg(feature = "tui")]

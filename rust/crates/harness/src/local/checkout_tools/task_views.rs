@@ -1,8 +1,7 @@
 //! Both model and direct calls select the admitted task's sparse fork.
 use super::*;
 use acyclic_fs::{
-    CancellationToken, IdempotencyKey, LazyWorkspaceStore as _, MountOptions, WorkBudget,
-    kernel::KernelAccounting,
+    CancellationToken, LazyWorkspaceStore as _, WorkBudget, kernel::KernelAccounting,
 };
 
 impl CheckoutTools {
@@ -59,6 +58,7 @@ impl CheckoutTools {
                     continue;
                 }
                 let view = self
+                    .workspace
                     .fork_task(candidate, self.workspace.view(), owner)
                     .await?;
                 let tools = Arc::new(self.mount_task_view(view, owner, None).await?);
@@ -78,7 +78,7 @@ impl CheckoutTools {
                 from_selected(
                     state.active.as_ref(),
                     parent.workspace.view(),
-                    async |view| self.fork_task(task, view, owner).await,
+                    async |view| self.workspace.fork_task(task, view, owner).await,
                 )
                 .await
             })
@@ -86,7 +86,7 @@ impl CheckoutTools {
         } else {
             serialized(&self.state, async |state| {
                 from_selected(state.active.as_ref(), self.workspace.view(), async |view| {
-                    self.fork_task(task, view, owner).await
+                    self.workspace.fork_task(task, view, owner).await
                 })
                 .await
             })
@@ -103,145 +103,16 @@ impl CheckoutTools {
         })
         .await
     }
-    async fn fork_task(
-        &self,
-        task: TaskId,
-        view: &workspace::View,
-        owner: &Arc<dyn crate::runtime::OwnedTaskMailbox>,
-    ) -> Result<workspace::View> {
-        let cancellation = CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let mut accounting = KernelAccounting::NativeOriginal {
-            work: &work,
-            cancellation: &cancellation,
-        };
-        owner.verify_owner(None)?.await?;
-        let name = format!("task-{task}");
-        // Reopening a task retains its original fork even if the
-        // parent's selected branch changed after child admission.
-        let id = self
-            .workspace
-            .filesystem
-            .workspace_id(&name)
-            .map_err(storage)?;
-        let saved = self
-            .workspace
-            .store
-            .load_lazy_workspace(id, &mut accounting)
-            .await
-            .map_err(storage)?;
-        let original = if let Some(saved) = saved {
-            let source = saved
-                .parent_workspace_id
-                .ok_or_else(|| Error::Conflict("task fork has no parent".into()))?;
-            if source == view.workspace().id() {
-                None
-            } else {
-                let source = acyclic_fs::WorkspaceResolver::resolve(
-                    &(
-                        self.workspace.filesystem.clone(),
-                        acyclic_fs::WorkspaceGraph::new(self.workspace.store.clone()),
-                    ),
-                    source,
-                )
-                .await
-                .map_err(storage)?;
-                Some(
-                    view.open_related(source, &mut accounting)
-                        .await
-                        .map_err(storage)?,
-                )
-            }
-        } else {
-            None
-        };
-        let view = original.as_ref().unwrap_or(view);
-        let (view, _) = view
-            .fork(
-                &name,
-                IdempotencyKey::from_bytes(task.into_bytes()),
-                // This lazy fork has no mount-operation lease. The
-                // authority still rejects an active reservation.
-                PublicationPermit::Unrestricted,
-                &mut accounting,
-            )
-            .await
-            .map_err(storage)?;
-        owner.verify_owner(None)?.await?;
-        Ok(view)
-    }
-
     pub(super) async fn mount_task_view(
         &self,
         view: workspace::View,
         owner: &Arc<dyn crate::runtime::OwnedTaskMailbox>,
         mounts: Option<Arc<workspace::Mounts>>,
     ) -> Result<Self> {
-        // Mount retirement may outlive the previous owner. Each
-        // live mount needs its own namespace so retiring it cannot
-        // detach a replacement owner's mount at the same path.
-        std::fs::create_dir_all(&self.workspace.mount_directory).map_err(storage)?;
-        let path = self
+        let workspace = self
             .workspace
-            .mount_directory
-            .join(crate::identity::fresh_uuid().to_string());
-        std::fs::create_dir(&path).map_err(storage)?;
-        let mut workspace = LocalWorkspace {
-            #[cfg(all(test, not(acyclic_harness_loom)))]
-            selection_reads: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(all(test, not(acyclic_harness_loom)))]
-            mount_advances: std::sync::atomic::AtomicUsize::new(0),
-            state: StateArc::new(AsyncMutex::new(State::new(
-                view.workspace().id(),
-                Arc::clone(&self.workspace.mounts),
-            ))),
-            mounts: mounts.unwrap_or_else(|| Arc::clone(&self.workspace.mounts)),
-            context_line: self.workspace.context_line().into(),
-            processes: self.workspace.processes.clone(),
-            path: path.clone(),
-            fresh: false,
-            mount_directory: self.workspace.mount_directory.clone(),
-            view,
-            mounted: None,
-            identity: acyclic_fs::capture_root_identity(&path).map_err(storage)?,
-            filesystem: self.workspace.filesystem.clone(),
-            store: self.workspace.store.clone(),
-        };
-        let (active, pending) = workspace.selected_view().await?;
-        let selected = active.as_ref().unwrap_or_else(|| workspace.view());
-        let initial_view = selected.workspace().id();
-        let mounted = Arc::new(
-            selected
-                .mount(
-                    &path,
-                    MountOptions::read_write().publication(acyclic_fs::MountPublication::Manual),
-                )
-                .await
-                .map_err(storage)?,
-        );
-        workspace.path = path;
-        workspace.identity = acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)?;
-        workspace.mounted = Some(mounted);
-        workspace.mounts = workspace.mounts_at(&workspace.path).await?;
-        workspace.context_line = workspace.mounts.context_line();
-        reconciliation::recover_pending(
-            &workspace,
-            active.as_ref().unwrap_or_else(|| workspace.view()),
-            pending,
-            &|| async { owner.verify_owner(None)?.await },
-        )
-        .await?;
-        workspace.state = StateArc::new(AsyncMutex::new(State {
-            active,
-            initial_view,
-            workspace: None,
-            watcher: None,
-            children: Default::default(),
-            mounts: Arc::clone(&workspace.mounts),
-            initialized: true,
-        }));
-        let workspace = Arc::new(workspace);
+            .mount_task_view(view, owner, mounts, &self.workspace.mount_directory)
+            .await?;
         let (capture_options, capture_policy) = capture::configuration(&workspace)?;
         Ok(Self {
             workspace: Arc::clone(&workspace),
@@ -255,89 +126,12 @@ impl CheckoutTools {
             selected: true,
         })
     }
-    // The caller owns this checkout's state guard. A sparse mount follows one
-    // workspace; switching selects a separate mount instead of staging across
-    // the mount's filesystem boundary. Failed mounts can be retried from state.
     pub(super) async fn selected_workspace(
         &self,
         state: &mut State,
         owner: &dyn crate::runtime::OwnedTaskMailbox,
     ) -> Result<Arc<LocalWorkspace>> {
-        if self.workspace.mounted.is_none() {
-            return Ok(self.workspace.clone());
-        }
-        let view = state
-            .active
-            .as_ref()
-            .unwrap_or_else(|| self.workspace.view());
-        let id = view.workspace().id();
-        if id == state.initial_view {
-            state.workspace = None;
-            state.mounts = Arc::clone(&self.workspace.mounts);
-            return Ok(self.workspace.clone());
-        }
-        if let Some((selected, workspace)) = &state.workspace
-            && *selected == id
-        {
-            return Ok(workspace.clone());
-        }
-        owner.verify_owner(None)?.await?;
-        std::fs::create_dir_all(&self.workspace.mount_directory).map_err(storage)?;
-        let path = self
-            .workspace
-            .mount_directory
-            .join(crate::identity::fresh_uuid().to_string());
-        std::fs::create_dir(&path).map_err(storage)?;
-        let mounted = Arc::new(
-            view.mount(
-                &path,
-                MountOptions::read_write().publication(acyclic_fs::MountPublication::Manual),
-            )
-            .await
-            .map_err(storage)?,
-        );
-        let cancellation = CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let view = self
-            .workspace
-            .view()
-            .open_related(
-                self.workspace.view().workspace().clone(),
-                &mut KernelAccounting::NativeOriginal {
-                    work: &work,
-                    cancellation: &cancellation,
-                },
-            )
-            .await
-            .map_err(storage)?;
-        let mounts = self.workspace.mounts_at(&path).await?;
-        let workspace = Arc::new(LocalWorkspace {
-            #[cfg(all(test, not(acyclic_harness_loom)))]
-            selection_reads: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(all(test, not(acyclic_harness_loom)))]
-            mount_advances: std::sync::atomic::AtomicUsize::new(0),
-            context_line: mounts.context_line(),
-            processes: self.workspace.processes.clone(),
-            mounts: Arc::clone(&mounts),
-            // This cached physical handle must not retain its owning cache.
-            state: StateArc::new(AsyncMutex::new(State::new(
-                view.workspace().id(),
-                Arc::clone(&mounts),
-            ))),
-            identity: acyclic_fs::capture_root_identity(&path).map_err(storage)?,
-            path,
-            fresh: false,
-            mount_directory: self.workspace.mount_directory.clone(),
-            view,
-            mounted: Some(mounted),
-            filesystem: self.workspace.filesystem.clone(),
-            store: self.workspace.store.clone(),
-        });
-        owner.verify_owner(None)?.await?;
-        state.mounts = mounts;
-        state.workspace = Some((id, workspace.clone()));
-        Ok(workspace)
+        self.workspace.selected_workspace(state, owner).await
     }
 }
 

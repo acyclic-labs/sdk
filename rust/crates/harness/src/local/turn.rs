@@ -20,11 +20,11 @@ impl LocalHarness {
         let model = self.command_model(task).await?;
         self.runtime
             .commands()
-            .with_model(&model, self.provider.clone(), &self.compaction, None)
+            .with_model(&model, self.agent()?.1.clone(), &self.compaction, None)
     }
 
     pub(super) async fn command_model(&self, task: Option<TaskId>) -> Result<Model> {
-        let mut model = self.model.clone();
+        let mut model = self.agent()?.0.clone();
         let settings = self
             .task_files
             .inner

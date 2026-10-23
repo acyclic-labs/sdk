@@ -102,7 +102,8 @@ impl LocalHarness {
         }
         #[cfg(feature = "hooks")]
         let hooks =
-            crate::native_settings::NativeSettings::load_hooks(Arc::clone(&self.settings)).await?;
+            crate::native_settings::NativeSettings::load_hooks(Arc::clone(self.settings()?))
+                .await?;
         #[cfg(feature = "hooks")]
         let hook_configuration = if hooks.is_empty() {
             None

@@ -59,7 +59,7 @@ wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsif
 filesystem = ["acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "acyclic-harness-core/filesystem", "acyclic-harness-search/filesystem"]
 filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local", "dep:dirs", "dep:getrandom", "dep:tempfile", "acyclic-harness-core/filesystem-local"]
 # Explicit native host composition; portable defaults never select it.
-native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio", "acyclic-harness-core/native-execution"]
+native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio", "dep:notify", "acyclic-harness-core/native-execution"]
 # Native lifecycle commands can also be embedded without filesystem mounts.
 hooks = ["dep:regex-lite", "dep:toml", "acyclic-harness-core/hooks"]
 # Optional native HTTP I/O. Browser hosts implement the same portable boundary.
@@ -73,6 +73,7 @@ grpc = ["acyclic-stream/grpc", "dep:tonic", "dep:tonic-prost", "acyclic-harness-
 
 [dependencies]
 once_cell = "1.21.3"
+notify = { workspace = true, optional = true }
 pulldown-cmark = { version = "0.13.4", default-features = false }
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
@@ -170,6 +171,10 @@ wasm-bindgen-test = "=0.3.67"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "host-hooks"
+path = "tests/host_hooks.rs"
 
 [[test]]
 name = "skills-context"

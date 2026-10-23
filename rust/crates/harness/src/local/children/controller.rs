@@ -89,14 +89,14 @@ impl LocalHarness {
             }
             let child = self.admit_child_task(files.as_ref(), &request).await?;
             let parsed = ChildRequest::parse(&request.bytes, self.limits.file_bytes)?;
-            let mut model = self.model.clone();
+            let mut model = self.agent()?.0.clone();
             if let Some(name) = parsed.model {
                 model.name = name;
                 model.validate()?;
             }
             let commands = self.runtime.commands().with_model(
                 &model,
-                self.provider.clone(),
+                self.agent()?.1.clone(),
                 &self.compaction,
                 None,
             )?;

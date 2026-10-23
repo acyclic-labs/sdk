@@ -1,6 +1,8 @@
 //! Real argv/provider/LocalHarness/client qualification over a loopback endpoint.
 mod catalog_compaction;
 mod goal_review;
+#[cfg(unix)]
+mod host_workspace_shutdown;
 mod input_review;
 mod instruction_review;
 #[cfg(test)]

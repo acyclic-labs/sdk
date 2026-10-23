@@ -189,6 +189,7 @@ impl Fixture {
             )?;
         }
         let (runtime, signed, task_files) = runtime::open(runtime::Configuration {
+            passive: false,
             files: files.clone(),
             #[cfg(feature = "native-execution")]
             workspace: None,
@@ -236,24 +237,26 @@ impl Fixture {
             journal: self.volumes[2].clone(),
             verifier,
             signed,
-            model: Model::new(
-                "scripted".into(),
-                "test".into(),
-                "1".into(),
-                serde_json::Value::Null,
-            )?,
-            provider: self.provider.clone(),
+            agent: Some((
+                Model::new(
+                    "scripted".into(),
+                    "test".into(),
+                    "1".into(),
+                    serde_json::Value::Null,
+                )?,
+                self.provider.clone(),
+            )),
             context_manifest: None,
             skill_cache: super::super::context::skills::cache(),
             context_read_observer: None,
             #[cfg(feature = "hooks")]
-            settings: Arc::new(
+            settings: Some(Arc::new(
                 crate::native_settings::SettingsConfig::new(
                     self.directory.path(),
                     self.directory.path().join("user-config"),
                 )
                 .codex_home(self.directory.path().join("user-config/.codex")),
-            ),
+            )),
             limits: Limits::default(),
             compaction: if compact {
                 CompactionPolicy::Threshold(ThresholdCompaction {

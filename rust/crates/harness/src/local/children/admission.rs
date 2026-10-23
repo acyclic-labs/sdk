@@ -41,6 +41,8 @@ impl LocalHarness {
         let parent = file.requester.ok_or_else(|| {
             Error::Unauthorized("child request has no authenticated parent".into())
         })?;
+        let parent_record = self.runtime.task_host().observe_admission(parent).await?;
+        let native_host = parent_record.task.name == "acyclic.native_host";
         let operation = child_operation(files.volume(), reference.as_str(), b"child")?;
         let admitted = match self
             .runtime
@@ -53,7 +55,11 @@ impl LocalHarness {
             Err(error) => return Err(error),
         };
         if let Some(admitted) = admitted {
-            if !crate::filesystem::child_agent::is_child(&admitted) {
+            if if native_host {
+                admitted.task.name != "acyclic.native_host" || admitted.task.version != "1"
+            } else {
+                !crate::filesystem::child_agent::is_child(&admitted)
+            } {
                 return Err(Error::Conflict(
                     "child request task definition changed".into(),
                 ));
@@ -116,7 +122,12 @@ impl LocalHarness {
             ));
         }
         let request = ChildRequest::parse(&file.bytes, context.scope().limits().file_bytes)?;
-        if !context.scope().grants().contains("tool:call:spawn") {
+        let spawn_grant = if native_host {
+            "task:spawn:acyclic.native_host@1"
+        } else {
+            "tool:call:spawn"
+        };
+        if !context.scope().grants().contains(spawn_grant) {
             return Err(Error::Unauthorized(
                 "child parent lacks the spawn capability".into(),
             ));
@@ -300,6 +311,10 @@ impl LocalHarness {
                         Some(parent),
                     )
                     .await?;
+                    let (input, inputs, task_kind) = if native_host {
+                        (serde_json::json!({"host":parent_record.input.get("host").ok_or_else(|| Error::Invalid("native parent host is absent".into()))?, "session":reference.as_str()}),
+                            Vec::new(), super::super::host_task::TASK)
+                    } else {
                     let (receive, model, manifest) = self
                         .stage_turn_with_output(
                             operation,
@@ -309,10 +324,12 @@ impl LocalHarness {
                         )
                         .await?;
                     let inputs = vec![receive.payload.clone(), model.payload.clone(), manifest];
+                    (serde_json::json!({"receive":receive,"model":model}), inputs, "acyclic.child_agent@1")
+                    };
                     let definition = self
                         .runtime
                         .harness()
-                        .task::<serde_json::Value, serde_json::Value>("acyclic.child_agent@1")?;
+                        .task::<serde_json::Value, serde_json::Value>(task_kind)?;
                     let mut child = self
                         .runtime
                         .harness()
@@ -320,7 +337,7 @@ impl LocalHarness {
                             operation,
                             &definition.identity().name,
                             &definition.identity().version,
-                            serde_json::json!({"receive":receive,"model":model}),
+                            input,
                             Some((parent, context.scope())),
                             None,
                             None,

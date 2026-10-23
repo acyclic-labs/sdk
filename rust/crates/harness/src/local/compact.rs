@@ -71,7 +71,7 @@ impl LocalHarness {
         let model = self
             .command_model(Some(crate::runtime::task_id_for_admission(operation)))
             .await?;
-        let capacity = self.provider.context_capacity(&model)?;
+        let capacity = self.agent()?.1.context_capacity(&model)?;
         let ceiling =
             crate::context::ThresholdCompaction::for_capacity(capacity, 0)?.response_reserve_tokens;
         let input = ModelContent::Text(format!(
@@ -94,10 +94,10 @@ impl LocalHarness {
             )?;
             // Compaction is admitted as a root task, so its pre-count reads the
             // summarized input under the root's own authority.
-            let provider = self
-                .provider
+            let unbound = &self.agent()?.1;
+            let provider = unbound
                 .bind_content(self.context_reader()?, self.limits.file_bytes)
-                .unwrap_or_else(|| self.provider.clone());
+                .unwrap_or_else(|| unbound.clone());
             let count = provider.count_tokens(&request).await?;
             summary_output_budget(
                 capacity.context_tokens,

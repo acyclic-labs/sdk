@@ -5,22 +5,12 @@
   "type": "module",
   "description": "Exact external host inputs for Acyclic qualification",
   "scripts": {
-    "test:native-service-readiness": "bun test native-service-readiness.test.ts",
-    "test:pi-context": "bun test pi-context.test.ts",
-    "test:pi-bootstrap": "bun test pi-bootstrap.test.ts",
-    "test:pi-session": "bun test pi-session.test.ts",
-    "test:pi-installation": "bun test pi-installation.test.ts",
-    "test:pi-service": "bun test pi-service.test.ts",
-    "test:pi-native-recursive": "bun test pi-native-recursive.test.ts",
-    "test:pi-context-mail": "bun test pi-context-mail.test.ts",
-    "test:pi-context-fresh": "bun test pi-context-fresh.test.ts",
-    "test:pi-context-pages": "bun test pi-context-pages.test.ts",
-    "test:pi-builtin-paths": "bun test pi-builtin-paths.test.ts"
+    "test:shim": "bun test shim-contract.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-code": "2.1.278",
     "@earendil-works/pi-coding-agent": "1.1.0",
     "@noble/hashes": "1.8.0",
-    "@openai/codex": "0.155.1"
+    "@openai/codex": "0.164.0"
   }
 }

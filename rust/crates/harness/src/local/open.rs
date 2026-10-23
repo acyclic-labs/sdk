@@ -6,7 +6,7 @@ struct Opening {
     tools: ToolRegistry,
     compaction: crate::context::CompactionPolicy,
     #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
-    settings: Arc<crate::native_settings::SettingsConfig>,
+    settings: Option<Arc<crate::native_settings::SettingsConfig>>,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     capabilities: Capabilities,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -34,14 +34,18 @@ pub(super) async fn open(config: LocalHarnessConfig) -> Result<LocalHarness> {
 
 impl Opening {
     async fn configure(config: LocalHarnessConfig) -> Result<Self> {
-        config.limits.validate(&mut None)?;
-        config.session_limits.validate(&mut None)?;
-        if config.concurrency == 0 {
-            return Err(Error::Invalid("local concurrency is zero".into()));
-        }
+        validate_configuration(&config)?;
         let mut config = config.prepare_state()?;
         let state_location = config.state_location()?;
-        config.model.0.validate()?;
+        let passive = config.model.is_none();
+        if passive && (config.default_tools || !config.tools.is_empty()) {
+            return Err(Error::Invalid(
+                "native host coordination cannot register tools".into(),
+            ));
+        }
+        if let Some((model, _)) = &config.model {
+            model.validate()?;
+        }
         let mut tools = ToolRegistry::default();
         if config.default_tools {
             crate::tools::bind_defaults(
@@ -56,39 +60,61 @@ impl Opening {
             tools.register((tool, None), &mut None, None)?;
         }
         #[cfg(feature = "search-http")]
+        if passive && config.web_tools {
+            return Err(Error::Invalid(
+                "native host coordination cannot register web tools".into(),
+            ));
+        }
+        #[cfg(feature = "search-http")]
         if config.web_tools {
             web::WebExecutor::bind(&mut tools, config.search_provider.take())?;
         }
         #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
-        let settings_configuration =
-            settings::configuration(&config.project, config.settings.take(), config.hermetic)?;
+        let settings_configuration = if passive {
+            None
+        } else {
+            Some(settings::configuration(
+                &config.project,
+                config.settings.take(),
+                config.hermetic,
+            )?)
+        };
         #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-        let mcp =
-            crate::native_settings::NativeSettings::load_mcp(Arc::clone(&settings_configuration))
-                .await?;
-        #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-        let mcp_workspace =
-            std::fs::canonicalize(config.project.root()).map_err(Error::process_io)?;
-        #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-        let installation = mcp
-            .install(tools, &mcp_workspace, config.mcp_limits)
-            .await?;
+        let installation = match &settings_configuration {
+            Some(settings) => {
+                let mcp =
+                    crate::native_settings::NativeSettings::load_mcp(Arc::clone(settings)).await?;
+                let root =
+                    std::fs::canonicalize(config.project.root()).map_err(Error::process_io)?;
+                mcp.install(tools, &root, config.mcp_limits).await?
+            }
+            None => crate::mcp::McpInstallation {
+                tools,
+                capabilities: Capabilities::default(),
+                diagnostics: Vec::new(),
+            },
+        };
         #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
         let tools = installation.tools;
-        let compaction = compaction::select(
-            config.compaction.take(),
-            &config.model.0,
-            config.model.1.as_ref(),
-            &tools,
-            config.limits,
-        )
-        .await?;
+        let compaction = if let Some((model, provider)) = &config.model {
+            compaction::select(
+                config.compaction.take(),
+                model,
+                provider.as_ref(),
+                &tools,
+                config.limits,
+            )
+            .await?
+        } else {
+            crate::context::CompactionPolicy::Disabled
+        };
         #[cfg(feature = "native-execution")]
-        let native_mounts = tools
-            .get(crate::tools::shell::PLATFORM.name, None, None)?
-            .is_some();
+        let native_mounts = passive
+            || tools
+                .get(crate::tools::shell::PLATFORM.name, None, None)?
+                .is_some();
         #[cfg(feature = "native-execution")]
-        if native_mounts {
+        if native_mounts && !passive {
             checkout_tools::shell::executable()?;
         }
         Ok(Self {
@@ -243,7 +269,11 @@ impl Opening {
         // dead previous owner left is dead; owners in this process share it.
         let state = workspace::OwnerState {
             store,
-            processes: Some(fence_stale_processes(directory.join("processes")).await?),
+            processes: if self.config.model.is_none() {
+                None
+            } else {
+                Some(fence_stale_processes(directory.join("processes")).await?)
+            },
         };
         let attach = workspace::Attach {
             volume: &owner.project,
@@ -270,7 +300,9 @@ impl Opening {
     fn user_roots(&self) -> Vec<PathBuf> {
         #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
         {
-            self.settings.skill_roots().to_vec()
+            self.settings
+                .as_ref()
+                .map_or_else(Vec::new, |settings| settings.skill_roots().to_vec())
         }
         #[cfg(not(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")))]
         {
@@ -309,6 +341,7 @@ impl Opening {
         );
         let verifier = issuer.verifier(&mut None)?;
         let (runtime, signed, task_files) = runtime::open(runtime::Configuration {
+            passive: self.config.model.is_none(),
             files: files.clone(),
             #[cfg(feature = "native-execution")]
             workspace: workspace.as_ref().map(Arc::clone),
@@ -340,8 +373,7 @@ impl Opening {
             verifier,
             issuer: Some(issuer),
             signed,
-            model: self.config.model.0,
-            provider: self.config.model.1,
+            agent: self.config.model,
             context_manifest: self.config.context_manifest,
             skill_cache: context::skills::cache(),
             #[cfg(test)]
@@ -369,6 +401,15 @@ impl Opening {
         };
         Ok(local)
     }
+}
+
+fn validate_configuration(config: &LocalHarnessConfig) -> Result<()> {
+    config.limits.validate(&mut None)?;
+    config.session_limits.validate(&mut None)?;
+    if config.concurrency == 0 {
+        return Err(Error::Invalid("local concurrency is zero".into()));
+    }
+    Ok(())
 }
 
 #[cfg(feature = "native-execution")]

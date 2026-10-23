@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) struct Configuration<'a> {
+    pub passive: bool,
     pub files: Arc<LocalFilesystem>,
     #[cfg(feature = "native-execution")]
     pub workspace: Option<Arc<workspace::LocalWorkspace>>,
@@ -65,6 +66,28 @@ pub(super) async fn open(
             fork.identity().version
         ),
     ];
+    if config.passive {
+        grants.retain(|grant| {
+            matches!(
+                grant.as_str(),
+                "fork:publish"
+                    | "project:merge"
+                    | "operation:declare"
+                    | "operation:observe"
+                    | "operation:cancel"
+                    | "operation:wake"
+            ) || grant
+                == &format!(
+                    "task:spawn:{}@{}",
+                    fork.identity().name,
+                    fork.identity().version
+                )
+        });
+    }
+    #[cfg(feature = "native-execution")]
+    if config.passive {
+        grants.push(format!("task:spawn:{}", super::host_task::TASK));
+    }
     for volume in [config.project, config.scratch] {
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
             grants.push(volume.capability(operation, &mut None)?);
@@ -121,13 +144,27 @@ pub(super) async fn open(
         None,
     )?);
     let mut tasks = TaskRegistry::default();
-    tasks.register(definition)?;
-    tasks.register(child_definition)?;
+    #[cfg(feature = "native-execution")]
+    let native_host = super::host_task::NativeHostTask::new();
+    #[cfg(feature = "native-execution")]
+    if config.passive {
+        tasks.register(native_host.definition()?)?;
+    }
+    if !config.passive {
+        tasks.register(definition)?;
+        tasks.register(child_definition)?;
+    }
     tasks.register(fork)?;
     let mut machines = MachineRegistry::default();
-    LocalHarness::register_commands(&mut tasks, &mut machines)?;
-    machines.register(stock, &mut None)?;
-    machines.register(child, &mut None)?;
+    #[cfg(feature = "native-execution")]
+    if config.passive {
+        machines.register(native_host, &mut None)?;
+    }
+    if !config.passive {
+        LocalHarness::register_commands(&mut tasks, &mut machines)?;
+        machines.register(stock, &mut None)?;
+        machines.register(child, &mut None)?;
+    }
     machines.register(preparation, &mut None)?;
     let mut runtime = LocalTaskRuntime::open(
         config.stream,
@@ -173,9 +210,12 @@ pub(super) async fn open(
                 &signed,
                 config.limits.file_bytes,
             );
-            runtime
-                .with_content_publisher(Arc::new(publisher))?
-                .with_workspace_tools(tools)?
+            let runtime = runtime.with_content_publisher(Arc::new(publisher))?;
+            if config.passive {
+                runtime
+            } else {
+                runtime.with_workspace_tools(tools)?
+            }
         }
         None => runtime,
     };

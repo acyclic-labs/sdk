@@ -132,6 +132,7 @@ async fn binding_an_existing_runtime_discovers_checkout_and_user_skills() -> Res
     // than reusing open()'s runtime scope for three distinct private volumes.
     let (runtime, signed, _) =
         super::super::super::runtime::open(super::super::super::runtime::Configuration {
+            passive: false,
             files: files.clone(),
             workspace: None,
             stream: stream.clone(),
