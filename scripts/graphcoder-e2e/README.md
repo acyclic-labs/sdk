@@ -10,6 +10,9 @@ Linux external acceptance also leases its fresh fixture directory. After all
 descendants exit, the supervisor normally unmounts its FUSE registrations and
 checks that their mount IDs have disappeared. Failed retirement fails the
 acceptance command; unrelated fixtures and pre-existing mounts are never adopted.
+The runner passes that same root as `ACYCLIC_TEST_FIXTURE_ROOT`; installed Pi
+fixtures create their service state below it and bind provider imports to the
+installed modules before moving provider files outside the repository.
 POSIX cleanup requires Python 3 and macOS `ps`; exit waits use Linux pidfds or
 macOS kqueue notifications. Separate service process groups stay owned. Shipping GraphCoder processes retain their own recovery
 oracle so an external-test cleanup boundary cannot hide orphan-fencing failures.
@@ -29,6 +32,9 @@ competing inside a shared deadline. On Windows run it under the fleet's
 the ten-second limit, including its filesystem variants. The aggregate receipt
 requires every case and variant exactly once; total matrix time is recorded
 separately. Run Node helper tests with `--test-concurrency=1` on Windows.
+The strict helper launcher also owns its complete process tree. Its active
+nine-second budget cancels and drains the scope; cancellation always fails
+qualification, including when a late child summary reports success.
 
 `coverage.json` maps every A1–A26 target to real case identities and names the
 owner of remaining scope gaps. Missing rows, unknown identities, duplicate

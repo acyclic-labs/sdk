@@ -36,6 +36,7 @@ test("installed-host entry points receive the same prebuilt plugin and fixture p
     assert.equal(options.env.ACYCLIC_TEST_BINARY, process.execPath);
     assert.equal(options.env.ACYCLIC_BINARY, process.execPath);
     assert.equal(options.env.RUST_TEST_THREADS, "1");
+    assert.equal(options.env.ACYCLIC_TEST_FIXTURE_ROOT, options.scopeMountRoot);
     return { code: 0, stdout: "1 pass\n0 fail", stderr: "" };
   } };
   const input = { binary_env: "E2E_BUN", fixture_binary_env: "E2E_PLUGIN_BINARY",

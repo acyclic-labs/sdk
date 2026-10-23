@@ -15,10 +15,10 @@ from owned_mounts import MountLease
 HERE = Path(__file__).resolve().parent
 
 
-def host(root, mode="exit", leased=True):
+def host(root, mode="exit", leased=True, lease_root=None):
     command = [sys.executable, str(HERE / "owned-process.py")]
     if leased:
-        command += ["--mount-root", str(root), "--"]
+        command += ["--mount-root", str(lease_root or root), "--"]
     command += [sys.executable, str(HERE / "mount-fixture.py"), str(root / "mounted space\ttab"), mode]
     return subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True)
@@ -35,6 +35,34 @@ def finish(process):
 
 
 class MountOwnership(unittest.TestCase):
+    def test_installed_pi_directories_remain_inside_acceptance_lease(self):
+        module = HERE.parent.parent / "plugin/tests/hosts/fixture-directory.mjs"
+        for prefix in [".pi-native-recursive-", ".pi-native-cuts-"]:
+            for mode in ["exit", "wait"]:
+                with self.subTest(prefix=prefix, mode=mode), tempfile.TemporaryDirectory() as root:
+                    script = (f"import {{hostFixtureDirectory}} from {json.dumps(module.as_uri())};"
+                              f"console.log(hostFixtureDirectory({json.dumps(prefix)}));")
+                    directory = Path(subprocess.check_output(
+                        ["node", "--input-type=module", "-e", script], text=True,
+                        env={**os.environ, "ACYCLIC_TEST_FIXTURE_ROOT": root}).strip())
+                    self.assertTrue(directory.is_relative_to(Path(root).resolve()))
+                    lease = MountLease(root)
+                    process = host(directory, mode, lease_root=root)
+                    try:
+                        if mode == "wait":
+                            self.assertIn("mounted", json.loads(process.stdout.readline()))
+                            self.assertEqual(len(lease.mounts()), 1)
+                            process.stdin.close()
+                        code, _, error = finish(process)
+                        self.assertEqual(code, 0 if mode == "exit" else 124, error)
+                        self.assertEqual(lease.mounts(), [])
+                    finally:
+                        if process.poll() is None:
+                            process.stdin.close()
+                            process.wait()
+                        lease.retire()
+                        lease.close()
+
     def test_process_only_negative_control_leaves_a_real_disconnected_mount(self):
         with tempfile.TemporaryDirectory() as root:
             lease = MountLease(root)

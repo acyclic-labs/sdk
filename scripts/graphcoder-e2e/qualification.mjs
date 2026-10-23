@@ -36,7 +36,8 @@ export function qualified(result, format, minimum) {
 export async function qualification(processes, input, fixture, capture) {
   const binary = fixture.env[input.binary_env];
   assert.ok(binary && isAbsolute(binary), `${input.binary_env} must name a prebuilt absolute executable`);
-  const env = { ...fixture.env, RUST_TEST_THREADS: "1" };
+  const env = { ...fixture.env, RUST_TEST_THREADS: "1",
+    ACYCLIC_TEST_FIXTURE_ROOT: dirname(fixture.workspace) };
   if (input.fixture_binary_env) {
     assert.ok(isAbsolute(env[input.fixture_binary_env] ?? ""), `${input.fixture_binary_env} must name the matching prebuilt plugin executable`);
     env.ACYCLIC_TEST_BINARY = env[input.fixture_binary_env];

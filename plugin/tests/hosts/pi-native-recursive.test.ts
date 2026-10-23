@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "bun:test";
-import { fileURLToPath } from "node:url";
+import { hostFixtureDirectory } from "./fixture-directory.mjs";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { installedNativeFixture } from "./pi-native-fixture.ts";
 import { piOperatorDriver } from "./pi-operator-driver.ts";
@@ -16,8 +16,8 @@ function volumeName(volume: unknown): string {
   return `harness-${Buffer.from(blake3(new TextEncoder().encode(JSON.stringify(canonical(volume))))).toString("hex")}`;
 }
 const recursiveProvider = `
-import { VERSION } from "@earendil-works/pi-coding-agent";
-import { fauxProvider, fauxAssistantMessage, fauxToolCall, getCurrentTools } from "@earendil-works/pi-ai";
+import { VERSION } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-coding-agent"))};
+import { fauxProvider, fauxAssistantMessage, fauxToolCall, getCurrentTools } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-ai"))};
 import { existsSync, statSync, writeFileSync, watch } from "node:fs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -173,7 +173,7 @@ export default function(pi) {
 `;
 
 test("required pinned Pi recursively launches original native effects and reopens without repeating work", async () => {
-  const directory = mkdtempSync(fileURLToPath(new URL(".pi-native-recursive-", import.meta.url)));
+  const directory = hostFixtureDirectory(".pi-native-recursive-");
   let fixture: Awaited<ReturnType<typeof installedNativeFixture>> | undefined;
   const oracleDirectory = join(directory, "native-oracles");
   const ownedServicePids: number[] = [];
@@ -350,7 +350,7 @@ test("required pinned Pi recursively launches original native effects and reopen
 }, { timeout: 240_000 });
 
 test("installed Pi retains split spawn, import and cancellation identities across lost replies and extension reload", async () => {
-  const directory = mkdtempSync(fileURLToPath(new URL(".pi-native-cuts-", import.meta.url)));
+  const directory = hostFixtureDirectory(".pi-native-cuts-");
   const oracleDirectory = join(directory, "native-oracles");
   let fixture: Awaited<ReturnType<typeof installedNativeFixture>> | undefined;
   try {
