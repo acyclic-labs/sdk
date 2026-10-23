@@ -19,17 +19,17 @@ impl Visibility {
                     .and_then(|words| words.first())
                     .is_some_and(|word| *word != 0);
                 self.levels.push(vec![u64::from(inherited)]);
-                #[cfg(any(test, feature = "audit-work"))]
+                #[cfg(test)]
                 crate::work::copy(std::mem::size_of::<u64>());
             }
             let Some(words) = self.levels.get_mut(level) else {
                 break;
             };
-            #[cfg(any(test, feature = "audit-work"))]
+            #[cfg(test)]
             crate::work::visibility(1);
             let position = bit / 64;
             if words.len() <= position {
-                #[cfg(any(test, feature = "audit-work"))]
+                #[cfg(test)]
                 crate::work::grow((position + 1 - words.len()) * std::mem::size_of::<u64>());
                 words.resize(position + 1, 0);
             }
@@ -66,7 +66,7 @@ impl Visibility {
     fn last(&self) -> usize {
         let mut position = 0;
         for words in self.levels.iter().rev() {
-            #[cfg(any(test, feature = "audit-work"))]
+            #[cfg(test)]
             crate::work::visibility(1);
             let word = words.get(position).copied().unwrap_or_default();
             if word == 0 {

@@ -136,7 +136,7 @@ impl Markdown {
         let mut out = self.state.checkpoint();
         let tail = self.source.get(self.offset..).unwrap_or_default();
         for raw in tail.split_inclusive('\n') {
-            #[cfg(any(test, feature = "audit-work"))]
+            #[cfg(test)]
             if (fence.indented && !indented_blank(raw, &fence))
                 || (!fence.indented && !fence.opening.is_empty())
             {
@@ -181,7 +181,7 @@ impl Markdown {
         self.lines.extend(out.lines);
         self.set_stable_lines(self.lines.len());
         let raw = self.source.get(self.offset..).unwrap_or_default();
-        #[cfg(any(test, feature = "audit-work"))]
+        #[cfg(test)]
         if (fence.indented && !indented_blank(raw, &fence))
             || (!fence.indented && !fence.opening.is_empty())
         {
@@ -218,11 +218,11 @@ fn fence_line<'a>(line: &'a str, fence: &Fence) -> FenceLine<'a> {
         let source = format!("{}{}{line}", fence.parser_opening, fence.pending);
         let mut text = String::new();
         let mut inside = false;
-        #[cfg(any(test, feature = "audit-work"))]
+        acyclic_markdown_work::record!(scan(source.len()));
+        #[cfg(test)]
         references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
         for event in Parser::new_ext(&source, options()) {
-            #[cfg(any(test, feature = "audit-work"))]
-            work::node();
+            acyclic_markdown_work::record!(node());
             match event {
                 Event::Start(Tag::CodeBlock(_)) => inside = true,
                 Event::Text(content) if inside => text.push_str(&content),
@@ -242,12 +242,12 @@ fn fence_line<'a>(line: &'a str, fence: &Fence) -> FenceLine<'a> {
                 .is_empty()
         {
             let source = format!("{}{line}", fence.parser_opening);
-            #[cfg(any(test, feature = "audit-work"))]
+            acyclic_markdown_work::record!(scan(source.len()));
+            #[cfg(test)]
             references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
             let text = Parser::new_ext(&source, options())
                 .filter_map(|event| {
-                    #[cfg(any(test, feature = "audit-work"))]
-                    work::node();
+                    acyclic_markdown_work::record!(node());
                     match event {
                         Event::Text(text) => Some(text.to_string()),
                         _ => None,
@@ -265,11 +265,11 @@ fn fence_line<'a>(line: &'a str, fence: &Fence) -> FenceLine<'a> {
     let source = format!("{}{line}", fence.parser_opening);
     let mut inside = false;
     let mut text = String::new();
-    #[cfg(any(test, feature = "audit-work"))]
+    acyclic_markdown_work::record!(scan(source.len()));
+    #[cfg(test)]
     references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
     for (event, range) in Parser::new_ext(&source, options()).into_offset_iter() {
-        #[cfg(any(test, feature = "audit-work"))]
-        work::node();
+        acyclic_markdown_work::record!(node());
         match event {
             Event::Start(Tag::CodeBlock(_)) => inside = true,
             Event::Text(content) if inside => text.push_str(&content),

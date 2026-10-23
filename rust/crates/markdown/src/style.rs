@@ -36,8 +36,7 @@ pub struct Span {
 
 impl Clone for Span {
     fn clone(&self) -> Self {
-        #[cfg(any(test, feature = "audit-work"))]
-        crate::work::span_copy(self.text.len());
+        acyclic_markdown_work::record!(span_copy(self.text.len()));
         Self {
             text: self.text.clone(),
             style: self.style,
@@ -58,7 +57,7 @@ impl Line {
         if text.is_empty() {
             return;
         }
-        #[cfg(any(test, feature = "audit-work"))]
+        #[cfg(test)]
         crate::work::copy(text.len());
         if let Some(last) = self.spans.last_mut()
             && last.style == style
@@ -68,11 +67,9 @@ impl Line {
                 _ => false,
             }
         {
-            #[cfg(any(test, feature = "audit-work"))]
-            {
-                crate::work::grow(text.len());
-                crate::work::span_copy(text.len());
-            }
+            acyclic_markdown_work::record!(span_copy(text.len()));
+            #[cfg(test)]
+            crate::work::grow(text.len());
             last.text.push_str(text);
         } else {
             self.push_new(text, style, link);
@@ -81,9 +78,8 @@ impl Line {
 
     pub(crate) fn push_new(&mut self, text: &str, style: Style, link: Option<&Arc<str>>) {
         if !text.is_empty() {
-            #[cfg(any(test, feature = "audit-work"))]
-            crate::work::span_copy(text.len());
-            #[cfg(any(test, feature = "audit-work"))]
+            acyclic_markdown_work::record!(span_copy(text.len()));
+            #[cfg(test)]
             crate::work::grow(std::mem::size_of::<Span>());
             if self.spans.len() == self.spans.capacity() {
                 // Most display rows contain one or two spans. Keep geometric

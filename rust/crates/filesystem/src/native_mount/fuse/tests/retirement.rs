@@ -1,9 +1,30 @@
 use super::*;
 use crate::native_mount::NativeSessionStopWork;
+use std::sync::mpsc::{Receiver, Sender};
 
 enum Event {
     Polling,
     Retired(Result<(), NativeMountError>),
+}
+
+fn waiting_mount(
+    polling: Sender<Event>,
+    acknowledged: Receiver<()>,
+    mut interrupted: bool,
+) -> std::io::Result<super::super::mount::Mount> {
+    super::super::mount::Mount::accepted_unmount(move |timeout| {
+        if timeout == 0 {
+            // A probe observes the connection before the later acknowledgment.
+            return Ok(false);
+        }
+        assert_eq!(timeout, -1);
+        if std::mem::take(&mut interrupted) {
+            return Err(std::io::ErrorKind::Interrupted.into());
+        }
+        polling.send(Event::Polling).map_err(|_| std::io::ErrorKind::BrokenPipe)?;
+        acknowledged.recv().map_err(|_| std::io::ErrorKind::BrokenPipe)?;
+        Ok(true)
+    })
 }
 
 // The kernel accepts unmount before its last connection reference disappears.
@@ -12,15 +33,21 @@ enum Event {
 #[test]
 fn accepted_unmount_waits_for_kernel_ack_using_birth_credit()
 -> Result<(), Box<dyn std::error::Error>> {
-    interleaving(false)
+    for interrupted in [false, true] {
+        interleaving(false, interrupted)?;
+    }
+    Ok(())
 }
 
 #[test]
 fn accepted_unmount_waits_for_kernel_ack_on_meter() -> Result<(), Box<dyn std::error::Error>> {
-    interleaving(true)
+    for interrupted in [false, true] {
+        interleaving(true, interrupted)?;
+    }
+    Ok(())
 }
 
-fn interleaving(meter: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn interleaving(meter: bool, interrupted: bool) -> Result<(), Box<dyn std::error::Error>> {
     let (source, _) = shared_sources(posix_config())?;
     let core = projection_core(
         Arc::new(source),
@@ -57,16 +84,7 @@ fn interleaving(meter: bool) -> Result<(), Box<dyn std::error::Error>> {
         },
         None,
     )?;
-    let mount = super::super::mount::Mount::accepted_unmount(move |timeout| {
-        if timeout == 0 {
-            // A probe observes the connection before the later acknowledgment.
-            return Ok(false);
-        }
-        assert_eq!(timeout, -1);
-        polling.send(Event::Polling).unwrap();
-        acknowledged.recv().unwrap();
-        Ok(true)
-    })?;
+    let mount = waiting_mount(polling, acknowledged, interrupted)?;
     core.stop();
     if !meter {
         // Losing the original caller cannot revoke already accepted cleanup.

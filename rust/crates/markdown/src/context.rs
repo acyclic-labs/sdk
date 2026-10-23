@@ -133,7 +133,8 @@ pub(super) fn container(source: &str, position: usize, tag: &Tag<'_>) -> Contain
 }
 
 fn columns(source: &str, start: usize) -> usize {
-    #[cfg(any(test, feature = "audit-work"))]
+    acyclic_markdown_work::record!(scan(source.len()));
+    #[cfg(test)]
     work::scan(source.len());
     source.bytes().fold(start, |column, byte| {
         column + if byte == b'\t' { 4 - column % 4 } else { 1 }
@@ -186,7 +187,8 @@ pub(super) fn html_closed(source: &str, range: &Range<usize>, parents: &[Contain
     let raw = source.get(range.clone()).unwrap_or_default();
     let end = prefix.len() + row.len() + raw.len();
     let probe = format!("{prefix}{row}{raw}{row}x\n");
-    #[cfg(any(test, feature = "audit-work"))]
+    acyclic_markdown_work::record!(scan(probe.len()));
+    #[cfg(test)]
     {
         work::copy(probe.len());
         references::PARSED_BYTES.with(|work| work.set(work.get() + probe.len()));
@@ -194,8 +196,7 @@ pub(super) fn html_closed(source: &str, range: &Range<usize>, parents: &[Contain
     Parser::new_ext(&probe, options())
         .into_offset_iter()
         .any(|(event, range)| {
-            #[cfg(any(test, feature = "audit-work"))]
-            work::node();
+            acyclic_markdown_work::record!(node());
             matches!(event, Event::End(TagEnd::HtmlBlock)) && range.end <= end
         })
 }

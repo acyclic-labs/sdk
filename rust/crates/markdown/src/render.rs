@@ -33,7 +33,7 @@ fn destination(url: &str, id: &str, references: Option<&crate::References>) -> A
     {
         return destination.clone();
     }
-    #[cfg(any(test, feature = "audit-work"))]
+    #[cfg(test)]
     crate::work::copy(url.len());
     Arc::from(url)
 }
@@ -74,7 +74,7 @@ impl Renderer {
     }
     pub(super) fn reuse_line(&mut self, mut line: Line) {
         line.spans.clear();
-        #[cfg(any(test, feature = "audit-work"))]
+        #[cfg(test)]
         crate::work::copy(self.line.spans.len() * std::mem::size_of::<crate::Span>());
         line.spans.append(&mut self.line.spans);
         self.line = line;
@@ -88,7 +88,7 @@ impl Renderer {
     }
 
     pub(crate) fn checkpoint(&self) -> Self {
-        #[cfg(any(test, feature = "audit-work"))]
+        #[cfg(test)]
         crate::work::copy(
             self.line
                 .spans
@@ -123,7 +123,7 @@ impl Renderer {
             }
             let text = part.trim_end_matches(['\r', '\n']);
             if self.new_link && self.link.is_some() && !text.is_empty() {
-                #[cfg(any(test, feature = "audit-work"))]
+                #[cfg(test)]
                 crate::work::copy(text.len());
                 self.line.push_new(text, self.style, self.link.as_ref());
                 self.new_link = false;

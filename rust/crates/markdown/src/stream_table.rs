@@ -62,7 +62,7 @@ impl Markdown {
         header.push('\n');
         let widths = table.widths();
         let (cost, valid) = references::expansion(calls.iter());
-        #[cfg(any(test, feature = "audit-work"))]
+        #[cfg(test)]
         work::copy(header.len() + widths.len() * std::mem::size_of::<usize>() * 2);
         self.table = Some(Stream {
             parsed: self.source.len(),
@@ -93,7 +93,7 @@ impl Markdown {
             return None;
         }
         let source = format!("{}{tail}", stream.header);
-        #[cfg(any(test, feature = "audit-work"))]
+        #[cfg(test)]
         work::copy(source.len());
         let (events, calls) = events::scoped(
             &source,
@@ -148,7 +148,7 @@ impl Markdown {
             table_start
         };
         let rows = addition.render_rows(1, &widths);
-        #[cfg(any(test, feature = "audit-work"))]
+        #[cfg(test)]
         {
             work::copy((rows.len() + 2) * std::mem::size_of::<Line>());
             work::grow((rows.len() + 2) * std::mem::size_of::<Line>());
@@ -178,7 +178,7 @@ impl Markdown {
 
 impl Stream {
     fn widths_for(&self, addition: &Table) -> Vec<usize> {
-        #[cfg(any(test, feature = "audit-work"))]
+        #[cfg(test)]
         work::copy(self.widths.len() * std::mem::size_of::<usize>());
         let mut widths = self.widths.clone();
         for row in addition.rows.iter().skip(1) {
@@ -190,7 +190,7 @@ impl Stream {
     fn append_rows(&mut self, rows: impl Iterator<Item = Vec<Line>>) {
         for row in rows {
             update_widths(&self.table, &mut self.widths, &row);
-            #[cfg(any(test, feature = "audit-work"))]
+            #[cfg(test)]
             work::grow(std::mem::size_of::<Vec<Line>>());
             self.table.rows.push(row);
         }
@@ -213,7 +213,8 @@ fn completions(
 ) -> (usize, usize) {
     let (mut total, mut committed) = (0usize, 0usize);
     for (event, range) in events {
-        #[cfg(any(test, feature = "audit-work"))]
+        acyclic_markdown_work::record!(scan(1));
+        #[cfg(test)]
         work::scan(1);
         if matches!(event, Event::Start(Tag::TableRow)) {
             let missing =
@@ -228,7 +229,8 @@ fn completions(
 }
 
 fn row_cells(row: &str) -> usize {
-    #[cfg(any(test, feature = "audit-work"))]
+    acyclic_markdown_work::record!(scan(row.len() * 3));
+    #[cfg(test)]
     work::scan(row.len() * 3);
     let row = row.trim_matches([' ', '\t', '\n', '\r', '\u{b}', '\u{c}']);
     if row.is_empty() {

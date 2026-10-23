@@ -203,23 +203,31 @@ impl Mount {
     }
 
     fn poll_detachment(&mut self, device: &OwnedFd, timeout: i32) -> io::Result<bool> {
+        loop {
+            match self.query_detachment(device, timeout) {
+                // A signal has not completed the admitted observation. Resume
+                // it here, while the session retains the same read credit.
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                result => return self.observe_detachment(|| result),
+            }
+        }
+    }
+
+    fn query_detachment(&mut self, device: &OwnedFd, timeout: i32) -> io::Result<bool> {
         #[cfg(test)]
         if let Some(poll) = self.detachment_poll.as_mut() {
-            let result = poll(timeout);
-            return self.observe_detachment(|| result);
+            return poll(timeout);
         }
-        self.observe_detachment(|| {
-            let mut poll = libc::pollfd {
-                fd: device.as_raw_fd(),
-                events: 0,
-                revents: 0,
-            };
-            // SAFETY: one initialized record; the state owner retains its descriptor.
-            if unsafe { libc::poll(&mut poll, 1, timeout) } < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(poll.revents & libc::POLLERR != 0)
-        })
+        let mut poll = libc::pollfd {
+            fd: device.as_raw_fd(),
+            events: 0,
+            revents: 0,
+        };
+        // SAFETY: one initialized record; the state owner retains its descriptor.
+        if unsafe { libc::poll(&mut poll, 1, timeout) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(poll.revents & libc::POLLERR != 0)
     }
 
     fn observe_detachment(&mut self, query: impl FnOnce() -> io::Result<bool>) -> io::Result<bool> {

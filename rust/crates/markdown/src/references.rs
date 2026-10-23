@@ -10,7 +10,7 @@ type Definition = (Arc<str>, Arc<str>, usize);
 // All callers receive labels already normalized by pulldown-cmark. In particular,
 // its ASCII whitespace rules must not be applied again as Unicode whitespace.
 pub(crate) fn normalize(label: &str) -> Key {
-    #[cfg(any(test, feature = "audit-work"))]
+    #[cfg(test)]
     crate::work::copy(label.len());
     unicase::UniCase::new(label.to_owned())
 }
@@ -19,7 +19,7 @@ pub(crate) fn normalize(label: &str) -> Key {
 pub(crate) struct References {
     pub(super) committed: HashMap<Key, Definition>,
     pub(super) pending: HashMap<Key, Definition>,
-    #[cfg(any(test, feature = "audit-work"))]
+    #[cfg(test)]
     pub(crate) work: usize,
 }
 
@@ -39,20 +39,21 @@ impl References {
     pub(crate) fn update(&mut self, source: &str, offset: usize, prefix: usize) -> HashSet<Key> {
         // Every definition opens with a `[` label: without one the tail has none.
         if !source.contains('[') {
-            #[cfg(any(test, feature = "audit-work"))]
+            acyclic_markdown_work::record!(scan(source.len()));
+            #[cfg(test)]
             crate::work::scan(source.len());
             return self.replace_pending(HashMap::new());
         }
-        #[cfg(any(test, feature = "audit-work"))]
+        acyclic_markdown_work::record!(scan(source.len()));
+        #[cfg(test)]
         PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
         let parser = Parser::new_ext(source, crate::options());
         let pending: HashMap<_, _> = parser
             .reference_definitions()
             .iter()
             .map(|(key, value)| {
-                #[cfg(any(test, feature = "audit-work"))]
-                crate::work::node();
-                #[cfg(any(test, feature = "audit-work"))]
+                acyclic_markdown_work::record!(node());
+                #[cfg(test)]
                 crate::work::copy(
                     value.dest.len() + value.title.as_ref().map_or(0, |title| title.len()),
                 );
@@ -70,7 +71,7 @@ impl References {
     }
 
     fn replace_pending(&mut self, pending: HashMap<Key, Definition>) -> HashSet<Key> {
-        #[cfg(any(test, feature = "audit-work"))]
+        #[cfg(test)]
         {
             self.work += self.pending.len() + pending.len();
         }
@@ -85,7 +86,7 @@ impl References {
     }
 
     pub(crate) fn commit(&mut self, offset: usize) {
-        #[cfg(any(test, feature = "audit-work"))]
+        #[cfg(test)]
         {
             self.work += self.pending.len();
         }
@@ -140,22 +141,22 @@ impl Template {
             }
             normalized.push_str(line);
         }
-        #[cfg(any(test, feature = "audit-work"))]
+        #[cfg(test)]
         crate::work::copy(normalized.len());
         let mut keys = HashSet::new();
         let mut callback = |link: BrokenLink<'_>| {
             keys.insert(normalize(&link.reference));
             None
         };
-        #[cfg(any(test, feature = "audit-work"))]
+        acyclic_markdown_work::record!(scan(normalized.len()));
+        #[cfg(test)]
         PARSED_BYTES.with(|work| work.set(work.get() + normalized.len()));
         for _ in Parser::new_with_broken_link_callback(
             &normalized,
             options(paragraph),
             Some(&mut callback),
         ) {
-            #[cfg(any(test, feature = "audit-work"))]
-            crate::work::node();
+            acyclic_markdown_work::record!(node());
         }
         Self {
             source: normalized,
@@ -226,7 +227,7 @@ fn options(paragraph: bool) -> pulldown_cmark::Options {
     options
 }
 
-#[cfg(any(test, feature = "audit-work"))]
+#[cfg(test)]
 std::thread_local! {
     pub(crate) static PARSED_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }

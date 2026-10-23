@@ -8,11 +8,6 @@ license.workspace = true
 repository.workspace = true
 description = "Incremental Markdown presentation as renderer-independent styled lines"
 
-[features]
-# Work instrumentation is enabled by the development dependency for tests and
-# benches; ordinary consumers do not pay for counters.
-audit-work = []
-
 [[test]]
 name = "streaming"
 path = "tests/streaming.rs"
@@ -26,6 +21,7 @@ name = "audit"
 harness = false
 
 [dependencies]
+acyclic-markdown-work = { path = "../markdown-work", version = "0.2.0" }
 pulldown-cmark = { version = "=0.13.4", default-features = false }
 syntect = { version = "=5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
 unicode-width = "0.2"
@@ -33,7 +29,9 @@ unicode-segmentation = "1.13"
 unicase = "2.10"
 
 [dev-dependencies]
-acyclic-markdown = { path = ".", features = ["audit-work"] }
+# Feature unification enables instrumentation in the parser for tests/benches,
+# without a dependency cycle or counters in ordinary consumers.
+acyclic-markdown-work = { path = "../markdown-work", version = "0.2.0", features = ["enabled"] }
 proptest.workspace = true
 
 [lints]

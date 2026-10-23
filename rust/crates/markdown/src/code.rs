@@ -10,7 +10,7 @@ use syntect::{
 static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
 static THEME: OnceLock<Theme> = OnceLock::new();
 
-#[cfg(any(test, feature = "audit-work"))]
+#[cfg(test)]
 std::thread_local! {
     pub(crate) static HIGHLIGHTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
@@ -46,7 +46,7 @@ pub(crate) fn highlighter(language: &str) -> Code {
 }
 
 pub(crate) fn highlight(code: &mut Code, text: &str) -> Line {
-    #[cfg(any(test, feature = "audit-work"))]
+    #[cfg(test)]
     HIGHLIGHTED.with(|count| count.set(count.get() + 1));
     let syntaxes = SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines);
     let (highlight, parse) = code
@@ -134,11 +134,11 @@ pub(crate) fn closing(text: &str, marker: u8, count: usize) -> bool {
     // Ordinary code lines never allocate or invoke this candidate parse.
     let opening = if marker == b'`' { "```" } else { "~~~" };
     let candidate = format!("{opening}\n{input}");
-    #[cfg(any(test, feature = "audit-work"))]
+    acyclic_markdown_work::record!(scan(candidate.len()));
+    #[cfg(test)]
     crate::references::PARSED_BYTES.with(|work| work.set(work.get() + candidate.len()));
     !Parser::new(&candidate).any(|event| {
-        #[cfg(any(test, feature = "audit-work"))]
-        crate::work::node();
+        acyclic_markdown_work::record!(node());
         matches!(event, Event::Text(_))
     })
 }

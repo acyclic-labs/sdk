@@ -1,9 +1,7 @@
 //! Checks append work independently of completed history and machine load.
 
-use acyclic_markdown::{
-    Markdown,
-    work::{self, Counts},
-};
+use acyclic_markdown::Markdown;
+use acyclic_markdown_work::{self as work, Counts};
 use std::{
     hint::black_box,
     time::{Duration, Instant},
