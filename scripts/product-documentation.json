@@ -54,6 +54,7 @@
   "rust/crates/filesystem/native-exchange-contract.md",
   "rust/crates/filesystem/tests/fixtures/cloud-filesystem/README.md",
   "rust/crates/grpc-observability/README.md",
+  "rust/crates/harness-conformance/README.md",
   "rust/crates/harness/README.md",
   "rust/crates/harness/docs/actor-package.md",
   "rust/crates/harness/docs/client/QUALIFICATION.md",

@@ -7,6 +7,15 @@ license.workspace = true
 repository.workspace = true
 publish = false
 description = "Internal Harness report qualification command"
+default-run = "harness-conformance"
+
+[lib]
+doctest = false
+
+[[bin]]
+name = "scenarios"
+path = "src/scenarios.rs"
+test = false
 
 [[bin]]
 name = "harness-conformance"
@@ -14,11 +23,21 @@ path = "src/main.rs"
 test = false
 
 [dependencies]
+acyclic-harness = { version = "=0.2.0", path = "../harness", features = ["test-support", "filesystem-local"] }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", features = ["memory"] }
+acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["local"] }
+futures.workspace = true
+serde.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tempfile = "3.27.0"
+reqwest.workspace = true
 acyclic-conformance = { version = "=0.2.0", path = "../conformance" }
 blake3.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+acyclic-test-support = { version = "=0.2.0", path = "../test-support" }
+axum.workspace = true
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 serde.workspace = true
 tempfile = "3.27.0"

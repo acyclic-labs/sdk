@@ -405,11 +405,19 @@ name = "acyclic-harness-conformance"
 version = "0.2.0"
 dependencies = [
  "acyclic-conformance",
+ "acyclic-fs",
+ "acyclic-harness",
  "acyclic-native-runtime",
+ "acyclic-stream",
+ "acyclic-test-support",
+ "axum",
  "blake3",
+ "futures",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

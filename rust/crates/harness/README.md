@@ -130,6 +130,13 @@ and independent input limits. The execution journal retains the exact request
 artifact and rechecks it before replay or reconciliation. TypeScript providers
 receive the same Rust-admitted bytes as `serializedInput`.
 
+The unchanged JSON corpus can also qualify an Actors package host. Run
+`cargo run --locked -p acyclic-harness-conformance --bin scenarios -- --substrate in-process --report out.json`
+or replace `in-process` with an HTTP contract endpoint. The report accounts for
+every case, including capability skips for native fixture introspection.
+See the [scenario substrate guide](../harness-conformance/README.md) for external
+host bindings, the `executor` capability and the native driver capability tags.
+
 For model-visible fork inheritance, bind an owner-authenticated reader with
 `StockExecutor::with_inherited_prefix`. After the fork-planning tool completes,
 `ParentProjectController::stage_completed_model_prefix` freezes its retained
