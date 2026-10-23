@@ -40,3 +40,31 @@ test('live main bootstrap uses the reviewed runner exactly',()=>{
  assert.match(pr,/cp Q:\/lanes\/gate-test-runner.sh "\$W\/\.gate-test-runner.sh"/);
  assert.match(pr,/GATE_TEST_RUNNER_SCRIPT=\.gate-test-runner.sh/);
 });
+
+test('main installs corrected helper before dispatching an older reviewed runner',()=>{
+ const cwd=mkdtempSync(join(tmpdir(),'main-runner-bootstrap-'));
+ try{
+  mkdirSync(join(cwd,'scripts'));
+  writeFileSync(join(cwd,'scripts/check-browser-targets.sh'),'');
+  writeFileSync(join(cwd,'scripts/gate-feature-matrix.sh'),'');
+  writeFileSync(join(cwd,'scripts/gate-test-runner.sh'),'old name-only runner');
+  writeFileSync(join(cwd,'scripts/main-gate-checks.sh'),'# Main baseline completion v2\ntest "$GATE_TEST_RUNNER_SCRIPT" = .gate-test-runner.sh || exit 71\ncmp .gate-test-runner.sh expected || exit 72\necho corrected-helper-selected\n');
+  writeFileSync(join(cwd,'expected'),source);
+  const complete=readFileSync(new URL('./buildbox/coordinator/gate-checks.sh',import.meta.url),'utf8');
+  // Exercise main dispatch only; auxiliary Cargo phases belong to other tests.
+  const boundary=complete.lastIndexOf('gate_main_existing "$@" | sed');
+  assert.ok(boundary>0);
+  const wrapper=complete.slice(0,boundary)+'gate_main_existing "$@"\n';
+  const a=wrapper.indexOf("cat > .gate-test-runner.sh <<'GATE_FUZZ_BOOTSTRAP'\n");
+  const b=wrapper.indexOf('export GATE_TEST_RUNNER_SCRIPT=.gate-test-runner.sh\n',a)+'export GATE_TEST_RUNNER_SCRIPT=.gate-test-runner.sh\n'.length;
+  const block=wrapper.slice(a,b);
+  for(const negative of [false,true]){
+   let script=wrapper;
+   if(negative){script=script.slice(0,a)+script.slice(b);const at=script.indexOf("cat > .gate-feature-matrix.mjs");script=script.slice(0,at)+block+script.slice(at);}
+   const path=join(cwd,'wrapper');writeFileSync(path,script);
+   const result=spawnSync('bash',[path],{cwd,encoding:'utf8',env:{...process.env,GATE_TEST_RUNNER_SCRIPT:''}});
+   assert.equal(result.status,negative?71:0,result.stdout+result.stderr);
+   if(!negative)assert.match(result.stdout,/corrected-helper-selected/);
+  }
+ }finally{rmSync(cwd,{recursive:true,force:true});}
+});

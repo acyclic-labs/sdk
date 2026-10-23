@@ -61,6 +61,37 @@ check -p acyclic-harness-providers --features browser
 GATE_BROWSER_BOOTSTRAP
 export GATE_BROWSER_SCRIPT=.gate-browser-targets.sh
 fi
+cat > .gate-test-runner.sh <<'GATE_FUZZ_BOOTSTRAP'
+#!/bin/bash
+# Cargo's --all-targets selects libFuzzer bins even when test=false. They have
+# their own main, so libtest's --skip arguments cannot be passed to them.
+set -euo pipefail
+program=$1; shift
+name=${program##*/}
+if [ -n "${GATE_FUZZ_TEST_BIN_FILE:-}" ]; then
+  while IFS= read -r bin; do
+    case "$name" in
+      "$bin"-*)
+        # Ordinary integration tests can share a fuzz target's basename.
+        # Require its linked libFuzzer driver before replacing libtest args.
+        if ! symbols=$(nm --defined-only -- "$program"); then
+          echo "error: GATE_RUNNER_INFRA cannot inspect $program" >&2
+          exit 2
+        fi
+        if awk '$NF == "LLVMFuzzerTestOneInput" { found=1 } END { exit !found }' <<< "$symbols"; then
+          echo "GATE_FUZZ_SMOKE bin=$bin runs=1 seed=1"
+          set -- -runs=1 -seed=1 -max_total_time=10
+        fi
+        break;;
+    esac
+  done < "$GATE_FUZZ_TEST_BIN_FILE"
+fi
+if [ -n "${GATE_BASE_TEST_RUNNER:-}" ]; then
+  exec "$GATE_BASE_TEST_RUNNER" "$program" "$@"
+fi
+exec "$program" "$@"
+GATE_FUZZ_BOOTSTRAP
+export GATE_TEST_RUNNER_SCRIPT=.gate-test-runner.sh
 # Prefer a reviewed runner with complete phase coverage markers.
 if [ -f scripts/main-gate-checks.sh ] && [ -f scripts/gate-feature-matrix.sh ] && grep -q '^# Main baseline completion v2$' scripts/main-gate-checks.sh; then
   exec bash scripts/main-gate-checks.sh "$@"
@@ -185,37 +216,6 @@ async function main() {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
 GATE_MATRIX_BOOTSTRAP
 export GATE_FEATURE_SCRIPT=.gate-feature-matrix.mjs
-cat > .gate-test-runner.sh <<'GATE_FUZZ_BOOTSTRAP'
-#!/bin/bash
-# Cargo's --all-targets selects libFuzzer bins even when test=false. They have
-# their own main, so libtest's --skip arguments cannot be passed to them.
-set -euo pipefail
-program=$1; shift
-name=${program##*/}
-if [ -n "${GATE_FUZZ_TEST_BIN_FILE:-}" ]; then
-  while IFS= read -r bin; do
-    case "$name" in
-      "$bin"-*)
-        # Ordinary integration tests can share a fuzz target's basename.
-        # Require its linked libFuzzer driver before replacing libtest args.
-        if ! symbols=$(nm --defined-only -- "$program"); then
-          echo "error: GATE_RUNNER_INFRA cannot inspect $program" >&2
-          exit 2
-        fi
-        if awk '$NF == "LLVMFuzzerTestOneInput" { found=1 } END { exit !found }' <<< "$symbols"; then
-          echo "GATE_FUZZ_SMOKE bin=$bin runs=1 seed=1"
-          set -- -runs=1 -seed=1 -max_total_time=10
-        fi
-        break;;
-    esac
-  done < "$GATE_FUZZ_TEST_BIN_FILE"
-fi
-if [ -n "${GATE_BASE_TEST_RUNNER:-}" ]; then
-  exec "$GATE_BASE_TEST_RUNNER" "$program" "$@"
-fi
-exec "$program" "$@"
-GATE_FUZZ_BOOTSTRAP
-export GATE_TEST_RUNNER_SCRIPT=.gate-test-runner.sh
 cat > .gate-feature-matrix.sh <<'GATE_FEATURE_BOOTSTRAP'
 #!/bin/bash
 # Shared by main and PR gates. Keep the cache outside either synced checkout.
