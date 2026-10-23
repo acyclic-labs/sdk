@@ -36,6 +36,9 @@ async fn append_follow_latency() -> TestResult {
         .connect()
         .await?;
     let transport = Client::from_channel(channel, authorization("latency-fixture")?);
+    transport
+        .session_client()?
+        .register_credential(0, crate::session::testing::credential())?;
     let result = measure(&transport, &transport, "grpc_tcp").await;
     server.abort();
     result
