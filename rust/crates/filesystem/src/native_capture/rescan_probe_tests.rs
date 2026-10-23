@@ -79,7 +79,6 @@ struct Output {
     health_items: u64,
     live_before: u64,
     live_after: u64,
-    #[cfg(windows)]
     root_path_units: u64,
 }
 
@@ -173,6 +172,11 @@ fn run(
             .encode_wide()
             .count() as u64
     };
+    #[cfg(target_os = "linux")]
+    let root_path_units = {
+        use std::os::unix::ffi::OsStrExt as _;
+        fixture.options.source_root.as_os_str().as_bytes().len() as u64
+    };
     let (work, cancellation) = fixture
         .setup
         .native_volume_work(WorkBudget {
@@ -263,7 +267,6 @@ fn run(
             health_items,
             live_before,
             live_after,
-            #[cfg(windows)]
             root_path_units,
         },
         heap,
@@ -429,16 +432,16 @@ fn expected_rescan_items(output: &Output) -> u64 {
         // The remaining 348 examinations belong to the fixed rescan fixture.
         348 + 2 * output.root_path_units
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
-        let _ = output;
-        331
+        // prepare_unix_name examines each source-root byte once. The fixed
+        // fixture contributes the other 316 examinations, independent of TMPDIR.
+        316 + output.root_path_units
     }
 }
 
-#[cfg(windows)]
 #[test]
-fn exact_rescan_work_tracks_ascii_and_surrogate_pair_root_names() {
+fn exact_rescan_work_tracks_native_root_names() {
     acyclic_native_runtime::initialize_native_io_services().unwrap();
     let _inline = acyclic_native_runtime::InlineBlocking::enter();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -456,14 +459,14 @@ fn exact_rescan_work_tracks_ascii_and_surrogate_pair_root_names() {
         );
         assert!(output.result.is_ok());
         assert!(output.unchanged_root);
-        assert_eq!(heap.count_total, 324);
+        assert_eq!(heap.count_total, if cfg!(windows) { 324 } else { 331 });
         let items = output.work["itemsExamined"].as_u64().unwrap() - output.health_items;
         assert_eq!(items, expected_rescan_items(&output));
         observations.push((output.root_path_units, items));
     }
     assert_eq!(
         observations[1].1 - observations[0].1,
-        2 * (observations[1].0 - observations[0].0)
+        (if cfg!(windows) { 2 } else { 1 }) * (observations[1].0 - observations[0].0)
     );
     assert_ne!(
         observations[0].1, observations[1].1,
