@@ -1,6 +1,7 @@
 #[cfg(test)]
 use crate::sync::Arc;
 use crate::sync::Mutex;
+#[path = "projection/registry.rs"]
 mod registry;
 
 // Exclusion belongs to a provider owner and volume. Independent stores may

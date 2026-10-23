@@ -45,20 +45,30 @@ async fn retry<const CHECK_MOUNT: bool, T, E, F: Future<Output = Result<Option<T
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn mount_revocation_fences_policy_observation() {
+    #[test]
+    fn mount_revocation_fences_policy_observation() {
+        #[cfg(acyclic_fs_loom)]
+        loom::model(check_mount_revocation);
+        #[cfg(not(acyclic_fs_loom))]
+        check_mount_revocation();
+    }
+
+    fn check_mount_revocation() {
+        use std::task::{Context, Poll, Waker};
         let caller = CancellationToken::new();
         let mount = CancellationToken::new();
         mount.cancel();
-        let current =
-            observe_policy(&caller, &mount, || std::future::ready(Ok::<_, ()>(Some(1)))).await;
-        assert!(matches!(current, Err(RetryError::MountCancelled)));
+        let mut context = Context::from_waker(Waker::noop());
+        let current = std::pin::pin!(observe_policy(&caller, &mount, || {
+            std::future::ready(Ok::<_, ()>(Some(1)))
+        }))
+        .poll(&mut context);
+        assert!(matches!(current, Poll::Ready(Err(RetryError::MountCancelled))));
         // Negative control: omitting the mount fence admits the same observation.
-        assert_eq!(
-            observe_policy_unfenced(&caller, &mount, || std::future::ready(Ok::<_, ()>(Some(1))))
-                .await
-                .unwrap(),
-            1
-        );
+        let unfenced = std::pin::pin!(observe_policy_unfenced(&caller, &mount, || {
+            std::future::ready(Ok::<_, ()>(Some(1)))
+        }))
+        .poll(&mut context);
+        assert!(matches!(unfenced, Poll::Ready(Ok(1))));
     }
 }
