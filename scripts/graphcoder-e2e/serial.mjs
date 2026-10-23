@@ -1,18 +1,19 @@
 // A matrix is a collection of bounded case suites. Windows executes them serially.
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import { inventory, readCoverage } from "./coverage.mjs";
 import { Processes } from "./process.mjs";
+import { publishReport } from "./report.mjs";
 
 export function collect(cases, receipts, platform, coverage) {
   assert.equal(receipts.length, cases.length, "every case needs a suite receipt");
   const results = [], suites = [];
   for (let index = 0; index < cases.length; index++) {
-    const test = cases[index], { code, report, error, seconds } = receipts[index];
+    const test = cases[index], { code, report, error, seconds, execution } = receipts[index];
     const expected = [test.id, ...(platform === "win32" && test.ntfs ? [`${test.id}-ntfs`] : [])];
     try {
       assert.ok(report, error ?? "missing suite receipt");
@@ -24,11 +25,11 @@ export function collect(cases, receipts, platform, coverage) {
       assert.ok(report.results.every(result => result.platform === platform), "case OS mismatch");
       assert.ok(Number.isFinite(report.seconds) && report.seconds > 0, "missing suite timing");
       assert.equal(report.limit_seconds, 10, "suite budget changed");
-      suites.push({ case: test.id, seconds: report.seconds, code });
+      suites.push({ case: test.id, seconds: report.seconds, code, execution });
       results.push(...report.results);
     } catch (failure) {
       suites.push({ case: test.id, seconds: seconds ?? null, code: code === 0 ? 1 : code,
-        error: failure.stack });
+        error: failure.stack, execution });
       results.push(...expected.map(id => ({ case: id, platform, status: "fail", error: failure.stack })));
     }
   }
@@ -45,10 +46,11 @@ export async function runSuites(cases, run, read) {
     try {
       result = await run(test);
       const report = await read(test);
-      receipts.push({ code: result.code, report, seconds: (performance.now() - start) / 1000 });
+      receipts.push({ code: result.code, report, execution: result,
+        seconds: (performance.now() - start) / 1000 });
     } catch (error) {
       receipts.push({ code: result?.code ?? 1, report: null, error: error.stack,
-        seconds: (performance.now() - start) / 1000 });
+        execution: result, seconds: (performance.now() - start) / 1000 });
     }
   }
   return receipts;
@@ -68,14 +70,12 @@ async function main() {
       const artifact = join(output, test.id);
       const result = await processes.run(process.execPath, [join(directory, "run.mjs"), resolve(binary), resolve(mock), test.id],
         { env: { ...process.env, E2E_OUTPUT: artifact } });
-      await writeFile(join(output, `${test.id}.log`), result.stdout + "\n" + result.stderr);
       console.log(`${test.id}: exit ${result.code}`);
       return result;
     }, async test => JSON.parse(await readFile(join(output, test.id, "matrix.json"), "utf8")));
   } finally { await processes.close(); }
   const report = { ...collect(cases, receipts, process.platform, coverage), seconds: (performance.now() - begin) / 1000 };
-  await writeFile(join(output, "matrix.json"), JSON.stringify(report, null, 2) + "\n");
-  console.log(JSON.stringify(report, null, 2));
+  await publishReport(join(output, "matrix.json"), report);
   process.exitCode = report.pass ? 0 : 1;
 }
 

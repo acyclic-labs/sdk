@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { qualification, qualified } from "./qualification.mjs";
+import { dirname } from "node:path";
 
 test("external acceptance requires executed tests, not a successful empty or ignored selection", () => {
   const result = stdout => ({ code: 0, stdout, stderr: "" });
@@ -13,6 +14,13 @@ test("external acceptance requires executed tests, not a successful empty or ign
   for (const output of ["0 pass\n0 fail", "1 pass\n1 fail", "1 pass\n0 fail\n1 skip", "1 pass\n0 fail\n1 fail", "1 pass\n1 pass\n0 fail"]) {
     assert.throws(() => qualified(result(output), "bun", 1));
   }
+  const node = "# tests 1\n# pass 1\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n";
+  qualified(result(node), "node", 1);
+  for (const output of ["", node.replaceAll("1", "0"), node + node,
+    node.replace("# pass 1", "# pass 0"),
+    ...["fail", "cancelled", "skipped", "todo"].map(key => node.replace(`# ${key} 0`, `# ${key} 1`))]) {
+    assert.throws(() => qualified(result(output), "node", 1));
+  }
 });
 
 test("installed-host entry points receive the same prebuilt plugin and fixture profile", async () => {
@@ -23,6 +31,7 @@ test("installed-host entry points receive the same prebuilt plugin and fixture p
     calls++;
     assert.equal(binary, process.execPath);
     assert.equal(options.cwd, fixture.workspace);
+    assert.equal(options.scopeMountRoot, dirname(fixture.workspace));
     assert.equal(options.env.CODEX_HOME, "fixture-profile");
     assert.equal(options.env.ACYCLIC_TEST_BINARY, process.execPath);
     assert.equal(options.env.ACYCLIC_BINARY, process.execPath);

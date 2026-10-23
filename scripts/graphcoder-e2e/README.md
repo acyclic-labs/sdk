@@ -6,13 +6,19 @@ The Windows `owned-process.cs` host must also be cross-compiled on bb2 and
 its absolute executable supplied as `E2E_PROCESS_HOST`. External acceptance
 commands run under a Linux subreaper, a macOS session or a Windows Job Object. Normal
 exit and suite cancellation drain their service descendants before returning.
+Linux external acceptance also leases its fresh fixture directory. After all
+descendants exit, the supervisor normally unmounts its FUSE registrations and
+checks that their mount IDs have disappeared. Failed retirement fails the
+acceptance command; unrelated fixtures and pre-existing mounts are never adopted.
 POSIX cleanup requires Python 3 and macOS `ps`; exit waits use Linux pidfds or
 macOS kqueue notifications. Separate service process groups stay owned. Shipping GraphCoder processes retain their own recovery
 oracle so an external-test cleanup boundary cannot hide orphan-fencing failures.
 Install `scripts/graphcoder-pty` with its frozen Bun lockfile and lifecycle scripts disabled.
 
 ```sh
-node --test scripts/graphcoder-e2e/*.test.mjs
+node scripts/graphcoder-e2e/helpers.mjs
+# Linux/bb2: real FUSE mount custody, including the process-only negative control.
+python3 scripts/graphcoder-e2e/mount.test.py
 node scripts/graphcoder-e2e/coverage.mjs
 node scripts/graphcoder-e2e/serial.mjs /absolute/graphcoder /absolute/harness-mock-model
 ```
@@ -33,6 +39,12 @@ Supplying case IDs after the two executables runs a diagnostic selection. Its
 receipt has `qualification: false`; a successful selection never qualifies the
 complete platform. The full run requires both passing cases and coverage.
 Known product failures retain their assertions and fail normally.
+
+`matrix.json` embeds each case's complete captures and acknowledged requests.
+The identical JSON is published to retained job stdout before writing the export
+file. Serial aggregates retain child stdout/stderr even when that child's report
+is missing or unreadable. Capture evidence has one publication path, so a failed
+fixture/export walk cannot erase it when the build snapshot is released.
 
 Installed-host and component acceptance cases consume prebuilt executables:
 

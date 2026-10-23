@@ -46,7 +46,8 @@ test("a missing or malformed suite receipt cannot stop later cases or erase the 
   const launched = [];
   const receipts = await runSuites(cases, async test => {
     launched.push(test.id);
-    return { code: test.id === "missing" ? 1 : 0 };
+    return { code: test.id === "missing" ? 1 : 0,
+      stdout: `${test.id}: complete capture`, stderr: `${test.id}: diagnostic` };
   }, async test => {
     if (test.id === "missing") throw new Error("ENOENT: missing matrix.json");
     if (test.id === "malformed") return JSON.parse("{");
@@ -60,5 +61,7 @@ test("a missing or malformed suite receipt cannot stop later cases or erase the 
   assert.deepEqual(report.results.map(result => result.status), ["fail", "fail", "pass"]);
   assert.match(report.results[0].error, /ENOENT/);
   assert.equal(report.suites.length, 3);
+  assert.equal(report.suites[0].execution.stdout, "missing: complete capture");
+  assert.equal(report.suites[1].execution.stderr, "malformed: diagnostic");
   assert.doesNotThrow(() => JSON.parse(JSON.stringify(report)));
 });

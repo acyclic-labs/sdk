@@ -22,6 +22,7 @@ import { seed, expand as expandFixture } from "./fixtures.mjs";
 import { inventory, readCoverage } from "./coverage.mjs";
 import { fenced } from "./orphan-check.mjs";
 import { qualification } from "./qualification.mjs";
+import { publishReport } from "./report.mjs";
 
 const [binaryArg, mockArg, ...selected] = process.argv.slice(2);
 assert.ok(binaryArg && mockArg, "usage: node run.mjs GRAPHCODER MOCK_MODEL [case-id...]");
@@ -48,6 +49,7 @@ assert.ok(cases.length, "no matching cases");
 assert.equal(new Set(cases.map(test => test.id)).size, cases.length, "case identities must be unique");
 const processes = new Processes();
 const contexts = new Map();
+const evidence = new Map();
 let server, events, port;
 const started = performance.now();
 // Reserve one second of the ten-second suite budget for process reaping and artifacts.
@@ -154,12 +156,11 @@ async function execute(test, gitOrigin) {
     return { case: test.id, platform: process.platform, status: "fail", seconds: (performance.now() - begin) / 1000, error: error.stack, workspace: fixture.workspace };
   } finally {
     await Promise.all(interrupted);
-    await json(join(artifact, "captures.json"), captures);
+    evidence.set(test.id, { captures });
   }
 }
 async function verify(result, allRecords) {
   const records = allRecords.filter(record => record.case === result.case);
-  await json(join(output, result.case, "requests.json"), records);
   if (result.status === "fail") return result;
   const { test, fixture, captures } = contexts.get(result.case);
   try {
@@ -202,10 +203,11 @@ try {
 // append can expose an incomplete JSONL line to the assertion phase.
 const allRecords = recordedRequests(readFileSync(join(output, "requests.jsonl"), "utf8"), events.seen);
 results = await Promise.all(results.map(result => verify(result, allRecords)));
+results = results.map(result => ({ ...result, evidence: { ...evidence.get(result.case),
+  requests: allRecords.filter(record => record.case === result.case) } }));
 const seconds = (performance.now() - started) / 1000;
 const report = { platform: process.platform, seconds, limit_seconds: 10, results, output, roots,
   selected, qualification: !selected.length, coverage };
-await json(join(output, "matrix.json"), report);
-console.log(JSON.stringify(report, null, 2));
+await publishReport(join(output, "matrix.json"), report);
 process.exitCode = results?.every(result => result.status === "pass") && seconds < 10
   && (selected.length > 0 || coverage.pass) ? 0 : 1;

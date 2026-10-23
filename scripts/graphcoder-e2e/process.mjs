@@ -56,13 +56,16 @@ export class Processes {
     return process.closed;
   }
   startOwned(program, args, options = {}) {
+    const { scopeMountRoot, ...spawnOptions } = options;
     if (process.platform === "win32") {
       const host = options.env?.E2E_PROCESS_HOST ?? process.env.E2E_PROCESS_HOST;
       assert.ok(host && isAbsolute(host), "E2E_PROCESS_HOST must name the cross-built process-tree host");
-      return this.start(host, [program, ...args], { ...options, scopeTreeControl: true });
+      return this.start(host, [program, ...args], { ...spawnOptions, scopeTreeControl: true });
     }
-    return this.start("python3", [fileURLToPath(new URL("./owned-process.py", import.meta.url)), program, ...args],
-      { ...options, scopeTreeControl: true });
+    const mountLease = process.platform === "linux" && scopeMountRoot
+      ? ["--mount-root", scopeMountRoot, "--"] : [];
+    return this.start("python3", [fileURLToPath(new URL("./owned-process.py", import.meta.url)), ...mountLease, program, ...args],
+      { ...spawnOptions, scopeTreeControl: true });
   }
   async runOwned(program, args, options, input = "") {
     assert.equal(input, "", "external acceptance commands receive empty stdin");

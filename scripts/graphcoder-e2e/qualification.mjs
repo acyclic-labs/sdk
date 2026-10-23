@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { isAbsolute } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 
 export function qualified(result, format, minimum) {
   assert.equal(result.code, 0, result.stderr);
@@ -19,6 +19,17 @@ export function qualified(result, format, minimum) {
     assert.ok(Number(passed[0][1]) >= minimum, "qualification ran zero or too few Bun tests");
     assert.equal(Number(failed[0][1]), 0, "qualification had failed Bun tests");
     assert.doesNotMatch(text, /^\s*[1-9]\d* skip\s*$/m, "qualification had skipped tests");
+  } else if (format === "node") {
+    const counts = {};
+    for (const key of ["tests", "pass", "fail", "cancelled", "skipped", "todo"]) {
+      const summaries = [...text.matchAll(new RegExp(`^# ${key} (\\d+)\\r?$`, "gm"))];
+      assert.equal(summaries.length, 1, `qualification needs exactly one Node ${key} summary`);
+      counts[key] = Number(summaries[0][1]);
+    }
+    assert.ok(counts.tests >= minimum, "qualification ran zero or too few Node tests");
+    assert.equal(counts.pass, counts.tests, "qualification did not pass every Node test");
+    for (const key of ["fail", "cancelled", "skipped", "todo"])
+      assert.equal(counts[key], 0, `qualification had Node ${key} tests`);
   } else assert.fail(`unknown qualification format ${format}`);
 }
 
@@ -31,7 +42,9 @@ export async function qualification(processes, input, fixture, capture) {
     env.ACYCLIC_TEST_BINARY = env[input.fixture_binary_env];
     env.ACYCLIC_BINARY = env[input.fixture_binary_env];
   }
-  const result = await processes.runOwned(binary, input.args, { cwd: fixture.workspace, env });
+  const result = await processes.runOwned(binary, input.args, {
+    cwd: fixture.workspace, env, scopeMountRoot: dirname(fixture.workspace),
+  });
   capture(result);
   qualified(result, input.format, input.minimum_tests);
 }

@@ -112,6 +112,14 @@ def main():
     linux = sys.platform == "linux"
     if not linux and sys.platform != "darwin":
         raise RuntimeError("unsupported POSIX acceptance host")
+    command = sys.argv[1:]
+    lease = None
+    if command[0] == "--mount-root":
+        if not linux or len(command) < 4 or command[2] != "--":
+            raise RuntimeError("Linux mount lease requires --mount-root ROOT -- COMMAND")
+        from owned_mounts import MountLease
+        lease = MountLease(command[1])
+        command = command[3:]
     if linux:
         library = ctypes.CDLL(None, use_errno=True)
         # PR_SET_CHILD_SUBREAPER, before any acceptance code can fork.
@@ -124,15 +132,21 @@ def main():
         try:
             with open(os.devnull, "rb") as empty:
                 os.dup2(empty.fileno(), 0)
-            os.execvpe(sys.argv[1], sys.argv[1:], os.environ)
+            os.execvpe(command[0], command, os.environ)
         except BaseException as error:
             print(f"acceptance command could not start: {error}", file=sys.stderr, flush=True)
             os._exit(127)
     cancelled = True
     try:
-        cancelled = wait_linux(root) if linux else wait_macos(root)
+        try:
+            cancelled = wait_linux(root) if linux else wait_macos(root)
+        finally:
+            status = drain_linux(root) if linux else drain_macos(root)
+        if lease is not None:
+            lease.retire()
     finally:
-        status = drain_linux(root) if linux else drain_macos(root)
+        if lease is not None:
+            lease.close()
     if cancelled:
         return 124
     result = os.waitstatus_to_exitcode(status)
