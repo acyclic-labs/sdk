@@ -106,11 +106,9 @@ impl Executor {
     fn register(self: &Arc<Self>, mut task: Option<Work>) -> Arc<TaskWake> {
         let (id, driver) = {
             let mut state = lock(&self.0);
+            assert!(state.next < u64::MAX, "simulation task ID exhausted");
             let id = state.next;
-            state.next = state
-                .next
-                .checked_add(1)
-                .expect("simulation task ID exhausted");
+            state.next += 1;
             if !state.closed {
                 state.live.insert(id);
                 state.ready.insert(id);
@@ -193,17 +191,18 @@ impl Executor {
                 .unwrap_or(false);
         // Raw waker clone and drop callbacks may reenter the executor too.
         // Snapshots retain Arc<Waker>, so neither callback runs under its lock.
-        let mut replacement = (root.is_some() || drain).then(|| Arc::new(cx.waker().clone()));
+        let mut replacement =
+            (root.is_some() || drain).then(|| (root, Arc::new(cx.waker().clone())));
         let (next, retired) = {
             let mut state = lock(&self.0);
             let retired = if state.closed {
                 None
-            } else if let Some(root) = root {
-                state.root_drivers.insert(root, replacement.take().unwrap())
-            } else if drain {
-                state.driver.replace(replacement.take().unwrap())
             } else {
-                None
+                match replacement.take() {
+                    Some((Some(root), waker)) => state.root_drivers.insert(root, waker),
+                    Some((None, waker)) => state.driver.replace(waker),
+                    None => None,
+                }
             };
             let next = if state.closed {
                 None
@@ -249,8 +248,7 @@ impl Executor {
             .ready
             .difference(&state.served)
             .filter(|id| eligible(state, id))
-            .nth(index as usize)
-            .expect("nonempty ready set");
+            .nth(index as usize)?;
         state.ready.remove(&id);
         state.served.insert(id);
         let cancelled = state.cancelled.contains(&id);
@@ -322,7 +320,11 @@ impl Executor {
             let Some((id, task, cancelled)) = self.next(cx, Some(root.0.id)) else {
                 return Poll::Pending;
             };
-            if id == root.0.id {
+            if let Some(task) = task {
+                self.poll_task(id, task, cancelled);
+                Poll::Pending
+            } else {
+                assert_eq!(id, root.0.id, "borrowed task belongs to another root");
                 assert!(!cancelled, "root cancellation must drop its future");
                 let result = POLLING_EXECUTOR.sync_scope(self.clone(), || {
                     future.as_mut().poll(&mut PollContext::from_waker(&waker))
@@ -337,21 +339,14 @@ impl Executor {
                     },
                 );
                 result
-            } else {
-                self.poll_task(id, task.expect("registered owned task"), cancelled);
-                Poll::Pending
             }
         })
         .await
     }
 
     pub(super) fn poll_owned(self: &Arc<Self>, cx: &PollContext<'_>) {
-        if let Some((id, task, cancelled)) = self.next(cx, None) {
-            self.poll_task(
-                id,
-                task.expect("root must be dropped before draining"),
-                cancelled,
-            );
+        if let Some((id, Some(task), cancelled)) = self.next(cx, None) {
+            self.poll_task(id, task, cancelled);
         }
     }
 

@@ -116,9 +116,12 @@ struct Open;
 
 impl Open {
     fn enter(operation: &'static str) -> Self {
-        if let Some(outer) = OPEN.get() {
-            panic!("nested durable boundary: {operation} inside {outer}");
-        }
+        let outer = OPEN.get();
+        assert!(
+            outer.is_none(),
+            "nested durable boundary: {operation} inside {}",
+            outer.unwrap_or_default()
+        );
         OPEN.set(Some(operation));
         Self
     }
@@ -202,13 +205,17 @@ pub fn durable_write(
         if call.schedule.0.state().writes.skip_write {
             return Ok(bytes.len());
         }
-        let offered = match call.fault.as_ref().map(|fault| fault.fault) {
-            Some(DurableFault::Torn(prefix)) => &bytes[..prefix.min(bytes.len().saturating_sub(1))],
-            _ => bytes,
+        let offered = if let Some(fault) = &call.fault
+            && let DurableFault::Torn(prefix) = fault.fault
+        {
+            let offered = &bytes[..prefix.min(bytes.len().saturating_sub(1))];
+            if offered.is_empty() && !bytes.is_empty() {
+                return Err(fault.error());
+            }
+            offered
+        } else {
+            bytes
         };
-        if offered.is_empty() && !bytes.is_empty() {
-            return Err(call.fault.as_ref().expect("torn prefix").error());
-        }
         write(offered)
     });
     call.finish(&result);
