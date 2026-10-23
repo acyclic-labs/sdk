@@ -225,7 +225,13 @@ fn owner_reopen_preserves_expired_policy_and_original_authority() {
             .verifier
             .verify(&original.signed, &mut None)
             .unwrap();
-        assert_eq!(authority.signed, original.signed);
+        assert_eq!(authority.signed.id(), original.signed.id());
+        assert_eq!(authority.signed.issuer(), original.signed.issuer());
+        assert_eq!(authority.signed.agent(), original.signed.agent());
+        assert_eq!(
+            authority.signed.capabilities(),
+            original.signed.capabilities()
+        );
         assert_eq!(authority.scope.run_limits(), original.scope.run_limits());
     }
     let replacement = PiOwnerConfig::new(&policy, None, &work()).unwrap();

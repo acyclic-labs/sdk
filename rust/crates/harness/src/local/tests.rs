@@ -372,7 +372,11 @@ async fn reopen_retains_owner_and_resumes_admitted_stock_turn_once() -> Result<(
     let project = harness.project().clone();
     drop(harness);
     let reopened = bounded_future("reopen", LocalHarness::open(config()?)).await?;
-    assert_eq!(&reopened.signed, &scope);
+    reopened.verifier.verify(&scope, &mut None)?;
+    assert_eq!(reopened.signed.id(), scope.id());
+    assert_eq!(reopened.signed.issuer(), scope.issuer());
+    assert_eq!(reopened.signed.agent(), scope.agent());
+    assert_eq!(reopened.signed.capabilities(), scope.capabilities());
     assert_eq!(reopened.project(), &project);
     assert_eq!(
         bounded_future("recovery", reopened.resume(task))

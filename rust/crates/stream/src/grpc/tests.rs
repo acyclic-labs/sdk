@@ -27,7 +27,15 @@ fn channel<S: StreamService + Clone>(service: S) -> Channel {
     ))
 }
 
-pub(crate) fn client<P: StreamProvider>(provider: P) -> Result<Client, ConnectError> {
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum TestClientError {
+    #[error(transparent)]
+    Connect(#[from] ConnectError),
+    #[error(transparent)]
+    Stream(#[from] StreamError),
+}
+
+pub(crate) fn client<P: StreamProvider>(provider: P) -> Result<Client, TestClientError> {
     let provider = Arc::new(provider);
     let channel = Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
         tower::service_fn(move |_| {
@@ -57,7 +65,11 @@ pub(crate) fn client<P: StreamProvider>(provider: P) -> Result<Client, ConnectEr
             }
         }),
     );
-    Ok(Client::from_channel(channel, authorization("fixture")?))
+    let client = Client::from_channel(channel, authorization("fixture")?);
+    client
+        .session_client()?
+        .register_credential(0, crate::session::testing::credential())?;
+    Ok(client)
 }
 
 fn unconnected() -> Result<Client, ConnectError> {

@@ -15,7 +15,7 @@ pub struct OperationClaims {
 impl Default for OperationClaims {
     fn default() -> Self {
         Self {
-            owner: uuid::Uuid::new_v4().into_bytes(),
+            owner: crate::new_identity(),
             active: crate::query_sync::SyncMutex::new(None),
             released: crate::query_sync::watch::channel(()).0,
         }

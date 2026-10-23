@@ -590,7 +590,17 @@ async fn source_parent_promotion_reads_only_the_record() {
             record.backend_read_operations,
             record.object_bytes_read
         );
-        assert!(record.backend_read_operations > 0, "cold record read");
+        if published {
+            assert_eq!(
+                record.backend_read_operations, 0,
+                "publication warmed the directory cache"
+            );
+        } else {
+            assert!(
+                record.backend_read_operations > 0,
+                "cold staged record read"
+            );
+        }
         // Page reads count every authenticated frontier page, cached or not.
         let reads = |work: WorkCounters| {
             (

@@ -231,17 +231,13 @@ fn file(bytes: &[u8], media: &str) -> crate::conversation::FileRef {
     .unwrap()
 }
 
-async fn workflow(
-    client: Arc<Observed>,
-    old: bool,
-    seed: u8,
-    reorder: bool,
-    break_verification: bool,
-) -> Vec<std::result::Result<Option<Digest>, String>> {
-    let owner = authority();
-    let verifier = issuer().verifier(&mut None).unwrap();
-    let mut reducer = Reducer::new(owner.clone(), verifier.clone(), SchemaRegistry::new());
-    let mut outcomes = Vec::new();
+fn prepared_events(seed: u8) -> Vec<crate::core::Event> {
+    let mut reducer = Reducer::new(
+        authority(),
+        issuer().verifier(&mut None).unwrap(),
+        SchemaRegistry::new(),
+    );
+    let mut events = Vec::new();
     for number in 1..=3 {
         let action = if number == 1 {
             Action::TransitionLifecycle {
@@ -283,9 +279,28 @@ async fn workflow(
             causal_parent: None,
             action,
         };
-        let ApplyResult::Applied { event } = reducer.plan(&command).unwrap() else {
+        let ApplyResult::Applied { event } = reducer.apply(&command).unwrap() else {
             panic!("fresh command")
         };
+        events.push(event);
+    }
+    events
+}
+
+async fn workflow(
+    client: Arc<Observed>,
+    old: bool,
+    events: &[crate::core::Event],
+    reorder: bool,
+    break_verification: bool,
+) -> Vec<std::result::Result<Option<Digest>, String>> {
+    let owner = authority();
+    let verifier = issuer().verifier(&mut None).unwrap();
+    let mut reducer = Reducer::new(owner.clone(), verifier.clone(), SchemaRegistry::new());
+    let mut outcomes = Vec::new();
+    for event in events {
+        let event = event.clone();
+        let number = event.revision;
         let publication = if old {
             old_effect_heads::publication(&client, &reducer, &event, &mut None)
                 .await
@@ -326,7 +341,7 @@ async fn workflow(
         };
         publication.verify(&envelope, &mut None).unwrap();
         reducer.apply_committed(event, &mut None).unwrap();
-        let result = root_at(&client, old, &verifier, number.into(), 1_000_000).await;
+        let result = root_at(&client, old, &verifier, number, 1_000_000).await;
         assert_eq!(result.as_ref().unwrap().0, root);
         outcomes.push(
             result
@@ -454,10 +469,11 @@ async fn workflow(
 }
 
 fn compare(seed: u8, reorder: bool, break_verification: bool) {
+    let events = prepared_events(seed);
     let [(old, before), (new, after)] = differential::pair::<_, _, effect_root_tests::Observation>(
         || Arc::new(Observed::default()),
         |client, old| {
-            futures::executor::block_on(workflow(client, old, seed, reorder, break_verification))
+            futures::executor::block_on(workflow(client, old, &events, reorder, break_verification))
         },
     );
     assert_eq!(old, new);

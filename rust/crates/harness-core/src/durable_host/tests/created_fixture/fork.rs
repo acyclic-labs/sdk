@@ -260,6 +260,7 @@ impl CreationFixture {
             .await?;
         let seed = report.clone().into_seed(&mut None)?;
         Ok(PreparedFilesystemChild {
+            _runtime: issuer,
             request,
             private,
             project,

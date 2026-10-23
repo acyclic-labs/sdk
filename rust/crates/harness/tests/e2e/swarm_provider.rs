@@ -18,7 +18,12 @@ impl Drop for Lease {
 }
 
 impl Observed {
-    fn observed(&self, path: &StreamPath, records: RecordStream) -> RecordStream {
+    fn observed<T: Send + 'static>(
+        &self,
+        path: &StreamPath,
+        records: futures::stream::BoxStream<'static, Result<T, StreamError>>,
+        is_record: fn(&T) -> bool,
+    ) -> futures::stream::BoxStream<'static, Result<T, StreamError>> {
         if path.as_str().ends_with("/status") {
             // Fault the actual provider open invoked by session::serve, before
             // any SwarmClient delivery or fixture callback can run.
@@ -45,16 +50,16 @@ impl Observed {
         drop(counts);
         let counts = self.counts.clone();
         futures::stream::unfold(
-            (records, lease, counts),
-            |(mut records, lease, counts)| async move {
+            (records, lease, counts, is_record),
+            |(mut records, lease, counts, is_record)| async move {
                 let record = records.next().await?;
-                if record.is_ok() {
+                if record.as_ref().is_ok_and(is_record) {
                     counts
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
                         .server_records += 1;
                 }
-                Some((record, (records, lease, counts)))
+                Some((record, (records, lease, counts, is_record)))
             },
         )
         .boxed()
@@ -98,7 +103,7 @@ impl StreamProvider for Observed {
         filter: acyclic_stream::FollowFilter,
     ) -> Result<RecordStream, StreamError> {
         let records = self.memory.follow(path.clone(), from, filter).await?;
-        Ok(self.observed(&path, records))
+        Ok(self.observed(&path, records, |_| true))
     }
     async fn follow_checked(
         &self,
@@ -111,7 +116,22 @@ impl StreamProvider for Observed {
             .memory
             .follow_checked(path.clone(), from, preceding, filter)
             .await?;
-        Ok(self.observed(&path, records))
+        Ok(self.observed(&path, records, |_| true))
+    }
+    async fn follow_updates(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: Option<CommitId>,
+        filter: FollowFilter,
+    ) -> Result<FollowStream, StreamError> {
+        let updates = self
+            .memory
+            .follow_updates(path.clone(), from, preceding, filter)
+            .await?;
+        Ok(self.observed(&path, updates, |update| {
+            matches!(update, FollowUpdate::Record(_))
+        }))
     }
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
         self.memory.children(request).await

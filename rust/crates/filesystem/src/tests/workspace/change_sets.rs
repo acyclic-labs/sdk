@@ -68,6 +68,57 @@ async fn raw_endpoint_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
+async fn complete_creation_delta_matches_full_path_resolution_and_bounds()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = unbounded!(fs, create_workspace("created-publication"))?;
+    workspace.write_text("/unchanged", "retained").await?;
+    let cancellation = CancellationToken::new();
+    for linked in [false, true] {
+        let before = unbounded!(workspace, head())?;
+        let mut transaction = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+        if linked {
+            unbounded!(
+                transaction,
+                write("/linked", OwnedBytes::from_static(b"alias"))
+            )?;
+            unbounded!(transaction, hard_link("/linked", "/second"))?;
+        } else {
+            unbounded!(transaction, create_dir_all("/created/nested"))?;
+            unbounded!(
+                transaction,
+                write("/created/nested/file", OwnedBytes::from_static(b"new"))
+            )?;
+        }
+        let TransactionCommit::Committed(after) = commit(&mut transaction).await? else {
+            return Err("creation was not committed".into());
+        };
+        let changes = unbounded!(before, diff_to(&after, 64))?.0;
+        let original =
+            crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
+                .map_err(|(error, _)| error)?;
+        let (complete, complete_guard) =
+            raw_endpoint_paths(&changes, 64, &original, &cancellation).await?;
+        let (resolved, resolved_guard) =
+            raw_changed_paths(&changes, 64, &original, &cancellation).await?;
+        assert_eq!(complete, resolved);
+        assert_eq!(complete.len(), if linked { 2 } else { 3 });
+        assert!(
+            complete
+                .iter()
+                .all(|path| path.before.is_none() && path.after.is_some())
+        );
+        drop((complete, complete_guard, resolved, resolved_guard));
+        assert!(matches!(
+            raw_endpoint_paths(&changes, 1, &original, &cancellation).await,
+            Err(WorkspaceError::ChangedPathLimit)
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
 async fn complete_publication_delta_includes_unchanged_descendants_of_a_rename()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();

@@ -35,6 +35,7 @@ fn counted_model(turns: usize) -> ScriptedModelProvider {
 }
 
 struct Binding {
+    _runtime: AuthorityIssuer,
     journal: Arc<LocalJournal>,
     bundle: HarnessBundle,
 }
@@ -199,7 +200,11 @@ async fn open(
         ))
             as Arc<dyn crate::context::ContextStage>]))
         .build()?;
-    Ok(Binding { journal, bundle })
+    Ok(Binding {
+        journal,
+        bundle,
+        _runtime: issuer,
+    })
 }
 
 fn copy_work(state: &crate::conversation::ConversationState) -> Result<serde_json::Value> {

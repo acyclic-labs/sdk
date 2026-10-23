@@ -151,7 +151,7 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
     let sessions = Arc::new(AtomicUsize::new(0));
     let (endpoint, server) = serve(&provider, &connections, &sessions).await?;
     let result: TestResult = async {
-        let client = HttpStream::new(&endpoint, "fixture-token", MAX_COMMAND_BYTES)?;
+        let client = authenticated_client(&endpoint)?;
         let _overview = latest_overview(&provider, &client).await?;
         let path = StreamPath::new("events")?;
         assert_eq!(
@@ -277,6 +277,10 @@ async fn http_session_preserves_the_callers_additional_tls_root() -> TestResult 
             MAX_COMMAND_BYTES,
             Some(pem.as_bytes()),
         )?;
+        client
+            .session_client()?
+            .session_client()?
+            .register_credential(0, crate::session::testing::credential())?;
         let mut records = client
             .follow(
                 StreamPath::new("events")?,
@@ -313,4 +317,15 @@ async fn http_session_preserves_the_callers_additional_tls_root() -> TestResult 
     .await;
     server.abort();
     result
+}
+
+fn authenticated_client(
+    endpoint: &str,
+) -> Result<HttpStream, Box<dyn std::error::Error + Send + Sync>> {
+    let client = HttpStream::new(endpoint, "fixture-token", MAX_COMMAND_BYTES)?;
+    client
+        .session_client()?
+        .session_client()?
+        .register_credential(0, crate::session::testing::credential())?;
+    Ok(client)
 }

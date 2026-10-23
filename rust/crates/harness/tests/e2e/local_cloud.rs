@@ -244,6 +244,18 @@ impl StreamProvider for Refusing {
     ) -> Result<RecordStream, StreamError> {
         Err(self.1.clone())
     }
+    async fn follow_updates(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: Option<CommitId>,
+        filter: acyclic_stream::FollowFilter,
+    ) -> Result<acyclic_stream::FollowStream, StreamError> {
+        if preceding.is_some() {
+            return Err(self.1.clone());
+        }
+        self.0.follow_updates(path, from, preceding, filter).await
+    }
     async fn children(&self, _: ChildrenRequest) -> Result<ChildStream, StreamError> {
         Err(self.1.clone())
     }

@@ -44,7 +44,10 @@ fn authority() -> Authority {
     }
 }
 fn issuer() -> AuthorityIssuer {
-    AuthorityIssuer::new("effect-root-proof", [91; 32], authority())
+    static RUNTIME: std::sync::OnceLock<AuthorityIssuer> = std::sync::OnceLock::new();
+    RUNTIME
+        .get_or_init(|| AuthorityIssuer::new("effect-root-proof", [91; 32], authority()))
+        .clone()
 }
 
 async fn publish_lifecycle(

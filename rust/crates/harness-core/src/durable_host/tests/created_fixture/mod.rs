@@ -31,6 +31,7 @@ pub(crate) struct CreationFixture {
 }
 
 pub(crate) struct PreparedFilesystemChild {
+    _runtime: AuthorityIssuer,
     pub(crate) request: ResourcePreparationRequest,
     pub(crate) private: VolumeRef,
     pub(crate) project: VolumeRef,

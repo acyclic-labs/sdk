@@ -335,7 +335,7 @@ pub fn native_root_output_binding_operation(
     Ok(crate::OperationId::from_bytes(bytes))
 }
 
-/// Authenticates the original ROOT Bind and returns its canonical command bytes.
+/// Authenticates or publishes the original ROOT binding without minting a retry command.
 #[allow(
     clippy::too_many_arguments,
     reason = "original creator, owner and paid authority are distinct"
@@ -350,7 +350,7 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider>
     original_creation: acyclic_fs::OperationId,
     limits: crate::conversation::Limits,
     work: &NativeMaterializationWork,
-) -> Result<acyclic_stream::OwnedBytes> {
+) -> Result<()> {
     let _authority_custody = authority_custody;
     let (audience, issuer, scope) = authority;
     let invalid = |reason| Error::NativeBoundary {
@@ -393,22 +393,21 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider>
         .0;
     event_io.return_staged_output()?;
     let event_custody = event_io.into_custody()?;
-    let original_revision = match event.as_ref() {
-        None => None,
+    let already_bound = match event.as_ref() {
+        None => false,
         Some(event) => match &event.payload {
             crate::core::EventPayload::ConversationBound { agent }
                 if Some(*agent) == scope.agent()
                     && event.scope.agent() == scope.agent()
                     && event.scope.id() == scope.id()
                     && event.scope.capabilities() == scope.capabilities()
+                    && event.scope.wire_parts().0 == scope.issuer()
                     && event.causal_parent.is_none() =>
             {
-                Some(
-                    event
-                        .revision
-                        .checked_sub(1)
-                        .ok_or_else(|| invalid("original ROOT binding has no command revision"))?,
-                )
+                if event.revision == 0 {
+                    return Err(invalid("original ROOT binding has no command revision"));
+                }
+                true
             }
             _ => {
                 return Err(invalid(
@@ -421,6 +420,11 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider>
     drop(event_custody);
     drop(reader);
     drop(reader_custody);
+    if already_bound {
+        let mut io = crate::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
+        verifier.verify(&scope, &mut Some(&mut io))?;
+        return Ok(());
+    }
     let mut aggregate_io =
         crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
     crate::store::history::HistoryIo::check_cancellation(&aggregate_io)?;
@@ -437,12 +441,11 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider>
     aggregate_io.return_staged_output()?;
     let _aggregate_custody = aggregate_io.into_custody()?;
     aggregate.set_limits(limits)?;
-    if original_revision.is_none()
-        && aggregate
-            .reducer()
-            .conversation()
-            .and_then(|state| state.agent)
-            .is_some()
+    if aggregate
+        .reducer()
+        .conversation()
+        .and_then(|state| state.agent)
+        .is_some()
     {
         return Err(invalid(
             "ROOT conversation changed during original binding admission",
@@ -458,26 +461,13 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider>
     let command = crate::core::Command {
         operation_id: operation,
         idempotency_key: key.0,
-        expected_revision: original_revision.unwrap_or_else(|| aggregate.reducer().revision()),
+        expected_revision: aggregate.reducer().revision(),
         causal_parent: None,
         action: crate::core::Action::BindConversation { agent },
         scope,
     };
     let mut io =
         crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
-    let encoded = crate::store::history::canonical_bytes_with_work(
-        &command,
-        crate::store::default_projection_read_limits().maximum_bytes,
-        &mut Some(&mut io),
-    )?;
-    let encoded_custody =
-        crate::store::history::HistoryIo::take_native_custody(&mut io, encoded.capacity() as u64)?;
-    let encoded = acyclic_stream::OwnedBytes::from_vec_with_guard(
-        encoded,
-        encoded_custody,
-        work.runtime_meter(),
-    )
-    .map_err(|failure| native_owned_bytes_failure(failure, work))?;
     crate::store::history::HistoryIo::retain_owned(
         &mut io,
         std::mem::size_of::<crate::core::ApplyResult>() as u64,
@@ -486,23 +476,7 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider>
         .execute(command, Some(owner), &mut Some(&mut io))
         .await?;
     drop(applied);
-    Ok(encoded)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn native_owned_bytes_failure(
-    failure: acyclic_stream::PreparedOwnedBytesFailure<acyclic_fs::NativeAllocation>,
-    work: &NativeMaterializationWork,
-) -> Error {
-    match failure.into_error() {
-        acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
-            Error::from(work.runtime_error(error))
-        }
-        acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Storage,
-            reason: "native owned byte buffer violated its fixed initialized ownership invariant",
-        },
-    }
+    Ok(())
 }
 
 fn validate_fork_volumes(

@@ -17,7 +17,11 @@ pub fn stream_resource(path: &str) -> String {
 pub fn validate_resource(resource: &str) -> Result<(), StreamError> {
     envelope(resource)?;
     if let Some(encoded) = resource.strip_prefix("streams:/") {
-        decode_stream_path(encoded)?;
+        if encoded.contains('%') {
+            decode_stream_path(encoded)?;
+        } else {
+            StreamPath::validate(encoded)?;
+        }
     }
     Ok(())
 }

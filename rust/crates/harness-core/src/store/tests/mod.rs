@@ -177,7 +177,10 @@ async fn with_content<P: StreamProvider>(client: &Arc<P>) -> Result<StreamAggreg
 }
 
 fn issuer() -> AuthorityIssuer {
-    AuthorityIssuer::new("test", [7; 32], authority())
+    static RUNTIME: std::sync::OnceLock<AuthorityIssuer> = std::sync::OnceLock::new();
+    RUNTIME
+        .get_or_init(|| AuthorityIssuer::new("test", [7; 32], authority()))
+        .clone()
 }
 
 fn schemas() -> SchemaRegistry {

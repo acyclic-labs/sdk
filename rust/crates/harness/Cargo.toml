@@ -52,6 +52,10 @@ required-features = ["test-support"]
 name = "explicit-image-conversion"
 required-features = ["filesystem"]
 
+[[example]]
+name = "native-wasm-fixture"
+required-features = ["filesystem"]
+
 [features]
 tui = ["dep:acyclic-harness-tui", "acyclic-harness-tui/tui", "acyclic-harness-core/tui"]
 test-support = ["dep:tempfile", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-harness-search/test-support"]

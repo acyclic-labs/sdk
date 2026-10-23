@@ -1,39 +1,487 @@
 {
   "version": 2,
   "cases": [
-    { "name": "operation-identities-are-stable", "family": "harness" },
+    {
+      "name": "operation-identities-are-stable",
+      "family": "harness"
+    },
     {
       "name": "native-wasm-replay-is-byte-equivalent",
       "family": "harness",
       "vector": {
-        "version": 2,
-        "event_wire_hex": "0a450a013212403161393235303330313230366263666562313835333062626333343263616539303261316632393264616434366262306231336435353534383964393664313612120802120e636f6e766572736174696f6e2d311802222430323032303230322d303230322d303230322d303230322d3032303230323032303230322a201e9fe93ce381a81bd78c0f38720e4f8cd01f1738b756a43daff22c10af824a0932340a04726f6f741213636f6e766572736174696f6e3a617070656e641211636f6e766572736174696f6e3a62696e641a0474657374421d636f6e766572736174696f6e5f6d6573736167655f617070656e6465644ab0057b226b696e64223a22636f6e766572736174696f6e5f6d6573736167655f617070656e646564222c226d657373616765223a7b226174746163686d656e7473223a7b226974656d73223a5b5d2c226b696e64223a22696e6c696e65227d2c22636f6e74656e74223a7b2264657363726970746f72223a7b22627974655f6c656e677468223a31322c226d656469615f74797065223a22746578742f706c61696e222c22736861323536223a5b39322c3138332c34372c3134342c3233332c3130342c3134362c34352c34382c38352c3132352c31302c3234382c3234372c32352c3231302c33312c39372c3132312c34332c3233362c3137302c3133352c3233352c35302c37312c3131392c3130332c3231352c35372c3232302c31315d7d2c22646973706c61795f6e616d65223a22696e7075742e747874222c2270617468223a226d657373616765732f696e7075742e747874222c2276657273696f6e223a2270696e6e65642d67656e65726174696f6e222c22766f6c756d65223a7b22636c617373223a226167656e745f70726976617465222c226964223a2273637261746368222c226f776e6572223a7b226964223a2230343034303430342d303430342d303430342d303430342d303430343034303430343034222c226b696e64223a226167656e74227d2c2270726f7669646572223a7b2266616d696c79223a2266696c6573797374656d222c226e616d657370616365223a2266697874757265222c2276657273696f6e223a2232227d7d7d2c22657874656e73696f6e73223a7b7d2c226964223a2230333033303330332d303330332d303330332d303330332d303330333033303330333033222c226b696e64223a2275736572222c227265706c795f746f223a6e756c6c2c2273657175656e6365223a312c22746f6f6c5f63616c6c5f6964223a6e756c6c7d7d522054a771abe6e1fb4bd3e89150a23d9fdc3d2e8cfd81f710214d2e09a6bd9f119d"
+        "event_wire_hex": "0a450a013212403564316665336333636566316530646362626462393436326262386464633630336130643333383236633339663866393935623766313633666362343366373612120802120e636f6e766572736174696f6e2d311802222430323032303230322d303230322d303230322d303230322d3032303230323032303230322a2037182f062066a46df54b195dd9313c9d19be83d9061dd99b43a1f903bd14172132340a04726f6f741213636f6e766572736174696f6e3a617070656e641211636f6e766572736174696f6e3a62696e641a0474657374421d636f6e766572736174696f6e5f6d6573736167655f617070656e6465644ab0057b226b696e64223a22636f6e766572736174696f6e5f6d6573736167655f617070656e646564222c226d657373616765223a7b226174746163686d656e7473223a7b226974656d73223a5b5d2c226b696e64223a22696e6c696e65227d2c22636f6e74656e74223a7b2264657363726970746f72223a7b22627974655f6c656e677468223a31322c226d656469615f74797065223a22746578742f706c61696e222c22736861323536223a5b39322c3138332c34372c3134342c3233332c3130342c3134362c34352c34382c38352c3132352c31302c3234382c3234372c32352c3231302c33312c39372c3132312c34332c3233362c3137302c3133352c3233352c35302c37312c3131392c3130332c3231352c35372c3232302c31315d7d2c22646973706c61795f6e616d65223a22696e7075742e747874222c2270617468223a226d657373616765732f696e7075742e747874222c2276657273696f6e223a2270696e6e65642d67656e65726174696f6e222c22766f6c756d65223a7b22636c617373223a226167656e745f70726976617465222c226964223a2273637261746368222c226f776e6572223a7b226964223a2230343034303430342d303430342d303430342d303430342d303430343034303430343034222c226b696e64223a226167656e74227d2c2270726f7669646572223a7b2266616d696c79223a2266696c6573797374656d222c226e616d657370616365223a2266697874757265222c2276657273696f6e223a2232227d7d7d2c22657874656e73696f6e73223a7b7d2c226964223a2230333033303330332d303330332d303330332d303330332d303330333033303330333033222c226b696e64223a2275736572222c227265706c795f746f223a6e756c6c2c2273657175656e6365223a312c22746f6f6c5f63616c6c5f6964223a6e756c6c7d7d52cc110af3090ae7050aa2050a84030a81010a3d0a0474657374120d6c6f63616c2d6861726e6573731a20a6320c0adf4aac5c7c9d7635d1551ddeed96e428ed01f816001d92657d63ddf420be8feed6061240400e990eb9cbb313cf766c8c5a994b58eaa1626448a73869cd0f80b1ee981b7756c77ae032dec193a4c4289f198c7f5419ae2670cb077a03a0c16499119a4d0f12fd010ab8010a0474657374120772756e74696d651a20f362640ac5596590aaca7967ac3720cac6e4c211129ebcb02cb6c2cb51fb68d320012a0c08be8feed60610bea98cd806326b0a3c0a3a0a270a256861726e6573733a2f636f6e766572736174696f6e732f636f6e766572736174696f6e2d31120f6861726e6573732f657865637574650a2b0a290a180a146861726e6573733a2f61646d697373696f6e732f1001120d6861726e6573732f61646d69743a08080312047465737412405dc90a3c5e5eb7aa82a85ed78475b36e8ea1e699ba4e3aeb693c8ebd1f57f1f4ac77d00feca9121567d22a48ec86cadabf26fa89b9a9434fc08711962fef8c021289014286010a0f6861726e6573732e73636f70652e3012737b226964223a22726f6f74222c226361706162696c6974696573223a5b22636f6e766572736174696f6e3a617070656e64222c22636f6e766572736174696f6e3a62696e64225d2c226167656e74223a6e756c6c2c22697373756572223a2274657374222c22706172656e74223a6e756c6c7d12400a3e0a3c0a3a0a270a256861726e6573733a2f636f6e766572736174696f6e732f636f6e766572736174696f6e2d31120f6861726e6573732f65786563757465122922270a256861726e6573733a2f636f6e766572736174696f6e732f636f6e766572736174696f6e2d311a20a634251fb6f211991ddcfacd6187893425648796ed368fea055001d08435747512403998a8989b2aa4984cd6499cd54ee5bfe1c9ff05e74fc2313ebf346f67e41d1e5c461838bd3fc1e9584fc7e04292379685705fcf1cf877b36348a87fb6e8f4060ac2030afd02123f423d0a19616379636c69632e61646d697373696f6e2e7061796c6f61641220214ce9358aca86d839f4a41f96feac768113b83b32ca13d11342144a8c7b68a8122442220a16616379636c69632e61646d697373696f6e2e74696d651208be87db6a00000000124542430a1a616379636c69632e61646d697373696f6e2e61756469656e636512256861726e6573733a2f636f6e766572736174696f6e732f636f6e766572736174696f6e2d31123e423c0a18616379636c69632e61646d697373696f6e2e746172676574122090901c272f01ce8c72e2b67747922de69f2029869d94d1ec1b45a0eb03bd0f8812400a3e0a3c0a3a0a270a256861726e6573733a2f636f6e766572736174696f6e732f636f6e766572736174696f6e2d31120f6861726e6573732f65786563757465122922270a256861726e6573733a2f636f6e766572736174696f6e732f636f6e766572736174696f6e2d311a2065a81a021944f7d9f5b9737eff4870fe2c272430094ca3c0c3d00ea24ab7f75b12404c94231c21d029c4abce719078f21ec373c9a2b31ec401bb480ae7f7aed55502b2ba18886ec78ca96fae1d181bfc82133e8be8d9d423d50ac44bc8ec69400f071a400911ff00a2b63b83bd637917b2b6894cbd30cfa561d6dd2afa83fcfdcbfe2970d631527ded1623cf4f395ad3ceee70f0f2647ea77eb0154832a287d980c4110a200112cd070a86070ac1060a84030a81010a3d0a0474657374120d6c6f63616c2d6861726e6573731a20a6320c0adf4aac5c7c9d7635d1551ddeed96e428ed01f816001d92657d63ddf420be8feed6061240400e990eb9cbb313cf766c8c5a994b58eaa1626448a73869cd0f80b1ee981b7756c77ae032dec193a4c4289f198c7f5419ae2670cb077a03a0c16499119a4d0f12fd010ab8010a0474657374120772756e74696d651a20f362640ac5596590aaca7967ac3720cac6e4c211129ebcb02cb6c2cb51fb68d320012a0c08be8feed60610bea98cd806326b0a3c0a3a0a270a256861726e6573733a2f636f6e766572736174696f6e732f636f6e766572736174696f6e2d31120f6861726e6573732f657865637574650a2b0a290a180a146861726e6573733a2f61646d697373696f6e732f1001120d6861726e6573732f61646d69743a08080312047465737412405dc90a3c5e5eb7aa82a85ed78475b36e8ea1e699ba4e3aeb693c8ebd1f57f1f4ac77d00feca9121567d22a48ec86cadabf26fa89b9a9434fc08711962fef8c02123f423d0a19616379636c69632e61646d697373696f6e2e7061796c6f61641220214ce9358aca86d839f4a41f96feac768113b83b32ca13d11342144a8c7b68a8122442220a16616379636c69632e61646d697373696f6e2e74696d651208be87db6a00000000124542430a1a616379636c69632e61646d697373696f6e2e61756469656e636512256861726e6573733a2f636f6e766572736174696f6e732f636f6e766572736174696f6e2d31123e423c0a18616379636c69632e61646d697373696f6e2e746172676574122090901c272f01ce8c72e2b67747922de69f2029869d94d1ec1b45a0eb03bd0f88126d0a6b0a690a670a560a546861726e6573733a2f61646d697373696f6e732f30613263363437623331396564303736653863386262353262336361373438356130373730383163303532636661356661396266653963393665336136666264120d6861726e6573732f61646d6974122922270a256861726e6573733a2f636f6e766572736174696f6e732f636f6e766572736174696f6e2d31120618be8feed606120610bf8feed6061a2084ab02929425dbe6e263470d6a9e59a1c8d84e2d4243bed96421324dbd322e6c12406ac8ab91c3484da176cc35d99e51e103384af236be11c7cc2e50ae0206acf81f44a4bce777b56ac814d65e9fc555b133542fd883076c40ac4523dae7574579031a40ace7504d3d93736aaa04ed1fe66f2db405c1728dfc5cf5413791f550f63c12591db1b3739a59afdc3d069470613c5588961fadf8476b8160d8f8e8bfd82ba309200118be8feed606",
+        "snapshot": {
+          "attestation": [
+            85,
+            174,
+            104,
+            161,
+            238,
+            7,
+            37,
+            95,
+            254,
+            2,
+            74,
+            72,
+            39,
+            28,
+            162,
+            239,
+            120,
+            180,
+            194,
+            56,
+            250,
+            84,
+            183,
+            194,
+            204,
+            139,
+            21,
+            97,
+            174,
+            59,
+            22,
+            20,
+            144,
+            140,
+            249,
+            119,
+            31,
+            230,
+            184,
+            212,
+            68,
+            174,
+            98,
+            213,
+            255,
+            216,
+            238,
+            249,
+            43,
+            116,
+            175,
+            220,
+            69,
+            115,
+            72,
+            254,
+            33,
+            54,
+            8,
+            70,
+            8,
+            199,
+            246,
+            4
+          ],
+          "authority": {
+            "id": "conversation-1",
+            "kind": "conversation"
+          },
+          "events": [
+            {
+              "attestation": "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",
+              "causal_parent": null,
+              "intent_digest": [
+                169,
+                104,
+                212,
+                100,
+                17,
+                212,
+                143,
+                13,
+                51,
+                238,
+                122,
+                64,
+                197,
+                17,
+                135,
+                210,
+                198,
+                178,
+                82,
+                140,
+                41,
+                129,
+                217,
+                229,
+                55,
+                200,
+                72,
+                40,
+                187,
+                20,
+                167,
+                244
+              ],
+              "operation_id": "01010101-0101-0101-0101-010101010101",
+              "payload": {
+                "agent": "04040404-0404-0404-0404-040404040404",
+                "kind": "conversation_bound"
+              },
+              "revision": 1,
+              "scope": {
+                "agent": null,
+                "capabilities": [
+                  "conversation:append",
+                  "conversation:bind"
+                ],
+                "id": "root",
+                "issuer": "test"
+              }
+            },
+            {
+              "attestation": "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",
+              "causal_parent": null,
+              "intent_digest": [
+                55,
+                24,
+                47,
+                6,
+                32,
+                102,
+                164,
+                109,
+                245,
+                75,
+                25,
+                93,
+                217,
+                49,
+                60,
+                157,
+                25,
+                190,
+                131,
+                217,
+                6,
+                29,
+                217,
+                155,
+                67,
+                161,
+                249,
+                3,
+                189,
+                20,
+                23,
+                33
+              ],
+              "operation_id": "02020202-0202-0202-0202-020202020202",
+              "payload": {
+                "kind": "conversation_message_appended",
+                "message": {
+                  "attachments": {
+                    "items": [],
+                    "kind": "inline"
+                  },
+                  "content": {
+                    "descriptor": {
+                      "byte_length": 12,
+                      "media_type": "text/plain",
+                      "sha256": [
+                        92,
+                        183,
+                        47,
+                        144,
+                        233,
+                        104,
+                        146,
+                        45,
+                        48,
+                        85,
+                        125,
+                        10,
+                        248,
+                        247,
+                        25,
+                        210,
+                        31,
+                        97,
+                        121,
+                        43,
+                        236,
+                        170,
+                        135,
+                        235,
+                        50,
+                        71,
+                        119,
+                        103,
+                        215,
+                        57,
+                        220,
+                        11
+                      ]
+                    },
+                    "display_name": "input.txt",
+                    "path": "messages/input.txt",
+                    "version": "pinned-generation",
+                    "volume": {
+                      "class": "agent_private",
+                      "id": "scratch",
+                      "owner": {
+                        "id": "04040404-0404-0404-0404-040404040404",
+                        "kind": "agent"
+                      },
+                      "provider": {
+                        "family": "filesystem",
+                        "namespace": "fixture",
+                        "version": "2"
+                      }
+                    }
+                  },
+                  "extensions": {},
+                  "id": "03030303-0303-0303-0303-030303030303",
+                  "kind": "user",
+                  "reply_to": null,
+                  "sequence": 1,
+                  "tool_call_id": null
+                }
+              },
+              "revision": 2,
+              "scope": {
+                "agent": null,
+                "capabilities": [
+                  "conversation:append",
+                  "conversation:bind"
+                ],
+                "id": "root",
+                "issuer": "test"
+              }
+            }
+          ],
+          "format_version": 6,
+          "projection": {
+            "active_configurations": [],
+            "active_extension_revision": null,
+            "active_extensions": [],
+            "bindings": [],
+            "configured_extensions": [],
+            "conversation": {
+              "agent": "04040404-0404-0404-0404-040404040404",
+              "messages": [
+                {
+                  "attachments": {
+                    "items": [],
+                    "kind": "inline"
+                  },
+                  "content": {
+                    "descriptor": {
+                      "byte_length": 12,
+                      "media_type": "text/plain",
+                      "sha256": [
+                        92,
+                        183,
+                        47,
+                        144,
+                        233,
+                        104,
+                        146,
+                        45,
+                        48,
+                        85,
+                        125,
+                        10,
+                        248,
+                        247,
+                        25,
+                        210,
+                        31,
+                        97,
+                        121,
+                        43,
+                        236,
+                        170,
+                        135,
+                        235,
+                        50,
+                        71,
+                        119,
+                        103,
+                        215,
+                        57,
+                        220,
+                        11
+                      ]
+                    },
+                    "display_name": "input.txt",
+                    "path": "messages/input.txt",
+                    "version": "pinned-generation",
+                    "volume": {
+                      "class": "agent_private",
+                      "id": "scratch",
+                      "owner": {
+                        "id": "04040404-0404-0404-0404-040404040404",
+                        "kind": "agent"
+                      },
+                      "provider": {
+                        "family": "filesystem",
+                        "namespace": "fixture",
+                        "version": "2"
+                      }
+                    }
+                  },
+                  "extensions": {},
+                  "id": "03030303-0303-0303-0303-030303030303",
+                  "kind": "user",
+                  "reply_to": null,
+                  "sequence": 1,
+                  "tool_call_id": null
+                }
+              ]
+            },
+            "effects": {},
+            "extension_states": {},
+            "forks": [],
+            "interactions": {},
+            "latest_context_checkpoint": null,
+            "lifecycle": "pending",
+            "published_merges": []
+          },
+          "revision": 2,
+          "state_digest": [
+            25,
+            138,
+            150,
+            67,
+            68,
+            49,
+            248,
+            0,
+            176,
+            131,
+            21,
+            16,
+            134,
+            84,
+            66,
+            125,
+            80,
+            47,
+            154,
+            12,
+            228,
+            34,
+            211,
+            60,
+            200,
+            160,
+            231,
+            47,
+            248,
+            89,
+            28,
+            93
+          ]
+        },
+        "version": 2
       }
     },
-    { "name": "authority-scopes-cannot-cross-aggregate-audiences", "family": "harness" },
-    { "name": "stream-append-uncertainty-is-queryable", "family": "harness" },
-    { "name": "full-history-restores-from-checked-snapshot", "family": "harness" },
-    { "name": "fork-publication-is-atomic", "family": "harness" },
-    { "name": "effect-attempts-respect-provider-guarantees", "family": "harness" },
-    { "name": "typed-approvals-bind-the-exact-action", "family": "harness" },
-    { "name": "structured-parent-waits-release-capacity", "family": "harness" },
-    { "name": "join-preserves-child-slot-order", "family": "harness" },
-    { "name": "race-uses-first-authoritative-success", "family": "harness" },
-    { "name": "quorum-fails-when-threshold-is-unreachable", "family": "harness" },
-    { "name": "stock-executor-replay-does-not-repeat-tools", "family": "harness" },
-    { "name": "custom-executor-owns-the-whole-turn-loop", "family": "harness" },
-    { "name": "client-replay-is-generation-fenced", "family": "harness" },
-    { "name": "client-outbox-clears-only-after-authority", "family": "harness" },
-    { "name": "pagination-is-bounded-and-rebase-safe", "family": "harness" },
-    { "name": "operation-control-is-protocol-scope-and-owner-bound", "family": "harness" },
-    { "name": "recursive-cancellation-is-atomic-and-exactly-replayable", "family": "harness" },
-    { "name": "recursive-cancellation-stops-at-owner-boundaries", "family": "harness" },
-    { "name": "transport-control-errors-remain-request-correlated", "family": "harness" },
-    { "name": "durable-context-providers-reopen-compaction-exactly", "family": "harness" },
-    { "name": "recursive-fork-isolation-attachments-and-project-only-merge", "family": "harness" },
-    { "name": "durable-local-conversation-fork-and-merge-reopens", "family": "harness" },
-    { "name": "filesystem-conflicts-are-explicit", "family": "filesystem" },
-    { "name": "stream-cas-rejects-stale-offset", "family": "stream" },
-    { "name": "objects-are-content-addressed", "family": "objects" }
+    {
+      "name": "authority-scopes-cannot-cross-aggregate-audiences",
+      "family": "harness"
+    },
+    {
+      "name": "stream-append-uncertainty-is-queryable",
+      "family": "harness"
+    },
+    {
+      "name": "full-history-restores-from-checked-snapshot",
+      "family": "harness"
+    },
+    {
+      "name": "fork-publication-is-atomic",
+      "family": "harness"
+    },
+    {
+      "name": "effect-attempts-respect-provider-guarantees",
+      "family": "harness"
+    },
+    {
+      "name": "typed-approvals-bind-the-exact-action",
+      "family": "harness"
+    },
+    {
+      "name": "structured-parent-waits-release-capacity",
+      "family": "harness"
+    },
+    {
+      "name": "join-preserves-child-slot-order",
+      "family": "harness"
+    },
+    {
+      "name": "race-uses-first-authoritative-success",
+      "family": "harness"
+    },
+    {
+      "name": "quorum-fails-when-threshold-is-unreachable",
+      "family": "harness"
+    },
+    {
+      "name": "stock-executor-replay-does-not-repeat-tools",
+      "family": "harness"
+    },
+    {
+      "name": "custom-executor-owns-the-whole-turn-loop",
+      "family": "harness"
+    },
+    {
+      "name": "client-replay-is-generation-fenced",
+      "family": "harness"
+    },
+    {
+      "name": "client-outbox-clears-only-after-authority",
+      "family": "harness"
+    },
+    {
+      "name": "pagination-is-bounded-and-rebase-safe",
+      "family": "harness"
+    },
+    {
+      "name": "operation-control-is-protocol-scope-and-owner-bound",
+      "family": "harness"
+    },
+    {
+      "name": "recursive-cancellation-is-atomic-and-exactly-replayable",
+      "family": "harness"
+    },
+    {
+      "name": "recursive-cancellation-stops-at-owner-boundaries",
+      "family": "harness"
+    },
+    {
+      "name": "transport-control-errors-remain-request-correlated",
+      "family": "harness"
+    },
+    {
+      "name": "durable-context-providers-reopen-compaction-exactly",
+      "family": "harness"
+    },
+    {
+      "name": "recursive-fork-isolation-attachments-and-project-only-merge",
+      "family": "harness"
+    },
+    {
+      "name": "durable-local-conversation-fork-and-merge-reopens",
+      "family": "harness"
+    },
+    {
+      "name": "filesystem-conflicts-are-explicit",
+      "family": "filesystem"
+    },
+    {
+      "name": "stream-cas-rejects-stale-offset",
+      "family": "stream"
+    },
+    {
+      "name": "objects-are-content-addressed",
+      "family": "objects"
+    }
   ]
 }

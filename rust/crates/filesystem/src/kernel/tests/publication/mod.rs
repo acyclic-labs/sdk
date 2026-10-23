@@ -41,6 +41,52 @@ async fn created(authority: &MemoryAuthorityStore, id: AuthorityId) -> TestResul
     };
     Ok(head)
 }
+async fn initialized(
+    objects: &MemoryObjectStore,
+    authority: &MemoryAuthorityStore,
+    volume_id: VolumeId,
+) -> TestResult<Head> {
+    use crate::model::{
+        CaseSensitivity, ConcurrencyMode, FilesystemProfile, UnicodePolicy, VolumeLimits,
+    };
+    let authority_id = volume_authority_id(volume_id);
+    created(authority, authority_id).await?;
+    let creation = crate::kernel::VolumeCreated {
+        volume_id,
+        config: VolumeConfig {
+            profile: FilesystemProfile::Portable,
+            concurrency: ConcurrencyMode::Optimistic,
+            lifecycle: Lifecycle::Ephemeral,
+            case_sensitivity: CaseSensitivity::Sensitive,
+            unicode: UnicodePolicy::Preserve,
+            symbolic_links: true,
+            hard_links: true,
+            sparse_files: true,
+            limits: VolumeLimits::default(),
+        },
+        initial_generation_root: fixture(objects, volume_id).await?,
+    };
+    let payload = crate::kernel::encode_volume_created(
+        creation,
+        |_| Ok::<_, crate::kernel::VolumeCreatedError>(()),
+        |_| CanonicalDecodeError::AllocationFailed.into(),
+    )?;
+    authority
+        .create_first_record(
+            authority_id,
+            ProposedCommit {
+                operation_id: OperationId::from_bytes(volume_id.into_bytes()),
+                fingerprint: Digest::from_bytes(Sha256::digest(&payload).into()),
+                payload: Bytes::from(payload),
+                publication: None,
+            },
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()),
+            None::<&mut ()>,
+        )
+        .await
+        .map_err(|error| error.into_error(std::convert::identity))?;
+    read_head(authority, authority_id).await
+}
 async fn read_head(authority: &MemoryAuthorityStore, id: AuthorityId) -> TestResult<Head> {
     Ok(authority
         .head(

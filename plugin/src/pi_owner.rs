@@ -591,14 +591,15 @@ impl super::pi_runtime::PiTaskRuntime {
         )?;
         let issuer = owner.issuer_with_native_work(AggregateKind::Task, policy.root_task, work)?;
         let task = work.display(&policy.root_task)?;
-        let signed = issuer.0.issue(
-            &task.0,
-            &storage.0,
-            Some(policy.agent),
-            None,
-            &mut Some(&mut io),
-        )?;
-        if signed != current.signed {
+        issuer
+            .0
+            .verifier(&mut Some(&mut io))?
+            .verify(&current.signed, &mut Some(&mut io))?;
+        if current.signed.id() != task.0
+            || current.signed.issuer() != ISSUER
+            || current.signed.capabilities() != &storage.0
+            || current.signed.agent() != Some(policy.agent)
+        {
             return Err(invalid());
         }
         Ok(())

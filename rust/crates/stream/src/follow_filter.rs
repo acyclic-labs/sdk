@@ -6,7 +6,7 @@ use std::sync::Arc;
 /// Canonical requested filter intersected with every capability filter.
 /// Requested ranges select any key; each authority ceiling covers every key.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct FollowFilter(Arc<Vec<Clause>>);
+pub struct FollowFilter(Option<Arc<Vec<Clause>>>);
 
 #[derive(Clone, Debug, PartialEq)]
 struct Clause {
@@ -15,6 +15,9 @@ struct Clause {
 }
 
 impl FollowFilter {
+    fn clauses(&self) -> &[Clause] {
+        self.0.as_deref().map_or(&[], Vec::as_slice)
+    }
     /// Validates and canonicalizes a requested subscription filter.
     pub fn new(mut requested: wire::SessionFilter) -> Result<Self, StreamError> {
         if requested.encoded_len() > crate::MAX_COMMAND_BYTES
@@ -44,7 +47,7 @@ impl FollowFilter {
                 });
             }
         }
-        Ok(Self(Arc::new(clauses)))
+        Ok(Self((!clauses.is_empty()).then(|| Arc::new(clauses))))
     }
 
     /// Intersects a request with authenticated capability clauses. Subject
@@ -54,7 +57,7 @@ impl FollowFilter {
         capability: &acyclic_auth::verify::VerifiedCapability,
     ) -> Result<Self, StreamError> {
         use acyclic_auth::contract::SubjectReferenceKind;
-        let mut clauses = Self::new(requested)?.0.as_ref().clone();
+        let mut clauses = Self::new(requested)?.clauses().to_vec();
         for scoped in capability.effective().filters() {
             let source = scoped.filter();
             let attributes = source
@@ -118,7 +121,7 @@ impl FollowFilter {
                 })?,
             });
         }
-        Ok(Self(Arc::new(clauses)))
+        Ok(Self((!clauses.is_empty()).then(|| Arc::new(clauses))))
     }
 
     /// Returns whether opaque record headers satisfy the full intersection.
@@ -129,7 +132,7 @@ impl FollowFilter {
                 .iter()
                 .any(|key| self.matches_entry(key, headers));
         }
-        self.0.iter().all(|clause| clause.matches(headers))
+        self.clauses().iter().all(|clause| clause.matches(headers))
     }
 
     /// Child identities are paths, not bounded record keys. Discovery supplies
@@ -140,14 +143,14 @@ impl FollowFilter {
         all(feature = "wasm", target_arch = "wasm32")
     ))]
     pub(crate) fn matches_child(&self, child: &crate::StreamPath) -> bool {
-        self.0.iter().all(|clause| {
+        self.clauses().iter().all(|clause| {
             (clause.filter.keys.is_empty() || clause.contains(child.as_str().as_bytes()))
                 && clause.filter.attributes.is_empty()
         })
     }
 
     fn matches_entry(&self, key: &[u8], headers: &RecordHeaders) -> bool {
-        self.0.iter().all(|clause| {
+        self.clauses().iter().all(|clause| {
             (clause.filter.keys.is_empty() || clause.contains(key))
                 && clause.matches_attributes(headers)
         })
@@ -189,7 +192,7 @@ impl FollowFilter {
             keys: vec![],
             attributes: vec![],
             all_of: self
-                .0
+                .clauses()
                 .iter()
                 .map(|clause| wire::SessionFilterClause {
                     keys: clause.filter.keys.clone(),
@@ -208,8 +211,8 @@ impl FollowFilter {
     pub fn digest(&self) -> [u8; 32] {
         let mut hash = Sha256::new();
         hash.update(b"acyclic.stream.follow-filter.v1\0");
-        hash.update((self.0.len() as u64).to_le_bytes());
-        for clause in self.0.iter() {
+        hash.update((self.clauses().len() as u64).to_le_bytes());
+        for clause in self.clauses().iter() {
             hash.update([u8::from(clause.all_keys)]);
             let bytes = clause.filter.encode_to_vec();
             hash.update((bytes.len() as u64).to_le_bytes());
@@ -219,14 +222,14 @@ impl FollowFilter {
     }
 
     pub(crate) fn ranges(&self) -> Option<&[wire::KeyRange]> {
-        self.0
+        self.clauses()
             .iter()
             .find(|clause| !clause.filter.keys.is_empty())
             .map(|clause| clause.filter.keys.as_slice())
     }
 
     pub(crate) fn attribute(&self) -> Option<&wire::AttributeMatch> {
-        self.0
+        self.clauses()
             .iter()
             .find_map(|clause| clause.filter.attributes.first())
     }
@@ -408,10 +411,12 @@ mod tests {
             all_keys: true,
             filter: requested.filter.clone(),
         };
-        let filter = FollowFilter(Arc::new(vec![requested.clone(), ceiling]));
+        let filter = FollowFilter(Some(Arc::new(vec![requested.clone(), ceiling])));
         assert!(filter.matches(&headers(&["a", "b"], "alice")));
         assert!(!filter.matches(&headers(&["b", "z"], "alice")));
-        assert!(FollowFilter(Arc::new(vec![requested])).matches(&headers(&["b", "z"], "alice")));
+        assert!(
+            FollowFilter(Some(Arc::new(vec![requested]))).matches(&headers(&["b", "z"], "alice"))
+        );
     }
     #[test]
     fn provider_hops_preserve_requested_any_keys_and_all_authority_ceilings() {
@@ -424,18 +429,18 @@ mod tests {
             })
             .unwrap(),
         };
-        let original = FollowFilter(Arc::new(vec![
+        let original = FollowFilter(Some(Arc::new(vec![
             make(false, b"a", b"c"),
             make(true, b"a", b"m"),
             make(true, b"b", b"z"),
-        ]));
+        ])));
         let forwarded = FollowFilter::new(original.transport_filter().unwrap()).unwrap();
         assert_eq!(original.digest(), forwarded.digest());
         assert!(forwarded.matches(&headers(&["b", "j"], "alice")));
         assert!(!forwarded.matches(&headers(&["b", "z"], "alice")));
         assert!(!forwarded.matches(&headers(&["a", "b"], "alice")));
         assert!(!forwarded.matches(&headers(&["j"], "alice")));
-        let dropped_ceiling = FollowFilter(Arc::new(vec![make(false, b"a", b"c")]));
+        let dropped_ceiling = FollowFilter(Some(Arc::new(vec![make(false, b"a", b"c")])));
         assert!(
             dropped_ceiling.matches(&headers(&["b", "z"], "alice")),
             "negative control needs the authority ceiling"

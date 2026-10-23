@@ -164,12 +164,17 @@ fn new_idempotency_key() -> IdempotencyKey {
 
 /// Transport callers keep this allocation instead of copying a domain wrapper.
 fn new_identity_bytes() -> bytes::Bytes {
+    bytes::Bytes::copy_from_slice(&new_identity())
+}
+
+/// Fresh provider identities share the same seeded entropy boundary.
+fn new_identity() -> [u8; 16] {
     #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     {
         let mut bytes = [0; 16];
         if acyclic_native_runtime::testing::fill_seeded(&mut bytes) {
-            return bytes::Bytes::copy_from_slice(&bytes);
+            return bytes;
         }
     }
-    bytes::Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes())
+    uuid::Uuid::new_v4().into_bytes()
 }

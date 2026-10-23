@@ -14,6 +14,7 @@ pub mod transport;
 use transport::Endpoint;
 
 mod admissions;
+mod data;
 use admissions::Admissions;
 #[cfg(not(target_arch = "wasm32"))]
 mod cache;
@@ -168,24 +169,21 @@ enum Received {
     Frame(wire::SessionFrame),
 }
 enum Command {
-    Credential {
-        slot: u32,
-        credential: Bytes,
-    },
+    Credential { slot: u32, credential: Bytes },
     Open(Box<OpenCommand>),
 }
 struct OpenCommand {
-        id: u64,
-        attempt_epoch: u64,
-        acknowledge: bool,
-        kind: Kind,
-        filter: Option<wire::SessionFilter>,
-        credential: u32,
-        raw: bool,
-        progress: Arc<Progress>,
-        records: mpsc::Sender<Result<Delivery, StreamError>>,
-        ready: oneshot::Sender<Result<u64, StreamError>>,
-        observation: super::runtime::OperationSpan,
+    id: u64,
+    attempt_epoch: u64,
+    acknowledge: bool,
+    kind: Kind,
+    filter: Option<wire::SessionFilter>,
+    credential: u32,
+    raw: bool,
+    progress: Arc<Progress>,
+    records: mpsc::Sender<Result<Delivery, StreamError>>,
+    ready: oneshot::Sender<Result<u64, StreamError>>,
+    observation: super::runtime::OperationSpan,
 }
 
 struct Route {
@@ -501,26 +499,17 @@ impl Client {
         ) {
             return Err(StreamError::InvalidArgument);
         }
-        Ok(self
-            .open_kind(
+        Ok(data::Data::new(
+            self.open_kind(
                 Kind::Follow(follow),
                 from,
                 acknowledge,
                 Some(filter.transport_filter()?),
             )
-            .await?
-            .filter_map(|item| {
-                future::ready(match item {
-                    Ok(Received::Data(data)) => Some(Ok(data)),
-                    Ok(Received::Frame(wire::SessionFrame {
-                        body: Some(Body::Watermark(_)),
-                        ..
-                    })) => None,
-                    Ok(_) => Some(Err(StreamError::Unavailable)),
-                    Err(error) => Some(Err(error)),
-                })
-            }))
+            .await?,
+        ))
     }
+
     /// Discovers direct children on the same per-node session as record follows.
     pub async fn children(
         &self,

@@ -230,7 +230,10 @@ impl History {
             return Ok(());
         }
         let applied = applied.unwrap();
-        prop_assert_eq!(&applied, &planned.unwrap());
+        let verifier = issuer()
+            .verifier(&mut None)
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
+        prop_assert!(equivalent_plans(&applied, &planned.unwrap(), &verifier));
         let ApplyResult::Applied { event } = applied else {
             panic!("fresh interaction operation replayed");
         };

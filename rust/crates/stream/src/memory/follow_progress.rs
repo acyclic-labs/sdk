@@ -85,11 +85,13 @@ impl MemoryStream {
                 if let Some(update) = update? {
                     return Ok(Some((update, state)));
                 }
-                state
-                    .changed
-                    .changed()
-                    .await
-                    .map_err(|_| StreamError::Unavailable)?;
+                state.changed.changed().await.map_err(|_| {
+                    if state.anchor.is_some() {
+                        StreamError::PrefixNotRetained
+                    } else {
+                        StreamError::Unavailable
+                    }
+                })?;
             }
         })
         .boxed())

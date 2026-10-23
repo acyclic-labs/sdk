@@ -256,6 +256,13 @@ async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_resto
             &mut None,
         )
         .await?;
+    let append_scope = issuer.issue(
+        "append",
+        &crate::Capabilities::new(["conversation:append"]),
+        Some(agent),
+        None,
+        &mut None,
+    )?;
     let mut ids = Vec::new();
     let mut references = Vec::new();
     for (position, kind) in [
@@ -293,7 +300,7 @@ async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_resto
                         "cold-message-{sequence}"
                     ))?,
                     expected_revision: aggregate.reducer().revision(),
-                    scope: scope.clone(),
+                    scope: append_scope.clone(),
                     causal_parent: None,
                     action: Action::AppendConversationMessage {
                         message: Box::new(ConversationMessage {

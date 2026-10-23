@@ -44,8 +44,7 @@ if (query.has("actor")) {
   });
   const first = await stream.append("events", [Uint8Array.of(1)], { idempotencyKey: key("first") });
   assert(first.ok && equal(Array.from(first.commitId), [
-    103, 88, 88, 43, 235, 47, 0, 131, 35, 251, 167, 33, 80, 169, 30, 73,
-    72, 104, 186, 58, 197, 155, 218, 185, 49, 156, 25, 42, 172, 54, 132, 40,
+    38, 143, 36, 24, 145, 152, 169, 224, 7, 28, 82, 129, 78, 208, 207, 70, 142, 223, 186, 183, 148, 195, 120, 23, 80, 176, 19, 93, 220, 251, 47, 177,
   ]), "durable browser outcome diverged from native journal fixture");
   const memory = new MemoryStreamProvider();
   assert(equal(first, await memory.append("events", [Uint8Array.of(1)], { idempotencyKey: key("first") })), "durable provider diverged from canonical memory outcome");

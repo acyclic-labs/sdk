@@ -467,6 +467,14 @@ async fn registration_reuses_original_admission_before_allocating_selected_roots
         .session_directory(&state.root_session_id)
         .join("pi-owner.v1");
     let bytes = fs::read(&owner).unwrap();
+    let owner_config = PiOwnerConfig::load(
+        &resources.data,
+        resources
+            .private_session_data(&resources.session_directory(&state.root_session_id))
+            .unwrap(),
+        &work,
+    )
+    .unwrap();
     let service = ConcurrentServiceControl::from_parts(
         resources,
         BTreeMap::from([(state.root_session_id.clone(), prepared)]),
@@ -493,15 +501,20 @@ async fn registration_reuses_original_admission_before_allocating_selected_roots
             .await
             .is_ok()
     );
-    assert_eq!(
-        status.0,
-        service
-            .start_session("registered", "pi", project.clone(), json!({}), &mut None)
-            .await
-            .unwrap()
-            .1
-            .0
-    );
+    let mut repeated = service
+        .start_session("registered", "pi", project.clone(), json!({}), &mut None)
+        .await
+        .unwrap()
+        .1
+        .0;
+    for response in [&status.0, &repeated] {
+        let caller = serde_json::from_value(response.get("caller").unwrap().clone()).unwrap();
+        crate::pi_caller::verify(&owner_config, &state, &caller, "registered", &work).unwrap();
+    }
+    // Registration reuses the durable task; renewing its signed caller changes
+    // certificate entropy while preserving the authenticated route and grants.
+    *repeated.get_mut("caller").unwrap() = status.0.get("caller").unwrap().clone();
+    assert_eq!(status.0, repeated);
     let replacement = directory.path().join("replacement");
     fs::create_dir(&replacement).unwrap();
     assert!(

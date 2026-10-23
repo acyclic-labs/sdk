@@ -114,9 +114,19 @@ pub(in crate::core) fn command(
     }
     let agent =
         matches!(&action, Action::PublishFork { .. }).then_some(AgentId::from_bytes([1; 16]));
-    let scope = issuer()
-        .issue("root", &Capabilities::new(grants), agent, None, &mut None)
-        .expect("fixture scope");
+    // Commands from one fixture actor reuse its admitted workload. Only fork
+    // commands need a distinct grant set derived from their source resources.
+    let issue = || {
+        issuer()
+            .issue("root", &Capabilities::new(grants), agent, None, &mut None)
+            .expect("fixture scope")
+    };
+    let scope = if agent.is_some() {
+        issue()
+    } else {
+        static ROOT: std::sync::OnceLock<Scope> = std::sync::OnceLock::new();
+        ROOT.get_or_init(issue).clone()
+    };
     Command {
         operation_id,
         idempotency_key: IdempotencyKey(format!("key-{operation_id}")),
@@ -154,3 +164,25 @@ mod interaction_history;
 mod model;
 #[cfg(not(target_arch = "wasm32"))]
 mod model_checking;
+
+// Admission receipts use fresh runtime entropy and trusted time. Both plans
+// must authenticate before comparing all deterministic event facts.
+fn equivalent_plans(
+    actual: &ApplyResult,
+    planned: &ApplyResult,
+    verifier: &AuthorityVerifier,
+) -> bool {
+    match (actual, planned) {
+        (ApplyResult::Applied { event: actual }, ApplyResult::Applied { event: planned }) => {
+            if verifier.verify_event(actual, &mut None).is_err()
+                || verifier.verify_event(planned, &mut None).is_err()
+            {
+                return false;
+            }
+            let mut planned = planned.clone();
+            planned.attestation.clone_from(&actual.attestation);
+            &planned == actual
+        }
+        _ => actual == planned,
+    }
+}

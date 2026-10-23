@@ -140,15 +140,26 @@ async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction
         client.observation_reads.store(0, Ordering::SeqCst);
         client.observation_maximum.store(0, Ordering::SeqCst);
     };
+    let original = conversation_command(
+        1,
+        Action::AppendConversationMessage {
+            message: Box::new(message(1)?),
+        },
+    )?;
     for sequence in 1..=MESSAGES {
+        let command = if sequence == 1 {
+            original.clone()
+        } else {
+            conversation_command(
+                sequence,
+                Action::AppendConversationMessage {
+                    message: Box::new(message(sequence)?),
+                },
+            )?
+        };
         writer
             .execute(
-                conversation_command(
-                    sequence,
-                    Action::AppendConversationMessage {
-                        message: Box::new(message(sequence)?),
-                    },
-                )?,
+                command,
                 #[cfg(feature = "filesystem")]
                 None,
                 &mut None,
@@ -243,12 +254,7 @@ async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction
     assert!(matches!(
         writer
             .execute(
-                conversation_command(
-                    1,
-                    Action::AppendConversationMessage {
-                        message: Box::new(message(1)?)
-                    }
-                )?,
+                original,
                 #[cfg(feature = "filesystem")]
                 None,
                 &mut None,

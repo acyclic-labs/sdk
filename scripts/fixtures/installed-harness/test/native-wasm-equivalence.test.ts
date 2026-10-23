@@ -1,9 +1,12 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { Harness } from "@acyclic-labs/harness";
+import { fromBinary, toBinary } from "@bufbuild/protobuf";
+import { EventEnvelopeSchema } from "@acyclic-labs/harness/proto";
+import { Harness, type Snapshot } from "@acyclic-labs/harness";
 
 const fixture = JSON.parse(readFileSync(new URL("../native-wasm-event-v2.json", import.meta.url), "utf8")) as {
   event_wire_hex: string;
+  snapshot: Snapshot;
 };
 
 test("WASM event bytes match the native cross-language fixture", async () => {
@@ -47,6 +50,31 @@ test("WASM event bytes match the native cross-language fixture", async () => {
   expect(first.result).toBe("applied");
   expect(replayed.result).toBe("replayed");
   expect(first.eventWire).toEqual(replayed.eventWire);
-  expect(Buffer.from(first.eventWire).toString("hex")).toBe(fixture.event_wire_hex);
+  const nativeBytes = new Uint8Array(Buffer.from(fixture.event_wire_hex, "hex"));
+  const nativeEvent = fromBinary(EventEnvelopeSchema, nativeBytes);
+  expect(toBinary(EventEnvelopeSchema, nativeEvent)).toEqual(nativeBytes);
+  const currentEvent = fromBinary(EventEnvelopeSchema, first.eventWire);
+  // Fresh workload certificates change the command digest and admission proof.
+  // Compare every remaining event field; authenticate native history below.
+  expect({ ...currentEvent, intentDigest: nativeEvent.intentDigest,
+    attestation: nativeEvent.attestation }).toEqual(nativeEvent);
+  const restored = await Harness.restore(fixture.snapshot, {
+    authority, issuerId: "test", issuerKey: new Uint8Array(32).fill(7),
+  });
+  const retained = restored.snapshot().events.at(-1) as {
+    revision: bigint; intent_digest: number[]; attestation: string; payload: unknown;
+  };
+  expect(retained.revision).toBe(nativeEvent.revision);
+  expect(new Uint8Array(retained.intent_digest)).toEqual(nativeEvent.intentDigest);
+  expect(new Uint8Array(Buffer.from(retained.attestation, "base64"))).toEqual(nativeEvent.attestation);
+  expect(retained.payload).toEqual(first.event.payload);
+  expect(restored.head()).toEqual([authority, 2n]);
+  expect(restored.conversation()).toEqual(harness.conversation());
+  restored.free();
+  const forged = structuredClone(fixture.snapshot);
+  (forged.attestation as number[])[0] ^= 1;
+  await expect(Harness.restore(forged, {
+    authority, issuerId: "test", issuerKey: new Uint8Array(32).fill(7),
+  })).rejects.toThrow();
   harness.free();
 });

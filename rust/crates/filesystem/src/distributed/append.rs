@@ -147,7 +147,12 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             generation_from_payload(authority_id, sequence, durable.payload, work)?
         {
             let (path, records) = self.publication_changes(
-                authority_id, &commit, generation, Some(expected), sequence, work,
+                authority_id,
+                &commit,
+                generation,
+                (expected.sequence != Sequence::GENESIS).then_some(expected),
+                sequence,
+                work,
             )?;
             let tail = match self.tail(path.clone(), work).await {
                 Ok(tail) => tail,
@@ -157,7 +162,10 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             conditions.push(if tail == 0 {
                 CommitCondition::Absent { path: path.clone() }
             } else {
-                CommitCondition::Tail { path: path.clone(), expected: tail }
+                CommitCondition::Tail {
+                    path: path.clone(),
+                    expected: tail,
+                }
             });
             mutations.push(CommitMutation::Append { path, records });
             let lineage = work.path(authority_id, "/lineage", None)?;
@@ -367,27 +375,33 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
     }
 }
 
-fn permits_append(permit: PublicationPermit, authority_id: AuthorityId, expected: Head, gate_tail: u64, active: Option<OperationId>) -> bool {
-     match permit {
-            PublicationPermit::Unrestricted => active.is_none(),
-            PublicationPermit::Reservation {
-                operation_id,
-                gate_tail: tail,
-                expected: head,
-            } => {
-                tail == gate_tail
-                    && active == Some(OperationId::from_bytes(operation_id))
-                    && head == expected
-            }
-            PublicationPermit::Lease {
-                authority_id: authority,
-                workspace_id,
-                ..
-            } => {
-                active.is_none()
-                    && AuthorityId::from_bytes(authority) == authority_id
-                    && volume_authority_id(crate::WorkspaceId::from_bytes(workspace_id).volume_id())
-                        == authority_id
-            }
+fn permits_append(
+    permit: PublicationPermit,
+    authority_id: AuthorityId,
+    expected: Head,
+    gate_tail: u64,
+    active: Option<OperationId>,
+) -> bool {
+    match permit {
+        PublicationPermit::Unrestricted => active.is_none(),
+        PublicationPermit::Reservation {
+            operation_id,
+            gate_tail: tail,
+            expected: head,
+        } => {
+            tail == gate_tail
+                && active == Some(OperationId::from_bytes(operation_id))
+                && head == expected
         }
+        PublicationPermit::Lease {
+            authority_id: authority,
+            workspace_id,
+            ..
+        } => {
+            active.is_none()
+                && AuthorityId::from_bytes(authority) == authority_id
+                && volume_authority_id(crate::WorkspaceId::from_bytes(workspace_id).volume_id())
+                    == authority_id
+        }
+    }
 }

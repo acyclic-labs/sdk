@@ -131,13 +131,17 @@ impl RecordHeaders {
         meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> std::io::Result<Self> {
         use acyclic_native_runtime::ReadAllocation;
-        meter.check()?;
         let Some(data) = &self.0 else {
             return Ok(self.clone());
         };
-        if data._allocation.is_some() {
+        if data
+            ._allocation
+            .as_ref()
+            .is_some_and(|allocation| Arc::ptr_eq(allocation.meter(), meter))
+        {
             return Ok(self.clone());
         }
+        meter.check()?;
         let copied = data.keys.len() * std::mem::size_of::<OwnedBytes>()
             + data.attributes.len() * std::mem::size_of::<Attribute>()
             + data
@@ -214,3 +218,30 @@ impl crate::Record {
 #[cfg(test)]
 #[path = "record_header_tests.rs"]
 mod tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod native_tests {
+    use super::*;
+    use crate::test_meter::Meter;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn prepared_headers_retain_only_their_original_admission()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let owner = Arc::new(Meter::default());
+        let original = owner.original();
+        let headers = RecordHeaders::new(vec![OwnedBytes::from_static(b"key")], vec![])?
+            .bind_native(&original)?;
+        owner.cancelled.store(true, Ordering::SeqCst);
+        owner.deny_allocation.store(true, Ordering::SeqCst);
+        assert_eq!(headers.bind_native(&original)?, headers);
+        assert_eq!(
+            RecordHeaders::default().bind_native(&original)?,
+            RecordHeaders::default()
+        );
+        let foreign = Arc::new(Meter::default());
+        foreign.deny_allocation.store(true, Ordering::SeqCst);
+        assert!(headers.bind_native(&foreign.original()).is_err());
+        Ok(())
+    }
+}

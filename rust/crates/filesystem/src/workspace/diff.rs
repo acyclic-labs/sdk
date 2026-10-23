@@ -1,5 +1,7 @@
 use super::*;
 
+mod created;
+
 /// Immutable semantic delta between two exact generations.
 pub struct ChangeSet<A, O> {
     pub(super) from: Generation<A, O>,
@@ -159,6 +161,18 @@ pub(crate) async fn complete_changed_paths<O: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
+    if let [Some(from), Some(to)] = endpoints {
+        return complete_between([from, to], maximum_entries, accounting, cancellation).await;
+    }
+    collect_all_paths(endpoints, maximum_entries, accounting, cancellation).await
+}
+
+async fn collect_all_paths<O: AsyncObjectStore>(
+    endpoints: [Option<super::namespace_view::NamespaceView<'_, O>>; 2],
+    maximum_entries: u32,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
     let mut paths = (Vec::new(), accounting.claim_owned(0, 0)?);
     for (index, view) in endpoints.into_iter().enumerate() {
         let Some(view) = view else {
@@ -187,6 +201,109 @@ pub(crate) async fn complete_changed_paths<O: AsyncObjectStore>(
         reverse_drop(search, bytes, accounting)?;
     }
     retain_changed_paths(paths, accounting)
+}
+
+async fn complete_between<O: AsyncObjectStore>(
+    endpoints: [super::namespace_view::NamespaceView<'_, O>; 2],
+    maximum_entries: u32,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
+    let [from, to] = &endpoints;
+    let changes = crate::facade::diff_generation_file_tables(
+        to.objects,
+        from.root.file_table,
+        to.root.file_table,
+        maximum_entries,
+        crate::kernel::DecodeLimits::for_volume(to.config),
+        accounting,
+        cancellation,
+    )
+    .await?;
+    if changes.0.truncated {
+        return Err(WorkspaceError::ChangedPathLimit);
+    }
+    // A binding of an existing directory can move unchanged descendants. New
+    // directories have all of their records in the Merkle delta already.
+    let moves_directory = moves_existing_directory(&changes.0, accounting)?;
+    let result = if moves_directory {
+        let [from, to] = endpoints;
+        collect_all_paths(
+            [Some(from), Some(to)],
+            maximum_entries,
+            accounting,
+            cancellation,
+        )
+        .await
+    } else {
+        match created::created_paths(
+            &endpoints,
+            &changes.0,
+            maximum_entries,
+            to.config.limits,
+            accounting,
+            cancellation,
+        )
+        .await?
+        {
+            Some(paths) => Ok(paths),
+            None => {
+                resolve_changed_paths(
+                    &endpoints,
+                    &changes.0,
+                    maximum_entries,
+                    accounting,
+                    cancellation,
+                )
+                .await
+            }
+        }
+    };
+    let bytes = workspace_vec_bytes(&changes.0.files)
+        + workspace_vec_bytes(&changes.0.bindings)
+        + changes
+            .0
+            .bindings
+            .iter()
+            .map(|binding| {
+                binding.name.retained_bytes() as u64
+                    + binding
+                        .before
+                        .as_ref()
+                        .map_or(0, |entry| entry.name.retained_bytes() as u64)
+                    + binding
+                        .after
+                        .as_ref()
+                        .map_or(0, |entry| entry.name.retained_bytes() as u64)
+            })
+            .sum::<u64>();
+    reverse_drop(changes, bytes, accounting)?;
+    result
+}
+
+fn moves_existing_directory(
+    changes: &GenerationDiff,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<bool, WorkspaceError> {
+    for binding in &changes.bindings {
+        for entry in binding.before.iter().chain(binding.after.iter()) {
+            accounting.charge_items(1)?;
+            if entry.kind != FileKind::Directory {
+                continue;
+            }
+            let position = binary_search_with_accounting(&changes.files, accounting, |file| {
+                file.file_id.cmp(&entry.file_id)
+            })?;
+            let newly_created = position
+                .ok()
+                .and_then(|index| changes.files.get(index))
+                .is_some_and(|file| file.before.is_none());
+            if !newly_created {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 async fn resolve_changed_paths(
@@ -250,6 +367,13 @@ async fn resolve_changed_paths(
     retain_changed_paths(paths, accounting)
 }
 
+fn record_changed(before: &crate::kernel::FileRecord, after: &crate::kernel::FileRecord) -> bool {
+    before.file_id != after.file_id
+        || before.kind != after.kind
+        || before.metadata != after.metadata
+        || (before.kind != FileKind::Directory && before.payload != after.payload)
+}
+
 fn retain_changed_paths(
     mut paths: (Vec<ChangedPath>, KernelOwnedAllocation),
     accounting: &mut KernelAccounting<'_>,
@@ -260,11 +384,7 @@ fn retain_changed_paths(
         accounting.charge_items(1)?;
         let entry = paths.0.get(index).ok_or(FsError::InvalidDiff)?;
         let changed = match (&entry.before, &entry.after) {
-            (Some(before), Some(after)) => {
-                before.kind != after.kind
-                    || before.metadata != after.metadata
-                    || (before.kind != FileKind::Directory && before.payload != after.payload)
-            }
+            (Some(before), Some(after)) => record_changed(before, after),
             (None, None) => false,
             _ => true,
         };

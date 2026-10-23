@@ -21,6 +21,12 @@ fuzz_target!(|input: &[u8]| {
     if input.len() > 4096 {
         return;
     }
+    checks::exercise(
+        u64::from(input.first().copied().unwrap_or(0)),
+        u16::from(input.get(1).copied().unwrap_or(0)),
+        input,
+        false,
+    );
     let Ok(frame) = wire::SessionFrame::decode(input) else {
         return;
     };

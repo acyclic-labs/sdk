@@ -6,7 +6,7 @@ async fn complete_generation_publishes_and_retries_exactly() -> TestResult {
     let authority = MemoryAuthorityStore::default();
     let volume_id = VolumeId::from_bytes([2; 16]);
     let authority_id = volume_authority_id(volume_id);
-    let head = created(&authority, authority_id).await?;
+    let head = initialized(&objects, &authority, volume_id).await?;
     let request = PublishGenerationRequest {
         authority_id,
         volume_id,
@@ -264,5 +264,37 @@ async fn publication_encoding_copy_and_hash_are_admitted_before_authority_mutati
         ));
         assert_eq!(read_head(&authority, authority_id).await?, head);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn missing_creation_record_returns_change_validation_without_appending() -> TestResult {
+    let objects = MemoryObjectStore::default();
+    let authority = MemoryAuthorityStore::default();
+    let volume_id = VolumeId::from_bytes([94; 16]);
+    let authority_id = volume_authority_id(volume_id);
+    let expected = created(&authority, authority_id).await?;
+    let failure = publish_generation(
+        &objects,
+        &authority,
+        PublishGenerationRequest {
+            authority_id,
+            volume_id,
+            expected,
+            epoch: Epoch::GENESIS,
+            operation_id: OperationId::from_bytes([95; 16]),
+            generation_root: fixture(&objects, volume_id).await?,
+        },
+        PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
+        limits(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await
+    .expect_err("a bare authority has no authenticated volume configuration");
+    assert!(
+        matches!(failure.error, PublicationError::ChangeValidation(error) if matches!(*error, crate::FsError::InvalidDiff))
+    );
+    assert_eq!(read_head(&authority, authority_id).await?, expected);
     Ok(())
 }

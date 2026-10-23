@@ -6,8 +6,8 @@
     "auth": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:277d48a5ec6eba72aacd29d2fcf5eb5b5e39cef05e07f5bac0096268a614cb0c",
-      "descriptorDigest": "sha256:f19406210bab4918de3993b30746667ed81dfdd13aea06243b840d75ef08099a"
+      "schemaDigest": "sha256:433481164184ed986dd5722ba8b1e34e3d05a875667128cbf5b6e1f493b5f90e",
+      "descriptorDigest": "sha256:b34d036f74a4dad3f44ca0db5fddb5430709279fd1ec27b70e587ee295cce52d"
     },
     "actors": {
       "version": "0.2.0",
@@ -17,21 +17,21 @@
     },
     "harness": {
       "version": "0.2.0",
-      "schemaDigest": "sha256:a608e0c198c35c881fb19862c21a799d5b23df8b262a2af3f303f78036aaf070",
-      "conformanceDigest": "sha256:1a6b16db2bf7de485c576efc9f182f4c53b227169ff42c7810e3d4069e1ccc10"
+      "schemaDigest": "sha256:b8e6991ed30583d9415b0f7836b35d224013c21e5d73f57d6cb0dc3ac35a12dd",
+      "conformanceDigest": "sha256:9eefcd228e36b74e995df7aafa3228955c102e75dd3b1b6ad6a6ebae8ed8403c"
     },
     "filesystem": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:00536a6c9044a69468c91761921247047273d51aff05002dc13372892ff38faa",
-      "descriptorDigest": "sha256:cea58f6dcee6ae8e9460eb53ca5cf00269041cf69ff7e08c3d52093c7e5012f5",
+      "schemaDigest": "sha256:71f9a4f28a070d97172412af4c689994174f5a8bce1bc4258014bf4c4cdf0460",
+      "descriptorDigest": "sha256:96d0fc8440409110480698ca5eb2b0d3b3e7de314b4dbbf5e26dcf9f12433b02",
       "conformanceDigest": "sha256:0587f37b90fb7080a54410e806dd01d4097025a24c3284fc742250546f745e8b"
     },
     "stream": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:57d33f775add8d93c2b78563c8659149e9bd1062050396079d4cf5c390a3e098",
-      "descriptorDigest": "sha256:94e886bc3d88da299bfbbc8e10d5102275e4426aa221b0493dbd9992659c1ec4",
+      "schemaDigest": "sha256:d2bbad0e2f6a9061ce684764effdf304d6fc2cfd49b9e4fa22d02e06b9470673",
+      "descriptorDigest": "sha256:10b5c835044876bbb289d57e3b3834bc7ef45297dc213440865de18646c38c27",
       "conformanceDigest": "sha256:230c14bfd9afde7f9ab6e9f8b69769c8b2a06cc7dc3ec6a51dc8964321984d08"
     },
     "objects": {

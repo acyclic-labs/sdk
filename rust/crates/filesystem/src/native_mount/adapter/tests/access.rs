@@ -18,10 +18,13 @@ fn pattern(path: &str) -> ResourcePattern {
 fn projfs_rejects_each_restrictive_writable_mode() -> Result<(), Box<dyn std::error::Error>> {
     use crate::native_mount::actions::require_projfs_mode;
     let source = source(FilesystemProfile::Portable)?;
-    let now = crate::native_mount::adapter::access::access_time(
-        &crate::native_mount::clock::Clock::capture(),
-    )?;
-    require_projfs_mode(&compiled(&source, 1, vec![], None)?, true, now)?;
+    let time = || {
+        crate::native_mount::adapter::access::access_time(
+            &crate::native_mount::clock::Clock::capture(),
+        )
+    };
+    let unrestricted = compiled(&source, 1, vec![], None)?;
+    require_projfs_mode(&unrestricted, true, time()?)?;
     for action in Action::ALL {
         let view = compiled(
             &source,
@@ -30,7 +33,7 @@ fn projfs_rejects_each_restrictive_writable_mode() -> Result<(), Box<dyn std::er
             None,
         )?;
         assert_eq!(
-            require_projfs_mode(&view, true, now).is_err(),
+            require_projfs_mode(&view, true, time()?).is_err(),
             matches!(
                 action,
                 Action::Create | Action::Write | Action::Append | Action::ReadHistory
@@ -38,7 +41,7 @@ fn projfs_rejects_each_restrictive_writable_mode() -> Result<(), Box<dyn std::er
             "unsupported writable mode for {action:?}",
         );
         assert!(matches!(
-            require_projfs_mode(&view, false, now),
+            require_projfs_mode(&view, false, time()?),
             Err(crate::native_mount::MountLifecycleError::NativePolicy(
                 "ProjFS cannot prevent host mutations on read-only mounts"
             )),

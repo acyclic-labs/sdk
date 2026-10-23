@@ -77,7 +77,11 @@ fn native_caller_preserves_claims_and_environment_and_rejects_substitution() {
     assert_eq!(environment.0.len(), 1);
     let decoded: Scope =
         serde_json::from_str(environment.0.get(CALLER_ENVIRONMENT).unwrap()).unwrap();
-    assert_eq!(decoded, caller.0);
+    verify(&owner, &state, &decoded, &binding.native_session_id, &work).unwrap();
+    assert_eq!(decoded.id(), caller.0.id());
+    assert_eq!(decoded.issuer(), caller.0.issuer());
+    assert_eq!(decoded.agent(), caller.0.agent());
+    assert_eq!(decoded.capabilities(), caller.0.capabilities());
     drop(decoded);
     drop(environment);
     let expanded = owner
@@ -185,27 +189,36 @@ fn native_caller_admission_denies_cancellation_and_exhausted_quota() {
             .expect_err("the original quota must deny the caller scope"),
     ] {
         let cause = match error {
-            acyclic_harness::Error::NativeWork { cause, custody: None } => cause,
-            acyclic_harness::Error::NativeFilesystem { source, custody: None } => {
-                match *source {
-                    acyclic_fs::FsError::NativeKernel(cause) => cause,
-                    other => panic!("caller denial lost its native cause: {other:?}"),
-                }
-            }
+            acyclic_harness::Error::NativeWork {
+                cause,
+                custody: None,
+            } => cause,
+            acyclic_harness::Error::NativeFilesystem {
+                source,
+                custody: None,
+            } => match *source {
+                acyclic_fs::FsError::NativeKernel(cause) => cause,
+                other => panic!("caller denial lost its native cause: {other:?}"),
+            },
             other => panic!("caller denial lost its original quota: {other:?}"),
         };
-        assert!(matches!(cause,
-            acyclic_fs::NativeTreeMaterializationError::Work(
-                acyclic_fs::WorkError::BudgetExceeded {
-                    counter: "peak_allocation_bytes", observed, maximum,
-                }
-            ) if observed > maximum
-                && maximum == acyclic_fs::NativeMaterializationWork::accounting_state_bytes() + 1
-        ), "caller denial differs from its original allocation limit: {cause:?}");
+        assert!(
+            matches!(cause,
+                acyclic_fs::NativeTreeMaterializationError::Work(
+                    acyclic_fs::WorkError::BudgetExceeded {
+                        counter: "peak_allocation_bytes", observed, maximum,
+                    }
+                ) if observed > maximum
+                    && maximum == acyclic_fs::NativeMaterializationWork::accounting_state_bytes() + 1
+            ),
+            "caller denial differs from its original allocation limit: {cause:?}"
+        );
     }
     let denied = work.receipt();
     assert_eq!(denied.authority_records_appended, 0);
     assert_eq!(denied.backend_write_operations, 0);
-    assert!(denied.peak_allocation_bytes
-        <= acyclic_fs::NativeMaterializationWork::accounting_state_bytes() + 1);
+    assert!(
+        denied.peak_allocation_bytes
+            <= acyclic_fs::NativeMaterializationWork::accounting_state_bytes() + 1
+    );
 }

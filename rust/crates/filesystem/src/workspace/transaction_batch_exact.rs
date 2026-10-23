@@ -16,9 +16,16 @@ fn check(invalid: bool, fault: Fault) -> TestCaseResult {
 
 #[test]
 fn staging_has_exact_work_and_physical_allocations() {
-    for invalid in [false, true] {
-        check(invalid, Fault::None).unwrap();
+    let results = [false, true].map(|invalid| check(invalid, Fault::None));
+    for result in &results {
+        if let Err(error) = result {
+            eprintln!("{error}");
+        }
     }
+    assert!(
+        results.iter().all(Result::is_ok),
+        "exact staging receipts changed"
+    );
 }
 
 #[test]

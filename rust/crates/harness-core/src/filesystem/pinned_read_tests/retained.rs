@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamProvider as _;
 use acyclic_test_support::{AllocationInfo, differential};
 use std::cell::Cell;
 
@@ -71,6 +72,18 @@ impl acyclic_stream::UnixMillisClock for Clock {
 }
 
 async fn initialize(prefix: usize, bytes: &[u8]) -> Result<(Arc<Host>, FileRef, ContentGrant)> {
+    let (host, file, grant, _) = initialize_with_stream(prefix, bytes).await?;
+    Ok((host, file, grant))
+}
+
+type Initialized = (
+    Arc<Host>,
+    FileRef,
+    ContentGrant,
+    Arc<acyclic_stream::MemoryStream>,
+);
+
+async fn initialize_with_stream(prefix: usize, bytes: &[u8]) -> Result<Initialized> {
     // Authority timestamps are part of the independently initialized read
     // history. A wall clock changes its encoded work between the two runs.
     let stream = Arc::new(acyclic_stream::MemoryStream::new_with_clock(
@@ -78,7 +91,7 @@ async fn initialize(prefix: usize, bytes: &[u8]) -> Result<(Arc<Host>, FileRef, 
         Arc::new(Clock),
     ));
     let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
-    let filesystem = Fs::from_memory_providers(stream, Arc::new(objects), bucket);
+    let filesystem = Fs::from_memory_providers(stream.clone(), Arc::new(objects), bucket);
     let (host, file) = fixture_with_filesystem(b"seed", filesystem).await?;
     let grant = grant(&file)?;
     let workspace = workspace_ref(
@@ -123,7 +136,7 @@ async fn initialize(prefix: usize, bytes: &[u8]) -> Result<(Arc<Host>, FileRef, 
         &IdempotencyKey::new("later-head")?,
     )
     .await?;
-    Ok((host, target, grant))
+    Ok((host, target, grant, stream))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -591,7 +604,18 @@ fn published_content_retries_and_recovery_do_not_append_retention_records() -> R
         .map_err(|error| Error::Storage(error.to_string()))?;
     for entry in [Entry::Create, Entry::Retry, Entry::Observe] {
         for native in [false, true] {
-            let (host, source, grant) = runtime.block_on(initialize(0, b"original"))?;
+            let (host, source, grant, stream) =
+                runtime.block_on(initialize_with_stream(0, b"original"))?;
+            let page =
+                runtime.block_on(stream.children_page(acyclic_stream::ChildrenPageRequest {
+                    parent: Some(acyclic_stream::StreamPath::new(".acyclic/fs")?),
+                    after: None,
+                    hierarchy_version: None,
+                    limit: 2,
+                }))?;
+            assert_eq!(page.children.len(), 1, "one fixture volume change stream");
+            let path = page.children[0].path.clone();
+            let before = runtime.block_on(stream.tail(path.clone()))?;
             let (result, receipt, _, _, _, _) = accounted(native, 64 * 1024 * 1024, false, |io| {
                 runtime.block_on(execute(
                     &host,
@@ -604,11 +628,26 @@ fn published_content_retries_and_recovery_do_not_append_retention_records() -> R
             })
             .map_err(|(error, receipt)| Error::Storage(format!("{error}: {receipt:?}")))?;
             let file = result?;
+            let changes = runtime
+                .block_on(stream.tail(path))?
+                .checked_sub(before)
+                .ok_or_else(|| Error::Storage("change stream regressed".into()))?;
+            assert_eq!(changes, u64::from(matches!(entry, Entry::Create)));
             if matches!(entry, Entry::Create) {
-                assert!(receipt.authority_records_appended > 0);
+                // The required B10 change record shares this publication commit.
+                // Preserve the original four-record bound for authority metadata.
+                let valid = |records: u64| {
+                    records
+                        .checked_sub(changes)
+                        .is_some_and(|metadata| metadata > 0 && metadata <= 4)
+                };
                 assert!(
-                    receipt.authority_records_appended <= 4,
+                    valid(receipt.authority_records_appended),
                     "published content appended redundant retention: {receipt:?}"
+                );
+                assert!(
+                    !valid(receipt.authority_records_appended + 1),
+                    "an extra retention record must fail the original bound"
                 );
             } else {
                 assert_eq!(

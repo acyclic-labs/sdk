@@ -24,13 +24,13 @@ fn authority() -> Authority {
 fn issuer() -> AuthorityIssuer {
     AuthorityIssuer::new("test", [7; 32], authority())
 }
-fn transition(revision: u64, to: LifecycleState) -> Result<Command> {
+fn transition(runtime: &AuthorityIssuer, revision: u64, to: LifecycleState) -> Result<Command> {
     let operation_id = OperationId::from_bytes([revision as u8 + 1; 16]);
     Ok(Command {
         operation_id,
         idempotency_key: IdempotencyKey::new(operation_id.to_string())?,
         expected_revision: revision,
-        scope: issuer().issue(
+        scope: runtime.issue(
             "root",
             &Capabilities::new(["lifecycle:manage"]),
             None,
@@ -41,12 +41,15 @@ fn transition(revision: u64, to: LifecycleState) -> Result<Command> {
         action: Action::TransitionLifecycle { to, reason: None },
     })
 }
-async fn writer(client: &Arc<MemoryStream>) -> Result<StreamAggregate<MemoryStream>> {
+async fn writer(
+    client: &Arc<MemoryStream>,
+    runtime: &AuthorityIssuer,
+) -> Result<StreamAggregate<MemoryStream>> {
     StreamAggregate::open(
         client,
         (
             authority(),
-            issuer().verifier(&mut None)?,
+            runtime.verifier(&mut None)?,
             SchemaRegistry::new(),
         ),
         None,
@@ -60,10 +63,11 @@ async fn writer(client: &Arc<MemoryStream>) -> Result<StreamAggregate<MemoryStre
 
 #[tokio::test]
 async fn follows_later_owner_waiting_without_scheduler_changes() -> Result<()> {
+    let runtime = issuer();
     let client = Arc::new(MemoryStream::default());
-    let mut writer = writer(&client).await?;
+    let mut writer = writer(&client, &runtime).await?;
     for (revision, state) in [(0, LifecycleState::Active), (1, LifecycleState::Waiting)] {
-        let next = transition(revision, state)?;
+        let next = transition(&runtime, revision, state)?;
         if revision == 0 {
             writer
                 .execute(
@@ -107,8 +111,9 @@ async fn follows_later_owner_waiting_without_scheduler_changes() -> Result<()> {
 
 #[tokio::test]
 async fn follow_pushes_individual_ready_records_and_checks_byte_bounds() -> Result<()> {
+    let runtime = issuer();
     let client = Arc::new(MemoryStream::default());
-    let mut writer = writer(&client).await?;
+    let mut writer = writer(&client, &runtime).await?;
     for (revision, state) in [
         LifecycleState::Active,
         LifecycleState::Waiting,
@@ -121,7 +126,7 @@ async fn follow_pushes_individual_ready_records_and_checks_byte_bounds() -> Resu
     {
         writer
             .execute(
-                transition(revision as u64, state)?,
+                transition(&runtime, revision as u64, state)?,
                 #[cfg(feature = "filesystem")]
                 None,
                 &mut None,
@@ -156,14 +161,15 @@ async fn follow_pushes_individual_ready_records_and_checks_byte_bounds() -> Resu
 #[tokio::test]
 async fn follow_verifies_authority_and_attestation() -> Result<()> {
     for wrong_authority in [false, true] {
+        let runtime = issuer();
         let client = Arc::new(MemoryStream::default());
         let mut reducer = Reducer::new(
             authority(),
-            issuer().verifier(&mut None)?,
+            runtime.verifier(&mut None)?,
             SchemaRegistry::new(),
         );
         let ApplyResult::Applied { mut event } =
-            reducer.apply(&transition(0, LifecycleState::Active)?)?
+            reducer.apply(&transition(&runtime, 0, LifecycleState::Active)?)?
         else {
             panic!("fresh event");
         };
@@ -179,7 +185,7 @@ async fn follow_verifies_authority_and_attestation() -> Result<()> {
         let reader = HistoryReader::new(
             &client,
             &authority(),
-            &issuer().verifier(&mut None)?,
+            &runtime.verifier(&mut None)?,
             &mut None,
         )?;
         let mut history = reader.follow(0, 65_536).await?;
@@ -195,8 +201,9 @@ async fn client_replay_follows_owner_changes_without_a_scheduler() -> Result<()>
         wire_api::{ReplayMode, replay_history},
         wire_codec::encode_authority,
     };
+    let runtime = issuer();
     let client = Arc::new(MemoryStream::default());
-    let verifier = issuer().verifier(&mut None)?;
+    let verifier = runtime.verifier(&mut None)?;
     let cursor = |revision| wire::ReplayCursor {
         authority: Some(encode_authority(&authority())),
         generation: "generation".into(),
@@ -210,10 +217,10 @@ async fn client_replay_follows_owner_changes_without_a_scheduler() -> Result<()>
             .await
             .is_err()
     );
-    let mut writer = writer(&client).await?;
+    let mut writer = writer(&client, &runtime).await?;
     writer
         .execute(
-            transition(0, LifecycleState::Active)?,
+            transition(&runtime, 0, LifecycleState::Active)?,
             #[cfg(feature = "filesystem")]
             None,
             &mut None,
@@ -234,7 +241,7 @@ async fn client_replay_follows_owner_changes_without_a_scheduler() -> Result<()>
     );
     writer
         .execute(
-            transition(1, LifecycleState::Waiting)?,
+            transition(&runtime, 1, LifecycleState::Waiting)?,
             #[cfg(feature = "filesystem")]
             None,
             &mut None,
@@ -276,8 +283,9 @@ async fn finite_inspection_stops_at_its_opening_cut_while_follow_remains_live() 
         wire_codec::encode_authority,
     };
     for append_before_read in [false, true] {
+        let runtime = issuer();
         let client = Arc::new(MemoryStream::default());
-        let verifier = issuer().verifier(&mut None)?;
+        let verifier = runtime.verifier(&mut None)?;
         let cursor = |revision| wire::ReplayCursor {
             authority: Some(encode_authority(&authority())),
             generation: "generation".into(),
@@ -286,10 +294,10 @@ async fn finite_inspection_stops_at_its_opening_cut_while_follow_remains_live() 
         let mut absent =
             replay_history(&client, &verifier, cursor(0), 65_536, ReplayMode::Snapshot).await?;
         assert!(matches!(absent.next().now_or_never(), Some(None)));
-        let mut writer = writer(&client).await?;
+        let mut writer = writer(&client, &runtime).await?;
         writer
             .execute(
-                transition(0, LifecycleState::Active)?,
+                transition(&runtime, 0, LifecycleState::Active)?,
                 #[cfg(feature = "filesystem")]
                 None,
                 &mut None,
@@ -317,7 +325,7 @@ async fn finite_inspection_stops_at_its_opening_cut_while_follow_remains_live() 
         }
         writer
             .execute(
-                transition(1, LifecycleState::Waiting)?,
+                transition(&runtime, 1, LifecycleState::Waiting)?,
                 #[cfg(feature = "filesystem")]
                 None,
                 &mut None,

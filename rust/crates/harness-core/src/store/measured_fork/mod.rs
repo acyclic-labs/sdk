@@ -54,6 +54,7 @@ async fn bind(
 
 #[cfg(feature = "filesystem")]
 struct GuardedForkFixture {
+    _runtimes: [crate::core::AuthorityIssuer; 2],
     fixture: crate::durable_host::tests::created_fixture::CreationFixture,
     owner: Arc<crate::durable_host::TaskJournalOwner<MemoryStream>>,
     lease: crate::distributed::WorkLease,
@@ -347,6 +348,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
         parent_verifier: parent_issuer.verifier(&mut None).expect("verifier copy"),
         child_scope,
         child_verifier: child_issuer.verifier(&mut None).expect("verifier copy"),
+        _runtimes: [parent_issuer, child_issuer],
     })
 }
 

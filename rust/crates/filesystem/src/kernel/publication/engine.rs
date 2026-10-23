@@ -167,8 +167,15 @@ where
         ));
     }
     commit.publication = crate::PublicationChanges::between(
-        objects, authority, request, &output.0.root, accounting, cancellation,
-    ).await.map_err(E::from)?;
+        objects,
+        authority,
+        request,
+        &output.0.root,
+        accounting,
+        cancellation,
+    )
+    .await
+    .map_err(E::from)?;
     // The lease spans validation and the authority CAS. It excludes new physical
     // projections; existing projections admit only candidates preserving policy.
     let (_projection_fence, projected) =
@@ -178,7 +185,11 @@ where
         projection::check(
             objects,
             authority,
-            projection::Candidate { request, root: &output.0.root, lease: &_projection_fence },
+            projection::Candidate {
+                request,
+                root: &output.0.root,
+                lease: &_projection_fence,
+            },
             closure_limits.decode,
             accounting,
             cancellation,
@@ -270,7 +281,7 @@ pub(super) fn publication_error(error: crate::FsError) -> PublicationError {
         crate::FsError::Authority(error) => error.into(),
         crate::FsError::Work(error) => error.into(),
         crate::FsError::Cancelled(_) => AuthorityStoreError::Cancelled.into(),
-        _ => unreachable!("unguarded publication has no caller-owned error"),
+        error => PublicationError::ChangeValidation(Box::new(error)),
     }
 }
 

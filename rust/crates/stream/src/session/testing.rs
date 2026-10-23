@@ -1,11 +1,11 @@
 //! Deterministic public trust and signed tokens for protocol qualification.
 use super::*;
 use acyclic_auth::{contract::*, testing as signed, verify::VerifyError};
-struct State;
+struct State(Arc<signed::Snapshot>);
 impl AuthorityState for State {
     fn snapshot(&self) -> Result<TrustSnapshot, VerifyError> {
         Ok(TrustSnapshot {
-            trust: Arc::new(signed::Snapshot::default()),
+            trust: self.0.clone(),
             now_unix_seconds: signed::NOW,
             revision: 0,
         })
@@ -20,7 +20,7 @@ impl AuthorityState for State {
 /// Public verifier for the deterministic qualification account.
 pub fn authority() -> Arc<Authority> {
     Arc::new(Authority {
-        state: Arc::new(State),
+        state: Arc::new(State(Arc::new(signed::Snapshot::default()))),
         audience: "workers:/test".into(),
         holder: Some("account".into()),
     })

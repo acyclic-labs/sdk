@@ -66,12 +66,13 @@ async fn native_fixture(objects: &MemoryObjectStore, volume_id: VolumeId) -> Tes
 }
 
 async fn native_request(
+    objects: &MemoryObjectStore,
     authority: &MemoryAuthorityStore,
     volume_id: VolumeId,
     generation_root: ObjectId,
 ) -> TestResult<PublishGenerationRequest> {
     let authority_id = volume_authority_id(volume_id);
-    let expected = created(authority, authority_id).await?;
+    let expected = initialized(objects, authority, volume_id).await?;
     Ok(PublishGenerationRequest {
         authority_id,
         volume_id,
@@ -89,7 +90,7 @@ async fn native_publication_owner_stale_after_await_fails_before_actual_cas() ->
     let authority = MemoryAuthorityStore::default();
     let volume_id = VolumeId::from_bytes([32; 16]);
     let root = native_fixture(&objects, volume_id).await?;
-    let request = native_request(&authority, volume_id, root).await?;
+    let request = native_request(&objects, &authority, volume_id, root).await?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
@@ -124,28 +125,27 @@ async fn native_publication_owner_stale_after_await_fails_before_actual_cas() ->
             }
         }
     };
-    let (result, ()) = tokio::join!(
-        publish_generation_async_guarded_with_native_work(
-            &objects,
-            &authority,
-            request,
-            PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
-            limits(),
-            None,
-            &original,
-            &cancellation,
-            &mut guard,
-            None,
-            None,
-        ),
-        async {
-            started_rx
-                .await
-                .expect("actual postplanning owner callback");
-            owner_epoch.store(2, Ordering::SeqCst);
-            continue_tx.send(()).expect("owner resume");
-        },
+    let publication = publish_generation_async_guarded_with_native_work(
+        &objects,
+        &authority,
+        request,
+        PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
+        limits(),
+        None,
+        &original,
+        &cancellation,
+        &mut guard,
+        None,
+        None,
     );
+    tokio::pin!(publication);
+    tokio::select! {
+        started = started_rx => started.expect("actual postplanning owner callback"),
+        result = &mut publication => panic!("publication returned before its owner callback: {result:?}"),
+    }
+    owner_epoch.store(2, Ordering::SeqCst);
+    continue_tx.send(()).expect("owner resume");
+    let result = publication.await;
     assert!(matches!(
         result,
         Err(NativePublicationTestError::OwnerStale)
@@ -166,7 +166,7 @@ async fn native_publication_partial_closure_and_allocation_denials_release_owned
     let authority = MemoryAuthorityStore::default();
     let volume_id = VolumeId::from_bytes([33; 16]);
     let root = native_fixture(&objects, volume_id).await?;
-    let request = native_request(&authority, volume_id, root).await?;
+    let request = native_request(&objects, &authority, volume_id, root).await?;
     let cancellation = CancellationToken::new();
     for early_allocation in [true, false] {
         let mut budget = WorkBudget::UNBOUNDED;
@@ -241,7 +241,7 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
     let volume_id = VolumeId::from_bytes([34; 16]);
     let root = native_fixture(&objects, volume_id).await?;
     let changed_root = fixture(&objects, volume_id).await?;
-    let request = native_request(&authority, volume_id, root).await?;
+    let request = native_request(&objects, &authority, volume_id, root).await?;
     let simulation = Simulation::wrap(authority, objects, SimulationOptions::default())?;
     let (authority, objects) = simulation.stores();
     simulation.schedule_next(

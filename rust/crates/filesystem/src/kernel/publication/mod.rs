@@ -117,6 +117,9 @@ pub enum PublicationError {
     /// Complete namespace changes exceeded the caller's admitted work.
     #[error("publication change paths exceed the admitted traversal bound")]
     ChangeLimit,
+    /// Namespace change facts could not be authenticated.
+    #[error("publication change validation failed: {0}")]
+    ChangeValidation(#[source] Box<crate::FsError>),
     /// The request targeted an authority other than the volume's canonical authority.
     #[error("authority {actual:?} does not own volume {volume_id:?}; expected {expected:?}")]
     AuthorityMismatch {

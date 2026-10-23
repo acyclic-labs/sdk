@@ -61,7 +61,15 @@ pub(super) fn spec(operation_id: OperationId, cpu: u64) -> Result<OperationSpec>
     Ok(OperationSpec {
         operation_id,
         parent: None,
-        owner_scope: grant(&issuer, "original-declare", &["operation:declare"])?,
+        owner_scope: {
+            static ORIGINAL: std::sync::OnceLock<Scope> = std::sync::OnceLock::new();
+            ORIGINAL
+                .get_or_init(|| {
+                    grant(&issuer, "original-declare", &["operation:declare"])
+                        .expect("original declaration scope")
+                })
+                .clone()
+        },
         owner: DurableOwner::Detached { authority },
         entrypoint: EntrypointRef {
             name: "example.task".into(),

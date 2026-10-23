@@ -419,7 +419,9 @@ impl Effects {
         observe(see, "applied", reducer, history)?;
         see.see(Seen::Agrees {
             view: "apply result",
-            equal: applied == planned,
+            equal: issuer()
+                .verifier(&mut None)
+                .is_ok_and(|verifier| equivalent_plans(&applied, &planned, &verifier)),
         })?;
         let ApplyResult::Applied { event } = applied else {
             return ok(see, "fresh operation application", Err(()));
@@ -681,17 +683,25 @@ fn every_effect_attestation_field_is_authenticated() {
     )| oracle.check(&Case::Attestation { payload, key_byte, bit }));
 }
 
-#[test]
-fn effect_retry_replay_and_restore_preserve_guarantees() {
-    let oracle = oracle();
-    proptest!(ProptestConfig::with_cases(64), |(
-        retries in 0..7_usize, payload in prop::collection::vec(any::<u8>(), 0..128)
-    )| {
-        for index in 0..3 {
-            for success in [false, true] {
-                let payload = payload.clone();
-                oracle.check(&Case::History { index, retries, payload, success });
-            }
+// Each guarantee/outcome owns an independent property suite. This preserves
+// all 64 histories per combination without making one test replay six full
+// cryptographic histories serially for every generated input.
+macro_rules! effect_history_suite {
+    ($name:ident, $index:expr, $success:expr) => {
+        #[test]
+        fn $name() {
+            let oracle = oracle();
+            proptest!(ProptestConfig::with_cases(64), |(
+                retries in 0..7_usize, payload in prop::collection::vec(any::<u8>(), 0..128)
+            )| oracle.check(&Case::History {
+                index: $index, retries, payload, success: $success,
+            }));
         }
-    });
+    };
 }
+effect_history_suite!(effect_at_most_once_success_replays_and_restores, 0, true);
+effect_history_suite!(effect_at_most_once_failure_replays_and_restores, 0, false);
+effect_history_suite!(effect_idempotent_success_replays_and_restores, 1, true);
+effect_history_suite!(effect_idempotent_failure_replays_and_restores, 1, false);
+effect_history_suite!(effect_retryable_success_replays_and_restores, 2, true);
+effect_history_suite!(effect_retryable_failure_replays_and_restores, 2, false);

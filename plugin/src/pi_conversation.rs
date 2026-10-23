@@ -45,7 +45,6 @@ pub(crate) async fn bind_task_conversation(
         stream, authority, custody, owner, volume, creation, limits, work,
     )
     .await
-    .map(drop)
 }
 
 pub(crate) async fn observe_task_conversation(

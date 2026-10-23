@@ -131,6 +131,13 @@ pub(crate) fn decode_event(
         quota.work(),
     )?;
     quota.adopt(claim)?;
+    if envelope.attestation.is_empty() {
+        return Err(boundary(
+            quota.work(),
+            Storage,
+            "missing event admission attestation",
+        ));
+    }
     let event = Event {
         revision: envelope.revision,
         operation_id,

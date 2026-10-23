@@ -261,6 +261,9 @@ async fn every_pre_object_fault_preserves_creation_and_checkout_retry()
                     matches!(
                         failure.error,
                         FsError::Object(ObjectStoreError::Corrupt)
+                            | FsError::Directory(crate::kernel::DirectoryReadError::Storage(
+                                ObjectStoreError::Corrupt
+                            ))
                             | FsError::Closure(ClosureError::Storage(ObjectStoreError::Corrupt))
                             | FsError::Closure(ClosureError::BlobRead(
                                 crate::kernel::BlobReadError::Storage(ObjectStoreError::Corrupt)

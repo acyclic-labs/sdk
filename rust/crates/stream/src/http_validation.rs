@@ -383,7 +383,7 @@ mod tests {
     fn hosted_http_validation_accepts_empty_record_values() -> serde_json::Result<()> {
         let commit_id = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
         let response = format!(
-            r#"[{{"sequence":"0","value":"","commitId":"{commit_id}","committedAtMicros":"1000"}}]"#
+            r#"[{{"sequence":"0","value":"","commitId":"{commit_id}","committedAtMicros":"1000","keys":[],"attributes":[]}}]"#
         );
 
         assert!(super::validate("read", &json_fixture(&response)?).is_ok());
