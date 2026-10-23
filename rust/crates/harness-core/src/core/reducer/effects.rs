@@ -140,7 +140,7 @@ impl Reducer {
                     .ok_or_else(|| Error::Invalid("effect projected custody overflows".into()))?;
                 quota.replace(next_retained)?;
             }
-            projection.apply_authenticated_payload(event, quota.work())?;
+            projection.apply_authenticated_payload_in_quota(event, &mut quota)?;
             previous = event.revision;
         }
         let effect = projection
@@ -150,6 +150,15 @@ impl Reducer {
             .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
         drop(projection);
         quota.relinquish(metadata_owned)?;
+        if quota
+            .work()
+            .as_deref()
+            .is_some_and(|io| !copying::is_native(io))
+        {
+            // Only the returned effect survives; the temporary map and replay
+            // records must not leave custody on the shared observer.
+            quota.replace(owned_effect(&effect)?)?;
+        }
         let retained = quota.retained();
         quota.transfer();
         Ok((effect, retained))

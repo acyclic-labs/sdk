@@ -168,7 +168,11 @@ fn fork_application_funds_its_map_node_before_inserting() -> Result<()> {
     let mut observer = &limited;
     assert!(
         reducer
-            .apply_payload_with_work(&payload, 1, &mut Some(&mut observer))
+            .apply_payload_in_quota(
+                &payload,
+                1,
+                &mut CodecQuota::new(&mut Some(&mut observer), 0)?
+            )
             .is_err()
     );
     assert!(reducer.projection.forks.is_empty());
@@ -177,7 +181,11 @@ fn fork_application_funds_its_map_node_before_inserting() -> Result<()> {
         &cancellation,
     )?;
     let mut observer = &io;
-    reducer.apply_payload_with_work(&payload, 1, &mut Some(&mut observer))?;
+    let mut work: Option<&mut dyn HistoryIo> = Some(&mut observer);
+    let mut quota = CodecQuota::new(&mut work, 0)?;
+    reducer.apply_payload_in_quota(&payload, 1, &mut quota)?;
+    quota.transfer();
+    drop(quota);
     assert_eq!(reducer.projection.forks.len(), 1);
     let forks = std::mem::take(&mut reducer.projection.forks);
     let actual = measure(|| drop(forks)).bytes_current.unsigned_abs();
@@ -449,4 +457,61 @@ fn json_ownership_preserves_the_codec_depth_limit() {
         value = Value::Array(vec![value]);
     }
     assert!(value.owned_heap_bytes().is_err());
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+fn temporary_effect_projection_releases_map_and_planning_custody() -> Result<()> {
+    let effect_id = crate::EffectId::from_bytes([9; 16]);
+    let mut reducer = crate::core::tests::reducer_fixture();
+    reducer.apply(&crate::core::tests::command(
+        crate::core::tests::operation(1),
+        0,
+        Action::PlanEffect {
+            effect_id,
+            provider: "example.provider".into(),
+            guarantee: EffectGuarantee::ExactlyOnce,
+            effect_kind: "example.send".into(),
+            request: Box::new(crate::core::tests::request_file(br#"{"value":1}"#)?),
+            result_schema: Box::new(crate::core::tests::schema_file(&json!({"type":"object"}))?),
+        },
+    ))?;
+    let events = reducer.events_after(0, 1)?;
+    let io = crate::filesystem::PreparationIo::from_budget(
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &acyclic_fs::CancellationToken::new(),
+    )?;
+    let mut observer = &io;
+    let mut work: Option<&mut dyn HistoryIo> = Some(&mut observer);
+    for invalid in [false, false, true, false] {
+        let authority = work
+            .as_deref_mut()
+            .unwrap()
+            .clone_authority(&reducer.authority)?;
+        let verifier = reducer.authority_verifier.copy(&mut work)?;
+        let history = if invalid {
+            vec![events[0].clone(), events[0].clone()]
+        } else {
+            events.clone()
+        };
+        let projected = Reducer::project_effect_with_retained_quota(
+            authority, verifier, effect_id, &history, &mut work,
+        );
+        if invalid {
+            assert!(projected.is_err());
+        } else {
+            let (effect, retained) = projected?;
+            assert_eq!(Some(&effect), reducer.effect(effect_id));
+            assert_eq!(io.owned_bytes()?, retained, "temporary storage leaked");
+            let actual = measure(|| drop(effect)).bytes_current.unsigned_abs();
+            assert!(retained >= actual);
+            work.as_deref_mut().unwrap().release_owned(retained)?;
+        }
+        assert_eq!(
+            io.owned_bytes()?,
+            0,
+            "projection custody outlived its owner"
+        );
+    }
+    Ok(())
 }

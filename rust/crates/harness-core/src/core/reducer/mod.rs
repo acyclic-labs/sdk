@@ -42,12 +42,12 @@ impl Reducer {
         &mut self,
         record: &ExtensionRecord,
         revision: u64,
-        work: &mut Option<&mut dyn HistoryIo>,
+        quota: &mut CodecQuota<'_, '_>,
     ) -> Result<()> {
         if !self.projection.extension_states.contains_key(&record.name) {
             ownership::admit_tree_insertion::<(String, (EventReference, ExtensionRecord))>(
                 self.projection.extension_states.len(),
-                work,
+                quota,
             )?;
         }
         let reference = EventReference {

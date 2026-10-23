@@ -7,12 +7,15 @@ mod tests;
 
 pub(in crate::core) fn admit_tree_insertion<T>(
     len: usize,
-    work: &mut Option<&mut dyn HistoryIo>,
+    quota: &mut CodecQuota<'_, '_>,
 ) -> Result<()> {
-    if let Some(io) = work.as_deref_mut().filter(|io| !copying::is_native(&**io)) {
+    if quota
+        .work()
+        .as_deref()
+        .is_some_and(|io| !copying::is_native(io))
+    {
         let bytes = walk::tree_insertion_bytes::<T>(len)?;
-        io.admit_owned(bytes)?;
-        io.retain_owned(bytes)?;
+        quota.replace(owned_sum([quota.retained(), bytes])?)?;
     }
     Ok(())
 }

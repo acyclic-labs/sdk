@@ -412,7 +412,9 @@ impl Reducer {
             io.admit_owned(bytes)?;
             io.retain_owned(bytes)?;
         }
-        self.apply_authenticated_payload(&event, work)?;
+        let mut projection_quota = CodecQuota::new(work, 0)?;
+        self.apply_authenticated_payload_in_quota(&event, &mut projection_quota)?;
+        projection_quota.transfer();
         self.revision = event.revision;
         self.events.push_back(event.clone());
         self.trim_resident_events();

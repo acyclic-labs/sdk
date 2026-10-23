@@ -450,7 +450,11 @@ impl Effects {
             Action::ResolveEffect { observation } if observation.status == EffectStatus::Indeterminate)
         {
             reducer
-                .apply_payload_with_work(&event.payload, event.revision + 1, &mut None)
+                .apply_payload_in_quota(
+                    &event.payload,
+                    event.revision + 1,
+                    &mut CodecQuota::from_retained(&mut None, 0),
+                )
                 .unwrap();
             reducer.revision += 1;
         }
