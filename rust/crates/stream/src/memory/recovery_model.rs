@@ -49,9 +49,12 @@ impl UnixMillisClock for loom::sync::atomic::AtomicU64 {
     }
 }
 
-/// Owns the real async state machine on the heap, outside Loom's coroutine stack.
+/// Drives the real state machine with the same executor as snapshot workers.
 pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    loom::future::block_on(Box::pin(future))
+    // Waker reference counting belongs to the executor, not the provider model.
+    // A single driver keeps every lock, registration and wake scheduled by Loom
+    // without multiplying schedules by modeled Arc clones of its own waker.
+    crate::snapshot::park(future)
 }
 
 /// Drives adapter models with the same parked-thread waker as snapshot workers.
