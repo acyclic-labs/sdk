@@ -486,11 +486,11 @@ dependencies = [
  "tracing-subscriber",
  "tsify",
  "uuid",
- "zeroize",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "which",
+ "zeroize",
 ]
 
 [[package]]

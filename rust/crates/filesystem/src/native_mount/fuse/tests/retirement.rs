@@ -21,8 +21,12 @@ fn waiting_mount(
         if std::mem::take(&mut interrupted) {
             return Err(std::io::ErrorKind::Interrupted.into());
         }
-        polling.send(Event::Polling).map_err(|_| std::io::ErrorKind::BrokenPipe)?;
-        acknowledged.recv().map_err(|_| std::io::ErrorKind::BrokenPipe)?;
+        polling
+            .send(Event::Polling)
+            .map_err(|_| std::io::ErrorKind::BrokenPipe)?;
+        acknowledged
+            .recv()
+            .map_err(|_| std::io::ErrorKind::BrokenPipe)?;
         Ok(true)
     })
 }

@@ -186,7 +186,9 @@ impl Markdown {
                     self.plain_spaces += appended.len();
                 } else {
                     if let Some(span) = line.spans.last_mut() {
-                        acyclic_markdown_work::record!(span_copy(self.plain_spaces + visible.len()));
+                        acyclic_markdown_work::record!(span_copy(
+                            self.plain_spaces + visible.len()
+                        ));
                         #[cfg(test)]
                         {
                             work::copy(self.plain_spaces + visible.len());

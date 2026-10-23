@@ -26,7 +26,9 @@ pub use counters::{Counts, node, scan, snapshot, span_copy};
 #[cfg(all(test, not(feature = "enabled")))]
 #[test]
 fn disabled_recording_does_not_evaluate_arguments() {
-    record!(scan(panic!("production instrumentation evaluated its argument")));
+    record!(scan(panic!(
+        "production instrumentation evaluated its argument"
+    )));
 }
 
 #[cfg(all(test, feature = "enabled"))]
