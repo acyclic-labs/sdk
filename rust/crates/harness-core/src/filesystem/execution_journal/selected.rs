@@ -164,7 +164,7 @@ where
                 "turn operation is not a model-context selection",
             ));
         };
-        if committed != selected.selection {
+        if *committed != selected.selection {
             return Err(crate::filesystem::interaction_host::interaction_boundary(
                 io,
                 crate::wire::ErrorCode::Conflict,
@@ -272,7 +272,7 @@ where
         let projected = crate::projection::select_model_context(
             &historical,
             committed.conversation_revision,
-            committed,
+            *committed,
             &resolver,
             crate::conversation::Limits {
                 context_messages: messages,

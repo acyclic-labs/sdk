@@ -107,7 +107,7 @@ pub(super) async fn initialize(harness: &Harness) -> Result<SelectedModelContext
         harness,
         OPERATION,
         Action::SelectModelContext {
-            selection: selection.clone(),
+            selection: (selection.clone()).into(),
         },
     )
     .await?;

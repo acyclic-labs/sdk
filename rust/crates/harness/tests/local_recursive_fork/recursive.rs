@@ -228,11 +228,14 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 )
             })
             .transpose()?;
-        let history = ResourceRevision::History(StreamRef::new(
-            stream_provider.clone(),
-            authority.stream_path(&mut None)?.into_bytes(),
-            Some(aggregate.reducer().revision().to_string()),
-        )?);
+        let history = ResourceRevision::History(
+            (StreamRef::new(
+                stream_provider.clone(),
+                authority.stream_path(&mut None)?.into_bytes(),
+                Some(aggregate.reducer().revision().to_string()),
+            )?)
+            .into(),
+        );
         let request = ForkRequest {
             authorized_source: None,
             operation_id: OperationId::from_bytes(identity(20 + level)),
@@ -255,8 +258,8 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 ForkSelection {
                     required: true,
                     revision: ResourceRevision::PrivateVolume {
-                        volume: private.clone(),
-                        generation: host
+                        volume: (private.clone()).into(),
+                        generation: (host
                             .resolve(
                                 &workspace_ref(
                                     provider.clone(),
@@ -265,7 +268,8 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                                 None,
                             )
                             .await?
-                            .generation,
+                            .generation)
+                            .into(),
                         paths: Vec::new(),
                     },
                 },
@@ -276,8 +280,8 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 ForkSelection {
                     required: true,
                     revision: ResourceRevision::Project {
-                        volume: project.clone(),
-                        generation: project_head.generation.clone(),
+                        volume: (project.clone()).into(),
+                        generation: (project_head.generation.clone()).into(),
                     },
                 },
             ],
@@ -395,11 +399,14 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 .iter_mut()
                 .find(|selection| matches!(selection.revision, ResourceRevision::History(_)))
                 .ok_or_else(|| Error::Invalid("missing history selection".into()))?
-                .revision = ResourceRevision::History(StreamRef::new(
-                stream_provider.clone(),
-                authority.stream_path(&mut None)?.into_bytes(),
-                Some(aggregate.reducer().revision().to_string()),
-            )?);
+                .revision = ResourceRevision::History(
+                (StreamRef::new(
+                    stream_provider.clone(),
+                    authority.stream_path(&mut None)?.into_bytes(),
+                    Some(aggregate.reducer().revision().to_string()),
+                )?)
+                .into(),
+            );
             let reader = FilesystemContentVerifier::new(
                 host.clone(),
                 &issuer.verifier(&mut None).expect("verifier copy"),

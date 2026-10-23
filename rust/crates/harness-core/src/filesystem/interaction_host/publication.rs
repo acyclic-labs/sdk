@@ -34,7 +34,9 @@ where
                 .execute(
                     operation_id,
                     scope.unwrap_or(&self.owner_scope),
-                    Action::OpenInteraction { ticket: copied },
+                    Action::OpenInteraction {
+                        ticket: (copied).into(),
+                    },
                     owner,
                     io,
                 )

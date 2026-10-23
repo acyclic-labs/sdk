@@ -64,12 +64,13 @@ pub(super) fn valid_seed(child: u8, readers: u16, revision: u8, result: bool) ->
         panic!("history fixture");
     };
     let history = ResourceRevision::History(
-        StreamRef::new(
+        (StreamRef::new(
             history.as_resource().provider().clone(),
             history.as_resource().key().to_vec(),
             Some(revision.to_string()),
         )
-        .unwrap(),
+        .unwrap())
+        .into(),
     );
     seed.resources[0] = CapturedResource {
         source: history.clone(),
@@ -86,19 +87,20 @@ pub(super) fn valid_seed(child: u8, readers: u16, revision: u8, result: bool) ->
     let ResourceRevision::PrivateVolume { volume, .. } = &mut seed.resources[2].revision else {
         panic!("scratch fixture");
     };
-    *volume = seed.child_private_volume.clone();
+    **volume = seed.child_private_volume.clone();
     if result {
         let (volume, generation) = result_allocation(&seed, seed.child_agent);
         seed.child_result_volume = Some(volume);
         seed.child_result_generation = Some(generation);
     }
     let artifact = ResourceRevision::Artifact(
-        ArtifactRef::new(
+        (ArtifactRef::new(
             seed.child_private_volume.provider().clone(),
             vec![revision],
             Some("1".into()),
         )
-        .unwrap(),
+        .unwrap())
+        .into(),
     );
     seed.resources.push(CapturedResource {
         source: artifact.clone(),
@@ -128,7 +130,7 @@ pub(super) fn violate(seed: &mut ForkSeed, violation: Violation) {
             else {
                 panic!("scratch fixture");
             };
-            *volume = seed.child_private_volume.clone();
+            **volume = seed.child_private_volume.clone();
         }
         Violation::ForeignScratchProvider => {
             let provider =

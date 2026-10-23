@@ -25,6 +25,8 @@ mod authority;
 pub(crate) use authority::effect_root_tests;
 mod copying;
 mod effects;
+#[cfg(test)]
+mod element_sizes;
 mod extension_types;
 mod filesystem_access;
 mod ownership;

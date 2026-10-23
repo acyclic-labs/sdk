@@ -344,7 +344,9 @@ async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_resto
                     expected_revision: aggregate.reducer().revision(),
                     scope: scope.clone(),
                     causal_parent: None,
-                    action: Action::SelectModelContext { selection },
+                    action: Action::SelectModelContext {
+                        selection: (selection).into(),
+                    },
                 },
                 #[cfg(feature = "filesystem")]
                 None,

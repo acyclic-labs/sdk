@@ -221,7 +221,7 @@ impl Reducer {
                 || seed.resources.iter().any(|capture| match &capture.source {
                     crate::fork::ResourceRevision::Project { volume, .. }
                     | crate::fork::ResourceRevision::SharedVolume(volume) => {
-                        volume == file.volume()
+                        volume.as_ref() == file.volume()
                     }
                     _ => false,
                 })

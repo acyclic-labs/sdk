@@ -66,10 +66,13 @@ impl ForkCaptureProvider for MachinesHost {
                     "selected Machines checkpoint is not forkable".into(),
                 ));
             }
-            Ok(Capture::Captured(CapturedResource {
-                source: selection.revision.clone(),
-                revision: selection.revision.clone(),
-            }))
+            Ok(Capture::Captured(
+                (CapturedResource {
+                    source: selection.revision.clone(),
+                    revision: selection.revision.clone(),
+                })
+                .into(),
+            ))
         })
     }
 

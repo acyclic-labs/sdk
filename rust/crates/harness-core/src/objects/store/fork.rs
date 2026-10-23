@@ -17,10 +17,13 @@ impl ForkCaptureProvider for ObjectContentStore {
                 ));
             };
             self.verify_artifact(artifact).await?;
-            Ok(Capture::Captured(CapturedResource {
-                source: selection.revision.clone(),
-                revision: selection.revision.clone(),
-            }))
+            Ok(Capture::Captured(
+                (CapturedResource {
+                    source: selection.revision.clone(),
+                    revision: selection.revision.clone(),
+                })
+                .into(),
+            ))
         })
     }
 

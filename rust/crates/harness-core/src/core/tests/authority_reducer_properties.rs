@@ -528,8 +528,8 @@ fn plan_effect(guarantee: EffectGuarantee, payload: &[u8]) -> Action {
         provider: "example.provider".into(),
         guarantee,
         effect_kind: "example.send".into(),
-        request: request_file(payload).unwrap(),
-        result_schema: schema_file(&json!({"type":"object"})).unwrap(),
+        request: (request_file(payload).unwrap()).into(),
+        result_schema: (schema_file(&json!({"type":"object"})).unwrap()).into(),
     }
 }
 
@@ -541,7 +541,9 @@ fn dispatch(attempt_id: EffectAttemptId) -> Action {
 }
 
 fn resolve(observation: EffectAttestation) -> Action {
-    Action::ResolveEffect { observation }
+    Action::ResolveEffect {
+        observation: (observation).into(),
+    }
 }
 
 fn attestation_fields(
@@ -649,7 +651,7 @@ fn effect_history(
     }
     let status = if success {
         EffectStatus::Succeeded {
-            result: request_file(br#"{"receipt":true}"#).unwrap(),
+            result: Box::new(request_file(br#"{"receipt":true}"#).unwrap()),
         }
     } else {
         EffectStatus::Failed {

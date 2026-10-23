@@ -132,7 +132,7 @@ impl ForkReport {
         for (selection, capture) in self.request.selections.into_iter().zip(self.captures) {
             owned.checkpoint()?;
             match capture {
-                Capture::Captured(resource) => resources.push(resource),
+                Capture::Captured(resource) => resources.push(*resource),
                 Capture::Unsupported(_) | Capture::InFlight(_) | Capture::Indeterminate(_)
                     if selection.required =>
                 {
@@ -195,7 +195,7 @@ impl ForkReport {
                 Capture::Captured(resource) if resource.source == selection.revision => {
                     resource.validate(work.work())?;
                     if let ResourceRevision::Project { volume, .. } = &resource.revision
-                        && volume != &self.request.preparation.child_project_volume
+                        && volume.as_ref() != &self.request.preparation.child_project_volume
                     {
                         return Err(
                             work.invalid("fork report changed the requested project volume")

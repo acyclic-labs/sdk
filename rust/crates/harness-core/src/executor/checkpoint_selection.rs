@@ -133,7 +133,7 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
         || selection.revision > cursor.through_revision
         || !matches!(&selection.payload,
             crate::core::EventPayload::ModelContextSelected { selection }
-            if selection == &envelope.selection)
+            if selection.as_ref() == &envelope.selection)
     {
         return Err(stock_boundary(
             io,

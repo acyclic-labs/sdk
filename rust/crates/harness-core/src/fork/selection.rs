@@ -6,36 +6,36 @@ use super::*;
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ResourceRevision {
     /// Immutable Stream history prefix.
-    History(#[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))] StreamRef),
+    History(#[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))] Box<StreamRef>),
     /// Immutable project workspace generation.
     Project {
         /// Project volume selected for the child.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmVolumeRefWire"))]
-        volume: VolumeRef,
+        volume: Box<VolumeRef>,
         /// Exact immutable generation in that volume.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))]
-        generation: GenerationRef,
+        generation: Box<GenerationRef>,
     },
     /// Direct parent's pinned scratch. Empty paths select an empty initial view;
     PrivateVolume {
         /// Parent or captured child scratch identity.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmVolumeRefWire"))]
-        volume: VolumeRef,
+        volume: Box<VolumeRef>,
         /// Immutable source or child generation.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))]
-        generation: GenerationRef,
+        generation: Box<GenerationRef>,
         /// Explicit scratch paths, excluding reserved runtime state.
         #[cfg_attr(feature = "wasm", tsify(type = "readonly string[]"))]
         paths: Vec<String>,
     },
     /// Selected model context revision.
-    Context(#[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))] ContextRef),
+    Context(#[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))] Box<ContextRef>),
     /// Qualified process checkpoint.
-    Process(#[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))] CheckpointRef),
+    Process(#[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))] Box<CheckpointRef>),
     /// Immutable retained artifact.
-    Artifact(#[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))] ArtifactRef),
+    Artifact(#[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))] Box<ArtifactRef>),
     /// Session-shared volume reference.
-    SharedVolume(#[cfg_attr(feature = "wasm", tsify(type = "WasmVolumeRefWire"))] VolumeRef),
+    SharedVolume(#[cfg_attr(feature = "wasm", tsify(type = "WasmVolumeRefWire"))] Box<VolumeRef>),
     /// Namespaced extension state with pinned implementation version.
     Extension {
         /// Namespaced state identity.
@@ -47,7 +47,7 @@ pub enum ResourceRevision {
         implementation_digest: [u8; 32],
         /// Provider-owned retained state reference.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))]
-        reference: ResourceRef,
+        reference: Box<ResourceRef>,
     },
 }
 

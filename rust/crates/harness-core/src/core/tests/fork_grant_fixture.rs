@@ -51,7 +51,7 @@ impl Matrix {
             .unwrap()
         });
         for volume in &shared {
-            let revision = ResourceRevision::SharedVolume(volume.clone());
+            let revision = ResourceRevision::SharedVolume((volume.clone()).into());
             seed.resources.push(CapturedResource {
                 source: revision.clone(),
                 revision,
@@ -121,7 +121,7 @@ impl Matrix {
             readers,
             shared,
             files,
-            project,
+            project: *project,
             inherited,
             operations,
             references,

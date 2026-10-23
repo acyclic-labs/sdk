@@ -76,7 +76,7 @@ async fn admission_content_keeps_original_published_bytes_until_last_alias() -> 
     aggregate
         .validate_task_admission_content_with_work(
             &Action::OpenInteraction {
-                ticket: ticket.clone(),
+                ticket: (ticket.clone()).into(),
             },
             &mut Some(&mut io),
         )
@@ -173,13 +173,13 @@ async fn interaction_request_and_answer_commit_only_after_exact_content_validati
             agent: crate::AgentId::from_bytes([8; 16]),
         },
         Action::OpenInteraction {
-            ticket: ticket.clone(),
+            ticket: (ticket.clone()).into(),
         },
         Action::ResolveInteraction {
-            resolution: resolution.clone(),
+            resolution: (resolution.clone()).into(),
         },
         Action::OpenInteraction {
-            ticket: future.clone(),
+            ticket: (future.clone()).into(),
         },
     ]
     .into_iter()
@@ -227,12 +227,13 @@ async fn interaction_request_and_answer_commit_only_after_exact_content_validati
     premature.expected_revision = 4;
     premature.scope = scope;
     premature.action = Action::ResolveInteraction {
-        resolution: InteractionResolution {
+        resolution: (InteractionResolution {
             id: future.id,
             expected_version: 1,
             outcome: InteractionOutcome::Expired {},
             detail: None,
-        },
+        })
+        .into(),
     };
     assert!(matches!(
         aggregate

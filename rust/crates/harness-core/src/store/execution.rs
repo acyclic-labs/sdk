@@ -72,10 +72,13 @@ impl<P: StreamProvider> StreamAggregate<P> {
                         }
                         crate::distributed::JournalWrite::Fresh
                     }
-                    Action::MarkEffectDispatched { effect_id, .. }
-                    | Action::ResolveEffect {
-                        observation: crate::core::EffectAttestation { effect_id, .. },
-                    } => {
+                    action @ (Action::MarkEffectDispatched { .. }
+                    | Action::ResolveEffect { .. }) => {
+                        let effect_id = match action {
+                            Action::MarkEffectDispatched { effect_id, .. } => effect_id,
+                            Action::ResolveEffect { observation } => &observation.effect_id,
+                            _ => unreachable!(),
+                        };
                         let mut retained = crate::wire_codec::CodecQuota::from_retained(work, 0);
                         let (effect, bytes) = self
                             .effect(

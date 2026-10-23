@@ -83,7 +83,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
             0,
             Action::ConfigureExtension {
                 extension: extension.clone(),
-                content: options_file,
+                content: (options_file).into(),
             },
         ),
         (
@@ -664,7 +664,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
             2,
             Action::ConfigureExtension {
                 extension: extension.clone(),
-                content: next,
+                content: (next).into(),
             },
         ),
         (

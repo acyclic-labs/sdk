@@ -16,18 +16,21 @@ fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
     seed.parent = issuer().audience;
     seed.parent_revision = 1;
     let history = |revision: &str| -> Result<ResourceRevision> {
-        Ok(ResourceRevision::History(StreamRef::new(
-            ProviderRef::new("acyclic".into(), "stream".into(), "1".into(), &mut None)?,
-            seed.parent.stream_path(&mut None)?.into_bytes(),
-            Some(revision.into()),
-        )?))
+        Ok(ResourceRevision::History(
+            (StreamRef::new(
+                ProviderRef::new("acyclic".into(), "stream".into(), "1".into(), &mut None)?,
+                seed.parent.stream_path(&mut None)?.into_bytes(),
+                Some(revision.into()),
+            )?)
+            .into(),
+        ))
     };
     seed.resources[0] = CapturedResource {
         source: history("1")?,
         revision: history("1")?,
     };
     if let ResourceRevision::PrivateVolume { volume, .. } = &mut seed.resources[2].source {
-        *volume = VolumeRef::new(
+        **volume = VolumeRef::new(
             volume.provider().clone(),
             "parent-private".into(),
             crate::conversation::VolumeClass::AgentPrivate,
@@ -51,13 +54,14 @@ fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
         name: "example.message".into(),
         version: 1,
         implementation_digest: [9; 32],
-        reference: ResourceRef::new(
+        reference: (ResourceRef::new(
             ResourceKind::Artifact,
             ProviderRef::new("test".into(), "objects".into(), "1".into(), &mut None)?,
             b"extension-state".to_vec(),
             Some("immutable-1".into()),
             &mut None,
-        )?,
+        )?)
+        .into(),
     };
     let mut extension_seed = seed.clone();
     extension_seed.resources.push(CapturedResource {
@@ -66,7 +70,7 @@ fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
     });
     let mut reset = extension_seed.clone();
     if let ResourceRevision::Extension { reference, .. } = &mut reset.resources[3].revision {
-        *reference = ResourceRef::new(
+        **reference = ResourceRef::new(
             ResourceKind::Artifact,
             reference.provider().clone(),
             b"child-extension-state".to_vec(),

@@ -89,8 +89,8 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                     provider: crate::core::copy_text(&plan.provider, &mut quota)?,
                     guarantee: plan.guarantee,
                     effect_kind: crate::core::copy_text(&plan.effect_kind, &mut quota)?,
-                    request,
-                    result_schema: schema,
+                    request: Box::new(request),
+                    result_schema: Box::new(schema),
                 }
             } else {
                 Action::MarkEffectDispatched {
@@ -197,7 +197,9 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                 expected_revision: aggregate.0.reducer().revision(),
                 scope,
                 causal_parent: None,
-                action: Action::ResolveEffect { observation },
+                action: Action::ResolveEffect {
+                    observation: (observation).into(),
+                },
             };
             if quota.work().is_some() {
                 #[cfg(feature = "filesystem")]

@@ -151,7 +151,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
     request.preparation.maximum_inherited_references = 1;
     let artifact_selection = ForkSelection {
         required: false,
-        revision: ResourceRevision::Artifact(artifact.clone()),
+        revision: ResourceRevision::Artifact((artifact.clone()).into()),
     };
     request.selections.push(artifact_selection.clone());
     request.validate(&mut None)?;
@@ -161,7 +161,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
     };
     assert_eq!(
         owner_store.capture(&request, &artifact_selection).await?,
-        Capture::Captured(captured.clone())
+        Capture::Captured((captured.clone()).into())
     );
     let mut seed: ForkSeed =
         serde_json::from_str(include_str!("../../../harness/fixtures/v2/fork-seed.json"))

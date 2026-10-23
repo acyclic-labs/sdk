@@ -17,7 +17,7 @@ fn checkpoint_proof_binds_issuer_key_identity_audience_and_format() -> Result<()
     let action = Action::AppendCustom {
         schema: "example.message".into(),
         version: 1,
-        content,
+        content: (content).into(),
     };
     let ApplyResult::Applied { .. } = reducer.apply(&command(operation(70), 0, action))? else {
         panic!("fresh append replayed")

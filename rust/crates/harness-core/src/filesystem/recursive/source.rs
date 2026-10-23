@@ -403,14 +403,14 @@ pub(in crate::filesystem) fn fork_request(
     };
     let mut selections = crate::model::vec_with_capacity(3, io)?;
     for revision in [
-        ResourceRevision::History(reference),
+        ResourceRevision::History((reference).into()),
         ResourceRevision::Project {
-            volume: project,
-            generation,
+            volume: (project).into(),
+            generation: (generation).into(),
         },
         ResourceRevision::PrivateVolume {
-            volume: private,
-            generation: private_generation,
+            volume: (private).into(),
+            generation: (private_generation).into(),
             paths: Vec::new(),
         },
     ] {

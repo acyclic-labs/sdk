@@ -41,7 +41,7 @@ impl Reducer {
             }
             EventPayload::ExtensionStateMigrated { migration } => {
                 migration.validate()?;
-                let ExtensionStateMigration { previous, record } = migration;
+                let ExtensionStateMigration { previous, record } = migration.as_ref();
                 self.schemas.pinned_binding(
                     &record.name,
                     record.version,
@@ -105,7 +105,7 @@ impl Reducer {
                         LifecycleState::Pending | LifecycleState::Waiting
                     )
                     || self.projection.configured_extensions.get(&record.extension)
-                        != previous.as_ref()
+                        != previous.as_deref()
                     || {
                         record.validate()?;
                         self.schemas
@@ -125,7 +125,7 @@ impl Reducer {
                 }
                 self.projection
                     .configured_extensions
-                    .insert(record.extension.clone(), record.clone());
+                    .insert(record.extension.clone(), record.as_ref().clone());
             }
             EventPayload::EffectPlanned {
                 effect_id,
@@ -172,9 +172,9 @@ impl Reducer {
                     provider: provider.clone(),
                     guarantee: *guarantee,
                     effect_kind: effect_kind.clone(),
-                    request: request.clone(),
+                    request: request.as_ref().clone(),
                     request_digest: *request_digest,
-                    result_schema: result_schema.clone(),
+                    result_schema: result_schema.as_ref().clone(),
                     result_schema_digest: *result_schema_digest,
                     status: EffectStatus::Planned,
                     attempts: Vec::new(),
@@ -257,7 +257,7 @@ impl Reducer {
                 }
                 self.projection
                     .interactions
-                    .insert(ticket.id, (ticket.clone(), None));
+                    .insert(ticket.id, (ticket.as_ref().clone(), None));
             }
             EventPayload::InteractionResolved { resolution } => {
                 let (ticket, prior) = self
@@ -266,7 +266,7 @@ impl Reducer {
                     .get_mut(&resolution.id)
                     .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
                 validate_interaction_transition(ticket, prior.as_ref(), resolution)?;
-                *prior = Some(resolution.clone());
+                *prior = Some(resolution.as_ref().clone());
             }
         }
         Ok(())

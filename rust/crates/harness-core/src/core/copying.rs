@@ -155,13 +155,17 @@ pub(crate) fn copy_boxed<T>(
     retain_entry::<T>(quota)?;
     Ok(Box::new(copy(source, quota)?))
 }
+pub(in crate::core) fn box_value<T>(value: T, quota: &mut CodecQuota<'_, '_>) -> Result<Box<T>> {
+    retain_entry::<T>(quota)?;
+    Ok(Box::new(value))
+}
 pub(crate) fn copy_event(source: &Event, quota: &mut CodecQuota<'_, '_>) -> Result<Event> {
     copy(source, quota, |value, work| {
         match &value.payload {
-            EventPayload::Custom { record }
-            | EventPayload::ExtensionStateMigrated {
-                migration: ExtensionStateMigration { record, .. },
-            } => record.content.validate(work)?,
+            EventPayload::Custom { record } => record.content.validate(work)?,
+            EventPayload::ExtensionStateMigrated { migration } => {
+                migration.record.content.validate(work)?;
+            }
             EventPayload::ExtensionsSelected { configurations, .. } => {
                 for value in configurations {
                     value.content.validate(work)?;

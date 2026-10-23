@@ -77,7 +77,7 @@ fn extension_activation_requires_validated_configuration_and_pins_revision() -> 
     let first = request_file(br#"{"enabled":true}"#)?;
     let configure = Action::ConfigureExtension {
         extension: extension.clone(),
-        content: first.clone(),
+        content: (first.clone()).into(),
     };
     apply(&mut reducer, 72, configure)?;
     select.expected_revision = 1;
@@ -86,7 +86,7 @@ fn extension_activation_requires_validated_configuration_and_pins_revision() -> 
     assert_eq!(admitted.configurations()[0].content, first);
     let configure = Action::ConfigureExtension {
         extension,
-        content: request_file(br#"{"enabled":false}"#)?,
+        content: (request_file(br#"{"enabled":false}"#)?).into(),
     };
     apply(&mut reducer, 74, configure)?;
     let mut restored = restore(&reducer, &owner)?;
@@ -170,7 +170,7 @@ fn extension_state_version_change_requires_exact_migration_event() -> Result<()>
         Ok(Action::AppendCustom {
             schema: "example.message".into(),
             version,
-            content: request_file(body)?,
+            content: (request_file(body)?).into(),
         })
     };
     apply(&mut reducer, 110, append(1, br#"{"text":"old"}"#)?)?;
@@ -182,7 +182,7 @@ fn extension_state_version_change_requires_exact_migration_event() -> Result<()>
             revision: 1,
         },
         to_version: 2,
-        content: request_file(br#"{"text":"new"}"#)?,
+        content: (request_file(br#"{"text":"new"}"#)?).into(),
     };
     let mut migrate = command(operation(112), 1, migration);
     migrate.scope = issuer().issue(

@@ -145,7 +145,7 @@ impl ForkRequest {
                     };
                     *count += 1;
                     if !selection.required
-                        || volume == destination
+                        || volume.as_ref() == destination
                         || volume.provider() != destination.provider()
                     {
                         return Err(
@@ -192,7 +192,7 @@ impl ForkRequest {
                     matches!(
                     &selection.revision,
                     ResourceRevision::Project { volume, generation }
-                        if volume == &source.project && generation == &source.generation)
+                        if volume.as_ref() == &source.project && generation.as_ref() == &source.generation)
                 })
                 || (source.source_task != source.caller_task
                     && (self.preparation.inherited_through_sequence != 0

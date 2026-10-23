@@ -198,7 +198,7 @@ where
                     "checkpoint operation is not a model-context selection",
                 ));
             };
-            if selection != &envelope.selection {
+            if selection.as_ref() != &envelope.selection {
                 return Err(canonical_boundary(
                     io,
                     crate::wire::ErrorCode::Conflict,

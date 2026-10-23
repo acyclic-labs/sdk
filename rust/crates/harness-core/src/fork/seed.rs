@@ -74,7 +74,7 @@ impl ForkSeed {
         if volume.class() == VolumeClass::Project {
             for resource in &self.resources {
                 work.checkpoint()?;
-                if matches!(&resource.revision, ResourceRevision::Project { volume: selected, .. } if selected == volume)
+                if matches!(&resource.revision, ResourceRevision::Project { volume: selected, .. } if selected.as_ref() == volume)
                 {
                     return Ok(true);
                 }
@@ -166,7 +166,7 @@ impl ForkSeed {
                     matches!(
                     &capture.source,
                     ResourceRevision::Project { volume, generation }
-                        if volume == &source.project && generation == &source.generation)
+                        if volume.as_ref() == &source.project && generation.as_ref() == &source.generation)
                 })
                 || (source.source_task != source.caller_task
                     && (self.inherited_through_sequence != 0 || self.summary.is_some()))
@@ -219,7 +219,7 @@ impl ForkSeed {
                 ResourceRevision::Project { .. } => project += 1,
                 ResourceRevision::PrivateVolume { volume, .. } => {
                     private += 1;
-                    if volume != &self.child_private_volume {
+                    if volume.as_ref() != &self.child_private_volume {
                         return Err(work.invalid("scratch capture names another child volume"));
                     }
                 }
@@ -323,7 +323,7 @@ impl ForkSeed {
             let mut selected = false;
             for resource in &self.resources {
                 work.checkpoint()?;
-                selected |= matches!(&resource.revision, ResourceRevision::SharedVolume(volume) if volume == &grant.volume);
+                selected |= matches!(&resource.revision, ResourceRevision::SharedVolume(volume) if volume.as_ref() == &grant.volume);
             }
             if !selected {
                 return Err(work.invalid("shared grant was not selected"));
@@ -341,7 +341,7 @@ impl ForkSeed {
                 let mut granted = false;
                 for grant in &self.shared_grants {
                     work.checkpoint()?;
-                    granted |= grant.volume == *volume && grant.child_agent == self.child_agent;
+                    granted |= grant.volume == **volume && grant.child_agent == self.child_agent;
                 }
                 if !granted {
                     return Err(work.invalid("shared-volume selections need exact child grants"));

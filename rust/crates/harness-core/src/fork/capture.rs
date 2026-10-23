@@ -3,13 +3,9 @@ use super::*;
 /// Result of one selected provider capture.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "capture variants preserve the published v2 serde shape"
-)]
 pub enum Capture {
     /// Exact immutable resource revision was captured.
-    Captured(CapturedResource),
+    Captured(Box<CapturedResource>),
     /// Provider does not support this requested capture.
     Unsupported(String),
     /// Capture must wait for an existing operation.

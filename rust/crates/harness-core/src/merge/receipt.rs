@@ -85,7 +85,7 @@ impl ProjectMergeReceipt {
                 (&capture.source, &capture.revision),
                 (ResourceRevision::Project { volume: parent, .. },
                  ResourceRevision::Project { volume: child, .. })
-                    if parent == &self.target_project && child == &self.source_project
+                    if parent.as_ref() == &self.target_project && child.as_ref() == &self.source_project
             )
         });
         if !captured {

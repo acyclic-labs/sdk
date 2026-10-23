@@ -154,15 +154,15 @@ impl CreationFixture {
                 ForkSelection {
                     required: true,
                     revision: ResourceRevision::Project {
-                        volume: parent_project.clone(),
-                        generation: project_head.generation,
+                        volume: (parent_project.clone()).into(),
+                        generation: (project_head.generation).into(),
                     },
                 },
                 ForkSelection {
                     required: true,
                     revision: ResourceRevision::PrivateVolume {
-                        volume: parent_private,
-                        generation: private_head.generation,
+                        volume: (parent_private).into(),
+                        generation: (private_head.generation).into(),
                         paths: Vec::new(),
                     },
                 },
@@ -175,11 +175,14 @@ impl CreationFixture {
                 0,
                 ForkSelection {
                     required: true,
-                    revision: ResourceRevision::History(StreamRef::new(
-                        stream_provider.clone(),
-                        parent.stream_path(&mut None)?.into_bytes(),
-                        Some(reducer.revision().to_string()),
-                    )?),
+                    revision: ResourceRevision::History(
+                        (StreamRef::new(
+                            stream_provider.clone(),
+                            parent.stream_path(&mut None)?.into_bytes(),
+                            Some(reducer.revision().to_string()),
+                        )?)
+                        .into(),
+                    ),
                 },
             );
             Some(

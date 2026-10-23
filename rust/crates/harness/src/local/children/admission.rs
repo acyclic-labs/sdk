@@ -281,15 +281,15 @@ impl LocalHarness {
                             ForkSelection {
                                 required: true,
                                 revision: ResourceRevision::Project {
-                                    volume: source_project.clone(),
-                                    generation: source_generation,
+                                    volume: (source_project.clone()).into(),
+                                    generation: (source_generation).into(),
                                 },
                             },
                             ForkSelection {
                                 required: true,
                                 revision: ResourceRevision::PrivateVolume {
-                                    volume: source_private.clone(),
-                                    generation: private_head.generation,
+                                    volume: (source_private.clone()).into(),
+                                    generation: (private_head.generation).into(),
                                     paths: Vec::new(),
                                 },
                             },

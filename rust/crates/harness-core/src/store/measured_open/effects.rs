@@ -57,8 +57,8 @@ async fn measured_cold_retirement_preserves_original_atomic_indexes() -> Result<
                     provider: "test.effects".into(),
                     guarantee: EffectGuarantee::IdempotentRetry,
                     effect_kind: "test.write".into(),
-                    request,
-                    result_schema: schema,
+                    request: (request).into(),
+                    result_schema: (schema).into(),
                 },
             ),
             #[cfg(feature = "filesystem")]
@@ -95,7 +95,13 @@ async fn measured_cold_retirement_preserves_original_atomic_indexes() -> Result<
     )?;
     writer
         .execute(
-            fresh(43, 2, Action::ResolveEffect { observation }),
+            fresh(
+                43,
+                2,
+                Action::ResolveEffect {
+                    observation: (observation).into(),
+                },
+            ),
             #[cfg(feature = "filesystem")]
             None,
             &mut None,

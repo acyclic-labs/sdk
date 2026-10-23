@@ -208,18 +208,21 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     fork.child_agent = child_agent;
     fork.preparation.child_project_volume = project.clone();
     fork.preparation.child_private_volume = private.clone();
-    fork.selections[0].revision = ResourceRevision::History(StreamRef::new(
-        stream_provider.clone(),
-        fork.parent.stream_path(&mut None)?.into_bytes(),
-        Some(fork.parent_revision.to_string()),
-    )?);
+    fork.selections[0].revision = ResourceRevision::History(
+        (StreamRef::new(
+            stream_provider.clone(),
+            fork.parent.stream_path(&mut None)?.into_bytes(),
+            Some(fork.parent_revision.to_string()),
+        )?)
+        .into(),
+    );
     fork.selections[1].revision = ResourceRevision::Project {
-        volume: created.project.clone(),
+        volume: (created.project.clone()).into(),
         generation: project_generation,
     };
     fork.selections[2].revision = ResourceRevision::PrivateVolume {
-        volume: created.private.clone(),
-        generation: created.seed.child_private_generation.clone(),
+        volume: (created.private.clone()).into(),
+        generation: (created.seed.child_private_generation.clone()).into(),
         paths: Vec::new(),
     };
     let history = crate::store::HistoryReader::new(

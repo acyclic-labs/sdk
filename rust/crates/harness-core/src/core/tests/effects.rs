@@ -16,8 +16,8 @@ fn effect_guarantees_and_attestations_control_retry() -> Result<()> {
             provider: "example.provider".into(),
             guarantee,
             effect_kind: "example.send".into(),
-            request: request_file(br#"{"value":1}"#)?,
-            result_schema: schema_file(&json!({"type":"object","required":["receipt"]}))?,
+            request: (request_file(br#"{"value":1}"#)?).into(),
+            result_schema: (schema_file(&json!({"type":"object","required":["receipt"]}))?).into(),
         };
         apply(&mut reducer, 1, plan)?;
         let dispatch = Action::MarkEffectDispatched {
@@ -39,22 +39,28 @@ fn effect_guarantees_and_attestations_control_retry() -> Result<()> {
                 &reducer,
                 first_attempt,
                 EffectStatus::Succeeded {
-                    result: schema_file(&json!({}))?,
+                    result: (schema_file(&json!({}))?).into(),
                 },
             )?;
             let action = Action::ResolveEffect {
-                observation: invalid,
+                observation: (invalid).into(),
             };
             assert!(apply(&mut reducer, 32, action).is_err());
             let mut forged = observe(&reducer, first_attempt, EffectStatus::Indeterminate)?;
             forged.provider = "attacker".into();
             let action = Action::ResolveEffect {
-                observation: forged,
+                observation: (forged).into(),
             };
             assert!(apply(&mut reducer, 33, action).is_err());
         }
         let observation = observe(&reducer, first_attempt, EffectStatus::Indeterminate)?;
-        apply(&mut reducer, 3, Action::ResolveEffect { observation })?;
+        apply(
+            &mut reducer,
+            3,
+            Action::ResolveEffect {
+                observation: (observation).into(),
+            },
+        )?;
         assert_eq!(
             reducer.effect(effect_id).unwrap().status,
             EffectStatus::Indeterminate
@@ -70,10 +76,16 @@ fn effect_guarantees_and_attestations_control_retry() -> Result<()> {
                 &reducer,
                 retry_attempt,
                 EffectStatus::Succeeded {
-                    result: request_file(br#"{"receipt":"confirmed"}"#)?,
+                    result: (request_file(br#"{"receipt":"confirmed"}"#)?).into(),
                 },
             )?;
-            apply(&mut reducer, 5, Action::ResolveEffect { observation })?;
+            apply(
+                &mut reducer,
+                5,
+                Action::ResolveEffect {
+                    observation: Box::new(observation),
+                },
+            )?;
             assert!(matches!(
                 reducer.effect(effect_id).unwrap().status,
                 EffectStatus::Succeeded { .. }

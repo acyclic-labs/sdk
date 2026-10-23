@@ -27,10 +27,6 @@ impl LifecycleState {
 /// Schema-validated event payload retained in canonical history.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "canonical events prioritize typed fields over enum stack size"
-)]
 pub enum EventPayload {
     /// Fixed aggregate lifecycle transition.
     LifecycleTransitioned {
@@ -44,12 +40,12 @@ pub enum EventPayload {
     /// Namespaced extension event validated by its registered schema.
     Custom {
         /// Complete typed and version-pinned extension record.
-        record: ExtensionRecord,
+        record: Box<ExtensionRecord>,
     },
     /// Explicit transition between exact retained extension state versions.
     ExtensionStateMigrated {
         /// Exact validated source and target revision pair.
-        migration: ExtensionStateMigration,
+        migration: Box<ExtensionStateMigration>,
     },
     /// Agent-owned active extension selection, including its resolved dependencies.
     ExtensionsSelected {
@@ -63,9 +59,9 @@ pub enum EventPayload {
     /// Agent-owned, provider-validated configuration publication.
     ExtensionConfigured {
         /// Exact predecessor for replay and concurrent update detection.
-        previous: Option<ExtensionConfiguration>,
+        previous: Option<Box<ExtensionConfiguration>>,
         /// Immutable configuration revision.
-        record: ExtensionConfiguration,
+        record: Box<ExtensionConfiguration>,
     },
     /// Durable intent to perform one external effect.
     EffectPlanned {
@@ -78,11 +74,11 @@ pub enum EventPayload {
         /// Namespaced effect kind.
         effect_kind: String,
         /// Pinned provider request file.
-        request: FileRef,
+        request: Box<FileRef>,
         /// Canonical digest of the complete provider request identity.
         request_digest: [u8; 32],
         /// Pinned JSON Schema file for a successful provider result.
-        result_schema: FileRef,
+        result_schema: Box<FileRef>,
         /// Digest pinning the result schema.
         result_schema_digest: [u8; 32],
     },
@@ -96,7 +92,7 @@ pub enum EventPayload {
     /// One provider attempt produced a semantic observation.
     EffectResolved {
         /// Complete host-attested provider observation.
-        observation: EffectAttestation,
+        observation: Box<EffectAttestation>,
     },
     /// Prepared immutable environment references became atomically visible.
     ForkPublished {
@@ -121,17 +117,17 @@ pub enum EventPayload {
     /// An exact ordered history subset was selected for a model request.
     ModelContextSelected {
         /// Revision-pinned source identities; projected bytes remain outside history.
-        selection: ModelContextSelection,
+        selection: Box<ModelContextSelection>,
     },
     /// A ref-only interaction became addressable to one granted responder.
     InteractionOpened {
         /// Admitted request identity and ref.
-        ticket: InteractionTicket,
+        ticket: Box<InteractionTicket>,
     },
     /// A responder closed one exact open interaction version.
     InteractionResolved {
         /// Exact responder outcome.
-        resolution: InteractionResolution,
+        resolution: Box<InteractionResolution>,
     },
 }
 
@@ -273,7 +269,7 @@ pub enum Action {
         /// Positive schema version.
         version: u32,
         /// Staged, version-pinned JSON payload.
-        content: FileRef,
+        content: Box<FileRef>,
     },
     /// Publishes a validated state revision under another installed version.
     MigrateExtensionState {
@@ -284,7 +280,7 @@ pub enum Action {
         /// Installed target schema and implementation version.
         to_version: u32,
         /// Staged target JSON, validated before event publication.
-        content: FileRef,
+        content: Box<FileRef>,
     },
     /// Selects installed extension versions for future agent admissions.
     SelectExtensions {
@@ -296,7 +292,7 @@ pub enum Action {
         /// Installed extension version.
         extension: ExtensionDependency,
         /// Owner-verified JSON file; bytes never enter the event.
-        content: FileRef,
+        content: Box<FileRef>,
     },
     /// Records intent for one external effect.
     PlanEffect {
@@ -309,9 +305,9 @@ pub enum Action {
         /// Namespaced effect kind.
         effect_kind: String,
         /// Pinned provider request file.
-        request: FileRef,
+        request: Box<FileRef>,
         /// Pinned JSON Schema file for a successful provider result.
-        result_schema: FileRef,
+        result_schema: Box<FileRef>,
     },
     /// Records that effect dispatch began.
     MarkEffectDispatched {
@@ -323,7 +319,7 @@ pub enum Action {
     /// Records one semantic effect completion.
     ResolveEffect {
         /// Provider observation attested by the aggregate authority host.
-        observation: EffectAttestation,
+        observation: Box<EffectAttestation>,
     },
     /// Atomically publishes one fully prepared child environment.
     PublishFork {
@@ -348,17 +344,17 @@ pub enum Action {
     /// Records a deliberate context selection separately from canonical messages.
     SelectModelContext {
         /// Exact ordered conversation subset.
-        selection: ModelContextSelection,
+        selection: Box<ModelContextSelection>,
     },
     /// Admits a validated staged request without embedding its prompt or schema.
     OpenInteraction {
         /// Request identity and staged content ref.
-        ticket: InteractionTicket,
+        ticket: Box<InteractionTicket>,
     },
     /// Resolves an open request with a responder-specific signed capability.
     ResolveInteraction {
         /// Expected version and explicit outcome.
-        resolution: InteractionResolution,
+        resolution: Box<InteractionResolution>,
     },
 }
 

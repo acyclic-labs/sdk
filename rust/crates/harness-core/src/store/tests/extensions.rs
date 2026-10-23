@@ -129,7 +129,7 @@ async fn configured_extension_cannot_publish_a_dangling_or_invalid_reference() -
         causal_parent: None,
         action: Action::ConfigureExtension {
             extension,
-            content: reference.clone(),
+            content: (reference.clone()).into(),
         },
     };
     let mut aggregate = StreamAggregate::open(

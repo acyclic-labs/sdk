@@ -11,14 +11,18 @@ impl<P: StreamProvider> StreamAggregate<P> {
             Action::OpenInteraction { ticket } => {
                 (&ticket.request, "interaction content verifier is not bound")
             }
-            Action::PlanEffect { request, .. } => {
-                (request, "effect request content verifier is not bound")
-            }
+            Action::PlanEffect { request, .. } => (
+                request.as_ref(),
+                "effect request content verifier is not bound",
+            ),
             Action::ResolveEffect { observation } => {
                 let EffectStatus::Succeeded { result } = &observation.status else {
                     return Ok(());
                 };
-                (result, "effect result content verifier is not bound")
+                (
+                    result.as_ref(),
+                    "effect result content verifier is not bound",
+                )
             }
             _ => return Ok(()),
         };

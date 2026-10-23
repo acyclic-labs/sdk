@@ -159,7 +159,7 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     ResourceRevision::Project {
                         volume: project,
                         generation,
-                    } if project == volume => Some(generation),
+                    } if project.as_ref() == volume => Some(generation),
                     _ => None,
                 })
                 .ok_or_else(|| {
@@ -208,7 +208,7 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                         volume: captured,
                         generation,
                         ..
-                    } if captured == volume => Some(generation),
+                    } if captured.as_ref() == volume => Some(generation),
                     _ => None,
                 })
                 .ok_or_else(|| {

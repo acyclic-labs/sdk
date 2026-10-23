@@ -418,7 +418,9 @@ async fn append_selection(
                 expected_revision: aggregate.reducer().revision(),
                 scope: scope.clone(),
                 causal_parent: None,
-                action: Action::SelectModelContext { selection },
+                action: Action::SelectModelContext {
+                    selection: (selection).into(),
+                },
             },
             None,
             &mut None,

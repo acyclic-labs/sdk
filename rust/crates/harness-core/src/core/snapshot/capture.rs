@@ -150,7 +150,7 @@ impl Reducer {
                     if selection.checkpoint.is_some()
                         && selection.checkpoint == self.projection.latest_context_checkpoint =>
                 {
-                    Some(selection)
+                    Some(selection.as_ref())
                 }
                 _ => None,
             })

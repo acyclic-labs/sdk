@@ -269,12 +269,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             let revision = match &selection.revision {
                 ResourceRevision::History(_) => selection.revision.copy(&mut work)?.0,
                 ResourceRevision::Project { .. } => ResourceRevision::Project {
-                    volume: policy.child_project_volume.copy(&mut work)?,
-                    generation: generation_copy(&child_project.generation)?,
+                    volume: (policy.child_project_volume.copy(&mut work)?).into(),
+                    generation: (generation_copy(&child_project.generation)?).into(),
                 },
                 ResourceRevision::PrivateVolume { paths, .. } => ResourceRevision::PrivateVolume {
-                    volume: private.copy(&mut work)?,
-                    generation: generation_copy(&private_observation.generation)?,
+                    volume: (private.copy(&mut work)?).into(),
+                    generation: (generation_copy(&private_observation.generation)?).into(),
                     paths: self.clone_paths(paths)?,
                 },
                 ResourceRevision::SharedVolume(volume) if volume.provider() == &host.provider => {
@@ -315,10 +315,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     continue;
                 }
             };
-            captures.push(Capture::Captured(CapturedResource {
+            captures.push(Capture::Captured(Box::new(CapturedResource {
                 source: selection.revision.copy(&mut work)?.0,
                 revision,
-            }));
+            })));
         }
         let inherited_through_sequence = policy.inherited_through_sequence;
         let mut report = ForkReport {

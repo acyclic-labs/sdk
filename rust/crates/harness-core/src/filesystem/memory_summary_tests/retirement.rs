@@ -161,8 +161,8 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
             ForkSelection {
                 required: true,
                 revision: ResourceRevision::PrivateVolume {
-                    volume: storage.volume.clone(),
-                    generation: storage
+                    volume: (storage.volume.clone()).into(),
+                    generation: (storage
                         .host
                         .resolve(
                             &crate::filesystem::workspace_ref(
@@ -172,23 +172,27 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
                             None,
                         )
                         .await?
-                        .generation,
+                        .generation)
+                        .into(),
                     paths: Vec::new(),
                 },
             },
             ForkSelection {
                 required: true,
-                revision: ResourceRevision::History(StreamRef::new(
-                    stream_provider.clone(),
-                    storage.conversation.stream_path(&mut None)?.into_bytes(),
-                    Some(parent.reducer().revision().to_string()),
-                )?),
+                revision: ResourceRevision::History(
+                    (StreamRef::new(
+                        stream_provider.clone(),
+                        storage.conversation.stream_path(&mut None)?.into_bytes(),
+                        Some(parent.reducer().revision().to_string()),
+                    )?)
+                    .into(),
+                ),
             },
             ForkSelection {
                 required: true,
                 revision: ResourceRevision::Project {
-                    volume: project,
-                    generation: project_head.generation,
+                    volume: (project).into(),
+                    generation: (project_head.generation).into(),
                 },
             },
         ],

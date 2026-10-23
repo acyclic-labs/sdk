@@ -204,8 +204,8 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
                 ForkSelection {
                     required: true,
                     revision: ResourceRevision::PrivateVolume {
-                        volume: private.clone(),
-                        generation: host
+                        volume: (private.clone()).into(),
+                        generation: (host
                             .resolve(
                                 &workspace_ref(
                                     provider.clone(),
@@ -214,23 +214,27 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
                                 None,
                             )
                             .await?
-                            .generation,
+                            .generation)
+                            .into(),
                         paths: Vec::new(),
                     },
                 },
                 ForkSelection {
                     required: true,
-                    revision: ResourceRevision::History(StreamRef::new(
-                        stream_provider.clone(),
-                        authority.stream_path(&mut None)?.into_bytes(),
-                        Some(aggregate.reducer().revision().to_string()),
-                    )?),
+                    revision: ResourceRevision::History(
+                        (StreamRef::new(
+                            stream_provider.clone(),
+                            authority.stream_path(&mut None)?.into_bytes(),
+                            Some(aggregate.reducer().revision().to_string()),
+                        )?)
+                        .into(),
+                    ),
                 },
                 ForkSelection {
                     required: true,
                     revision: ResourceRevision::Project {
-                        volume: project.clone(),
-                        generation: project_head.generation.clone(),
+                        volume: (project.clone()).into(),
+                        generation: (project_head.generation.clone()).into(),
                     },
                 },
             ],

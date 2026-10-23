@@ -190,7 +190,7 @@ where
                 operation_id,
                 "context",
                 Action::SelectModelContext {
-                    selection: preparation.selection.clone(),
+                    selection: (preparation.selection.clone()).into(),
                 },
             )
             .await?;
@@ -274,7 +274,9 @@ where
             &mut aggregate,
             publication,
             "checkpoint",
-            Action::SelectModelContext { selection },
+            Action::SelectModelContext {
+                selection: (selection).into(),
+            },
         )
         .await
     }

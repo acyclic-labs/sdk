@@ -281,8 +281,8 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                 ForkSelection {
                     required: true,
                     revision: ResourceRevision::PrivateVolume {
-                        volume: private.clone(),
-                        generation: host
+                        volume: (private.clone()).into(),
+                        generation: (host
                             .resolve(
                                 &workspace_ref(
                                     provider.clone(),
@@ -291,23 +291,27 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                                 None,
                             )
                             .await?
-                            .generation,
+                            .generation)
+                            .into(),
                         paths: Vec::new(),
                     },
                 },
                 ForkSelection {
                     required: true,
-                    revision: ResourceRevision::History(StreamRef::new(
-                        stream_provider.clone(),
-                        parent.stream_path(&mut None)?.into_bytes(),
-                        Some("2".into()),
-                    )?),
+                    revision: ResourceRevision::History(
+                        (StreamRef::new(
+                            stream_provider.clone(),
+                            parent.stream_path(&mut None)?.into_bytes(),
+                            Some("2".into()),
+                        )?)
+                        .into(),
+                    ),
                 },
                 ForkSelection {
                     required: true,
                     revision: ResourceRevision::Project {
-                        volume: project.clone(),
-                        generation: project_head.generation.clone(),
+                        volume: (project.clone()).into(),
+                        generation: (project_head.generation.clone()).into(),
                     },
                 },
             ],

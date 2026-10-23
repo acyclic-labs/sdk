@@ -385,24 +385,27 @@ where
                 selections: vec![
                     ForkSelection {
                         required: true,
-                        revision: ResourceRevision::History(StreamRef::new(
-                            stream_provider,
-                            parent.stream_path(&mut None)?.into_bytes(),
-                            Some(aggregate.reducer().revision().to_string()),
-                        )?),
+                        revision: ResourceRevision::History(
+                            (StreamRef::new(
+                                stream_provider,
+                                parent.stream_path(&mut None)?.into_bytes(),
+                                Some(aggregate.reducer().revision().to_string()),
+                            )?)
+                            .into(),
+                        ),
                     },
                     ForkSelection {
                         required: true,
                         revision: ResourceRevision::Project {
-                            volume: project,
-                            generation: project_head.generation,
+                            volume: (project).into(),
+                            generation: (project_head.generation).into(),
                         },
                     },
                     ForkSelection {
                         required: true,
                         revision: ResourceRevision::PrivateVolume {
-                            volume: volume.clone(),
-                            generation: host
+                            volume: (volume.clone()).into(),
+                            generation: (host
                                 .resolve(
                                     &workspace_ref(
                                         volume.provider().clone(),
@@ -411,7 +414,8 @@ where
                                     None,
                                 )
                                 .await?
-                                .generation,
+                                .generation)
+                                .into(),
                             paths: Vec::new(),
                         },
                     },

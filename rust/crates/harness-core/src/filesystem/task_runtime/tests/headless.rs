@@ -841,15 +841,15 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
             ForkSelection {
                 required: true,
                 revision: ResourceRevision::Project {
-                    volume: project.clone(),
-                    generation: selected_generation.clone(),
+                    volume: (project.clone()).into(),
+                    generation: (selected_generation.clone()).into(),
                 },
             },
             ForkSelection {
                 required: true,
                 revision: ResourceRevision::PrivateVolume {
-                    volume: fixture.volume.clone(),
-                    generation: fixture
+                    volume: (fixture.volume.clone()).into(),
+                    generation: (fixture
                         .filesystem
                         .resolve(
                             &crate::filesystem::workspace_ref(
@@ -859,17 +859,21 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
                             None,
                         )
                         .await?
-                        .generation,
+                        .generation)
+                        .into(),
                     paths: Vec::new(),
                 },
             },
             ForkSelection {
                 required: true,
-                revision: ResourceRevision::History(crate::resources::StreamRef::new(
-                    stream_provider,
-                    authority.stream_path(&mut None)?.into_bytes(),
-                    Some(original_revision.to_string()),
-                )?),
+                revision: ResourceRevision::History(
+                    (crate::resources::StreamRef::new(
+                        stream_provider,
+                        authority.stream_path(&mut None)?.into_bytes(),
+                        Some(original_revision.to_string()),
+                    )?)
+                    .into(),
+                ),
             },
         ],
     };

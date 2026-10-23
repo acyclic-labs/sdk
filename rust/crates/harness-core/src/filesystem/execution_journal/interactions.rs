@@ -114,12 +114,12 @@ where
                 operation,
                 responder,
                 crate::core::Action::ResolveInteraction {
-                    resolution: InteractionResolution {
+                    resolution: Box::new(InteractionResolution {
                         id: ticket.id,
                         expected_version,
                         outcome,
                         detail,
-                    },
+                    }),
                 },
                 None,
                 None,

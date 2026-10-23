@@ -50,7 +50,9 @@ impl Reducer {
                     content: content.clone_in_quota(quota)?,
                 };
                 record.validate()?;
-                Ok(EventPayload::Custom { record })
+                Ok(EventPayload::Custom {
+                    record: copying::box_value(record, quota)?,
+                })
             }
             Action::MigrateExtensionState {
                 name,
@@ -84,12 +86,15 @@ impl Reducer {
                 };
                 record.validate()?;
                 Ok(EventPayload::ExtensionStateMigrated {
-                    migration: ExtensionStateMigration {
-                        previous: copy(previous, quota, |value: &EventReference, _| {
-                            Ok(value.authority.id.capacity() as u64)
-                        })?,
-                        record,
-                    },
+                    migration: copying::box_value(
+                        ExtensionStateMigration {
+                            previous: copy(previous, quota, |value: &EventReference, _| {
+                                Ok(value.authority.id.capacity() as u64)
+                            })?,
+                            record,
+                        },
+                        quota,
+                    )?,
                 })
             }
             Action::SelectExtensions { roots } => {
@@ -164,8 +169,10 @@ impl Reducer {
                                 owned_bytes(value)
                             })
                         })
+                        .transpose()?
+                        .map(|record| copying::box_value(record, quota))
                         .transpose()?,
-                    record,
+                    record: copying::box_value(record, quota)?,
                 })
             }
             Action::PlanEffect {
@@ -207,9 +214,13 @@ impl Reducer {
                     provider: copying::copy_text(provider, quota)?,
                     guarantee: *guarantee,
                     effect_kind: copying::copy_text(effect_kind, quota)?,
-                    request: request.clone_in_quota(quota)?,
+                    request: copying::copy_boxed(request.as_ref(), quota, FileRef::clone_in_quota)?,
                     request_digest,
-                    result_schema: result_schema.clone_in_quota(quota)?,
+                    result_schema: copying::copy_boxed(
+                        result_schema.as_ref(),
+                        quota,
+                        FileRef::clone_in_quota,
+                    )?,
                     result_schema_digest,
                 })
             }
@@ -235,12 +246,18 @@ impl Reducer {
                     .verify_effect(observation, quota.work())?;
                 validate_effect_observation(effect, observation)?;
                 Ok(EventPayload::EffectResolved {
-                    observation: copy(observation, quota, |value: &EffectAttestation, work| {
-                        if let EffectStatus::Succeeded { result } = &value.status {
-                            result.validate(work)?;
-                        }
-                        owned_bytes(value)
-                    })?,
+                    observation: copying::copy_boxed(
+                        observation.as_ref(),
+                        quota,
+                        |source, quota| {
+                            copy(source, quota, |value: &EffectAttestation, work| {
+                                if let EffectStatus::Succeeded { result } = &value.status {
+                                    result.validate(work)?;
+                                }
+                                owned_bytes(value)
+                            })
+                        },
+                    )?,
                 })
             }
             Action::PublishFork { seed } => {
@@ -292,11 +309,13 @@ impl Reducer {
                 self.require_conversation()?;
                 selection.validate(&self.projection.conversation)?;
                 Ok(EventPayload::ModelContextSelected {
-                    selection: copy(selection, quota, |value: &ModelContextSelection, work| {
-                        if let Some(file) = &value.checkpoint {
-                            file.validate(work)?;
-                        }
-                        owned_bytes(value)
+                    selection: copying::copy_boxed(selection.as_ref(), quota, |source, quota| {
+                        copy(source, quota, |value: &ModelContextSelection, work| {
+                            if let Some(file) = &value.checkpoint {
+                                file.validate(work)?;
+                            }
+                            owned_bytes(value)
+                        })
                     })?,
                 })
             }
@@ -309,9 +328,11 @@ impl Reducer {
                     ));
                 }
                 Ok(EventPayload::InteractionOpened {
-                    ticket: copy(ticket, quota, |value: &InteractionTicket, work| {
-                        value.request.validate(work)?;
-                        owned_bytes(value)
+                    ticket: copying::copy_boxed(ticket.as_ref(), quota, |source, quota| {
+                        copy(source, quota, |value: &InteractionTicket, work| {
+                            value.request.validate(work)?;
+                            owned_bytes(value)
+                        })
                     })?,
                 })
             }
@@ -323,15 +344,21 @@ impl Reducer {
                     .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
                 validate_interaction_transition(ticket, prior.as_ref(), resolution)?;
                 Ok(EventPayload::InteractionResolved {
-                    resolution: copy(resolution, quota, |value: &InteractionResolution, work| {
-                        if let InteractionOutcome::Answered { answer } = &value.outcome {
-                            answer.validate(work)?;
-                        }
-                        if let Some(file) = &value.detail {
-                            file.validate(work)?;
-                        }
-                        owned_bytes(value)
-                    })?,
+                    resolution: copying::copy_boxed(
+                        resolution.as_ref(),
+                        quota,
+                        |source, quota| {
+                            copy(source, quota, |value: &InteractionResolution, work| {
+                                if let InteractionOutcome::Answered { answer } = &value.outcome {
+                                    answer.validate(work)?;
+                                }
+                                if let Some(file) = &value.detail {
+                                    file.validate(work)?;
+                                }
+                                owned_bytes(value)
+                            })
+                        },
+                    )?,
                 })
             }
         }

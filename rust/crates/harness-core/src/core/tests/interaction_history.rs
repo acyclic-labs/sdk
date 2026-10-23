@@ -53,7 +53,7 @@ impl History {
             &mut reducer,
             2,
             Action::OpenInteraction {
-                ticket: ticket.clone(),
+                ticket: (ticket.clone()).into(),
             },
         )
         .unwrap();
@@ -73,7 +73,11 @@ impl History {
             .iter()
             .filter_map(|event| {
                 if let EventPayload::InteractionResolved { resolution } = &event.payload {
-                    Some((event.revision, event.operation_id, resolution.clone()))
+                    Some((
+                        event.revision,
+                        event.operation_id,
+                        resolution.as_ref().clone(),
+                    ))
                 } else {
                     None
                 }
@@ -171,7 +175,7 @@ impl History {
             id,
             2 + next_version - 1,
             Action::ResolveInteraction {
-                resolution: submitted,
+                resolution: (submitted).into(),
             },
         );
         let grant = if (granted || fault == Fault::ForeignResponder) && fault != Fault::RejectAll {

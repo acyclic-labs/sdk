@@ -60,7 +60,9 @@ where
             self.execute(
                 operation_id,
                 &scope,
-                Action::ResolveInteraction { resolution },
+                Action::ResolveInteraction {
+                    resolution: (resolution).into(),
+                },
                 None,
                 None,
             )
@@ -102,7 +104,9 @@ where
             self.execute(
                 operation_id,
                 &scope,
-                Action::ResolveInteraction { resolution },
+                Action::ResolveInteraction {
+                    resolution: (resolution).into(),
+                },
                 None,
                 None,
             )

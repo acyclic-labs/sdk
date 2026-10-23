@@ -20,7 +20,7 @@ fn interactions_are_ref_only_versioned_and_responder_bound() -> Result<()> {
     let agent = AgentId::from_bytes([1; 16]);
     apply(&mut reducer, 19, Action::BindConversation { agent })?;
     let open = Action::OpenInteraction {
-        ticket: ticket.clone(),
+        ticket: (ticket.clone()).into(),
     };
     apply(&mut reducer, 20, open)?;
     let resolution = InteractionResolution {
@@ -30,14 +30,16 @@ fn interactions_are_ref_only_versioned_and_responder_bound() -> Result<()> {
         detail: None,
     };
     let ungranted = Action::ResolveInteraction {
-        resolution: resolution.clone(),
+        resolution: (resolution.clone()).into(),
     };
     assert!(apply(&mut reducer, 21, ungranted).is_err());
-    let resolve = |id, revision, resolution| -> Result<Command> {
+    let resolve = |id, revision, resolution: InteractionResolution| -> Result<Command> {
         let mut command = command(
             operation(id),
             revision,
-            Action::ResolveInteraction { resolution },
+            Action::ResolveInteraction {
+                resolution: (resolution).into(),
+            },
         );
         command.scope = issuer().issue(
             "responder",
@@ -100,7 +102,7 @@ fn conversation_binding_and_messages_replay_through_snapshot() -> Result<()> {
             operation(id),
             revision,
             Action::SelectModelContext {
-                selection: selection.clone(),
+                selection: (selection.clone()).into(),
             },
         )
     };
@@ -113,7 +115,9 @@ fn conversation_binding_and_messages_replay_through_snapshot() -> Result<()> {
         apply(
             &mut reducer,
             4,
-            Action::SelectModelContext { selection: stale }
+            Action::SelectModelContext {
+                selection: (stale).into()
+            }
         )
         .is_err()
     );

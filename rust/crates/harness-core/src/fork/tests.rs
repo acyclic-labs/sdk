@@ -56,7 +56,7 @@ proptest::proptest! {
             operation_id: seed.operation_id, parent: seed.parent, parent_revision: seed.parent_revision,
             child: seed.child, child_agent: seed.child_agent, attached_agents: Vec::new(),
             preparation: ForkPreparation {
-                child_project_volume: project, child_private_volume: seed.child_private_volume,
+                child_project_volume: *project, child_private_volume: seed.child_private_volume,
                 child_result_volume: None, summary: None, inherited_through_sequence: through,
                 maximum_inherited_messages: 4, maximum_inherited_bytes: 65536, maximum_inherited_references: 1,
             },
@@ -182,7 +182,7 @@ fn project_capture_requires_new_volume_with_independent_owner() -> Result<()> {
     let ResourceRevision::Project { volume, .. } = &mut capture.revision else {
         panic!("project fixture")
     };
-    *volume = VolumeRef::new(
+    **volume = VolumeRef::new(
         volume.provider().clone(),
         "foreign".into(),
         VolumeClass::Project,
@@ -239,7 +239,7 @@ fn fork_history_must_be_exact_parent_prefix() -> Result<()> {
         VolumeOwner::Session("session".into()),
         &mut None,
     )?;
-    let optional = ResourceRevision::SharedVolume(shared.clone());
+    let optional = ResourceRevision::SharedVolume((shared.clone()).into());
     request.selections.push(ForkSelection {
         required: false,
         revision: optional.clone(),
@@ -250,7 +250,7 @@ fn fork_history_must_be_exact_parent_prefix() -> Result<()> {
             .resources
             .iter()
             .cloned()
-            .map(Capture::Captured)
+            .map(|resource| Capture::Captured(Box::new(resource)))
             .chain([Capture::Indeterminate(OperationId::from_bytes([9; 16]))])
             .collect(),
         child_private_volume: seed.child_private_volume.clone(),
@@ -281,7 +281,7 @@ fn fork_history_must_be_exact_parent_prefix() -> Result<()> {
     if let Capture::Captured(capture) = &mut changed.captures[1]
         && let ResourceRevision::Project { volume, .. } = &mut capture.revision
     {
-        *volume = VolumeRef::new(
+        **volume = VolumeRef::new(
             volume.provider().clone(),
             "different-child-project".into(),
             VolumeClass::Project,

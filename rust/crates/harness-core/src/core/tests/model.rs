@@ -48,7 +48,7 @@ fn malformed_admission_metadata_is_rejected() -> Result<()> {
     let action = Action::AppendCustom {
         schema: "example.message".into(),
         version: 1,
-        content: request_file(br#"{"text":"hello"}"#)?,
+        content: (request_file(br#"{"text":"hello"}"#)?).into(),
     };
     let before = reducer.copy(&mut None)?;
     let mut empty_key = command(operation(30), 0, action.clone());
@@ -139,7 +139,7 @@ async fn native_component_model_transition_work_grows_linearly_with_bounded_resi
                 Action::AppendCustom {
                     schema: "example.message".into(),
                     version: 1,
-                    content: primed,
+                    content: (primed).into(),
                 },
             ),
             None,
@@ -165,22 +165,22 @@ async fn native_component_model_transition_work_grows_linearly_with_bounded_resi
             0 => Action::AppendCustom {
                 schema: "example.message".into(),
                 version: 1,
-                content: custom.clone(),
+                content: (custom.clone()).into(),
             },
             1 => Action::PlanEffect {
                 effect_id,
                 provider: "example.provider".into(),
                 guarantee: EffectGuarantee::AtMostOnce,
                 effect_kind: "example.model_output".into(),
-                request: request.clone(),
-                result_schema: schema.clone(),
+                request: (request.clone()).into(),
+                result_schema: (schema.clone()).into(),
             },
             2 => Action::MarkEffectDispatched {
                 effect_id,
                 attempt_id,
             },
             _ => Action::ResolveEffect {
-                observation: owner.attest_effect(
+                observation: (owner.attest_effect(
                     effect_id,
                     reference
                         .reducer()
@@ -191,7 +191,8 @@ async fn native_component_model_transition_work_grows_linearly_with_bounded_resi
                         message: "actual attested provider rejection".into(),
                     },
                     &mut None,
-                )?,
+                )?)
+                .into(),
             },
         };
         let mut operation = [0_u8; 16];

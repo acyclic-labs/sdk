@@ -216,7 +216,7 @@ async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction
             conversation_command(
                 MESSAGES + 1,
                 Action::SelectModelContext {
-                    selection: selection.clone(),
+                    selection: (selection.clone()).into(),
                 },
             )?,
             #[cfg(feature = "filesystem")]

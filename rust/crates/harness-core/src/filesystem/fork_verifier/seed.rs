@@ -403,7 +403,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     ..
                 },
             ) = (&resource.source, &resource.revision)
-                && child == &seed.child_private_volume
+                && child.as_ref() == &seed.child_private_volume
             {
                 scratch = Some((source, generation, paths, initial));
                 break;

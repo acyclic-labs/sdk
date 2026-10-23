@@ -238,7 +238,7 @@ impl Reducer {
     /// Enumerates context selections in the resident event suffix, in admission order.
     pub fn resident_context_selections(&self) -> impl Iterator<Item = &ModelContextSelection> {
         self.events.iter().filter_map(|event| match &event.payload {
-            EventPayload::ModelContextSelected { selection } => Some(selection),
+            EventPayload::ModelContextSelected { selection } => Some(selection.as_ref()),
             _ => None,
         })
     }
@@ -257,7 +257,7 @@ impl Reducer {
     ) -> Option<&ModelContextSelection> {
         self.event_for_operation(operation_id)
             .and_then(|event| match &event.payload {
-                EventPayload::ModelContextSelected { selection } => Some(selection),
+                EventPayload::ModelContextSelected { selection } => Some(selection.as_ref()),
                 _ => None,
             })
     }

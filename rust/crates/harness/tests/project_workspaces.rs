@@ -181,28 +181,28 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
         resources: vec![
             CapturedResource {
                 source: ResourceRevision::PrivateVolume {
-                    volume: parent_private,
-                    generation: parent_private_head.generation,
+                    volume: (parent_private).into(),
+                    generation: (parent_private_head.generation).into(),
                     paths: Vec::new(),
                 },
                 revision: ResourceRevision::PrivateVolume {
-                    volume: child_private.clone(),
-                    generation: child_private_head.generation.clone(),
+                    volume: (child_private.clone()).into(),
+                    generation: (child_private_head.generation.clone()).into(),
                     paths: Vec::new(),
                 },
             },
             CapturedResource {
-                source: ResourceRevision::History(history.clone()),
-                revision: ResourceRevision::History(history),
+                source: ResourceRevision::History((history.clone()).into()),
+                revision: ResourceRevision::History((history).into()),
             },
             CapturedResource {
                 source: ResourceRevision::Project {
-                    volume: project.clone(),
-                    generation: parent_head.generation.clone(),
+                    volume: (project.clone()).into(),
+                    generation: (parent_head.generation.clone()).into(),
                 },
                 revision: ResourceRevision::Project {
-                    volume: child_project.clone(),
-                    generation: child_head.clone(),
+                    volume: (child_project.clone()).into(),
+                    generation: (child_head.clone()).into(),
                 },
             },
         ],

@@ -138,7 +138,9 @@ async fn summary_preparation(
                 expected_revision: aggregate.reducer().revision(),
                 scope: storage.scope.clone(),
                 causal_parent: None,
-                action: Action::SelectModelContext { selection },
+                action: Action::SelectModelContext {
+                    selection: (selection).into(),
+                },
             },
             #[cfg(feature = "filesystem")]
             None,
@@ -302,8 +304,8 @@ async fn summary_fork_fixture(
             ForkSelection {
                 required: true,
                 revision: ResourceRevision::PrivateVolume {
-                    volume: storage.volume.clone(),
-                    generation: storage
+                    volume: (storage.volume.clone()).into(),
+                    generation: (storage
                         .host
                         .resolve(
                             &crate::filesystem::workspace_ref(
@@ -313,23 +315,27 @@ async fn summary_fork_fixture(
                             None,
                         )
                         .await?
-                        .generation,
+                        .generation)
+                        .into(),
                     paths: Vec::new(),
                 },
             },
             ForkSelection {
                 required: true,
-                revision: ResourceRevision::History(StreamRef::new(
-                    stream_provider.clone(),
-                    storage.conversation.stream_path(&mut None)?.into_bytes(),
-                    Some(aggregate.reducer().revision().to_string()),
-                )?),
+                revision: ResourceRevision::History(
+                    (StreamRef::new(
+                        stream_provider.clone(),
+                        storage.conversation.stream_path(&mut None)?.into_bytes(),
+                        Some(aggregate.reducer().revision().to_string()),
+                    )?)
+                    .into(),
+                ),
             },
             ForkSelection {
                 required: true,
                 revision: ResourceRevision::Project {
-                    volume: project,
-                    generation: project_head.generation,
+                    volume: (project).into(),
+                    generation: (project_head.generation).into(),
                 },
             },
         ],

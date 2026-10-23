@@ -113,11 +113,14 @@ pub(super) async fn publication_rejections(
     assert_eq!(incomplete.reducer().revision(), seed.parent_revision);
     let mut foreign_history = seed.clone();
     let foreign = ProviderRef::new("foreign".into(), "stream".into(), "2".into(), &mut None)?;
-    let reference = ResourceRevision::History(StreamRef::new(
-        foreign,
-        authority.stream_path(&mut None)?.into_bytes(),
-        Some(seed.parent_revision.to_string()),
-    )?);
+    let reference = ResourceRevision::History(
+        (StreamRef::new(
+            foreign,
+            authority.stream_path(&mut None)?.into_bytes(),
+            Some(seed.parent_revision.to_string()),
+        )?)
+        .into(),
+    );
     foreign_history.resources[1].source = reference.clone();
     foreign_history.resources[1].revision = reference;
     foreign_history.validate(&mut None)?;
@@ -202,8 +205,8 @@ pub(super) async fn publication_rejections(
     rogue_seed.child_private_volume = rogue_private.clone();
     rogue_seed.child_private_generation = rogue_head.generation.clone();
     rogue_seed.resources[0].revision = ResourceRevision::PrivateVolume {
-        volume: rogue_private,
-        generation: rogue_head.generation,
+        volume: (rogue_private).into(),
+        generation: (rogue_head.generation).into(),
         paths: Vec::new(),
     };
     rogue_seed.inherited_context.clear();

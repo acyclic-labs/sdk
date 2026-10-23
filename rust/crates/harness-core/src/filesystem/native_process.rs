@@ -154,7 +154,7 @@ where
             return Ok(None);
         };
         let reference = match observed.effect.status {
-            EffectStatus::Succeeded { result } => Some(result),
+            EffectStatus::Succeeded { result } => Some(*result),
             _ => observed.diagnostic,
         };
         if let Some(reference) = &reference {
@@ -552,7 +552,12 @@ where
         return Ok((EffectStatus::Indeterminate, Some(result)));
     }
     Ok(if cleanup_completed {
-        (EffectStatus::Succeeded { result }, None)
+        (
+            EffectStatus::Succeeded {
+                result: Box::new(result),
+            },
+            None,
+        )
     } else {
         (EffectStatus::Indeterminate, Some(result))
     })

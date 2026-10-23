@@ -246,41 +246,47 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             resources: vec![
                 CapturedResource {
                     source: ResourceRevision::PrivateVolume {
-                        volume: private.clone(),
-                        generation: source_private_generation,
+                        volume: (private.clone()).into(),
+                        generation: (source_private_generation).into(),
                         paths: Vec::new(),
                     },
                     revision: ResourceRevision::PrivateVolume {
-                        volume: child_private.clone(),
-                        generation: private_fork.generation,
+                        volume: (child_private.clone()).into(),
+                        generation: (private_fork.generation).into(),
                         paths: Vec::new(),
                     },
                 },
                 CapturedResource {
-                    source: ResourceRevision::History(StreamRef::new(
-                        stream_provider.clone(),
-                        authority.stream_path(&mut None)?.into_bytes(),
-                        Some(aggregate.reducer().revision().to_string()),
-                    )?),
-                    revision: ResourceRevision::History(StreamRef::new(
-                        stream_provider.clone(),
-                        authority.stream_path(&mut None)?.into_bytes(),
-                        Some(aggregate.reducer().revision().to_string()),
-                    )?),
+                    source: ResourceRevision::History(
+                        (StreamRef::new(
+                            stream_provider.clone(),
+                            authority.stream_path(&mut None)?.into_bytes(),
+                            Some(aggregate.reducer().revision().to_string()),
+                        )?)
+                        .into(),
+                    ),
+                    revision: ResourceRevision::History(
+                        (StreamRef::new(
+                            stream_provider.clone(),
+                            authority.stream_path(&mut None)?.into_bytes(),
+                            Some(aggregate.reducer().revision().to_string()),
+                        )?)
+                        .into(),
+                    ),
                 },
                 CapturedResource {
                     source: ResourceRevision::Project {
-                        volume: project.clone(),
-                        generation: project_head.generation.clone(),
+                        volume: (project.clone()).into(),
+                        generation: (project_head.generation.clone()).into(),
                     },
                     revision: ResourceRevision::Project {
-                        volume: child_project.clone(),
-                        generation: forked.generation.clone(),
+                        volume: (child_project.clone()).into(),
+                        generation: (forked.generation.clone()).into(),
                     },
                 },
                 CapturedResource {
-                    source: ResourceRevision::SharedVolume(shared.clone()),
-                    revision: ResourceRevision::SharedVolume(shared.clone()),
+                    source: ResourceRevision::SharedVolume((shared.clone()).into()),
+                    revision: ResourceRevision::SharedVolume((shared.clone()).into()),
                 },
             ],
             omissions: Vec::new(),
@@ -469,7 +475,7 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     child_result_volume: seed.child_result_volume.clone(),
                     summary: None,
                     child_project_volume: match &seed.resources[2].revision {
-                        ResourceRevision::Project { volume, .. } => volume.clone(),
+                        ResourceRevision::Project { volume, .. } => volume.as_ref().clone(),
                         _ => unreachable!("fork seed includes the child project"),
                     },
                     child_private_volume: seed.child_private_volume.clone(),
@@ -492,7 +498,7 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 .resources
                 .iter()
                 .cloned()
-                .map(Capture::Captured)
+                .map(|resource| Capture::Captured(Box::new(resource)))
                 .collect(),
             child_private_volume: seed.child_private_volume.clone(),
             child_private_generation: seed.child_private_generation.clone(),

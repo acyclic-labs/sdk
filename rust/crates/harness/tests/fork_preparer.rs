@@ -58,10 +58,13 @@ impl ForkCaptureProvider for LostCaptureReply {
         let ready = self.observation_ready.load(Ordering::SeqCst);
         Box::pin(async move {
             Ok(ready.then(|| {
-                Capture::Captured(CapturedResource {
-                    source: selection.revision.clone(),
-                    revision: selection.revision.clone(),
-                })
+                Capture::Captured(
+                    (CapturedResource {
+                        source: selection.revision.clone(),
+                        revision: selection.revision.clone(),
+                    })
+                    .into(),
+                )
             }))
         })
     }
@@ -331,8 +334,8 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             ForkSelection {
                 required: true,
                 revision: ResourceRevision::PrivateVolume {
-                    volume: parent_private.clone(),
-                    generation: host
+                    volume: (parent_private.clone()).into(),
+                    generation: (host
                         .resolve(
                             &workspace_ref(
                                 provider.clone(),
@@ -341,23 +344,27 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
                             None,
                         )
                         .await?
-                        .generation,
+                        .generation)
+                        .into(),
                     paths: Vec::new(),
                 },
             },
             ForkSelection {
                 required: true,
-                revision: ResourceRevision::History(StreamRef::new(
-                    stream_provider.clone(),
-                    parent.stream_path(&mut None)?.into_bytes(),
-                    Some("2".into()),
-                )?),
+                revision: ResourceRevision::History(
+                    (StreamRef::new(
+                        stream_provider.clone(),
+                        parent.stream_path(&mut None)?.into_bytes(),
+                        Some("2".into()),
+                    )?)
+                    .into(),
+                ),
             },
             ForkSelection {
                 required: true,
                 revision: ResourceRevision::Project {
-                    volume: project.clone(),
-                    generation: project_head.generation,
+                    volume: (project.clone()).into(),
+                    generation: (project_head.generation).into(),
                 },
             },
         ],
@@ -530,11 +537,14 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     uncertain.attached_agents.push(attached_reader);
     uncertain.selections.push(ForkSelection {
         required: false,
-        revision: ResourceRevision::Artifact(ArtifactRef::new(
-            objects_provider,
-            b"artifact".to_vec(),
-            Some("immutable-v1".into()),
-        )?),
+        revision: ResourceRevision::Artifact(
+            (ArtifactRef::new(
+                objects_provider,
+                b"artifact".to_vec(),
+                Some("immutable-v1".into()),
+            )?)
+            .into(),
+        ),
     });
     assert!(matches!(
         aggregate.prepare_fork(&composed, uncertain.clone()).await,
@@ -680,11 +690,14 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     bounded_later.parent_revision = aggregate.reducer().revision();
     for selection in &mut bounded_later.selections {
         if matches!(selection.revision, ResourceRevision::History(_)) {
-            selection.revision = ResourceRevision::History(StreamRef::new(
-                stream_provider.clone(),
-                parent.stream_path(&mut None)?.into_bytes(),
-                Some(aggregate.reducer().revision().to_string()),
-            )?);
+            selection.revision = ResourceRevision::History(
+                (StreamRef::new(
+                    stream_provider.clone(),
+                    parent.stream_path(&mut None)?.into_bytes(),
+                    Some(aggregate.reducer().revision().to_string()),
+                )?)
+                .into(),
+            );
         }
     }
     bounded_later.preparation.maximum_inherited_messages = 1;

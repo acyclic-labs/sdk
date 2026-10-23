@@ -14,10 +14,6 @@ pub enum EffectGuarantee {
 /// Current durable status of an effect.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "public ref-valued status keeps its stable serde and Rust shape"
-)]
 pub enum EffectStatus {
     /// Effect is durable but has not been dispatched.
     Planned,
@@ -26,7 +22,7 @@ pub enum EffectStatus {
     /// Effect completed successfully.
     Succeeded {
         /// Pinned schema-defined JSON result file.
-        result: FileRef,
+        result: Box<FileRef>,
     },
     /// Effect completed with a known failure.
     Failed {

@@ -253,11 +253,12 @@ async fn workflow(
                 provider: "test.effects".into(),
                 guarantee: EffectGuarantee::IdempotentRetry,
                 effect_kind: "send".into(),
-                request: file(
+                request: (file(
                     format!("{{\"seed\":{seed}}}").as_bytes(),
                     "application/json",
-                ),
-                result_schema: file(b"{}", "application/schema+json"),
+                ))
+                .into(),
+                result_schema: (file(b"{}", "application/schema+json")).into(),
             }
         };
         let command = Command {

@@ -160,7 +160,7 @@ async fn fork_admission_proves_the_selected_checkpoint_exists() -> Result<()> {
     let mut seed: ForkSeed =
         serde_json::from_str(include_str!("../../../harness/fixtures/v2/fork-seed.json"))
             .map_err(|error| Error::Invalid(error.to_string()))?;
-    let process = ResourceRevision::Process(checkpoint);
+    let process = ResourceRevision::Process((checkpoint).into());
     seed.resources.insert(
         2,
         CapturedResource {
@@ -186,7 +186,7 @@ async fn fork_admission_proves_the_selected_checkpoint_exists() -> Result<()> {
     request.validate(&mut None)?;
     assert_eq!(
         host.capture(&request, &request.selections[2]).await?,
-        Capture::Captured(seed.resources[2].clone()),
+        Capture::Captured((seed.resources[2].clone()).into()),
     );
     simulator
         .destroy_checkpoint(
@@ -203,8 +203,9 @@ async fn fork_admission_proves_the_selected_checkpoint_exists() -> Result<()> {
         Err(Error::Conflict(_))
     ));
     let mut missing = seed;
-    let unavailable =
-        ResourceRevision::Process(CheckpointRef::new(machines.clone(), [9; 16].into(), None)?);
+    let unavailable = ResourceRevision::Process(
+        (CheckpointRef::new(machines.clone(), [9; 16].into(), None)?).into(),
+    );
     missing.resources[2] = CapturedResource {
         source: unavailable.clone(),
         revision: unavailable,
@@ -214,11 +215,9 @@ async fn fork_admission_proves_the_selected_checkpoint_exists() -> Result<()> {
         Err(error @ Error::Machines(ProviderError::NotFound(_)))
             if error.code() == crate::wire::ErrorCode::NotFound
     ));
-    let forged = ResourceRevision::Process(CheckpointRef::new(
-        machines,
-        [9; 16].into(),
-        Some("forged-generation".into()),
-    )?);
+    let forged = ResourceRevision::Process(
+        (CheckpointRef::new(machines, [9; 16].into(), Some("forged-generation".into()))?).into(),
+    );
     missing.resources[2] = CapturedResource {
         source: forged.clone(),
         revision: forged,

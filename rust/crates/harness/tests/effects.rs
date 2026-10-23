@@ -49,7 +49,7 @@ impl EffectProvider for ResultProvider {
                 request_digest: request.request_digest,
                 guarantee: request.guarantee,
                 status: EffectStatus::Succeeded {
-                    result: self.0.clone(),
+                    result: (self.0.clone()).into(),
                 },
             })
         })
@@ -208,8 +208,8 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                         provider: "test.effects".into(),
                         guarantee: EffectGuarantee::IdempotentRetry,
                         effect_kind: "test.write".into(),
-                        request: request.clone(),
-                        result_schema: invalid_schema,
+                        request: (request.clone()).into(),
+                        result_schema: (invalid_schema).into(),
                     }
                 ),
                 #[cfg(feature = "filesystem")]

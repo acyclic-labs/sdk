@@ -65,7 +65,7 @@ fn command(identity: u8) -> Result<Command> {
         action: Action::AppendCustom {
             schema: "example.message".into(),
             version: 1,
-            content: content()?,
+            content: (content()?).into(),
         },
     })
 }

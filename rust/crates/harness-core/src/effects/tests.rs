@@ -91,7 +91,7 @@ impl EffectProvider for Provider {
                 request_digest: request.request_digest,
                 guarantee: request.guarantee,
                 status: EffectStatus::Succeeded {
-                    result: request_file(br#"{"receipt":"ok"}"#)?,
+                    result: (request_file(br#"{"receipt":"ok"}"#)?).into(),
                 },
             })
         }

@@ -80,7 +80,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             .operation_event(operation)
             .await?
             .and_then(|event| match event.payload {
-                EventPayload::ModelContextSelected { selection } => Some(selection),
+                EventPayload::ModelContextSelected { selection } => Some(*selection),
                 _ => None,
             }))
     }
