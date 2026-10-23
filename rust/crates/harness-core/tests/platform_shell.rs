@@ -26,14 +26,7 @@ fn default_tool_names_and_shell_contract_match_the_host() -> Result<()> {
     assert_eq!(schema["required"], serde_json::json!(["command"]));
     assert!(schema["properties"].get("cwd").is_some());
     assert_eq!(schema["additionalProperties"], false);
-    assert_eq!(
-        tool.hook_names,
-        if cfg!(windows) {
-            &["PowerShell", "Bash", "shell"]
-        } else {
-            &["Bash", "PowerShell", "shell"]
-        }
-    );
+    assert!(tool.hook_names.is_empty());
     assert!(tool.definition.description.contains(if cfg!(windows) {
         "PowerShell syntax"
     } else {

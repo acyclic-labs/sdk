@@ -30,6 +30,5 @@ See the [adapter API](https://docs.rs/acyclic-harness/latest/acyclic_harness/fil
 
 The model-visible command tool is `shell` on every platform. It runs bash on
 Linux/macOS and PowerShell 7 (or Windows PowerShell 5.1) on Windows; the
-environment context records that command language. Hook matchers accept `shell`
-and the host aliases `Bash` and `PowerShell`. A hook command's `shell` field
-continues to select its interpreter.
+environment context records that command language. Hook matchers use `shell` only.
+A hook command's `shell` field continues to select its interpreter.

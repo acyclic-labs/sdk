@@ -54,7 +54,7 @@ async fn pinned(
 }
 
 fn settings(command: &str) -> String {
-    json!({"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{
+    json!({"hooks":{"PreToolUse":[{"matcher":"shell","hooks":[{
         "type":"command","command":command,"args":["one argument"],"onFailure":"block"
     }]}]}})
     .to_string()
@@ -66,7 +66,7 @@ fn guard(rules: &[HookRule], executable: &str) {
         1,
         "untrusted project hooks entered the snapshot"
     );
-    assert_eq!(rules[0].matcher, "Bash");
+    assert_eq!(rules[0].matcher, "shell");
     assert_eq!(rules[0].hooks.len(), 1);
     assert_eq!(rules[0].hooks[0].failure, HookFailure::Block);
     assert_eq!(

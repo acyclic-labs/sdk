@@ -13,7 +13,7 @@ const SOURCES: [(&str, &str); 5] = [
     ),
     (
         ".claude/settings.json",
-        r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"original-guard"}]}]}}"#,
+        r#"{"hooks":{"PreToolUse":[{"matcher":"shell","hooks":[{"type":"command","command":"original-guard"}]}]}}"#,
     ),
     (
         ".mcp.json",

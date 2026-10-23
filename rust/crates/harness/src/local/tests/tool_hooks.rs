@@ -97,7 +97,7 @@ async fn guards_use_aliases_revalidate_replacements_and_retain_post_tool_feedbac
     let script = fixture(root.path())?;
     let settings = json!({"hooks":{
         "PreToolUse":[
-            {"matcher":"Bash","hooks":[rule(&script,"deny",json!({"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"guard denied"}}))]},
+            {"matcher":"blocked","hooks":[rule(&script,"deny",json!({"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"guard denied"}}))]},
             {"matcher":"Edit","hooks":[rule(&script,"replace",json!({"hookSpecificOutput":{"updatedInput":{"value":42},"additionalContext":"pre-feedback"}}))]},
             {"matcher":"Read","hooks":[{"type":"command","command":"missing-report-guard","args":[]}]},
             {"matcher":"Write","hooks":[rule(&script,"invalid",json!({"hookSpecificOutput":{"updatedInput":{"value":false}}}))]}
@@ -117,7 +117,7 @@ async fn guards_use_aliases_revalidate_replacements_and_retain_post_tool_feedbac
         ScriptedTurn::Text("invalid replacement rejected".into()),
     ]);
     let tools = vec![
-        guarded("blocked", &["Bash"], &executed),
+        guarded("blocked", &[], &executed),
         guarded("changed", &["Edit"], &executed),
         guarded("reported", &["Read"], &executed),
         guarded("invalid", &["Write"], &executed),

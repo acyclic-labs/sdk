@@ -78,7 +78,7 @@ async fn installation_is_additive_filtered_and_uses_the_retained_connection() ->
     tools.register(
         (
             Tool {
-                hook_names: &["Bash"],
+                hook_names: &[],
                 definition: ToolDefinition {
                     name: "shell".into(),
                     revision: "1".into(),
@@ -143,7 +143,7 @@ async fn installation_is_additive_filtered_and_uses_the_retained_connection() ->
         .get("shell", None, None)?
         .expect("existing tool");
     assert_eq!(original.definition.description.as_ptr(), pointer);
-    assert_eq!(original.hook_names, &["Bash"]);
+    assert!(original.hook_names.is_empty());
     let tool = installed
         .tools
         .get("mcp.configured.read", None, None)?

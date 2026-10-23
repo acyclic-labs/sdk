@@ -107,7 +107,7 @@ async fn child_tool_failure_is_a_typed_wait_result_and_parent_completes() -> Res
     let home = tempfile::tempdir().map_err(storage)?;
     std::fs::create_dir_all(home.path().join(".claude")).map_err(storage)?;
     std::fs::write(home.path().join(".claude/settings.json"), serde_json::json!({"hooks":{
-        "PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"unused-hook","onFailure":"block"}]}]
+        "PreToolUse":[{"matcher":"shell","hooks":[{"type":"command","command":"unused-hook","onFailure":"block"}]}]
     }}).to_string()).map_err(storage)?;
     let provider = Arc::new(
         ScriptedModelProvider::new([

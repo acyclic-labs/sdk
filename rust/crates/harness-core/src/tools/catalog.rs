@@ -92,7 +92,7 @@ static SHELL: ToolSpec = ToolSpec {
     name: super::shell::PLATFORM.name,
     revision: "1",
     description: super::shell::PLATFORM.description,
-    hook_names: super::shell::PLATFORM.hook_names,
+    hook_names: &[],
     binding: ToolBinding::Workspace,
     input: schema::input::<super::ShellInput>,
     output: object,

@@ -9,8 +9,6 @@ pub struct ShellSpec {
     pub name: &'static str,
     /// Model guidance for the host's command language.
     pub description: &'static str,
-    /// Approval and lifecycle hook aliases.
-    pub hook_names: &'static [&'static str],
     /// Native executables in preference order; resolved once at host startup.
     pub executables: &'static [&'static str],
     /// Non-interactive arguments preceding the source text.
@@ -24,7 +22,6 @@ pub struct ShellSpec {
 pub const PLATFORM: ShellSpec = ShellSpec {
     name: "shell",
     description: "Run a command in the platform shell (bash on Linux/macOS; PowerShell 7, or Windows PowerShell 5.1, on Windows) in the calling task's composed workspace view, using PowerShell 7 (pwsh) when available, otherwise Windows PowerShell 5.1. Use PowerShell syntax and Windows paths. Runs with -NoProfile -NonInteractive; writes outside the task view are not captured. No OS sandbox in release 1",
-    hook_names: &["PowerShell", "Bash", "shell"],
     executables: &["pwsh.exe", "powershell.exe"],
     arguments: &["-NoProfile", "-NonInteractive", "-Command"],
     stdin_bootstrap: Some(
@@ -37,7 +34,6 @@ pub const PLATFORM: ShellSpec = ShellSpec {
 pub const PLATFORM: ShellSpec = ShellSpec {
     name: "shell",
     description: "Run a command in the platform shell (bash on Linux/macOS; PowerShell 7, or Windows PowerShell 5.1, on Windows) in the calling task's composed workspace view. Use bash syntax and Unix paths. No OS sandbox in release 1; writes outside the task view are not captured",
-    hook_names: &["Bash", "PowerShell", "shell"],
     executables: &["bash"],
     arguments: &["--noprofile", "--norc", "-c"],
     stdin_bootstrap: None,

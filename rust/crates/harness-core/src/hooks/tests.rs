@@ -396,7 +396,7 @@ fn invalid_hook_replacement_is_atomic() -> Result<()> {
 fn imports_normalize_to_the_same_typed_rules_and_validate_atomically() -> Result<()> {
     let mut imported = Hooks::default();
     imported.add_json(
-        json!({"hooks":{"PreToolUse":[{"matcher":crate::tools::shell::PLATFORM.hook_names[0],"hooks":[
+        json!({"hooks":{"PreToolUse":[{"matcher":crate::tools::shell::PLATFORM.name,"hooks":[
         {"type":"command","command":"guard","args":["--check"],"shell":"bash","timeout":2,"onFailure":"block"},
         {"type":"command","command":"format","shell":"sh"}
     ]}]}}).to_string().as_bytes(),
@@ -418,11 +418,11 @@ fn imports_normalize_to_the_same_typed_rules_and_validate_atomically() -> Result
         command = "format"
         shell = "sh"
     "#,
-        matcher = crate::tools::shell::PLATFORM.hook_names[0]
+        matcher = crate::tools::shell::PLATFORM.name
     ))?;
     let rule = HookRule {
         on: HookEvent::PreToolUse,
-        matcher: crate::tools::shell::PLATFORM.hook_names[0].into(),
+        matcher: crate::tools::shell::PLATFORM.name.into(),
         hooks: vec![
             HookSpec {
                 run: HookRun::Executable {
@@ -590,7 +590,7 @@ fn tool_matchers_use_declared_names_and_exact_identifiers() -> Result<()> {
     ]}}).to_string().as_bytes(),
     )?;
     for (name, commands) in [
-        ("shell", vec!["guard", "windows-guard", "shell-guard"]),
+        ("shell", vec!["shell-guard"]),
         ("edit", vec!["edit", "changes"]),
         ("write", vec!["changes"]),
         ("fs", vec!["fs"]),
@@ -605,6 +605,36 @@ fn tool_matchers_use_declared_names_and_exact_identifiers() -> Result<()> {
                 .collect::<Vec<_>>(),
             commands
         );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn shell_hooks_reject_host_tool_aliases() -> Result<()> {
+    let registry = crate::tools::defaults()?;
+    for matcher in ["Bash", "PowerShell"] {
+        let mut hooks = Hooks::default();
+        hooks.add_json(
+            json!({"hooks":{"PreToolUse":[{
+                "matcher":matcher,"hooks":[{"type":"command","command":"guard"}]
+            }]}})
+            .to_string()
+            .as_bytes(),
+        )?;
+        let mut calls = 0;
+        hooks
+            .run_commands(
+                HookEvent::PreToolUse,
+                &json!({"tool_name":"shell"}),
+                &registry,
+                65_536,
+                |_, _| {
+                    calls += 1;
+                    std::future::ready(Ok((Some(0), vec![], vec![])))
+                },
+            )
+            .await?;
+        assert_eq!(calls, 0, "{matcher} must not match shell");
     }
     Ok(())
 }
@@ -1043,7 +1073,7 @@ exit 2
     write(
         &home,
         ".claude/settings.json",
-        &json!({"hooks":{"PreToolUse":[{"matcher":crate::tools::shell::PLATFORM.hook_names[0],"hooks":[hook]}]}}),
+        &json!({"hooks":{"PreToolUse":[{"matcher":crate::tools::shell::PLATFORM.name,"hooks":[hook]}]}}),
     )?;
     let project = json!({"hooks":{"Stop":[{"hooks":[hook]}]}});
     for path in [

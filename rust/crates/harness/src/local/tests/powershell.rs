@@ -249,7 +249,7 @@ async fn powershell_approval_patterns_block_execution() -> Result<()> {
     std::fs::create_dir(home.path().join(".claude")).map_err(super::super::storage)?;
     let executable = super::super::checkout_tools::shell::executable()?;
     let deny = json!({"hookSpecificOutput":{"permissionDecision":"deny", "permissionDecisionReason":"PowerShell policy denied"}});
-    let settings = json!({"hooks":{"PreToolUse":[{"matcher":"^(powershell|PowerShell)$", "hooks":[{
+    let settings = json!({"hooks":{"PreToolUse":[{"matcher":"shell", "hooks":[{
         "type":"command", "command":executable,
         "args":["-NoProfile", "-NonInteractive", "-Command", format!("[Console]::Write('{}')", deny)],
         "onFailure":"block"
