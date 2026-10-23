@@ -35,9 +35,9 @@ class BenchmarkContracts(unittest.TestCase):
         return manifest(label, "https://github.com/example/benchmark.git", "b" * 40,
                         [f"tasks/task-{index:03}" for index in range(count)])
 
-    def plan(self, stage="tb2-20", dataset=None):
+    def plan(self, stage="tb2-20", dataset=None, model="openai/fixture"):
         return paired_plan(stage, dataset or self.dataset(), self.artifact, str(self.binary),
-                           "openai/fixture", "http://127.0.0.1:9999/v1", 100, 10, "0.164.0")
+                           model, "http://127.0.0.1:9999/v1", 100, 10, "0.164.0")
 
     def test_artifact_identity_is_verified_at_every_construction_entry(self):
         with self.assertRaisesRegex(ValueError, "immutable bytes"):

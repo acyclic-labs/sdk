@@ -63,6 +63,9 @@ pinned SWE-bench Verified inventory of all 500 tasks. Both agent job configs
 contain the same explicit task list, dataset commit and model endpoint, one
 attempt per task, concurrency one and zero retries. The selection seed is
 `predictor-tb2-v1`; no model results affect selection.
+The pinned Codex adapter projects model names to their last slash-delimited
+segment. Paired plans therefore require exactly `provider/model`; nested model
+names are rejected because the two adapters would select different models.
 
 Each plan contains `graphcoder` and `codex` Harbor job objects. Preserve the plan
 alongside any subsequently authorized job configurations and resulting Harbor

@@ -9,6 +9,9 @@ from pathlib import Path
 
 
 CONTROLS = [
+    ("comparator changes model identity", "plan.py",
+     'if model.count("/") != 1:', 'if False:',
+     "test_harbor.HarborContracts.test_comparator_projection_cannot_change_the_effective_model"),
     ("unchecked runner bootstrap", "bootstrap.py",
      "if hashlib.sha256(payload).hexdigest() != UV_SHA256:", "if False:",
      "test_contracts.BenchmarkContracts.test_bootstrap_rejects_unpinned_bytes_before_archive_parsing"),

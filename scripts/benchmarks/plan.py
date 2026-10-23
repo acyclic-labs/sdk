@@ -60,6 +60,8 @@ def paired_plan(stage: str, dataset: dict, artifact: Artifact, binary_path: str,
     if re.fullmatch(r"\d+\.\d+\.\d+", codex_version) is None:
         raise ValueError("pin the exact Codex CLI release")
     catalog(model, base_url, context_tokens, output_tokens)
+    if model.count("/") != 1:
+        raise ValueError("pinned Codex comparator truncates nested model names")
     # Selection depends on task identity, never registry order or agent result.
     tasks = sorted(dataset["tasks"], key=lambda task: hashlib.sha256(
         ("predictor-tb2-v1\0" + label + "\0" + task["name"]).encode()).digest())[:selected_count]

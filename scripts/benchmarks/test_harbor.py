@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from harbor.models.job.config import JobConfig
+from harbor.agents.installed.codex import Codex, CodexOptions
 from .graphcoder_harbor import GraphCoder
 from . import test_contracts
 
@@ -79,6 +80,32 @@ class HarborContracts(unittest.IsolatedAsyncioTestCase):
     async def test_extra_environment_is_rejected_before_setup(self):
         with self.assertRaisesRegex(ValueError, "inherited agent env"):
             GraphCoder(**self.kwargs, extra_env={"FIXTURE_TOKEN": "not-a-real-key"})
+
+    async def test_comparator_projection_cannot_change_the_effective_model(self):
+        fixture = test_contracts.BenchmarkContracts()
+        fixture.setUp()
+        try:
+            for model in ("openai/fixture", "proxy/org/fixture"):
+                # Call only the actual pure command builder on public values.
+                # Never construct Codex or enter its authentication discovery.
+                subject = SimpleNamespace(model_name=model, options=CodexOptions(),
+                    _REMOTE_ACP_CODEX_HOME=Codex._REMOTE_ACP_CODEX_HOME,
+                    _acp_codex_executable=None)
+                command = Codex.acp_command(subject)
+                config = next(value.removeprefix("CODEX_CONFIG=") for value in command
+                              if value.startswith("CODEX_CONFIG="))
+                import json
+                effective = json.loads(config)["model"]
+                if model == "openai/fixture":
+                    result = fixture.plan(model=model)
+                    self.assertEqual(result["graphcoder"]["agents"][0]["model_name"].split("/", 1)[1],
+                                     effective)
+                else:
+                    self.assertNotEqual(model.split("/", 1)[1], effective)
+                    with self.assertRaisesRegex(ValueError, "truncates nested model"):
+                        fixture.plan(model=model)
+        finally:
+            fixture.doCleanups()
 
     async def test_plans_validate_as_real_harbor_jobs(self):
         fixture = test_contracts.BenchmarkContracts()
