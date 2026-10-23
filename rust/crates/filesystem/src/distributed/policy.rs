@@ -197,7 +197,9 @@ mod tests {
             .commit(CommitRequest {
                 conditions,
                 mutations: vec![CommitMutation::Append {
-                    path: StreamPath::new("policy/destination")?,
+                    // The destination must have its own condition. Use the same
+                    // authority to isolate duplicate policy/publication checks.
+                    path: StreamPath::new("policy/source")?,
                     records: vec![acyclic_stream::OwnedBytes::from_static(b"published").into()],
                 }],
                 idempotency_key: acyclic_stream::IdempotencyKey::new(
