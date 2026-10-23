@@ -57,7 +57,9 @@ fn native_caller_abort_keeps_sdk_request_and_accepted_flush_owned()
         let terminal = Arc::downgrade(&provider.inner);
         drop(provider);
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while terminal.upgrade().is_some() {
+            // The provider can disappear before the detached work drops its
+            // accounting guards. Wait for every SDK meter owner as well.
+            while terminal.upgrade().is_some() || Arc::strong_count(&meter) != 1 {
                 tokio::task::yield_now().await;
             }
         })
@@ -133,7 +135,8 @@ fn native_guard_lease_survives_caller_abort_and_real_durability_terminal()
             1
         );
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while weak.upgrade().is_some() {
+            // Guard release precedes destruction of the work's reservations.
+            while weak.upgrade().is_some() || Arc::strong_count(&meter) != 1 {
                 tokio::task::yield_now().await;
             }
         })

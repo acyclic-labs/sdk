@@ -103,21 +103,33 @@ mod tests {
         assert_eq!(registry.live_roots().await, 0);
     }
 
-    fn close_native_watch(
+    async fn close_native_watch(
         physical: &SharedPhysicalRoot,
         work: &NativeMaterializationWork,
     ) -> RootResult<bool> {
         // The SDK observer ABI uses std::sync::Mutex and exposes poisoning as
         // a real typed failure; do not erase it with an immediate lock unwrap.
-        physical
-            .watcher
-            .lock()
-            .map_err(|_| RootError::NativeBoundary {
-                code: acyclic_harness::wire::ErrorCode::Storage,
-                reason: "fixture original watcher state is poisoned",
-            })?
-            .shutdown_with_native_work(work)
-            .map_err(native_watch_error)
+        let deadline = std::time::Instant::now() + WATCH_FENCE_TIMEOUT;
+        loop {
+            let result = physical
+                .watcher
+                .lock()
+                .map_err(|_| RootError::NativeBoundary {
+                    code: acyclic_harness::wire::ErrorCode::Storage,
+                    reason: "fixture original watcher state is poisoned",
+                })?
+                .shutdown_with_native_work(work);
+            match result {
+                // Shutdown is nonblocking while the observer holds its worker
+                // lock. Release the watcher mutex before letting it finish.
+                Err(acyclic_fs::NativeWatchError::WorkerUnavailable)
+                    if std::time::Instant::now() < deadline =>
+                {
+                    tokio::task::yield_now().await;
+                }
+                result => return result.map_err(native_watch_error),
+            }
+        }
     }
 
     fn selection(
@@ -209,7 +221,7 @@ mod tests {
             .unwrap();
         assert!(Arc::ptr_eq(&first, &warm));
         let retained_epoch = warm.source.reference().epoch;
-        assert!(close_native_watch(&warm, &query).unwrap());
+        assert!(close_native_watch(&warm, &query).await.unwrap());
         drop(warm);
         drop(first);
         assert_eq!(registry.live_roots().await, 0);
@@ -222,7 +234,7 @@ mod tests {
         assert_eq!(reopened.source.root_identity(), expected);
         assert_eq!(reopened.source.reference().identity, original.identity);
         assert!(reopened.source.reference().epoch > retained_epoch);
-        assert!(close_native_watch(&reopened, &query).unwrap());
+        assert!(close_native_watch(&reopened, &query).await.unwrap());
     }
 
     #[tokio::test]
@@ -238,7 +250,7 @@ mod tests {
             .await
             .unwrap();
         let source = Arc::clone(&physical.source);
-        assert!(close_native_watch(&physical, &work).unwrap());
+        assert!(close_native_watch(&physical, &work).await.unwrap());
         drop(physical);
         let held = work.live_allocation_bytes();
         assert_eq!(source.root_identity(), expected);
@@ -385,7 +397,7 @@ mod tests {
         } if old == expected && actual != expected));
         assert_eq!(physical.source.root_identity(), expected);
         assert_eq!(physical.source.reference().identity, original.identity);
-        assert!(close_native_watch(&physical, &work).unwrap());
+        assert!(close_native_watch(&physical, &work).await.unwrap());
     }
 
     #[tokio::test]
@@ -482,7 +494,7 @@ mod tests {
         assert!(remaining >= owned && remaining <= held);
         drop(allocation);
         assert_eq!(query.live_allocation_bytes(), remaining - owned);
-        assert!(close_native_watch(&physical, &birth).unwrap());
+        assert!(close_native_watch(&physical, &birth).await.unwrap());
     }
 
     #[tokio::test]
@@ -551,7 +563,7 @@ mod tests {
         assert_eq!(observed.0.prior_source, prior);
         assert!(observed.0.source.epoch > prior.epoch);
         drop(observed);
-        assert!(close_native_watch(&physical, &birth).unwrap());
+        assert!(close_native_watch(&physical, &birth).await.unwrap());
     }
 
     #[tokio::test]
@@ -615,7 +627,7 @@ mod tests {
             query.live_allocation_bytes(),
             NativeMaterializationWork::accounting_state_bytes()
         );
-        assert!(close_native_watch(&physical, &birth).unwrap());
+        assert!(close_native_watch(&physical, &birth).await.unwrap());
     }
     #[tokio::test]
     async fn native_source_invalidation_failure_preserves_a_real_required_rescan() {
@@ -699,6 +711,6 @@ mod tests {
         assert!(warm.source.reference().epoch > prior.epoch);
         assert_eq!(failed.receipt(), prefix);
         drop(warm);
-        assert!(close_native_watch(&physical, &birth).unwrap());
+        assert!(close_native_watch(&physical, &birth).await.unwrap());
     }
 }
