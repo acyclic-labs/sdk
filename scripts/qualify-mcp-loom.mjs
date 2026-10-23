@@ -213,7 +213,7 @@ export const harnessModelSuites = {
     ["local::routing::model::", 3],
     ["local::orphans::model::", 4],
     ["local::workspace::bootstrap::loom_tests::", 1],
-    ["local::checkout_tools::tests::", 8],
+    ["local::checkout_tools::tests::", 9],
     ["local::children::preparation::models::", 1],
     ["local::children::controller::inputs::models::", 1],
     ["local::children::controller::follow::models::", 1],

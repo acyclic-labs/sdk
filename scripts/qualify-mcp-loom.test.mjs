@@ -41,6 +41,23 @@ test("gate runs every harness model suite and rejects an absent suite or a stale
   assertGateStep(["--query-model", "--all-features"]);
 });
 
+test("checkout qualification requires all nine tests including nested fencing", () => {
+  assert.deepEqual(harnessModelSuites["acyclic-harness"].find(([prefix]) => prefix === "local::checkout_tools::tests::"),
+    ["local::checkout_tools::tests::", 9]);
+  for (const checkoutCount of [8, 9, 10]) {
+    const run = command => command === "cargo"
+      ? { status: 0, stdout: JSON.stringify({ ...artifact, target: { name: "acyclic_harness" } }) }
+      : undefined;
+    const execute = (command, args) => command === "cargo" ? run(command) : {
+      status: 0,
+      stdout: summary(args[0] === "local::checkout_tools::tests::" ? checkoutCount
+        : harnessModelSuites["acyclic-harness"].find(([prefix]) => prefix === args[0])[1], 0, 100),
+    };
+    if (checkoutCount === 9) qualifyHarnessModelsLoom(undefined, execute);
+    else assert.throws(() => qualifyHarnessModelsLoom(undefined, execute), /requires a nonzero/);
+  }
+});
+
 function qualifyOrReject(missing, qualify) {
   if (missing === null) qualify();
   else assert.throws(qualify, /requires a nonzero/);
