@@ -99,11 +99,12 @@ pub(super) fn determinization(
     nodes: usize,
     symbols: usize,
     state_bytes: usize,
+    maximum_states: usize,
 ) -> Result<usize, InvalidPolicy> {
     let states = 1_usize
         .checked_shl(u32::try_from(nodes).unwrap_or(u32::MAX))
         .unwrap_or(MAXIMUM_STATES)
-        .min(MAXIMUM_STATES);
+        .min(maximum_states);
     let members = product(states, nodes)?.min(MAXIMUM_STATE_MEMBERS);
     let transitions = product(states, sum([symbols, 1])?)?.min(MAXIMUM_TRANSITIONS);
     // Subset keys and vectors, their growth and current NFA closure scratch;

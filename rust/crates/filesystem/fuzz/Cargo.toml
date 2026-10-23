@@ -90,6 +90,7 @@ bench = false
 
 [[bin]]
 name = "session_fs"
+required-features = ["fuzz-targets"]
 path = "fuzz_targets/session_fs.rs"
 test = false
 doc = false
@@ -97,6 +98,7 @@ bench = false
 
 [[bin]]
 name = "workspace_name"
+required-features = ["fuzz-targets"]
 path = "fuzz_targets/workspace_name.rs"
 test = false
 doc = false

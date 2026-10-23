@@ -800,11 +800,6 @@ impl<'a> CompiledPatterns<'a> {
         available: &mut usize,
         reserve: &mut impl FnMut(usize) -> Result<(), InvalidPolicy>,
     ) -> Result<CompiledStates, InvalidPolicy> {
-        reserve(super::compilation::determinization(
-            self.nfa.nodes.len(),
-            self.symbols.len(),
-            std::mem::size_of::<State>(),
-        )?)?;
         let uniform = policy
             .layers
             .iter()
@@ -815,6 +810,12 @@ impl<'a> CompiledPatterns<'a> {
                 .iter()
                 .flatten()
                 .all(|grant| grant.resource.path == "**");
+        reserve(super::compilation::determinization(
+            self.nfa.nodes.len(),
+            self.symbols.len(),
+            std::mem::size_of::<State>(),
+            if uniform { 1 } else { MAXIMUM_STATES },
+        )?)?;
         let states = if uniform {
             // Every active pattern accepts every canonical path, including
             // root. One terminal state replaces subset construction.

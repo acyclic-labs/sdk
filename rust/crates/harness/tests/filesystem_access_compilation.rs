@@ -98,6 +98,74 @@ fn compiler_admits_storage_before_allocation_and_honors_work()
     Ok(())
 }
 
+#[test]
+fn uniform_policy_reserves_one_state_within_the_callers_budget()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (policy, mut cap) = input("**")?;
+    // Two policy rules and four grants all match every path. More independent
+    // NFA starts must not turn the single-state fast path into exponential credit.
+    let grant = cap
+        .layers
+        .first()
+        .and_then(|layer| layer.first())
+        .ok_or("missing fixture grant")?
+        .clone();
+    cap.layers = vec![vec![grant; 4]];
+    let caller = caller();
+    let context = Context {
+        now: 10,
+        approvals: 0,
+    };
+    let mut work = 100_000;
+    let mut reserved = 0;
+    let mut compiled = None;
+    let measured = acyclic_test_support::measure(|| {
+        compiled = Some(PathTrie::compile_with_work(
+            &policy,
+            &caller,
+            resource(),
+            context,
+            &cap,
+            &mut work,
+            |bytes| {
+                reserved += bytes;
+                if reserved > 256 * 1024 {
+                    return Err(InvalidPolicy("unfunded uniform policy"));
+                }
+                Ok(())
+            },
+        ));
+    });
+    let trie = compiled.ok_or("compiler did not run")??;
+    assert!(measured.bytes_max <= reserved as u64);
+    assert_eq!(
+        trie.logical_owned_bytes(),
+        measured.bytes_current.cast_unsigned()
+    );
+    for path in ["", "public/file", "hidden/nested/file"] {
+        for action in Action::ALL {
+            assert_eq!(
+                trie.decide(action, path, 10),
+                decide(
+                    &policy,
+                    &caller,
+                    action,
+                    Resource { path, ..resource() },
+                    context,
+                    &cap
+                )
+            );
+        }
+    }
+    // The constrained compilation still preserves the universal deny rule.
+    let denied = PathTrie::compile(&policy, &caller, resource(), context, &cap)?;
+    assert_eq!(
+        denied.decide(Action::Read, "public/file", 10).denial,
+        Some(Denial::Rule)
+    );
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
