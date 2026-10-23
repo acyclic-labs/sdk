@@ -13,7 +13,7 @@ fn main() {
 }
 fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut arguments = std::env::args().skip(1);
-    let mut selected = "in-process".to_string();
+    let mut selected = "in-process".to_owned();
     let mut filter = None;
     let mut report = None;
     let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../harness/tests/scenarios");

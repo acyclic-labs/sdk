@@ -197,7 +197,7 @@ async fn run_attempts(
                     actual => {
                         execution.replay_error = Some(format!(
                             "replay changed result or dispatched provider: {actual:?}"
-                        ))
+                        ));
                     }
                 }
             }

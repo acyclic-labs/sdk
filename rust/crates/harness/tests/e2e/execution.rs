@@ -45,9 +45,9 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
         Ok(replay(journal.as_ref(), self.operation)
             .await?
             .into_iter()
-            .map(|event| match event["kind"].as_str() {
-                Some("model") => serde_json::json!({"kind": "model", "event": event["event"]}),
-                _ => serde_json::json!({"kind": event["kind"]}),
+            .map(|event| match event.get("kind").and_then(Value::as_str) {
+                Some("model") => serde_json::json!({"kind": "model", "event": event.get("event")}),
+                _ => serde_json::json!({"kind": event.get("kind")}),
             })
             .collect())
     }

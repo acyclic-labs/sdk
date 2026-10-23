@@ -409,7 +409,6 @@ dependencies = [
  "acyclic-harness",
  "acyclic-native-runtime",
  "acyclic-stream",
- "acyclic-test-support",
  "axum",
  "blake3",
  "futures",

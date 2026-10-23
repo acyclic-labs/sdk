@@ -36,7 +36,6 @@ blake3.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
-acyclic-test-support = { version = "=0.2.0", path = "../test-support" }
 axum.workspace = true
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 serde.workspace = true

@@ -1,8 +1,5 @@
 //! Hosting-contract adapter. External hosts implement `ActorRuntime` and `Volume`.
-use crate::{
-    TestResult,
-    observation::{self, Observation},
-};
+use crate::{CaseObservation, TestResult};
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs};
 use acyclic_harness::{
     AgentId, Error, IdempotencyKey, OperationId, Result,
@@ -38,7 +35,7 @@ pub trait Substrate: ProviderPlatform {
         &self,
         recipe: Value,
         paths: Vec<String>,
-    ) -> BoxProviderFuture<'_, TestResult<Observation>>;
+    ) -> BoxProviderFuture<'_, TestResult<CaseObservation>>;
 }
 
 /// Public fs binding for immutable fixture and result publications.
@@ -91,8 +88,14 @@ where
         })
     }
 }
-fn codec(error: serde_json::Error) -> Error {
+fn codec(error: impl std::fmt::Display) -> Error {
     Error::Invalid(error.to_string())
+}
+
+fn field<'a>(value: &'a Value, name: &str) -> Result<&'a Value> {
+    value
+        .get(name)
+        .ok_or_else(|| Error::Invalid(format!("missing scenario field {name}")))
 }
 
 /// Pinned package shared by reference and external runtimes. The deterministic
@@ -114,7 +117,9 @@ impl HarnessPackage {
                         concat!(
                             include_str!("substrate.rs"),
                             include_str!("execution/observation.rs"),
-                            include_str!("../../harness/tests/e2e/execution.rs")
+                            include_str!("../../harness/tests/e2e/execution.rs"),
+                            include_str!("../../harness/tests/support/composer.rs"),
+                            include_str!("composer.rs")
                         )
                         .as_bytes(),
                     )
@@ -143,21 +148,24 @@ impl ResumableMachine for HarnessPackage {
         &self.schema
     }
     fn initialize(&self, input: &Value) -> Result<Value> {
-        let _: WorkflowCommand = serde_json::from_value(input["command"].clone()).map_err(codec)?;
-        Ok(json!({"command":input["command"],"started":false}))
+        let command = field(input, "command")?;
+        let _: WorkflowCommand = serde_json::from_value(command.clone()).map_err(codec)?;
+        Ok(json!({"command":command,"started":false}))
     }
     fn transition(&self, state: &Value, input: &Value) -> Result<MachineTransition> {
-        if state["started"] == false && input == &json!({"start":true}) {
+        if field(state, "started")?.as_bool() == Some(false) && input == &json!({"start":true}) {
             return Ok(MachineTransition {
                 state: json!({"started":true}),
-                commands: vec![serde_json::from_value(state["command"].clone()).map_err(codec)?],
+                commands: vec![
+                    serde_json::from_value(field(state, "command")?.clone()).map_err(codec)?,
+                ],
                 status: MachineStatus::Suspended,
             });
         }
-        if state["started"] != true {
+        if field(state, "started")?.as_bool() != Some(true) {
             return Err(Error::Invalid("unexpected scenario input".into()));
         }
-        let _: FileRef = serde_json::from_value(input["output"].clone()).map_err(codec)?;
+        let _: FileRef = serde_json::from_value(field(input, "output")?.clone()).map_err(codec)?;
         Ok(MachineTransition {
             state: input.clone(),
             commands: vec![],
@@ -179,13 +187,13 @@ pub struct Actors<R, V> {
 }
 impl<R: ActorRuntime, V: Volume> Substrate for Actors<R, V> {
     fn capabilities(&self) -> BTreeSet<String> {
-        BTreeSet::from(["executor".into()])
+        BTreeSet::from(["executor".into(), "composer".into()])
     }
     fn execute(
         &self,
         recipe: Value,
         paths: Vec<String>,
-    ) -> BoxProviderFuture<'_, TestResult<Observation>> {
+    ) -> BoxProviderFuture<'_, TestResult<CaseObservation>> {
         Box::pin(async move {
             let package = Arc::new(HarnessPackage::new(self.bindings.clone()));
             let identity = package.manifest().agent.clone();
@@ -240,7 +248,7 @@ impl<R: ActorRuntime, V: Volume> Substrate for Actors<R, V> {
                 return Err("host changed a settled scenario on recovery".into());
             }
             let output: FileRef =
-                serde_json::from_value(completed.checkpoint.state["output"].clone())?;
+                serde_json::from_value(field(&completed.checkpoint.state, "output")?.clone())?;
             Ok(serde_json::from_value(self.volume.get(output).await?)?)
         })
     }
@@ -285,7 +293,7 @@ pub trait ExecutorFixture: ProviderPlatform {
         &self,
         recipe: Value,
         paths: Vec<String>,
-    ) -> BoxProviderFuture<'_, TestResult<Observation>>;
+    ) -> BoxProviderFuture<'_, TestResult<CaseObservation>>;
 }
 
 /// Explicit provider bundle for executor journals, files and context discovery.
@@ -305,8 +313,8 @@ where
         &self,
         recipe: Value,
         paths: Vec<String>,
-    ) -> BoxProviderFuture<'_, TestResult<Observation>> {
-        Box::pin(observation::collect_on(
+    ) -> BoxProviderFuture<'_, TestResult<CaseObservation>> {
+        Box::pin(crate::collect_on(
             recipe,
             paths,
             self.filesystem.clone(),
@@ -367,10 +375,11 @@ impl<V: Volume + 'static> EffectHost for FixtureEffects<V> {
                 output
             } else {
                 let value = self.volume.get(command.payload).await?;
-                let paths = serde_json::from_value(value["paths"].clone()).map_err(codec)?;
+                let paths =
+                    serde_json::from_value(field(&value, "paths")?.clone()).map_err(codec)?;
                 let observed = self
                     .executor
-                    .collect(value["recipe"].clone(), paths)
+                    .collect(field(&value, "recipe")?.clone(), paths)
                     .await
                     .map_err(|e| Error::Invalid(e.to_string()))?;
                 self.volume
@@ -428,13 +437,13 @@ pub fn fixture_bindings() -> Bindings {
 pub struct InProcess;
 impl Substrate for InProcess {
     fn capabilities(&self) -> BTreeSet<String> {
-        BTreeSet::from(["executor".into()])
+        BTreeSet::from(["executor".into(), "composer".into()])
     }
     fn execute(
         &self,
         recipe: Value,
         paths: Vec<String>,
-    ) -> BoxProviderFuture<'_, TestResult<Observation>> {
+    ) -> BoxProviderFuture<'_, TestResult<CaseObservation>> {
         Box::pin(async move {
             let directory = tempfile::tempdir()?;
             let stream = Arc::new(
@@ -443,8 +452,12 @@ impl Substrate for InProcess {
             let filesystem = Fs::memory();
             let volume = Arc::new(
                 MemoryHarnessStorage::from_providers(
-                    AgentId::new(), 1_048_576, filesystem.clone(), stream.clone(),
-                ).await?,
+                    AgentId::new(),
+                    1_048_576,
+                    filesystem.clone(),
+                    stream.clone(),
+                )
+                .await?,
             );
             let bindings = fixture_bindings();
             let executor = Arc::new(Providers {
@@ -472,13 +485,18 @@ impl Substrate for InProcess {
 pub struct Local;
 impl Substrate for Local {
     fn capabilities(&self) -> BTreeSet<String> {
-        BTreeSet::from(["executor".into()])
+        BTreeSet::from(["executor".into(), "composer".into()])
     }
     fn execute(
         &self,
         recipe: Value,
         paths: Vec<String>,
-    ) -> BoxProviderFuture<'_, TestResult<Observation>> {
-        Box::pin(observation::collect(recipe, paths))
+    ) -> BoxProviderFuture<'_, TestResult<CaseObservation>> {
+        Box::pin(crate::collect_on(
+            recipe,
+            paths,
+            Fs::memory(),
+            Arc::new(acyclic_stream::MemoryStream::default()),
+        ))
     }
 }

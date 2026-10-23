@@ -10,9 +10,10 @@ cargo run --locked -p acyclic-harness-conformance --bin scenarios -- --substrate
 Build on bb2. The runtime budget is measured separately from Cargo compilation.
 `--corpus DIR` selects an exported copy of `harness/tests/scenarios`. Defaults
 are merged by the existing corpus loader; no case JSON needs changing.
-`--substrate local` runs the same portable executor fixtures directly, providing
-a baseline for the Actors adapter. The existing `cargo test -p acyclic-harness
---test main` path and its native drivers are unchanged.
+`--substrate local` runs the same portable executor and composer fixtures
+directly, providing a baseline for the Actors adapter. The existing
+`cargo test -p acyclic-harness --test main` path retains its native driver
+selection and scenario inputs.
 
 The report has a sorted `records` array with one `case`, `status`, `reason` and
 `requires` entry per discovered JSON case, plus pass/fail/skip counts. Defaults
@@ -23,8 +24,8 @@ nothing cannot qualify a host.
 
 At the initial corpus revision, the 847 JSON files comprise 60 inherited-default
 files and 787 executable cases, matching the existing discovery rule. The
-reference qualifies 259 executor cases and explicitly skips 528 native-fixture
-cases with the capabilities below. Defaults still apply to their descendant
+reference qualifies 436 executor/composer cases and explicitly skips 351
+native-fixture cases with the capabilities below. Defaults apply to their descendant
 cases; they are not executable scenarios.
 
 ## External hosts
@@ -34,8 +35,8 @@ Implement #1359's `ActorRuntime` and this crate's `substrate::Volume`, then use
 `HarnessPackage`. Its pinned deterministic handler emits a
 `harness.scenario.compute` command; bind that command to `FixtureEffects` with
 an explicit `Providers` bundle (or an equivalent executor using
-`observation::collect_on`). The effect runs the stock
-executor with a scripted model and fixture-owned files. The package checkpoints
+`collect_on`). The effect runs the stock executor with a scripted model or the
+public command catalog APIs, using fixture-owned files. The package checkpoints
 the resulting immutable fs reference. The runner supplies fixture inputs and
 file paths to inspect, never expected answers. Assertions run on the client.
 
@@ -69,15 +70,19 @@ observations. Both direct and Actors substrates declare it. Host adapters must
 implement all these operations to declare `executor`; an unsupported operation
 is a failure, never a silent skip.
 
+`composer` means catalog capture/resolution, completion, pinned mention attachments,
+configuration publication and immutable fs reads through the supplied providers.
+Both substrates declare it; all 177 composer cases run through the package.
+
 The resolved recipe driver tags cases requiring native fixture introspection as
 `local-driver:<driver>`, where `<driver>` is `local`, `goal-local`, `agents`,
-`composer`, `composer_entry`, `notifications`, `task_query`, `subagents`,
+`composer_entry`, `notifications`, `task_query`, `subagents`,
 `swarm`, `plans` or `plan-query`. They inspect native scheduler state, UI
-entrypoints, process fixtures, fixture-owned projections, concrete memory fs
+entrypoints, process fixtures, fixture-owned projections, native builder/run_prompt
 fixtures or instrumented provider counters outside the #1359 package adapter,
 and are explicitly skipped by this package. Each report reason identifies the
-concrete fixture dependency. These
-capabilities describe missing driver adapters; declaring `executor` does not
+concrete fixture dependency. These capabilities identify native fixture
+dependencies; declaring `executor` does not
 imply them. The report is the authoritative case and skip count for a corpus
 revision. Unknown drivers fail instead of acquiring an automatic capability.
 

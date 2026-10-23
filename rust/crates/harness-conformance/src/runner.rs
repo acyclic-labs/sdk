@@ -1,4 +1,7 @@
-use crate::{TestResult, observation, scenario::Scenario, scenario_data, substrate::Substrate};
+use crate::{
+    CaseObservation, TestResult, composer::Composer, observation, scenario::Scenario,
+    scenario_data, substrate::Substrate,
+};
 use futures::{FutureExt, StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -58,11 +61,11 @@ pub fn requirements(value: &Value) -> TestResult<Vec<String>> {
     match value.get("driver") {
         None => Ok(vec!["executor".into()]),
         Some(Value::String(driver)) if driver == "executor" => Ok(vec!["executor".into()]),
+        Some(Value::String(driver)) if driver == "composer" => Ok(vec!["composer".into()]),
         Some(Value::String(driver))
             if [
                 "goal-local",
                 "agents",
-                "composer",
                 "composer_entry",
                 "notifications",
                 "task_query",
@@ -153,26 +156,13 @@ async fn run_case(
                 ),
             ));
         }
-        let driver = value
-            .as_object_mut()
-            .ok_or("scenario must be an object")?
-            .remove("driver");
-        let parsed = if driver.is_none() {
-            Scenario::load(root, &path)?
-        } else {
-            Scenario::from_value(value.clone())?
-        };
-        let paths = parsed.expect.files.keys().cloned().collect();
-        value
-            .as_object_mut()
-            .ok_or("scenario must be an object")?
-            .remove("expect");
-        // Resume entries are error oracles. The host needs only their count.
-        value["resume"] = serde_json::to_value(vec!["fixture interruption"; parsed.resume.len()])?;
+        let parsed = Case::parse(root, &path, &mut value)?;
+        let paths = parsed.paths();
+        parsed.prepare(&mut value)?;
         let observed = tokio::time::timeout_at(deadline, substrate.execute(value, paths))
             .await
             .map_err(|_| "corpus execution budget exhausted")??;
-        observation::check(&parsed, &observed)?;
+        parsed.check(&observed)?;
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>((
             Status::Pass,
             "all scenario oracles passed".into(),
@@ -206,9 +196,62 @@ fn fixture_reason(value: &Value) -> &'static str {
             "driver asserts synchronous delivery from its concrete MemoryStream fixture"
         }
         Some("notifications") => "driver inspects its fixture-owned notification projection",
-        Some("composer" | "plans" | "plan-query") => {
-            "driver binds a concrete MemoryHarnessStorage fixture rather than the package fs binding"
+        Some("plans" | "plan-query") => {
+            "driver uses native storage.builder/run_prompt and fixture-owned file-query projections"
         }
         _ => "host did not declare the required capability",
+    }
+}
+
+enum Case {
+    Executor(Box<Scenario>),
+    Composer(Box<Composer>),
+}
+impl Case {
+    fn parse(root: &Path, path: &Path, value: &mut Value) -> TestResult<Self> {
+        let driver = value
+            .as_object_mut()
+            .ok_or("scenario must be an object")?
+            .remove("driver");
+        match driver.as_ref().and_then(Value::as_str) {
+            Some("composer") => Ok(Self::Composer(Box::new(Composer::parse(value.clone())?))),
+            Some("executor") => Ok(Self::Executor(Box::new(Scenario::from_value(
+                value.clone(),
+            )?))),
+            None if driver.is_none() => Ok(Self::Executor(Box::new(Scenario::load(root, path)?))),
+            _ => Err("no portable adapter for declared driver".into()),
+        }
+    }
+    fn paths(&self) -> Vec<String> {
+        match self {
+            Self::Executor(case) => case.expect.files.keys().cloned().collect(),
+            Self::Composer(case) => case.paths(),
+        }
+    }
+    fn prepare(&self, value: &mut Value) -> TestResult {
+        let object = value.as_object_mut().ok_or("scenario must be an object")?;
+        object.remove("expect");
+        match self {
+            Self::Composer(_) => {
+                object.insert("driver".into(), "composer".into());
+            }
+            Self::Executor(case) => {
+                // Resume strings are error oracles; the host needs only their count.
+                object.insert(
+                    "resume".into(),
+                    serde_json::to_value(vec!["fixture interruption"; case.resume.len()])?,
+                );
+            }
+        }
+        Ok(())
+    }
+    fn check(&self, actual: &CaseObservation) -> TestResult {
+        match (self, actual) {
+            (Self::Executor(case), CaseObservation::Executor(actual)) => {
+                observation::check(case, actual)
+            }
+            (Self::Composer(case), CaseObservation::Composer(actual)) => case.check(actual),
+            _ => Err("host returned observations for a different driver".into()),
+        }
     }
 }

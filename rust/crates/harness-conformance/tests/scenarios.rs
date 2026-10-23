@@ -6,7 +6,7 @@ use acyclic_harness::{
     },
 };
 use acyclic_harness_conformance::{
-    check_local,
+    check_local, check_local_composer,
     runner::{self, Status},
     scenario_data,
     substrate::{self, Actors, remote::Request},
@@ -31,14 +31,18 @@ async fn corpus_matches_original_driver_and_reports_every_case()
         let root = &root;
         async move {
             let mut value = scenario_data::load_value(root, &path)?;
-            if runner::requirements(&value)? == ["executor"] {
+            let requirements = runner::requirements(&value)?;
+            if requirements == ["executor"] || requirements == ["composer"] {
                 value
                     .as_object_mut()
                     .ok_or("missing recipe")?
                     .remove("driver");
-                check_local(value)
-                    .await
-                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                let result = if requirements == ["composer"] {
+                    check_local_composer(value).await
+                } else {
+                    check_local(value).await
+                };
+                result.map_err(|e| format!("{}: {e}", path.display()))?;
             }
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
         }
@@ -49,13 +53,22 @@ async fn corpus_matches_original_driver_and_reports_every_case()
     for result in results {
         result?;
     }
-    let report = runner::run(
-        &root,
-        &substrate::InProcess,
-        None,
-        std::thread::available_parallelism()?.get(),
-    )
-    .await?;
+    let (report, local) = tokio::join!(
+        runner::run(
+            &root,
+            &substrate::InProcess,
+            None,
+            std::thread::available_parallelism()?.get(),
+        ),
+        runner::run(
+            &root,
+            &substrate::Local,
+            None,
+            std::thread::available_parallelism()?.get()
+        )
+    );
+    let report = report?;
+    let local = local?;
     for record in &report.records {
         assert_ne!(
             record.status,
@@ -71,13 +84,6 @@ async fn corpus_matches_original_driver_and_reports_every_case()
         "{} cases: {} passed, {} skipped",
         count, report.passed, report.skipped
     );
-    let local = runner::run(
-        &root,
-        &substrate::Local,
-        None,
-        std::thread::available_parallelism()?.get(),
-    )
-    .await?;
     assert_eq!(serde_json::to_value(local)?, serde_json::to_value(report)?);
     Ok(())
 }
@@ -161,14 +167,21 @@ async fn lost_contract_observation_fails_and_filter_never_drops_cases()
 async fn endpoint_bridge_uses_the_same_pinned_package_and_oracles()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let directory = tempfile::tempdir()?;
+    let stream = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
+    let filesystem = acyclic_fs::Fs::memory();
     let volume = Arc::new(
-        acyclic_harness::filesystem::MemoryHarnessStorage::new(AgentId::new(), 1_048_576).await?,
+        acyclic_harness::filesystem::MemoryHarnessStorage::from_providers(
+            AgentId::new(),
+            1_048_576,
+            filesystem.clone(),
+            stream.clone(),
+        )
+        .await?,
     );
     let bindings = substrate::fixture_bindings();
-    let stream = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
     let executor = Arc::new(substrate::Providers {
         stream: stream.clone(),
-        filesystem: acyclic_fs::Fs::memory(),
+        filesystem,
     });
     let runtime = Arc::new(substrate::Supervised::new(InProcessRuntime::new(
         stream,
@@ -198,7 +211,15 @@ async fn endpoint_bridge_uses_the_same_pinned_package_and_oracles()
         volume: http,
         bindings,
     };
-    let result = runner::run(&corpus(), &host, Some("core/text.json"), 1).await;
+    let cases = tempfile::tempdir()?;
+    for path in ["core/text.json", "composer/mentions/pinned.json"] {
+        let value = scenario_data::load_value(&corpus(), &corpus().join(path))?;
+        std::fs::write(
+            cases.path().join(path.replace('/', "_")),
+            serde_json::to_vec(&value)?,
+        )?;
+    }
+    let result = runner::run(cases.path(), &host, None, 2).await;
     server.abort();
     let report = result?;
     assert_eq!(
@@ -211,7 +232,7 @@ async fn endpoint_bridge_uses_the_same_pinned_package_and_oracles()
             .filter(|r| r.status == Status::Fail)
             .collect::<Vec<_>>()
     );
-    assert_eq!(report.passed, 1);
+    assert_eq!(report.passed, 2);
     assert!(report.success());
     Ok(())
 }
@@ -254,7 +275,9 @@ async fn bad_fixture_and_wrong_expected_answer_each_fail_with_a_record()
     let mut value: Value = serde_json::from_slice(include_bytes!(
         "../../harness/tests/scenarios/core/text.json"
     ))?;
-    value["expect"]["text"] = "WRONG".into();
+    *value
+        .pointer_mut("/expect/text")
+        .ok_or("missing text expectation")? = "WRONG".into();
     std::fs::write(
         directory.path().join("wrong.json"),
         serde_json::to_vec(&value)?,
@@ -280,10 +303,19 @@ async fn client_oracles_reject_mutations_on_both_substrates()
     ))?;
     let mutations = [
         ("text", serde_json::json!("WRONG")),
-        ("requests", serde_json::json!([{ "messages": [{ "content": "WRONG" }] }])),
-        ("not_requests", serde_json::json!([{ "messages": [{ "role": "user" }] }])),
+        (
+            "requests",
+            serde_json::json!([{ "messages": [{ "content": "WRONG" }] }]),
+        ),
+        (
+            "not_requests",
+            serde_json::json!([{ "messages": [{ "role": "user" }] }]),
+        ),
         ("events", serde_json::json!([])),
-        ("not_events", serde_json::json!([{ "kind": "model_started" }])),
+        (
+            "not_events",
+            serde_json::json!([{ "kind": "model_started" }]),
+        ),
         ("model_events", serde_json::json!([])),
         ("result", serde_json::json!({ "steps": 99 })),
         ("files", serde_json::json!({ "missing.txt": "WRONG" })),
@@ -294,10 +326,76 @@ async fn client_oracles_reject_mutations_on_both_substrates()
     let count = mutations.len();
     for (field, mutation) in mutations {
         let mut value = baseline.clone();
-        value["expect"][field] = mutation;
-        std::fs::write(directory.path().join(format!("{field}.json")), serde_json::to_vec(&value)?)?;
+        value
+            .get_mut("expect")
+            .and_then(Value::as_object_mut)
+            .ok_or("missing expectations")?
+            .insert(field.into(), mutation);
+        std::fs::write(
+            directory.path().join(format!("{field}.json")),
+            serde_json::to_vec(&value)?,
+        )?;
     }
-    for substrate in [&substrate::Local as &dyn substrate::Substrate, &substrate::InProcess] {
+    for substrate in [
+        &substrate::Local as &dyn substrate::Substrate,
+        &substrate::InProcess,
+    ] {
+        let report = runner::run(directory.path(), substrate, None, 4).await?;
+        assert_eq!(report.records.len(), count);
+        assert_eq!(report.failed, count, "{report:?}");
+        assert!(!report.success());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn composer_oracle_mutations_fail_on_both_substrates()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let directory = tempfile::tempdir()?;
+    let mutations = [
+        (
+            "composer/mentions/pinned.json",
+            "result",
+            serde_json::json!({"kind":"WRONG"}),
+        ),
+        (
+            "composer/mentions/pinned.json",
+            "mention_files",
+            serde_json::json!(["WRONG"]),
+        ),
+        (
+            "composer/mentions/pinned.json",
+            "files",
+            serde_json::json!({"missing.txt":"WRONG"}),
+        ),
+        (
+            "composer/mentions/pinned.json",
+            "file_values",
+            serde_json::json!({"missing.json":{}}),
+        ),
+        (
+            "composer/builtins/completion-all.json",
+            "completions",
+            serde_json::json!(["WRONG"]),
+        ),
+    ];
+    let count = mutations.len();
+    for (index, (path, field, mutation)) in mutations.into_iter().enumerate() {
+        let mut value = scenario_data::load_value(&corpus(), &corpus().join(path))?;
+        value
+            .get_mut("expect")
+            .and_then(Value::as_object_mut)
+            .ok_or("missing expectations")?
+            .insert(field.into(), mutation);
+        std::fs::write(
+            directory.path().join(format!("{index}.json")),
+            serde_json::to_vec(&value)?,
+        )?;
+    }
+    for substrate in [
+        &substrate::Local as &dyn substrate::Substrate,
+        &substrate::InProcess,
+    ] {
         let report = runner::run(directory.path(), substrate, None, 4).await?;
         assert_eq!(report.records.len(), count);
         assert_eq!(report.failed, count, "{report:?}");
