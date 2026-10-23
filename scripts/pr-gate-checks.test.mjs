@@ -16,7 +16,7 @@ test('affected PR checks every target and docs, including test=false fuzz binari
     writeFileSync(cargo,`#!/bin/bash
 echo "$*" >> calls
 case "$1" in
-metadata) echo '{"workspace_members":["fuzz"],"packages":[{"id":"fuzz","name":"fuzz","metadata":{"cargo-fuzz":true},"targets":[{"name":"recorded_invocation","kind":["bin"]}]}]}' ;;
+metadata) [ "$BROKEN_METADATA" != 1 ] || { echo 'error: metadata control' >&2; exit 101; }; echo '{"workspace_members":["fuzz"],"packages":[{"id":"fuzz","name":"fuzz","metadata":{"cargo-fuzz":true},"targets":[{"name":"recorded_invocation","kind":["bin"]}]}]}' ;;
 clean|clippy) exit 0 ;;
 test)
  if [[ " $* " == *" --all-targets "* ]] && [ "$BROKEN_FUZZ" = 1 ]; then
@@ -46,5 +46,10 @@ esac
       if(expected)assert.match(result.stdout,/error\[E0425\]: cannot find type Capabilities/);
       assert.equal(readFileSync(join(cwd,'.gate-fuzz-bins'),'utf8'),'recorded_invocation\n');
     }
+    // A preparation error must not launch unobserved background Cargo jobs.
+    writeFileSync(join(cwd,'calls'),'');
+    const failed=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,BROKEN_METADATA:'1'}});
+    assert.equal(failed.status,2);assert.match(failed.stdout+failed.stderr,/metadata control/);
+    assert.ok(readFileSync(join(cwd,'calls'),'utf8').split('\n').filter(Boolean).every(c=>c.startsWith('metadata ')));
   }finally{rmSync(cwd,{recursive:true,force:true});}
 });
