@@ -24,7 +24,7 @@ mod tests {
         fn policy_cut_scope_never_leaks_across_pending_ready_or_drop(polls in 0usize..32, complete in any::<bool>()) {
             let cut = PolicyCut::new([1; 16], AuthorityId::from_bytes([2; 16]), Head::genesis(Epoch::GENESIS), 1);
             let future = futures::future::poll_fn(|_| {
-                assert_eq!(PolicyCut::current().unwrap().authority, cut.authority);
+                assert_eq!(PolicyCut::current().map(|current| current.authority), Some(cut.authority));
                 if complete { std::task::Poll::Ready(()) } else { std::task::Poll::Pending }
             });
             let mut future = Box::pin(cut.scope(future));

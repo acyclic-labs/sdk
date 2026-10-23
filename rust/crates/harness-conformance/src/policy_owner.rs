@@ -81,6 +81,24 @@ async fn fork<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore>(
     result.map_err(|failure| failure.error)?.value
 }
 
+fn revoked_policy() -> TestResult<Vec<u8>> {
+    let mut policy: Policy = serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)?;
+    policy.version += 1;
+    let layer = policy
+        .layers
+        .first_mut()
+        .ok_or("initial policy has no layer")?;
+    let mut deny = layer
+        .first()
+        .ok_or("initial policy layer is empty")?
+        .clone();
+    deny.id = "revoke-fork".into();
+    deny.effect = Effect::Deny;
+    deny.actions = [Action::Fork].into_iter().collect();
+    layer.push(deny);
+    Ok(serde_json::to_vec(&policy)?)
+}
+
 pub(crate) async fn collect<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore>(
     mut recipe: serde_json::Value,
     filesystem: Fs<A, O>,
@@ -124,16 +142,9 @@ pub(crate) async fn collect<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
         )
         .await?
         .value;
-    let mut policy: Policy = serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)?;
-    policy.version += 1;
-    let mut deny = policy.layers[0][0].clone();
-    deny.id = "revoke-fork".into();
-    deny.effect = Effect::Deny;
-    deny.actions = [Action::Fork].into_iter().collect();
-    policy.layers[0].push(deny);
     checkout
         .write_access_policy(
-            &serde_json::to_vec(&policy)?,
+            &revoked_policy()?,
             acyclic_fs::NamedAttributeWriteMode::Upsert,
             WorkBudget::UNBOUNDED,
             &cancellation,

@@ -77,16 +77,19 @@ async fn revocation(omit_fence: bool) -> TestResult {
     let publish = || async {
         let writer = source.clone();
         // A separate task models an independently polling remote policy writer.
-        tokio::spawn(async move {
-            crate::access::fixtures::publish_policy(
+        let published = tokio::spawn(async move {
+            let outcome = crate::access::fixtures::publish_policy(
                 &writer,
                 &crate::access::fixtures::denied(crate::access::Action::Read, "**"),
             )
-            .await
-            .unwrap();
+            .await;
+            assert!(outcome.is_ok(), "policy writer failed: {outcome:?}");
         })
-        .await
-        .unwrap();
+        .await;
+        assert!(
+            published.is_ok(),
+            "policy writer task failed: {published:?}"
+        );
         fork(&source, "revoked-child").await
     };
     let result = if omit_fence {
@@ -138,7 +141,11 @@ async fn independent_source_revocation_fences_stream_fork_atomically() -> TestRe
 #[tokio::test]
 #[should_panic(expected = "fork published after independent source policy revocation")]
 async fn missing_durable_policy_cut_negative_control() {
-    revocation(true).await.unwrap();
+    let outcome = revocation(true).await;
+    assert!(
+        outcome.is_ok(),
+        "control failed before the publication oracle: {outcome:?}"
+    );
 }
 
 #[tokio::test]
@@ -272,7 +279,11 @@ async fn independent_source_revocation_fences_merge_append_atomically() -> TestR
 #[tokio::test]
 #[should_panic(expected = "merge append ignored source policy revocation")]
 async fn missing_merge_policy_cut_negative_control() {
-    append_revocation(true).await.unwrap();
+    let outcome = append_revocation(true).await;
+    assert!(
+        outcome.is_ok(),
+        "control failed before the publication oracle: {outcome:?}"
+    );
 }
 
 #[tokio::test]
