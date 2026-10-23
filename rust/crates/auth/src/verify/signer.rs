@@ -33,7 +33,7 @@ impl CertifiedSigner {
         &self,
         caveats: Vec<Caveat>,
         next: SigningKey,
-        trust: &impl Trust,
+        trust: &(impl Trust + ?Sized),
         now_unix_seconds: u64,
     ) -> Result<VerifiedCapability, VerifyError> {
         let block = Block {
@@ -48,6 +48,7 @@ impl CertifiedSigner {
             signature: signature.to_bytes().to_vec(),
         };
         let secret = Zeroizing::new(next.to_bytes());
+        drop(next);
         let encoded = wire::encode(&[signed], 18, secret.as_ref(), VERSION);
         verify(&encoded, trust, now_unix_seconds)
     }

@@ -20,7 +20,7 @@ fn sign_claims(domain: &[u8], claims: &impl Message, signer: &SigningKey) -> Vec
     signer.sign(&message).to_bytes().to_vec()
 }
 
-// The fixture plays the runtime custodian. No root mint API exists in the crate.
+// The fixture supplies authenticated certificates for the runtime custodian.
 pub fn root(mut change: impl FnMut(&mut Block)) -> Vec<u8> {
     let mut block = claims::root();
     let certificates = block.certificates.as_mut().unwrap();

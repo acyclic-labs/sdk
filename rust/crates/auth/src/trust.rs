@@ -1,7 +1,9 @@
-use acyclic_auth::{crypto::BlockId, verify::*};
+//! Public trust snapshots shared by native and WebAssembly capability holders.
+use crate::{crypto::BlockId, verify::*};
 use std::collections::HashSet;
 
 /// An authenticated owner-supplied trust snapshot, never derived from a token.
+#[derive(Clone)]
 pub struct Snapshot {
     /// Environment whose public issuer keys were authenticated by the owner.
     pub environment: String,

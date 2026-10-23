@@ -109,7 +109,7 @@ pub struct VerifiedCapability {
 /// authority must still be checked against current trust/time at each admission.
 pub fn verify(
     bytes: &[u8],
-    trust: &impl Trust,
+    trust: &(impl Trust + ?Sized),
     now_unix_seconds: u64,
 ) -> Result<VerifiedCapability, VerifyError> {
     let envelope = wire::decode(bytes)?;
@@ -256,7 +256,11 @@ impl VerifiedCapability {
     }
 
     /// Recheck the current trust snapshot and clock without repeating signatures.
-    pub fn check(&self, trust: &impl Trust, now_unix_seconds: u64) -> Result<(), VerifyError> {
+    pub fn check(
+        &self,
+        trust: &(impl Trust + ?Sized),
+        now_unix_seconds: u64,
+    ) -> Result<(), VerifyError> {
         if now_unix_seconds < self.not_before || now_unix_seconds >= self.expires_at {
             return Err(VerifyError::Time);
         }
@@ -318,7 +322,7 @@ impl VerifiedCapability {
     /// Authorize against fresh revocations/time and the owner's policy result.
     pub fn authorize(
         &self,
-        trust: &impl Trust,
+        trust: &(impl Trust + ?Sized),
         request: &authority::Request<'_>,
         policy: authority::PolicyDecision,
     ) -> Result<(), VerifyError> {
