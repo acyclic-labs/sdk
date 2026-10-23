@@ -70,7 +70,7 @@ async fn same_client_discovers_replacement_after_idle_close() -> TestResult {
         let client = Client::with_transport(
             endpoint.clone(),
             Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
-            Arc::new(super::super::super::runtime::PlatformExecutor),
+            Arc::new(crate::runtime::PlatformExecutor),
         );
         client.register_credential(0, crate::session::testing::credential())?;
         let mut first = client

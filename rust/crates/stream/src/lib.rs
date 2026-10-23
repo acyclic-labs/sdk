@@ -25,6 +25,7 @@ pub mod http_response;
 pub mod persistence;
 pub mod preparation;
 pub mod request;
+pub mod runtime;
 #[cfg(any(
     all(feature = "grpc", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
@@ -159,8 +160,8 @@ pub use path::StreamPath;
 
 include!("lib/domain.rs");
 
-mod record_headers;
 mod changes;
+mod record_headers;
 pub use changes::ChangeEntryRef;
 pub use record_headers::{
     MAX_RECORD_ATTRIBUTES, MAX_RECORD_KEY_BYTES, MAX_RECORD_KEYS, RecordHeaders,

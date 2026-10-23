@@ -1,9 +1,9 @@
 //! Deterministic executor and local platform I/O for the real Streams pool.
 use acyclic_stream::{
     BoxProviderFuture, StreamError, StreamProvider,
+    runtime::Executor,
     session::{
         self, Client,
-        runtime::Executor,
         transport::{Endpoint, Requests, Responses, Transport},
     },
     wire,

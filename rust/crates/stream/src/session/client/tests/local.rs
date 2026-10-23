@@ -9,7 +9,7 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
         let client = Client::in_process(
             provider.clone(),
             crate::session::testing::authority(),
-            Arc::new(super::super::super::runtime::PlatformExecutor),
+            Arc::new(crate::runtime::PlatformExecutor),
         );
         client.register_credential(0, crate::session::testing::credential())?;
         let path = StreamPath::new("events")?;

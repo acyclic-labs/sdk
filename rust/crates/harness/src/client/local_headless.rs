@@ -114,7 +114,7 @@ impl LocalFileClient {
         .await?;
         let mut subscription = crate::package::harness::CommandSubscription::start(
             local.clone(),
-            &acyclic_stream::session::runtime::PlatformExecutor,
+            &acyclic_stream::runtime::PlatformExecutor,
             operation,
             true,
         );

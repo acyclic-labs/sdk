@@ -13,7 +13,7 @@ struct Worker {
 }
 
 struct HostExecutor(Mutex<Option<AbortRegistration>>);
-impl acyclic_stream::session::runtime::Executor for HostExecutor {
+impl acyclic_stream::runtime::Executor for HostExecutor {
     fn spawn(&self, future: BoxProviderFuture<'static, ()>) {
         if let Some(registration) = self
             .0
@@ -27,8 +27,8 @@ impl acyclic_stream::session::runtime::Executor for HostExecutor {
         }
     }
     fn sleep(&self, milliseconds: u32) -> BoxProviderFuture<'static, ()> {
-        acyclic_stream::session::runtime::Executor::sleep(
-            &acyclic_stream::session::runtime::PlatformExecutor,
+        acyclic_stream::runtime::Executor::sleep(
+            &acyclic_stream::runtime::PlatformExecutor,
             milliseconds,
         )
     }

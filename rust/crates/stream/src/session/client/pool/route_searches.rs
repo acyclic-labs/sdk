@@ -35,7 +35,7 @@ impl<S: tracing::Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Observer {
     }
 }
 struct Immediate;
-impl super::super::super::runtime::Executor for Immediate {
+impl crate::runtime::Executor for Immediate {
     fn spawn(&self, task: BoxProviderFuture<'static, ()>) {
         assert_eq!(
             task.now_or_never(),

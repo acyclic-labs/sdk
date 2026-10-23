@@ -1,5 +1,6 @@
 //! In-process platform I/O over the same multiplexed session implementation.
-use super::{Client, Limits, runtime::Executor, transport};
+use super::{Client, Limits, transport};
+use crate::runtime::Executor;
 use crate::{BoxProviderFuture, StreamError, StreamProvider};
 use futures::StreamExt as _;
 use std::sync::Arc;

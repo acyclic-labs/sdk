@@ -55,7 +55,7 @@ impl WasmStream {
         self.session = Some(crate::session::Client::in_process(
             self.provider.clone(),
             authority.authority.clone(),
-            std::sync::Arc::new(crate::session::runtime::PlatformExecutor),
+            std::sync::Arc::new(crate::runtime::PlatformExecutor),
         ));
         Ok(())
     }
@@ -64,8 +64,11 @@ impl WasmStream {
     #[wasm_bindgen(js_name = registerCredential)]
     pub fn register_credential(&self, slot: u32, credential: &[u8]) -> Result<(), JsValue> {
         check_command_size(credential)?;
-        self.session.as_ref().ok_or_else(|| js_error(StreamError::Unsupported))?
-            .register_credential(slot, bytes::Bytes::copy_from_slice(credential)).map_err(js_error)
+        self.session
+            .as_ref()
+            .ok_or_else(|| js_error(StreamError::Unsupported))?
+            .register_credential(slot, bytes::Bytes::copy_from_slice(credential))
+            .map_err(js_error)
     }
 
     /// Connects canonical platform RPCs and shared push follows. Credentials stay live.

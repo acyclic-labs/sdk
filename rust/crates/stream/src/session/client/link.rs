@@ -224,7 +224,11 @@ impl Pool {
         };
         let capacity = u32::try_from(route.records.capacity())
             .map_err(|_| StreamError::Capacity)?
-            .min(u32::try_from(QUEUE).map_err(|_| StreamError::Capacity)?.saturating_sub(route.buffered_data));
+            .min(
+                u32::try_from(QUEUE)
+                    .map_err(|_| StreamError::Capacity)?
+                    .saturating_sub(route.buffered_data),
+            );
         let grant = wire::SessionWindow {
             frames: capacity.saturating_sub(route.credit.frames),
             bytes: (u64::from(capacity)
@@ -344,7 +348,7 @@ async fn open_link(
     destination: &str,
     identity: Bytes,
     credentials: BTreeMap<u32, Bytes>,
-    executor: std::sync::Arc<dyn super::super::runtime::Executor>,
+    executor: std::sync::Arc<dyn crate::runtime::Executor>,
 ) -> Result<Ready, StreamError> {
     for attempt in 0..3 {
         let mut observation = Observation::session(attempt);

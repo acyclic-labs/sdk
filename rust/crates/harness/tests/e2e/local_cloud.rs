@@ -416,7 +416,7 @@ fn swarm_refusal() -> acyclic_harness::Error {
 async fn native_swarm_client_follows_a_loopback_session_and_detects_divergence() -> TestResult {
     let reply = "Plan the work.";
     let memory = Arc::new(MemoryStream::default());
-    let executor = Arc::new(acyclic_stream::session::runtime::PlatformExecutor);
+    let executor = Arc::new(acyclic_stream::runtime::PlatformExecutor);
     let in_process = acyclic_stream::session::Client::in_process(
         memory.clone(),
         acyclic_stream::session::testing::authority(),

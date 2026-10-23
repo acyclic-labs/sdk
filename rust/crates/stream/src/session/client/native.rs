@@ -117,7 +117,7 @@ impl Client {
         Self::with_transport(
             home,
             connect,
-            std::sync::Arc::new(super::super::runtime::PlatformExecutor),
+            std::sync::Arc::new(crate::runtime::PlatformExecutor),
         )
     }
 }

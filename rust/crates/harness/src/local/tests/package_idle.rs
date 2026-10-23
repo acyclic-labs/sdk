@@ -1,7 +1,7 @@
 //! Idle attachments release the package host, including its final strong owner.
 use super::*;
 use crate::package::harness::CommandSubscription;
-use acyclic_stream::session::runtime::{Executor, PlatformExecutor};
+use acyclic_stream::runtime::{Executor, PlatformExecutor};
 
 pub(super) struct ObservedExecutor {
     pub(super) finished: Mutex<Option<futures::channel::oneshot::Sender<()>>>,

@@ -56,7 +56,7 @@ pub async fn with_local_commands<T, E: From<Error>>(
 ) -> std::result::Result<T, E> {
     let mut subscription = crate::package::harness::CommandSubscription::start(
         local,
-        &acyclic_stream::session::runtime::PlatformExecutor,
+        &acyclic_stream::runtime::PlatformExecutor,
         session,
         false,
     );

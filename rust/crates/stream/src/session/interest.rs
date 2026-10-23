@@ -272,7 +272,7 @@ fn follow_source<P: StreamProvider + ?Sized>(
     preceding: Option<crate::CommitId>,
     filter: crate::FollowFilter,
     identity: wire::SessionChannel,
-    executor: Arc<dyn runtime::Executor>,
+    executor: Arc<dyn crate::runtime::Executor>,
 ) -> Source {
     let state = (
         provider,

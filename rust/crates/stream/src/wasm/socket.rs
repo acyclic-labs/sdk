@@ -232,6 +232,6 @@ pub(super) fn sessions(endpoint: Endpoint) -> crate::session::Client {
                     as crate::session::transport::Endpoint)
             })
         }),
-        Arc::new(crate::session::runtime::PlatformExecutor),
+        Arc::new(crate::runtime::PlatformExecutor),
     )
 }

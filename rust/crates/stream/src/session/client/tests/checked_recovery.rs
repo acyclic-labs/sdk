@@ -1,5 +1,5 @@
 use super::*;
-use crate::{CommitId, session::runtime::PlatformExecutor};
+use crate::{CommitId, runtime::PlatformExecutor};
 use proptest::prelude::*;
 
 #[derive(Default)]

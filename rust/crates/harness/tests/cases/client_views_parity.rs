@@ -8,9 +8,7 @@ use acyclic_harness::{
     task_volume::{Channel, Cursor, FileKey, Query, TaskVolume, Write},
 };
 use acyclic_stream::{
-    MemoryStream, StreamPath, StreamProvider,
-    session::{Client, runtime::PlatformExecutor},
-    wire,
+    MemoryStream, StreamPath, StreamProvider, runtime::PlatformExecutor, session::Client, wire,
 };
 use futures::{FutureExt as _, channel::oneshot};
 use js_sys::{Array, Uint8Array};

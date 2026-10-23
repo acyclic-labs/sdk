@@ -78,7 +78,7 @@ const FRAME_BYTES: u64 = crate::MAX_RECORD_BYTES as u64 + 128;
 #[derive(Clone)]
 pub struct Client {
     connections: super::Connections,
-    executor: std::sync::Arc<dyn super::runtime::Executor>,
+    executor: std::sync::Arc<dyn crate::runtime::Executor>,
     commands: mpsc::Sender<Command>,
     removed: Arc<signal::Signal<u64>>,
     next_id: Arc<AtomicU64>,
@@ -222,7 +222,7 @@ struct Link {
 struct Pool {
     credentials: BTreeMap<u32, Bytes>,
     connections: super::Connections,
-    executor: std::sync::Arc<dyn super::runtime::Executor>,
+    executor: std::sync::Arc<dyn crate::runtime::Executor>,
     identity: Bytes,
     connect: std::sync::Arc<transport::Connect>,
     home: String,
@@ -261,7 +261,7 @@ impl Client {
     pub fn with_transport(
         channel: Endpoint,
         connect: std::sync::Arc<transport::Connect>,
-        executor: std::sync::Arc<dyn super::runtime::Executor>,
+        executor: std::sync::Arc<dyn crate::runtime::Executor>,
     ) -> Self {
         let (commands, receiver) = mpsc::channel(crate::MAX_ITEMS);
         let connections = super::Connections::new();

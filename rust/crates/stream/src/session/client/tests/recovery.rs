@@ -40,7 +40,7 @@ async fn check_recovery(terminal: bool) -> TestResult {
             terminal,
         }),
         std::sync::Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
-        std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
+        std::sync::Arc::new(crate::runtime::PlatformExecutor),
     );
     client.register_credential(0, crate::session::testing::credential())?;
     let mut records = client

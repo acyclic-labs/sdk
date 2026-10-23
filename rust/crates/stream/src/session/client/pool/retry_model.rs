@@ -1,5 +1,5 @@
 use super::*;
-use crate::session::runtime::Executor;
+use crate::runtime::Executor;
 
 struct Clock {
     release: Arc<gate::Gate>,

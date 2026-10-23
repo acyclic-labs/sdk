@@ -11,7 +11,7 @@ use proptest::{
 use std::sync::Arc;
 
 struct Unpolled;
-impl acyclic_stream::session::runtime::Executor for Unpolled {
+impl acyclic_stream::runtime::Executor for Unpolled {
     fn spawn(&self, _: acyclic_stream::BoxProviderFuture<'static, ()>) {}
     fn sleep(&self, _: u32) -> acyclic_stream::BoxProviderFuture<'static, ()> {
         Box::pin(futures::future::pending())

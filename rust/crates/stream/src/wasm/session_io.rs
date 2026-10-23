@@ -1,6 +1,7 @@
 //! Binary platform callbacks for the canonical session client, also on Node/Bun.
 use super::*;
-use crate::session::{Client, runtime::PlatformExecutor, transport};
+use crate::runtime::PlatformExecutor;
+use crate::session::{Client, transport};
 use futures::{
     Stream,
     future::{AbortHandle, Abortable},

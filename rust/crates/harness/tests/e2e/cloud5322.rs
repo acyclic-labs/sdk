@@ -95,7 +95,7 @@ pub(super) async fn required_pass() -> TestResult {
     let swarm = timed("required SwarmClient::follow", async {
         let session = remote.session_client()?;
         let baseline = Arc::new(MemoryStream::default());
-        let executor = Arc::new(acyclic_stream::session::runtime::PlatformExecutor);
+        let executor = Arc::new(acyclic_stream::runtime::PlatformExecutor);
         let local = acyclic_stream::session::Client::in_process(
             baseline.clone(),
             acyclic_stream::session::testing::authority(),

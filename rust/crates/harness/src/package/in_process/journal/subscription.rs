@@ -33,7 +33,7 @@ impl<P: StreamProvider> InProcessRuntime<P> {
     /// complete handler/effect lifetime; the returned value observes settlement.
     pub fn subscribe(
         self: &Arc<Self>,
-        executor: &dyn acyclic_stream::session::runtime::Executor,
+        executor: &dyn acyclic_stream::runtime::Executor,
         placement: Placement,
     ) -> ActorSubscription {
         let runtime = self.clone();

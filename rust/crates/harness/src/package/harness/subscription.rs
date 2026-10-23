@@ -5,7 +5,7 @@ use crate::{
     local::LocalHarness,
     task_volume::FileValue,
 };
-use acyclic_stream::session::runtime::Executor;
+use acyclic_stream::runtime::Executor;
 use futures::{channel::oneshot, future::Either};
 use std::{
     future::Future,

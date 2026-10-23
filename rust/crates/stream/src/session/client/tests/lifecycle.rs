@@ -5,7 +5,7 @@ fn waiting_client() -> (Client, mpsc::Receiver<Command>) {
     (
         Client {
             connections: super::super::super::Connections::new(),
-            executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
+            executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
             commands,
             removed: Arc::new(signal::Signal::new()),
             next_id: Arc::new(AtomicU64::new(1)),
@@ -31,7 +31,9 @@ async fn registration_deadline_removes_only_the_stalled_interest() -> TestResult
     let Some(Command::Open(open)) = commands.recv().await else {
         return Err("missing registration".into());
     };
-    let OpenCommand { id, ready: _held, .. } = *open;
+    let OpenCommand {
+        id, ready: _held, ..
+    } = *open;
     let mut healthy = Box::pin(client.follow(
         StreamPath::new("healthy")?,
         0,
@@ -41,7 +43,11 @@ async fn registration_deadline_removes_only_the_stalled_interest() -> TestResult
     let Some(Command::Open(open)) = commands.recv().await else {
         return Err("missing sibling".into());
     };
-    let OpenCommand { id: healthy_id, ready, .. } = *open;
+    let OpenCommand {
+        id: healthy_id,
+        ready,
+        ..
+    } = *open;
     ready
         .send(Ok(healthy_id))
         .map_err(|_| "sibling cancelled")?;

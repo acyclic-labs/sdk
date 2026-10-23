@@ -10,7 +10,7 @@ use crate::{
 };
 use acyclic_stream::{
     BoxProviderFuture, BoxProviderStream, StreamError, StreamProvider,
-    session::runtime::{Executor, PlatformExecutor},
+    runtime::{Executor, PlatformExecutor},
     wire,
 };
 use futures::{FutureExt as _, StreamExt as _};

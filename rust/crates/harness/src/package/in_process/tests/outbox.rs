@@ -108,7 +108,7 @@ fn machine() -> Arc<Machine> {
 #[derive(Default)]
 struct RuntimeExecutor(std::sync::Mutex<Option<BoxProviderFuture<'static, ()>>>);
 
-impl acyclic_stream::session::runtime::Executor for RuntimeExecutor {
+impl acyclic_stream::runtime::Executor for RuntimeExecutor {
     fn spawn(&self, future: BoxProviderFuture<'static, ()>) {
         assert!(self.0.lock().unwrap().replace(future).is_none());
     }

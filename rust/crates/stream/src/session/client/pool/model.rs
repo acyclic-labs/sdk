@@ -23,7 +23,7 @@ pub fn verify_abandoned_reconnect(broken: bool) {
             let (commands, _) = mpsc::channel(2);
             let client = Client {
                 connections: super::super::super::Connections::new(),
-                executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
+                executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
                 commands,
                 removed: Arc::clone(&pool.removed),
                 next_id: Arc::new(AtomicU64::new(1)),
@@ -131,7 +131,7 @@ pub fn verify_pool_lifetime(fault: u8) {
         let (commands, _) = mpsc::channel(2);
         let client = Client {
             connections: super::super::super::Connections::new(),
-            executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
+            executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
             commands,
             removed: Arc::clone(&pool.removed),
             next_id: Arc::new(AtomicU64::new(1)),
@@ -237,7 +237,7 @@ pub fn verify_interest_accounting(operations: Vec<(u8, bool)>) {
         let (commands, _) = mpsc::channel(2);
         let client = Client {
             connections: super::super::super::Connections::new(),
-            executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
+            executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
             commands,
             removed: Arc::new(signal::Signal::new()),
             next_id: Arc::new(AtomicU64::new(1)),
@@ -416,7 +416,7 @@ pub fn verify_registration_deadline(broken: bool) {
             let (commands, _commands) = mpsc::channel(1);
             let client = Client {
                 connections: super::super::super::Connections::new(),
-                executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
+                executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
                 commands,
                 removed: Arc::new(signal::Signal::new()),
                 next_id: Arc::new(AtomicU64::new(1)),
@@ -516,7 +516,7 @@ pub fn verify_node_dials(fault: u8) {
             }
             let client = Client {
                 connections: super::super::super::Connections::new(),
-                executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
+                executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
                 commands: mpsc::channel(2).0,
                 removed: Arc::clone(&pool.removed),
                 next_id: Arc::new(AtomicU64::new(5)),
@@ -629,7 +629,7 @@ pub fn verify_terminal_cursor_dial(broken: bool) {
         pool.routes.get_mut(&1).unwrap().node = "good".into();
         let client = Client {
             connections: super::super::super::Connections::new(),
-            executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
+            executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
             commands: mpsc::channel(2).0,
             removed: Arc::clone(&pool.removed),
             next_id: Arc::new(AtomicU64::new(5)),

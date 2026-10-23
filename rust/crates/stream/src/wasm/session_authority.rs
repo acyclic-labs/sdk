@@ -1,6 +1,7 @@
 //! Explicit owner-authenticated public trust for browser-local sessions.
 use super::*;
-use crate::session::{Authority, AuthorityState, TrustSnapshot, runtime::Executor};
+use crate::runtime::Executor;
+use crate::session::{Authority, AuthorityState, TrustSnapshot};
 use acyclic_auth::{trust::Snapshot, verify::VerifyError};
 use std::sync::{Arc, Mutex};
 
@@ -58,8 +59,7 @@ impl AuthorityState for State {
     }
     fn expires_at(&self, unix_seconds: u64) -> crate::BoxProviderFuture<'_, ()> {
         let milliseconds = (unix_seconds as f64 * 1000.0 - Date::now()).max(0.0);
-        crate::session::runtime::PlatformExecutor
-            .sleep(milliseconds.min(f64::from(i32::MAX)) as u32)
+        crate::runtime::PlatformExecutor.sleep(milliseconds.min(f64::from(i32::MAX)) as u32)
     }
 }
 
