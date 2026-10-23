@@ -73,7 +73,6 @@ pub struct LocalHarness {
     scratch: VolumeRef,
     journal: VolumeRef,
     verifier: AuthorityVerifier,
-    issuer: Option<AuthorityIssuer>,
     signed: Scope,
     model: Model,
     /// Unbound: each model command binds it to its executing task's reader.

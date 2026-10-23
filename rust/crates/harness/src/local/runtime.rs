@@ -150,6 +150,7 @@ pub(super) async fn open(
         None,
     )
     .await?
+    .with_authority_custodian(config.issuer)?
     .with_output_volume(config.project, None)?
     .with_task_files(task_files.clone())?;
     runtime.bind_task_files(Some(projection_files.clone()));

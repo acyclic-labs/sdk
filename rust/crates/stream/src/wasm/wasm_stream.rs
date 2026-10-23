@@ -14,13 +14,9 @@ impl WasmStream {
     pub fn new() -> Self {
         let provider: std::sync::Arc<dyn StreamProvider> =
             std::sync::Arc::new(MemoryStream::default());
-        let session = crate::session::Client::in_process(
-            provider.clone(),
-            std::sync::Arc::new(crate::session::runtime::PlatformExecutor),
-        );
         Self {
             connections: None,
-            session: Some(session),
+            session: None,
             provider,
         }
     }
@@ -42,15 +38,34 @@ impl WasmStream {
                 .await
                 .map_err(js_error)?,
         );
-        let session = crate::session::Client::in_process(
-            provider.clone(),
-            std::sync::Arc::new(crate::session::runtime::PlatformExecutor),
-        );
         Ok(Self {
             connections: None,
-            session: Some(session),
+            session: None,
             provider,
         })
+    }
+
+    /// Binds the local session to an authenticated public trust feed supplied by
+    /// the owning runtime. A bare provider has no implicit session authority.
+    #[wasm_bindgen(js_name = bindSession)]
+    pub fn bind_session(&mut self, authority: &WasmSessionAuthority) -> Result<(), JsValue> {
+        if self.session.is_some() || self.connections.is_some() {
+            return Err(js_error(StreamError::InvalidArgument));
+        }
+        self.session = Some(crate::session::Client::in_process(
+            self.provider.clone(),
+            authority.authority.clone(),
+            std::sync::Arc::new(crate::session::runtime::PlatformExecutor),
+        ));
+        Ok(())
+    }
+
+    /// Adds, renews or drops a local or remote session credential slot.
+    #[wasm_bindgen(js_name = registerCredential)]
+    pub fn register_credential(&self, slot: u32, credential: &[u8]) -> Result<(), JsValue> {
+        check_command_size(credential)?;
+        self.session.as_ref().ok_or_else(|| js_error(StreamError::Unsupported))?
+            .register_credential(slot, bytes::Bytes::copy_from_slice(credential)).map_err(js_error)
     }
 
     /// Connects canonical platform RPCs and shared push follows. Credentials stay live.

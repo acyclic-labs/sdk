@@ -16,7 +16,7 @@ mod filtered_follow_tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod follow_tests;
-#[cfg(feature = "grpc")]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub mod grpc;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
@@ -69,7 +69,7 @@ pub use follow_filter::FollowFilter;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-pub use wasm::WasmStream;
+pub use wasm::{WasmSessionAuthority, WasmStream};
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.
 pub mod wire_codec;
 

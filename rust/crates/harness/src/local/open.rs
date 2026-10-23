@@ -347,7 +347,6 @@ impl Opening {
             scratch,
             journal,
             verifier,
-            issuer: Some(issuer),
             signed,
             model: self.config.model.0,
             provider: self.config.model.1,

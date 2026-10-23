@@ -22,6 +22,9 @@ include!("validation.rs");
 
 include!("projection.rs");
 
+mod session_authority;
+pub use session_authority::WasmSessionAuthority;
+
 include!("wasm_stream.rs");
 
 include!("follow_state.rs");

@@ -35,6 +35,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 mod deadline;
+mod authority_custodian;
 mod inspection;
 mod reconciliation;
 pub use inspection::TaskSourceInspection;
@@ -265,6 +266,7 @@ pub struct FilesystemTaskRuntime<P, A, O> {
     volume: VolumeRef,
     verifier: AuthorityVerifier,
     signed: Scope,
+    authority_custodian: Option<crate::core::AuthorityIssuer>,
     tools: ToolRegistry,
     maximum_payload_bytes: u64,
     policy: Option<Arc<dyn ToolPolicy>>,

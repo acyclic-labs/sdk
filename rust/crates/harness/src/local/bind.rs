@@ -223,7 +223,6 @@ impl BoundComposition {
             scratch: volume.clone(),
             journal: volume,
             verifier,
-            issuer: None,
             signed,
             model,
             provider,

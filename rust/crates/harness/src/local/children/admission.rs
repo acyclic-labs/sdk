@@ -136,17 +136,12 @@ impl LocalHarness {
                 ));
             }
         };
-        let issuer = self
-            .issuer
-            .as_ref()
-            .ok_or_else(|| Error::Unauthorized("child source has no issuing authority".into()))?;
-        let signed = issuer.issue(
-            "child-source",
-            context.scope().grants(),
-            Some(source_agent),
-            None,
-            &mut None,
-        )?;
+        let signed = self.runtime.fork_source_scope(parent, fence.clone()).await?;
+        if signed.agent() != Some(source_agent)
+            || signed.capabilities() != context.scope().grants()
+        {
+            return Err(Error::Unauthorized("child source differs from its retained admission".into()));
+        }
         let verifier = self.verifier.clone();
         let reducer = Reducer::new(
             verifier.audience().clone(),

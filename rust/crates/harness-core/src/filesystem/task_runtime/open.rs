@@ -325,6 +325,7 @@ where
             volume,
             verifier,
             signed,
+            authority_custodian: None,
             tools,
             maximum_payload_bytes,
             policy,
