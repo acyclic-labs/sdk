@@ -19,9 +19,11 @@ async fn fixture() -> TestResult<(Engine, Arc<MemoryStream>, Space)> {
 }
 fn credential(name: &str) -> Vec<u8> {
     signed::root(|block| {
-        block.certificates.as_mut().unwrap().keys[0].key.grants = GrantSet { grants: vec![Grant {
+        for certificate in block.certificates.iter_mut().flat_map(|chain| chain.keys.iter_mut()).take(1) {
+            certificate.key.grants = GrantSet { grants: vec![Grant {
             kind: GrantKind::Resource(ResourceGrant { resource: ResourcePattern { name: name.into(), prefix: true }, actions: vec!["fs/list".into()] }),
         }] };
+        }
     })
 }
 async fn subscribe(fs: Engine, streams: Arc<MemoryStream>, volume: VolumeId, path: &str) -> TestResult<ResourceSubscription> {

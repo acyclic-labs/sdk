@@ -104,11 +104,11 @@ async fn copy_cut(
                 mutations: vec![
                     CommitMutation::Append {
                         path: canonical_path,
-                        records: vec![canonical.clone()],
+                        records: vec![canonical.clone().into()],
                     },
                     CommitMutation::Append {
                         path: proof_path,
-                        records: vec![certificate],
+                        records: vec![certificate.into()],
                     },
                 ],
                 idempotency_key: acyclic_stream::IdempotencyKey::new("copied-effect-cut")?,

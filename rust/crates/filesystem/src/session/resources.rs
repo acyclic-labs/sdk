@@ -87,7 +87,7 @@ where
                     match deadline_rx.await {
                         Ok(Some(deadline)) => terminal.authorization.expires_at(deadline).await,
                         Ok(None) => future::pending().await,
-                        Err(_) => return,
+                        Err(_) => (),
                     }
                 };
                 let _ = future::select(Box::pin(terminal.watch.changed()), Box::pin(deadline)).await;
@@ -104,7 +104,7 @@ where
                 *opened.trie.lock().map_err(|_| StreamError::AccessDenied)? = Some(trie.clone());
                 opened.validate()?;
                 let path = StreamPath::new(format!(".acyclic/fs/{}", hex::encode(volume_id.into_bytes())))?;
-                let filter = request.authorization.filter_paths(&resource(volume_id, "")?, request.filter)?;
+                let filter = request.authorization.filter_paths(&resource(volume_id, "")?, &request.filter)?;
                 let records = streams.follow_updates(path, request.from, request.preceding, filter).await?;
                 opened.validate()?;
                 let output = records.map(move |update| {

@@ -226,7 +226,6 @@ pub use directory::DirectoryRecordPage;
 pub use directory::PathMetadataLookup;
 pub use directory::ResolvedDirectoryEntry;
 pub use directory::ResolvedDirectoryPage;
-pub(crate) use directory::list_directory_records_to_file_root_with_accounting;
 pub use error::FsError;
 use error::map_merge_failure;
 use error::map_transfer_error;

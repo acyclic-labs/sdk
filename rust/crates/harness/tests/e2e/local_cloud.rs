@@ -157,7 +157,12 @@ async fn loopback<P: StreamProvider + 'static>(provider: Arc<P>) -> TestResult<L
             ))
             .add_service(
                 wire::stream_session_service_server::StreamSessionServiceServer::new(
-                    session::Service::new(provider, "loopback".into(), session::Limits::default()),
+                    session::Service::new(
+                        provider,
+                        acyclic_stream::session::testing::authority(),
+                        "loopback".into(),
+                        session::Limits::default(),
+                    ),
                 ),
             )
             .serve_with_incoming(incoming),
@@ -166,6 +171,7 @@ async fn loopback<P: StreamProvider + 'static>(provider: Arc<P>) -> TestResult<L
     let remote = Remote {
         endpoint,
         bearer: "loopback".into(),
+        workload: acyclic_stream::session::testing::credential().to_vec(),
         ca_file: ca.path().join("ca.pem"),
     };
     std::fs::write(&remote.ca_file, certificate.cert.pem())?;
@@ -221,14 +227,20 @@ impl StreamProvider for Refusing {
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.0.read(request).await
     }
-    async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        self.0.follow(path, from).await
+    async fn follow(
+        &self,
+        path: StreamPath,
+        from: u64,
+        filter: acyclic_stream::FollowFilter,
+    ) -> Result<RecordStream, StreamError> {
+        self.0.follow(path, from, filter).await
     }
     async fn follow_checked(
         &self,
         _: StreamPath,
         _: u64,
         _: CommitId,
+        _: acyclic_stream::FollowFilter,
     ) -> Result<RecordStream, StreamError> {
         Err(self.1.clone())
     }
@@ -393,7 +405,12 @@ async fn native_swarm_client_follows_a_loopback_session_and_detects_divergence()
     let reply = "Plan the work.";
     let memory = Arc::new(MemoryStream::default());
     let executor = Arc::new(acyclic_stream::session::runtime::PlatformExecutor);
-    let in_process = acyclic_stream::session::Client::in_process(memory.clone(), executor);
+    let in_process = acyclic_stream::session::Client::in_process(
+        memory.clone(),
+        acyclic_stream::session::testing::authority(),
+        executor,
+    );
+    in_process.register_credential(0, acyclic_stream::session::testing::credential())?;
     let left = remote_swarm::follow(memory, &in_process, "swarm", reply).await?;
     let shared = loopback(Arc::new(MemoryStream::default())).await?;
     let session = shared.client.session_client()?;

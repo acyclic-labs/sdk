@@ -16,7 +16,7 @@ pub(crate) fn verify(retain_pending: bool, children: bool, memory: bool) {
         let path = StreamPath::new("watched").unwrap();
         block_on(provider.inner.provider.append(AppendRequest {
             path: path.clone(),
-            records: vec![crate::OwnedBytes::from_static(b"seed")],
+            records: vec![crate::OwnedBytes::from_static(b"seed").into()],
             if_tail: None,
             idempotency_key: None,
         }))
@@ -76,7 +76,7 @@ pub(crate) fn abandon(
         let path = StreamPath::new("watched").unwrap();
         block_on(provider.inner.provider.append(AppendRequest {
             path: path.clone(),
-            records: vec![crate::OwnedBytes::from_static(b"seed")],
+            records: vec![crate::OwnedBytes::from_static(b"seed").into()],
             if_tail: None,
             idempotency_key: None,
         }))

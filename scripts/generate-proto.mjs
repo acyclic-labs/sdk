@@ -16,7 +16,7 @@ export function generateProto(packages = new Set(packagedTypeScriptBindings.flat
   if (bindings.length === 0) return;
   const paths = bindings.map(([stem]) => {
     const family = stem.split("/")[0];
-    const owner = family === "protocol" || family === "harness" ? "harness-core" : family === "validation" ? "contract-derive" : family;
+    const owner = family === "protocol" || family === "harness" ? "harness-core" : family === "validation" ? "contract-derive" : family === "filesystem" ? "filesystem-wire" : family;
     return `rust/crates/${owner}/proto/${stem.replace(/_pb$/, ".proto")}`;
   });
   /** @type {Map<string, Set<string>>} */

@@ -61,7 +61,7 @@ pub enum SwarmChange {
         /// Decoded file delta when this is selected content.
         file: Option<FileValue>,
         /// Original platform delivery.
-        data: wire::SessionData,
+        data: Box<wire::SessionData>,
     },
     /// Durability advanced without consuming a file record.
     Watermark {
@@ -322,7 +322,7 @@ impl ClientViews {
                     agent,
                     overview: false,
                     file: change.file,
-                    data,
+                    data: Box::new(data),
                 })
             }
             SwarmUpdate::Data {
@@ -336,7 +336,7 @@ impl ClientViews {
                     agent,
                     overview: true,
                     file: None,
-                    data,
+                    data: Box::new(data),
                 })
             }
             SwarmUpdate::Watermark {
@@ -355,7 +355,7 @@ impl ClientViews {
                     .ok_or_else(|| {
                         Error::Conflict("content watermark arrived before its snapshot".into())
                     })?;
-                files.session_watermark(watermark)?;
+                files.session_watermark(&watermark)?;
                 Ok(SwarmChange::Watermark {
                     agent,
                     overview: false,

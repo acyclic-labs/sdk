@@ -43,7 +43,38 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             return Err(StreamError::Capacity);
         }
         // Validate and stage the whole diff before changing the active set.
-        // Provider opens run independently; refusal closes only that channel.
+        fn follow_parameters(follow: &wire::SessionFollow, resume: &wire::SessionCursor) -> Result<(Option<crate::CommitId>, bool), StreamError> {
+                let preceding = wire_codec::session::preceding_follow(&follow, &resume)?;
+                if !resume.opaque.is_empty() {
+                    return Err(StreamError::InvalidArgument);
+                }
+                let latest = match wire::SessionDelivery::try_from(follow.delivery) {
+                    Ok(wire::SessionDelivery::All) => false,
+                    Ok(wire::SessionDelivery::Latest) => true,
+                    _ => return Err(StreamError::InvalidArgument),
+                };
+    Ok((preceding, latest))
+}
+impl Channel {
+    fn opened(binding: Option<authority::Binding>, identity: wire::SessionChannel, resume: wire::SessionCursor, revalidate: Option<ResourceRevalidation>, latest: bool, opaque_cursor: bool) -> Self {
+        Self {
+            binding,
+            generation: identity.generation,
+            latest,
+            opaque_cursor,
+            revalidate,
+            pending: VecDeque::new(),
+            progress: None,
+            indexed: None,
+            credit: wire::SessionWindow::default(),
+            sent: resume.clone(),
+            applied: resume,
+            ending: None,
+        }
+    }
+}
+
+// Provider opens run independently; refusal closes only that channel.
         let mut opened = Vec::new();
         for subscription in interest.upsert {
             opened.push(self.open(subscription, self.channels.len() - removed + added)?);
@@ -92,64 +123,69 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         let channel = subscription.channel.ok_or(StreamError::InvalidArgument)?;
         let resume = subscription.resume.ok_or(StreamError::InvalidArgument)?;
         let identity = channel;
-        let opaque_cursor = matches!(
-            subscription.kind,
-            Some(Kind::Children(_) | Kind::FsPublications(_))
-        );
+        let opaque_cursor = matches!(subscription.kind, Some(Kind::Children(_)));
         let binding;
         let mut terminal = None;
         let (latest, source, revalidate) = match subscription.kind {
             Some(Kind::Follow(follow)) => {
-                let preceding = wire_codec::session::preceding_follow(&follow, &resume)?;
-                if !resume.opaque.is_empty() {
-                    return Err(StreamError::InvalidArgument);
-                }
-                let latest = match wire::SessionDelivery::try_from(follow.delivery) {
-                    Ok(wire::SessionDelivery::All) => false,
-                    Ok(wire::SessionDelivery::Latest) => true,
-                    _ => return Err(StreamError::InvalidArgument),
-                };
+                let (preceding, latest) = follow_parameters(&follow, &resume)?;
                 if follow.resource.starts_with("fs:/") {
                     // Filesystem changes are typed records, never latest-value
                     // application payloads. Missing owner routing fails closed.
-                    if latest { return Err(StreamError::InvalidArgument); }
+                    if latest {
+                        return Err(StreamError::InvalidArgument);
+                    }
                     let (authorization, filter, context) = match self.authority.bind_resource(
-                        &self.slots, subscription.credential, follow.resource.clone(),
-                        subscription.filter.unwrap_or_default(), channels,
+                        &self.slots,
+                        subscription.credential,
+                        follow.resource.clone(),
+                        subscription.filter.unwrap_or_default(),
+                        channels,
                     ) {
                         Ok(binding) => binding,
                         Err(reason) => return Ok(Admission::Denied(identity, reason)),
                     };
-                    let prepared = self.resources.as_ref().ok_or(StreamError::Unsupported)?.follow(ResourceFollowRequest {
-                        resource: follow.resource, from: resume.next, preceding, filter,
-                        authorization: context,
-                    })?;
+                    let prepared = self
+                        .resources
+                        .as_ref()
+                        .ok_or(StreamError::Unsupported)?
+                        .follow(ResourceFollowRequest {
+                            resource: follow.resource,
+                            from: resume.next,
+                            preceding,
+                            filter,
+                            authorization: context,
+                        })?;
                     binding = Some(authorization);
-                    terminal = Some(publications::terminal(prepared.terminal, identity));
-                    (false, resources::source(prepared.open, identity, preceding), Some(prepared.revalidate))
+                    terminal = Some(resources::terminal(prepared.terminal, identity));
+                    (
+                        false,
+                        resources::source(prepared.open, identity, preceding),
+                        Some(prepared.revalidate),
+                    )
                 } else {
-                let path = wire_codec::session::stream_path(&follow.resource)?;
-                let (authorization, filter) = match self.authority.bind(
-                    &self.slots,
-                    subscription.credential,
-                    &path,
-                    subscription.filter.unwrap_or_default(),
-                    channels,
-                ) {
-                    Ok(binding) => binding,
-                    Err(reason) => return Ok(Admission::Denied(identity, reason)),
-                };
-                binding = Some(authorization);
-                let source = follow_source(
-                    Arc::clone(&self.provider),
-                    path,
-                    resume.next,
-                    preceding,
-                    filter,
-                    identity,
-                    self.executor.clone(),
-                );
-                (latest, source, None)
+                    let path = wire_codec::session::stream_path(&follow.resource)?;
+                    let (authorization, filter) = match self.authority.bind(
+                        &self.slots,
+                        subscription.credential,
+                        &path,
+                        subscription.filter.unwrap_or_default(),
+                        channels,
+                    ) {
+                        Ok(binding) => binding,
+                        Err(reason) => return Ok(Admission::Denied(identity, reason)),
+                    };
+                    binding = Some(authorization);
+                    let source = follow_source(
+                        Arc::clone(&self.provider),
+                        path,
+                        resume.next,
+                        preceding,
+                        filter,
+                        identity,
+                        self.executor.clone(),
+                    );
+                    (latest, source, None)
                 }
             }
             Some(Kind::Children(request)) => {
@@ -185,20 +221,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         };
         Ok(Admission::Open(Box::new(Opened {
             identity,
-            channel: Channel {
-                binding,
-                generation: identity.generation,
-                latest,
-                opaque_cursor,
-                revalidate,
-                pending: VecDeque::new(),
-                progress: None,
-                indexed: None,
-                credit: wire::SessionWindow::default(),
-                sent: resume.clone(),
-                applied: resume,
-                ending: None,
-            },
+            channel: Channel::opened(binding, identity, resume, revalidate, latest, opaque_cursor),
             source,
             terminal,
         })))

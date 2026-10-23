@@ -31,7 +31,7 @@ impl FileViews {
         })
     }
 
-    pub(crate) fn session_watermark(&mut self, value: wire::SessionWatermark) -> Result<()> {
+    pub(crate) fn session_watermark(&mut self, value: &wire::SessionWatermark) -> Result<()> {
         self.watermark(StreamWatermarks {
             accepted: value.accepted,
             durable: value.durable,

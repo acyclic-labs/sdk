@@ -153,6 +153,11 @@ impl FollowFilter {
         Ok(Some(record))
     }
 
+    #[cfg(any(
+        test,
+        all(feature = "grpc", not(target_arch = "wasm32")),
+        all(feature = "wasm", target_arch = "wasm32")
+    ))]
     pub(crate) fn transport_filter(&self) -> Result<wire::SessionFilter, StreamError> {
         let filter = wire::SessionFilter {
             keys: vec![], attributes: vec![],

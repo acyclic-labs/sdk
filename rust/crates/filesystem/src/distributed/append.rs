@@ -52,28 +52,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             });
         }
         let (gate, gate_tail, active) = self.reservation_gate(authority_id, work).await?;
-        let admitted = match permit {
-            PublicationPermit::Unrestricted => active.is_none(),
-            PublicationPermit::Reservation {
-                operation_id,
-                gate_tail: tail,
-                expected: head,
-            } => {
-                tail == gate_tail
-                    && active == Some(OperationId::from_bytes(operation_id))
-                    && head == expected
-            }
-            PublicationPermit::Lease {
-                authority_id: authority,
-                workspace_id,
-                ..
-            } => {
-                active.is_none()
-                    && AuthorityId::from_bytes(authority) == authority_id
-                    && volume_authority_id(crate::WorkspaceId::from_bytes(workspace_id).volume_id())
-                        == authority_id
-            }
-        };
+        let admitted = permits_append(permit, authority_id, expected, gate_tail, active);
         if !admitted {
             return Ok(FsAppendOutcome::Fenced {
                 actual_epoch: snapshot.head.epoch,
@@ -386,4 +365,29 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             Err(error) => Err(error),
         }
     }
+}
+
+fn permits_append(permit: PublicationPermit, authority_id: AuthorityId, expected: Head, gate_tail: u64, active: Option<OperationId>) -> bool {
+     match permit {
+            PublicationPermit::Unrestricted => active.is_none(),
+            PublicationPermit::Reservation {
+                operation_id,
+                gate_tail: tail,
+                expected: head,
+            } => {
+                tail == gate_tail
+                    && active == Some(OperationId::from_bytes(operation_id))
+                    && head == expected
+            }
+            PublicationPermit::Lease {
+                authority_id: authority,
+                workspace_id,
+                ..
+            } => {
+                active.is_none()
+                    && AuthorityId::from_bytes(authority) == authority_id
+                    && volume_authority_id(crate::WorkspaceId::from_bytes(workspace_id).volume_id())
+                        == authority_id
+            }
+        }
 }

@@ -88,7 +88,7 @@ fn settled_archive_reclaims_capacity_and_keeps_history_readable() {
         while let Ok(frame) = observed.try_recv() {
             if let Some(wire::session_frame::Body::Interest(change)) = frame.body {
                 for sub in change.upsert {
-                    if matches!(&sub.kind, Some(wire::session_subscription::Kind::Follow(f)) if f.path == "swarm/a/status" || f.path == "swarm/a/files")
+                    if matches!(&sub.kind, Some(wire::session_subscription::Kind::Follow(f)) if f.resource == "streams:/swarm/a/status" || f.resource == "streams:/swarm/a/files")
                     {
                         owned.push(sub.channel.unwrap().channel_id);
                     }

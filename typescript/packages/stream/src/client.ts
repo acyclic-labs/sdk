@@ -54,6 +54,10 @@ export class StreamClient {
   json(path: string, parse?: (value: JsonValue) => JsonValue): Stream<JsonValue> {
     return new Stream(this.provider, path, parse === undefined ? jsonCodec() : jsonCodec(parse));
   }
+  async registerCredential(slot: number, credential: Uint8Array): Promise<void> {
+    if (this.provider.registerCredential === undefined) throw new StreamError("unsupported", "provider does not support session credentials");
+    await this.provider.registerCredential(slot, credential);
+  }
   bytes(path: string): Stream<Uint8Array> { return new Stream(this.provider, path, bytesCodec); }
   inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
     return this.provider.inspectIdempotency(key.slice() as IdempotencyKey);
@@ -188,6 +192,7 @@ export class Stream<Value = Uint8Array> {
   follow(options: FollowOptions): AsyncIterable<Record<Value>> {
     const authored = {
       from: options.from,
+      ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     };
     return this.followAfterCapture(authored);

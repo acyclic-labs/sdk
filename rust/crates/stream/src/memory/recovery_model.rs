@@ -73,7 +73,7 @@ fn seed(provider: &MemoryStream) -> Result<(StreamPath, CommitId)> {
     let path = StreamPath::new("model")?;
     let outcome = block_on(provider.append(AppendRequest {
         path: path.clone(),
-        records: vec![Bytes::from_static(b"anchor")],
+        records: vec![Bytes::from_static(b"anchor").into()],
         if_tail: Some(0),
         idempotency_key: None,
     }))?;
@@ -149,7 +149,7 @@ fn subscription_and_append(omit_wake: bool) {
                 }
                 block_on(provider.append(AppendRequest {
                     path,
-                    records: vec![Bytes::from_static(b"next")],
+                    records: vec![Bytes::from_static(b"next").into()],
                     if_tail: Some(1),
                     idempotency_key: None,
                 }))
@@ -225,7 +225,7 @@ fn head_fence_and_recovery(ignore_head: bool) {
         let replacement = MemoryStream::default();
         block_on(replacement.append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"replaced")],
+            records: vec![Bytes::from_static(b"replaced").into()],
             if_tail: Some(0),
             idempotency_key: None,
         }))?;
@@ -242,7 +242,7 @@ fn head_fence_and_recovery(ignore_head: bool) {
             }],
             mutations: vec![CommitMutation::Append {
                 path: path.clone(),
-                records: vec![Bytes::from_static(b"obsolete")],
+                records: vec![Bytes::from_static(b"obsolete").into()],
             }],
             idempotency_key: IdempotencyKey::new(Bytes::from_static(b"write"))?,
         };
@@ -316,8 +316,8 @@ pub fn session_registration_and_recovery_never_splice(omit_anchor: bool) {
         block_on(replacement.append(AppendRequest {
             path: path.clone(),
             records: vec![
-                Bytes::from_static(b"replacement"),
-                Bytes::from_static(b"new tail"),
+                Bytes::from_static(b"replacement").into(),
+                Bytes::from_static(b"new tail").into(),
             ],
             if_tail: Some(0),
             idempotency_key: None,
@@ -339,7 +339,12 @@ pub fn session_registration_and_recovery_never_splice(omit_anchor: bool) {
                     .follow(path, cursor.next, crate::FollowFilter::default())
                     .await
             } else {
-                wire_codec::session::follow_records(&provider, &follow, &cursor).await
+                wire_codec::session::follow_records(
+                    &provider,
+                    &follow,
+                    &cursor,
+                )
+                .await
             };
             let error = match registered {
                 Err(error) => error,

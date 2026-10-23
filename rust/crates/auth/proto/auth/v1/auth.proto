@@ -74,6 +74,12 @@ enum PrincipalKind {
   PRINCIPAL_KIND_ANONYMOUS = 5;
 }
 
+message AdmittedCapability {
+  bytes workload = 1;
+  bytes receipt = 2;
+  uint64 admitted_at_unix_seconds = 3;
+}
+
 message Attribute {
   string name = 1;
   bytes value = 2;

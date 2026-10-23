@@ -172,7 +172,9 @@ enum Command {
         slot: u32,
         credential: Bytes,
     },
-    Open {
+    Open(Box<OpenCommand>),
+}
+struct OpenCommand {
         id: u64,
         attempt_epoch: u64,
         acknowledge: bool,
@@ -184,8 +186,8 @@ enum Command {
         records: mpsc::Sender<Result<Delivery, StreamError>>,
         ready: oneshot::Sender<Result<u64, StreamError>>,
         observation: super::runtime::OperationSpan,
-    },
 }
+
 struct Route {
     node: String,
     attempt_epoch: u64,
@@ -641,7 +643,7 @@ impl Client {
         let operation = cursor.observation.operation.clone();
         let registration = async {
             self.commands
-                .send(Command::Open {
+                .send(Command::Open(Box::new(OpenCommand {
                     id,
                     attempt_epoch: self.attempt_epoch.load(Ordering::Acquire),
                     acknowledge,
@@ -653,7 +655,7 @@ impl Client {
                     records,
                     ready,
                     observation: operation.clone(),
-                })
+                })))
                 .await
                 .map_err(|_| StreamError::Unavailable)?;
             let opened_id = opened.await.map_err(|_| StreamError::Unavailable)??;

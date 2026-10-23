@@ -199,18 +199,27 @@ impl StreamProvider for FaultStream {
         self.trip(Op::Read, n, When::After, 0)?;
         result.map(|records| self.items(records, Op::Read, n))
     }
-    async fn follow(&self, path: StreamPath, from: u64) -> Storage<RecordStream> {
-        self.source()?.follow(path, from).await
+    async fn follow(
+        &self,
+        path: StreamPath,
+        from: u64,
+        filter: acyclic_stream::FollowFilter,
+    ) -> Storage<RecordStream> {
+        self.source()?.follow(path, from, filter).await
     }
     async fn follow_checked(
         &self,
         path: StreamPath,
         from: u64,
         preceding: CommitId,
+        filter: acyclic_stream::FollowFilter,
     ) -> Storage<RecordStream> {
         let n = self.call(Op::Follow)?;
         self.trip(Op::Follow, n, When::Before, 0)?;
-        let result = self.source()?.follow_checked(path, from, preceding).await;
+        let result = self
+            .source()?
+            .follow_checked(path, from, preceding, filter)
+            .await;
         self.trip(Op::Follow, n, When::After, 0)?;
         result.map(|records| self.items(records, Op::Follow, n))
     }
@@ -360,7 +369,7 @@ async fn replacement(original: &MemoryStream, loss: Loss) -> Result<Arc<MemorySt
         replacement
             .append(AppendRequest {
                 path: StreamPath::new("task-volume")?,
-                records: vec![header],
+                records: vec![header.into()],
                 if_tail: Some(0),
                 idempotency_key: None,
             })

@@ -138,7 +138,7 @@ fn open(
         .map_err(fail)?;
     boundary(pool, model, wakes & 2 != 0)?;
     let (ready, _opened) = oneshot::channel();
-    let command = Command::Open {
+    let command = Command::Open(Box::new(OpenCommand {
         filter: None,
         credential: 0,
         id,
@@ -154,7 +154,7 @@ fn open(
         records,
         ready,
         observation: cursor.observation.operation.clone(),
-    };
+    }));
     boundary(pool, model, wakes & 4 != 0)?;
     model.open(id);
     if broken {

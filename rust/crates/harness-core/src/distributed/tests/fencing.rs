@@ -366,7 +366,9 @@ async fn passive_suspension_atomically_fences_execution_and_recovers_commit_ack(
                     )?
                     .append_batch(
                         vec![
-                            OwnedBytes::from_static(b"settled observation");
+                            acyclic_stream::AppendRecord::from(OwnedBytes::from_static(
+                                b"settled observation"
+                            ));
                             usize::try_from(tail).map_err(|_| Error::Invalid(
                                 "fixture tail is not representable".into()
                             ))?
@@ -469,7 +471,7 @@ async fn passive_suspension_atomically_fences_execution_and_recovers_commit_ack(
                         ],
                         mutations: vec![acyclic_stream::CommitMutation::Append {
                             path: execution_path(execution, &mut None)?,
-                            records: vec![OwnedBytes::from_static(b"stale dispatch")],
+                            records: vec![OwnedBytes::from_static(b"stale dispatch").into()],
                         }],
                         idempotency_key: stream_key(
                             "stale-idle-dispatch".len(),

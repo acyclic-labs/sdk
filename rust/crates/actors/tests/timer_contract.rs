@@ -112,7 +112,9 @@ async fn due_fire_wakes_follow_once_and_rejects_identity_reuse()
             )?),
         })
         .await?;
-    let mut follow = provider.follow(inbox.clone(), 1).await?;
+    let mut follow = provider
+        .follow(inbox.clone(), 1, acyclic_stream::FollowFilter::default())
+        .await?;
     let mut next = Box::pin(follow.next());
     assert!(poll!(&mut next).is_pending());
     assert!(fire(&provider, &record, inbox.clone(), 19).await?.is_none());

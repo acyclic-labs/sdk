@@ -54,7 +54,11 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         crate::local_admission::submit(&harness, &case.prompt, reader.as_ref()).await?;
     let tool_files = crate::local_tool_files::observe(&harness, task_id, &scripted_calls).await?;
     let mut frames = stream
-        .follow(StreamPath::new("harness/v3/coordinator/events")?, 0)
+        .follow(
+            StreamPath::new("harness/v3/coordinator/events")?,
+            0,
+            acyclic_stream::FollowFilter::default(),
+        )
         .await?;
     let output = harness.resume(task_id).await;
     crate::local_admission::settled(&harness, task_id, status, &case.expect.statuses).await?;

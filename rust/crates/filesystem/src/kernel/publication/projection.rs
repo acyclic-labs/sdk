@@ -1,12 +1,16 @@
 use super::*;
 use crate::kernel::{DecodeLimits, GenerationRoot, MetadataField};
 
+pub(super) struct Candidate<'a> {
+    pub request: PublishGenerationRequest,
+    pub root: &'a GenerationRoot,
+    pub lease: &'a crate::access::projection::Lease,
+}
+
 pub(super) async fn check<O: crate::AsyncObjectStore, A: crate::AsyncAuthorityStore>(
     objects: &O,
     authority: &A,
-    request: PublishGenerationRequest,
-    candidate: &GenerationRoot,
-    lease: &crate::access::projection::Lease,
+    candidate: Candidate<'_>,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -19,9 +23,7 @@ pub(super) async fn check<O: crate::AsyncObjectStore, A: crate::AsyncAuthoritySt
     let result = check_inner(
         objects,
         authority,
-        request,
         candidate,
-        lease,
         limits,
         accounting,
         cancellation,
@@ -46,13 +48,12 @@ pub(super) async fn check<O: crate::AsyncObjectStore, A: crate::AsyncAuthoritySt
 async fn check_inner<O: crate::AsyncObjectStore, A: crate::AsyncAuthorityStore>(
     objects: &O,
     authority: &A,
-    request: PublishGenerationRequest,
-    candidate: &GenerationRoot,
-    lease: &crate::access::projection::Lease,
+    candidate: Candidate<'_>,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(), crate::FsError> {
+    let Candidate { request, root: candidate, lease } = candidate;
     let mut work = match &*accounting {
         #[cfg(not(target_arch = "wasm32"))]
         KernelAccounting::NativeOriginal { work, .. } => {

@@ -243,7 +243,9 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
         super::local_admission::submit(&harness, &case.prompt, reader.as_ref()).await?;
     let stream = local_task_stream(&harness);
     let path = StreamPath::new("harness/v3/coordinator/events")?;
-    let mut frames = stream.follow(path.clone(), 0).await?;
+    let mut frames = stream
+        .follow(path.clone(), 0, acyclic_stream::FollowFilter::default())
+        .await?;
     let output = harness.resume(task_id).await;
     super::local_admission::settled(&harness, task_id, status, &case.expect.statuses).await?;
     match (case.expect.outcome, output) {

@@ -10,7 +10,6 @@ pub(super) fn empty_session(latest: bool) -> Session<MemoryStream> {
         deadline: Some(1000),
         provider: Arc::new(MemoryStream::default()),
         executor: Arc::new(runtime::PlatformExecutor),
-        publications: None,
         resources: None,
         limits: Limits::default(),
         node: "node".into(),

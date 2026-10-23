@@ -18,7 +18,7 @@ pub(crate) fn registration(omit_wake: bool) {
         let path = StreamPath::new("watched").unwrap();
         let seed = block_on(provider.inner.provider.append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"anchor")],
+            records: vec![Bytes::from_static(b"anchor").into()],
             if_tail: None,
             idempotency_key: None,
         }))
@@ -37,7 +37,7 @@ pub(crate) fn registration(omit_wake: bool) {
                         .provider
                         .append(AppendRequest {
                             path,
-                            records: vec![Bytes::from_static(b"accepted")],
+                            records: vec![Bytes::from_static(b"accepted").into()],
                             if_tail: Some(1),
                             idempotency_key: None,
                         })
@@ -67,7 +67,7 @@ pub(crate) fn cancellation(retain: bool) {
         let path = StreamPath::new("watched").unwrap();
         block_on(provider.inner.provider.append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"seed")],
+            records: vec![Bytes::from_static(b"seed").into()],
             if_tail: None,
             idempotency_key: None,
         }))
@@ -102,7 +102,7 @@ pub(crate) fn cancellation(retain: bool) {
                 .provider
                 .append(AppendRequest {
                     path: path.clone(),
-                    records: vec![Bytes::from_static(b"next")],
+                    records: vec![Bytes::from_static(b"next").into()],
                     if_tail: Some(1),
                     idempotency_key: None,
                 })
@@ -141,7 +141,7 @@ pub(crate) fn failure_lock_order(hold_borrow: bool) {
         let path = StreamPath::new("watched").unwrap();
         let seed = block_on(provider.inner.provider.append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"seed")],
+            records: vec![Bytes::from_static(b"seed").into()],
             if_tail: None,
             idempotency_key: None,
         }))

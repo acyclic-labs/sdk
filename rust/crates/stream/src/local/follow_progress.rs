@@ -39,7 +39,7 @@ impl LocalStream {
                 match futures::future::select(failed, changed).await {
                     futures::future::Either::Left((error, _)) => return Err(error),
                     futures::future::Either::Right((result, _)) => {
-                        result.map_err(|_| StreamError::Unavailable)?
+                        result.map_err(|_| StreamError::Unavailable)?;
                     }
                 }
             }

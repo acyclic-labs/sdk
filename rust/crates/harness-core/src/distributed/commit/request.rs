@@ -64,7 +64,7 @@ pub(crate) fn add_record(
     custody.reserve(request.mutations.len() + 1, &mut request.mutations)?;
     let mut records = Vec::new();
     custody.reserve(1, &mut records)?;
-    records.push(record);
+    records.push(record.into());
     request
         .mutations
         .push(acyclic_stream::CommitMutation::Append { path, records });

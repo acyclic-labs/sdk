@@ -184,14 +184,17 @@ export class GrpcStreamProvider implements StreamProvider {
       yield* this.#frames("read", this.#client.read(fromBinary(wire.ReadRequestSchema, wireRequest(request)), { signal: controller.signal }), request.from, request.limit);
     } finally { controller.abort(); }
   }
+  async registerCredential(slot: number, credential: Uint8Array): Promise<void> {
+    await this.#sessions.registerCredential(slot, credential);
+  }
   async *followData(follow: SessionFollow, options: FollowOptions): AsyncIterable<SessionData> {
     const authored = structuredClone(follow);
-    const { from, signal } = options;
-    yield* this.#sessions.followData(authored, { from, ...(signal === undefined ? {} : { signal }) });
+    yield* this.#sessions.followData(authored, options);
   }
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
-    await validateWireRequest({ kind: "follow", path, from: options.from });
-    yield* this.#sessions.follow(path, options);
+    const authored = { ...options, ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }) };
+    await validateWireRequest({ kind: "follow", path, from: authored.from });
+    yield* this.#sessions.follow(path, authored);
   }
   async *#frames(operation: string, frames: AsyncIterable<wire.ReadResponse>, next: bigint,
     remaining?: number, signal?: AbortSignal): AsyncIterable<EncodedRecord> {

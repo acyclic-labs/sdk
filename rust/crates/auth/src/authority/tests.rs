@@ -1,6 +1,5 @@
 use super::*;
-#[path = "../../tests/common/mod.rs"]
-mod common;
+use crate::testing::claims as common;
 #[path = "../../tests/common/request_hardening.rs"]
 mod hardening;
 use proptest::{

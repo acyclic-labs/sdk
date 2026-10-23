@@ -28,7 +28,7 @@ pub(crate) fn request() -> ChildrenRequest {
 pub(crate) fn append(provider: &MemoryStream, path: &str) -> Result {
     block_on(provider.append(AppendRequest {
         path: StreamPath::new(path)?,
-        records: vec![Bytes::from_static(b"child")],
+        records: vec![Bytes::from_static(b"child").into()],
         if_tail: None,
         idempotency_key: None,
     }))?;

@@ -69,21 +69,7 @@ async fn malformed_discovery_closes_only_its_node_and_keeps_later_opens_live() -
             }
             changed.await;
         }
-        bad.controls.send(Ok(frame(
-            id,
-            2,
-            Body::Data(wire::SessionData {
-                after: Some(wire::SessionCursor {
-                    next: 2,
-                    opaque: Bytes::from_static(b"other/child"),
-                }),
-                accepted: 2,
-                durable: 0,
-                item: Some(Item::Child(wire::Child {
-                    path: "other/child".into(),
-                })),
-            }),
-        )))?;
+        bad.controls.send(Ok(malformed_child(id)))?;
         assert_eq!(children.next().await, Some(Err(StreamError::Unavailable)));
         assert!(children.next().await.is_none());
         let mut later = client
@@ -105,4 +91,22 @@ async fn malformed_discovery_closes_only_its_node_and_keeps_later_opens_live() -
     })
     .await??;
     Ok(())
+}
+
+fn malformed_child(id: u64) -> wire::SessionFrame {
+frame(
+            id,
+            2,
+            Body::Data(wire::SessionData {
+                after: Some(wire::SessionCursor {
+                    next: 2,
+                    opaque: Bytes::from_static(b"other/child"),
+                }),
+                accepted: 2,
+                durable: 0,
+                item: Some(Item::Child(wire::Child {
+                    path: "other/child".into(),
+                })),
+            }),
+        )
 }

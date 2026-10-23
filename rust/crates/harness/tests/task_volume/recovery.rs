@@ -77,16 +77,24 @@ impl StreamProvider for Restartable {
         }
         Ok(records)
     }
-    async fn follow(&self, path: StreamPath, from: u64) -> StreamResult<RecordStream> {
-        self.current()?.follow(path, from).await
+    async fn follow(
+        &self,
+        path: StreamPath,
+        from: u64,
+        filter: acyclic_stream::FollowFilter,
+    ) -> StreamResult<RecordStream> {
+        self.current()?.follow(path, from, filter).await
     }
     async fn follow_checked(
         &self,
         path: StreamPath,
         from: u64,
         preceding: CommitId,
+        filter: acyclic_stream::FollowFilter,
     ) -> StreamResult<RecordStream> {
-        self.current()?.follow_checked(path, from, preceding).await
+        self.current()?
+            .follow_checked(path, from, preceding, filter)
+            .await
     }
     async fn children(&self, request: ChildrenRequest) -> StreamResult<ChildStream> {
         self.current()?.children(request).await
@@ -156,7 +164,7 @@ async fn reused_accepted_positions_reset_cached_heads_and_resume_cursors() -> Re
     replacement
         .append(AppendRequest {
             path: path.clone(),
-            records: vec![header],
+            records: vec![header.into()],
             if_tail: Some(0),
             idempotency_key: None,
         })
@@ -257,7 +265,7 @@ async fn replacement_history(
     provider
         .append(AppendRequest {
             path: path.clone(),
-            records: vec![header],
+            records: vec![header.into()],
             if_tail: Some(0),
             idempotency_key: None,
         })

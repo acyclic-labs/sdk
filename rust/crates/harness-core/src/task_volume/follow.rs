@@ -220,6 +220,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 self.path.clone(),
                 cursor.position,
                 acyclic_stream::CommitId::from_bytes(cursor.commit),
+                acyclic_stream::FollowFilter::default(),
             )
             .await?;
         Ok(record_changes(query, cursor, records))

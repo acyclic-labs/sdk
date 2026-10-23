@@ -108,7 +108,7 @@ proptest! {
 
     #[test]
     fn head_condition_wire_round_trip_binds_the_full_identity(position in any::<u64>(), identity in any::<[u8;32]>()) {
-        let request=CommitRequest { conditions:vec![CommitCondition::Head {path:StreamPath::new("head")?,expected:position,commit_id:CommitId::from_bytes(identity)}],mutations:vec![CommitMutation::Append {path:StreamPath::new("head")?,records:vec![OwnedBytes::from_static(b"event")]}],idempotency_key:IdempotencyKey::new(OwnedBytes::from_static(b"key"))?};
+        let request=CommitRequest { conditions:vec![CommitCondition::Head {path:StreamPath::new("head")?,expected:position,commit_id:CommitId::from_bytes(identity)}],mutations:vec![CommitMutation::Append {path:StreamPath::new("head")?,records:vec![OwnedBytes::from_static(b"event").into()]}],idempotency_key:IdempotencyKey::new(OwnedBytes::from_static(b"key"))?};
         let wire=acyclic_stream::wire_codec::commit_to_wire(&request);
         prop_assert_eq!(acyclic_stream::wire_codec::commit_from_wire(wire)?,request);
         let observation=acyclic_stream::IdempotencyObservation {

@@ -109,6 +109,7 @@ impl StreamProvider for Provider {
         &self,
         _: StreamPath,
         _: u64,
+        _filter: acyclic_stream::FollowFilter,
     ) -> std::result::Result<RecordStream, StreamError> {
         Err(StreamError::Unsupported)
     }

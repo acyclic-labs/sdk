@@ -250,7 +250,10 @@ async fn cold_projection_rejects_forged_state_and_non_atomic_heads() -> Result<(
             .append_batch(
                 canonical[..63]
                     .iter()
-                    .map(|record| record.value.clone())
+                    .map(|record| acyclic_stream::AppendRecord {
+                        value: record.value.clone(),
+                        headers: record.headers.clone(),
+                    })
                     .collect(),
                 Some(0),
                 None,
@@ -272,11 +275,11 @@ async fn cold_projection_rejects_forged_state_and_non_atomic_heads() -> Result<(
                     mutations: vec![
                         CommitMutation::Append {
                             path: stream.path().clone(),
-                            records: vec![canonical[63].value.clone()],
+                            records: vec![canonical[63].value.clone().into()],
                         },
                         CommitMutation::Append {
                             path: head_path.clone(),
-                            records: vec![head_bytes],
+                            records: vec![head_bytes.into()],
                         },
                     ],
                     idempotency_key: StreamIdempotencyKey::new("copied-projection")?,

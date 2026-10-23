@@ -303,7 +303,7 @@ async fn missing_and_corrupt_gates_fail_authority_reopen() -> TestResult {
             request.mutations.push(CommitMutation::Append {
                 path,
                 records: vec![
-                    acyclic_stream::OwnedBytes::from_static(PUBLICATION_GATE_FREE).into(),
+                    acyclic_stream::OwnedBytes::from_static(PUBLICATION_GATE_FREE),
                     acyclic_stream::OwnedBytes::copy_from_slice(gate).into(),
                 ],
             });
@@ -445,7 +445,7 @@ async fn reservations_exclude_writers_and_recover_the_original_head() -> TestRes
         stream
             .commit(gate_commit(
                 next,
-                acyclic_stream::OwnedBytes::from_static(PUBLICATION_GATE_FREE).into(),
+                acyclic_stream::OwnedBytes::from_static(PUBLICATION_GATE_FREE),
                 release_key(next)?
             )?)
             .await?,

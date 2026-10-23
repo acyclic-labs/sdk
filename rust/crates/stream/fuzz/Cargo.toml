@@ -8,7 +8,7 @@ publish = false
 cargo-fuzz = true
 
 [dependencies]
-acyclic-stream = { path = ".." }
+acyclic-stream = { path = "..", features = ["test-support"] }
 bytes = "1.10.1"
 futures = "0.3.31"
 libfuzzer-sys = "0.4"

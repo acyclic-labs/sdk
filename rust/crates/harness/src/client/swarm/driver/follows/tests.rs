@@ -23,6 +23,7 @@ fn path(id: usize) -> StreamPath {
 fn check(commands: &[u8], broken: bool) -> TestCaseResult {
     let session = Client::in_process(
         Arc::new(acyclic_stream::MemoryStream::default()),
+        acyclic_stream::session::testing::authority(),
         Arc::new(Unpolled),
     );
     let mut follows = Follows::new(session, Box::pin(futures::stream::pending()));

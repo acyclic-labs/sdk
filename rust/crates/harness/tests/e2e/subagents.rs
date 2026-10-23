@@ -453,7 +453,10 @@ pub(super) async fn latest(client: &Client, root: &str) -> TestResult<Option<Ref
         delivery: wire::SessionDelivery::Latest as i32,
         preceding_commit_id: Default::default(),
     };
-    let delivered = match client.follow_data(follow, 0).await {
+    let delivered = match client
+        .follow_data(follow, 0, acyclic_stream::FollowFilter::default())
+        .await
+    {
         Ok(mut data) => next(&mut data, "the LATEST follow").await?,
         Err(error) => Err(error),
     };

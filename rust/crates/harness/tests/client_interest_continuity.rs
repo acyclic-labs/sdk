@@ -97,7 +97,11 @@ fn snapshot_cannot_be_spliced_into_recovered_history_at_the_same_position() {
         put(&recovered, "GOAL.md", b"new history tail").await;
         // A deliberately unchecked follow accepts the replacement suffix.
         let mut unchecked = replacement
-            .follow(path("swarm/a/files"), cut.position)
+            .follow(
+                path("swarm/a/files"),
+                cut.position,
+                acyclic_stream::FollowFilter::default(),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -139,7 +143,7 @@ fn snapshot_cannot_be_spliced_into_recovered_history_at_the_same_position() {
         );
         let content: Vec<_> = std::iter::from_fn(|| observed.try_recv().ok()).filter_map(|frame| match frame.body {
             Some(wire::session_frame::Body::Interest(update)) => Some(update.upsert), _ => None,
-        }).flatten().filter(|sub| matches!(&sub.kind, Some(wire::session_subscription::Kind::Follow(f)) if f.path == "swarm/a/files" && f.delivery == wire::SessionDelivery::All as i32)).collect();
+        }).flatten().filter(|sub| matches!(&sub.kind, Some(wire::session_subscription::Kind::Follow(f)) if f.resource == "streams:/swarm/a/files" && f.delivery == wire::SessionDelivery::All as i32)).collect();
         assert_eq!(content.len(), 1);
         let Some(wire::session_subscription::Kind::Follow(follow)) = &content[0].kind else {
             unreachable!()
@@ -175,7 +179,7 @@ fn standalone_watermarks_reach_status_and_content_without_another_data_frame() {
             let watermark = match &item {
                 Ok(frame) if matches!(&frame.body, Some(wire::session_frame::Body::Data(data)) if matches!(&data.item,
                     Some(wire::session_data::Item::LatestValue(_) | wire::session_data::Item::Record(_)))) => {
-                    Some(Ok(wire::SessionFrame { body: Some(wire::session_frame::Body::Watermark(wire::SessionWatermark { accepted: 9, durable: 9 })), ..frame.clone() }))
+                    Some(Ok(wire::SessionFrame { body: Some(wire::session_frame::Body::Watermark(wire::SessionWatermark { after: None, preceding_commit_id: Default::default(), accepted: 9, durable: 9 })), ..frame.clone() }))
                 }
                 _ => None,
             };

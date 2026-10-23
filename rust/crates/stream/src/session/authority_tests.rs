@@ -28,7 +28,7 @@ impl State {
 impl AuthorityState for State {
     fn snapshot(&self) -> Result<TrustSnapshot, VerifyError> {
         Ok(TrustSnapshot {
-            trust: self.trust.read().unwrap().clone(),
+            trust: self.trust.read().map_err(|_| VerifyError::Trust)?.clone(),
             now_unix_seconds: self.clock.load(Ordering::SeqCst),
             revision: *self.revision.borrow(),
         })
@@ -60,7 +60,8 @@ fn authority(state: Arc<State>) -> Authority {
 }
 fn token(path: &str, change: impl Fn(&mut Block)) -> Vec<u8> {
     signed::root(|block| {
-        block.certificates.as_mut().unwrap().keys[0].key.grants = GrantSet {
+        for certificate in block.certificates.iter_mut().flat_map(|chain| chain.keys.iter_mut()).take(1) {
+            certificate.key.grants = GrantSet {
             grants: vec![Grant {
                 kind: GrantKind::Resource(ResourceGrant {
                     resource: ResourcePattern {
@@ -71,6 +72,7 @@ fn token(path: &str, change: impl Fn(&mut Block)) -> Vec<u8> {
                 }),
             }],
         };
+        }
         change(block);
     })
 }
@@ -82,7 +84,7 @@ fn bind(
     authority.bind(
         slots,
         0,
-        &StreamPath::new(path).unwrap(),
+        &StreamPath::new(path).map_err(|_| Rejection::Forbidden)?,
         wire::SessionFilter::default(),
         1,
     )
@@ -112,7 +114,7 @@ fn slots_reject_forgery_expiry_wrong_audience_holder_and_widening() {
         Err(StreamError::Capacity)
     );
     let mut forged = bytes.clone();
-    forged[20] ^= 1;
+    if let Some(byte) = forged.get_mut(20) { *byte ^= 1; }
     auth.register(&mut slots, 0, &forged, 2).unwrap();
     assert!(matches!(
         bind(&auth, &slots, "allowed"),
@@ -134,7 +136,7 @@ fn slots_reject_forgery_expiry_wrong_audience_holder_and_widening() {
             &token("allowed", |block| {
                 block.caveats = vec![Caveat {
                     kind: caveat.clone(),
-                }]
+                }];
             }),
             2,
         )
@@ -164,7 +166,7 @@ async fn revocation_and_drop_invalidate_idle_bindings_without_record_credit() {
     let cap = verify::verify(&bytes, &signed::Snapshot::default(), signed::NOW).unwrap();
     state.publish(
         signed::Snapshot {
-            revoked_blocks: vec![cap.block_ids()[0]],
+            revoked_blocks: vec![*cap.block_ids().first().unwrap()],
             ..Default::default()
         },
         signed::NOW,
@@ -192,7 +194,7 @@ fn rotation_cannot_drop_pins_filters_or_rebind_the_declaring_subject() {
                 name: "author".into(),
                 value: PinValue::SubjectId(SubjectId {}),
             }),
-        }]
+        }];
     });
     auth.register(&mut slots, 0, &bytes, 2).unwrap();
     let (mut binding, filter) = bind(&auth, &slots, "allowed").unwrap();
@@ -248,7 +250,6 @@ fn rotation_cannot_drop_pins_filters_or_rebind_the_declaring_subject() {
 #[tokio::test]
 async fn live_sessions_close_idle_and_queued_follows_before_disclosure() {
     use crate::{AppendRequest, MemoryStream};
-    use futures::channel::mpsc;
     for queued in [false, true] {
         for reason in ["revoked", "credential_expired", "rotation", "drop"] {
             let state = State::new();
@@ -271,55 +272,7 @@ async fn live_sessions_close_idle_and_queued_follows_before_disclosure() {
             };
             append(b"seed").await;
             let bytes = token("allowed", |_| {});
-            let (sender, receiver) = mpsc::unbounded();
-            sender
-                .unbounded_send(Ok(frame(
-                    0,
-                    0,
-                    Body::Hello(wire::SessionHello {
-                        version: 1,
-                        client_id: Bytes::from_static(b"authority-control"),
-                        destination_node: "node".into(),
-                        receive_bytes: 1_000_000,
-                        receive_frames: 100,
-                        credentials: vec![bytes.clone().into()],
-                    }),
-                )))
-                .unwrap();
-            sender
-                .unbounded_send(Ok(frame(
-                    0,
-                    0,
-                    Body::Interest(wire::SessionInterest {
-                        revision: 1,
-                        upsert: vec![wire::SessionSubscription {
-                            channel: Some(wire::SessionChannel {
-                                channel_id: 1,
-                                generation: 1,
-                            }),
-                            resume: Some(cursor(1)),
-                            credential: 0,
-                            filter: None,
-                            kind: Some(Kind::Follow(wire::SessionFollow {
-                                resource: crate::wire_codec::session::stream_resource(
-                                    path.as_str(),
-                                ),
-                                delivery: wire::SessionDelivery::All as i32,
-                                ..Default::default()
-                            })),
-                        }],
-                        remove: vec![],
-                    }),
-                )))
-                .unwrap();
-            let mut output = serve(
-                provider.clone(),
-                Arc::new(authority(state.clone())),
-                "node".into(),
-                crate::session::Limits::default(),
-                receiver.boxed(),
-            )
-            .unwrap();
+            let (sender, mut output) = live_session(provider.clone(), state.clone(), bytes.clone(), &path).unwrap();
             let mut opened = false;
             for _ in 0..3 {
                 let message =
@@ -361,7 +314,7 @@ async fn live_sessions_close_idle_and_queued_follows_before_disclosure() {
                         verify::verify(&bytes, &signed::Snapshot::default(), signed::NOW).unwrap();
                     state.publish(
                         signed::Snapshot {
-                            revoked_blocks: vec![capability.block_ids()[0]],
+                            revoked_blocks: vec![*capability.block_ids().first().unwrap()],
                             ..Default::default()
                         },
                         signed::NOW,
@@ -424,6 +377,60 @@ async fn live_sessions_close_idle_and_queued_follows_before_disclosure() {
             ));
         }
     }
+}
+
+fn live_session(provider: Arc<crate::MemoryStream>, state: Arc<State>, bytes: Vec<u8>, path: &StreamPath) -> Result<(futures::channel::mpsc::UnboundedSender<Result<wire::SessionFrame, StreamError>>, transport::Responses), Box<dyn std::error::Error>> {
+    use futures::channel::mpsc;
+            let (sender, receiver) = mpsc::unbounded();
+            sender
+                .unbounded_send(Ok(frame(
+                    0,
+                    0,
+                    Body::Hello(wire::SessionHello {
+                        version: 1,
+                        client_id: Bytes::from_static(b"authority-control"),
+                        destination_node: "node".into(),
+                        receive_bytes: 1_000_000,
+                        receive_frames: 100,
+                        credentials: vec![bytes.clone().into()],
+                    }),
+                )))
+                ?;
+            sender
+                .unbounded_send(Ok(frame(
+                    0,
+                    0,
+                    Body::Interest(wire::SessionInterest {
+                        revision: 1,
+                        upsert: vec![wire::SessionSubscription {
+                            channel: Some(wire::SessionChannel {
+                                channel_id: 1,
+                                generation: 1,
+                            }),
+                            resume: Some(cursor(1)),
+                            credential: 0,
+                            filter: None,
+                            kind: Some(Kind::Follow(wire::SessionFollow {
+                                resource: crate::wire_codec::session::stream_resource(
+                                    path.as_str(),
+                                ),
+                                delivery: wire::SessionDelivery::All as i32,
+                                ..Default::default()
+                            })),
+                        }],
+                        remove: vec![],
+                    }),
+                )))
+                ?;
+            let output = serve(
+                provider.clone(),
+                Arc::new(authority(state.clone())),
+                "node".into(),
+                crate::session::Limits::default(),
+                receiver.boxed(),
+            )
+            ?;
+    Ok((sender, output))
 }
 
 #[test]
@@ -502,9 +509,11 @@ fn canonical_resource_bindings_preserve_reserved_names_and_literal_escapes()
 
 fn fs_token(resource: &str, change: impl Fn(&mut Block)) -> Vec<u8> {
     signed::root(|block| {
-        block.certificates.as_mut().unwrap().keys[0].key.grants = GrantSet { grants: vec![Grant {
+        for certificate in block.certificates.iter_mut().flat_map(|chain| chain.keys.iter_mut()).take(1) {
+            certificate.key.grants = GrantSet { grants: vec![Grant {
             kind: GrantKind::Resource(ResourceGrant { resource: ResourcePattern { name: resource.into(), prefix: true }, actions: vec!["fs/list".into()] }),
         }] };
+        }
         change(block);
     })
 }
@@ -521,7 +530,7 @@ fn filesystem_discovery_defers_only_list_and_checks_full_paths_and_deny_wins() {
         assert!(context.authorize(name, &[], &attributes, PolicyDecision::Allow).is_err());
     }
     assert!(context.authorize("fs:/volume/public", &[], &attributes, PolicyDecision::Deny).is_err());
-    let indexed = context.filter_paths("fs:/volume", filter).unwrap();
+    let indexed = context.filter_paths("fs:/volume", &filter).unwrap();
     for key in [b"public".as_slice(), b"public/file"] {
         assert!(indexed.matches(&crate::RecordHeaders::new(vec![key.to_vec().into()], vec![]).unwrap()));
     }
@@ -544,7 +553,7 @@ fn filesystem_context_rechecks_revocation_expiry_and_renewal_before_disclosure()
         let attributes = RecordAttributes::try_new(vec![]).unwrap();
         assert!(context.authorize("fs:/volume/public", &[], &attributes, PolicyDecision::Allow).is_ok());
         let cap = verify::verify(&bytes, &signed::Snapshot::default(), signed::NOW).unwrap();
-        state.publish(signed::Snapshot { revoked_blocks: if revoke { vec![cap.block_ids()[0]] } else { vec![] }, ..Default::default() }, if revoke { signed::NOW } else { 1000 });
+        state.publish(signed::Snapshot { revoked_blocks: if revoke { vec![*cap.block_ids().first().unwrap()] } else { vec![] }, ..Default::default() }, if revoke { signed::NOW } else { 1000 });
         assert!(context.authorize("fs:/volume/public", &[], &attributes, PolicyDecision::Allow).is_err());
     }
     let auth = Arc::new(authority(State::new()));
@@ -559,7 +568,7 @@ fn filesystem_context_rejects_forged_expired_and_wrong_audience_credentials() {
     let auth = Arc::new(authority(State::new()));
     let mut slots = Slots::default();
     let valid = fs_token("fs:/volume", |_| {});
-    let mut forged = valid.clone(); forged[20] ^= 1;
+    let mut forged = valid; if let Some(byte) = forged.get_mut(20) { *byte ^= 1; }
     for bytes in [forged, fs_token("fs:/volume", |block| block.caveats.push(Caveat { kind: CaveatKind::ExpiresAtUnixSeconds(signed::NOW) })), fs_token("fs:/volume", |block| block.caveats.push(Caveat { kind: CaveatKind::Audience(ResourcePattern { name: "workers:/other".into(), prefix: false }) }))] {
         auth.register(&mut slots, 0, &bytes, 2).unwrap();
         assert!(auth.bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1).is_err());

@@ -54,16 +54,24 @@ impl StreamProvider for Interleaved {
     async fn read(&self, request: ReadRequest) -> Storage<RecordStream> {
         self.inner.read(request).await
     }
-    async fn follow(&self, path: StreamPath, from: u64) -> Storage<RecordStream> {
-        self.inner.follow(path, from).await
+    async fn follow(
+        &self,
+        path: StreamPath,
+        from: u64,
+        filter: acyclic_stream::FollowFilter,
+    ) -> Storage<RecordStream> {
+        self.inner.follow(path, from, filter).await
     }
     async fn follow_checked(
         &self,
         path: StreamPath,
         from: u64,
         preceding: CommitId,
+        filter: acyclic_stream::FollowFilter,
     ) -> Storage<RecordStream> {
-        self.inner.follow_checked(path, from, preceding).await
+        self.inner
+            .follow_checked(path, from, preceding, filter)
+            .await
     }
     async fn children(&self, request: ChildrenRequest) -> Storage<ChildStream> {
         self.inner.children(request).await
@@ -112,7 +120,8 @@ impl Interleaved {
             let bytes = records.first()?;
             FileValue::from_record(&Record {
                 sequence: 1,
-                value: bytes.clone(),
+                value: bytes.value.clone(),
+                headers: bytes.headers.clone(),
                 commit_id: CommitId::from_bytes([0; 32]),
                 committed_at_micros: 0,
             })

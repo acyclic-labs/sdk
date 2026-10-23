@@ -96,7 +96,12 @@ pub(super) async fn required_pass() -> TestResult {
         let session = remote.session_client()?;
         let baseline = Arc::new(MemoryStream::default());
         let executor = Arc::new(acyclic_stream::session::runtime::PlatformExecutor);
-        let local = acyclic_stream::session::Client::in_process(baseline.clone(), executor);
+        let local = acyclic_stream::session::Client::in_process(
+            baseline.clone(),
+            acyclic_stream::session::testing::authority(),
+            executor,
+        );
+        local.register_credential(0, acyclic_stream::session::testing::credential())?;
         let expected = remote_swarm::follow(baseline, &local, "swarm", "Do it.").await?;
         let observed = remote_swarm::follow(remote.clone(), &session, "swarm", "Do it.").await?;
         if observed != expected {
@@ -151,7 +156,7 @@ async fn head_fenced_task_volume_publication_rejects_a_forged_head() -> TestResu
         }],
         mutations: vec![CommitMutation::Append {
             path: path.clone(),
-            records: vec![OwnedBytes::from_static(b"must-not-commit")],
+            records: vec![OwnedBytes::from_static(b"must-not-commit").into()],
         }],
         idempotency_key: IdempotencyKey::new(b"cloud5322-forged-head".to_vec())?,
     };
@@ -217,7 +222,7 @@ where
             conditions: vec![condition],
             mutations: vec![CommitMutation::Append {
                 path: path.clone(),
-                records: vec![OwnedBytes::copy_from_slice(&[step])],
+                records: vec![OwnedBytes::copy_from_slice(&[step]).into()],
             }],
             idempotency_key: IdempotencyKey::new(format!("{}/{step}", path.as_str()).into_bytes())?,
         };
@@ -300,6 +305,7 @@ async fn latest_payload_matches_exactly() -> TestResult {
                 preceding_commit_id: Default::default(),
             },
             0,
+            acyclic_stream::FollowFilter::default(),
         )
         .await?;
     let observed = wait(&mut 1, "LATEST value", data.next())
@@ -319,7 +325,7 @@ async fn checked_follow_close_codes() -> TestResult {
     remote
         .append(AppendRequest {
             path: path.clone(),
-            records: vec![OwnedBytes::from_static(b"anchor")],
+            records: vec![OwnedBytes::from_static(b"anchor").into()],
             if_tail: Some(0),
             idempotency_key: None,
         })
@@ -342,8 +348,21 @@ async fn checked_follow_close_codes() -> TestResult {
         ),
     ] {
         let opened = match preceding {
-            Some(preceding) => session.follow_checked(path, from, preceding).await,
-            None => session.follow(path, from).await,
+            Some(preceding) => {
+                session
+                    .follow_checked(
+                        path,
+                        from,
+                        preceding,
+                        acyclic_stream::FollowFilter::default(),
+                    )
+                    .await
+            }
+            None => {
+                session
+                    .follow(path, from, acyclic_stream::FollowFilter::default())
+                    .await
+            }
         };
         let observed = match opened {
             Err(error) => Some(error),
@@ -382,7 +401,7 @@ async fn raw_session_closed_frames_use_stream_error_codes() -> TestResult {
     remote
         .append(AppendRequest {
             path: path.clone(),
-            records: vec![OwnedBytes::from_static(b"anchor")],
+            records: vec![OwnedBytes::from_static(b"anchor").into()],
             if_tail: Some(0),
             idempotency_key: None,
         })
@@ -401,6 +420,7 @@ async fn raw_session_closed_frames_use_stream_error_codes() -> TestResult {
         body: Some(body),
     };
     send.send(frame(Body::Hello(wire::SessionHello {
+        credentials: vec![remote.config.workload.clone().into()],
         version: 1,
         client_id: b"cloud-local-5322".to_vec().into(),
         destination_node: String::new(),
@@ -431,6 +451,8 @@ async fn raw_session_closed_frames_use_stream_error_codes() -> TestResult {
     ]
     .into_iter()
     .map(|(id, path, next, preceding)| wire::SessionSubscription {
+        credential: 0,
+        filter: None,
         channel: Some(wire::SessionChannel {
             channel_id: id,
             generation: 1,

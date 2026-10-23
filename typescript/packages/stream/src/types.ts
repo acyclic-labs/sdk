@@ -72,7 +72,7 @@ export type AppendResult =
 export type AppendOptions = PublicWire<WireAppendRequest, { readonly idempotencyKey?: IdempotencyKey }, "path" | "records">;
 export type ForkOptions = PublicWire<WireForkRequest, { readonly idempotencyKey?: IdempotencyKey }, "source" | "destination">;
 export type ReadOptions = Readonly<Pick<WireReadRequest, "from" | "limit">>;
-export interface FollowOptions { readonly from: Sequence; readonly signal?: AbortSignal }
+export interface FollowOptions { readonly from: Sequence; readonly signal?: AbortSignal; readonly filter?: NonNullable<import("../generated/proto/stream/v1/session_pb.js").SessionSubscription["filter"]> }
 export interface StreamChild { readonly path: string }
 export interface ChildrenRequest { readonly parent?: string; readonly limit: number; readonly signal?: AbortSignal }
 export type ChildrenPageRequest = Readonly<{ parent?: string; limit: number }> & (
@@ -121,6 +121,7 @@ export interface ProviderCommitRequest {
   )[];
 }
 export interface StreamProvider {
+  registerCredential?(slot: number, credential: Uint8Array): Promise<void>;
   inspectIdempotency(idempotencyKey: IdempotencyKey): Promise<IdempotencyObservation | undefined>;
   tail(path: string): Promise<Sequence>;
   append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult>;

@@ -304,6 +304,23 @@ pub struct Capability {
     pub version: u32,
 }
 
+/// Sealed workload proof and runtime-authenticated admission time. This is
+/// historical evidence for one payload, never reusable append authority.
+#[acyclic_contract_derive::message(error = Error, file = AuthFile)]
+#[derive(Clone, Debug, PartialEq, TS)]
+pub struct AdmittedCapability {
+    /// Sealed descendant of the workload presented at admission.
+    #[wire(tag = 1, bytes)]
+    pub workload: Vec<u8>,
+    /// Sealed block zero, signed by the runtime's certified signer, binding
+    /// the exact workload bytes, payload, recipient and admission time.
+    #[wire(tag = 2, bytes)]
+    pub receipt: Vec<u8>,
+    /// Trusted runtime clock value authenticated by the receipt.
+    #[wire(tag = 3, uint64)]
+    pub admitted_at_unix_seconds: u64,
+}
+
 /// Typed GrantKind cases. Unknown wire cases are rejected.
 #[acyclic_contract_derive::oneof(error = Error, file = AuthFile)]
 #[derive(Clone, Debug, PartialEq, TS)]
@@ -425,7 +442,8 @@ pub enum TipProof {
         CaveatProto,
         BlockProto,
         SignedBlockProto,
-        CapabilityProto
+        CapabilityProto,
+        AdmittedCapabilityProto
     ),
     enums(PrincipalKind, AuditDecision)
 )]

@@ -34,7 +34,7 @@ fn scenario(broken: bool) {
     let peer = loom::thread::spawn(move || {
         loom::future::block_on(Box::pin(provider.append(AppendRequest {
             path,
-            records: vec![record],
+            records: vec![record.into()],
             if_tail: None,
             idempotency_key: None,
         })))

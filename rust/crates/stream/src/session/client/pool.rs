@@ -233,7 +233,8 @@ impl Pool {
                 }
                 Ok(())
             }
-            Command::Open {
+            Command::Open(open) => {
+                let OpenCommand {
                 id,
                 attempt_epoch,
                 acknowledge,
@@ -245,7 +246,7 @@ impl Pool {
                 records,
                 ready,
                 observation,
-            } => {
+            } = *open;
                 self.admissions.remove(id)?;
                 if attempt_epoch != self.dial_epoch {
                     let _ = ready.send(Err(StreamError::Unavailable));
@@ -424,9 +425,19 @@ impl Pool {
                     Ok(())
                 }
             }
-            Some(Body::Watermark(mut mark))
+            Some(Body::Watermark(mark))
                 if mark.durable <= mark.accepted && mark.accepted >= route.received =>
             {
+                if Self::watermark(route, id, input.generation, mark)? {
+                    self.flush_watermark(id)
+                } else {
+                    Ok(())
+                }
+            }
+            _ => Err(StreamError::Unavailable),
+        }
+    }
+    fn watermark(route: &mut Route, id: u64, generation: u64, mut mark: wire::SessionWatermark) -> Result<bool, StreamError> {
                 if let Some(after) = &mark.after {
                     if !matches!(route.kind, Kind::Follow(_))
                         || !after.opaque.is_empty()
@@ -452,14 +463,11 @@ impl Pool {
                         mark.preceding_commit_id
                             .clone_from(&previous.preceding_commit_id);
                     }
-                    route.watermark = Some(frame(id, input.generation, Body::Watermark(mark)));
-                    self.flush_watermark(id)
+                    route.watermark = Some(frame(id, generation, Body::Watermark(mark)));
+                    Ok(true)
                 } else {
-                    Ok(())
+                    Ok(false)
                 }
-            }
-            _ => Err(StreamError::Unavailable),
-        }
     }
     /// Accept an Open reply that resumes exactly where the route left off.
     fn opened(
@@ -578,7 +586,7 @@ impl Pool {
         route.buffered_data = route
             .buffered_data
             .checked_add(1)
-            .filter(|count| *count <= QUEUE as u32)
+            .filter(|count| usize::try_from(*count).is_ok_and(|count| count <= QUEUE))
             .ok_or(StreamError::Capacity)?;
         let delivery = Delivery {
             before: route.watermark.take(),

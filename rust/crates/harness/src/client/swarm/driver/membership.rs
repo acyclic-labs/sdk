@@ -27,6 +27,7 @@ impl Membership {
                 parent.path().clone(),
                 snapshot.cursor.position,
                 acyclic_stream::CommitId::from_bytes(snapshot.cursor.commit),
+                acyclic_stream::FollowFilter::default(),
             )
             .await
             .map_err(|e| Error::Storage(e.to_string()))?;

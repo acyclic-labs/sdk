@@ -466,6 +466,7 @@ async fn cron_inbox_append_reaches_lowered_actor_wake_subscription()
         .follow(
             path.clone(),
             subscription.start().cursor_value().ok_or("cursor")?,
+            acyclic_stream::FollowFilter::default(),
         )
         .await?;
     let initialized = wake.next().await.ok_or("missing initialization")??;

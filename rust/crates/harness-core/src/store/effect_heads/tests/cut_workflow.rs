@@ -59,7 +59,7 @@ fn normalized_request(mut request: CommitRequest) -> CommitRequest {
         };
         if path.as_str().contains("/effect-heads/") && path.as_str().ends_with("/cuts") {
             for bytes in records {
-                let root = decode_certificate(path.as_str().contains("/v2/"), bytes).0;
+                let root = decode_certificate(path.as_str().contains("/v2/"), &bytes.value).0;
                 *bytes = crate::contract::canonical_json_bytes(&(root, "format-specific MAC"))
                     .unwrap()
                     .into();
@@ -115,9 +115,10 @@ impl StreamProvider for Observed {
         &self,
         path: StreamPath,
         from: u64,
+        filter: acyclic_stream::FollowFilter,
     ) -> std::result::Result<RecordStream, StreamError> {
         record(("follow", normalized_path(&path), from));
-        self.0.follow(path, from).await
+        self.0.follow(path, from, filter).await
     }
     async fn children(
         &self,
@@ -383,13 +384,13 @@ async fn workflow(
         if fault != "anchor" {
             mutations.push(CommitMutation::Append {
                 path: source,
-                records: vec![canonical.clone()],
+                records: vec![canonical.clone().into()],
             });
         }
         if fault != "cut" {
             mutations.push(CommitMutation::Append {
                 path: cut_path(old),
-                records: vec![bytes],
+                records: vec![bytes.into()],
             });
         }
         let groups = if fault == "split" {

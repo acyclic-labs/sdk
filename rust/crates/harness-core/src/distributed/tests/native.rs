@@ -110,7 +110,7 @@ async fn native_refresh_keeps_original_serde_error_and_raw_record_prefix() {
     coordinator
         .stream
         .0
-        .append_batch(vec![raw], Some(0), None)
+        .append_batch(vec![raw.into()], Some(0), None)
         .await
         .expect("original physical envelope");
     let cancellation = acyclic_fs::CancellationToken::new();

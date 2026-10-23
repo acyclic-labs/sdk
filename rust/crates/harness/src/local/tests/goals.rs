@@ -86,7 +86,7 @@ async fn run(case: Case) -> Result<()> {
     };
     let events = StreamPath::new("harness/v3/coordinator/events").map_err(super::super::storage)?;
     let mut followed = stream
-        .follow(events.clone(), 0)
+        .follow(events.clone(), 0, acyclic_stream::FollowFilter::default())
         .await
         .map_err(super::super::storage)?;
     // The finished execution's accepted tail bounds its frames. A frame still

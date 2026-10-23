@@ -17,7 +17,7 @@ fn request() -> CommitRequest {
             .into_iter()
             .map(|path| crate::CommitMutation::Append {
                 path: StreamPath::new(path).unwrap(),
-                records: vec![crate::OwnedBytes::from_static(b"accepted")],
+                records: vec![crate::OwnedBytes::from_static(b"accepted").into()],
             })
             .collect(),
         idempotency_key: IdempotencyKey::new(crate::OwnedBytes::from_static(b"compacting"))
@@ -39,7 +39,7 @@ pub(crate) fn verify(fault: u8) {
         let path = StreamPath::new("agents/a").unwrap();
         let seeded = block_on(provider.append(AppendRequest {
             path: path.clone(),
-            records: vec![crate::OwnedBytes::from_static(b"seed")],
+            records: vec![crate::OwnedBytes::from_static(b"seed").into()],
             if_tail: None,
             idempotency_key: None,
         }))
@@ -145,7 +145,7 @@ pub(crate) fn verify(fault: u8) {
         }
         block_on(deferring_durability(provider.append(AppendRequest {
             path: StreamPath::new("agents/c").unwrap(),
-            records: vec![crate::OwnedBytes::from_static(b"later")],
+            records: vec![crate::OwnedBytes::from_static(b"later").into()],
             if_tail: None,
             idempotency_key: None,
         })))

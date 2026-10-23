@@ -12,7 +12,7 @@ async fn read_cut(after_completion: bool, omit_hook: bool) -> Result<bool> {
     let (io, mut events) = testing::Schedule::new();
     let request = AppendRequest {
         path: path.clone(),
-        records: vec![OwnedBytes::from_static(b"committed")],
+        records: vec![OwnedBytes::from_static(b"committed").into()],
         if_tail: Some(0),
         idempotency_key: None,
     };

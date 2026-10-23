@@ -111,7 +111,7 @@ impl<P: StreamProvider> Journal<P> {
             .into_iter()
             .map(|path| CommitMutation::Append {
                 path,
-                records: vec![value.clone()],
+                records: vec![value.clone().into()],
             })
             .collect();
         if cancellation {
@@ -127,9 +127,12 @@ impl<P: StreamProvider> Journal<P> {
                 .ok_or_else(|| Error::Invalid("actor inbox cursor overflow".into()))?;
             mutations.push(CommitMutation::Append {
                 path: self.path.clone(),
-                records: vec![Bytes::from(
-                    serde_json::to_vec(&requested).map_err(|error| codec_error(&error))?,
-                )],
+                records: vec![
+                    Bytes::from(
+                        serde_json::to_vec(&requested).map_err(|error| codec_error(&error))?,
+                    )
+                    .into(),
+                ],
             });
         }
         self.commit_transaction(conditions, mutations).await?;

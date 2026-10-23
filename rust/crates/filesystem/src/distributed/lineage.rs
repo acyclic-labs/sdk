@@ -50,13 +50,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             work.append_record(&mut request.mutations, records, [genesis])?;
             None
         };
-        if let (Some(proposed), Some(generation)) = (proposed, generation) {
-            let (path, records) = self.publication_changes(
-                authority, proposed, generation, None, Sequence::new(1), work,
-            )?;
-            request.conditions.push(CommitCondition::Absent { path: path.clone() });
-            request.mutations.push(CommitMutation::Append { path, records });
-        }
+        self.creation_changes(request, authority, proposed, generation, work)?;
         let epoch = work.stream_bytes(EPOCH_DOMAIN, &[&epoch.get().to_le_bytes()])?;
         work.append_record(&mut request.mutations, epochs, [epoch])?;
         work.append_record(
@@ -113,6 +107,17 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             let tail = inherited.map_or(0, |(tail, _)| tail).saturating_add(1);
             let value = work.stream_bytes(LINEAGE_TAIL_DOMAIN, &[&tail.to_le_bytes()])?;
             work.append_record(&mut request.mutations, locator, [value])?;
+        }
+        Ok(())
+    }
+
+    fn creation_changes(&self, request: &mut CommitRequest, authority: AuthorityId, proposed: Option<&ProposedCommit>, generation: Option<GenerationId>, work: &mut AuthorityWork<'_>) -> Result<(), AuthorityStoreError> {
+        if let (Some(proposed), Some(generation)) = (proposed, generation) {
+            let (path, records) = self.publication_changes(
+                authority, proposed, generation, None, Sequence::new(1), work,
+            )?;
+            request.conditions.push(CommitCondition::Absent { path: path.clone() });
+            request.mutations.push(CommitMutation::Append { path, records });
         }
         Ok(())
     }

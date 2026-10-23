@@ -4,6 +4,7 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { SessionFrameSchema, SessionFollowSchema, SessionDelivery } from "../generated/proto/stream/v1/session_pb.js";
 import { GrpcStreamProvider, createStreamGrpcClient } from "../src/grpc.js";
 import { HttpStreamProvider } from "../src/http.js";
+import { SessionFilterSchema } from "../generated/proto/stream/v1/stream_pb.js";
 import { SessionNode } from "./session-node.js";
 import { grpcFixture, tlsIdentity } from "./session-grpc-fixture.js";
 import type { SessionTransport } from "../src/session.js";
@@ -19,7 +20,9 @@ test("public gRPC follows and unaries share one physical HTTP/2 session", async 
   try {
     const provider = new GrpcStreamProvider(options);
     expect(await provider.tail("unary")).toBe(0n);
-    const latest = provider.followData(create(SessionFollowSchema, { resource: "streams:/status", delivery: SessionDelivery.LATEST }), { from: 0n })[Symbol.asyncIterator]();
+    await provider.registerCredential(0, new Uint8Array([1, 2, 3]));
+    const filter = create(SessionFilterSchema, { keys: [{ start: new Uint8Array([4]), end: new Uint8Array([5]) }] });
+    const latest = provider.followData(create(SessionFollowSchema, { resource: "streams:/status", delivery: SessionDelivery.LATEST }), { from: 0n, filter })[Symbol.asyncIterator]();
     const firstStatus = latest.next();
     const follows = Array.from({ length: 64 }, (_, id) => provider.follow(`agent/${id}`, { from: 0n })[Symbol.asyncIterator]());
     const children = provider.children({ parent: "agent", limit: 1 })[Symbol.asyncIterator]();
@@ -28,6 +31,11 @@ test("public gRPC follows and unaries share one physical HTTP/2 session", async 
     await Promise.race([node.until(() => node.active === follows.length + 2), pending.then(() => {})]);
     for (let id = 0; id < follows.length; id += 1) node.append(`agent/${id}`);
     expect((await pending).every(result => result.value?.sequence === 0n)).toBe(true);
+    const hello = node.received.find(frame => frame.body.case === "hello")!;
+    expect(hello.body.case === "hello" && hello.body.value.credentials[0]).toEqual(new Uint8Array([1, 2, 3]));
+    const interest = node.received.flatMap(frame => frame.body.case === "interest" ? frame.body.value.upsert : [])
+      .find(subscription => subscription.kind.case === "follow" && subscription.kind.value.resource === "streams:/status");
+    expect(interest?.filter).toEqual(filter);
     node.publishLatest("status", 3n);
     node.publishLatest("status", 9n, true);
     expect((await firstStatus).value?.after?.next).toBe(3n);
@@ -121,7 +129,9 @@ test("public browser follows use one authenticated binary WebSocket without fetc
       fetcher: async () => { fetches += 1; throw new Error("follow issued an HTTP poll"); },
       webSocketFactory: (url, protocols) => { sockets += 1; return new WebSocket(url, { protocols, tls: { ca: cert } }); },
     });
-    const latest = provider.followData(create(SessionFollowSchema, { resource: "streams:/status", delivery: SessionDelivery.LATEST }), { from: 0n })[Symbol.asyncIterator]();
+    await provider.registerCredential(0, new Uint8Array([1, 2, 3]));
+    const filter = create(SessionFilterSchema, { keys: [{ start: new Uint8Array([4]), end: new Uint8Array([5]) }] });
+    const latest = provider.followData(create(SessionFollowSchema, { resource: "streams:/status", delivery: SessionDelivery.LATEST }), { from: 0n, filter })[Symbol.asyncIterator]();
     const firstStatus = latest.next();
     const follows = Array.from({ length: 64 }, (_, id) => provider.follow(`agent/${id}`, { from: 0n })[Symbol.asyncIterator]());
     const children = provider.children({ parent: "agent", limit: 1 })[Symbol.asyncIterator]();
@@ -130,6 +140,11 @@ test("public browser follows use one authenticated binary WebSocket without fetc
     await Promise.race([node.until(() => node.active === follows.length + 2), pending.then(() => {})]);
     for (let id = 0; id < follows.length; id += 1) node.append(`agent/${id}`);
     expect((await pending).every(result => result.value?.sequence === 0n)).toBe(true);
+    const hello = node.received.find(frame => frame.body.case === "hello")!;
+    expect(hello.body.case === "hello" && hello.body.value.credentials[0]).toEqual(new Uint8Array([1, 2, 3]));
+    const interest = node.received.flatMap(frame => frame.body.case === "interest" ? frame.body.value.upsert : [])
+      .find(subscription => subscription.kind.case === "follow" && subscription.kind.value.resource === "streams:/status");
+    expect(interest?.filter).toEqual(filter);
     node.publishLatest("status", 3n);
     node.publishLatest("status", 9n, true);
     expect((await firstStatus).value?.after?.next).toBe(3n);

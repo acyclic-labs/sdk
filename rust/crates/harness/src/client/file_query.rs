@@ -424,7 +424,7 @@ impl FileQueryView {
     }
     pub(super) fn session_watermark(
         &mut self,
-        value: acyclic_stream::wire::SessionWatermark,
+        value: &acyclic_stream::wire::SessionWatermark,
     ) -> Result<()> {
         self.storage
             .session_watermark(value)

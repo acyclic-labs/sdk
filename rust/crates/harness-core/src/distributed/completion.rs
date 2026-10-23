@@ -196,7 +196,7 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
                 .clone();
             let mut optional = Some(&mut observer as &mut dyn HistoryIo);
             let mut quota = CodecQuota::from_retained(&mut optional, 0);
-            let committed = match native_response(&original, sdk.finish(output).await) {
+            let committed = match native_response(&original, sdk.finish(output.into()).await) {
                 Ok(received) => {
                     observe_commit(&received.0, true, None, &mut quota)?;
                     matches!(&received.0, CommitOutcome::Committed(_))

@@ -1,692 +1,109 @@
-//! Exhaustive schedules through the filesystem publication adapter and Session.
+//! Exhaustive checked change-stream cut and wake schedules. Policy/publication
+//! races use the production observation models in `access::projection::model`.
 #![cfg(acyclic_loom)]
-use acyclic_fs::session::{Cursor, Provider, Publication, Subscription};
-use acyclic_fs::{CancellationToken, WorkBudget};
-use acyclic_stream::session::{self as engine, PublicationProvider};
 use acyclic_stream::{verification, *};
 use bytes::Bytes;
-use futures::{FutureExt, StreamExt, channel::mpsc};
-use loom::sync::atomic::{AtomicBool, Ordering};
-use std::mem::ManuallyDrop;
-use std::sync::Arc;
-use wire::session_frame::Body;
-
-#[path = "support/session_fs.rs"]
-mod support;
-
-fn run<F: std::future::Future>(future: F) -> F::Output {
-    verification::park(future)
-}
-fn control(run: impl FnOnce(), messages: &[&str]) {
-    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run))
-        .expect_err("broken path escaped model");
-    let text = failure
-        .downcast_ref::<String>()
-        .map(String::as_str)
-        .or_else(|| failure.downcast_ref::<&str>().copied())
-        .unwrap_or("");
-    assert!(
-        messages.iter().any(|message| text.contains(message)),
-        "unexpected model failure: {text}"
-    );
-}
-
-// Seed only canonical records: the full workspace mutation fixture has large
-// futures unrelated to these adapter races. Actors still use the real Stream
-// append/recovery and Provider checked-follow paths with their real Loom locks.
-fn input(texts: &[&str]) -> (Subscription, Vec<Bytes>) {
-    use acyclic_fs::kernel::{PublishedGeneration, VolumeCreated};
-    use acyclic_fs::{Digest, DurableCommit, Epoch, OperationId, Sequence, VolumeId};
-    let sub = Subscription {
-        volume_id: VolumeId::from_bytes([7; 16]),
-        workspace_name: acyclic_fs::WorkspaceName::new(
-            "session-fs",
-            &WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .unwrap()
-        .value,
-        path_prefix: acyclic_fs::path::PortablePath::parse("/", Default::default()).unwrap(),
-        delivery: acyclic_fs_wire::wire::filesystem::v2::SessionFsDelivery::All,
-        start_next: 0,
-    };
-    let root = |text: &[u8]| acyclic_fs::ObjectId {
-        kind: acyclic_fs::ObjectKind::GenerationRoot,
-        digest: Digest::from_bytes(*blake3::hash(text).as_bytes()),
-    };
-    let created = acyclic_fs::kernel::encode_volume_created::<acyclic_fs::FsError>(
-        VolumeCreated {
-            volume_id: sub.volume_id,
-            config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
-            initial_generation_root: root(b"initial"),
-        },
-        |_| Ok(()),
-        |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed.into(),
-    )
-    .unwrap();
-    let mut payloads = vec![Bytes::new(), Bytes::from(created)];
-    for text in texts {
-        if *text == "deleted" {
-            payloads.push(Bytes::from(
-                acyclic_fs::kernel::encode_workspace_deleted::<acyclic_fs::FsError>(
-                    sub.volume_id,
-                    |_| Ok(()),
-                    |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed.into(),
-                )
-                .unwrap(),
-            ));
-            continue;
-        }
-        let publication = PublishedGeneration {
-            volume_id: sub.volume_id,
-            generation_root: root(text.as_bytes()),
-        };
-        let mut payload = b"acyclic-fs-publish-generation-v1\0".to_vec();
-        payload.extend_from_slice(&1_u16.to_le_bytes());
-        payload.extend_from_slice(&publication.volume_id.into_bytes());
-        payload.push(publication.generation_root.kind.canonical_tag());
-        payload.extend_from_slice(publication.generation_root.digest.as_bytes());
-        assert_eq!(
-            acyclic_fs::kernel::decode_published_generation::<acyclic_fs::FsError>(
-                &payload,
-                MAX_RECORD_BYTES as u64,
-                |_| Ok(()),
-            )
-            .unwrap(),
-            publication
-        );
-        payloads.push(Bytes::from(payload));
-    }
-    let mut previous_digest = Digest::ZERO;
-    let records = payloads
-        .into_iter()
-        .enumerate()
-        .map(|(index, payload)| {
-            if index == 0 {
-                return Bytes::from(
-                    [
-                        b"acyclic-fs-stream-genesis-v1\0".as_slice(),
-                        &Epoch::GENESIS.get().to_le_bytes(),
-                    ]
-                    .concat(),
-                );
-            }
-            let sequence = Sequence::new(index as u64);
-            let operation_id = OperationId::from_bytes([u8::try_from(index).unwrap(); 16]);
-            let fingerprint = Digest::from_bytes(*blake3::hash(&payload).as_bytes());
-            let digest = acyclic_fs::authority_commit_digest(
-                acyclic_fs::kernel::volume_authority_id(sub.volume_id),
-                Epoch::GENESIS,
-                sequence,
-                operation_id,
-                fingerprint,
-                previous_digest,
-                &payload,
-            );
-            let commit = DurableCommit {
-                epoch: Epoch::GENESIS,
-                sequence,
-                operation_id,
-                fingerprint,
-                previous_digest,
-                digest,
-                payload,
-                settled_at_micros: None,
-            };
-            previous_digest = digest;
-            acyclic_fs::StreamsDurableRecord::encode(&commit, MAX_RECORD_BYTES as u64).unwrap()
-        })
-        .collect();
-    (sub, records)
-}
-fn path(sub: &Subscription) -> StreamPath {
-    StreamPath::new(format!(
-        "fs/authorities/{}/records",
-        hex::encode(sub.volume_id.into_bytes())
-    ))
-    .unwrap()
-}
-fn append(stream: &MemoryStream, sub: &Subscription, records: &[Bytes], from: u64) -> CommitId {
-    let outcome = run(stream.append(AppendRequest {
-        path: path(sub),
-        records: records.iter().map(|bytes| bytes.to_vec().into()).collect(),
+use futures::{FutureExt, StreamExt};
+use std::{mem::ManuallyDrop, sync::Arc};
+fn append(stream: &MemoryStream, path: &StreamPath, value: &'static [u8], from: u64) -> CommitId {
+    let AppendOutcome::Committed(receipt) = verification::park(stream.append(AppendRequest {
+        path: path.clone(),
+        records: vec![Bytes::from_static(value).into()],
         if_tail: Some(from),
         idempotency_key: None,
     }))
-    .unwrap();
-    let AppendOutcome::Committed(receipt) = outcome else {
-        panic!("append conflicted")
+    .unwrap() else {
+        panic!("unexpected conflict")
     };
     receipt.commit_id
 }
-fn cursor(sub: &Subscription, next: u64, anchor: CommitId) -> wire::SessionCursor {
-    wire::SessionCursor {
-        next,
-        opaque: Cursor {
-            subscription: sub.clone(),
-            next,
-            preceding_commit_id: anchor,
-        }
-        .encode()
-        .unwrap(),
-    }
+fn control(run: impl FnOnce(), expected: &str) {
+    let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run))
+        .expect_err("broken model escaped");
+    let text = error
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| error.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(text.contains(expected), "unexpected model failure: {text}");
 }
-
 fn resume(omit_wake: bool) {
-    let fixture = input(&["next"]);
     verification::check(move || {
-        let (sub, records) = fixture.clone();
+        let path = StreamPath::new(".acyclic/fs/07070707070707070707070707070707")?;
         let stream = Arc::new(MemoryStream::default());
-        let anchor = append(&stream, &sub, &records[..2], 0);
+        let anchor = append(&stream, &path, b"accepted-root", 0);
         let keeper = ManuallyDrop::new(stream.clone());
         let writer = loom::thread::spawn({
             let stream = stream.clone();
-            let sub = sub.clone();
+            let path = path.clone();
             move || {
                 if omit_wake {
                     verification::omit_append_wake();
                 }
-                append(&stream, &sub, &records[2..], 2);
+                append(&stream, &path, b"change", 1);
             }
         });
-        run(async {
-            let mut source = Provider::new(stream.clone(), |_: &Subscription| Ok(()))
-                .subscribe(sub.encode().unwrap(), cursor(&sub, 2, anchor))
-                .unwrap()
-                .open
+        verification::park(async {
+            let mut follow = stream
+                .follow_updates(path, 1, Some(anchor), FollowFilter::default())
                 .await
                 .unwrap();
-            let data = source.next().await.unwrap().unwrap();
-            assert_eq!(data.after.as_ref().unwrap().next, 3);
-            let Some(wire::session_data::Item::FsPublication(bytes)) = data.item else {
-                panic!("missing publication")
+            let FollowUpdate::Record(record) = follow.next().await.unwrap().unwrap() else {
+                panic!("change lost")
             };
-            assert_eq!(Publication::decode(&bytes).unwrap().sequence.get(), 2);
+            assert_eq!(record.sequence, 1);
+            assert_eq!(record.value.as_ref(), b"change");
             writer.join().unwrap();
-            assert!(
-                source.next().now_or_never().is_none(),
-                "duplicate publication"
-            );
+            assert!(follow.next().now_or_never().is_none(), "duplicate change");
         });
         drop(ManuallyDrop::into_inner(keeper));
         Ok(())
     });
 }
 #[test]
-fn checked_resume_exhausts_append_registration_and_wakeup() {
+fn change_resume_exhausts_append_registration_and_wakeup() {
     resume(false);
-    control(|| resume(true), &["deadlock"]);
+    control(|| resume(true), "deadlock");
 }
 fn replacement(unchecked: bool) {
-    let fixture = input(&["original"]);
-    let other_fixture = input(&["replacement", "later"]);
     verification::check(move || {
-        let (sub, records) = fixture.clone();
-        let (other, replacement) = other_fixture.clone();
-        assert_eq!(sub.volume_id, other.volume_id);
+        let path = StreamPath::new(".acyclic/fs/07070707070707070707070707070707")?;
         let stream = Arc::new(MemoryStream::default());
-        let anchor = append(&stream, &sub, &records, 0);
+        let anchor = append(&stream, &path, b"original", 0);
         let keeper = ManuallyDrop::new(stream.clone());
-        let replaced = MemoryStream::default();
-        append(&replaced, &other, &replacement, 0);
+        let replacement = MemoryStream::default();
+        append(&replacement, &path, b"replacement", 0);
+        append(&replacement, &path, b"later", 1);
         let writer = loom::thread::spawn({
             let stream = stream.clone();
-            move || run(verification::recover(&stream, &replaced)).unwrap()
+            move || verification::park(verification::recover(&stream, &replacement)).unwrap()
         });
-        let mut history = support::History::new(stream);
-        history.unchecked = unchecked;
-        let provider = Provider::new(Arc::new(history), |_: &Subscription| Ok(()));
-        run(async {
-            let error = match provider
-                .subscribe(sub.encode().unwrap(), cursor(&sub, 3, anchor))
-                .unwrap()
-                .open
-                .await
-            {
-                Err(error) => error,
-                Ok(mut source) => match source.next().await {
-                    Some(Err(error)) => error,
-                    _ => panic!("history was not rejected"),
-                },
+        verification::park(async {
+            let mut follow = stream
+                .follow_updates(
+                    path,
+                    1,
+                    if unchecked { None } else { Some(anchor) },
+                    FollowFilter::default(),
+                )
+                .await;
+            writer.join().unwrap();
+            let rejected = match &mut follow {
+                Err(StreamError::PrefixNotRetained) => true,
+                Ok(records) => matches!(
+                    records.next().await,
+                    Some(Err(StreamError::PrefixNotRetained))
+                ),
+                _ => false,
             };
-            assert_eq!(
-                error,
-                StreamError::PrefixNotRetained,
-                "history was not rejected"
-            );
+            assert!(rejected, "history was not rejected");
         });
-        writer.join().unwrap();
         drop(ManuallyDrop::into_inner(keeper));
         Ok(())
     });
 }
 #[test]
-fn checked_resume_exhausts_independent_history_replacement() {
+fn change_resume_exhausts_independent_history_replacement() {
     replacement(false);
-    control(|| replacement(true), &["history was not rejected"]);
-}
-
-fn frame(id: u64, body: Body) -> wire::SessionFrame {
-    wire::SessionFrame {
-        channel_id: id,
-        generation: u64::from(id != 0),
-        body: Some(body),
-    }
-}
-fn revocation(skip_authorization: bool) {
-    let fixture = input(&["buffered"]);
-    verification::check(move || {
-        let (sub, records) = fixture.clone();
-        let stream = Arc::new(MemoryStream::default());
-        let anchor = append(&stream, &sub, &records, 0);
-        // Host authority is a Loom atomic. Observation fields below are touched
-        // only by the Session owner; they add no scheduling/synchronization edge.
-        let allowed = Arc::new(AtomicBool::new(true));
-        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let last = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let provider = Arc::new(Provider::new(stream.clone(), {
-            let allowed = allowed.clone();
-            let calls = calls.clone();
-            let last = last.clone();
-            move |_: &Subscription| {
-                let current = allowed.load(Ordering::SeqCst);
-                calls.fetch_add(1, Ordering::Relaxed);
-                last.store(current, Ordering::Relaxed);
-                if current {
-                    Ok(())
-                } else {
-                    Err(StreamError::AccessDenied)
-                }
-            }
-        }));
-        let provider = Arc::new(support::Broken {
-            inner: provider,
-            skip_deletion: false,
-            skip_authorization,
-        });
-        let (sender, incoming) = mpsc::unbounded();
-        let mut output = engine::serve_with_publications(
-            stream,
-            Some(provider),
-            "node".into(),
-            engine::Limits::default(),
-            Box::pin(incoming),
-        )
-        .unwrap();
-        sender
-            .unbounded_send(Ok(frame(
-                0,
-                Body::Hello(wire::SessionHello {
-                    version: 1,
-                    client_id: Bytes::from_static(b"model"),
-                    destination_node: "node".into(),
-                    receive_bytes: 1_000_000,
-                    receive_frames: 100,
-                }),
-            )))
-            .unwrap();
-        sender
-            .unbounded_send(Ok(frame(
-                0,
-                Body::Interest(wire::SessionInterest {
-                    revision: 1,
-                    remove: vec![],
-                    upsert: vec![wire::SessionSubscription {
-                        channel: Some(wire::SessionChannel {
-                            channel_id: 1,
-                            generation: 1,
-                        }),
-                        resume: Some(cursor(&sub, 2, anchor)),
-                        kind: Some(wire::session_subscription::Kind::FsPublications(
-                            sub.encode().unwrap(),
-                        )),
-                    }],
-                }),
-            )))
-            .unwrap();
-        run(async {
-            assert!(matches!(
-                output.next().await.unwrap().unwrap().body,
-                Some(Body::Welcome(_))
-            ));
-            assert!(matches!(
-                output.next().await.unwrap().unwrap().body,
-                Some(Body::InterestApplied(_))
-            ));
-            assert!(matches!(
-                output.next().await.unwrap().unwrap().body,
-                Some(Body::Opened(_))
-            ));
-            assert!(output.next().now_or_never().is_none()); // buffer before granting credit
-        });
-        let writer = loom::thread::spawn(move || allowed.store(false, Ordering::SeqCst));
-        sender
-            .unbounded_send(Ok(frame(
-                1,
-                Body::Window(wire::SessionWindow {
-                    bytes: 1_000_000,
-                    frames: 1,
-                }),
-            )))
-            .unwrap();
-        let outcome = run(output.next()).unwrap().unwrap();
-        assert_eq!(
-            calls.load(Ordering::Relaxed),
-            3,
-            "delivery skipped authorization"
-        );
-        if last.load(Ordering::Relaxed) {
-            assert!(matches!(outcome.body, Some(Body::Data(_))));
-        } else {
-            let Some(Body::Closed(close)) = outcome.body else {
-                panic!("denied frame delivered")
-            };
-            assert_eq!(close.code, StreamError::AccessDenied.code());
-            assert_eq!(
-                StreamError::from_session_close(&close.code),
-                StreamError::AccessDenied
-            );
-        }
-        writer.join().unwrap();
-        Ok(())
-    });
-}
-#[test]
-fn resumed_buffered_delivery_exhausts_revocation() {
-    revocation(false);
-    control(|| revocation(true), &["delivery skipped authorization"]);
-}
-
-// Empty opaque cursors select the separate follow/tail/read branch. No barrier
-// orders those awaits against append/recovery: the real shim explores each gap.
-fn fresh_open(replace: bool, start_next: u64, stale_head: bool) {
-    let fixture = input(if replace {
-        &["original", "original-tail"]
-    } else {
-        &["original"]
-    });
-    let deleted = input(&[if replace { "replacement" } else { "original" }, "deleted"]);
-    verification::check(move || {
-        let (mut sub, records) = fixture.clone();
-        sub.start_next = start_next;
-        let stream = Arc::new(MemoryStream::default());
-        append(&stream, &sub, &records, 0);
-        let keeper = ManuallyDrop::new(stream.clone());
-        let replacement = MemoryStream::default();
-        append(&replacement, &sub, &deleted.1, 0);
-        let writer = loom::thread::spawn({
-            let stream = stream.clone();
-            let sub = sub.clone();
-            let terminal = deleted.1[3].clone();
-            move || {
-                if replace {
-                    run(verification::recover(&stream, &replacement)).unwrap();
-                } else {
-                    append(&stream, &sub, &[terminal], 3);
-                }
-            }
-        });
-        let mut history = support::History::new(stream);
-        history.stale_head = stale_head;
-        history.unchecked = stale_head;
-        let provider = Provider::new(Arc::new(history), |_: &Subscription| Ok(()));
-        let error = run(async {
-            match provider
-                .subscribe(sub.encode().unwrap(), wire::SessionCursor::default())
-                .unwrap()
-                .open
-                .await
-            {
-                Err(error) => error,
-                Ok(mut source) => source
-                    .next()
-                    .await
-                    .expect("fresh follow ended")
-                    .unwrap_err(),
-            }
-        });
-        // A future start can be rejected before the append linearizes. Replacing
-        // a live checked follow rejects its old anchor with PrefixNotRetained. Neither
-        // permits advancing a cursor or remaining idle after the terminal fact.
-        match error {
-            StreamError::NotFound => {}
-            StreamError::OutOfRange if !replace && start_next == 4 => {}
-            StreamError::PrefixNotRetained if replace => {}
-            other => panic!("unexpected fresh-open error: {other:?}"),
-        }
-        writer.join().unwrap();
-        drop(ManuallyDrop::into_inner(keeper));
-        Ok(())
-    });
-}
-#[test]
-fn fresh_open_exhausts_deletion_and_history_replacement() {
-    fresh_open(false, 3, false);
-    fresh_open(false, 4, false);
-    fresh_open(true, 4, false);
-    control(|| fresh_open(false, 4, true), &["deadlock"]);
-    // The unchecked replacement can either park forever or lose its watch with
-    // the wrong terminal code. Both violate the exact production-path oracle.
-    control(
-        || fresh_open(true, 4, true),
-        &["deadlock", "unexpected fresh-open error: Unavailable"],
-    );
-}
-
-fn fresh_delivery_replacement(unchecked: bool) {
-    let fixture = input(&["original"]);
-    let other = input(&["replacement"]);
-    verification::check(move || {
-        let (sub, records) = fixture.clone();
-        let stream = Arc::new(MemoryStream::default());
-        append(&stream, &sub, &records, 0);
-        let keeper = ManuallyDrop::new(stream.clone());
-        let replacement = MemoryStream::default();
-        append(&replacement, &sub, &other.1, 0);
-        let mut history = support::History::new(stream.clone());
-        history.unchecked = unchecked;
-        let mut source = run(Provider::new(Arc::new(history), |_: &Subscription| Ok(()))
-            .subscribe(sub.encode().unwrap(), wire::SessionCursor::default())
-            .unwrap()
-            .open)
-        .unwrap();
-        let first = run(source.next()).unwrap().unwrap();
-        assert_eq!(first.after.unwrap().next, 2);
-        let writer = loom::thread::spawn(move || {
-            run(verification::recover(&stream, &replacement)).unwrap();
-        });
-        let mut terminal = false;
-        for _ in 0..2 {
-            match run(source.next()).expect("fresh follow ended") {
-                Err(error) => {
-                    assert_eq!(error, StreamError::PrefixNotRetained, "mixed histories");
-                    terminal = true;
-                    break;
-                }
-                Ok(data) => {
-                    let Some(wire::session_data::Item::FsPublication(bytes)) = data.item else {
-                        panic!("missing publication")
-                    };
-                    let publication = Publication::decode(&bytes).unwrap();
-                    assert_eq!(
-                        publication.generation.generation_root.digest.as_bytes(),
-                        blake3::hash(b"original").as_bytes(),
-                        "mixed histories"
-                    );
-                }
-            }
-        }
-        assert!(terminal, "mixed histories");
-        writer.join().unwrap();
-        drop(ManuallyDrop::into_inner(keeper));
-        Ok(())
-    });
-}
-#[test]
-fn fresh_deliveries_exhaust_history_replacement() {
-    fresh_delivery_replacement(false);
-    control(|| fresh_delivery_replacement(true), &["mixed histories"]);
-}
-
-// The terminal future and the Session scheduler compose only through poll and
-// Waker. terminal_opening exhausts the real terminal future against a real
-// deletion append, polling on every wake; this model exhausts the real Session
-// polling a woken terminal with zero channel and connection credit. Splitting at
-// that contract keeps both searches unbounded and well inside the deadline.
-struct Deletion {
-    observed: AtomicBool,
-    waker: loom::sync::Mutex<Option<std::task::Waker>>,
-}
-impl Deletion {
-    fn publish(&self) {
-        self.observed.store(true, Ordering::SeqCst);
-        if let Some(waker) = self.waker.lock().unwrap().take() {
-            waker.wake();
-        }
-    }
-}
-struct ObservedTerminal {
-    data: Provider<MemoryStream, fn(&Subscription) -> Result<(), StreamError>>,
-    deletion: Arc<Deletion>,
-}
-impl PublicationProvider for ObservedTerminal {
-    fn subscribe(
-        &self,
-        encoded: Bytes,
-        resume: wire::SessionCursor,
-    ) -> Result<engine::PublicationSubscription, StreamError> {
-        let mut source = self.data.subscribe(encoded, resume)?;
-        let deletion = self.deletion.clone();
-        source.terminal = Box::pin(futures::future::poll_fn(move |cx| {
-            *deletion.waker.lock().unwrap() = Some(cx.waker().clone());
-            if deletion.observed.load(Ordering::SeqCst) {
-                std::task::Poll::Ready(StreamError::NotFound)
-            } else {
-                std::task::Poll::Pending
-            }
-        }));
-        Ok(source)
-    }
-}
-
-fn zero_credit_deletion(skip_terminal: bool) {
-    let fixture = input(&[]);
-    verification::check(move || {
-        let (sub, records) = fixture.clone();
-        let stream = Arc::new(MemoryStream::default());
-        append(&stream, &sub, &records, 0);
-        let keeper = ManuallyDrop::new(stream.clone());
-        let deletion = Arc::new(Deletion {
-            observed: AtomicBool::new(false),
-            waker: loom::sync::Mutex::new(None),
-        });
-        let allow: fn(&Subscription) -> Result<(), StreamError> = |_| Ok(());
-        let provider = Arc::new(ObservedTerminal {
-            data: Provider::new(stream.clone(), allow),
-            deletion: deletion.clone(),
-        });
-        let (sender, incoming) = mpsc::unbounded();
-        let mut output = engine::serve_with_publications(
-            stream.clone(),
-            Some(provider),
-            "node".into(),
-            engine::Limits::default(),
-            Box::pin(incoming),
-        )
-        .unwrap();
-        sender
-            .unbounded_send(Ok(frame(
-                0,
-                Body::Hello(wire::SessionHello {
-                    version: 1,
-                    client_id: Bytes::from_static(b"model"),
-                    destination_node: "node".into(),
-                    receive_bytes: 0,
-                    receive_frames: 0,
-                }),
-            )))
-            .unwrap();
-        sender
-            .unbounded_send(Ok(frame(
-                0,
-                Body::Interest(wire::SessionInterest {
-                    revision: 1,
-                    remove: vec![],
-                    upsert: vec![wire::SessionSubscription {
-                        channel: Some(wire::SessionChannel {
-                            channel_id: 1,
-                            generation: 1,
-                        }),
-                        resume: Some(wire::SessionCursor::default()),
-                        kind: Some(wire::session_subscription::Kind::FsPublications(
-                            sub.encode().unwrap(),
-                        )),
-                    }],
-                }),
-            )))
-            .unwrap();
-        for expected in 0..2 {
-            let body = run(output.next()).unwrap().unwrap().body;
-            assert!(matches!(
-                (expected, body),
-                (0, Some(Body::Welcome(_))) | (1, Some(Body::InterestApplied(_)))
-            ));
-        }
-        assert!(matches!(
-            run(output.next()).unwrap().unwrap().body,
-            Some(Body::Opened(_))
-        ));
-        assert!(output.next().now_or_never().is_none());
-        // Negative control: the terminal never observes deletion, so the
-        // zero-credit subscriber must stay idle and the model must deadlock.
-        let writer = loom::thread::spawn(move || {
-            if !skip_terminal {
-                deletion.publish();
-            }
-        });
-        let Some(Body::Closed(close)) = run(output.next()).unwrap().unwrap().body else {
-            panic!("deletion needs credit")
-        };
-        assert_eq!(close.code, StreamError::NotFound.code());
-        writer.join().unwrap();
-        assert!(output.next().now_or_never().is_none());
-        drop(ManuallyDrop::into_inner(keeper));
-        Ok(())
-    });
-}
-#[test]
-fn terminal_watch_exhausts_zero_credit_deletion() {
-    zero_credit_deletion(false);
-    control(|| zero_credit_deletion(true), &["deadlock"]);
-}
-
-// Registration and scheduler wakeup compose at the required terminal future:
-// this model races its opening, the preceding model races its Session polling.
-fn terminal_opening(skip_terminal: bool) {
-    let fixture = input(&["deleted"]);
-    verification::check(move || {
-        let (sub, records) = fixture.clone();
-        let stream = Arc::new(MemoryStream::default());
-        append(&stream, &sub, &records[..2], 0);
-        let keeper = ManuallyDrop::new(stream.clone());
-        let provider = support::Broken {
-            inner: Arc::new(Provider::new(stream.clone(), |_: &Subscription| Ok(()))),
-            skip_deletion: skip_terminal,
-            skip_authorization: false,
-        };
-        let terminal = provider
-            .subscribe(sub.encode().unwrap(), wire::SessionCursor::default())
-            .unwrap()
-            .terminal;
-        let writer = loom::thread::spawn(move || append(&stream, &sub, &records[2..], 2));
-        assert_eq!(run(terminal), StreamError::NotFound);
-        writer.join().unwrap();
-        drop(ManuallyDrop::into_inner(keeper));
-        Ok(())
-    });
-}
-#[test]
-fn terminal_opening_exhausts_deletion_registration() {
-    terminal_opening(false);
-    control(|| terminal_opening(true), &["deadlock"]);
+    control(|| replacement(true), "history was not rejected");
 }

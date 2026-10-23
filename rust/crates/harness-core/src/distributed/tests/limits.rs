@@ -78,7 +78,11 @@ async fn append_source(
         }
     } else {
         stream
-            .append_batch(vec![OwnedBytes::from(bytes)], Some(revision - 1), None)
+            .append_batch(
+                vec![OwnedBytes::from(bytes).into()],
+                Some(revision - 1),
+                None,
+            )
             .await?;
     }
     Ok(length)

@@ -224,7 +224,7 @@ impl Pool {
         };
         let capacity = u32::try_from(route.records.capacity())
             .map_err(|_| StreamError::Capacity)?
-            .min((QUEUE as u32).saturating_sub(route.buffered_data));
+            .min(u32::try_from(QUEUE).map_err(|_| StreamError::Capacity)?.saturating_sub(route.buffered_data));
         let grant = wire::SessionWindow {
             frames: capacity.saturating_sub(route.credit.frames),
             bytes: (u64::from(capacity)

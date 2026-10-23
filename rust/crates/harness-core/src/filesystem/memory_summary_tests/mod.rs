@@ -385,6 +385,7 @@ impl acyclic_stream::StreamProvider for ColdSummaryStream {
         &self,
         _: acyclic_stream::StreamPath,
         _: u64,
+        _filter: acyclic_stream::FollowFilter,
     ) -> std::result::Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> {
         Err(acyclic_stream::StreamError::Unsupported)
     }

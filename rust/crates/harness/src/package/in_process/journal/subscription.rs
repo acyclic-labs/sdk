@@ -57,7 +57,13 @@ impl<P: StreamProvider> Journal<P> {
             }
         }
         let mut follow = if consumed == 0 {
-            self.stream.follow(self.inbox.clone(), 0).await
+            self.stream
+                .follow(
+                    self.inbox.clone(),
+                    0,
+                    acyclic_stream::FollowFilter::default(),
+                )
+                .await
         } else {
             let mut records = self
                 .stream
@@ -74,7 +80,12 @@ impl<P: StreamProvider> Journal<P> {
                 .map_err(|error| journal::stream_error(&error))?
                 .ok_or_else(|| Error::Storage("actor inbox anchor is missing".into()))?;
             self.stream
-                .follow_checked(self.inbox.clone(), consumed, anchor.commit_id)
+                .follow_checked(
+                    self.inbox.clone(),
+                    consumed,
+                    anchor.commit_id,
+                    acyclic_stream::FollowFilter::default(),
+                )
                 .await
         }
         .map_err(|error| journal::stream_error(&error))?;
@@ -89,7 +100,12 @@ impl<P: StreamProvider> Journal<P> {
     pub(in super::super) async fn changed(&self, current: &journal::Loaded) -> Result<()> {
         let mut workflow = self
             .stream
-            .follow_checked(self.path.clone(), current.tail, current.head)
+            .follow_checked(
+                self.path.clone(),
+                current.tail,
+                current.head,
+                acyclic_stream::FollowFilter::default(),
+            )
             .await
             .map_err(|error| journal::stream_error(&error))?;
         let checkpoint = Box::pin(async {

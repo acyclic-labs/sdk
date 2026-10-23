@@ -101,7 +101,12 @@ pub(super) async fn append_origin<const FENCE: bool, P: StreamProvider, const N:
     add_condition(&mut request, CommitCondition::Absent { path: path.clone() })?;
     let mut records = Vec::new();
     request.1.reserve(N, &mut records)?;
-    records.extend(input.iter().cloned());
+    records.extend(
+        input
+            .iter()
+            .cloned()
+            .map(acyclic_stream::AppendRecord::from),
+    );
     request
         .0
         .mutations

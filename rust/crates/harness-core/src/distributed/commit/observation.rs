@@ -28,7 +28,7 @@ pub(in crate::distributed) fn observe_commit(
             CommittedMutation::Fork(fork) => &fork.records,
         };
         for record in records {
-            let bytes = record.value.len() as u64;
+            let bytes = record.payload_bytes() as u64;
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let received = observer.receive_native_record(bytes);
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]

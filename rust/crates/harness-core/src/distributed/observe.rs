@@ -15,7 +15,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         );
         let revision = initial.revision;
         let source = Some(operations::ObservedRecords::Ordinary(
-            self.stream.0.follow(self.revision).await?,
+            self.stream
+                .0
+                .follow(self.revision, acyclic_stream::FollowFilter::default())
+                .await?,
         ));
         Ok(Box::pin(stream::try_unfold(
             (self, source, Some(initial), revision),

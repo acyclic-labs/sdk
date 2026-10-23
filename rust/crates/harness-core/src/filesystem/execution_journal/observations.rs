@@ -441,7 +441,7 @@ where
                 .await
             }
             None => stream
-                .append_batch(vec![bytes], Some(tail), Some(key))
+                .append_batch(vec![bytes.into()], Some(tail), Some(key))
                 .await
                 .map_err(|error| match error {
                     StreamError::IdempotencyMismatch => {

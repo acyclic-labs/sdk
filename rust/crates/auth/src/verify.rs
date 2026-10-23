@@ -246,6 +246,20 @@ pub fn verify(
 }
 
 impl VerifiedCapability {
+    /// Whether this chain has irreversibly discarded its append authority.
+    pub fn is_sealed(&self) -> bool {
+        matches!(self.proof, Proof::Sealed(_))
+    }
+
+    /// Account authenticated by the environment birth certificate.
+    pub fn account_id(&self) -> Result<&str, VerifyError> {
+        self.blocks
+            .first()
+            .and_then(|block| block.certificates.as_ref())
+            .map(|certificates| certificates.birth.birth.account_id.as_str())
+            .ok_or(VerifyError::Malformed)
+    }
+
     /// Borrow effective principal, conjunctive grant/filter sets and numeric minima.
     pub fn effective(&self) -> Effective<'_> {
         Effective { capability: self }
@@ -364,7 +378,8 @@ impl VerifiedCapability {
         policy: authority::PolicyDecision,
     ) -> Result<(), VerifyError> {
         self.check(trust, request.now_unix_seconds)?;
-        authority::permits_resource_follow(&self.blocks, request, policy).map_err(VerifyError::Denied)
+        authority::permits_resource_follow(&self.blocks, request, policy)
+            .map_err(VerifyError::Denied)
     }
 
     /// Append a conjunctive block. The caller supplies fresh cryptographic entropy;

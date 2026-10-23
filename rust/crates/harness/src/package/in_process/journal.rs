@@ -223,7 +223,7 @@ impl<P: StreamProvider> Journal<P> {
             }],
             vec![CommitMutation::Append {
                 path: self.path.clone(),
-                records: vec![value],
+                records: vec![value.into()],
             }],
         )
         .await
@@ -244,16 +244,17 @@ impl<P: StreamProvider> Journal<P> {
         }];
         let mut mutations = vec![CommitMutation::Append {
             path: self.path.clone(),
-            records: vec![value],
+            records: vec![value.into()],
         }];
         if let Some(record) = &entry.workflow {
             let path = self.revision_path(record.prior.revision)?;
             conditions.push(CommitCondition::Absent { path: path.clone() });
             mutations.push(CommitMutation::Append {
                 path,
-                records: vec![Bytes::from(
-                    serde_json::to_vec(&tail).map_err(|error| codec_error(&error))?,
-                )],
+                records: vec![
+                    Bytes::from(serde_json::to_vec(&tail).map_err(|error| codec_error(&error))?)
+                        .into(),
+                ],
             });
         }
         if let Some(event) = event {

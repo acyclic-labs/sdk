@@ -23,7 +23,7 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
     let header = encode_header(limits, 0)?;
     file.write_all(&header)?;
     let journal = Journal {
-        lock: file.try_clone()?,
+        _lock: file.try_clone()?,
         file: Arc::new(file),
         epoch: 0,
         operations: 0,
@@ -78,7 +78,7 @@ pub(crate) fn accepted_queries_and_publication_have_no_lost_wakeup_or_durability
         let path = StreamPath::new("model")?;
         let seed = block_on(deferring_durability(stream.append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"anchor")],
+            records: vec![Bytes::from_static(b"anchor").into()],
             if_tail: Some(0),
             idempotency_key: None,
         })))?;
@@ -93,7 +93,7 @@ pub(crate) fn accepted_queries_and_publication_have_no_lost_wakeup_or_durability
                     stream
                         .append(AppendRequest {
                             path,
-                            records: vec![Bytes::from_static(b"accepted")],
+                            records: vec![Bytes::from_static(b"accepted").into()],
                             if_tail: Some(1),
                             idempotency_key: None,
                         })
@@ -138,7 +138,7 @@ pub(crate) fn poison_wakes_checked_followers(omit_publication: bool) {
         let path = StreamPath::new("model")?;
         let seed = block_on(deferring_durability(stream.append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"anchor")],
+            records: vec![Bytes::from_static(b"anchor").into()],
             if_tail: Some(0),
             idempotency_key: None,
         })))?;
@@ -186,7 +186,7 @@ pub(crate) fn persist_wakes_parked_followers(omit_wake: bool) {
         let path = StreamPath::new("model")?;
         let seed = block_on(deferring_durability(stream.append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"anchor")],
+            records: vec![Bytes::from_static(b"anchor").into()],
             if_tail: Some(0),
             idempotency_key: None,
         })))?;
@@ -209,7 +209,7 @@ pub(crate) fn persist_wakes_parked_followers(omit_wake: bool) {
             move || {
                 block_on(deferring_durability(stream.append(AppendRequest {
                     path,
-                    records: vec![Bytes::from_static(b"accepted")],
+                    records: vec![Bytes::from_static(b"accepted").into()],
                     if_tail: Some(1),
                     idempotency_key: None,
                 })))

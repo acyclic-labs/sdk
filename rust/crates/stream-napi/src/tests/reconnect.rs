@@ -178,6 +178,7 @@ impl StreamSessionService for DisconnectingHost {
             } else {
                 &self.provider
             }),
+            acyclic_stream::session::testing::authority(),
             "native".into(),
             Default::default(),
             input,
@@ -253,6 +254,9 @@ impl Fixture {
             grpc::Client::connect_eager_with_ca_certificate(&endpoint, "fixture", &certificate)
                 .await?,
         );
+        client
+            .session_client()?
+            .register_credential(0, acyclic_stream::session::testing::credential())?;
         Ok(Self {
             provider,
             client,
@@ -623,30 +627,7 @@ async fn cancellation_case(
         .ok_or("old recovery never entered its handshake gate")?
         .0;
     evidence.lock().gate = "native cursor retirement";
-    if action == 2 {
-        let owner = Arc::downgrade(&cursor.state.records);
-        drop(cursor);
-        assert!(owner.upgrade().is_none(), "drop retained the native cursor");
-    } else {
-        let pending = cursor.next_result();
-        futures::pin_mut!(pending);
-        assert!(futures::poll!(&mut pending).is_pending());
-        if action == 0 {
-            cancellation.cancel();
-            let next = pending.await?;
-            assert!(next.value.is_none());
-            assert_eq!(
-                next.error.ok_or("cancellation became EOF")?.code,
-                "cancelled"
-            );
-        } else {
-            let (next, ()) = tokio::join!(pending, cursor.close());
-            let next = next?;
-            assert!(next.value.is_none() && next.error.is_none());
-        }
-        end(&cursor).await?;
-        assert!(cursor.state.records.lock().await.is_none());
-    }
+    retire_cursor(cursor, &cancellation, action).await?;
     evidence.lock().gate = "successor RPC arrival";
     let (replacement, successor) = fixture.replacement_after_retirement(old, evidence).await?;
     evidence.lock().gate = "replacement payload";
@@ -787,4 +768,32 @@ proptest::proptest! {
             Ok(())
         })?;
     }
+}
+
+async fn retire_cursor(cursor: NativeStreamFollow, cancellation: &NativeStreamCancellation, action: u8) -> TestResult {
+    if action == 2 {
+        let owner = Arc::downgrade(&cursor.state.records);
+        drop(cursor);
+        assert!(owner.upgrade().is_none(), "drop retained the native cursor");
+    } else {
+        let pending = cursor.next_result();
+        futures::pin_mut!(pending);
+        assert!(futures::poll!(&mut pending).is_pending());
+        if action == 0 {
+            cancellation.cancel();
+            let next = pending.await?;
+            assert!(next.value.is_none());
+            assert_eq!(
+                next.error.ok_or("cancellation became EOF")?.code,
+                "cancelled"
+            );
+        } else {
+            let (next, ()) = tokio::join!(pending, cursor.close());
+            let next = next?;
+            assert!(next.value.is_none() && next.error.is_none());
+        }
+        end(&cursor).await?;
+        assert!(cursor.state.records.lock().await.is_none());
+    }
+    Ok(())
 }

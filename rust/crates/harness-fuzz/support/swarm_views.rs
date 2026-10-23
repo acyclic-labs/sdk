@@ -239,6 +239,8 @@ fn exercise_fault(input: &[u8], skip_watermark: bool, drop_attention: bool) {
                     agent: path("swarm/a"),
                     overview: false,
                     watermark: wire::SessionWatermark {
+                        after: None,
+                        preceding_commit_id: Default::default(),
                         accepted: cut + 2,
                         durable: cut + 1,
                     },
@@ -317,6 +319,8 @@ fn exercise_fault(input: &[u8], skip_watermark: bool, drop_attention: bool) {
                 agent: path("swarm/a"),
                 overview: true,
                 watermark: wire::SessionWatermark {
+                    after: None,
+                    preceding_commit_id: Default::default(),
                     accepted: 2,
                     durable: 2,
                 },

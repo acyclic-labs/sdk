@@ -43,6 +43,7 @@ const MAXIMUM_FILE_BYTES: u64 = 1_048_576;
 pub(super) struct Remote {
     pub endpoint: String,
     pub bearer: String,
+    pub workload: Vec<u8>,
     pub ca_file: PathBuf,
 }
 
@@ -56,9 +57,12 @@ struct Child {
 impl Remote {
     pub(super) async fn connect(&self) -> TestResult<Arc<Client>> {
         let ca = std::fs::read(&self.ca_file)?;
-        Ok(Arc::new(
-            Client::connect_eager_with_ca_certificate(&self.endpoint, &self.bearer, ca).await?,
-        ))
+        let client =
+            Client::connect_eager_with_ca_certificate(&self.endpoint, &self.bearer, ca).await?;
+        client
+            .session_client()?
+            .register_credential(0, self.workload.clone().into())?;
+        Ok(Arc::new(client))
     }
 }
 

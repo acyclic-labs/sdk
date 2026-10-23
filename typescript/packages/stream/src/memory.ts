@@ -1,8 +1,8 @@
 import { streamError } from "./wasm-error.js";
-import { fromBinary } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { projectMemoryResponse, WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
-  ReadResponseSchema, TailResponseSchema, ChildrenResponseSchema,
+  ReadResponseSchema, TailResponseSchema, ChildrenResponseSchema, FollowRequestSchema, type Record as WireRecord,
 } from "../generated/proto/stream/v1/stream_pb.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
@@ -86,9 +86,12 @@ class RustStreamProvider implements StreamProvider {
 
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
     const { from, signal } = options;
+    const filter = options.filter === undefined ? undefined : structuredClone(options.filter);
     await validateWireRequest({ kind: "follow", path, from });
     if (signal?.aborted) return;
-    const request = wireRequest({ kind: "follow", path, from });
+    const request = toBinary(FollowRequestSchema, create(FollowRequestSchema, { path, from,
+      ...(filter === undefined ? {} : { filter }),
+    }));
     let handle: Awaited<ReturnType<WasmStream["open_follow"]>>;
     try { handle = await (await this.#inner).open_follow(request); }
     catch (error) { throw streamError(error, "follow"); }
@@ -167,8 +170,8 @@ class RustStreamProvider implements StreamProvider {
 }
 
 
-function record(value: { sequence: bigint; value: Uint8Array; commitId: Uint8Array; committedAtMicros: bigint }): EncodedRecord {
-  return { sequence: value.sequence, value: value.value, commitId: commitId(value.commitId), committedAtMicros: value.committedAtMicros };
+function record(value: WireRecord): EncodedRecord {
+  return { sequence: value.sequence, value: value.value, commitId: commitId(value.commitId), committedAtMicros: value.committedAtMicros, keys: value.keys, attributes: value.attributes };
 }
 
 /** Durable account-local provider using strict IndexedDB publication and Rust recovery. */

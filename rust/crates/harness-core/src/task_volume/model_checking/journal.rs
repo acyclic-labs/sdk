@@ -130,7 +130,12 @@ impl StreamProvider for Journal {
     async fn fork(&self, _: ForkRequest) -> Result<ForkReceipt, StreamError> {
         Err(StreamError::Unsupported)
     }
-    async fn follow(&self, _: StreamPath, _: u64) -> Result<RecordStream, StreamError> {
+    async fn follow(
+        &self,
+        _: StreamPath,
+        _: u64,
+        _filter: acyclic_stream::FollowFilter,
+    ) -> Result<RecordStream, StreamError> {
         Err(StreamError::Unsupported)
     }
     async fn children(&self, _: ChildrenRequest) -> Result<ChildStream, StreamError> {

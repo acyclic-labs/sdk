@@ -59,9 +59,9 @@ macro_rules! provider {
                 self.0.$name($arg).await
             })*
 
-            async fn follow(&self, path: StreamPath, from: u64) -> std::result::Result<RecordStream, StreamError> {
+            async fn follow(&self, path: StreamPath, from: u64, filter: acyclic_stream::FollowFilter) -> std::result::Result<RecordStream, StreamError> {
                 suspend().await;
-                self.0.follow(path, from).await
+                self.0.follow(path, from, filter).await
             }
 
             async fn read(&self, request: ReadRequest) -> std::result::Result<RecordStream, StreamError> {

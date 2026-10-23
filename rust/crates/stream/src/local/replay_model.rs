@@ -11,7 +11,7 @@ fn race<const REQUIRE: bool>() {
         let keeper = std::mem::ManuallyDrop::new(stream.clone());
         block_on(deferring_durability(stream.append(AppendRequest {
             path: StreamPath::new("replay-work")?,
-            records: vec![crate::OwnedBytes::from_static(b"one")],
+            records: vec![crate::OwnedBytes::from_static(b"one").into()],
             if_tail: Some(0),
             idempotency_key: None,
         })))?;

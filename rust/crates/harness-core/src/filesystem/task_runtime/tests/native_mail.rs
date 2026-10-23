@@ -360,11 +360,11 @@ async fn native_mail_sdk_cursor_rejects_actual_hostile_version_and_recipient_rec
                 mutations: vec![
                     acyclic_stream::CommitMutation::Append {
                         path: mailbox,
-                        records: vec![bytes],
+                        records: vec![bytes.into()],
                     },
                     acyclic_stream::CommitMutation::Append {
                         path: intent,
-                        records: vec![location],
+                        records: vec![location.into()],
                     },
                 ],
                 idempotency_key: acyclic_stream::IdempotencyKey::new(OwnedBytes::copy_from_slice(

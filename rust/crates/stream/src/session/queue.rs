@@ -64,20 +64,6 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 }),
                 None,
             ),
-            Ok(Event::Publication(data)) => {
-                let after = data.after.ok_or(StreamError::InvalidArgument)?;
-                let Some(Item::FsPublication(value)) = data.item else {
-                    return Err(StreamError::InvalidArgument);
-                };
-                if after.next <= channel.sent.next {
-                    return Err(StreamError::InvalidArgument);
-                }
-                (
-                    after,
-                    Item::FsPublication(value),
-                    channel.latest.then(|| Bytes::from_static(b"fs")),
-                )
-            }
             Ok(Event::Record(record)) => {
                 let next = record
                     .sequence

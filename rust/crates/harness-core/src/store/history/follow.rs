@@ -16,7 +16,11 @@ impl<P: StreamProvider> HistoryReader<P> {
         }
         let source = self
             .client
-            .follow(self.path.clone(), after_revision)
+            .follow(
+                self.path.clone(),
+                after_revision,
+                acyclic_stream::FollowFilter::default(),
+            )
             .await
             .map_err(|error| match error {
                 StreamError::NotFound => Error::NotFound("aggregate history".into()),

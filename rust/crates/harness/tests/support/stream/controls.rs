@@ -106,7 +106,7 @@ impl<P> LostSessionAck<P> {
                     append
                         .records
                         .iter()
-                        .map(|record| record.value.len() as u64)
+                        .map(|record| record.payload_bytes() as u64)
                         .sum::<u64>(),
                 ),
                 _ => None,
@@ -116,13 +116,16 @@ impl<P> LostSessionAck<P> {
             .receipt_bytes
             .fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
     }
-    pub(super) fn measure_write(&self, records: &[OwnedBytes]) {
+    pub(super) fn measure_write(&self, records: &[acyclic_stream::AppendRecord]) {
         use std::sync::atomic::Ordering;
         self.io
             .records
             .fetch_add(records.len() as u64, Ordering::SeqCst);
         self.io.write_bytes.fetch_add(
-            records.iter().map(|record| record.len() as u64).sum(),
+            records
+                .iter()
+                .map(|record| record.payload_bytes() as u64)
+                .sum(),
             Ordering::SeqCst,
         );
     }

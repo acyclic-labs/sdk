@@ -252,12 +252,13 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         &self,
         path: acyclic_stream::StreamPath,
         from: u64,
+        filter: acyclic_stream::FollowFilter,
     ) -> std::result::Result<acyclic_stream::RecordStream, StreamError> {
         assert!(
             !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
             "ordinary follow on native-only fixture"
         );
-        self.inner.follow(path, from).await
+        self.inner.follow(path, from, filter).await
     }
     async fn children(
         &self,

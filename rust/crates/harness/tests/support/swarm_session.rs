@@ -32,6 +32,7 @@ impl<P: StreamProvider + 'static> Transport for Local<P> {
             });
             let output = session::serve(
                 self.provider.clone(),
+                session::testing::authority(),
                 "local".into(),
                 Default::default(),
                 source.boxed(),
@@ -120,6 +121,11 @@ pub fn open<P: StreamProvider + 'static>(
             Box::pin(async move { Ok(endpoint) })
         }),
         Arc::new(Scheduled(scheduled)),
+    );
+    assert!(
+        client
+            .register_credential(0, session::testing::credential())
+            .is_ok()
     );
     (
         client,

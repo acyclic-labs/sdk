@@ -91,8 +91,13 @@ impl StreamProvider for Observed {
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.memory.read(request).await
     }
-    async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        let records = self.memory.follow(path.clone(), from).await?;
+    async fn follow(
+        &self,
+        path: StreamPath,
+        from: u64,
+        filter: acyclic_stream::FollowFilter,
+    ) -> Result<RecordStream, StreamError> {
+        let records = self.memory.follow(path.clone(), from, filter).await?;
         Ok(self.observed(&path, records))
     }
     async fn follow_checked(
@@ -100,10 +105,11 @@ impl StreamProvider for Observed {
         path: StreamPath,
         from: u64,
         preceding: CommitId,
+        filter: acyclic_stream::FollowFilter,
     ) -> Result<RecordStream, StreamError> {
         let records = self
             .memory
-            .follow_checked(path.clone(), from, preceding)
+            .follow_checked(path.clone(), from, preceding, filter)
             .await?;
         Ok(self.observed(&path, records))
     }

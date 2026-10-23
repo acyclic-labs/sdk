@@ -14,7 +14,7 @@ fn check<const OMIT_ANCHOR: bool>() {
         let path = StreamPath::new("model").unwrap();
         let AppendOutcome::Committed(receipt) = block_on(provider.append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"old")],
+            records: vec![Bytes::from_static(b"old").into()],
             if_tail: Some(0),
             idempotency_key: None,
         }))
@@ -25,8 +25,8 @@ fn check<const OMIT_ANCHOR: bool>() {
         block_on(replacement.append(AppendRequest {
             path: path.clone(),
             records: vec![
-                Bytes::from_static(b"replacement"),
-                Bytes::from_static(b"next"),
+                Bytes::from_static(b"replacement").into(),
+                Bytes::from_static(b"next").into(),
             ],
             if_tail: Some(0),
             idempotency_key: None,

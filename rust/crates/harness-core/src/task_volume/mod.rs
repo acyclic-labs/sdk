@@ -534,7 +534,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             conditions,
             mutations: vec![CommitMutation::Append {
                 path: self.path.clone(),
-                records: vec![segment],
+                records: vec![segment.into()],
             }],
             idempotency_key: IdempotencyKey::new(
                 crate::identity::fresh_uuid().as_bytes().to_vec(),

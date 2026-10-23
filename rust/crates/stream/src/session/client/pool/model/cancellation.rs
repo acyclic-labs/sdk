@@ -25,7 +25,7 @@ pub fn verify_cancel_before_open(broken: bool) {
             let cursor = client.cursor(5, Arc::clone(&progress), receiver).unwrap();
             let (ready, _opened) = oneshot::channel();
             opening
-                .send(Command::Open {
+                .send(Command::Open(Box::new(OpenCommand {
                     id: 5,
                     attempt_epoch: 0,
                     acknowledge: false,
@@ -39,7 +39,7 @@ pub fn verify_cancel_before_open(broken: bool) {
                     records,
                     ready,
                     observation: cursor.observation.operation.clone(),
-                })
+                })))
                 .unwrap();
             cursor
         });

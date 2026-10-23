@@ -17,25 +17,7 @@ impl MemoryStream {
             .iter()
             .map(AppendRecord::payload_bytes)
             .sum::<usize>();
-        #[cfg(not(target_arch = "wasm32"))]
-        let hashed = b"acyclic.stream.request.v1\0".len() as u64
-            + b"append".len() as u64
-            + 24
-            + request.path.as_str().len() as u64
-            + request
-                .records
-                .iter()
-                .map(AppendRecord::hash_bytes)
-                .sum::<u64>();
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = &self.work {
-            work.record(work.meter.admit_codec(0, 0, hashed))?;
-        }
-        let digest = append_digest(&request)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = &self.work {
-            work.record(work.meter.record_codec(0, 0, hashed))?;
-        }
+        let digest = self.append_request_digest(&request)?;
         let mut state = self.state.write().await;
         if let Some(result) =
             self.replay_append(&state, request.idempotency_key.as_ref(), digest)?
@@ -114,4 +96,27 @@ impl MemoryStream {
             Ok((outcome, Default::default()))
         })
     }
+    fn append_request_digest(&self, request: &AppendRequest) -> Result<[u8; 32], StreamError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let hashed = b"acyclic.stream.request.v1\0".len() as u64
+            + b"append".len() as u64
+            + 24
+            + request.path.as_str().len() as u64
+            + request
+                .records
+                .iter()
+                .map(AppendRecord::hash_bytes)
+                .sum::<u64>();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = &self.work {
+            work.record(work.meter.admit_codec(0, 0, hashed))?;
+        }
+        let digest = append_digest(request)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = &self.work {
+            work.record(work.meter.record_codec(0, 0, hashed))?;
+        }
+        Ok(digest)
+    }
+
 }

@@ -132,8 +132,9 @@ impl<P: StreamProvider> StreamProvider for ReceiptFaultStream<P> {
         &self,
         path: acyclic_stream::StreamPath,
         from: u64,
+        filter: acyclic_stream::FollowFilter,
     ) -> std::result::Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> {
-        self.inner.follow(path, from).await
+        self.inner.follow(path, from, filter).await
     }
     async fn children(
         &self,
@@ -160,7 +161,7 @@ impl<P: StreamProvider> StreamProvider for ReceiptFaultStream<P> {
         let mut armed = self.fault.lock().await;
         let selected = armed.as_ref().is_some_and(|(kind, _)| request.mutations.iter().any(|mutation| {
             matches!(mutation, acyclic_stream::CommitMutation::Append { path, records }
-                if path.as_str().starts_with("harness/v2/native-process/") && records.iter().any(|record| serde_json::from_slice::<Value>(record).is_ok_and(|value| value.get("kind").and_then(Value::as_str) == Some(*kind))))
+                if path.as_str().starts_with("harness/v2/native-process/") && records.iter().any(|record| serde_json::from_slice::<Value>(&record.value).is_ok_and(|value| value.get("kind").and_then(Value::as_str) == Some(*kind))))
         }));
         let fault = if selected { armed.take() } else { None };
         drop(armed);

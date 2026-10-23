@@ -101,6 +101,12 @@ export class DefaultStreamProvider implements StreamProvider {
     const authored = key.slice() as typeof key;
     return this.provider().then(provider => provider.inspectIdempotency(authored));
   }
+  async registerCredential(slot: number, credential: Uint8Array): Promise<void> {
+    const authored = credential.slice();
+    const provider = await this.provider();
+    if (provider.registerCredential === undefined) throw new StreamError("unsupported", "provider does not support session credentials");
+    await provider.registerCredential(slot, authored);
+  }
   tail(path: string) { return this.provider().then(provider => provider.tail(path)); }
   append(path: string, values: Parameters<StreamProvider["append"]>[1], options?: Parameters<StreamProvider["append"]>[2]) {
     const copiedValues = values.map(value => value.slice());
@@ -121,6 +127,7 @@ export class DefaultStreamProvider implements StreamProvider {
   follow(path: string, options: Parameters<StreamProvider["follow"]>[1]) {
     const authored = {
       from: options.from,
+      ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     };
     return this.followAfterSelection(path, authored);

@@ -29,8 +29,11 @@ pub(crate) async fn append<P: StreamProvider, const N: usize>(
 ) -> Result<AppendOutcome> {
     let mut quota = CodecQuota::from_retained(work, retained_request);
     let mut records = crate::core::reserve_copy_vector(N, &mut quota)?;
-    records.extend(input);
-    let bytes = records.iter().map(|record| record.len() as u64).sum();
+    records.extend(input.map(acyclic_stream::AppendRecord::from));
+    let bytes = records
+        .iter()
+        .map(|record| record.payload_bytes() as u64)
+        .sum();
     if let Some(io) = quota.work().as_deref_mut() {
         io.admit_acknowledgment(bytes, N as u64)?;
     }
@@ -136,11 +139,12 @@ pub(crate) async fn commit<P: StreamProvider>(
         for mutation in &request.mutations {
             let (acyclic_stream::CommitMutation::Append { records, .. }
             | acyclic_stream::CommitMutation::Fork { records, .. }) = mutation;
-            vectors += (records.capacity() * std::mem::size_of::<OwnedBytes>()) as u64;
+            vectors +=
+                (records.capacity() * std::mem::size_of::<acyclic_stream::AppendRecord>()) as u64;
             count += records.len() as u64;
             bytes += records
                 .iter()
-                .map(|record| record.len() as u64)
+                .map(|record| record.payload_bytes() as u64)
                 .sum::<u64>();
         }
         io.admit_acknowledgment(bytes, count)?;

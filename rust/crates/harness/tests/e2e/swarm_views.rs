@@ -8,7 +8,7 @@ use acyclic_harness::{
     client::{ClientViewHandle, QueryViewLimits, SwarmChange, query_verification::FileViews},
     task_volume::{Change, FileValue, Generation, HeadFile, HeadSnapshot},
 };
-use acyclic_stream::{CommitId, Record, wire};
+use acyclic_stream::wire;
 use futures::channel::mpsc;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -303,18 +303,7 @@ impl<'a> State<'a> {
         let Some(wire::session_data::Item::Record(record)) = data.item else {
             return Err(Error::Invalid("content changed wire fidelity".into()));
         };
-        let record = Record {
-            sequence: record.sequence,
-            value: record.value.into(),
-            commit_id: CommitId::from_bytes(
-                record
-                    .commit_id
-                    .as_ref()
-                    .try_into()
-                    .map_err(publish::storage)?,
-            ),
-            committed_at_micros: record.committed_at_micros,
-        };
+        let record = acyclic_stream::wire_codec::record(record).map_err(publish::storage)?;
         if record.sequence + 1 != next {
             return Err(Error::Invalid("content wire position differs".into()));
         }

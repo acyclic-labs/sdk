@@ -52,6 +52,7 @@ impl<P: StreamProvider> StreamProvider for NativeOnly<P> {
         &self,
         _: StreamPath,
         _: u64,
+        _filter: acyclic_stream::FollowFilter,
     ) -> std::result::Result<RecordStream, StreamError> {
         Err(self.ordinary_error())
     }

@@ -213,7 +213,7 @@ async fn execution_fence_and_deadline_are_checked_in_the_publication_commit() ->
     provider
         .append(AppendRequest {
             path: fence.clone(),
-            records: vec![OwnedBytes::from_static(b"held")],
+            records: vec![OwnedBytes::from_static(b"held").into()],
             if_tail: Some(0),
             idempotency_key: None,
         })
@@ -224,7 +224,7 @@ async fn execution_fence_and_deadline_are_checked_in_the_publication_commit() ->
     provider
         .append(AppendRequest {
             path: fence.clone(),
-            records: vec![OwnedBytes::from_static(b"revoked")],
+            records: vec![OwnedBytes::from_static(b"revoked").into()],
             if_tail: Some(1),
             idempotency_key: None,
         })

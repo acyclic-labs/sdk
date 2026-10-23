@@ -8,11 +8,15 @@ mod fixture {
 use fixture::{Counts, Fixture, Options, Traffic};
 impl Fixture {
     fn client(&self) -> Result<acyclic_stream::grpc::Client> {
-        Ok(self
+        let client = self
             .tls_client
             .as_ref()
             .ok_or("TLS fixture required")?
-            .with_credential("fixture")?)
+            .with_credential("fixture")?;
+        client
+            .session_client()?
+            .register_credential(0, acyclic_stream::session::testing::credential())?;
+        Ok(client)
     }
 }
 
@@ -48,7 +52,7 @@ async fn publication_observes_share_one_streams_session_and_resume_at_the_snapsh
         }
         // Keep an unread channel saturated while independent file queries advance.
         let unread_from = generation.position;
-        let mut unread = client.follow(volume_path, unread_from).await?;
+        let mut unread = client.follow(volume_path, unread_from, acyclic_stream::FollowFilter::default()).await?;
         let unread_id = counts.guards.lock().map_err(|_| "guards poisoned")?.iter()
             .find(|(_, _, guard)| guard.is_empty()).ok_or("unread channel omitted")?.0;
         let mut children = client.children(acyclic_stream::ChildrenRequest { parent: Some(StreamPath::new("volumes")?), limit: 1 }).await?;

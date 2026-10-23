@@ -150,23 +150,6 @@ impl<O: AsyncObjectStore> NamespaceEndpoints for [super::namespace_view::Namespa
     }
 }
 
-pub(crate) async fn changed_paths_in_roots<O: AsyncObjectStore>(
-    endpoints: [super::namespace_view::NamespaceView<'_, O>; 2],
-    changes: &GenerationDiff,
-    maximum_entries: u32,
-    accounting: &mut KernelAccounting<'_>,
-    cancellation: &CancellationToken,
-) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
-    resolve_changed_paths(
-        &endpoints,
-        changes,
-        maximum_entries,
-        accounting,
-        cancellation,
-    )
-    .await
-}
-
 /// Complete path delta, including descendants whose unchanged file records move
 /// when an ancestor is renamed. The supplied scan bound never truncates an
 /// accepted publication's visible change list.

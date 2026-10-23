@@ -28,26 +28,20 @@ async fn registration_deadline_removes_only_the_stalled_interest() -> TestResult
         crate::FollowFilter::default(),
     ));
     assert!(futures::poll!(stalled.as_mut()).is_pending());
-    let Some(Command::Open {
-        id, ready: _held, ..
-    }) = commands.recv().await
-    else {
+    let Some(Command::Open(open)) = commands.recv().await else {
         return Err("missing registration".into());
     };
+    let OpenCommand { id, ready: _held, .. } = *open;
     let mut healthy = Box::pin(client.follow(
         StreamPath::new("healthy")?,
         0,
         crate::FollowFilter::default(),
     ));
     assert!(futures::poll!(healthy.as_mut()).is_pending());
-    let Some(Command::Open {
-        id: healthy_id,
-        ready,
-        ..
-    }) = commands.recv().await
-    else {
+    let Some(Command::Open(open)) = commands.recv().await else {
         return Err("missing sibling".into());
     };
+    let OpenCommand { id: healthy_id, ready, .. } = *open;
     ready
         .send(Ok(healthy_id))
         .map_err(|_| "sibling cancelled")?;

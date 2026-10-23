@@ -42,6 +42,7 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
         }
     }
     let record = acyclic_stream::Record {
+        headers: Default::default(),
         sequence: 1,
         value: bytes.to_vec().into(),
         commit_id: acyclic_stream::CommitId::from_bytes([0; 32]),

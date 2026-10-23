@@ -32,7 +32,9 @@ async fn followed_observation(
     let session = streams.session_client()?;
     let path = observation_path(actor_id)?;
     let followed = async {
-        let mut follow = session.follow(path, from).await?;
+        let mut follow = session
+            .follow(path, from, acyclic_stream::FollowFilter::default())
+            .await?;
         let mut next = from;
         while let Some(record) = stall::waiting("actor observation", follow.next()).await {
             let record = record?;
@@ -141,7 +143,10 @@ async fn append_events(
     match streams
         .append(AppendRequest {
             path: StreamPath::new(EVENTS)?,
-            records,
+            records: records
+                .into_iter()
+                .map(acyclic_stream::AppendRecord::from)
+                .collect(),
             if_tail: None,
             idempotency_key: None,
         })

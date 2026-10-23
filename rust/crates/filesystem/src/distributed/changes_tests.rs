@@ -245,7 +245,7 @@ fn bounded_index_prefix_never_authorizes_an_extension_outside_a_range() -> TestR
     // compares strictly above every extension. Equality at end excludes both.
     for cut in 0..=key.slice().len() {
         let endpoint = key.slice().get(..cut).ok_or("endpoint out of range")?;
-        for last in [b'w', b'x', b'y'] {
+        for last in *b"wxy" {
             let mut endpoint = endpoint.to_vec();
             if let Some(byte) = endpoint.last_mut() {
                 *byte = last;

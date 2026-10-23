@@ -511,7 +511,7 @@ fn fenced_publication(expiry: bool, broken: bool, preemptions: Option<usize>) {
         let actor = StreamPath::new("actor")?;
         block_on(provider.append(AppendRequest {
             path: actor.clone(),
-            records: vec![OwnedBytes::from_static(b"owner")],
+            records: vec![OwnedBytes::from_static(b"owner").into()],
             if_tail: Some(0),
             idempotency_key: None,
         }))?;
@@ -530,7 +530,7 @@ fn fenced_publication(expiry: bool, broken: bool, preemptions: Option<usize>) {
                         provider
                             .append(AppendRequest {
                                 path: StreamPath::new("clock")?,
-                                records: vec![OwnedBytes::from_static(b"expire")],
+                                records: vec![OwnedBytes::from_static(b"expire").into()],
                                 if_tail: Some(0),
                                 idempotency_key: None,
                             })
@@ -540,7 +540,7 @@ fn fenced_publication(expiry: bool, broken: bool, preemptions: Option<usize>) {
                         provider
                             .append(AppendRequest {
                                 path: actor.clone(),
-                                records: vec![OwnedBytes::from_static(b"new owner")],
+                                records: vec![OwnedBytes::from_static(b"new owner").into()],
                                 if_tail: Some(1),
                                 idempotency_key: None,
                             })

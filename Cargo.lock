@@ -251,10 +251,14 @@ dependencies = [
 name = "acyclic-fs-fuzz"
 version = "0.0.0"
 dependencies = [
+ "acyclic-auth",
  "acyclic-fs",
+ "acyclic-stream",
+ "futures",
  "libfuzzer-sys",
  "loom",
  "proptest",
+ "prost",
  "rustix 1.1.5",
  "serde",
  "serde_json",

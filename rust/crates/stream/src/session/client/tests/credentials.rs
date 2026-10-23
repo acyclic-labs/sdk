@@ -118,16 +118,7 @@ async fn session_credentials_renew_on_handshake_retry_reconnect_and_move() -> Te
         )
         .await?;
         let resolutions = std::sync::Arc::new(AtomicUsize::new(0));
-        let count = resolutions.clone();
-        let client = grpc::Client::connect_eager_with_credential(
-            &old.endpoint,
-            grpc::CredentialProvider::new(move || {
-                let index = count.fetch_add(1, Ordering::SeqCst) + 1;
-                future::ready(Ok(format!("rotated-{index}")))
-            }),
-            Some(certificate.as_bytes()),
-        )
-        .await?;
+        let client = rotating_client(&old.endpoint, &certificate, resolutions.clone()).await?;
         client
             .session_client()?
             .register_credential(0, crate::session::testing::credential())?;
@@ -195,4 +186,18 @@ async fn session_credentials_renew_on_handshake_retry_reconnect_and_move() -> Te
     })
     .await??;
     Ok(())
+}
+
+async fn rotating_client(endpoint: &str, certificate: &str, resolutions: std::sync::Arc<AtomicUsize>) -> Result<grpc::Client, Box<dyn std::error::Error + Send + Sync>> {
+        let count = resolutions;
+        let client = grpc::Client::connect_eager_with_credential(
+            endpoint,
+            grpc::CredentialProvider::new(move || {
+                let index = count.fetch_add(1, Ordering::SeqCst) + 1;
+                future::ready(Ok(format!("rotated-{index}")))
+            }),
+            Some(certificate.as_bytes()),
+        )
+        .await?;
+    Ok(client)
 }

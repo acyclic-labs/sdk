@@ -193,6 +193,7 @@ async fn close_during_ready_poll_drops_cursor_without_reinsertion() {
         value: vec![1_u8, 2].into(),
         commit_id: acyclic_stream::CommitId::default(),
         committed_at_micros: 0,
+        headers: Default::default(),
     };
     let mut record = Some(record);
     let records: acyclic_stream::RecordStream = Box::pin(futures::stream::poll_fn(move |_| {
@@ -276,6 +277,7 @@ impl StreamProvider for TcpDropProbe {
         &self,
         _path: StreamPath,
         _from: u64,
+        _filter: acyclic_stream::FollowFilter,
     ) -> std::result::Result<RecordStream, StreamError> {
         self.started.notify_one();
         let dropped = Arc::clone(&self.dropped);
@@ -285,6 +287,19 @@ impl StreamProvider for TcpDropProbe {
             Poll::Pending
         })
         .boxed())
+    }
+
+    async fn follow_updates(
+        &self,
+        path: StreamPath,
+        from: u64,
+        _preceding: Option<acyclic_stream::CommitId>,
+        filter: acyclic_stream::FollowFilter,
+    ) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
+        let records = self.follow(path, from, filter).await?;
+        Ok(Box::pin(records.map(|item| {
+            item.map(acyclic_stream::FollowUpdate::Record)
+        })))
     }
 
     async fn children(
@@ -362,6 +377,7 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
             wire::stream_session_service_server::StreamSessionServiceServer::with_interceptor(
                 acyclic_stream::session::Service::new(
                     Arc::clone(&provider),
+                    acyclic_stream::session::testing::authority(),
                     "native".into(),
                     acyclic_stream::session::Limits::default(),
                 ),
@@ -405,8 +421,12 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
             "connect returned an error envelope"
         );
         let client = connected.client.expect("connect result omitted client");
+        client.register_credential(
+            0,
+            Buffer::from(acyclic_stream::session::testing::credential().to_vec()),
+        )?;
         let request = wire::FollowRequest {
-                    filter: None,
+            filter: None,
             path: "accounts/events".to_owned(),
             from: 0,
         };

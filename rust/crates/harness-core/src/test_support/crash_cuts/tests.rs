@@ -33,7 +33,7 @@ fn commit(name: &'static str, expected: u64) -> CommitRequest {
         }],
         mutations: vec![CommitMutation::Append {
             path: path(),
-            records: vec![OwnedBytes::from_static(b"record")],
+            records: vec![OwnedBytes::from_static(b"record").into()],
         }],
         idempotency_key: key(name),
     }
@@ -49,7 +49,7 @@ async fn cuts(limits: LocalStreamLimits) -> Result<CrashCuts<Frames>, CutSimulat
             stream
                 .append(AppendRequest {
                     path: path(),
-                    records: vec![OwnedBytes::from_static(b"setup")],
+                    records: vec![OwnedBytes::from_static(b"setup").into()],
                     if_tail: Some(0),
                     idempotency_key: None,
                 })
@@ -73,7 +73,7 @@ async fn cuts(limits: LocalStreamLimits) -> Result<CrashCuts<Frames>, CutSimulat
             let _ = stream
                 .append(AppendRequest {
                     path: path(),
-                    records: vec![OwnedBytes::from_static(b"after")],
+                    records: vec![OwnedBytes::from_static(b"after").into()],
                     if_tail: None,
                     idempotency_key: None,
                 })

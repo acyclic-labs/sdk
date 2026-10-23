@@ -48,10 +48,10 @@ macro_rules! delegate {
                 self.inner.$name($arg).await
             })*
 
-            async fn follow(&self, path: StreamPath, from: u64)
+            async fn follow(&self, path: StreamPath, from: u64, filter: acyclic_stream::FollowFilter)
                 -> std::result::Result<RecordStream, StreamError>
             {
-                self.inner.follow(path, from).await
+                self.inner.follow(path, from, filter).await
             }
 
             async fn commit(&self, request: CommitRequest)

@@ -40,7 +40,7 @@ pub fn verify_abandoned_reconnect(broken: bool) {
                 let observation = cursor.observation.operation.clone();
                 (
                     cursor,
-                    Command::Open {
+                    Command::Open(Box::new(OpenCommand {
                         raw: false,
                         id,
                         attempt_epoch: client.attempt_epoch.load(Ordering::Acquire),
@@ -54,7 +54,7 @@ pub fn verify_abandoned_reconnect(broken: bool) {
                         records,
                         ready,
                         observation,
-                    },
+                    })),
                     opened,
                 )
             };
@@ -145,7 +145,7 @@ pub fn verify_pool_lifetime(fault: u8) {
             let (records, receiver) = mpsc::channel(2);
             let cursor = client.cursor(id, Arc::clone(&progress), receiver).unwrap();
             let (ready, opened) = oneshot::channel();
-            let command = Command::Open {
+            let command = Command::Open(Box::new(OpenCommand {
                 raw: false,
                 id,
                 attempt_epoch: 0,
@@ -159,7 +159,7 @@ pub fn verify_pool_lifetime(fault: u8) {
                 records,
                 ready,
                 observation: cursor.observation.operation.clone(),
-            };
+            }));
             (cursor, command, opened)
         };
         let (first, command, _first_opened) = prepare(1);
@@ -376,7 +376,7 @@ pub fn verify_link_isolation(broken: bool) {
         // An unrelated later open still reaches the real subscription queue.
         let (records, _receiver) = mpsc::channel(2);
         let (ready, mut opened) = oneshot::channel();
-        pool.command(Command::Open {
+        pool.command(Command::Open(Box::new(OpenCommand {
             raw: false,
             id: 5,
             attempt_epoch: 0,
@@ -390,7 +390,7 @@ pub fn verify_link_isolation(broken: bool) {
             records,
             ready,
             observation: crate::obs::OperationSpan::new(tracing::Span::none()),
-        })
+        })))
         .unwrap();
         assert!(pool.receive_frame(
             "good",

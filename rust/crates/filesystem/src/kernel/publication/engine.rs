@@ -178,9 +178,7 @@ where
         projection::check(
             objects,
             authority,
-            request,
-            &output.0.root,
-            &_projection_fence,
+            projection::Candidate { request, root: &output.0.root, lease: &_projection_fence },
             closure_limits.decode,
             accounting,
             cancellation,

@@ -446,6 +446,22 @@ async fn connect_native(
 
 #[napi]
 impl NativeStreamClient {
+    /// Adds, renews, or drops a workload capability in this client's pooled Session.
+    #[napi]
+    pub fn register_credential(&self, slot: u32, credential: Buffer) -> Result<()> {
+        if credential.len() > acyclic_stream::MAX_COMMAND_BYTES {
+            return Err(napi_error(&stream_error(&StreamError::LimitExceeded)));
+        }
+        let encoded = credential.to_vec();
+        // Release the JavaScript buffer reference before entering the Rust pool;
+        // queued credentials own their bounded copy independently.
+        drop(credential);
+        self.provider
+            .session_client()
+            .and_then(|session| session.register_credential(slot, encoded.into()))
+            .map_err(|error| napi_error(&stream_error(&error)))
+    }
+
     /// Resolves JavaScript credentials inside each Rust retry and reconnect.
     #[napi(js_name = "withCredentialProvider")]
     pub fn with_credential_provider(

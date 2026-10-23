@@ -192,6 +192,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FileQuerySource
                     path,
                     cursor.position,
                     acyclic_stream::CommitId::from_bytes(cursor.commit),
+                    acyclic_stream::FollowFilter::default(),
                 )
                 .await?;
             super::access::require_current(&workspace, &permissions, &io).await?;

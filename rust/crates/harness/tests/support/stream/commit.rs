@@ -43,7 +43,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
             self.inner
                 .append(acyclic_stream::AppendRequest {
                     path,
-                    records: vec![OwnedBytes::from_static(b"dispatch won")],
+                    records: vec![OwnedBytes::from_static(b"dispatch won").into()],
                     if_tail: Some(tail),
                     idempotency_key: None,
                 })

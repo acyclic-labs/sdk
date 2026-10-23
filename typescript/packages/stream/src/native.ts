@@ -132,6 +132,11 @@ export class NativeStreamProvider implements StreamProvider {
     finally { release?.(); }
   }
 
+  async registerCredential(slot: number, credential: Uint8Array): Promise<void> {
+    try { this.client.registerCredential(slot, Buffer.from(credential)); }
+    catch (error) { throw nativeError(error, "session credential"); }
+  }
+
   get transport(): string { return this.client.transport(); }
 
   async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
@@ -184,6 +189,9 @@ export class NativeStreamProvider implements StreamProvider {
 
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
     const request = { kind: "follow" as const, path, from: options.from };
+    const encoded = toBinary(wire.FollowRequestSchema, create(wire.FollowRequestSchema, {
+      path, from: options.from, ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }),
+    }));
     await validateWireRequest(request);
     if (options.signal?.aborted) return;
     const cancellation = new this.module.NativeStreamCancellation();
@@ -201,7 +209,7 @@ export class NativeStreamProvider implements StreamProvider {
       let opened: GeneratedNative.NativeStreamFollowResult;
       try {
         release = this.credential?.retain(options.signal);
-        opened = await this.client.openFollowResult(Buffer.from(wireRequest(request)), cancellation);
+        opened = await this.client.openFollowResult(Buffer.from(encoded), cancellation);
       } catch (error) {
         if (options.signal?.aborted) return;
         throw nativeError(error, "follow");
@@ -227,7 +235,8 @@ export class NativeStreamProvider implements StreamProvider {
         try { response = fromBinary(wire.ReadResponseSchema, result.value); }
         catch (error) { throw invalidResponse("follow", error); }
         for (const decoded of readResponseRecords(response)) {
-          const record = checkedRecord(decoded, next);
+          if (decoded.sequence < next) throw new StreamError("invalid_response", "follow record cursor regressed");
+          const record = checkedRecord(decoded, decoded.sequence);
           next = record.sequence + 1n;
           yield record;
         }

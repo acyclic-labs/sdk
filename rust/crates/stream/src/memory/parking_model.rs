@@ -15,7 +15,7 @@ pub(crate) fn verify(retain_pending: bool, children: bool, checked: bool) {
         let path = StreamPath::new("watched").unwrap();
         let AppendOutcome::Committed(seed) = block_on(provider.append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"seed")],
+            records: vec![Bytes::from_static(b"seed").into()],
             if_tail: None,
             idempotency_key: None,
         }))
@@ -69,7 +69,7 @@ pub(crate) fn verify(retain_pending: bool, children: bool, checked: bool) {
         drop(held);
         park(provider.append(AppendRequest {
             path,
-            records: vec![Bytes::from_static(b"next")],
+            records: vec![Bytes::from_static(b"next").into()],
             if_tail: Some(1),
             idempotency_key: None,
         }))
@@ -96,7 +96,7 @@ pub(crate) fn shutdown(
         let path = StreamPath::new("watched").unwrap();
         let AppendOutcome::Committed(seed) = block_on(provider.append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"seed")],
+            records: vec![Bytes::from_static(b"seed").into()],
             if_tail: None,
             idempotency_key: None,
         }))
@@ -162,7 +162,7 @@ pub(crate) fn shutdown(
             drop(held);
             park(provider.append(AppendRequest {
                 path: path.clone(),
-                records: vec![Bytes::from_static(b"next")],
+                records: vec![Bytes::from_static(b"next").into()],
                 if_tail: Some(1),
                 idempotency_key: None,
             }))
@@ -176,7 +176,7 @@ pub(crate) fn shutdown(
         drop(held);
         park(provider.append(AppendRequest {
             path,
-            records: vec![Bytes::from_static(b"next")],
+            records: vec![Bytes::from_static(b"next").into()],
             if_tail: Some(1),
             idempotency_key: None,
         }))
@@ -202,7 +202,7 @@ pub(crate) fn abandon(
         let path = StreamPath::new("watched").unwrap();
         block_on(provider.append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"seed")],
+            records: vec![Bytes::from_static(b"seed").into()],
             if_tail: None,
             idempotency_key: None,
         }))

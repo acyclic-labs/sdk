@@ -12,7 +12,10 @@ cargo-fuzz = true
 fuzz-targets = ["dep:libfuzzer-sys"]
 
 [dependencies]
-acyclic-fs = { path = "..", features = ["model-checking", "fuzzing"] }
+acyclic-stream = { path = "../../stream" }
+acyclic-auth = { path = "../../auth" }
+prost.workspace = true
+acyclic-fs = { path = "..", features = ["model-checking", "fuzzing", "session"] }
 libfuzzer-sys = { version = "0.4", optional = true }
 serde.workspace = true
 serde_json.workspace = true
@@ -22,6 +25,7 @@ tempfile = "3.27.0"
 rustix = { workspace = true, features = ["fs", "net"] }
 
 [dev-dependencies]
+futures.workspace = true
 proptest.workspace = true
 loom = "0.7"
 

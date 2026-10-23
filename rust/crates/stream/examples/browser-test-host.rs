@@ -300,7 +300,7 @@ async fn serve(host: Host, socket: WebSocket) {
                     let Ok(path) = acyclic_stream::StreamPath::new(path) else { continue; };
                     let Ok(marks) = host.streams.watermarks(path).await else { continue; };
                     let frame = wire::SessionFrame { channel_id, generation,
-                        body: Some(wire::session_frame::Body::Watermark(wire::SessionWatermark { accepted: marks.accepted, durable: marks.durable })) };
+                        body: Some(wire::session_frame::Body::Watermark(wire::SessionWatermark { accepted: marks.accepted, durable: marks.durable, after: None, preceding_commit_id: Default::default() })) };
                     if sender.send(Message::Binary(frame.encode_to_vec().into())).await.is_err() { return; }
                 }
             },

@@ -28,7 +28,7 @@ fn indexed_headers_share_the_value_payload_bound() -> Result<(), StreamError> {
         idempotency_key: None,
     };
     crate::request::append_digest(&request)?;
-    request.records[0].value = vec![0; MAX_RECORD_BYTES].into();
+    request.records.first_mut().ok_or(StreamError::Unavailable)?.value = vec![0; MAX_RECORD_BYTES].into();
     assert_eq!(
         crate::request::append_digest(&request),
         Err(StreamError::LimitExceeded)

@@ -60,16 +60,22 @@ impl StreamProvider for Provider {
     async fn read(&self, request: ReadRequest) -> StreamResult<RecordStream> {
         self.inner.read(request).await
     }
-    async fn follow(&self, path: StreamPath, from: u64) -> StreamResult<RecordStream> {
-        self.inner.follow(path, from).await
+    async fn follow(
+        &self,
+        path: StreamPath,
+        from: u64,
+        filter: acyclic_stream::FollowFilter,
+    ) -> StreamResult<RecordStream> {
+        self.inner.follow(path, from, filter).await
     }
     async fn follow_checked(
         &self,
         path: StreamPath,
         from: u64,
         commit: CommitId,
+        filter: acyclic_stream::FollowFilter,
     ) -> StreamResult<RecordStream> {
-        self.inner.follow_checked(path, from, commit).await
+        self.inner.follow_checked(path, from, commit, filter).await
     }
     async fn children(&self, request: ChildrenRequest) -> StreamResult<ChildStream> {
         self.inner.children(request).await

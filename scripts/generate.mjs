@@ -14,8 +14,8 @@ function run(command, args) {
   if (result.status !== 0) throw new Error(`Generation failed: ${command} ${args.join(" ")}`);
 }
 
-generateProto(packages);
 if (packages.has("auth")) run("cargo", ["run", "--locked", "--quiet", "-p", "acyclic-auth", "--example", "generate", "--", root]);
+generateProto(packages);
 if (packages.has("actors")) run(process.execPath, [join(root, "scripts/generate-actors.mjs"), "write"]);
 if (packages.has("workers")) {
   const output = join(root, "typescript/packages/workers/src/generated");

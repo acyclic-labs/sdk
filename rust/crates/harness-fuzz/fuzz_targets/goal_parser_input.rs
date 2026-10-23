@@ -45,6 +45,7 @@ pub fn check(data: &[u8]) -> Result<()> {
         return Ok(());
     }
     let record = acyclic_stream::Record {
+        headers: Default::default(),
         sequence: 1,
         value: data.to_vec().into(),
         commit_id: acyclic_stream::CommitId::from_bytes([1; 32]),

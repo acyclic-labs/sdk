@@ -77,6 +77,8 @@ impl SwarmClient {
         // hierarchy snapshot, live creation cursor, credit and reconnect fence.
         let discovery = session
             .subscribe(wire::SessionSubscription {
+                credential: 0,
+                filter: None,
                 channel: None,
                 resume: Some(wire::SessionCursor::default()),
                 kind: Some(wire::session_subscription::Kind::Children(
