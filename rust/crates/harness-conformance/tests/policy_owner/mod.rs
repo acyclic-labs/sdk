@@ -9,6 +9,11 @@ use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 // happens to be local here; only the public Streams contract crosses this seam.
 struct Session(Arc<LocalStream>, OperationClaims);
 
+fn object_store() -> acyclic_fs::MemoryObjectBackend {
+    let (provider, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+    acyclic_fs::LogicalObjectStore::new(Arc::new(provider), bucket)
+}
+
 #[async_trait::async_trait]
 impl StreamProvider for Session {
     fn operation_claims(&self) -> &OperationClaims {
@@ -81,7 +86,7 @@ impl Substrate for Streams {
             );
             let filesystem = acyclic_fs::Fs::new(
                 authority,
-                Arc::new(acyclic_fs::MemoryObjectStore::default()),
+                object_store(),
                 acyclic_fs::EmbeddedCapabilities::MEMORY,
             );
             acyclic_harness_conformance::collect_on(recipe, paths, filesystem, session).await
@@ -126,7 +131,7 @@ async fn stream_policy_revocation_survives_durable_provider_restart()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use acyclic_fs::{CancellationToken, Fs, WorkBudget};
     let directory = tempfile::tempdir()?;
-    let objects = Arc::new(acyclic_fs::MemoryObjectStore::default());
+    let objects = object_store();
     {
         let durable = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
         let session = Arc::new(Session(durable, OperationClaims::default()));

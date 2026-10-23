@@ -1,5 +1,27 @@
 use super::*;
 
+pub(super) async fn authorize_fork<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    workspace: &Workspace<A, O>,
+    grant: &ContentGrant,
+    generation: GenerationId,
+    io: &PreparationIo,
+) -> Result<()> {
+    let access = compile(
+        workspace,
+        grant,
+        Some(generation),
+        VolumeOperation::Read,
+        &[
+            acyclic_fs::access::Action::Read,
+            acyclic_fs::access::Action::List,
+            acyclic_fs::access::Action::Fork,
+        ],
+        io,
+    )
+    .await?;
+    super::super::access::require_current(workspace, &access.0, io).await
+}
+
 pub(super) async fn compile<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
     workspace: &Workspace<A, O>,
     grant: &ContentGrant,

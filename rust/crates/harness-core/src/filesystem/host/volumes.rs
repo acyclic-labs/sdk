@@ -91,21 +91,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let forked = io.sdk(
             workspace
                 .with_stable_policy(io, io.cancellation(), || async {
-                    let access = super::volume_access::compile(
-                        &workspace,
-                        grant,
-                        Some(pinned.id()),
-                        VolumeOperation::Read,
-                        &[
-                            acyclic_fs::access::Action::Read,
-                            acyclic_fs::access::Action::List,
-                            acyclic_fs::access::Action::Fork,
-                        ],
-                        io,
-                    )
-                    .await?;
-                    super::super::access::require_current(&workspace, &access.0, io).await?;
-                    drop(access);
+                    super::volume_access::authorize_fork(&workspace, grant, pinned.id(), io)
+                        .await?;
                     let options = acyclic_fs::ForkOptions::from_generation(pinned, operation);
                     let options = match paths {
                         Some(paths) => options.inherit_paths(paths),

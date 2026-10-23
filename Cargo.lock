@@ -414,6 +414,7 @@ dependencies = [
  "acyclic-fs",
  "acyclic-harness",
  "acyclic-native-runtime",
+ "acyclic-objects",
  "acyclic-stream",
  "async-trait",
  "axum",
