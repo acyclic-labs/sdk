@@ -1,4 +1,4 @@
-//! The fence cookie state machine that the macOS FSEvents fence drives: where
+//! The fence cookie state machine that the macOS `FSEvents` fence drives: where
 //! a cookie can be placed, and when its arrival confirms delivery.
 use super::*;
 use crate::source_watch::{HostChange, HostChangeSink as _};

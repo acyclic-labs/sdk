@@ -380,7 +380,7 @@ fn invalidate_root_hints<W: crate::demand::SourceDemandReadWork>(
     Ok(())
 }
 
-/// FSEvents reports only hints, so a change to the captured tree requires a
+/// `FSEvents` reports only hints, so a change to the captured tree requires a
 /// rescan. A change beneath an excluded subtree is not part of that tree, and
 /// the fence cookie written there confirms that every earlier change was
 /// delivered: a quiet command never rescans, so it never reads files it did
@@ -3093,7 +3093,7 @@ impl NativeWatch {
         Ok(())
     }
 
-    /// FSEvents cannot report that it delivered everything up to now. A
+    /// `FSEvents` cannot report that it delivered everything up to now. A
     /// cookie in an excluded subtree can, because one stream delivers in
     /// event order. A watch with no excluded directory that takes a cookie
     /// has no place for one outside the captured tree, so its fence reports
