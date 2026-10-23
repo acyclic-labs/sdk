@@ -17,6 +17,8 @@ POSIX cleanup requires Python 3 and macOS `ps`; exit waits use Linux pidfds or
 macOS kqueue notifications. Separate service process groups stay owned. Shipping GraphCoder processes retain their own recovery
 oracle so an external-test cleanup boundary cannot hide orphan-fencing failures.
 Install `scripts/graphcoder-pty` with its frozen Bun lockfile and lifecycle scripts disabled.
+The terminal package is required for PTY cases and the complete helper suite;
+headless selections load only their own runtime dependencies.
 
 ```sh
 node scripts/graphcoder-e2e/helpers.mjs

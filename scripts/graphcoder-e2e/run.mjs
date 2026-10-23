@@ -16,7 +16,6 @@ import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { Processes, Events, schedule } from "./process.mjs";
-import { pty } from "./pty.mjs";
 import { requests, subset, recordedRequests } from "./assertions.mjs";
 import { seed, expand as expandFixture } from "./fixtures.mjs";
 import { inventory, readCoverage } from "./coverage.mjs";
@@ -115,6 +114,7 @@ async function execute(test, gitOrigin) {
         continue;
       }
       if (input.mode === "pty") {
+        const { pty } = await import("./pty.mjs");
         await pty(processes, binary, fixture, input, capture => captures.push(capture));
         continue;
       }
