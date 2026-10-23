@@ -114,7 +114,10 @@ async fn run_requests(
             continue;
         }
         if let Err(error) = execute_request(&mut commands, local, &request).await {
-            if !only_session && commands.failure_is_saved(&request, &error).await? {
+            if commands.failure_is_saved(&request, &error).await? {
+                if only_session {
+                    return Ok(());
+                }
                 continue;
             }
             if matches!(&error, Error::Conflict(message)

@@ -69,7 +69,7 @@ async fn prompt_runs_through_files_and_reopening_does_not_resend() -> Result<()>
     );
     assert_eq!(final_text(&output), "done");
     assert_eq!(provider.requests().len(), 1);
-    drop(client);
+    client.finish(Ok(HeadlessOutcome::Completed)).await?;
     let (mut client, target) = connect_local(harness.clone(), operation).await?;
     let mut restored = Vec::new();
     assert_eq!(
@@ -77,7 +77,7 @@ async fn prompt_runs_through_files_and_reopening_does_not_resend() -> Result<()>
         HeadlessOutcome::Completed
     );
     assert_eq!(provider.requests().len(), 1);
-    drop(client);
+    client.finish(Ok(HeadlessOutcome::Completed)).await?;
     close(harness).await
 }
 
@@ -96,7 +96,7 @@ async fn jsonl_eof_drains_the_admitted_file_request() -> Result<()> {
     );
     assert_eq!(final_text(&output), "done");
     assert_eq!(provider.requests().len(), 1);
-    drop(client);
+    client.finish(Ok(HeadlessOutcome::Completed)).await?;
     close(harness).await
 }
 
@@ -150,7 +150,7 @@ async fn stdout_failure_keeps_the_exact_pending_outcome_and_owner() -> Result<()
         }
     ));
     assert_eq!(provider.requests().len(), 1);
-    drop(client);
+    client.finish(Ok(HeadlessOutcome::Completed)).await?;
     close(harness).await
 }
 
@@ -170,7 +170,7 @@ async fn opening_and_empty_jsonl_do_not_start_a_model() -> Result<()> {
         Err(Error::NotFound(_))
     ));
     assert_eq!(provider.requests().len(), 0);
-    drop(client);
+    client.finish(Ok(HeadlessOutcome::Completed)).await?;
     close(harness).await
 }
 
@@ -233,7 +233,7 @@ async fn task_files_share_the_snapshot_follow_and_reopen_cut() -> Result<()> {
         .collect();
     assert!(keys.contains(&&after.key));
     assert!(!keys.contains(&&foreign.key));
-    drop(client);
+    client.finish(Ok(HeadlessOutcome::Completed)).await?;
     let (mut client, target) = connect_local(harness.clone(), operation).await?;
     let mut restored = Vec::new();
     run_headless(
@@ -261,7 +261,7 @@ async fn task_files_share_the_snapshot_follow_and_reopen_cut() -> Result<()> {
     assert!(head_keys.contains(&after.key));
     assert!(!head_keys.contains(&foreign.key));
     assert_eq!(provider.requests().len(), 1);
-    drop(client);
+    client.finish(Ok(HeadlessOutcome::Completed)).await?;
     close(harness).await
 }
 
@@ -277,7 +277,7 @@ async fn restored_jsonl_checks_ready_input_without_waiting_for_a_scheduled_frame
         &mut Vec::new(),
     )
     .await?;
-    drop(client);
+    client.finish(Ok(HeadlessOutcome::Completed)).await?;
     for ready in [false, true] {
         let (mut client, target) = connect_local(harness.clone(), operation).await?;
         let input = Box::pin(futures::stream::once(async move {
@@ -293,7 +293,7 @@ async fn restored_jsonl_checks_ready_input_without_waiting_for_a_scheduled_frame
             assert_eq!(outcome?, HeadlessOutcome::Completed);
         }
         assert_eq!(provider.requests().len(), 1);
-        drop(client);
+        client.finish(Ok(HeadlessOutcome::Completed)).await?;
     }
     close(harness).await
 }
@@ -379,7 +379,7 @@ async fn workspace_launch_identity_reuses_only_unfinished_requests() -> Result<(
         run_headless(&mut client, request, target, &mut Vec::new()).await?,
         HeadlessOutcome::Completed
     );
-    drop(client);
+    client.finish(Ok(HeadlessOutcome::Completed)).await?;
     assert_ne!(
         operation,
         crate::client::local_identity(&harness, Some(prompt), None).await?
@@ -434,7 +434,7 @@ async fn prompt_just_under_request_bound_has_independent_observation_budget() ->
         HeadlessOutcome::Completed
     );
     assert_eq!(provider.requests().len(), 1);
-    drop(client);
+    client.finish(Ok(HeadlessOutcome::Completed)).await?;
     close(harness).await
 }
 
@@ -497,7 +497,7 @@ async fn goal_guidance_and_the_blocked_exit_follow_goal_md() -> Result<()> {
         let requests = provider.requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(goal_guided(&requests[0]), guided, "{prompt} with {goal:?}");
-        drop(client);
+        client.finish(Ok(settled)).await?;
         close(harness).await?;
     }
     Ok(())
