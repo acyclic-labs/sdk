@@ -31,7 +31,7 @@ impl ContentResidencyVerifier for Resolver {
         &'a self,
         file: &'a FileRef,
         _: u64,
-        _ceiling: Option<&'a acyclic_harness::Capabilities>,
+        _ceiling: Option<&'a acyclic_harness::contract::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> acyclic_harness::Result<
         acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>,
