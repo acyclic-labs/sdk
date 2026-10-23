@@ -6,6 +6,7 @@
     "outDir": "dist"
   },
   "references": [
+    { "path": "../auth" },
     { "path": "../actors" },
     { "path": "../workers" },
     { "path": "../harness" },

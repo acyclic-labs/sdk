@@ -7,5 +7,5 @@
     "paths": { "@acyclic-labs/objects": ["./src/index.ts"] }
   },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../actors" }]
+  "references": [{ "path": "../auth" }, { "path": "../actors" }]
 }

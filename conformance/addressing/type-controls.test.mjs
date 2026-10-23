@@ -1,9 +1,35 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+
+test("package-local build graphs schedule Auth before every identity facade", () => {
+  const root = fileURLToPath(new URL("../../", import.meta.url));
+  const compiler = join(root, "node_modules/typescript/bin/tsc");
+  const packages = ["actors", "stream", "objects", "filesystem", "machines", "workers", "sdk"];
+  const requiresAuth = config => assert.ok(
+    config.references?.some(reference => reference.path === "../auth"),
+    "an identity facade must reference its Auth declaration producer",
+  );
+  for (const name of packages) {
+    const configPath = join(root, "typescript/packages", name, "tsconfig.json");
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    requiresAuth(config);
+    assert.throws(() => requiresAuth({ ...config,
+      references: config.references.filter(reference => reference.path !== "../auth"),
+    }), /must reference/);
+    const result = spawnSync(process.execPath, [compiler, "-b", configPath, "--dry", "--verbose"], {
+      cwd: root, encoding: "utf8",
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const auth = result.stdout.indexOf("typescript/packages/auth/tsconfig.json");
+    const consumer = result.stdout.indexOf(`typescript/packages/${name}/tsconfig.json`);
+    assert.ok(auth >= 0 && consumer > auth, result.stdout);
+  }
+});
 
 test("all public identity bindings accept byte fields and reject text and mutable field shapes", () => {
   // The umbrella SDK declares all eight dependencies. Put its temporary consumer

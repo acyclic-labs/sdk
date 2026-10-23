@@ -10,5 +10,5 @@
     "types": ["node"]
   },
   "include": ["src/**/*.ts", "src/**/*.d.ts"],
-  "references": [{ "path": "../actors" }]
+  "references": [{ "path": "../auth" }, { "path": "../actors" }]
 }
