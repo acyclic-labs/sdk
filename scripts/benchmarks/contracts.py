@@ -63,7 +63,7 @@ def catalog(model_name: str, base_url: str, context_tokens: int, output_tokens: 
         "adapter": "responses", "authentication": "optional", "base_url": base_url,
         "models": {model: {"capacity": {"context_tokens": context_tokens,
                                       "output_tokens": output_tokens},
-                           "features": {"tools": True}}},
+                           "features": {"tools": True, "images": False}}},
         "max_event_bytes": 1048576,
         "token_counter": {"path": "responses/input_tokens", "adapter": "responses",
                           "response_field": "input_tokens", "framing_tokens": 0},
