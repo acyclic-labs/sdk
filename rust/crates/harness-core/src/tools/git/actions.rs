@@ -540,19 +540,33 @@ where
         if self.ignore.reserves(path) {
             return Err(Error::NotFound(path.to_owned()));
         }
-        let bytes = self
-            .generation(*tree)
-            .await?
-            .read(
-                &format!("/{path}"),
-                SHOWN_FILE_BYTES,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
+        let generation = self.generation(*tree).await?;
+        let shown = format!("/{path}");
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let kind = generation
+            .stat(&shown, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(Error::from)?;
+            .map(|receipt| receipt.value.kind)
+            .map_err(|failure| Error::from(failure.error))?;
+        // Git stores a link as its target, so showing one prints the target
+        // and never follows it.
+        let bytes = if kind == FileKind::SymbolicLink {
+            generation
+                .read_symbolic_link(&shown, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .map(|receipt| receipt.value.bytes)
+        } else {
+            generation
+                .read(
+                    &shown,
+                    SHOWN_FILE_BYTES,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map(|receipt| receipt.value)
+        }
+        .map_err(|failure| Error::from(failure.error))?;
         let value = match std::str::from_utf8(&bytes) {
             Ok(text) => json!({ "path": path, "text": text }),
             Err(_) => json!({

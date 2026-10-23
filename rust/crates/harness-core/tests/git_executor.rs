@@ -1600,3 +1600,55 @@ async fn a_whole_tree_restore_keeps_the_directory_of_a_reserved_path() -> Result
     assert_eq!(read_text(&main, "/.volumes/other.txt").await?, None);
     Ok(())
 }
+
+/// `show REV:PATH` prints a committed link's stored target without following
+/// it, and history captured before a path was reserved lists that path in
+/// no listing once it is: `ls-files`, `log`, `show` and `show REV:PATH` all
+/// read through the repository policy, before any new capture.
+#[tokio::test]
+async fn committed_links_show_and_reserved_history_stays_hidden() -> Result<()> {
+    let (_temp, _root, fs, store, main) = fixture().await?;
+    let repo = main.workspace().id();
+    write_text(&main, "/base.txt", b"base\n").await?;
+    author_volume_alias(&main).await?;
+    for command in [&["add", "-A"][..], &["commit", "-m", "legacy"]] {
+        run(&fs, &store, &main, repo, command).await?;
+    }
+    let show = ["show", "HEAD:.volumes/scratch"];
+    let GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data { kind, value }) =
+        run(&fs, &store, &main, repo, &show).await?.0
+    else {
+        return Err("expected the committed link".into());
+    };
+    assert_eq!(kind, "file");
+    assert_eq!(
+        value.get("text").and_then(serde_json::Value::as_str),
+        Some("/host/volumes/scratch")
+    );
+
+    let reserved = [SCRATCH.to_owned()];
+    for command in [&["ls-files"][..], &["log"], &["show"]] {
+        let paths: Vec<String> = match run_reserving(&fs, &store, &main, repo, &reserved, command)
+            .await?
+            .0
+        {
+            GitCommandOutput::Paths(paths) => paths,
+            GitCommandOutput::Commits(commits) => commits
+                .into_iter()
+                .flat_map(|commit| commit.tracked_paths)
+                .collect(),
+            _ => return Err(format!("{command:?} is not a listing").into()),
+        };
+        assert!(paths.iter().any(|path| path == "base.txt"), "{command:?}");
+        assert!(
+            !paths.iter().any(|path| path.starts_with(".volumes")),
+            "{command:?} lists {paths:?}"
+        );
+    }
+    assert!(
+        run_reserving(&fs, &store, &main, repo, &reserved, &show)
+            .await
+            .is_err()
+    );
+    Ok(())
+}
