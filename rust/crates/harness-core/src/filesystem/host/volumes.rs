@@ -88,63 +88,64 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         fork_preparer_io::retain(&pinned, Some(io)).await?;
         let name = crate::executor::with_history_io(Some(io), |work| child.storage_name(work))?;
         let operation = fork_preparer_io::operation_key(key, Some(io))?;
-        let forked = workspace
-            .with_stable_policy(|| async {
-                let access = super::volume_access::compile(
-                    &workspace,
-                    grant,
-                    Some(pinned.id()),
-                    VolumeOperation::Read,
-                    &[
-                        acyclic_fs::access::Action::Read,
-                        acyclic_fs::access::Action::List,
-                        acyclic_fs::access::Action::Fork,
-                    ],
-                    io,
-                )
-                .await?;
-                super::super::access::require_current(&workspace, &access.0, io).await?;
-                drop(access);
-                let options = acyclic_fs::ForkOptions::from_generation(pinned, operation);
-                let options = match paths {
-                    Some(paths) => options.inherit_paths(paths),
-                    None => options,
-                };
-                let forked = match preparation {
-                    Some(task) => io.sdk(
-                        workspace
-                            .fork::<_, _, Error>(
-                                &name,
-                                options,
-                                acyclic_fs::PublicationPermit::Unrestricted,
-                                io,
-                                io.cancellation(),
-                                task.as_ref(),
-                            )
-                            .await,
-                    )?,
-                    None => io.sdk(
-                        workspace
-                            .fork::<_, _, Error>(
-                                &name,
-                                options,
-                                acyclic_fs::PublicationPermit::Unrestricted,
-                                io,
-                                io.cancellation(),
-                                &mut |_| {
-                                    std::future::ready(Ok(acyclic_fs::OperationReceipt {
-                                        value: (),
-                                        work: WorkCounters::default(),
-                                    }))
-                                },
-                            )
-                            .await,
-                    )?,
-                };
-                Ok::<_, Error>(forked)
-            })
-            .await
-            .map_err(map_error)??;
+        let forked = io.sdk(
+            workspace
+                .with_stable_policy(io, io.cancellation(), || async {
+                    let access = super::volume_access::compile(
+                        &workspace,
+                        grant,
+                        Some(pinned.id()),
+                        VolumeOperation::Read,
+                        &[
+                            acyclic_fs::access::Action::Read,
+                            acyclic_fs::access::Action::List,
+                            acyclic_fs::access::Action::Fork,
+                        ],
+                        io,
+                    )
+                    .await?;
+                    super::super::access::require_current(&workspace, &access.0, io).await?;
+                    drop(access);
+                    let options = acyclic_fs::ForkOptions::from_generation(pinned, operation);
+                    let options = match paths {
+                        Some(paths) => options.inherit_paths(paths),
+                        None => options,
+                    };
+                    let forked = match preparation {
+                        Some(task) => io.sdk(
+                            workspace
+                                .fork::<_, _, Error>(
+                                    &name,
+                                    options,
+                                    acyclic_fs::PublicationPermit::Unrestricted,
+                                    io,
+                                    io.cancellation(),
+                                    task.as_ref(),
+                                )
+                                .await,
+                        )?,
+                        None => io.sdk(
+                            workspace
+                                .fork::<_, _, Error>(
+                                    &name,
+                                    options,
+                                    acyclic_fs::PublicationPermit::Unrestricted,
+                                    io,
+                                    io.cancellation(),
+                                    &mut |_| {
+                                        std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                                            value: (),
+                                            work: WorkCounters::default(),
+                                        }))
+                                    },
+                                )
+                                .await,
+                        )?,
+                    };
+                    Ok::<_, Error>(forked)
+                })
+                .await,
+        )??;
         io.remaining()?;
         let observed = host.fork_observation(&forked, name, operation, io).await?;
         if io.original_native_work().is_none()

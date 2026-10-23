@@ -32,6 +32,8 @@ pub(crate) use work::authority_error;
 pub use work::{AuthorityAllocation, AuthorityError, AuthorityGuard, AuthorityWork};
 mod authority;
 pub use authority::AsyncAuthorityStore;
+mod policy;
+pub use policy::{PolicyCut, PolicyOwner};
 mod objects;
 pub use objects::{AsyncObjectStore, PublicationScope};
 mod read_batch;

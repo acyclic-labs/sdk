@@ -8,6 +8,8 @@ use acyclic_stream::{
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 #[cfg(not(target_arch = "wasm32"))]
 mod operation_tests;
+#[cfg(not(target_arch = "wasm32"))]
+mod policy_tests;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 const BUDGET: WorkBudget = crate::performance::work_budget(1 << 28, 1 << 28);
 

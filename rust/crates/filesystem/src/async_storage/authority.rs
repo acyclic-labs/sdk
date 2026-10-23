@@ -5,6 +5,20 @@ contract! {
 pub trait AsyncAuthorityStore: ProviderPlatform {
     /// Live ownership of this backend owner, preserved by forwarding adapters.
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims;
+    /// Backend guarantee used to keep authorization and publication on one cut.
+    fn policy_owner(&self) -> PolicyOwner {
+        PolicyOwner::Unsupported
+    }
+    /// Captures a cut which this backend checks atomically at publication.
+    fn policy_cut(
+        &self,
+        _authority: AuthorityId,
+        _work: &mut AuthorityWork<'_>,
+    ) -> impl Future<Output = Result<PolicyCut, crate::AuthorityStoreError>> + ProviderTask {
+        std::future::ready(Err(crate::AuthorityStoreError::RejectedStatic(
+            "authority backend does not support atomic policy cuts",
+        )))
+    }
     /// Whether creation can retain a published-generation prefix.
     fn supports_generation_lineage_prefix(&self) -> bool {
         false

@@ -1,6 +1,27 @@
 use super::*;
 
 impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityStore<P> {
+    fn policy_owner(&self) -> crate::PolicyOwner {
+        if self.provider.has_exclusive_process_owner() {
+            crate::PolicyOwner::ExclusiveProcess
+        } else {
+            crate::PolicyOwner::AtomicPublication
+        }
+    }
+
+    async fn policy_cut(
+        &self,
+        authority: AuthorityId,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<crate::PolicyCut, AuthorityStoreError> {
+        let snapshot = self.fork_snapshot(authority, work).await?;
+        Ok(crate::PolicyCut::new(
+            self.operation_claims().owner_identity(),
+            authority,
+            snapshot.head,
+            snapshot.epoch_tail,
+        ))
+    }
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         self.provider.operation_claims()
     }

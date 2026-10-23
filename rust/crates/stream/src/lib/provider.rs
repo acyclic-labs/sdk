@@ -41,6 +41,11 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     /// Distinct provider sessions are distinct owners; backend leases remain
     /// responsible for exclusion across independently opened sessions.
     fn operation_claims(&self) -> &crate::OperationClaims;
+    /// Whether every mutation of this provider's storage shares these process
+    /// claims. Remote sessions must leave this false, even with local caches.
+    fn has_exclusive_process_owner(&self) -> bool {
+        false
+    }
     /// Reads the retained terminal result for one caller-owned retry identity.
     async fn inspect_idempotency(
         &self,

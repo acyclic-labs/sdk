@@ -1,4 +1,5 @@
 //! Corpus parity, contract fault injection and executable report qualification.
+mod policy_owner;
 use acyclic_harness::{
     AgentId, Result as HarnessResult,
     package::{

@@ -2,6 +2,9 @@ use super::*;
 use crate::async_storage::{AsyncAuthorityStore, authority_error, seal};
 
 impl AsyncAuthorityStore for MemoryAuthorityStore {
+    fn policy_owner(&self) -> crate::PolicyOwner {
+        crate::PolicyOwner::ExclusiveProcess
+    }
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         &self.operation_claims
     }

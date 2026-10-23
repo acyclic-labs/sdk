@@ -49,37 +49,40 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore> VolumeImportPlan<'_,
         >,
         permit: acyclic_fs::PublicationPermit,
     ) -> Result<acyclic_fs::JoinOutcome<A, O>> {
-        self.plan
-            .source()
-            .with_stable_policy(|| async {
-                let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-                let source = super::volume_access::compile(
-                    self.plan.source(),
-                    self.source_grant,
-                    Some(self.plan.source_head()),
-                    VolumeOperation::Read,
-                    &[Action::Read, Action::List],
-                    &io,
-                )
-                .await?;
-                let target = super::volume_access::compile(
-                    self.plan.target(),
-                    self.target_grant,
-                    None,
-                    VolumeOperation::Write,
-                    &[Action::MergeInto],
-                    &io,
-                )
-                .await?;
-                super::super::access::require_current(self.plan.source(), &source.0, &io).await?;
-                super::super::access::require_current(self.plan.target(), &target.0, &io).await?;
-                drop((source, target));
-                self.plan
-                    .apply(options, resolutions, permit)
-                    .await
-                    .map_err(map_error)
-            })
-            .await
-            .map_err(map_error)?
+        let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+        io.sdk(
+            self.plan
+                .source()
+                .with_stable_policy(&io, io.cancellation(), || async {
+                    let source = super::volume_access::compile(
+                        self.plan.source(),
+                        self.source_grant,
+                        Some(self.plan.source_head()),
+                        VolumeOperation::Read,
+                        &[Action::Read, Action::List],
+                        &io,
+                    )
+                    .await?;
+                    let target = super::volume_access::compile(
+                        self.plan.target(),
+                        self.target_grant,
+                        None,
+                        VolumeOperation::Write,
+                        &[Action::MergeInto],
+                        &io,
+                    )
+                    .await?;
+                    super::super::access::require_current(self.plan.source(), &source.0, &io)
+                        .await?;
+                    super::super::access::require_current(self.plan.target(), &target.0, &io)
+                        .await?;
+                    drop((source, target));
+                    self.plan
+                        .apply(options, resolutions, permit)
+                        .await
+                        .map_err(map_error)
+                })
+                .await,
+        )?
     }
 }

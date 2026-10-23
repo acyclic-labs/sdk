@@ -445,9 +445,9 @@ where
         let source = self.generation(source_reference.clone()).await?;
         let source_workspace = source.workspace.clone();
         let destination = source_workspace
-            .with_stable_policy(|| async {
-                // Rebind after lease admission: the first lookup may have raced a
-                // policy edit. The lease freezes policy, but cannot freeze time.
+            .with_stable_policy(WorkBudget::UNBOUNDED, &CancellationToken::new(), || async {
+                // Rebind after policy admission: the first lookup may have raced
+                // an edit. Publication checks the cut; time must not grant access.
                 let source = self.generation(source_reference).await?;
                 if source
                     .workspace
@@ -485,7 +485,8 @@ where
                     .map(|receipt| receipt.value)
             })
             .await
-            .map_err(|error| status(&error))??;
+            .map_err(|failure| status(&failure.error))?
+            .value?;
         Ok(Response::new(wire::WorkspaceResponse {
             workspace: Some(workspace_message(&destination).await?),
             status: wire::MutationStatus::Committed as i32,

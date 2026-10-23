@@ -297,8 +297,39 @@ mod properties {
     #[cfg(all(feature = "memory", not(target_arch = "wasm32")))]
     #[test]
     fn unknown_authorities_cannot_claim_a_process_policy_owner() {
-        let unknown = crate::Fs::new((), (), crate::EmbeddedCapabilities::MEMORY);
+        struct Unknown(crate::OperationClaims);
+        impl crate::AsyncAuthorityStore for Unknown {
+            fn operation_claims(&self) -> &crate::OperationClaims {
+                &self.0
+            }
+            async fn head(
+                &self,
+                _: crate::AuthorityId,
+                _: &mut crate::AuthorityWork<'_>,
+            ) -> Result<crate::foundation::Head, crate::AuthorityStoreError> {
+                Err(crate::AuthorityStoreError::RejectedStatic("unsupported"))
+            }
+            async fn replay(
+                &self,
+                _: crate::AuthorityId,
+                _: crate::foundation::Sequence,
+                _: crate::ReplayLimit,
+                _: &mut crate::AuthorityWork<'_>,
+            ) -> Result<
+                (Vec<crate::DurableCommit>, crate::AuthorityAllocation),
+                crate::AuthorityStoreError,
+            > {
+                Err(crate::AuthorityStoreError::RejectedStatic("unsupported"))
+            }
+        }
+        let unknown = crate::Fs::new(
+            Unknown(Default::default()), (), crate::EmbeddedCapabilities::MEMORY,
+        );
         assert!(!unknown.has_process_policy_owner());
+        assert_eq!(
+            crate::AsyncAuthorityStore::policy_owner(unknown.authority()),
+            crate::PolicyOwner::Unsupported,
+        );
         assert!(crate::Fs::memory().has_process_policy_owner());
     }
     proptest! {

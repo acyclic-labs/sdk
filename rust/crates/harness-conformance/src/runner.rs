@@ -62,6 +62,9 @@ pub fn requirements(value: &Value) -> TestResult<Vec<String>> {
         None => Ok(vec!["executor".into()]),
         Some(Value::String(driver)) if driver == "executor" => Ok(vec!["executor".into()]),
         Some(Value::String(driver)) if driver == "composer" => Ok(vec!["composer".into()]),
+        Some(Value::String(driver)) if driver == "filesystem-policy" => {
+            Ok(vec!["filesystem-policy".into()])
+        }
         Some(Value::String(driver))
             if [
                 "goal-local",
@@ -217,6 +220,7 @@ fn fixture_reason(value: &Value) -> &'static str {
 enum Case {
     Executor(Box<Scenario>),
     Composer(Box<Composer>),
+    FilesystemPolicy(crate::policy_owner::Case),
 }
 impl Case {
     fn parse(root: &Path, path: &Path, value: &mut Value) -> TestResult<Self> {
@@ -225,6 +229,9 @@ impl Case {
             .ok_or("scenario must be an object")?
             .remove("driver");
         match driver.as_ref().and_then(Value::as_str) {
+            Some("filesystem-policy") => Ok(Self::FilesystemPolicy(
+                crate::policy_owner::Case::parse(value.clone())?,
+            )),
             Some("composer") => Ok(Self::Composer(Box::new(Composer::parse(value.clone())?))),
             Some("executor") => Ok(Self::Executor(Box::new(Scenario::from_value(
                 value.clone(),
@@ -237,12 +244,16 @@ impl Case {
         match self {
             Self::Executor(case) => case.expect.files.keys().cloned().collect(),
             Self::Composer(case) => case.paths(),
+            Self::FilesystemPolicy(_) => Vec::new(),
         }
     }
     fn prepare(&self, value: &mut Value) -> TestResult {
         let object = value.as_object_mut().ok_or("scenario must be an object")?;
         object.remove("expect");
         match self {
+            Self::FilesystemPolicy(_) => {
+                object.insert("driver".into(), "filesystem-policy".into());
+            }
             Self::Composer(_) => {
                 object.insert("driver".into(), "composer".into());
             }
@@ -262,6 +273,9 @@ impl Case {
                 observation::check(case, actual)
             }
             (Self::Composer(case), CaseObservation::Composer(actual)) => case.check(actual),
+            (Self::FilesystemPolicy(case), CaseObservation::FilesystemPolicy(actual)) => {
+                case.check(actual)
+            }
             _ => Err("host returned observations for a different driver".into()),
         }
     }

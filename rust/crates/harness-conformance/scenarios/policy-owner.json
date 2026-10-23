@@ -1,0 +1,4 @@
+{
+  "driver": "filesystem-policy",
+  "expect": { "forked": true, "revoked": true, "policy_version": 2 }
+}

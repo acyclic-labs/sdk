@@ -164,7 +164,7 @@ pub use acyclic_stream::{LocalDurability as LocalStreamDurability, LocalStreamLi
 pub use async_storage::NativeAuthorityGuard;
 pub use async_storage::{
     AsyncAuthorityStore, AsyncObjectStore, AuthorityAllocation, AuthorityError, AuthorityGuard,
-    AuthorityWork, GenerationFork, GenerationForkSource, PublicationScope, WorkspaceForkCommit,
+    AuthorityWork, GenerationFork, GenerationForkSource, PolicyCut, PolicyOwner, PublicationScope, WorkspaceForkCommit,
     WorkspaceForkOutcome,
 };
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};

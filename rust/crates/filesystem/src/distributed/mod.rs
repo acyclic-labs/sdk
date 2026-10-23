@@ -70,6 +70,7 @@ use io::*;
 mod native;
 use native::*;
 mod append;
+mod policy;
 mod authority;
 mod bindings;
 mod changes;

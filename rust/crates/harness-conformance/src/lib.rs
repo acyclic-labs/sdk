@@ -5,6 +5,8 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 mod composer;
 mod native_schema;
+mod policy_owner;
+pub use policy_owner::Observation as PolicyOwnerObservation;
 
 #[path = "../../harness/tests/support/scenario_data.rs"]
 mod case_data;
@@ -33,6 +35,8 @@ pub enum CaseObservation {
     Executor(observation::Observation),
     /// Command catalog, completion, mention and fs observations.
     Composer(ComposerObservation),
+    /// Filesystem policy authority and fork observations.
+    FilesystemPolicy(PolicyOwnerObservation),
 }
 
 /// Collects raw fixture observations using the host's resolved providers.
@@ -53,6 +57,9 @@ where
         )),
         Some("composer") => Ok(CaseObservation::Composer(
             composer::collect(recipe, paths, filesystem, stream).await?,
+        )),
+        Some("filesystem-policy") => Ok(CaseObservation::FilesystemPolicy(
+            policy_owner::collect(recipe, filesystem).await?,
         )),
         _ => Err("unknown portable fixture driver".into()),
     }

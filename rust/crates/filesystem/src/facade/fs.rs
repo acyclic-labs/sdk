@@ -49,17 +49,9 @@ impl<A, O> Fs<A, O> {
     }
     pub(crate) fn has_process_policy_owner(&self) -> bool
     where
-        A: 'static,
+        A: AsyncAuthorityStore,
     {
-        #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-        if self.inner._local_root_lifecycle.is_some() {
-            return true;
-        }
-        #[cfg(feature = "memory")]
-        if std::any::TypeId::of::<A>() == std::any::TypeId::of::<crate::MemoryAuthorityBackend>() {
-            return true;
-        }
-        false
+        self.inner.authority.policy_owner() == crate::PolicyOwner::ExclusiveProcess
     }
 
     /// Deployment guarantees supplied when this engine was composed.

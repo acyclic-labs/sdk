@@ -376,6 +376,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 .conditions
                 .push(CommitCondition::Tail { path, expected: 1 });
         }
+        let request = self.fence_policy(request, work)?;
         let outcome = self
             .commit(
                 request,

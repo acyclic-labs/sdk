@@ -99,6 +99,7 @@ fn field<'a>(value: &'a Value, name: &str) -> Result<&'a Value> {
 }
 
 const FIXTURE_SOURCES: &[(&str, &str)] = &[
+    ("policy_owner", include_str!("policy_owner.rs")),
     ("substrate", include_str!("substrate.rs")),
     ("dispatch", include_str!("lib.rs")),
     ("execution_adapter", include_str!("execution.rs")),
@@ -265,7 +266,7 @@ pub struct Actors<R, V> {
 }
 impl<R: ActorRuntime, V: Volume> Substrate for Actors<R, V> {
     fn capabilities(&self) -> BTreeSet<String> {
-        BTreeSet::from(["executor".into(), "composer".into()])
+        BTreeSet::from(["executor".into(), "composer".into(), "filesystem-policy".into()])
     }
     fn execute(
         &self,
@@ -515,7 +516,7 @@ pub fn fixture_bindings() -> Bindings {
 pub struct InProcess;
 impl Substrate for InProcess {
     fn capabilities(&self) -> BTreeSet<String> {
-        BTreeSet::from(["executor".into(), "composer".into()])
+        BTreeSet::from(["executor".into(), "composer".into(), "filesystem-policy".into()])
     }
     fn execute(
         &self,
@@ -563,7 +564,7 @@ impl Substrate for InProcess {
 pub struct Local;
 impl Substrate for Local {
     fn capabilities(&self) -> BTreeSet<String> {
-        BTreeSet::from(["executor".into(), "composer".into()])
+        BTreeSet::from(["executor".into(), "composer".into(), "filesystem-policy".into()])
     }
     fn execute(
         &self,

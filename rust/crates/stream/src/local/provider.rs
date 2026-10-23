@@ -1,5 +1,8 @@
 #[async_trait]
 impl StreamProvider for LocalStream {
+    fn has_exclusive_process_owner(&self) -> bool {
+        true
+    }
     fn operation_claims(&self) -> &crate::OperationClaims {
         self.inner.provider.operation_claims()
     }

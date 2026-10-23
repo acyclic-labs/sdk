@@ -2,26 +2,63 @@ use super::*;
 use crate::access::{Action, Capability, Context, PathTrie, Policy, Principal, Resource};
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
-    /// Authorize and publish under one process-owned policy cut. The operation
-    /// must reject clock-expiring authority, which this publication lease cannot freeze.
-    pub async fn with_stable_policy<F, T>(
+    /// Authorize and publish under one backend-owned policy cut. The operation
+    /// must reject clock-expiring authority. Atomic backends reject publication
+    /// if the source changes; process owners exclude policy edits while it runs.
+    /// Backend operations must be awaited in this future, not spawned separately.
+    pub async fn with_stable_policy<W: crate::facade::FsWork, F, T>(
         &self,
+        work: W,
+        cancellation: &CancellationToken,
         operation: impl FnOnce() -> F,
-    ) -> Result<T, WorkspaceError>
+    ) -> W::Output<T, WorkspaceError>
     where
         A: 'static,
         F: Future<Output = T>,
     {
-        if !self.volume.fs.has_process_policy_owner() {
-            return Err(WorkspaceError::AccessDenied);
+        let mut accounting = work.accounting(cancellation);
+        let result = async {
+            accounting.check()?;
+            if crate::PolicyCut::current().is_some() {
+                return Err(WorkspaceError::AccessDenied);
+            }
+            match self.volume.fs.authority().policy_owner() {
+                crate::PolicyOwner::Unsupported => return Err(WorkspaceError::AccessDenied),
+                crate::PolicyOwner::AtomicPublication => {
+                    let mut authority_work =
+                        crate::AuthorityWork::new(accounting.remaining()?, cancellation);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        authority_work.original = accounting.native_work();
+                    }
+                    let captured = self
+                        .volume
+                        .fs
+                        .authority()
+                        .policy_cut(self.authority_id(), &mut authority_work)
+                        .await
+                        .map_err(|error| WorkspaceError::from(FsError::Authority(error)));
+                    let cut = match accounting.standalone_parts() {
+                        Some((_, spent, _, _)) => {
+                            merge_workspace_backend(authority_work.receipt(captured), spent, 0)?
+                                .value
+                        }
+                        None => captured?,
+                    };
+                    return Ok(cut.scope(operation()).await);
+                }
+                crate::PolicyOwner::ExclusiveProcess => {}
+            }
+            let policy = crate::access::projection::enter(
+                self.volume.fs.operation_claims(),
+                self.id.volume_id(),
+            )?;
+            let result = operation().await;
+            drop(policy);
+            Ok(result)
         }
-        let policy = crate::access::projection::enter(
-            self.volume.fs.operation_claims(),
-            self.id.volume_id(),
-        )?;
-        let result = operation().await;
-        drop(policy);
-        Ok(result)
+        .await;
+        work.finish(result, &accounting)
     }
 
     /// Intersect a deployment-verified coarse action ceiling with persisted
