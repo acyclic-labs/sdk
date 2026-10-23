@@ -200,7 +200,7 @@ impl Reducer {
                 )?,
                 agent: command.scope.agent,
             },
-            attestation: [0; 32],
+            attestation: Vec::new(),
             causal_parent: command
                 .causal_parent
                 .as_ref()
@@ -212,7 +212,10 @@ impl Reducer {
                 .transpose()?,
             payload,
         };
-        event.attestation = self.authority_verifier.attest_event(&event, quota.work())?;
+        event.attestation =
+            self.authority_verifier
+                .attest_event(&command.scope, &event, quota.work())?;
+        quota.adopt(event.attestation.capacity() as u64)?;
         let retained = quota.retained();
         quota.transfer();
         Ok((ApplyResult::Applied { event }, retained))
@@ -409,7 +412,7 @@ impl Reducer {
             io.admit_owned(bytes)?;
             io.retain_owned(bytes)?;
         }
-        self.apply_payload_with_work(&event.payload, event.revision, work)?;
+        self.apply_authenticated_payload(&event, work)?;
         self.revision = event.revision;
         self.events.push_back(event.clone());
         self.trim_resident_events();

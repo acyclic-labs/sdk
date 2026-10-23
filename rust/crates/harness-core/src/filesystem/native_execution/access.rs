@@ -8,6 +8,7 @@ use acyclic_fs::{
 struct PolicyOwner<A, O> {
     workspace: Workspace<A, O>,
     scope: Scope,
+    verifier: AuthorityVerifier,
     ceiling: Option<(crate::Capabilities, NativeAllocation)>,
     generation: GenerationId,
     writable: bool,
@@ -109,6 +110,7 @@ where
             workspace,
             generation,
             self.scope,
+            self.verifier,
             context.scope().grants(),
             self.writable,
             work,
@@ -211,6 +213,7 @@ where
         workspace,
         generation,
         authority.scope,
+        authority.verifier,
         authority.ceiling,
         writable,
         work,
@@ -222,6 +225,7 @@ async fn bind_mount_options<A, O>(
     workspace: &Workspace<A, O>,
     generation: GenerationId,
     admitted_scope: &Scope,
+    verifier: &AuthorityVerifier,
     admitted_ceiling: &crate::Capabilities,
     writable: bool,
     work: &NativeMaterializationWork,
@@ -231,6 +235,7 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     let io = PreparationIo::from_native_work(work)?;
+    verifier.verify(admitted_scope, &mut Some(&mut io.history_io()))?;
     let (compiled, custody) = compile(
         workspace,
         admitted_scope,
@@ -240,8 +245,10 @@ where
         &io,
     )
     .await?;
+    verifier.verify(admitted_scope, &mut Some(&mut io.history_io()))?;
     let view = AccessView::new_native(compiled, custody)?;
     let scope = admitted_scope.copy(&mut Some(&mut io.history_io()))?;
+    let verifier = verifier.copy(&mut Some(&mut io.history_io()))?;
     io.retain_owned(
         (std::mem::size_of::<PolicyOwner<A, O>>() + 2 * std::mem::size_of::<usize>()) as u64,
     )?;
@@ -255,6 +262,7 @@ where
     let refresh = Arc::new(PolicyOwner {
         workspace: workspace.clone(),
         scope,
+        verifier,
         ceiling,
         generation,
         writable,
@@ -287,6 +295,8 @@ where
                 });
             }
             let io = PreparationIo::from_native_work(work)?;
+            self.verifier
+                .verify(&self.scope, &mut Some(&mut io.history_io()))?;
             let (view, custody) = compile(
                 &self.workspace,
                 &self.scope,
@@ -298,6 +308,8 @@ where
                 &io,
             )
             .await?;
+            self.verifier
+                .verify(&self.scope, &mut Some(&mut io.history_io()))?;
             self.view.publish_native(view, custody)?;
             Ok(())
         })
@@ -321,6 +333,7 @@ where
                 &self.workspace,
                 generation,
                 &self.scope,
+                &self.verifier,
                 self.ceiling
                     .as_ref()
                     .map_or(self.scope.capabilities(), |(grants, _)| grants),
@@ -396,4 +409,75 @@ pub async fn require_unrestricted_workspace_read<A: AsyncAuthorityStore, O: Asyn
         ],
         surface,
     )
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod workload_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn retained_mount_owner_rejects_revocation_on_refresh_and_selection()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let fs = acyclic_fs::Fs::memory();
+        let workspace = fs
+            .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
+                "retained-mount",
+                acyclic_fs::VolumeInitialization {
+                    config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+                    access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
+                },
+                acyclic_fs::OperationId::new(),
+                &work,
+                &cancellation,
+                None,
+            )
+            .await?
+            .workspace();
+        let generation = workspace.head(&work, &cancellation).await?.id();
+        let issuer = crate::core::AuthorityIssuer::new(
+            "mount",
+            [72; 32],
+            crate::core::Authority {
+                kind: crate::core::AggregateKind::Agent,
+                id: "mount".into(),
+            },
+        );
+        let scope = issuer.issue(
+            "mount",
+            &crate::Capabilities::new(["unused"]),
+            None,
+            None,
+            &mut None,
+        )?;
+        let verifier = issuer.verifier(&mut None)?;
+        let options = bind_mount_options(
+            &workspace,
+            generation,
+            &scope,
+            &verifier,
+            scope.capabilities(),
+            false,
+            &work,
+        )
+        .await?;
+        // Both callbacks use the retained public verifier, with no root signer.
+        let refresh = PolicyOwner {
+            workspace: workspace.clone(),
+            scope: scope.clone(),
+            verifier,
+            ceiling: None,
+            generation,
+            writable: false,
+            view: options.require_access_view()?.clone(),
+            _custody: work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?,
+        };
+        refresh.check(&work)?.await?;
+        issuer.revoke_workload(&scope)?;
+        assert!(refresh.check(&work)?.await.is_err());
+        assert!(refresh.select(generation, &work)?.await.is_err());
+        Ok(())
+    }
 }

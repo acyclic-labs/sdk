@@ -257,7 +257,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                 && (effect.0.provider != plan.provider
                     || effect.0.guarantee != plan.guarantee
                     || effect.0.effect_kind != plan.effect_kind
-                    || effect.0.request != plan.request
+                    || effect.0.request.as_ref() != &plan.request
                     || effect.0.result_schema != plan.result_schema)
             {
                 return Err(boundary(

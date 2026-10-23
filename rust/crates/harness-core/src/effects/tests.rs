@@ -67,7 +67,19 @@ impl ContentResidencyVerifier for ResultResolver {
 }
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-struct Provider(AtomicUsize);
+struct Provider(
+    AtomicUsize,
+    std::sync::Mutex<Option<(AuthorityIssuer, crate::core::Scope)>>,
+);
+impl Provider {
+    fn revoke(&self) -> Result<()> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        if let Some((issuer, scope)) = self.1.lock().unwrap().take() {
+            issuer.revoke_workload(&scope)?;
+        }
+        Ok(())
+    }
+}
 
 impl EffectProvider for Provider {
     fn id(&self) -> &str {
@@ -83,8 +95,9 @@ impl EffectProvider for Provider {
     }
 
     fn dispatch<'a>(&'a self, request: EffectDispatch) -> BoxFuture<'a, Result<EffectObservation>> {
-        self.0.fetch_add(1, Ordering::SeqCst);
+        let admitted = self.revoke();
         async move {
+            admitted?;
             Ok(EffectObservation {
                 provider: request.provider,
                 effect_id: request.effect_id,
@@ -103,29 +116,30 @@ impl EffectProvider for Provider {
         &'a self,
         _: EffectAttemptId,
     ) -> BoxFuture<'a, Result<Option<EffectObservation>>> {
-        async { Ok(None) }.boxed()
+        let admitted = self.revoke();
+        async move {
+            admitted?;
+            Ok(None)
+        }
+        .boxed()
     }
 }
 
-#[tokio::test]
-async fn durable_dispatch_produces_a_validated_attestation() -> Result<()> {
-    let provider = Arc::new(Provider(AtomicUsize::new(0)));
+struct Fixture {
+    registry: EffectRegistry,
+    provider: Arc<Provider>,
+    issuer: AuthorityIssuer,
+    scope: crate::core::Scope,
+    state: EffectState,
+    effect_id: EffectId,
+}
+fn fixture() -> Result<Fixture> {
+    let provider = Arc::new(Provider(AtomicUsize::new(0), std::sync::Mutex::new(None)));
     let mut registry = EffectRegistry::new(None, Some(Arc::new(ResultResolver)))?;
     registry.register(provider.clone(), None)?;
     let effect_id = EffectId::from_bytes([1; 16]);
     let attempt_id = EffectAttemptId::from_bytes([2; 16]);
     let schema = json!({"type": "object", "required": ["receipt"]});
-    let state = EffectState {
-        provider: "example.provider".into(),
-        guarantee: EffectGuarantee::IdempotentRetry,
-        effect_kind: "example.write".into(),
-        request: request_file(br#"{"value":1}"#)?,
-        request_digest: [3; 32],
-        result_schema: schema_file(&schema)?,
-        result_schema_digest: *schema_file(&schema)?.descriptor().sha256(),
-        status: EffectStatus::Dispatched,
-        attempts: vec![attempt_id],
-    };
     let issuer = AuthorityIssuer::new(
         "host",
         [4; 32],
@@ -134,10 +148,140 @@ async fn durable_dispatch_produces_a_validated_attestation() -> Result<()> {
             id: "task-1".into(),
         },
     );
+    let scope = issuer.issue(
+        "planner",
+        &crate::Capabilities::new([
+            "event:append",
+            "effect:plan",
+            "effect:run",
+            "effect:provider:example.provider",
+        ]),
+        None,
+        None,
+        &mut None,
+    )?;
+    let verifier = issuer.verifier(&mut None)?;
+    let mut reducer = crate::core::Reducer::new(
+        verifier.audience().clone(),
+        verifier,
+        crate::core::SchemaRegistry::new(),
+    );
+    for (ordinal, action) in [
+        crate::core::Action::PlanEffect {
+            effect_id,
+            provider: "example.provider".into(),
+            guarantee: EffectGuarantee::IdempotentRetry,
+            effect_kind: "example.write".into(),
+            request: request_file(br#"{"value":1}"#)?.into(),
+            result_schema: schema_file(&schema)?.into(),
+        },
+        crate::core::Action::MarkEffectDispatched {
+            effect_id,
+            attempt_id,
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        reducer.apply(&crate::core::Command {
+            operation_id: crate::OperationId::from_bytes([ordinal as u8 + 1; 16]),
+            idempotency_key: crate::IdempotencyKey(format!("{ordinal}")),
+            expected_revision: ordinal as u64,
+            scope: scope.clone(),
+            causal_parent: None,
+            action,
+        })?;
+    }
+    let state = reducer.effect(effect_id).unwrap().clone();
+    Ok(Fixture {
+        registry,
+        provider,
+        issuer,
+        scope,
+        state,
+        effect_id,
+    })
+}
+
+#[tokio::test]
+async fn durable_dispatch_produces_a_validated_attestation() -> Result<()> {
+    let Fixture {
+        registry,
+        provider,
+        issuer,
+        state,
+        effect_id,
+        ..
+    } = fixture()?;
     let attestation = registry
         .dispatch_and_attest(&issuer, effect_id, &state, &mut None)
         .await?;
     assert_eq!(provider.0.load(Ordering::SeqCst), 1);
     assert!(matches!(attestation.status, EffectStatus::Succeeded { .. }));
+    Ok(())
+}
+
+#[tokio::test]
+async fn revoked_plans_never_enter_dispatch_or_reconciliation() -> Result<()> {
+    let f = fixture()?;
+    f.issuer.revoke_workload(&f.scope)?;
+    assert!(
+        f.registry
+            .dispatch_and_attest(&f.issuer, f.effect_id, &f.state, &mut None)
+            .await
+            .is_err()
+    );
+    assert!(
+        f.registry
+            .reconcile_and_attest(&f.issuer, f.effect_id, &f.state, &mut None)
+            .await
+            .is_err()
+    );
+    assert_eq!(f.provider.0.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn revocation_during_a_provider_callback_rejects_its_observation() -> Result<()> {
+    for reconcile in [false, true] {
+        let f = fixture()?;
+        *f.provider.1.lock().unwrap() = Some((f.issuer.clone(), f.scope));
+        if reconcile {
+            assert!(
+                f.registry
+                    .reconcile_and_attest(&f.issuer, f.effect_id, &f.state, &mut None)
+                    .await
+                    .is_err()
+            );
+        } else {
+            assert!(
+                f.registry
+                    .dispatch_and_attest(&f.issuer, f.effect_id, &f.state, &mut None)
+                    .await
+                    .is_err()
+            );
+        }
+        assert_eq!(f.provider.0.load(Ordering::SeqCst), 1);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_valid_planning_workload_cannot_be_reused_for_another_request() -> Result<()> {
+    let mut f = fixture()?;
+    f.state.effect_kind = "example.widened".into();
+    assert!(
+        f.registry
+            .dispatch_and_attest(&f.issuer, f.effect_id, &f.state, &mut None)
+            .await
+            .is_err()
+    );
+    assert!(
+        f.registry
+            .reconcile_and_attest(&f.issuer, f.effect_id, &f.state, &mut None)
+            .await
+            .is_err()
+    );
+    assert_eq!(f.provider.0.load(Ordering::SeqCst), 0);
     Ok(())
 }

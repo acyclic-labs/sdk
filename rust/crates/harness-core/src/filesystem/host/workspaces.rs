@@ -3,20 +3,30 @@ use super::*;
 #[derive(Clone, Copy)]
 enum FilePublication<'a> {
     Replace(Option<&'a GenerationRef>),
-    Authorized(acyclic_fs::access::PolicyFence),
+    Authorized(acyclic_fs::access::PolicyFence, &'a ContentGrant),
     CreateOnly,
 }
 
 impl FilePublication<'_> {
     fn fence(self) -> Option<acyclic_fs::access::PolicyFence> {
         match self {
-            Self::Authorized(fence) => Some(fence),
+            Self::Authorized(fence, _) => Some(fence),
             Self::Replace(_) | Self::CreateOnly => None,
         }
     }
 }
 
-fn require_publication_time(fence: Option<acyclic_fs::access::PolicyFence>) -> Result<()> {
+fn require_publication_time(
+    publication: FilePublication<'_>,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
+    if let FilePublication::Authorized(_, grant) = publication {
+        grant.recheck(io)?;
+    }
+    require_publication_fence(publication.fence())
+}
+
+fn require_publication_fence(fence: Option<acyclic_fs::access::PolicyFence>) -> Result<()> {
     if fence.is_some_and(|fence| !fence.valid_at(access::access_now())) {
         return Err(Error::Unauthorized(
             "filesystem write authority expired".into(),
@@ -277,7 +287,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     budget,
                     &cancellation,
                     |_| async {
-                        require_publication_time(publication.fence())
+                        require_publication_time(publication, None)
                             .map_err(acyclic_fs::OperationFailure::before_work)?;
                         Ok::<_, acyclic_fs::OperationFailure<Error>>(acyclic_fs::OperationReceipt {
                             value: (),
@@ -378,7 +388,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     }
                     WorkspaceMutation::PutFile { path, bytes } => {
                         match publication {
-                            FilePublication::Replace(_) | FilePublication::Authorized(_) => {
+                            FilePublication::Replace(_) | FilePublication::Authorized(..) => {
                                 transaction
                                     .write(path, bytes.clone(), budget, cancellation)
                                     .await
@@ -556,7 +566,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     pub(in crate::filesystem) fn apply_authorized_generation<'a>(
         &'a self,
         reference: &'a WorkspaceRef,
-        fence: acyclic_fs::access::PolicyFence,
+        authorization: (acyclic_fs::access::PolicyFence, &'a ContentGrant),
         mutations: &'a [WorkspaceMutation],
         key: IdempotencyKey,
         io: Option<&'a PreparationIo>,
@@ -568,7 +578,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             key,
             io,
             preparation,
-            FilePublication::Authorized(fence),
+            FilePublication::Authorized(authorization.0, authorization.1),
         )
     }
 
@@ -601,7 +611,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
         let expected = match publication {
             FilePublication::Replace(expected) => expected,
-            FilePublication::CreateOnly | FilePublication::Authorized(_) => None,
+            FilePublication::CreateOnly | FilePublication::Authorized(..) => None,
         };
         let Some(io) = io else {
             return crate::conversation::BoundedContentFuture::new(None, || async move {
@@ -653,7 +663,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             Self::publish_mutations(&mut transaction, mutations, publication, io, preparation)
                 .await?;
-            Self::commit_publication(transaction, io, preparation, publication.fence()).await
+            Self::commit_publication(transaction, io, preparation, publication).await
         })
     }
     async fn publish_mutations(
@@ -676,7 +686,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             .await,
                     )?,
                     WorkspaceMutation::PutFile { path, bytes } => match publication {
-                        FilePublication::Replace(_) | FilePublication::Authorized(_) => io.sdk(
+                        FilePublication::Replace(_) | FilePublication::Authorized(..) => io.sdk(
                             transaction
                                 .write(path, bytes.clone(), io, io.cancellation())
                                 .await,
@@ -716,20 +726,49 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         mut transaction: acyclic_fs::Transaction<A, O>,
         io: &PreparationIo,
         preparation: Option<&Arc<crate::resource_preparation::TaskResourcePreparation>>,
-        fence: Option<acyclic_fs::access::PolicyFence>,
+        publication: FilePublication<'_>,
     ) -> Result<Generation<A, O>> {
         let commit = crate::conversation::BoundedContentFuture::new(Some(io), || async {
             let commit = 'commit: {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(work) = io.original_native_work() {
                     let preparation = preparation.cloned();
+                    let fence = publication.fence();
+                    let authority = if let FilePublication::Authorized(_, grant) = publication {
+                        let before = io.owned_bytes()?;
+                        let verifier = grant.copy_verifier(&mut Some(&mut io.history_io()))?;
+                        let scope = grant.policy_scope().copy(&mut Some(&mut io.history_io()))?;
+                        let metadata = (std::mem::size_of::<(
+                            AuthorityVerifier,
+                            Scope,
+                            acyclic_fs::NativeAllocation,
+                        )>() + 2 * std::mem::size_of::<usize>())
+                            as u64;
+                        io.retain_owned(metadata)?;
+                        io.allocation_attempt(metadata)?;
+                        let custody = io.take_native_custody(io.owned_since(before)?)?;
+                        Some(Arc::new((verifier, scope, custody)))
+                    } else {
+                        None
+                    };
                     let mut native_before = move |work: &acyclic_fs::NativeMaterializationWork| {
                         let preparation = preparation.clone();
                         let work = work.clone();
+                        let authority = authority.clone();
                         async move {
-                            require_publication_time(fence)?;
+                            let check = || -> Result<()> {
+                                require_publication_fence(fence)?;
+                                if let Some(authority) = &authority {
+                                    let io = PreparationIo::from_native_work(&work)?;
+                                    authority
+                                        .0
+                                        .verify(&authority.1, &mut Some(&mut io.history_io()))?;
+                                }
+                                Ok(())
+                            };
+                            check()?;
                             verify_native_publication(preparation.as_ref(), &work).await?;
-                            require_publication_time(fence)
+                            check()
                         }
                     };
                     break 'commit transaction
@@ -750,7 +789,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             io.remaining()?,
                             io.cancellation(),
                             &mut |_| async move {
-                                require_publication_time(fence)
+                                require_publication_time(publication, Some(io))
                                     .map_err(acyclic_fs::OperationFailure::before_work)?;
                                 if let Some(task) = preparation {
                                     task.verify(false, Some(io))
@@ -758,7 +797,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                         .await
                                         .map_err(acyclic_fs::OperationFailure::before_work)?;
                                 }
-                                require_publication_time(fence)
+                                require_publication_time(publication, Some(io))
                                     .map_err(acyclic_fs::OperationFailure::before_work)?;
                                 Ok(acyclic_fs::OperationReceipt {
                                     value: (),
@@ -822,4 +861,87 @@ async fn verify_native_publication(
         task.verify(false, Some(&io))?.await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod workload_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn revocation_during_staging_prevents_content_publication() -> Result<()> {
+        let provider = ProviderRef::new(
+            "revocation".into(),
+            "filesystem".into(),
+            "1".into(),
+            &mut None,
+        )?;
+        let agent = AgentId::from_bytes([61; 16]);
+        let volume = VolumeRef::new(
+            provider.clone(),
+            "revocation".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+            &mut None,
+        )?;
+        let mut host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+        host.create_volume(&volume).await?;
+        let issuer = crate::core::AuthorityIssuer::new(
+            "owner",
+            [73; 32],
+            Authority {
+                kind: crate::core::AggregateKind::Agent,
+                id: agent.to_string(),
+            },
+        );
+        let scope = issuer.issue(
+            "write",
+            &crate::Capabilities::new([volume.capability(VolumeOperation::Write, &mut None)?]),
+            Some(agent),
+            None,
+            &mut None,
+        )?;
+        let grant = ContentGrant::verify(
+            &issuer.verifier(&mut None)?,
+            &scope,
+            &volume,
+            VolumeOperation::Write,
+            u64::MAX,
+            &mut None,
+        )?;
+        let workspace = fork_preparer_io::content_workspace(&provider, &volume, None)?;
+        let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+        let opened = host.open(&workspace, Some(&io)).await?;
+        let before = io.sdk(opened.head(&io, io.cancellation()).await)?.id();
+        Arc::get_mut(&mut host).unwrap().publication_pause = Some(Arc::new(move || {
+            let issuer = issuer.clone();
+            let scope = scope.clone();
+            Box::pin(async move {
+                issuer.revoke_workload(&scope).unwrap();
+            })
+        }));
+        let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+        let result = host
+            .put_content(
+                &volume,
+                &grant,
+                "private",
+                b"secret",
+                "text/plain",
+                "private",
+                64,
+                &IdempotencyKey::new("revoked-publication")?,
+                None,
+                crate::conversation::ContentAccess {
+                    ceiling: None,
+                    io: Some(&io),
+                },
+            )
+            .await;
+        assert!(result.is_err());
+        assert_eq!(
+            io.sdk(opened.head(&io, io.cancellation()).await)?.id(),
+            before
+        );
+        Ok(())
+    }
 }

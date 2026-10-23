@@ -39,7 +39,7 @@ class Client {
   }
   async openFollowResult(bytes: Uint8Array) {
     const request = fromBinary(wire.FollowRequestSchema, bytes);
-    assert.deepEqual(request.filter, filter, "native follow dropped its requested filter");
+    assert.deepEqual(request.filter && toBinary(wire.SessionFilterSchema, request.filter), toBinary(wire.SessionFilterSchema, filter), "native follow dropped its requested filter");
     let index = 0;
     return { follow: {
       async nextResult() {
@@ -62,7 +62,7 @@ const follow = provider.follow("scoped", { from: 0n, filter })[Symbol.asyncItera
 for (const sequence of [2n, 5n]) {
   const next = await follow.next();
   assert.equal(next.value?.sequence, sequence, "filtered follow must admit increasing cursor gaps");
-  assert.deepEqual(next.value?.keys, [new Uint8Array([4])], "native follow dropped record keys");
+  assert.deepEqual(next.value?.keys?.map(key => [...key]), [[4]], "native follow dropped record keys");
   assert.equal(next.value?.attributes[0]?.name, "owner", "native follow dropped record attributes");
 }
 await assert.rejects(follow.next(), (error: any) => error.code === "invalid_response");

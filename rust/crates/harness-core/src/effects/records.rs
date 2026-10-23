@@ -35,7 +35,7 @@ impl EffectDispatch {
             effect_id,
             attempt_id,
             effect_kind: effect.effect_kind.clone(),
-            request: effect.request.clone(),
+            request: effect.request.as_ref().clone(),
             guarantee: effect.guarantee,
             request_digest: effect.request_digest,
         })

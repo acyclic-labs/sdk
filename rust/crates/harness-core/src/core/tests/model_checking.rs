@@ -279,8 +279,9 @@ fn scope_field_property(
             .verify(&original, &mut None)
             .is_err()
     );
-    foreign = owner.clone();
-    foreign.key[byte] ^= 1 << bit;
+    let mut foreign_key = [7; 32];
+    foreign_key[byte] ^= 1 << bit;
+    foreign = AuthorityIssuer::new(owner.id.clone(), foreign_key, owner.audience.clone());
     prop_assert!(
         foreign
             .verifier(&mut None)

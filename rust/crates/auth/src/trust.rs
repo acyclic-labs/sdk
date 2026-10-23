@@ -3,7 +3,7 @@ use crate::{crypto::BlockId, verify::*};
 use std::collections::HashSet;
 
 /// An authenticated owner-supplied trust snapshot, never derived from a token.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Snapshot {
     /// Environment whose public issuer keys were authenticated by the owner.
     pub environment: String,

@@ -16,7 +16,7 @@ proptest::proptest! {
     #[test]
     fn fixed_certificate_has_one_admitted_allocation(
         root in proptest::option::of(proptest::arbitrary::any::<[u8;32]>()),
-        proof in proptest::arbitrary::any::<[u8;32]>()
+        proof in proptest::arbitrary::any::<[u8;64]>()
     ) {
         let io = crate::filesystem::PreparationIo::from_budget(
             acyclic_fs::performance::BOUNDARY_BUDGET, &acyclic_fs::CancellationToken::new(),
@@ -26,13 +26,13 @@ proptest::proptest! {
         let expected = effect_certificate::parts(root.as_ref(), &proof).concat();
         proptest::prop_assert_eq!(bytes.as_slice(), expected.as_slice());
         proptest::prop_assert_eq!(io.receipt(), acyclic_fs::WorkCounters {
-            allocation_operations: 1, peak_allocation_bytes: 65,
-            bytes_encoded: 65, bytes_copied: 65, items_examined: 3,
+            allocation_operations: 1, peak_allocation_bytes: 97,
+            bytes_encoded: 97, bytes_copied: 97, items_examined: 3,
             ..acyclic_fs::WorkCounters::default()
         });
-        proptest::prop_assert_eq!(io.owned_bytes().unwrap(), 65);
+        proptest::prop_assert_eq!(io.owned_bytes().unwrap(), 97);
         drop(bytes);
-        observer.release_owned(65).unwrap();
+        observer.release_owned(97).unwrap();
         proptest::prop_assert_eq!(io.owned_bytes().unwrap(), 0);
     }
 }

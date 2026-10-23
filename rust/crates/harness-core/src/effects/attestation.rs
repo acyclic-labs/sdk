@@ -9,6 +9,7 @@ impl EffectRegistry {
         effect: &EffectState,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<EffectAttestation> {
+        issuer.authorize_effect(effect_id, effect, work)?;
         let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
         if effect.status != EffectStatus::Dispatched {
             return Err(crate::store::guarded_boundary(
@@ -81,6 +82,7 @@ impl EffectRegistry {
         effect: &EffectState,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Option<EffectAttestation>> {
+        issuer.authorize_effect(effect_id, effect, work)?;
         let provider = self.resolve(effect, work)?;
         let attempt_id = effect.attempts.last().copied().ok_or_else(|| {
             crate::store::guarded_boundary(
@@ -103,7 +105,10 @@ impl EffectRegistry {
                     )
                     .await?,
                 )),
-                None => Ok(None),
+                None => {
+                    issuer.authorize_effect(effect_id, effect, work)?;
+                    Ok(None)
+                }
             };
         }
         if work.is_some() {
@@ -116,7 +121,10 @@ impl EffectRegistry {
                 self.attest_provider_observation(issuer, effect_id, effect, observation, work)
                     .await?,
             )),
-            None => Ok(None),
+            None => {
+                issuer.authorize_effect(effect_id, effect, work)?;
+                Ok(None)
+            }
         }
     }
 

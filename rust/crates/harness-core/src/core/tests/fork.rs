@@ -214,7 +214,7 @@ fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
     };
     foreign.attestation = issuer()
         .verifier(&mut None)?
-        .attest_event(&foreign, &mut None)?;
+        .attest_event(&scope, &foreign, &mut None)?;
     assert!(reducer.apply_committed(foreign, &mut None).is_err());
     reducer.apply_committed(event, &mut None)?;
     assert_eq!(reducer.fork(&seed.child), Some(&seed));

@@ -269,6 +269,19 @@ impl VerifiedCapability {
         &self.ids
     }
 
+    /// Every chain and certificate ancestor whose revocation invalidates this workload.
+    pub fn revocation_ids(&self) -> impl Iterator<Item = &[u8]> {
+        self.ids.iter().map(|id| id.as_slice()).chain(
+            self.blocks
+                .first()
+                .into_iter()
+                .flat_map(|block| block.certificates.iter())
+                .flat_map(|certificates| &certificates.keys)
+                .flat_map(|certificate| &certificate.key.parent_revocation_ids)
+                .map(Vec::as_slice),
+        )
+    }
+
     /// Recheck the current trust snapshot and clock without repeating signatures.
     pub fn check(
         &self,
@@ -443,7 +456,10 @@ impl VerifiedCapability {
 
     /// Exact encoded length, without allocating or exposing the append secret.
     pub fn encoded_len(&self) -> usize {
-        let proof_len = match &self.proof { Proof::Append(_) => 32, Proof::Sealed(_) => 64 };
+        let proof_len = match &self.proof {
+            Proof::Append(_) => 32,
+            Proof::Sealed(_) => 64,
+        };
         wire::encoded_len(&self.signed, proof_len, VERSION)
     }
 

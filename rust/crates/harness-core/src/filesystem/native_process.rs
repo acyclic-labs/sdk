@@ -307,11 +307,14 @@ where
         let state = aggregate.reducer().effect(effect_id).ok_or_else(|| {
             Error::Unauthorized("native command has no committed effect admission".into())
         })?;
+        self.authority
+            .verifier
+            .verify_effect_plan(effect_id, state, &mut None)?;
         if EffectDispatch::from_state(effect_id, state)? != *dispatch
             || state.provider != self.plan.provider
             || state.effect_kind != self.plan.effect_kind
             || state.guarantee != self.plan.guarantee
-            || state.request != self.plan.request
+            || state.request.as_ref() != &self.plan.request
             || state.result_schema != self.plan.result_schema
         {
             return Err(Error::Conflict(
@@ -481,8 +484,13 @@ where
                 .ok_or_else(|| {
                     Error::Unauthorized("native receipt has no retained core effect".into())
                 })?;
+            self.authority.verifier.verify_effect_plan(
+                launch.dispatch.effect_id,
+                state,
+                &mut None,
+            )?;
             if state.request_digest != launch.dispatch.request_digest
-                || state.request != launch.plan.request
+                || state.request.as_ref() != &launch.plan.request
                 || state.provider != launch.plan.provider
                 || state.effect_kind != launch.plan.effect_kind
                 || state.guarantee != launch.plan.guarantee

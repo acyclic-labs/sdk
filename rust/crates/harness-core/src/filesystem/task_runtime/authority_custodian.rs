@@ -73,6 +73,38 @@ where
                 Error::Unauthorized("runtime workload has no agent identity".into())
             })?
         };
-        issuer.issue("child-source", scope.grants(), Some(agent), None, &mut None)
+        self.verifier.verify(&self.signed, &mut None)?;
+        let derived = if self.signed.agent() == Some(agent)
+            && scope.grants().is_subset_of(self.signed.capabilities())
+        {
+            issuer.attenuate(&self.signed, "child-source", scope.grants())?
+        } else {
+            issuer.issue_derived(
+                &self.signed,
+                "child-source",
+                scope.grants(),
+                Some(agent),
+                &mut None,
+            )?
+        };
+        if let Some(deadline) = scope.run_limits().deadline_epoch_ms {
+            let remaining = deadline
+                .checked_sub(self.host.clock.now_unix_millis())
+                .ok_or_else(|| Error::Unauthorized("source workload has expired".into()))?;
+            let now = acyclic_stream::UnixMillisClock::now_unix_millis(
+                &acyclic_stream::SystemUnixMillisClock,
+            ) / 1000;
+            let expires = now
+                .checked_add(remaining.div_ceil(1000))
+                .ok_or_else(|| Error::Unauthorized("source workload deadline overflows".into()))?;
+            derived.with_workload_expiry(
+                expires,
+                &issuer.public_workload_trust(),
+                issuer.audience(),
+                now,
+            )
+        } else {
+            Ok(derived)
+        }
     }
 }

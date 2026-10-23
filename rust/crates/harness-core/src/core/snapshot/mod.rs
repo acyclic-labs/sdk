@@ -24,7 +24,7 @@ pub struct Snapshot<C = ConversationState> {
     /// Canonical digest of the complete state and retained cache.
     pub state_digest: [u8; 32],
     /// Domain-separated issuer proof over the digest and aggregate identity.
-    pub attestation: [u8; 32],
+    pub attestation: Vec<u8>,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -165,11 +165,14 @@ impl Snapshot {
         if self.digest_with_work(work)? != self.state_digest {
             return Err(Error::Invalid("snapshot digest mismatch".into()));
         }
-        if verifier.canonical_proof(
-            b"harness/v6/reducer-checkpoint\0",
-            &(&verifier.id, &verifier.audience, self.state_digest),
-            work,
-        )? != self.attestation
+        if verifier
+            .verify_canonical_proof(
+                b"harness/v6/reducer-checkpoint\0",
+                &(&verifier.id, &verifier.audience, self.state_digest),
+                &self.attestation,
+                work,
+            )
+            .is_err()
         {
             return Err(Error::Unauthorized(
                 "snapshot admission attestation is invalid".into(),

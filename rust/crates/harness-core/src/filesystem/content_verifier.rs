@@ -161,7 +161,9 @@ where
                 owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
                 &owned
             };
-            self.host
+            crate::executor::with_history_io(io, |work| self.verifier.verify(&self.scope, work))?;
+            let bytes = self
+                .host
                 .read_selection_with_access(
                     &self.scope,
                     reference,
@@ -172,7 +174,9 @@ where
                 )
                 .await?
                 .read_range(range)
-                .await
+                .await?;
+            crate::executor::with_history_io(io, |work| self.verifier.verify(&self.scope, work))?;
+            Ok(bytes)
         })
     }
 
@@ -444,7 +448,9 @@ where
             unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
             &unmeasured
         };
-        self.host
+        crate::executor::with_history_io(io, |work| self.verifier.verify(&self.scope, work))?;
+        let bytes = self
+            .host
             .read_file_with_access(
                 &self.scope,
                 reference,
@@ -453,7 +459,9 @@ where
                 ceiling,
                 authority_io,
             )
-            .await
+            .await?;
+        crate::executor::with_history_io(io, |work| self.verifier.verify(&self.scope, work))?;
+        Ok(bytes)
     }
 
     /// Lazily lists another agent's private directory under this reader's signed, owner-delegated subtree grant.

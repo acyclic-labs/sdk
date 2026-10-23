@@ -212,7 +212,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
         let mut changed = seed.clone();
         match mutation {
             0 => changed.history_witness = None,
-            1 => changed.history_witness = Some([0; 32]),
+            1 => changed.history_witness = Some(vec![0; 64]),
             2 => {
                 changed.reference_grants.pop();
             }

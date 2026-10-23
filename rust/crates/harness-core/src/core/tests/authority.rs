@@ -23,6 +23,27 @@ fn committed_events_attest_admission_without_persisting_bearer_scopes() -> Resul
     assert!(wire["scope"].get("proof").is_none());
     assert!(wire["scope"].get("parent_proof").is_none());
     assert!(serde_json::from_value::<Scope>(wire["scope"].clone()).is_err());
+    {
+        use acyclic_auth::{contract::AdmittedCapabilityProto, verify};
+        use prost::Message;
+        let admission = AdmittedCapabilityProto::decode(event.attestation.as_slice())
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let trust = owner.public_workload_trust();
+        for encoded in [&admission.workload, &admission.receipt] {
+            let sealed = verify::verify(encoded, &trust, admission.admitted_at_unix_seconds)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            assert!(sealed.is_sealed());
+            assert!(matches!(
+                sealed.attenuate(vec![], &[89; 32]),
+                Err(verify::VerifyError::Sealed)
+            ));
+        }
+        let mut tampered = event.clone();
+        let mut forged_time = admission;
+        forged_time.admitted_at_unix_seconds += 1;
+        tampered.attestation = forged_time.encode_to_vec();
+        assert!(reducer.apply_committed(tampered, &mut None).is_err());
+    }
     let mut tampered = event.clone();
     tampered.scope.capabilities = Capabilities::new(["conversation:bind", "effect:run"]);
     assert!(reducer.apply_committed(tampered, &mut None).is_err());

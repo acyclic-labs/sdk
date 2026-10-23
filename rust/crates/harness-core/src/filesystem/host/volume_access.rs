@@ -8,6 +8,7 @@ pub(super) async fn compile<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
     actions: &[acyclic_fs::access::Action],
     io: &'a PreparationIo,
 ) -> Result<super::super::access::CompiledAccess<'a>> {
+    grant.recheck(Some(io))?;
     let scope = grant.policy_scope();
     let label =
         crate::core::filesystem_scope_label(scope.capabilities(), &mut Some(&mut io.history_io()))?;
@@ -26,5 +27,6 @@ pub(super) async fn compile<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
             "whole-volume copy requires non-expiring authority",
         ));
     }
+    grant.recheck(Some(io))?;
     Ok(view)
 }

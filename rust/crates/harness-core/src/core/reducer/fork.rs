@@ -66,7 +66,13 @@ impl Reducer {
             ));
         }
         self.validate_fork_reference_ownership(seed, Some(history), work)?;
-        seed.history_witness = Some(self.authority_verifier.fork_history_proof(seed, work)?);
+        let mut quota = CodecQuota::new(work, 64)?;
+        seed.history_witness = Some(
+            self.authority_verifier
+                .fork_history_proof(seed, quota.work())?
+                .to_vec(),
+        );
+        quota.transfer();
         Ok(())
     }
 
@@ -81,9 +87,13 @@ impl Reducer {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         if history.is_none()
-            && let Some(proof) = seed.history_witness
+            && let Some(proof) = &seed.history_witness
         {
-            if proof != self.authority_verifier.fork_history_proof(seed, work)? {
+            if self
+                .authority_verifier
+                .verify_fork_history_proof(seed, proof, work)
+                .is_err()
+            {
                 return Err(crate::fork::boundary_error(
                     work,
                     crate::wire::ErrorCode::Unauthorized,

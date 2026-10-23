@@ -141,11 +141,7 @@ pub(crate) fn decode_event(
             scope.issuer,
             parse_scope_agent(&scope.agent_id, quota.work())?,
         ),
-        attestation: envelope
-            .attestation
-            .as_slice()
-            .try_into()
-            .map_err(|_| boundary(quota.work(), Storage, "invalid event attestation"))?,
+        attestation: std::mem::take(&mut envelope.attestation),
         causal_parent: envelope
             .causal_parent
             .take()

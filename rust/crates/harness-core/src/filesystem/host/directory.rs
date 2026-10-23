@@ -250,6 +250,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 fork_preparer_io::generation_ref(&self.provider, generation.id(), Some(io))?;
             page_hold.adopt(reference.logical_owned_bytes()?)?;
             super::super::access::require_current(&workspace, &view.0, io).await?;
+            request.grant.recheck(Some(io))?;
             return Ok(((reference, page), page_hold));
         }
     }

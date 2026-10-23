@@ -507,7 +507,9 @@ impl Effects {
             _ => unreachable!("only effect transitions are tested"),
         };
         let verifier = issuer().verifier(&mut None).unwrap();
-        event.attestation = verifier.attest_event(&event, &mut None).unwrap();
+        event.attestation = verifier
+            .attest_event(&cmd.scope, &event, &mut None)
+            .unwrap();
         verifier.verify_event(&event, &mut None).unwrap();
         let accepted = reducer.apply_committed(event, &mut None).is_ok();
         refused("committed event", accepted, &*reducer)?;

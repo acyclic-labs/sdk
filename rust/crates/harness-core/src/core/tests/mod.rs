@@ -40,14 +40,19 @@ pub(in crate::core) fn schema_file(schema: &Value) -> Result<FileRef> {
 }
 
 pub(in crate::core) fn issuer() -> AuthorityIssuer {
-    AuthorityIssuer::new(
-        "test",
-        [7; 32],
-        Authority {
-            kind: AggregateKind::Conversation,
-            id: "conversation-1".into(),
-        },
-    )
+    static RUNTIME: std::sync::OnceLock<AuthorityIssuer> = std::sync::OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            AuthorityIssuer::new(
+                "test",
+                [7; 32],
+                Authority {
+                    kind: AggregateKind::Conversation,
+                    id: "conversation-1".into(),
+                },
+            )
+        })
+        .clone()
 }
 
 pub(in crate::core) fn schemas() -> SchemaRegistry {

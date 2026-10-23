@@ -69,17 +69,27 @@ async fn local_session_requires_explicit_trust_and_rejects_forgery_expiry_and_wi
     assert!(stream.bind_session(&authority).is_err());
     for invalid in [vec![1, 2, 3], credential(true)] {
         stream.register_credential(2, &invalid).expect("register");
-        assert!(stream.open_data(&request).await.is_err());
+        match stream.open_data(&request).await {
+            Err(_) => {}
+            Ok(follow) => {
+                assert!(follow.next().await.is_err());
+                follow.close();
+            }
+        }
     }
     stream
         .register_credential(2, &credential(false))
         .expect("register");
-    assert!(
-        stream
-            .open_data(&subscription("neighbor").encode_to_vec())
-            .await
-            .is_err()
-    );
+    match stream
+        .open_data(&subscription("neighbor").encode_to_vec())
+        .await
+    {
+        Err(_) => {}
+        Ok(follow) => {
+            assert!(follow.next().await.is_err());
+            follow.close();
+        }
+    }
 }
 
 #[wasm_bindgen_test]

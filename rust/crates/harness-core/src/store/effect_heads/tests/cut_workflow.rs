@@ -145,12 +145,12 @@ impl StreamProvider for Observed {
     }
 }
 
-fn decode_certificate(old: bool, bytes: &[u8]) -> (Option<Digest>, Digest) {
+fn decode_certificate(old: bool, bytes: &[u8]) -> (Option<Digest>, Vec<u8>) {
     if old {
         serde_json::from_slice(bytes).unwrap()
     } else {
         // Independent of the candidate codec, including the absent-root padding.
-        assert_eq!(bytes.len(), 65);
+        assert_eq!(bytes.len(), 97);
         let root: Digest = bytes[1..33].try_into().unwrap();
         let root = match bytes[0] {
             0 => {
@@ -160,7 +160,7 @@ fn decode_certificate(old: bool, bytes: &[u8]) -> (Option<Digest>, Digest) {
             1 => Some(root),
             _ => panic!("invalid certificate tag"),
         };
-        (root, bytes[33..].try_into().unwrap())
+        (root, bytes[33..].to_vec())
     }
 }
 
@@ -303,8 +303,9 @@ async fn workflow(
         let expected = if old {
             effect_root_tests::old_proof(&verifier, event.revision, digest, root, &mut None)
                 .unwrap()
+                .to_vec()
         } else {
-            effect_root_tests::reference(&verifier, event.revision, digest, root)
+            effect_root_tests::reference(&verifier, event.revision, digest, root).to_vec()
         };
         assert_eq!(proof, expected);
         let mut unmetered = None;
@@ -365,11 +366,10 @@ async fn workflow(
         "valid", "proof", "split", "anchor", "cut", "quota", "audience",
     ] {
         let copy = Arc::new(Observed::default());
-        let proof = if fault == "proof" {
-            [proof[0] ^ 1; 32]
-        } else {
-            proof
-        };
+        let mut proof = proof.clone();
+        if fault == "proof" {
+            proof[0] ^= 1;
+        }
         let bytes: OwnedBytes = if old {
             crate::contract::canonical_json_bytes(&(root, proof)).unwrap()
         } else {

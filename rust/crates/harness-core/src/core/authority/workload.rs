@@ -8,6 +8,8 @@ use acyclic_auth::{
 };
 use ed25519_dalek::{Signer, SigningKey};
 use prost::Message;
+mod admission;
+pub(super) use admission::{live_record, record, verify_record};
 
 const CLAIM: &str = "harness.scope.";
 const ACTION: &str = "harness/execute";
@@ -96,18 +98,24 @@ fn signature(domain: &[u8], claims: &impl Message, signer: &SigningKey) -> Vec<u
     message.extend_from_slice(&claims.encode_to_vec());
     signer.sign(&message).to_bytes().to_vec()
 }
-fn signer(issuer: &AuthorityIssuer, timestamp: u64, name: &str) -> Result<CertifiedSigner> {
-    let environment = key(&issuer.key, "acyclic.harness.environment.v1");
-    let account = key(&issuer.key, "acyclic.harness.account.v1");
-    let leaf = key(&issuer.key, "acyclic.harness.runtime.v1");
+fn signer(
+    id: &str,
+    seed: &[u8; 32],
+    timestamp: u64,
+    name: &str,
+    parent: Option<&VerifiedCapability>,
+) -> Result<CertifiedSigner> {
+    let environment = key(seed, "acyclic.harness.environment.v1");
+    let account = key(seed, "acyclic.harness.account.v1");
+    let leaf = key(seed, "acyclic.harness.runtime.v1");
     let birth = Birth {
-        account_id: issuer.id.clone(),
+        account_id: id.into(),
         environment: "local-harness".into(),
         genesis_public_key: account.verifying_key().to_bytes().to_vec(),
         issued_at_unix_seconds: timestamp,
     };
     let certified = CertifiedKey {
-        account_id: issuer.id.clone(),
+        account_id: id.into(),
         key_id: "runtime".into(),
         public_key: leaf.verifying_key().to_bytes().to_vec(),
         key_epoch: 1,
@@ -115,19 +123,38 @@ fn signer(issuer: &AuthorityIssuer, timestamp: u64, name: &str) -> Result<Certif
             not_before_unix_seconds: timestamp,
             expires_at_unix_seconds: timestamp
                 .checked_add(CERTIFICATE_SECONDS)
-                .ok_or_else(|| unauthorized("clock overflow"))?,
+                .ok_or_else(|| unauthorized("clock overflow"))?
+                .min(parent.map_or(u64::MAX, |parent| {
+                    parent.effective().expires_at_unix_seconds()
+                })),
         },
-        grants: grant(name),
+        grants: {
+            let mut grants = grant(name);
+            grants.grants.push(Grant {
+                kind: GrantKind::Resource(ResourceGrant {
+                    resource: ResourcePattern {
+                        name: "harness:/admissions/".into(),
+                        prefix: true,
+                    },
+                    actions: vec![acyclic_auth::admission::RECEIPT_ACTION.into()],
+                }),
+            });
+            grants
+        },
         principal: Principal {
             kind: PrincipalKind::Service,
-            id: issuer.id.clone(),
+            id: id.into(),
             lineage: vec![],
             groups: vec![],
             roles: vec![],
             attributes: vec![],
         },
         parent_key_id: None,
-        parent_revocation_ids: vec![],
+        parent_revocation_ids: parent
+            .into_iter()
+            .flat_map(VerifiedCapability::revocation_ids)
+            .map(<[u8]>::to_vec)
+            .collect(),
     };
     let certificates = CertificateChain {
         birth: BirthCertificate {
@@ -181,6 +208,7 @@ fn retain(
 pub(super) fn issue(
     issuer: &AuthorityIssuer,
     scope: &mut Scope,
+    parent: Option<&VerifiedCapability>,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
     if let Some(io) = work.as_deref() {
@@ -188,10 +216,13 @@ pub(super) fn issue(
     }
     let timestamp = now();
     let name = resource(&issuer.audience)?;
-    let capability = signer(issuer, timestamp, &name)?
+    let capability = signer(&issuer.id, issuer.runtime.seed(), timestamp, &name, parent)?
         .mint(
             vec![
                 claims(scope, 0)?,
+                Caveat {
+                    kind: CaveatKind::Grants(grant(&name)),
+                },
                 Caveat {
                     kind: CaveatKind::Audience(ResourcePattern {
                         name,
@@ -200,16 +231,26 @@ pub(super) fn issue(
                 },
             ],
             SigningKey::from_bytes(&entropy()),
-            &trust(&issuer.id, &issuer.key),
+            &issuer.public_workload_trust(),
             timestamp,
         )
         .map_err(unauthorized)?;
     retain(scope, &capability, work)
 }
-pub(super) fn append(capability: &VerifiedCapability, scope: &mut Scope) -> Result<()> {
+pub(super) fn append(
+    capability: &VerifiedCapability,
+    scope: &mut Scope,
+    expires: Option<u64>,
+) -> Result<()> {
     let index = capability.block_ids().len();
+    let mut caveats = vec![claims(scope, index)?];
+    if let Some(expires) = expires {
+        caveats.push(Caveat {
+            kind: CaveatKind::ExpiresAtUnixSeconds(expires),
+        });
+    }
     let narrowed = capability
-        .attenuate(vec![claims(scope, index)?], &entropy())
+        .attenuate(caveats, &entropy())
         .map_err(unauthorized)?;
     retain(scope, &narrowed, &mut None)
 }
@@ -237,7 +278,7 @@ pub(super) fn verify(
         return Err(unauthorized("foreign issuer"));
     }
     verify_trusted(
-        &trust(&verifier.id, &verifier.key),
+        &*verifier.public.trust.read().map_err(unauthorized)?,
         audience,
         scope,
         timestamp,

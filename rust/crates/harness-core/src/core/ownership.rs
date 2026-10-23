@@ -58,7 +58,14 @@ pub(crate) fn owned_effect(effect: &EffectState) -> Result<u64> {
     owned_sum([
         effect.provider.capacity() as u64,
         effect.effect_kind.capacity() as u64,
+        std::mem::size_of::<FileRef>() as u64,
         effect.request.logical_owned_bytes()?,
+        effect.planning.as_ref().map_or(Ok(0), |event| {
+            owned_sum([
+                std::mem::size_of::<Event>() as u64,
+                event_owned_bytes(event)?,
+            ])
+        })?,
         effect.result_schema.logical_owned_bytes()?,
         owned_bytes(&effect.status)?,
         owned_buffer::<EffectAttemptId>(effect.attempts.capacity())?,
@@ -68,6 +75,7 @@ pub(crate) fn owned_effect(effect: &EffectState) -> Result<u64> {
 pub(crate) fn event_owned_bytes(event: &Event) -> Result<u64> {
     owned_sum([
         event.scope.logical_owned_bytes()?,
+        event.attestation.capacity() as u64,
         event
             .causal_parent
             .as_ref()

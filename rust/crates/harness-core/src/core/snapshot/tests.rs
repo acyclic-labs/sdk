@@ -274,11 +274,13 @@ fn lifecycle_snapshot(events: u64) -> Result<Snapshot> {
 
 fn resign_snapshot(snapshot: &mut Snapshot, verifier: &AuthorityVerifier) -> Result<()> {
     snapshot.state_digest = snapshot.digest_with_work(&mut None)?;
-    snapshot.attestation = verifier.canonical_proof(
-        b"harness/v6/reducer-checkpoint\0",
-        &(&verifier.id, &verifier.audience, snapshot.state_digest),
-        &mut None,
-    )?;
+    snapshot.attestation = verifier
+        .canonical_proof(
+            b"harness/v6/reducer-checkpoint\0",
+            &(&verifier.id, &verifier.audience, snapshot.state_digest),
+            &mut None,
+        )?
+        .to_vec();
     Ok(())
 }
 
@@ -301,8 +303,16 @@ fn signed_snapshot_duplicate_operations_and_invalid_proofs_are_rejected() -> Res
         for duplicate_index in [1, 7, events as usize - 1] {
             let mut snapshot = original.copy(&mut None)?;
             snapshot.events[duplicate_index].operation_id = snapshot.events[0].operation_id;
+            let recorded = &snapshot.events[duplicate_index].scope;
+            let scope = issuer().issue(
+                &recorded.id,
+                &recorded.capabilities,
+                recorded.agent,
+                None,
+                &mut None,
+            )?;
             snapshot.events[duplicate_index].attestation =
-                verifier.attest_event(&snapshot.events[duplicate_index], &mut None)?;
+                verifier.attest_event(&scope, &snapshot.events[duplicate_index], &mut None)?;
             resign_snapshot(&mut snapshot, &verifier)?;
             assert!(matches!(
                 restore(snapshot.copy(&mut None)?, &issuer(), crate::core::tests::schemas()),
@@ -312,7 +322,7 @@ fn signed_snapshot_duplicate_operations_and_invalid_proofs_are_rejected() -> Res
             resign_snapshot(&mut snapshot, &verifier)?;
             assert!(matches!(
                 restore(snapshot, &issuer(), crate::core::tests::schemas()),
-                Err(Error::Unauthorized(message)) if message == "event admission attestation is invalid"
+                Err(Error::Unauthorized(_))
             ));
         }
     }

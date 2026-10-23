@@ -59,7 +59,7 @@ pub struct EffectAttestation {
     pub result_schema_digest: [u8; 32],
     /// Terminal or explicitly unknown result.
     pub status: EffectStatus,
-    pub(in crate::core) proof: [u8; 32],
+    pub(in crate::core) proof: Vec<u8>,
 }
 
 impl EffectAttestation {
@@ -85,7 +85,7 @@ pub struct EffectState {
     /// Namespaced effect kind.
     pub effect_kind: String,
     /// Immutable provider request file; the event carries no request body.
-    pub request: FileRef,
+    pub request: Box<FileRef>,
     /// Canonical digest binding provider, kind, guarantee, and request.
     pub request_digest: [u8; 32],
     /// Immutable JSON Schema file for successful results.
@@ -94,6 +94,8 @@ pub struct EffectState {
     pub result_schema_digest: [u8; 32],
     /// Current semantic completion state.
     pub status: EffectStatus,
+    /// Authenticated planning event; dispatch and reconciliation recheck its live workload.
+    pub(crate) planning: Option<Box<Event>>,
     /// Ordered unique attempts made against the provider.
     pub attempts: Vec<EffectAttemptId>,
 }

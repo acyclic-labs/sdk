@@ -90,13 +90,15 @@ impl<P: StreamProvider> Tree<'_, P> {
         if canonical.commit_id != record.commit_id {
             return Err(Error::Storage("effect cut atomic anchor differs".into()));
         }
-        if *certificate.1
-            != verifier.effect_history_root_proof_with_work(
+        if verifier
+            .verify_effect_history_root_with_work(
                 revision,
                 *blake3::hash(&canonical.value).as_bytes(),
                 root,
+                certificate.1,
                 quota.work(),
-            )?
+            )
+            .is_err()
         {
             return Err(Error::Unauthorized("effect cut proof differs".into()));
         }
@@ -400,7 +402,7 @@ fn add_head_indexes(
 
 fn encode_certificate(
     root: Option<&Digest>,
-    proof: &Digest,
+    proof: &[u8; 64],
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Vec<u8>> {
     let mut quota = CodecQuota::new(work, 0)?;

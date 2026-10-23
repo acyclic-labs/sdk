@@ -126,3 +126,45 @@ fn workload_holders_attenuate_with_public_trust_and_revocation_invalidates_desce
     );
     Ok(())
 }
+
+#[test]
+fn an_offline_deadline_cannot_be_widened_by_a_later_child() -> Result<()> {
+    let runtime = fixture();
+    let now = now();
+    let root = runtime.issue(
+        "root",
+        &Capabilities::new(["event:append"]),
+        None,
+        None,
+        &mut None,
+    )?;
+    let bounded = root.with_workload_expiry(
+        now + 2,
+        &runtime.public_workload_trust(),
+        runtime.audience(),
+        now,
+    )?;
+    let widened = bounded.with_workload_expiry(
+        now + 100,
+        &runtime.public_workload_trust(),
+        runtime.audience(),
+        now,
+    )?;
+    widened.verify_workload(
+        &runtime.public_workload_trust(),
+        runtime.audience(),
+        now + 1,
+        &mut None,
+    )?;
+    assert!(
+        widened
+            .verify_workload(
+                &runtime.public_workload_trust(),
+                runtime.audience(),
+                now + 2,
+                &mut None
+            )
+            .is_err()
+    );
+    Ok(())
+}

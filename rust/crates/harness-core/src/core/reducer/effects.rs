@@ -140,7 +140,7 @@ impl Reducer {
                     .ok_or_else(|| Error::Invalid("effect projected custody overflows".into()))?;
                 quota.replace(next_retained)?;
             }
-            projection.apply_payload_with_work(&event.payload, event.revision, quota.work())?;
+            projection.apply_authenticated_payload(event, quota.work())?;
             previous = event.revision;
         }
         let effect = projection

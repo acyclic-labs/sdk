@@ -30,7 +30,7 @@ pub struct ForkReport {
     pub reference_grants: Vec<ReferenceGrant>,
     /// Original issuer's proof of complete archived reference/grant capture.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub history_witness: Option<[u8; 32]>,
+    pub history_witness: Option<Vec<u8>>,
     /// Published manifests whose complete private members must remain readable.
     pub attachment_manifests: Vec<FileRef>,
 }
@@ -165,7 +165,7 @@ impl ForkReport {
             inherited_through_sequence: self.inherited_through_sequence,
             shared_grants: self.shared_grants,
             reference_grants: self.reference_grants,
-            history_witness: self.history_witness,
+            history_witness: self.history_witness.clone(),
             attachment_manifests: self.attachment_manifests,
             boundary: self.request.boundary,
         };

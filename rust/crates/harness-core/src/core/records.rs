@@ -209,8 +209,8 @@ pub struct Event {
     pub intent_digest: [u8; 32],
     /// Non-transferable admission metadata; never a reusable authorization scope.
     pub scope: RecordedScope,
-    /// Keyed proof over this complete event, including its admission metadata.
-    pub attestation: [u8; 32],
+    /// Sealed Ed25519 workload descendant and runtime receipt for this event.
+    pub attestation: Vec<u8>,
     /// Optional causal predecessor in another aggregate.
     pub causal_parent: Option<EventReference>,
     /// Typed payload.

@@ -243,3 +243,65 @@ fn conversation_enforces_binding_order_and_call_links() -> Result<()> {
     assert_eq!(state.messages.len(), 2);
     Ok(())
 }
+
+#[test]
+fn retained_content_grants_reject_revoked_workload_ancestors() -> Result<()> {
+    let owner = AgentId::from_bytes([1; 16]);
+    let selected = file(owner, "scratch/note.txt")?;
+    let volume = selected.volume();
+    let issuer = crate::core::AuthorityIssuer::new(
+        "retained",
+        [71; 32],
+        crate::core::Authority {
+            kind: crate::core::AggregateKind::Agent,
+            id: owner.to_string(),
+        },
+    );
+    let scope = issuer.issue(
+        "owner",
+        &crate::Capabilities::new([
+            volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.capability(VolumeOperation::Write, &mut None)?,
+            selected.read_capability(&mut None)?,
+            volume.directory_read_capability("scratch", &mut None)?,
+        ]),
+        Some(owner),
+        None,
+        &mut None,
+    )?;
+    let verifier = issuer.verifier(&mut None)?;
+    let reads = [
+        ContentGrant::verify_read(&verifier, &scope, &selected)?,
+        ContentGrant::verify_file_read(&verifier, &scope, &selected)?,
+        ContentGrant::verify_directory_read(&verifier, &scope, volume, "scratch", &mut None)?,
+    ];
+    let write = ContentGrant::verify(
+        &verifier,
+        &scope,
+        volume,
+        VolumeOperation::Write,
+        u64::MAX,
+        &mut None,
+    )?;
+    for grant in &reads {
+        grant.require_file_read(&selected, None)?;
+    }
+    reads[2].require_directory_path(volume, "scratch", None)?;
+    write.require(volume, VolumeOperation::Write, None)?;
+    issuer.revoke_workload(&scope)?;
+    for grant in &reads {
+        assert!(matches!(
+            grant.require_file_read(&selected, None),
+            Err(Error::Unauthorized(_))
+        ));
+    }
+    assert!(matches!(
+        reads[2].require_directory_path(volume, "scratch", None),
+        Err(Error::Unauthorized(_))
+    ));
+    assert!(matches!(
+        write.require(volume, VolumeOperation::Write, None),
+        Err(Error::Unauthorized(_))
+    ));
+    Ok(())
+}

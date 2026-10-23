@@ -337,7 +337,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .map_err(|_| Error::Invalid("inherited conversation is malformed".into()))?;
             let selected =
                 if seed.inherited_through_sequence < conversation.resident_after_sequence() {
-                    if seed.history_witness != Some(verifier.fork_history_proof(seed, &mut None)?) {
+                    if seed.history_witness.as_deref().is_none_or(|proof| {
+                        verifier
+                            .verify_fork_history_proof(seed, proof, &mut None)
+                            .is_err()
+                    }) {
                         return Err(Error::Unauthorized(
                             "archived fork activation requires its original witness".into(),
                         ));

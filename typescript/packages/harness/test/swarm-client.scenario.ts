@@ -2,6 +2,7 @@ import { create, toBinary } from "@bufbuild/protobuf";
 import { AppendRequestSchema } from "../../stream/generated/proto/stream/v1/stream_pb.js";
 import { SessionLatestValueSchema } from "../../stream/generated/proto/stream/v1/session_pb.js";
 import { SwarmClient, TaskVolume, WasmStream, initializeClientQueries } from "../src/client-query.js";
+import { bindLocalSession } from "./session-authority.js";
 
 const encode = new TextEncoder(), decode = new TextDecoder();
 const turn = 9007199254740993n;
@@ -14,6 +15,7 @@ export const viewLimits = { agents: 2n, selected: 1n, overview_values: 2n, overv
 export async function exerciseSwarm(stream: WasmStream, recover?: () => Promise<void>) {
   await initializeClientQueries();
   const configStream = new WasmStream();
+  await bindLocalSession(configStream);
   const config = await TaskVolume.create(configStream, "client/config");
   const parent = await TaskVolume.create(stream, "swarm/files");
   const a = await TaskVolume.create(stream, "swarm/a/files"), b = await TaskVolume.create(stream, "swarm/b/files");
@@ -21,7 +23,7 @@ export async function exerciseSwarm(stream: WasmStream, recover?: () => Promise<
   const layout = async (file: string, value: unknown) => config.write(await config.head(), { Input: `workspace/${file}.json` }, encode.encode(JSON.stringify(value)), null);
   const status = async (agent: string, attention: boolean) => {
     const value = toBinary(SessionLatestValueSchema, create(SessionLatestValueSchema, { key: encode.encode("status"), value: encode.encode("running"), attention }));
-    await stream.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: `${agent}/status`, records: [value] })));
+    await stream.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: `${agent}/status`, records: [{ value }] })));
   };
   for (const reference of ["a", "b"]) {
     await parent.write(await parent.head(), { Child: { reference, file: "Status" } }, encode.encode(JSON.stringify({

@@ -1,5 +1,6 @@
 //! Aggregate identity and host-issued authorization.
 use super::*;
+mod runtime_signing;
 mod workload;
 /// Kind of independently ordered durable aggregate.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -157,25 +158,60 @@ impl Scope {
     /// Verifies the workload using only independently authenticated public trust.
     /// The owner supplies its current revocation snapshot and trusted UTC time.
     pub fn verify_workload(
-        &self, trust: &dyn acyclic_auth::verify::Trust, audience: &Authority,
-        now_unix_seconds: u64, work: &mut Option<&mut dyn HistoryIo>,
+        &self,
+        trust: &dyn acyclic_auth::verify::Trust,
+        audience: &Authority,
+        now_unix_seconds: u64,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         workload::verify_trusted(trust, audience, self, now_unix_seconds, work).map(|_| ())
     }
 
     /// Attenuates this workload offline; possession of a runtime root is unnecessary.
     pub fn attenuate_workload(
-        &self, id: impl Into<String>, capabilities: &Capabilities,
-        trust: &dyn acyclic_auth::verify::Trust, audience: &Authority, now_unix_seconds: u64,
+        &self,
+        id: impl Into<String>,
+        capabilities: &Capabilities,
+        trust: &dyn acyclic_auth::verify::Trust,
+        audience: &Authority,
+        now_unix_seconds: u64,
     ) -> Result<Self> {
         if !capabilities.is_subset_of(&self.capabilities) {
-            return Err(Error::Unauthorized("child scope cannot widen ancestor capabilities".into()));
+            return Err(Error::Unauthorized(
+                "child scope cannot widen ancestor capabilities".into(),
+            ));
         }
-        let capability = workload::verify_trusted(trust, audience, self, now_unix_seconds, &mut None)?;
-        let mut scope = Self { id: id.into(), capabilities: capabilities.clone(), agent: self.agent,
-            issuer: self.issuer.clone(), parent_proof: Some(*self.proof), proof: Box::new([0; 32]), workload: Vec::new() };
-        workload::append(&capability, &mut scope)?;
+        let capability =
+            workload::verify_trusted(trust, audience, self, now_unix_seconds, &mut None)?;
+        let mut scope = Self {
+            id: id.into(),
+            capabilities: capabilities.clone(),
+            agent: self.agent,
+            issuer: self.issuer.clone(),
+            parent_proof: Some(*self.proof),
+            proof: Box::new([0; 32]),
+            workload: Vec::new(),
+        };
+        workload::append(&capability, &mut scope, None)?;
         Ok(scope)
+    }
+
+    /// Narrows expiry offline; the verifier still intersects every ancestor deadline.
+    pub fn with_workload_expiry(
+        mut self,
+        expires_at_unix_seconds: u64,
+        trust: &dyn acyclic_auth::verify::Trust,
+        audience: &Authority,
+        now_unix_seconds: u64,
+    ) -> Result<Self> {
+        if expires_at_unix_seconds <= now_unix_seconds {
+            return Err(Error::Unauthorized("workload deadline has elapsed".into()));
+        }
+        let capability =
+            workload::verify_trusted(trust, audience, &self, now_unix_seconds, &mut None)?;
+        self.parent_proof = Some(*self.proof);
+        workload::append(&capability, &mut self, Some(expires_at_unix_seconds))?;
+        Ok(self)
     }
 
     /// Copies the immutable grant under the caller's optional ledger.
@@ -221,7 +257,7 @@ impl Scope {
 #[derive(Clone)]
 pub struct AuthorityIssuer {
     pub(in crate::core) id: String,
-    pub(in crate::core) key: [u8; 32],
+    runtime: std::sync::Arc<runtime_signing::RuntimeSigner>,
     pub(in crate::core) audience: Authority,
 }
 
@@ -229,9 +265,10 @@ impl AuthorityIssuer {
     /// Creates an issuer from host-managed key material.
     #[must_use]
     pub fn new(id: impl Into<String>, key: [u8; 32], audience: Authority) -> Self {
+        let id = id.into();
         Self {
-            id: id.into(),
-            key,
+            runtime: std::sync::Arc::new(runtime_signing::RuntimeSigner::new(&id, key)),
+            id,
             audience,
         }
     }
@@ -244,7 +281,7 @@ impl AuthorityIssuer {
         let mut quota = CodecQuota::new(work, 0)?;
         let cloned = Self {
             id: copying::copy_text(&self.id, &mut quota)?,
-            key: self.key,
+            runtime: self.runtime.clone(),
             audience: copying::copy_authority(&self.audience, &mut quota)?,
         };
         quota.transfer();
@@ -256,22 +293,48 @@ impl AuthorityIssuer {
         &self.id
     }
 
-    #[cfg(feature = "filesystem")]
     pub(crate) const fn audience(&self) -> &Authority {
         &self.audience
     }
 
     /// Copies the configured verifier using the caller's ledger.
     pub fn verifier(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<AuthorityVerifier> {
-        let Self { id, key, audience } = self.copy(work)?;
-        Ok(AuthorityVerifier { id, key, audience })
+        let mut quota = CodecQuota::new(work, 0)?;
+        let id = copying::copy_text(&self.id, &mut quota)?;
+        let audience = copying::copy_authority(&self.audience, &mut quota)?;
+        let verifier = AuthorityVerifier {
+            id,
+            audience,
+            public: self.runtime.public.clone(),
+            admission: runtime_signing::AdmissionPort::new(&self.runtime),
+        };
+        quota.transfer();
+        Ok(verifier)
     }
 
     /// Public local account anchors. Callers must authenticate keyring updates
     /// independently before using a changed snapshot for workload verification.
     #[must_use]
     pub fn public_workload_trust(&self) -> acyclic_auth::trust::Snapshot {
-        workload::trust(&self.id, &self.key)
+        self.runtime
+            .public
+            .trust
+            .read()
+            .expect("runtime trust poisoned")
+            .clone()
+    }
+
+    /// Revokes this workload and every descendant at this runtime's public trust boundary.
+    pub fn revoke_workload(&self, scope: &Scope) -> Result<()> {
+        self.verifier(&mut None)?.verify(scope, &mut None)?;
+        self.runtime
+            .public
+            .trust
+            .write()
+            .map_err(|_| Error::Storage("runtime trust poisoned".into()))?
+            .revoked_block_ids
+            .insert(*scope.proof);
+        Ok(())
     }
 
     /// Signs one grant using the caller's optional ledger.
@@ -281,6 +344,44 @@ impl AuthorityIssuer {
         capabilities: &Capabilities,
         agent: Option<AgentId>,
         parent_proof: Option<[u8; 32]>,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Scope> {
+        self.issue_bound(id, capabilities, agent, parent_proof, None, work)
+    }
+
+    /// Runtime-only delegation across an attested created resource or agent boundary.
+    pub(crate) fn issue_derived(
+        &self,
+        parent: &Scope,
+        id: &str,
+        capabilities: &Capabilities,
+        agent: Option<AgentId>,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Scope> {
+        let capability = workload::verify(
+            &self.verifier(work)?,
+            &self.audience,
+            parent,
+            workload::now(),
+            work,
+        )?;
+        self.issue_bound(
+            id,
+            capabilities,
+            agent,
+            Some(*parent.proof),
+            Some(&capability),
+            work,
+        )
+    }
+
+    fn issue_bound(
+        &self,
+        id: &str,
+        capabilities: &Capabilities,
+        agent: Option<AgentId>,
+        parent_proof: Option<[u8; 32]>,
+        parent: Option<&acyclic_auth::verify::VerifiedCapability>,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Scope> {
         let mut quota = CodecQuota::new(work, 0)?;
@@ -299,7 +400,7 @@ impl AuthorityIssuer {
             proof: Box::new([0; 32]),
             workload: Vec::new(),
         };
-        workload::issue(self, &mut scope, quota.work())?;
+        workload::issue(self, &mut scope, parent, quota.work())?;
         quota.adopt(scope.workload.capacity() as u64)?;
         quota.transfer();
         Ok(scope)
@@ -312,7 +413,13 @@ impl AuthorityIssuer {
         id: impl Into<String>,
         capabilities: &Capabilities,
     ) -> Result<Scope> {
-        parent.attenuate_workload(id, capabilities, &self.public_workload_trust(), &self.audience, workload::now())
+        parent.attenuate_workload(
+            id,
+            capabilities,
+            &self.public_workload_trust(),
+            &self.audience,
+            workload::now(),
+        )
     }
 
     /// Delegates one pinned private file to another agent without a fork or
@@ -331,11 +438,11 @@ impl AuthorityIssuer {
         }
         let volume = file.volume();
         self.require_private_owner_read(owner_scope, volume)?;
-        self.issue(
+        self.issue_derived(
+            owner_scope,
             &id.into(),
             &Capabilities::new([file.read_capability(&mut None)?]),
             Some(reader),
-            Some(*owner_scope.proof),
             &mut None,
         )
     }
@@ -350,11 +457,11 @@ impl AuthorityIssuer {
         prefix: &str,
     ) -> Result<Scope> {
         self.require_private_owner_read(owner_scope, volume)?;
-        self.issue(
+        self.issue_derived(
+            owner_scope,
             &id.into(),
             &Capabilities::new([volume.directory_read_capability(prefix, &mut None)?]),
             Some(reader),
-            Some(*owner_scope.proof),
             &mut None,
         )
     }
@@ -378,6 +485,16 @@ impl AuthorityIssuer {
         Ok(())
     }
 
+    pub(crate) fn authorize_effect(
+        &self,
+        effect_id: EffectId,
+        effect: &EffectState,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<acyclic_auth::verify::VerifiedCapability> {
+        self.verifier(work)?
+            .verify_effect_plan(effect_id, effect, work)
+    }
+
     /// Signs the original provider observation with admitted encoding and hashing.
     pub(crate) fn attest_effect(
         &self,
@@ -387,6 +504,7 @@ impl AuthorityIssuer {
         status: EffectStatus,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<EffectAttestation> {
+        let parent = self.authorize_effect(effect_id, effect, work)?;
         let mut custody = CodecQuota::new(work, 0)?;
         let mut observation = EffectAttestation {
             provider: copying::copy_text(&effect.provider, &mut custody)?,
@@ -396,22 +514,58 @@ impl AuthorityIssuer {
             guarantee: effect.guarantee,
             result_schema_digest: effect.result_schema_digest,
             status,
-            proof: [0; 32],
+            proof: Vec::new(),
         };
-        observation.proof =
-            effect_attestation_proof(&self.key, &self.audience, &observation, custody.work())?;
+        let scope = self.issue_bound(
+            "effect-observation",
+            &Capabilities::new([
+                "effect:run".to_owned(),
+                capability::effect_provider(&effect.provider),
+            ]),
+            None,
+            parent.block_ids().last().copied(),
+            Some(&parent),
+            custody.work(),
+        )?;
+        let held = scope.logical_owned_bytes()?;
+        custody.adopt(held)?;
+        let payload = effect_attestation_digest(&self.audience, &observation, custody.work())?;
+        observation.proof = workload::record(
+            &self.runtime,
+            &self.id,
+            &self.audience,
+            &scope,
+            payload,
+            custody.work(),
+        )?;
+        custody.adopt(observation.proof.capacity() as u64)?;
+        drop(scope);
+        custody.relinquish(held)?;
         custody.transfer();
         Ok(observation)
     }
 }
 
 /// Reducer-side verifier for host-issued scopes.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct AuthorityVerifier {
     pub(in crate::core) id: String,
-    pub(in crate::core) key: [u8; 32],
+    public: std::sync::Arc<runtime_signing::PublicAuthority>,
+    admission: runtime_signing::AdmissionPort,
     pub(in crate::core) audience: Authority,
 }
+
+impl PartialEq for AuthorityVerifier {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.audience == other.audience
+            && self.public.metadata_key == other.public.metadata_key
+            && (std::sync::Arc::ptr_eq(&self.public, &other.public)
+                || *self.public.trust.read().expect("runtime trust poisoned")
+                    == *other.public.trust.read().expect("runtime trust poisoned"))
+    }
+}
+impl Eq for AuthorityVerifier {}
 
 impl std::fmt::Debug for AuthorityVerifier {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -425,6 +579,87 @@ impl std::fmt::Debug for AuthorityVerifier {
 }
 
 impl AuthorityVerifier {
+    /// Reject expired or revoked planning authority before any provider callback.
+    pub(crate) fn verify_effect_plan(
+        &self,
+        effect_id: EffectId,
+        effect: &EffectState,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<acyclic_auth::verify::VerifiedCapability> {
+        let event = effect
+            .planning
+            .as_ref()
+            .ok_or_else(|| Error::Unauthorized("effect has no planning workload".into()))?;
+        match &event.payload {
+            EventPayload::EffectPlanned {
+                effect_id: planned_id,
+                provider,
+                guarantee,
+                effect_kind,
+                request,
+                request_digest,
+                result_schema,
+                result_schema_digest,
+            } if *planned_id == effect_id
+                && provider == &effect.provider
+                && *guarantee == effect.guarantee
+                && effect_kind == &effect.effect_kind
+                && request == &effect.request
+                && request_digest == &effect.request_digest
+                && result_schema.as_ref() == &effect.result_schema
+                && result_schema_digest == &effect.result_schema_digest => {}
+            _ => {
+                return Err(Error::Unauthorized(
+                    "effect differs from its authenticated plan".into(),
+                ));
+            }
+        }
+        if !event.scope.capabilities.contains("effect:plan")
+            || !event
+                .scope
+                .capabilities
+                .contains(&capability::effect_provider(&effect.provider))
+        {
+            return Err(Error::Unauthorized(
+                "planning workload does not grant this provider".into(),
+            ));
+        }
+        workload::live_record(self, event, work)
+    }
+
+    /// Builds a verification-only owner from independently authenticated public configuration.
+    /// This value cannot admit events, issue workloads or sign checkpoints.
+    pub fn from_public(
+        id: String,
+        audience: Authority,
+        trust: acyclic_auth::trust::Snapshot,
+        checkpoint_key: [u8; 32],
+    ) -> Result<Self> {
+        audience.validate_with_work(&mut None)?;
+        if id != trust.account {
+            return Err(Error::Unauthorized(
+                "public authority account mismatch".into(),
+            ));
+        }
+        ed25519_dalek::VerifyingKey::from_bytes(&checkpoint_key)
+            .map_err(|_| Error::Unauthorized("invalid checkpoint verification key".into()))?;
+        Ok(Self {
+            id,
+            audience,
+            public: std::sync::Arc::new(runtime_signing::PublicAuthority {
+                trust: std::sync::RwLock::new(trust),
+                metadata_key: checkpoint_key,
+            }),
+            admission: runtime_signing::AdmissionPort::closed(),
+        })
+    }
+
+    /// Public checkpoint verification key, authenticated by the runtime configuration.
+    #[must_use]
+    pub fn public_checkpoint_key(&self) -> [u8; 32] {
+        self.public.metadata_key
+    }
+
     /// Returns the one aggregate this verifier is allowed to authenticate.
     #[must_use]
     pub const fn audience(&self) -> &Authority {
@@ -442,7 +677,8 @@ impl AuthorityVerifier {
         match work.as_deref_mut() {
             Some(work) => Ok(Self {
                 id: work.clone_text(&self.id)?,
-                key: self.key,
+                public: self.public.clone(),
+                admission: self.admission.clone(),
                 audience: work.clone_authority(&self.audience)?,
             }),
             None => Ok(self.clone()),
@@ -464,7 +700,7 @@ impl AuthorityVerifier {
         workload::verify(self, audience, scope, workload::now(), work).map(|_| ())
     }
 
-    pub(in crate::core) fn canonical_proof<T: Serialize>(
+    pub(in crate::core) fn canonical_digest<T: Serialize>(
         &self,
         domain: &[u8],
         value: &T,
@@ -480,7 +716,7 @@ impl AuthorityVerifier {
         if let Some(io) = quota.work().as_deref_mut() {
             io.hashed_bytes(domain.len() as u64 + 8 + bytes.len() as u64)?;
         }
-        let mut hasher = blake3::Hasher::new_keyed(&self.key);
+        let mut hasher = blake3::Hasher::new();
         hasher.update(domain);
         hasher.update(&(bytes.len() as u64).to_le_bytes());
         hasher.update(&bytes);
@@ -490,14 +726,55 @@ impl AuthorityVerifier {
         Ok(proof)
     }
 
+    pub(in crate::core) fn canonical_proof<T: Serialize>(
+        &self,
+        domain: &[u8],
+        value: &T,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<[u8; 64]> {
+        let digest = self.canonical_digest(domain, value, work)?;
+        self.admission.sign(&digest)
+    }
+
+    pub(in crate::core) fn verify_canonical_proof<T: Serialize>(
+        &self,
+        domain: &[u8],
+        value: &T,
+        proof: &[u8],
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        self.verify_metadata(&self.canonical_digest(domain, value, work)?, proof)
+    }
+
+    fn verify_metadata(&self, digest: &[u8; 32], proof: &[u8]) -> Result<()> {
+        let key = ed25519_dalek::VerifyingKey::from_bytes(&self.public.metadata_key)
+            .map_err(|_| Error::Unauthorized("invalid runtime verification key".into()))?;
+        let signature = ed25519_dalek::Signature::from_slice(proof)
+            .map_err(|_| Error::Unauthorized("invalid runtime signature".into()))?;
+        key.verify_strict(digest, &signature).map_err(|_| {
+            Error::Unauthorized("runtime signature does not authenticate this payload".into())
+        })
+    }
+
     pub(in crate::core) fn attest_event(
+        &self,
+        scope: &Scope,
+        event: &Event,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Vec<u8>> {
+        let digest = self.event_digest(event, work)?;
+        self.admission
+            .record(&self.id, &self.audience, scope, digest, work)
+    }
+
+    fn event_digest(
         &self,
         event: &Event,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<[u8; 32]> {
-        self.canonical_proof(
-            b"harness/v2/committed-event\0",
+        crate::executor::json::canonical_json_digest(
             &(
+                "harness/v2/committed-event",
                 &self.audience,
                 event.revision,
                 event.operation_id,
@@ -506,6 +783,7 @@ impl AuthorityVerifier {
                 &event.causal_parent,
                 &event.payload,
             ),
+            crate::store::default_projection_read_limits().maximum_bytes,
             work,
         )
     }
@@ -527,21 +805,32 @@ impl AuthorityVerifier {
             .map(|work| crate::executor::PreparationIo::from_native_work(&work.recheck_admitted()))
             .transpose()?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let expected = match recheck.as_ref() {
-            Some(io) => self.attest_event(event, &mut Some(&mut io.history_io()))?,
-            None => self.attest_event(event, work)?,
+        let verified = match recheck.as_ref() {
+            Some(io) => self.verify_event_record(event, &mut Some(&mut io.history_io())),
+            None => self.verify_event_record(event, work),
         };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let expected = self.attest_event(event, work)?;
-        if event.attestation != expected {
-            return Err(Error::Unauthorized(
-                "event admission attestation is invalid".into(),
-            ));
-        }
-        Ok(())
+        let verified = self.verify_event_record(event, work);
+        verified
     }
 
-    pub(crate) fn effect_history_root_proof_with_work(
+    fn verify_event_record(
+        &self,
+        event: &Event,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        let digest = self.event_digest(event, work)?;
+        workload::verify_record(
+            self,
+            &event.attestation,
+            digest,
+            Some(&event.scope),
+            &[],
+            work,
+        )
+    }
+
+    fn effect_history_root_digest_with_work(
         &self,
         revision: u64,
         canonical_digest: [u8; 32],
@@ -567,7 +856,7 @@ impl AuthorityVerifier {
             not(target_arch = "wasm32")
         ))]
         acyclic_differential::record(crate::test_support::EffectRootObservation::Hash(bytes));
-        let mut hasher = blake3::Hasher::new_keyed(&self.key);
+        let mut hasher = blake3::Hasher::new();
         hasher.update(domain);
         hasher.update(&[match self.audience.kind {
             AggregateKind::Agent => 1,
@@ -587,13 +876,38 @@ impl AuthorityVerifier {
         Ok(*hasher.finalize().as_bytes())
     }
 
-    pub(crate) fn fork_history_proof(
+    pub(crate) fn effect_history_root_proof_with_work(
+        &self,
+        revision: u64,
+        canonical: [u8; 32],
+        root: Option<[u8; 32]>,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<[u8; 64]> {
+        self.admission
+            .sign(&self.effect_history_root_digest_with_work(revision, canonical, root, work)?)
+    }
+
+    pub(crate) fn verify_effect_history_root_with_work(
+        &self,
+        revision: u64,
+        canonical: [u8; 32],
+        root: Option<[u8; 32]>,
+        proof: &[u8],
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        self.verify_metadata(
+            &self.effect_history_root_digest_with_work(revision, canonical, root, work)?,
+            proof,
+        )
+    }
+
+    fn fork_history_digest(
         &self,
         seed: &ForkSeed,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<[u8; 32]> {
         self.verify_audience(&seed.parent, work)?;
-        self.canonical_proof(
+        self.canonical_digest(
             b"harness/v2/fork-history-witness\0",
             &(
                 (
@@ -626,6 +940,23 @@ impl AuthorityVerifier {
         )
     }
 
+    pub(crate) fn fork_history_proof(
+        &self,
+        seed: &ForkSeed,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<[u8; 64]> {
+        self.admission.sign(&self.fork_history_digest(seed, work)?)
+    }
+
+    pub(crate) fn verify_fork_history_proof(
+        &self,
+        seed: &ForkSeed,
+        proof: &[u8],
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        self.verify_metadata(&self.fork_history_digest(seed, work)?, proof)
+    }
+
     #[cfg(feature = "filesystem")]
     pub(crate) fn fork_history_selection_proof_with_work(
         &self,
@@ -635,10 +966,11 @@ impl AuthorityVerifier {
         history_digest: [u8; 32],
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<[u8; 32]> {
-        self.canonical_proof(
+        self.canonical_digest(
             b"harness/v1/fork-history-selection\0",
             &(
                 &self.id,
+                self.public.metadata_key,
                 &self.audience,
                 revision,
                 through_sequence,
@@ -673,13 +1005,16 @@ impl AuthorityVerifier {
         observation: &EffectAttestation,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
-        let expected = effect_attestation_proof(&self.key, &self.audience, observation, work)?;
-        if observation.proof != expected {
-            return Err(Error::Unauthorized(
-                "effect observation attestation is invalid".into(),
-            ));
-        }
-        Ok(())
+        let digest = effect_attestation_digest(&self.audience, observation, work)?;
+        let provider = capability::effect_provider(&observation.provider);
+        workload::verify_record(
+            self,
+            &observation.proof,
+            digest,
+            None,
+            &["effect:run", &provider],
+            work,
+        )
     }
 }
 
@@ -688,8 +1023,7 @@ impl AuthorityVerifier {
 #[path = "effect_root_tests.rs"]
 pub(crate) mod effect_root_tests;
 
-fn effect_attestation_proof(
-    key: &[u8; 32],
+fn effect_attestation_digest(
     audience: &Authority,
     observation: &EffectAttestation,
     work: &mut Option<&mut dyn HistoryIo>,
@@ -713,7 +1047,7 @@ fn effect_attestation_proof(
     if let Some(work) = custody.work().as_deref_mut() {
         work.hashed_bytes(bytes.len() as u64)?;
     }
-    let proof = *blake3::keyed_hash(key, &bytes).as_bytes();
+    let proof = *blake3::hash(&bytes).as_bytes();
     drop(bytes);
     Ok(proof)
 }

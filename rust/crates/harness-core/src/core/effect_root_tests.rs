@@ -6,16 +6,20 @@ use proptest::prelude::*;
 pub(crate) use crate::test_support::EffectRootObservation as Observation;
 
 pub(crate) fn verifier() -> AuthorityVerifier {
-    AuthorityIssuer::new(
-        "effect-root-proof",
-        [91; 32],
-        Authority {
-            kind: AggregateKind::Task,
-            id: "effect-root-proof".into(),
-        },
-    )
-    .verifier(&mut None)
-    .unwrap()
+    static RUNTIME: std::sync::OnceLock<AuthorityIssuer> = std::sync::OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            AuthorityIssuer::new(
+                "effect-root-proof",
+                [91; 32],
+                Authority {
+                    kind: AggregateKind::Task,
+                    id: "effect-root-proof".into(),
+                },
+            )
+        })
+        .verifier(&mut None)
+        .unwrap()
 }
 
 // Buffered baseline: initialized independently, with no candidate codec or state.
@@ -24,7 +28,7 @@ pub(crate) fn reference(
     revision: u64,
     canonical: [u8; 32],
     root: Option<[u8; 32]>,
-) -> [u8; 32] {
+) -> [u8; 64] {
     let mut bytes = b"harness/v2/effect-history-root\0".to_vec();
     bytes.push(5);
     for text in [v.id.as_bytes(), v.audience.id.as_bytes()] {
@@ -36,7 +40,12 @@ pub(crate) fn reference(
     bytes.push(u8::from(root.is_some()));
     bytes.extend(root.unwrap_or([0; 32]));
     differential::record(Observation::Hash(bytes.len() as u64));
-    *blake3::keyed_hash(&v.key, &bytes).as_bytes()
+    use ed25519_dalek::Signer;
+    let signer = ed25519_dalek::SigningKey::from_bytes(&blake3::derive_key(
+        "acyclic.harness.metadata.v1",
+        &[91; 32],
+    ));
+    signer.sign(blake3::hash(&bytes).as_bytes()).to_bytes()
 }
 
 fn measured(
@@ -45,17 +54,20 @@ fn measured(
     canonical: [u8; 32],
     root: Option<[u8; 32]>,
     decimal: bool,
-) -> ([u8; 32], WorkCounters) {
+) -> (Vec<u8>, WorkCounters) {
     let io =
         crate::filesystem::PreparationIo::from_budget(BOUNDARY_BUDGET, &CancellationToken::new())
             .unwrap();
     let mut observer = &io;
     let proof = if decimal {
         old_proof(v, revision, canonical, root, &mut Some(&mut observer))
+            .unwrap()
+            .to_vec()
     } else {
         v.effect_history_root_proof_with_work(revision, canonical, root, &mut Some(&mut observer))
-    }
-    .unwrap();
+            .unwrap()
+            .to_vec()
+    };
     assert_eq!(io.owned_bytes().unwrap(), 0);
     (proof, io.receipt())
 }
@@ -85,7 +97,7 @@ proptest! {
         let [(baseline, baseline_trace), (candidate, candidate_trace)] = differential::pair::<_, _, Observation>(
             verifier,
             |v, baseline| if baseline {
-                (reference(&v, revision, canonical, root), None)
+                (reference(&v, revision, canonical, root).to_vec(), None)
             } else {
                 let (proof, work) = measured(&v, revision, canonical, root, false);
                 assert_exact_work(&v, work);
@@ -122,11 +134,21 @@ pub(crate) fn old_proof(
     let mut quota = CodecQuota::new(work, 0)?;
     let path = v.audience.stream_path(quota.work())?;
     quota.adopt(path.capacity() as u64)?;
-    v.canonical_proof(
-        b"harness/v1/effect-history-root\0",
+    let domain = b"harness/v1/effect-history-root\0";
+    let bytes = crate::store::history::canonical_bytes_with_work(
         &(&v.id, &v.audience, &path, revision, canonical, root),
+        crate::store::default_projection_read_limits().maximum_bytes,
         quota.work(),
-    )
+    )?;
+    quota.adopt(bytes.capacity() as u64)?;
+    if let Some(io) = quota.work().as_deref_mut() {
+        io.hashed_bytes(domain.len() as u64 + 8 + bytes.len() as u64)?;
+    }
+    let mut hasher = blake3::Hasher::new_keyed(&[91; 32]);
+    hasher.update(domain);
+    hasher.update(&(bytes.len() as u64).to_le_bytes());
+    hasher.update(&bytes);
+    Ok(*hasher.finalize().as_bytes())
 }
 
 #[test]

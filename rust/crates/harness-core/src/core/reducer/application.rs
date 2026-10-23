@@ -1,5 +1,31 @@
 use super::*;
 impl Reducer {
+    pub(in crate::core) fn apply_authenticated_payload(
+        &mut self,
+        event: &Event,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        let planning = if matches!(event.payload, EventPayload::EffectPlanned { .. }) {
+            Some(
+                CodecQuota::produce(work, |quota| {
+                    copying::copy_boxed(event, quota, copying::copy_event)
+                })?
+                .0,
+            )
+        } else {
+            None
+        };
+        self.apply_payload_with_work(&event.payload, event.revision, work)?;
+        if let EventPayload::EffectPlanned { effect_id, .. } = event.payload {
+            self.projection
+                .effects
+                .get_mut(&effect_id)
+                .ok_or_else(|| Error::Invalid("planned effect was not materialized".into()))?
+                .planning = planning;
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_lines, reason = "one arm per event")]
     pub(in crate::core) fn apply_payload_with_work(
         &mut self,
@@ -172,12 +198,13 @@ impl Reducer {
                     provider: provider.clone(),
                     guarantee: *guarantee,
                     effect_kind: effect_kind.clone(),
-                    request: request.as_ref().clone(),
+                    request: request.clone(),
                     request_digest: *request_digest,
                     result_schema: result_schema.as_ref().clone(),
                     result_schema_digest: *result_schema_digest,
                     status: EffectStatus::Planned,
                     attempts: Vec::new(),
+                    planning: None,
                 };
                 self.projection.effects.insert(*effect_id, effect);
             }

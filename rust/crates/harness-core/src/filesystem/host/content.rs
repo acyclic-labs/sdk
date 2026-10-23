@@ -70,6 +70,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 io,
             )
             .await?;
+        grant.recheck(io)?;
         Ok(observed.map(|(file, _)| file))
     }
 

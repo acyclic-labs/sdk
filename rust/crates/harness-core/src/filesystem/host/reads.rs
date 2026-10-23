@@ -50,15 +50,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
             &unmeasured
         };
-        self.read_file_with_access(
-            grant.policy_scope(),
-            reference,
-            maximum_bytes,
-            true,
-            None,
-            io,
-        )
-        .await
+        let bytes = self
+            .read_file_with_access(
+                grant.policy_scope(),
+                reference,
+                maximum_bytes,
+                true,
+                None,
+                io,
+            )
+            .await?;
+        grant.recheck(Some(io))?;
+        Ok(bytes)
     }
 
     /// Resolves a private file and verifies its bytes with optional original IO.
@@ -193,6 +196,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             hold.into_retained()?;
         }
         super::super::access::require_current(&workspace, &view.0, io).await?;
+        grant.recheck(Some(io))?;
         Ok((reference.0, bytes.0, publication))
     }
 
@@ -273,6 +277,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         drop(reference);
         drop(reference_hold);
         super::super::access::require_current(&workspace, &view.0, io).await?;
+        grant.recheck(Some(io))?;
         Ok(chunk.bytes)
     }
 

@@ -374,7 +374,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     history.conversation(),
                     &mut work,
                 )?;
-                report.history_witness = seed.history_witness;
+                report.history_witness = seed.history_witness.clone();
             }
             host.bind_fork_seed(&seed, self.journal_limit(MAX_REQUEST_BYTES), io, task)
                 .await?;

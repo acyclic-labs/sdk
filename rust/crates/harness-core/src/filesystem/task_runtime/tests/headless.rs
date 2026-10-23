@@ -3,17 +3,29 @@ use crate::conversation::{ContentGrant, FileRef};
 use crate::runtime::TaskSpawner as _;
 
 #[tokio::test]
-async fn fork_source_authority_is_derived_by_the_runtime_and_rejects_foreign_roots_and_stale_leases() -> Result<()> {
+async fn fork_source_authority_is_derived_by_the_runtime_and_rejects_foreign_roots_and_stale_leases()
+-> Result<()> {
     let mut fixture = Fixture::new().await?;
     let grants = Capabilities::new(fixture.scope.grants().iter().chain(["tool:call:spawn"]));
-    fixture.signed = fixture.issuer.issue(
-        "owner", &grants, fixture.signed.agent(), None, &mut None,
+    fixture.signed =
+        fixture
+            .issuer
+            .issue("owner", &grants, fixture.signed.agent(), None, &mut None)?;
+    fixture.scope = RuntimeScope::new(grants.clone(), Limits::default())?.with_run_limits(
+        TaskRunLimits {
+            deadline_epoch_ms: Some(20),
+            ..Default::default()
+        },
+        &mut None,
     )?;
-    fixture.scope = RuntimeScope::new(grants.clone(), Limits::default())?
-        .with_run_limits(TaskRunLimits { deadline_epoch_ms: Some(20), ..Default::default() }, &mut None)?;
     let foreign = AuthorityIssuer::new("foreign", [33; 32], fixture.issuer.audience().clone());
-    assert!(matches!(runtime(&fixture).await?.with_authority_custodian(&foreign), Err(Error::Unauthorized(_))));
-    let runtime = runtime(&fixture).await?.with_authority_custodian(&fixture.issuer)?;
+    assert!(matches!(
+        runtime(&fixture).await?.with_authority_custodian(&foreign),
+        Err(Error::Unauthorized(_))
+    ));
+    let runtime = runtime(&fixture)
+        .await?
+        .with_authority_custodian(&fixture.issuer)?;
     let lease = fixture.admit(&runtime).await?;
     runtime.task_host().start_task(&lease, &mut None).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
@@ -22,10 +34,28 @@ async fn fork_source_authority_is_derived_by_the_runtime_and_rejects_foreign_roo
     forged.reservation_id = "forged".into();
     assert!(runtime.fork_source_scope(task, forged).await.is_err());
     let signed = runtime.fork_source_scope(task, fence.clone()).await?;
-    fixture.issuer.verifier(&mut None)?.verify(&signed, &mut None)?;
+    fixture
+        .issuer
+        .verifier(&mut None)?
+        .verify(&signed, &mut None)?;
     assert_eq!(signed.agent(), fixture.signed.agent());
     assert_eq!(signed.capabilities(), &grants);
     fixture.clock.0.store(1000, Ordering::SeqCst);
+    assert!(
+        runtime
+            .fork_source_scope(task, fence.clone())
+            .await
+            .is_err()
+    );
+    fixture.clock.0.store(10, Ordering::SeqCst);
+    fixture.issuer.revoke_workload(&fixture.signed)?;
+    assert!(
+        fixture
+            .issuer
+            .verifier(&mut None)?
+            .verify(&signed, &mut None)
+            .is_err()
+    );
     assert!(runtime.fork_source_scope(task, fence).await.is_err());
     Ok(())
 }

@@ -51,7 +51,7 @@ pub struct ForkSeed {
     pub reference_grants: Vec<ReferenceGrant>,
     /// Mandatory issuer proof when the selected prefix is no longer resident.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub history_witness: Option<[u8; 32]>,
+    pub history_witness: Option<Vec<u8>>,
     /// Exact published attachment lists.
     pub attachment_manifests: Vec<FileRef>,
     /// Optional provider-attested common boundary.

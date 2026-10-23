@@ -40,7 +40,7 @@ impl Snapshot {
                 .projection
                 .copy(conversation, self.projection.bindings.clone()),
             state_digest: self.state_digest,
-            attestation: self.attestation,
+            attestation: copying::copy_copy_vector(&self.attestation, &mut quota)?,
         };
         quota.transfer();
         Ok(snapshot)
@@ -125,18 +125,22 @@ impl Reducer {
                 .collect(),
             projection: self.projection.copy(conversation, bindings),
             state_digest: [0; 32],
-            attestation: [0; 32],
+            attestation: Vec::new(),
         };
         snapshot.state_digest = snapshot.digest_with_work(quota.work())?;
-        snapshot.attestation = self.authority_verifier.canonical_proof(
-            b"harness/v6/reducer-checkpoint\0",
-            &(
-                &self.authority_verifier.id,
-                &self.authority_verifier.audience,
-                snapshot.state_digest,
-            ),
-            quota.work(),
-        )?;
+        quota.replace(ownership::owned_sum([quota.retained(), 64])?)?;
+        snapshot.attestation = self
+            .authority_verifier
+            .canonical_proof(
+                b"harness/v6/reducer-checkpoint\0",
+                &(
+                    &self.authority_verifier.id,
+                    &self.authority_verifier.audience,
+                    snapshot.state_digest,
+                ),
+                quota.work(),
+            )?
+            .to_vec();
         let retained = quota.retained();
         quota.transfer();
         Ok((snapshot, retained))

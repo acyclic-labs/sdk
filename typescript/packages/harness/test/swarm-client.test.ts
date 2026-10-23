@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test";
 import { SwarmClient, WasmStream, initializeClientQueries } from "../src/client-query.js";
 import { exerciseSwarm, limits, viewLimits } from "./swarm-client.scenario.js";
+import { bindLocalSession } from "./session-authority.js";
 
 test("memory volumes use the production swarm pool and file fold through WASM", async () => {
   await initializeClientQueries();
   const stream = new WasmStream();
+  await bindLocalSession(stream);
   try { expect(await exerciseSwarm(stream)).toEqual({ agents: 2, snapshots: 2, textDeltas: 1, recovered: false }); }
   finally { stream.free(); }
 });

@@ -36,7 +36,7 @@ proptest::proptest! {
             seed.resources.retain(|capture| !matches!(capture.revision, ResourceRevision::History(_)));
         }
         seed.inherited_through_sequence = through;
-        seed.history_witness = witness.then_some([1; 32]);
+        seed.history_witness = witness.then_some(vec![1; 64]);
         let expected = through == 0 && match (kinds[parent], kinds[child]) {
             (AggregateKind::Conversation, AggregateKind::Conversation) => include_history,
             (AggregateKind::Task, AggregateKind::Task) => !include_history && !witness,
@@ -258,7 +258,7 @@ fn fork_history_must_be_exact_parent_prefix() -> Result<()> {
         child_result_volume: None,
         child_result_generation: None,
         summary: None,
-        history_witness: seed.history_witness,
+        history_witness: seed.history_witness.clone(),
         inherited_context: Vec::new(),
         shared_grants: Vec::new(),
         reference_grants: Vec::new(),

@@ -17,6 +17,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
             &owned
         };
+        grant.recheck(Some(io))?;
         let scope = grant.policy_scope();
         let label = crate::core::filesystem_scope_label(
             scope.capabilities(),

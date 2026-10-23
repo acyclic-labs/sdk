@@ -419,6 +419,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     "upload identity belongs to different content",
                 ));
             }
+            grant.recheck(io)?;
             return Ok(reference);
         }
         if expected_generation.is_some_and(|expected| expected != &authorized_generation.0) {
@@ -470,7 +471,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let generation = self
             .apply_authorized_generation(
                 &workspace,
-                policy_fence,
+                (policy_fence, grant),
                 &mutations,
                 IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?),
                 io,
@@ -504,6 +505,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }?;
         self.read_retained_file(&generation, &reference, maximum_bytes, io)
             .await?;
+        grant.recheck(io)?;
         Ok(reference)
     }
     async fn read_retained_file(
