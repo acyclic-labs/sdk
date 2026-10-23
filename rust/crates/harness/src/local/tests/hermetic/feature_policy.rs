@@ -224,8 +224,8 @@ fn read_runtime(path: &std::path::Path) -> Result<String, String> {
 fn runtime_files(
     read: impl Fn(&std::path::Path) -> Result<String, String>,
 ) -> Result<std::collections::BTreeMap<std::path::PathBuf, (String, Fixtures)>, String> {
-    let root = std::path::Path::new(crate::build_metadata::MANIFEST_DIR);
-    let core = std::path::Path::new(acyclic_harness_core::build_metadata::MANIFEST_DIR);
+    let root = acyclic_test_support::source_path("rust/crates/harness");
+    let core = acyclic_test_support::source_path("rust/crates/harness-core");
     modules::sources(
         &[
             (root.join("src/local/mod.rs"), Fixtures::Local),
@@ -263,7 +263,7 @@ fn planted_violations_in_every_runtime_unit_are_rejected() {
         assert_eq!(policy(&planted, fixtures).violations, 1);
     }
     let settings = read_runtime(
-        &std::path::Path::new(acyclic_harness_core::build_metadata::MANIFEST_DIR)
+        &acyclic_test_support::source_path("rust/crates/harness-core")
             .join("src/native_settings.rs"),
     )
     .expect("native settings source must be readable");

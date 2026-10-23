@@ -1,9 +1,8 @@
 use crate::{TestResult, drivers, scenario};
 use serde_json::{Value, json};
-use std::path::Path;
 
 async fn baseline(path: &str) -> TestResult<Value> {
-    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
+    let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
     let case = scenario::load_value(&root, &root.join(path))?;
     drivers::run(case.clone()).await?;
     Ok(case)

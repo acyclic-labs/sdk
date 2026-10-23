@@ -1,4 +1,4 @@
-use super::{ACYCLIC, command};
+use super::{acyclic, command};
 use sha2::{Digest as _, Sha256};
 use std::{
     collections::BTreeMap,
@@ -61,7 +61,7 @@ pub fn write_qualification_receipt(host: &str, host_binary: &Path, invariants: &
         "acyclic": {
             "package": env!("CARGO_PKG_NAME"),
             "version": env!("CARGO_PKG_VERSION"),
-            "executable_sha256": file_sha256(Path::new(ACYCLIC)),
+            "executable_sha256": file_sha256(&acyclic()),
         },
         "host": {
             "name": host,
@@ -89,7 +89,7 @@ pub fn write_qualification_receipt(host: &str, host_binary: &Path, invariants: &
                 other => other,
             },
         },
-        "scenario_corpus_sha256": tree_digest(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests")),
+        "scenario_corpus_sha256": tree_digest(&acyclic_test_support::source_path("plugin").join("tests")),
         "satisfied_invariants": invariants,
         "passed": true,
     });

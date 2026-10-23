@@ -255,31 +255,11 @@ mod tests {
 
     #[test]
     fn module_directories_match_the_compiler() {
-        for (declaration, child, leaf) in [
-            ("mod child;", "root/child.rs", "root/child/leaf.rs"),
-            ("mod child;", "root/child/mod.rs", "root/child/leaf.rs"),
-            ("#[path = \"hidden.rs\"] mod child;", "hidden.rs", "leaf.rs"),
-            (
-                "mod nested { mod child; }",
-                "root/nested/child.rs",
-                "root/nested/child/leaf.rs",
-            ),
-            (
-                "mod nested { #[path = \"hidden.rs\"] mod child; }",
-                "root/nested/hidden.rs",
-                "root/nested/leaf.rs",
-            ),
-            (
-                "#[path = \"chosen\"] mod nested { mod child; }",
-                "chosen/child.rs",
-                "chosen/child/leaf.rs",
-            ),
-            (
-                "#[path = \"alternate/mod.rs\"] mod child;",
-                "alternate/mod.rs",
-                "alternate/leaf.rs",
-            ),
-        ] {
+        for ((declaration, child, leaf), compiler_reached) in
+            acyclic_test_support::module_cases::CASES
+                .into_iter()
+                .zip(acyclic_test_support::MODULE_COMPILER_REACHED)
+        {
             let directory = tempfile::tempdir().unwrap();
             let root = directory.path();
             for (file, text) in [
@@ -295,25 +275,6 @@ mod tests {
                 std::fs::create_dir_all(file.parent().unwrap()).unwrap();
                 std::fs::write(file, text).unwrap();
             }
-            let output = std::process::Command::new("rustc")
-                .args([
-                    "--edition=2024",
-                    "--crate-type=lib",
-                    "--emit=metadata",
-                    "--cfg",
-                    "feature=\"test-support\"",
-                ])
-                .arg(root.join("lib.rs"))
-                .arg("-o")
-                .arg(root.join("proof.rmeta"))
-                .output()
-                .expect("module differential requires the build toolchain");
-            assert!(!output.status.success());
-            let errors = String::from_utf8_lossy(&output.stderr);
-            assert!(
-                errors.contains("policy descendant reached"),
-                "{declaration}: {errors}"
-            );
             let found = sources(&[(root.join("root.rs"), Fixtures::None)], |path| {
                 std::fs::read_to_string(path).map_err(|error| error.to_string())
             });
@@ -324,7 +285,7 @@ mod tests {
                     .values()
                     .map(|(source, fixtures)| policy(source, *fixtures).violations)
                     .sum::<usize>(),
-                1
+                usize::from(compiler_reached)
             );
         }
     }

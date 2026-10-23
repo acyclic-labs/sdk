@@ -94,7 +94,7 @@ proptest! {
 
 #[test]
 fn checked_in_saved_record_corpus() {
-    let directory = std::path::Path::new(crate::build_metadata::MANIFEST_DIR)
+    let directory = acyclic_test_support::source_path("rust/crates/harness-core")
         .join("../harness-fuzz/corpus/recorded_invocation");
     for entry in std::fs::read_dir(directory).unwrap() {
         input::check(&std::fs::read(entry.unwrap().path()).unwrap());

@@ -117,8 +117,7 @@ fn local_schema_requires_outcome_frames_files_and_known_fields() -> crate::TestR
 
 #[tokio::test]
 async fn read_family_rejects_a_valid_but_wrong_selected_range() -> crate::TestResult {
-    let root =
-        std::path::Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
+    let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
     let baseline =
         super::scenario::load_value(&root, &root.join("default-tools/read/middle.json"))?;
     super::drivers::run(baseline.clone()).await?;
@@ -217,8 +216,7 @@ async fn fs_family_rejects_executing_a_rejected_command() -> crate::TestResult {
 
 #[tokio::test]
 async fn fs_family_rejects_bypassing_schema_rejection() -> crate::TestResult {
-    let root =
-        std::path::Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
+    let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
     let baseline = super::scenario::load_value(&root, &root.join("default-tools/fs/empty.json"))?;
     super::drivers::run(baseline.clone()).await?;
     let mut broken = baseline;
@@ -231,8 +229,7 @@ async fn fs_family_rejects_bypassing_schema_rejection() -> crate::TestResult {
 }
 
 async fn reject_changed_command(path: &str, command: &str) -> crate::TestResult {
-    let root =
-        std::path::Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
+    let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
     let baseline = super::scenario::load_value(&root, &root.join(path))?;
     super::drivers::run(baseline.clone()).await?;
     let mut broken = baseline;

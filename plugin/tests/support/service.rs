@@ -1,5 +1,5 @@
 use super::process::try_output_with_timeout;
-use super::{ACYCLIC, BoundedOutput, command, isolated_state};
+use super::{BoundedOutput, acyclic, command, isolated_state};
 use acyclic_native_runtime::ProcessTree;
 use serde_json::Value;
 use std::{
@@ -105,7 +105,7 @@ impl ServiceGuard {
         // Linux FUSE teardown.
         #[cfg(target_os = "linux")]
         self.terminate_clients()?;
-        let mut drain = command(ACYCLIC);
+        let mut drain = command(acyclic());
         drain.arg("__service-drain").arg(&identity);
         isolated_state(&mut drain, &self.home);
         let BoundedOutput {
@@ -139,7 +139,7 @@ impl ServiceGuard {
         {
             return Ok(false);
         }
-        let mut cleanup = command(ACYCLIC);
+        let mut cleanup = command(acyclic());
         cleanup.arg("__service-drain").arg(expected);
         isolated_state(&mut cleanup, &self.home);
         let BoundedOutput {
@@ -255,7 +255,7 @@ pub fn assert_service_absent(home: &Path) -> Result<(), String> {
 }
 
 fn service_status(home: &Path) -> Result<Value, String> {
-    let mut status = command(ACYCLIC);
+    let mut status = command(acyclic());
     status.arg("__service-status");
     isolated_state(&mut status, home);
     let BoundedOutput {

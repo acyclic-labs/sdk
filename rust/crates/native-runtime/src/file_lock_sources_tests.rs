@@ -7,7 +7,6 @@
 //! as `file.try_lock()` are type-checked instead by the `disallowed-methods`
 //! entries in each `clippy.toml`.
 use std::collections::BTreeMap;
-use std::path::Path;
 
 /// Source trees scanned from the repository root.
 const ROOTS: [&str; 7] = [
@@ -94,7 +93,7 @@ fn violations<'a>(files: impl IntoIterator<Item = (String, &'a str)>) -> Vec<Str
 fn sources() -> &'static [(String, String)] {
     static FILES: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
     FILES.get_or_init(|| {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let root = acyclic_test_support::source_path("");
         let mut files = Vec::new();
         let mut pending = ROOTS.map(|name| root.join(name)).to_vec();
         while let Some(directory) = pending.pop() {

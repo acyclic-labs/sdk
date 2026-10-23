@@ -11,8 +11,6 @@ use std::{
 
 const MAX_CAPTURED_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
 
-pub const ACYCLIC: &str = env!("CARGO_BIN_EXE_acyclic");
-
 pub fn command(program: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new(program);
     command.env_remove("ACYCLIC_INSTALL_TEST_CRASH");

@@ -33,7 +33,7 @@ async fn filesystem<P: StreamProvider, O: ObjectsProvider + 'static>(
 fn cases() -> TestResult<Vec<(PathBuf, Value)>> {
     let root = acyclic_harness::test_support::environment("CARGO_MANIFEST_DIR")
         .map_or_else(
-            || PathBuf::from(acyclic_harness::build_metadata::MANIFEST_DIR),
+            || acyclic_test_support::source_path("rust/crates/harness"),
             PathBuf::from,
         )
         .join("tests/scenarios");

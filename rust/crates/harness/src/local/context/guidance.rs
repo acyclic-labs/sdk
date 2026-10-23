@@ -43,7 +43,7 @@ mod tests {
 
     #[test]
     fn file_guidance_corpus() -> Result<()> {
-        let corpus = Path::new(crate::build_metadata::MANIFEST_DIR)
+        let corpus = acyclic_test_support::source_path("rust/crates/harness")
             .join("fuzz-context/corpus/file_guidance");
         for entry in std::fs::read_dir(corpus).map_err(storage)? {
             fuzz_input::check(&std::fs::read(entry.map_err(storage)?.path()).map_err(storage)?);

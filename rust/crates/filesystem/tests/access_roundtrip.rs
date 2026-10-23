@@ -31,7 +31,9 @@ proptest! {
 
 #[test]
 fn access_fuzz_corpus() -> Result<(), Box<dyn std::error::Error>> {
-    for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/fuzz/corpus/access"))? {
+    for entry in std::fs::read_dir(acyclic_test_support::source_path(
+        "rust/crates/filesystem/fuzz/corpus/access",
+    ))? {
         let entry = entry?;
         let bytes = std::fs::read(entry.path())?;
         if entry.file_name() != "scope" && entry.file_name() != "malformed" {

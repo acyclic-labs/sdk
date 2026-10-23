@@ -26,7 +26,7 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 use support::{
-    ACYCLIC, ServiceGuard, command, isolated_state, output_with_stdin_timeout, test_tempdir,
+    ServiceGuard, acyclic, command, isolated_state, output_with_stdin_timeout, test_tempdir,
 };
 
 /// The host protocol these scenarios drive; its hook contract matches every
@@ -116,7 +116,7 @@ impl Session {
     }
 
     fn output(&self, arguments: &[&str], cwd: &Path, input: &[u8]) -> std::process::Output {
-        let mut run = command(ACYCLIC);
+        let mut run = command(acyclic());
         run.args(arguments).current_dir(cwd);
         isolated_state(&mut run, self.home.path());
         let bounded =

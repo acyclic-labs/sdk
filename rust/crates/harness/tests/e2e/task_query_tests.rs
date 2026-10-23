@@ -6,10 +6,10 @@ use acyclic_harness::task_volume::Channel;
 use futures::FutureExt as _;
 use proptest::prelude::*;
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, path::Path};
+use std::collections::BTreeMap;
 
 fn fixture(name: &str) -> TestResult<Value> {
-    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
+    let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
     Ok(super::scenario::load_value(
         &root,
         &root.join(format!("task-query/{name}.json")),
@@ -207,7 +207,7 @@ proptest! {
 
 #[test]
 fn task_query_codec_seed_corpus() -> TestResult {
-    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR)
+    let root = acyclic_test_support::source_path("rust/crates/harness")
         .join("../harness-fuzz/corpus/task_query_case");
     for entry in std::fs::read_dir(root)? {
         let bytes = std::fs::read(entry?.path())?;

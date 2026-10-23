@@ -16,7 +16,7 @@ use std::os::windows::process::CommandExt as _;
 use std::path::Path;
 use std::time::Duration;
 use support::{
-    ACYCLIC, BoundedOutput, PackagedPlugin, RequestFingerprint, ScriptedProvider, ServiceGuard,
+    BoundedOutput, PackagedPlugin, RequestFingerprint, ScriptedProvider, ServiceGuard, acyclic,
     assert_service_absent, command, installed_host_binary, isolated_state, make_read_only,
     make_writable, output_after_provider_admission, output_with_stdin, output_with_stdin_timeout,
     output_with_timeout, package_production_plugin, test_tempdir, write_qualification_receipt,
@@ -33,7 +33,7 @@ fn service_client_jobs_remain_owned_until_authenticated_drain() {
     let mut service = ServiceGuard::new(temporary.path());
     let mut identity = None;
     for _ in 0..2 {
-        let mut client = command(ACYCLIC);
+        let mut client = command(acyclic());
         client.args(["agents", "--json"]);
         isolated_state(&mut client, temporary.path());
         let bounded = output_with_stdin_timeout(&mut client, b"", CLIENT_DEADLINE);
@@ -79,7 +79,7 @@ fn hook_failure_allows_the_host_to_continue_with_a_visible_notice() {
     let temporary = test_tempdir("pre-tool-");
     let unusable_state = temporary.path().join("not-a-directory");
     fs::write(&unusable_state, b"file").expect("unusable state root");
-    let mut hook = command(ACYCLIC);
+    let mut hook = command(acyclic());
     hook.args(["__hook", "codex", "PreToolUse"]);
     isolated_state(&mut hook, temporary.path());
     if cfg!(windows) {
@@ -105,7 +105,7 @@ fn hook_failure_allows_the_host_to_continue_with_a_visible_notice() {
             .is_some_and(|message| message.contains("without an isolated workspace"))
     );
 
-    let mut non_blocking = command(ACYCLIC);
+    let mut non_blocking = command(acyclic());
     non_blocking.args(["__hook", "codex", "SessionStart"]);
     isolated_state(&mut non_blocking, temporary.path());
     if cfg!(windows) {
@@ -127,7 +127,7 @@ fn hook_failure_allows_the_host_to_continue_with_a_visible_notice() {
 fn unreachable_service_output(root: &Path, arguments: &[&str], input: &[u8]) -> Value {
     let unusable_state = root.join("not-a-directory");
     fs::write(&unusable_state, b"file").expect("unusable state root");
-    let mut process = command(ACYCLIC);
+    let mut process = command(acyclic());
     process.args(arguments);
     isolated_state(&mut process, root);
     process.env(

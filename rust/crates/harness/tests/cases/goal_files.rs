@@ -14,7 +14,7 @@ mod goal_parser_input;
 
 #[test]
 fn checked_in_fuzz_corpus() -> Result<()> {
-    let directory = std::path::Path::new(acyclic_harness::build_metadata::MANIFEST_DIR)
+    let directory = acyclic_test_support::source_path("rust/crates/harness")
         .join("../harness-fuzz/corpus/goal_parser");
     let mut seeds = 0;
     for entry in std::fs::read_dir(directory).map_err(|error| Error::Storage(error.to_string()))? {

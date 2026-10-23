@@ -51,15 +51,15 @@ mod tests {
         fn paths_round_trip_inside_the_workspace(
             names in prop::collection::vec("[a-zA-Z0-9_-]{1,20}", 1..8),
         ) {
-            let mount = Path::new(crate::build_metadata::MANIFEST_DIR);
+            let mount = std::env::temp_dir();
             let path = names.join("/");
-            let canonical = workspace_path_argument(mount, &path).unwrap();
+            let canonical = workspace_path_argument(&mount, &path).unwrap();
             prop_assert_eq!(&canonical, &format!("/{path}"));
             let absolute = mount.join(&path);
-            prop_assert_eq!(workspace_path_argument(mount, absolute.to_str().unwrap()).unwrap(), canonical);
-            prop_assert!(workspace_path_argument(mount, &format!("{path}/../escape")).is_err(),
+            prop_assert_eq!(workspace_path_argument(&mount, absolute.to_str().unwrap()).unwrap(), canonical);
+            prop_assert!(workspace_path_argument(&mount, &format!("{path}/../escape")).is_err(),
                 "parent traversal accepted");
-            prop_assert!(workspace_path_argument(mount, &format!("{path}\0suffix")).is_err(),
+            prop_assert!(workspace_path_argument(&mount, &format!("{path}\0suffix")).is_err(),
                 "NUL accepted");
         }
     }

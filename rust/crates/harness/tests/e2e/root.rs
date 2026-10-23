@@ -65,7 +65,6 @@ use drivers::run;
 use futures::{StreamExt as _, stream};
 use scenario::Scenario;
 use std::{
-    path::Path,
     sync::atomic::{AtomicUsize, Ordering},
     time::Instant,
 };
@@ -139,7 +138,7 @@ async fn scenario_oracles_reject_wrong_text_context_events_files_and_unused_turn
 
 #[tokio::test]
 async fn summary_oracles_reject_ignored_mode_text_result_context_and_recovery() -> TestResult {
-    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
+    let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
     let baseline = root.join("summary/exact-capacity.json");
     run(Scenario::load(&root, &baseline)?).await?;
     for field in ["mode", "text", "result", "context", "budget"] {
@@ -172,7 +171,7 @@ async fn summary_oracles_reject_ignored_mode_text_result_context_and_recovery() 
 
 #[tokio::test]
 async fn compaction_oracles_reject_ignored_context_capacity_policy_and_accounting() -> TestResult {
-    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
+    let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
     let baseline = root.join("compaction/threshold.json");
     run(Scenario::load(&root, &baseline)?).await?;
     for field in ["context", "capacity", "policy", "accounting", "output"] {
@@ -197,7 +196,7 @@ async fn compaction_oracles_reject_ignored_context_capacity_policy_and_accountin
 
 #[tokio::test]
 async fn compaction_oracles_check_the_attached_recovered_summary() -> TestResult {
-    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
+    let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
     let baseline = root.join("compaction/recover-summary.json");
     run(Scenario::load(&root, &baseline)?).await?;
     for files in [
@@ -220,7 +219,7 @@ async fn compaction_oracles_check_the_attached_recovered_summary() -> TestResult
 
 #[tokio::test]
 async fn recovery_oracles_reject_wrong_prefixes_replies_counts_and_attempts() -> TestResult {
-    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
+    let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
     let baseline = root.join("recovery/midstream.json");
     run(Scenario::load(&root, &baseline)?).await?;
     for field in ["prefix", "continuation", "count", "resume", "unused"] {
@@ -253,7 +252,7 @@ async fn recovery_oracles_reject_wrong_prefixes_replies_counts_and_attempts() ->
 #[tokio::test]
 async fn unrecoverable_scenario_oracles_reject_uncertain_outcomes_and_extra_dispatches()
 -> TestResult {
-    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
+    let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
     for relative in [
         "recovery/unrecoverable.json",
         "summary/unrecoverable.json",
@@ -372,12 +371,12 @@ where
 }
 
 fn run_scenarios(started: Instant) -> TestResult {
-    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
+    let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
     let mut paths = Vec::new();
     discover(&root, &mut paths)?;
     #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
     let local_root =
-        Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/local-scenarios");
+        acyclic_test_support::source_path("rust/crates/harness").join("tests/local-scenarios");
     #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
     discover(&local_root, &mut paths)?;
     paths.sort();
@@ -441,7 +440,7 @@ fn run_scenarios(started: Instant) -> TestResult {
         |(path, result)| {
             let name = path
                 .strip_prefix(
-                    Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests"),
+                    acyclic_test_support::source_path("rust/crates/harness").join("tests"),
                 )
                 .unwrap_or(path)
                 .display();

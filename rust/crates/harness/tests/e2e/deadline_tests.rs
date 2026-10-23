@@ -32,7 +32,7 @@ fn deadlines(source: &str) -> Vec<String> {
 #[test]
 fn scenario_sources_contain_no_wall_clock_deadline() -> crate::TestResult {
     let manifest = acyclic_harness::test_support::environment("CARGO_MANIFEST_DIR").map_or_else(
-        || std::path::PathBuf::from(acyclic_harness::build_metadata::MANIFEST_DIR),
+        || acyclic_test_support::source_path("rust/crates/harness"),
         std::path::PathBuf::from,
     );
     let tests = manifest.join("tests");

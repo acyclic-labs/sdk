@@ -622,7 +622,7 @@ fn file_path(root: &std::path::Path, path: &str) -> TestResult<std::path::PathBu
 /// child never reaches its model.
 #[test]
 fn a_composition_wide_reader_cannot_read_a_childs_task() -> TestResult {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    let path = acyclic_test_support::source_path("rust/crates/harness")
         .join("tests/local-scenarios/agents/spawn-wait.json");
     let mut case: Value = serde_json::from_slice(&std::fs::read(path)?)?;
     let object = case.as_object_mut().ok_or("scenario must be an object")?;

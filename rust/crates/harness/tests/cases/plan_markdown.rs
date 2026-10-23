@@ -5,7 +5,7 @@ use proptest::prelude::*;
 
 #[test]
 fn checked_in_fuzz_corpus() {
-    let directory = std::path::Path::new(acyclic_harness::build_metadata::MANIFEST_DIR)
+    let directory = acyclic_test_support::source_path("rust/crates/harness")
         .join("../harness-fuzz/corpus/plan_markdown");
     let expected = [
         ("escaped", None),

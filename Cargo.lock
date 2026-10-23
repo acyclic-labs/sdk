@@ -832,6 +832,7 @@ dependencies = [
  "acyclic-native-runtime",
  "acyclic-plugin-identity",
  "acyclic-stream",
+ "acyclic-test-support",
  "async-trait",
  "axum",
  "base64 0.23.1",

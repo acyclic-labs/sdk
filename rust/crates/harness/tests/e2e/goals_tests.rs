@@ -6,7 +6,6 @@ use acyclic_harness::{
 };
 use proptest::prelude::*;
 use serde_json::{Value, json};
-use std::path::Path;
 
 #[path = "goal_workers_tests.rs"]
 mod workers;
@@ -143,8 +142,8 @@ proptest! {
 
 #[test]
 fn goal_scenario_fuzz_corpus() -> TestResult {
-    let directory =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../harness-fuzz/corpus/goal_scenario");
+    let directory = acyclic_test_support::source_path("rust/crates/harness")
+        .join("../harness-fuzz/corpus/goal_scenario");
     let mut count = 0;
     for entry in std::fs::read_dir(directory)? {
         goal_scenario_input::check(&std::fs::read(entry?.path())?);
@@ -157,7 +156,7 @@ fn goal_scenario_fuzz_corpus() -> TestResult {
 #[test]
 fn goal_oracles_reject_changed_files_views_scripts_counts_and_policy() -> TestResult {
     crate::scenario_runtime()?.block_on(async {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+        let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
         let mut baseline =
             crate::scenario::load_value(&root, &root.join("goals/continuations/cap-two.json"))?;
         let mut settled =

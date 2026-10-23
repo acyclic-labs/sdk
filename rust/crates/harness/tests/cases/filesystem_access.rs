@@ -106,7 +106,7 @@ fn production_labels_use_the_filesystem_vocabulary() -> Result<(), Box<dyn std::
         SCOPE_PREFIX,
     ];
     let mut directories =
-        vec![std::path::Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("src")];
+        vec![acyclic_test_support::source_path("rust/crates/harness").join("src")];
     while let Some(directory) = directories.pop() {
         for entry in std::fs::read_dir(directory)? {
             let path = entry?.path();

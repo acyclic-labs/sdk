@@ -5,10 +5,9 @@ use super::{
 };
 use proptest::prelude::*;
 use serde_json::{Value, json};
-use std::path::Path;
 
 fn fixture(name: &str) -> TestResult<Value> {
-    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/fixtures");
+    let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/fixtures");
     Ok(scenario_data::load_value(
         &root,
         &root.join(format!("diffs/{name}.json")),
@@ -137,7 +136,7 @@ fn diff_case_codec_rejects_unknown_fields_missing_expectations_and_invalid_bytes
 
 #[test]
 fn diff_case_codec_replays_fuzz_seeds() -> TestResult {
-    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR)
+    let root = acyclic_test_support::source_path("rust/crates/harness")
         .join("../harness-fuzz/corpus/client_diff");
     for entry in std::fs::read_dir(root)? {
         let entry = entry?;
@@ -157,7 +156,7 @@ fn run(value: Value) -> TestResult {
 #[test]
 fn bounded_diff_unit_cases() -> TestResult {
     let root =
-        Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/fixtures/diffs");
+        acyclic_test_support::source_path("rust/crates/harness").join("tests/fixtures/diffs");
     let mut cases = Vec::new();
     scenario_data::discover(&root, &mut cases)?;
     assert_eq!(cases.len(), 29);

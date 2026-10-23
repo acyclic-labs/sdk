@@ -115,7 +115,9 @@ fn violations<'a>(files: impl IntoIterator<Item = (String, &'a str)>) -> Vec<Str
 // Both scans share one read of the tree.
 fn sources() -> &'static [(String, String)] {
     static FILES: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
-    FILES.get_or_init(|| read_sources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("..")))
+    FILES.get_or_init(|| {
+        read_sources(&acyclic_test_support::source_path("rust/crates/harness").join(".."))
+    })
 }
 
 fn read_sources(root: &Path) -> Vec<(String, String)> {

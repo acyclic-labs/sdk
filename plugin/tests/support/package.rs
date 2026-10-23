@@ -1,4 +1,4 @@
-use super::{ACYCLIC, command, isolated_state};
+use super::{acyclic, command, isolated_state};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -51,12 +51,16 @@ pub fn target_name() -> &'static str {
 }
 
 pub fn package_production_plugin(temporary: &Path) -> PackagedPlugin {
-    let plugin = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let plugin = acyclic_test_support::source_path("plugin");
     let package_root = temporary.join("package");
     let package = acyclic_native_runtime::process_output(
         command("node")
             .arg(plugin.join("scripts/package.mjs"))
-            .args(["--binary", &format!("{}={ACYCLIC}", target_name()), "--out"])
+            .args([
+                "--binary",
+                &format!("{}={}", target_name(), acyclic().display()),
+                "--out",
+            ])
             .arg(&package_root),
         std::time::Duration::from_secs(120),
         8 * 1024 * 1024,

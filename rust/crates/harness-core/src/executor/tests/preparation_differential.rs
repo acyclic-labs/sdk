@@ -203,7 +203,7 @@ fn exact(invalid: bool, restore: bool) -> TestCaseResult {
     let [(old, _), (new, _)] = pair(&text, invalid, restore);
     let expected: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(
-            std::path::Path::new(crate::build_metadata::MANIFEST_DIR)
+            acyclic_test_support::source_path("rust/crates/harness-core")
                 .join("src/executor/tests/preparation_expected.json"),
         )
         .unwrap(),

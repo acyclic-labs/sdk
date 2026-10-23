@@ -5,6 +5,14 @@
 //! binary that links it. A test, bench or fuzz binary that measures declares
 //! [`counting_allocator!`] once at its crate root.
 pub mod differential;
+mod fixtures;
+pub use fixtures::source_path;
+pub mod module_cases;
+/// Compiler observations made on the build host for every module path case.
+/// Target tests compare their actual source traversal with this independent proof.
+pub const MODULE_COMPILER_REACHED: [bool; module_cases::CASES.len()] =
+    include!(concat!(env!("OUT_DIR"), "/module-compiler.rs"));
+
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
