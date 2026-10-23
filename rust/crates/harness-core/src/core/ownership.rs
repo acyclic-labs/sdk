@@ -5,6 +5,18 @@ pub(crate) use walk::{OwnedBytes, owned_enum, owned_struct, owned_tuple};
 #[cfg(test)]
 mod tests;
 
+pub(in crate::core) fn admit_tree_insertion<T>(
+    len: usize,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<()> {
+    if let Some(io) = work.as_deref_mut().filter(|io| !copying::is_native(&**io)) {
+        let bytes = walk::tree_insertion_bytes::<T>(len)?;
+        io.admit_owned(bytes)?;
+        io.retain_owned(bytes)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn owned_sum(parts: impl IntoIterator<Item = u64>) -> Result<u64> {
     parts.into_iter().try_fold(0_u64, |sum, bytes| {
         sum.checked_add(bytes)

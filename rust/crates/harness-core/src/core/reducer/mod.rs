@@ -42,7 +42,14 @@ impl Reducer {
         &mut self,
         record: &ExtensionRecord,
         revision: u64,
-    ) {
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        if !self.projection.extension_states.contains_key(&record.name) {
+            ownership::admit_tree_insertion::<(String, (EventReference, ExtensionRecord))>(
+                self.projection.extension_states.len(),
+                work,
+            )?;
+        }
         let reference = EventReference {
             authority: self.authority.clone(),
             revision,
@@ -50,6 +57,7 @@ impl Reducer {
         self.projection
             .extension_states
             .insert(record.name.clone(), (reference, record.clone()));
+        Ok(())
     }
 
     pub(in crate::core) fn append_conversation_message_with_work(

@@ -63,7 +63,7 @@ impl Reducer {
                         "extension state version change lacks migration".into(),
                     ));
                 }
-                self.replace_extension_state(record, revision);
+                self.replace_extension_state(record, revision, work)?;
             }
             EventPayload::ExtensionStateMigrated { migration } => {
                 migration.validate()?;
@@ -91,7 +91,7 @@ impl Reducer {
                         "extension migration does not match retained state".into(),
                     ));
                 }
-                self.replace_extension_state(record, revision);
+                self.replace_extension_state(record, revision, work)?;
             }
             EventPayload::ExtensionsSelected {
                 previous,
@@ -149,6 +149,16 @@ impl Reducer {
                         "extension configuration does not match pinned agent state".into(),
                     ));
                 }
+                if !self
+                    .projection
+                    .configured_extensions
+                    .contains_key(&record.extension)
+                {
+                    ownership::admit_tree_insertion::<(ExtensionDependency, ExtensionConfiguration)>(
+                        self.projection.configured_extensions.len(),
+                        work,
+                    )?;
+                }
                 self.projection
                     .configured_extensions
                     .insert(record.extension.clone(), record.as_ref().clone());
@@ -194,6 +204,10 @@ impl Reducer {
                         "effect result schema digest mismatch".into(),
                     ));
                 }
+                ownership::admit_tree_insertion::<(EffectId, EffectState)>(
+                    self.projection.effects.len(),
+                    work,
+                )?;
                 let effect = EffectState {
                     provider: provider.clone(),
                     guarantee: *guarantee,
@@ -234,15 +248,14 @@ impl Reducer {
             EventPayload::ForkPublished { seed } => {
                 self.validate_extension_fork_with_work(seed, work)?;
                 self.require_fresh_fork_with_work(seed, work)?;
+                ownership::admit_tree_insertion::<(Authority, ForkSeed)>(
+                    self.projection.forks.len(),
+                    work,
+                )?;
                 if let Some(observer) = work.as_deref_mut().filter(|io| !copying::is_native(&**io))
                 {
-                    let reservation = seed
-                        .owned_heap_bytes()?
-                        .checked_add(seed.child.id.len() as u64)
-                        .and_then(|bytes| {
-                            bytes.checked_add(std::mem::size_of::<(Authority, ForkSeed)>() as u64)
-                        })
-                        .ok_or_else(|| Error::Invalid("fork map clone quota overflows".into()))?;
+                    let reservation =
+                        owned_sum([seed.owned_heap_bytes()?, seed.child.owned_heap_bytes()?])?;
                     observer.admit_owned(reservation)?;
                     observer.retain_owned(reservation)?;
                 }
@@ -257,6 +270,10 @@ impl Reducer {
                 if self.projection.published_merges.contains(&key) {
                     return Err(Error::Conflict("project join was already published".into()));
                 }
+                ownership::admit_tree_insertion::<(String, Vec<u8>)>(
+                    self.projection.published_merges.len(),
+                    work,
+                )?;
                 self.append_conversation_message_with_work(&receipt.notice, work)?;
                 self.projection.published_merges.insert(key);
             }
@@ -283,6 +300,10 @@ impl Reducer {
                         "interaction identity already exists".into(),
                     ));
                 }
+                ownership::admit_tree_insertion::<(
+                    uuid::Uuid,
+                    (InteractionTicket, Option<InteractionResolution>),
+                )>(self.projection.interactions.len(), work)?;
                 self.projection
                     .interactions
                     .insert(ticket.id, (ticket.as_ref().clone(), None));

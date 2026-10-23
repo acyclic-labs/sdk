@@ -101,6 +101,94 @@ fn over_aligned_tree_storage_includes_node_padding() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn tree_insertion_bounds_cover_root_and_cascading_splits() -> Result<()> {
+    fn insert<K: Ord, V>(map: &mut BTreeMap<K, V>, key: K, value: V) -> Result<()> {
+        let reserved = super::walk::tree_insertion_bytes::<(K, V)>(map.len())?;
+        let actual = measure(|| assert!(map.insert(key, value).is_none())).bytes_total;
+        assert!(
+            reserved >= actual,
+            "tree insertion: reserved {reserved}, allocated {actual}"
+        );
+        Ok(())
+    }
+    let seed = fixture!(ForkSeed, "fork-seed")?;
+    let mut forks = BTreeMap::new();
+    let mut aligned = BTreeMap::new();
+    let mut set = BTreeSet::new();
+    for index in 0..256_u64 {
+        let child = Authority {
+            kind: AggregateKind::Conversation,
+            id: format!("child-{index:04}"),
+        };
+        insert(&mut forks, child, seed.clone())?;
+        insert(&mut aligned, AlignedKey(index), [0_u8; 32])?;
+        let reserved = super::walk::tree_insertion_bytes::<u64>(set.len())?;
+        let actual = measure(|| assert!(set.insert(index))).bytes_total;
+        assert!(
+            reserved >= actual,
+            "set insertion: reserved {reserved}, allocated {actual}"
+        );
+    }
+    // Sparse trees can have a different height and split pattern at the same len.
+    while forks.len() > 12 {
+        forks.pop_first();
+    }
+    for index in 256..512 {
+        let child = Authority {
+            kind: AggregateKind::Conversation,
+            id: format!("child-{index:04}"),
+        };
+        insert(&mut forks, child, seed.clone())?;
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+fn fork_application_funds_its_map_node_before_inserting() -> Result<()> {
+    let seed = fixture!(ForkSeed, "fork-seed")?;
+    let old_reservation = super::owned_sum([
+        seed.owned_heap_bytes()?,
+        seed.child.id.len() as u64,
+        size_of::<(Authority, ForkSeed)>() as u64,
+    ])?;
+    let payload = EventPayload::ForkPublished {
+        seed: Box::new(seed),
+    };
+    let mut reducer = crate::core::tests::reducer_fixture();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let limited = crate::filesystem::PreparationIo::from_budget(
+        acyclic_fs::performance::WorkBudget {
+            peak_allocation_bytes: old_reservation,
+            ..acyclic_fs::performance::BOUNDARY_BUDGET
+        },
+        &cancellation,
+    )?;
+    let mut observer = &limited;
+    assert!(
+        reducer
+            .apply_payload_with_work(&payload, 1, &mut Some(&mut observer))
+            .is_err()
+    );
+    assert!(reducer.projection.forks.is_empty());
+    let io = crate::filesystem::PreparationIo::from_budget(
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &cancellation,
+    )?;
+    let mut observer = &io;
+    reducer.apply_payload_with_work(&payload, 1, &mut Some(&mut observer))?;
+    assert_eq!(reducer.projection.forks.len(), 1);
+    let forks = std::mem::take(&mut reducer.projection.forks);
+    let actual = measure(|| drop(forks)).bytes_current.unsigned_abs();
+    assert!(
+        io.owned_bytes()? >= actual,
+        "fork map: reserved {}, allocated {actual}",
+        io.owned_bytes()?
+    );
+    Ok(())
+}
+
 fn json_values() -> impl Strategy<Value = Value> {
     prop_oneof![
         Just(Value::Null),
