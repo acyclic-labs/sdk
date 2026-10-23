@@ -342,12 +342,7 @@ pub fn session_registration_and_recovery_never_splice(omit_anchor: bool) {
                     .follow(path, cursor.next, crate::FollowFilter::default())
                     .await
             } else {
-                wire_codec::session::follow_records(
-                    &provider,
-                    &follow,
-                    &cursor,
-                )
-                .await
+                wire_codec::session::follow_records(&provider, &follow, &cursor).await
             };
             let error = match registered {
                 Err(error) => error,
