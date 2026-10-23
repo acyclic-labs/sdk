@@ -87,10 +87,12 @@ fn merge_policy_condition(
     work: &mut AuthorityWork<'_>,
 ) -> Result<(), AuthorityStoreError> {
     for existing in conditions.iter() {
-        work.admit(WorkCounters {
+        let examined = WorkCounters {
             items_examined: 1,
             ..WorkCounters::UNCHARGED
-        })?;
+        };
+        work.admit(examined)?;
+        work.charge(examined)?;
         if condition_path(existing) != condition_path(&policy) {
             continue;
         }
@@ -119,6 +121,61 @@ fn merge_policy_condition(
 mod tests {
     use super::*;
     use acyclic_stream::StreamProvider;
+
+    fn comparison_prefix(omit_charge: bool) -> Result<(), Box<dyn std::error::Error>> {
+        for allowance in 0..=4 {
+            let token = CancellationToken::new();
+            let mut budget = WorkBudget::UNBOUNDED;
+            budget.items_examined = allowance;
+            let mut work = AuthorityWork::new(budget, &token);
+            let mut conditions = ["policy/a", "policy/b", "policy/c", "policy/target"]
+                .into_iter()
+                .map(|path| StreamPath::new(path).map(|path| CommitCondition::Absent { path }))
+                .collect::<Result<Vec<_>, _>>()?;
+            let candidate = CommitCondition::Absent {
+                path: StreamPath::new("policy/target")?,
+            };
+            work.hold_opaque(condition_path(&candidate).as_str().len() as u64)?;
+            let result = if omit_charge {
+                conditions.iter().try_for_each(|_| {
+                    work.admit(WorkCounters {
+                        items_examined: 1,
+                        ..WorkCounters::UNCHARGED
+                    })
+                })
+            } else {
+                merge_policy_condition(&mut conditions, candidate, &mut work)
+            };
+            assert_eq!(
+                work.spent().items_examined,
+                allowance,
+                "policy comparison prefix was not charged"
+            );
+            assert_eq!(
+                result.is_ok(),
+                allowance == 4,
+                "policy comparisons escaped their allowance"
+            );
+            assert_eq!(conditions.len(), 4);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn policy_condition_comparisons_charge_each_admitted_prefix()
+    -> Result<(), Box<dyn std::error::Error>> {
+        comparison_prefix(false)
+    }
+
+    #[test]
+    #[should_panic(expected = "policy comparison prefix was not charged")]
+    fn uncharged_policy_comparisons_negative_control() {
+        let outcome = comparison_prefix(true);
+        assert!(
+            outcome.is_ok(),
+            "control failed before its work oracle: {outcome:?}"
+        );
+    }
 
     async fn duplicate_condition_control(
         omit_merge: bool,
