@@ -165,7 +165,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         // A legacy grant is authority for this exact request only. A structured
         // payload is always its ceiling, even when legacy labels are also present.
         if label.is_none() && !inherited_reference {
-            super::require_file_read(scope, reference, io)?;
+            super::content_verifier::require_file_read(scope, reference, io)?;
         }
         let workspace_ref =
             fork_preparer_io::content_workspace(&self.provider, reference.volume(), Some(io))?;

@@ -106,7 +106,8 @@ pub struct Scope {
     /// Public identity of the authenticated workload tip.
     pub(in crate::core) proof: Box<[u8; 32]>,
     /// Ed25519 workload chain, including only its restricted append tip.
-    #[cfg_attr(feature = "wasm", tsify(type = "number[]"))]
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    #[serde(with = "super::capability_bytes")]
     pub(in crate::core) workload: Vec<u8>,
 }
 

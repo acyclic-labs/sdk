@@ -59,6 +59,7 @@ pub struct EffectAttestation {
     pub result_schema_digest: [u8; 32],
     /// Terminal or explicitly unknown result.
     pub status: EffectStatus,
+    #[serde(with = "super::capability_bytes")]
     pub(in crate::core) proof: Vec<u8>,
 }
 

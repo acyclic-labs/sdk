@@ -142,7 +142,7 @@ pub(crate) fn content_error(
 
 /// Reject caller ceilings on adapters bound only to their owner's authority.
 #[cfg(any(all(feature = "wasm", target_arch = "wasm32"), test))]
-pub(crate) fn require_owner_reader(ceiling: Option<&crate::Capabilities>) -> Result<()> {
+pub fn require_owner_reader(ceiling: Option<&crate::Capabilities>) -> Result<()> {
     if ceiling.is_some() {
         Err(Error::Unsupported(
             "browser content reader cannot enforce a caller ceiling".into(),

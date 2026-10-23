@@ -1,5 +1,5 @@
 import { WasmReducer, type ProtocolIdentity } from "../generated/wasm/acyclic_harness_wasm.js";
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { create, fromBinary, fromJson, toBinary } from "@bufbuild/protobuf";
 import {
   ApplyResponseSchema,
   ApplyState,
@@ -88,6 +88,8 @@ export interface Scope {
   readonly agent: AgentId | null;
   readonly parent_proof: readonly number[] | null;
   readonly proof: readonly number[];
+  /** Canonical base64 Ed25519 workload chain and restricted append tip. */
+  readonly workload: string;
 }
 
 /** Durable non-bearer admission evidence; a signed command scope is never stored in an event. */
@@ -382,6 +384,7 @@ export class Harness {
           agentId: command.scope.agent ?? "",
           parentProof: new Uint8Array(command.scope.parent_proof ?? []),
           proof: new Uint8Array(command.scope.proof),
+          workload: fromJson(ScopeSchema, { workload: command.scope.workload }).workload,
         }),
         causalParent: command.causal_parent === null ? undefined : encodeReference(command.causal_parent),
         actionType: command.action.kind,

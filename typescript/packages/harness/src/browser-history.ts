@@ -32,7 +32,8 @@ export interface CanonicalEvent<Payload = unknown> {
   readonly operation_id: OperationId;
   readonly intent_digest: readonly number[];
   readonly scope: RecordedScope;
-  readonly attestation: readonly number[];
+  /** Canonical base64 sealed workload admission receipt. */
+  readonly attestation: string;
   readonly causal_parent: EventReference | null;
   readonly payload: Payload;
 }

@@ -573,6 +573,7 @@ async fn child_replay_and_records_share_the_native_node_session() -> TestResult 
 async fn largest_child_path_fits_its_channel_credit() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let path = "a".repeat(crate::MAX_PATH_BYTES);
+    assert!(crate::RecordHeaders::new(vec![path.as_str().into()], vec![]).is_err());
     append(&provider, &path, 1).await?;
     let fixture = Fixture::open(Arc::clone(&provider), "large-child").await?;
     let client = fixture.client()?;
@@ -590,6 +591,71 @@ async fn largest_child_path_fits_its_channel_credit() -> TestResult {
             .as_str(),
         path
     );
+    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn hidden_children_preserve_the_consumed_resume_cut_and_shared_connection() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    for path in ["agents/private", "agents/public"] {
+        append(&provider, path, 1).await?;
+    }
+    let fixture = Fixture::open(Arc::clone(&provider), "filtered-children").await?;
+    let client = fixture.client()?;
+    let session = client.session_client()?;
+    let subscription = |resume| wire::SessionSubscription {
+        channel: None,
+        credential: 0,
+        resume: Some(resume),
+        filter: Some(wire::SessionFilter {
+            keys: vec![wire::KeyRange {
+                start: b"agents/public".as_slice().into(),
+                end: b"agents/public~".as_slice().into(),
+            }],
+            ..Default::default()
+        }),
+        kind: Some(Kind::Children(wire::ChildrenRequest {
+            parent: Some("agents".into()),
+            limit: 8,
+        })),
+    };
+    let mut children = session
+        .subscribe(subscription(super::super::cursor(0)))
+        .await?;
+    let cut = loop {
+        let input = tokio::time::timeout(Duration::from_secs(1), children.next())
+            .await?
+            .ok_or("filtered children ended")??;
+        if let Some(Body::Data(data)) = input.body {
+            assert!(
+                matches!(data.item, Some(Item::Child(wire::Child { path })) if path == "agents/public")
+            );
+            let after = data.after.ok_or("child cursor missing")?;
+            assert_eq!(after.next, 2);
+            assert_eq!(after.opaque.as_ref(), b"agents/public");
+            break after;
+        }
+    };
+    drop(children);
+    let mut resumed = session.subscribe(subscription(cut)).await?;
+    append(&provider, "agents/public-new", 1).await?;
+    loop {
+        let input = tokio::time::timeout(Duration::from_secs(1), resumed.next())
+            .await?
+            .ok_or("resumed children ended")??;
+        if let Some(Body::Data(data)) = input.body {
+            assert!(
+                matches!(data.item, Some(Item::Child(wire::Child { path })) if path == "agents/public-new")
+            );
+            assert_eq!(data.after.ok_or("resumed cursor missing")?.next, 3);
+            break;
+        }
+    }
+    let mut records = client
+        .follow(StreamPath::new("agents/public")?, 0, Default::default())
+        .await?;
+    assert_eq!(next(&mut records).await?.sequence, 0);
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
     Ok(())
 }

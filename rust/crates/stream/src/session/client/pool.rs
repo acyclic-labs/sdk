@@ -235,18 +235,18 @@ impl Pool {
             }
             Command::Open(open) => {
                 let OpenCommand {
-                id,
-                attempt_epoch,
-                acknowledge,
-                kind,
-                filter,
-                credential,
-                raw,
-                progress,
-                records,
-                ready,
-                observation,
-            } = *open;
+                    id,
+                    attempt_epoch,
+                    acknowledge,
+                    kind,
+                    filter,
+                    credential,
+                    raw,
+                    progress,
+                    records,
+                    ready,
+                    observation,
+                } = *open;
                 self.admissions.remove(id)?;
                 if attempt_epoch != self.dial_epoch {
                     let _ = ready.send(Err(StreamError::Unavailable));
@@ -437,37 +437,42 @@ impl Pool {
             _ => Err(StreamError::Unavailable),
         }
     }
-    fn watermark(route: &mut Route, id: u64, generation: u64, mut mark: wire::SessionWatermark) -> Result<bool, StreamError> {
-                if let Some(after) = &mark.after {
-                    if !matches!(route.kind, Kind::Follow(_))
-                        || !after.opaque.is_empty()
-                        || after.next < route.received
-                        || after.next > mark.accepted
-                        || mark.preceding_commit_id.len() != 32
-                        || after.next == 0
-                    {
-                        return Err(StreamError::Unavailable);
-                    }
-                    route.received = after.next;
-                }
-                if route.raw || mark.after.is_some() {
-                    // A durability-only update cannot erase an unconsumed
-                    // skipped-prefix cut. Both describe the same channel order.
-                    if mark.after.is_none()
-                        && let Some(wire::SessionFrame {
-                            body: Some(Body::Watermark(previous)),
-                            ..
-                        }) = &route.watermark
-                    {
-                        mark.after.clone_from(&previous.after);
-                        mark.preceding_commit_id
-                            .clone_from(&previous.preceding_commit_id);
-                    }
-                    route.watermark = Some(frame(id, generation, Body::Watermark(mark)));
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
+    fn watermark(
+        route: &mut Route,
+        id: u64,
+        generation: u64,
+        mut mark: wire::SessionWatermark,
+    ) -> Result<bool, StreamError> {
+        if let Some(after) = &mark.after {
+            if !matches!(route.kind, Kind::Follow(_))
+                || !after.opaque.is_empty()
+                || after.next < route.received
+                || after.next > mark.accepted
+                || mark.preceding_commit_id.len() != 32
+                || after.next == 0
+            {
+                return Err(StreamError::Unavailable);
+            }
+            route.received = after.next;
+        }
+        if route.raw || mark.after.is_some() {
+            // A durability-only update cannot erase an unconsumed
+            // skipped-prefix cut. Both describe the same channel order.
+            if mark.after.is_none()
+                && let Some(wire::SessionFrame {
+                    body: Some(Body::Watermark(previous)),
+                    ..
+                }) = &route.watermark
+            {
+                mark.after.clone_from(&previous.after);
+                mark.preceding_commit_id
+                    .clone_from(&previous.preceding_commit_id);
+            }
+            route.watermark = Some(frame(id, generation, Body::Watermark(mark)));
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
     /// Accept an Open reply that resumes exactly where the route left off.
     fn opened(
@@ -555,17 +560,16 @@ impl Pool {
             (Kind::Children(request), Some(Item::Child(child))) => {
                 let path = StreamPath::new(&child.path).map_err(|_| StreamError::Unavailable)?;
                 if path.parent().as_ref().map(StreamPath::as_str) != request.parent.as_deref()
-                    || after.next
-                        != route
-                            .received
-                            .checked_add(1)
-                            .ok_or(StreamError::OutOfRange)?
+                    || after.next <= route.received
+                    || after.opaque.as_ref() != child.path.as_bytes()
                     || data.durable > data.accepted
                     || data.accepted < after.next
                 {
                     return Err(StreamError::Unavailable);
                 }
-                route.received
+                // The provider cursor includes undisclosed children. Preserve
+                // its cut without transferring any hidden path to the client.
+                after.next - 1
             }
             _ => return Err(StreamError::Unavailable),
         };

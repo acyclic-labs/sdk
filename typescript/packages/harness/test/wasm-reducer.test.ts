@@ -192,7 +192,9 @@ test("native Rust semantics execute through WASM", async () => {
     issuer: scope.issuer, agent: scope.agent });
   expect("proof" in first.event.scope).toBe(false);
   expect("parent_proof" in first.event.scope).toBe(false);
-  expect(first.event.attestation).toHaveLength(32);
+  expect(first.event.attestation.byteLength).toBeGreaterThan(64);
+  expect(typeof scope.workload).toBe("string");
+  expect(() => harness.verifyScope({ ...scope, workload: "AAAA" })).toThrow();
   const snapshot = harness.snapshot();
   expect(snapshot.revision).toBe(1n);
   expect(() => harness.attenuate(scope, "forged", ["effect:run"])).toThrow();

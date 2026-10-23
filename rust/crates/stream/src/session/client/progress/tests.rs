@@ -4,7 +4,7 @@ use proptest::prelude::*;
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
     // The application cut is the fold of only current-generation consumed
-    // deliveries. Ordinary records and opaque child positions never skip.
+    // deliveries. Ordinary records never skip.
     #[test]
     fn latest_progress_matches_the_consumed_generation_fold(
         steps in prop::collection::vec((any::<bool>(), 0_u64..16, any::<bool>()), 0..32),
@@ -29,7 +29,7 @@ proptest! {
 fn negative_control_strict_consumption_cannot_apply_a_conflated_jump() {
     let progress = Progress::new(1);
     assert_eq!(
-        progress.consume_opaque(1, 7, &[]),
+        progress.consume_record(1, 7, [7; 32]),
         Err(StreamError::Unavailable)
     );
     assert_eq!(progress.next().unwrap(), 1);
@@ -40,6 +40,21 @@ fn negative_control_strict_consumption_cannot_apply_a_conflated_jump() {
         Err(StreamError::Unavailable)
     );
     assert_eq!(progress.next().unwrap(), 8);
+}
+
+#[test]
+fn child_cut_skips_hidden_discoveries_only_when_consumed_in_the_current_generation()
+-> Result<(), StreamError> {
+    let progress = Progress::new(0);
+    assert_eq!(progress.next()?, 0);
+    assert_eq!(progress.consume_opaque(1, 1, b"agents/public"), Ok(true));
+    assert_eq!(progress.position()?, (2, b"agents/public".to_vec()));
+    assert_eq!(progress.fence(), Ok(2));
+    assert_eq!(progress.consume_opaque(1, 5, b"agents/stale"), Ok(false));
+    assert_eq!(progress.position()?, (2, b"agents/public".to_vec()));
+    assert_eq!(progress.consume_opaque(2, 0, b"agents/old"), Ok(false));
+    assert_eq!(progress.position()?, (2, b"agents/public".to_vec()));
+    Ok(())
 }
 
 #[test]

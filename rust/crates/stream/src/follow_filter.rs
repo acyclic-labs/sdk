@@ -17,19 +17,31 @@ struct Clause {
 impl FollowFilter {
     /// Validates and canonicalizes a requested subscription filter.
     pub fn new(mut requested: wire::SessionFilter) -> Result<Self, StreamError> {
-        if requested.encoded_len() > crate::MAX_COMMAND_BYTES || requested.all_of.len() > crate::MAX_ITEMS {
+        if requested.encoded_len() > crate::MAX_COMMAND_BYTES
+            || requested.all_of.len() > crate::MAX_ITEMS
+        {
             return Err(StreamError::LimitExceeded);
         }
         let conjunction = std::mem::take(&mut requested.all_of);
         let filter = canonical(requested)?;
         let mut clauses = Vec::new();
         if !filter.keys.is_empty() || !filter.attributes.is_empty() {
-            clauses.push(Clause { all_keys: false, filter });
+            clauses.push(Clause {
+                all_keys: false,
+                filter,
+            });
         }
         for clause in conjunction {
-            let filter = canonical(wire::SessionFilter { keys: clause.keys, attributes: clause.attributes, all_of: vec![] })?;
+            let filter = canonical(wire::SessionFilter {
+                keys: clause.keys,
+                attributes: clause.attributes,
+                all_of: vec![],
+            })?;
             if !filter.keys.is_empty() || !filter.attributes.is_empty() {
-                clauses.push(Clause { all_keys: clause.all_keys, filter });
+                clauses.push(Clause {
+                    all_keys: clause.all_keys,
+                    filter,
+                });
             }
         }
         Ok(Self(Arc::new(clauses)))
@@ -120,6 +132,20 @@ impl FollowFilter {
         self.0.iter().all(|clause| clause.matches(headers))
     }
 
+    /// Child identities are paths, not bounded record keys. Discovery supplies
+    /// no record attributes, so an attribute constraint cannot match a child.
+    #[cfg(any(
+        test,
+        all(feature = "grpc", not(target_arch = "wasm32")),
+        all(feature = "wasm", target_arch = "wasm32")
+    ))]
+    pub(crate) fn matches_child(&self, child: &crate::StreamPath) -> bool {
+        self.0.iter().all(|clause| {
+            (clause.filter.keys.is_empty() || clause.contains(child.as_str().as_bytes()))
+                && clause.filter.attributes.is_empty()
+        })
+    }
+
     fn matches_entry(&self, key: &[u8], headers: &RecordHeaders) -> bool {
         self.0.iter().all(|clause| {
             (clause.filter.keys.is_empty() || clause.contains(key))
@@ -160,12 +186,21 @@ impl FollowFilter {
     ))]
     pub(crate) fn transport_filter(&self) -> Result<wire::SessionFilter, StreamError> {
         let filter = wire::SessionFilter {
-            keys: vec![], attributes: vec![],
-            all_of: self.0.iter().map(|clause| wire::SessionFilterClause {
-                keys: clause.filter.keys.clone(), attributes: clause.filter.attributes.clone(), all_keys: clause.all_keys,
-            }).collect(),
+            keys: vec![],
+            attributes: vec![],
+            all_of: self
+                .0
+                .iter()
+                .map(|clause| wire::SessionFilterClause {
+                    keys: clause.filter.keys.clone(),
+                    attributes: clause.filter.attributes.clone(),
+                    all_keys: clause.all_keys,
+                })
+                .collect(),
         };
-        if filter.encoded_len() > crate::MAX_COMMAND_BYTES { return Err(StreamError::LimitExceeded); }
+        if filter.encoded_len() > crate::MAX_COMMAND_BYTES {
+            return Err(StreamError::LimitExceeded);
+        }
         Ok(filter)
     }
 
@@ -240,7 +275,9 @@ impl Clause {
 }
 
 fn canonical(mut filter: wire::SessionFilter) -> Result<wire::SessionFilter, StreamError> {
-    if !filter.all_of.is_empty() { return Err(StreamError::InvalidArgument); }
+    if !filter.all_of.is_empty() {
+        return Err(StreamError::InvalidArgument);
+    }
     if filter.keys.len() > crate::MAX_ITEMS
         || filter.attributes.len() > crate::MAX_RECORD_ATTRIBUTES
         || filter.encoded_len() > crate::MAX_COMMAND_BYTES
@@ -304,6 +341,26 @@ fn canonical(mut filter: wire::SessionFilter) -> Result<wire::SessionFilter, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn child_paths_keep_path_bounds_and_every_filter_constraint() -> Result<(), StreamError> {
+        let path = crate::StreamPath::new("a".repeat(crate::MAX_PATH_BYTES))?;
+        assert!(RecordHeaders::new(vec![path.as_str().into()], vec![]).is_err());
+        let filter = FollowFilter::new(wire::SessionFilter {
+            keys: vec![range(b"a", b"b")],
+            ..Default::default()
+        })?;
+        assert!(filter.matches_child(&path));
+        assert!(!filter.matches_child(&crate::StreamPath::new("b")?));
+        let attributes = FollowFilter::new(wire::SessionFilter {
+            attributes: vec![wire::AttributeMatch {
+                name: "owner".into(),
+                any_of: vec![b"alice".as_slice().into()],
+            }],
+            ..Default::default()
+        })?;
+        assert!(!attributes.matches_child(&path));
+        Ok(())
+    }
     fn range(start: &'static [u8], end: &'static [u8]) -> wire::KeyRange {
         wire::KeyRange {
             start: start.into(),
@@ -323,7 +380,7 @@ mod tests {
     #[test]
     fn any_requested_key_and_every_attribute_must_match() {
         let filter = FollowFilter::new(wire::SessionFilter {
-                    all_of: vec![],
+            all_of: vec![],
             keys: vec![range(b"a", b"c")],
             attributes: vec![wire::AttributeMatch {
                 name: "owner".into(),
@@ -341,7 +398,7 @@ mod tests {
         let requested = Clause {
             all_keys: false,
             filter: canonical(wire::SessionFilter {
-                    all_of: vec![],
+                all_of: vec![],
                 keys: vec![range(b"a", b"c")],
                 attributes: vec![],
             })
@@ -358,8 +415,20 @@ mod tests {
     }
     #[test]
     fn provider_hops_preserve_requested_any_keys_and_all_authority_ceilings() {
-        let make = |all_keys, start, end| Clause { all_keys, filter: canonical(wire::SessionFilter { keys: vec![range(start, end)], attributes: vec![], all_of: vec![] }).unwrap() };
-        let original = FollowFilter(Arc::new(vec![make(false, b"a", b"c"), make(true, b"a", b"m"), make(true, b"b", b"z")]));
+        let make = |all_keys, start, end| Clause {
+            all_keys,
+            filter: canonical(wire::SessionFilter {
+                keys: vec![range(start, end)],
+                attributes: vec![],
+                all_of: vec![],
+            })
+            .unwrap(),
+        };
+        let original = FollowFilter(Arc::new(vec![
+            make(false, b"a", b"c"),
+            make(true, b"a", b"m"),
+            make(true, b"b", b"z"),
+        ]));
         let forwarded = FollowFilter::new(original.transport_filter().unwrap()).unwrap();
         assert_eq!(original.digest(), forwarded.digest());
         assert!(forwarded.matches(&headers(&["b", "j"], "alice")));
@@ -367,19 +436,22 @@ mod tests {
         assert!(!forwarded.matches(&headers(&["a", "b"], "alice")));
         assert!(!forwarded.matches(&headers(&["j"], "alice")));
         let dropped_ceiling = FollowFilter(Arc::new(vec![make(false, b"a", b"c")]));
-        assert!(dropped_ceiling.matches(&headers(&["b", "z"], "alice")), "negative control needs the authority ceiling");
+        assert!(
+            dropped_ceiling.matches(&headers(&["b", "z"], "alice")),
+            "negative control needs the authority ceiling"
+        );
     }
 
     #[test]
     fn canonical_ranges_and_values_have_one_digest() {
         let left = FollowFilter::new(wire::SessionFilter {
-                    all_of: vec![],
+            all_of: vec![],
             keys: vec![range(b"b", b"d"), range(b"a", b"c")],
             attributes: vec![],
         })
         .unwrap();
         let right = FollowFilter::new(wire::SessionFilter {
-                    all_of: vec![],
+            all_of: vec![],
             keys: vec![range(b"a", b"d")],
             attributes: vec![],
         })
@@ -401,7 +473,7 @@ mod tests {
         }
         assert!(
             FollowFilter::new(wire::SessionFilter {
-                    all_of: vec![],
+                all_of: vec![],
                 keys: vec![],
                 attributes: vec![wire::AttributeMatch {
                     name: "owner".into(),

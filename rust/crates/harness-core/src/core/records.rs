@@ -210,6 +210,7 @@ pub struct Event {
     /// Non-transferable admission metadata; never a reusable authorization scope.
     pub scope: RecordedScope,
     /// Sealed Ed25519 workload descendant and runtime receipt for this event.
+    #[serde(with = "super::capability_bytes")]
     pub attestation: Vec<u8>,
     /// Optional causal predecessor in another aggregate.
     pub causal_parent: Option<EventReference>,

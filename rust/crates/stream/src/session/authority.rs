@@ -219,7 +219,11 @@ impl Authority {
         if binding.children {
             capability.authorize_children(snapshot.trust.as_ref(), &request, PolicyDecision::Allow)
         } else if binding.resource_authorization.is_some() {
-            capability.authorize_resource_follow(snapshot.trust.as_ref(), &request, PolicyDecision::Allow)
+            capability.authorize_resource_follow(
+                snapshot.trust.as_ref(),
+                &request,
+                PolicyDecision::Allow,
+            )
         } else {
             capability.authorize_follow(snapshot.trust.as_ref(), &request, PolicyDecision::Allow)
         }
@@ -277,7 +281,8 @@ impl Authority {
         }
         let (revision, _, credential) = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
         let capability = credential.as_ref().map_err(|error| *error)?;
-        let authorization = ResourceAuthorization::new(Arc::clone(self), resource.clone(), Arc::clone(capability));
+        let authorization =
+            ResourceAuthorization::new(Arc::clone(self), resource.clone(), Arc::clone(capability));
         let mut binding = Binding {
             children: false,
             credential_revision: *revision,
@@ -329,11 +334,7 @@ impl Authority {
             resource_authorization: None,
         };
         match self.filter(slots, &child_binding, channels) {
-            Ok(filter) => {
-                let headers = crate::RecordHeaders::new(vec![child.as_str().into()], vec![])
-                    .map_err(|_| Rejection::Filter)?;
-                Ok(filter.matches(&headers))
-            }
+            Ok(filter) => Ok(filter.matches_child(child)),
             Err(Rejection::Forbidden) => Ok(false),
             Err(error) => Err(error),
         }
@@ -356,7 +357,13 @@ impl Authority {
             return Err(Rejection::Forbidden);
         }
         if let Some(authorization) = &binding.resource_authorization {
-            let capability = slots.entries.get(&binding.slot).ok_or(Rejection::Forbidden)?.2.as_ref().map_err(|error| *error)?;
+            let capability = slots
+                .entries
+                .get(&binding.slot)
+                .ok_or(Rejection::Forbidden)?
+                .2
+                .as_ref()
+                .map_err(|error| *error)?;
             authorization.renew(Arc::clone(capability))?;
         }
         binding.credential_revision = revision;

@@ -206,13 +206,14 @@ mod tests {
             .map_err(|error| Error::Invalid(error.to_string()))?
             .current()
             .map_err(|error| Error::Invalid(error.to_string()))?;
+        let now = crate::filesystem::access::access_now();
         assert!(
-            view.decide(acyclic_fs::access::Action::Read, "public/file", 0)
+            view.decide(acyclic_fs::access::Action::Read, "public/file", now)
                 .allowed
         );
         assert!(
             !view
-                .decide(acyclic_fs::access::Action::Read, "private/key", 0)
+                .decide(acyclic_fs::access::Action::Read, "private/key", now)
                 .allowed
         );
         issuer.revoke_workload(&port.scope)?;
