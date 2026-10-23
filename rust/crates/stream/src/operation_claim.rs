@@ -7,6 +7,7 @@ struct Node {
 
 /// Live operation ownership independent of persisted crash-recovery records.
 pub struct OperationClaims {
+    owner: [u8; 16],
     active: crate::query_sync::SyncMutex<Option<Box<Node>>>,
     released: crate::query_sync::watch::Sender<()>,
 }
@@ -14,6 +15,7 @@ pub struct OperationClaims {
 impl Default for OperationClaims {
     fn default() -> Self {
         Self {
+            owner: uuid::Uuid::new_v4().into_bytes(),
             active: crate::query_sync::SyncMutex::new(None),
             released: crate::query_sync::watch::channel(()).0,
         }
@@ -28,6 +30,13 @@ pub struct OperationClaim<'a, H> {
 }
 
 impl OperationClaims {
+    /// Stable process-local identity shared by adapters of this provider owner.
+    /// This value identifies live exclusion state; it conveys no authority.
+    #[must_use]
+    pub const fn owner_identity(&self) -> [u8; 16] {
+        self.owner
+    }
+
     /// Visits each active claim before inspecting it, then admits the exact
     /// node allocation before construction. Returns `None` for a live duplicate.
     /// The caller retains its own accounting error type and storage custody.

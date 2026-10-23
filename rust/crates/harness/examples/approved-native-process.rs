@@ -738,6 +738,15 @@ mod recovery;
 mod task;
 use recovery::Restart;
 
+fn report_failure(failure: &dyn std::error::Error) {
+    eprintln!("scenario failed: {failure}");
+    let mut cause = failure.source();
+    while let Some(error) = cause {
+        eprintln!("  caused by: {error}");
+        cause = error.source();
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     if cfg!(test) && std::env::args().any(|arg| arg == "--list") {
@@ -789,7 +798,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             .filter_map(std::result::Result::err)
             .collect::<Vec<_>>();
         for failure in &failures {
-            eprintln!("scenario failed: {failure}");
+            report_failure(failure.as_ref());
         }
         failures.into_iter().next().map_or(Ok(()), Err)
     } else {

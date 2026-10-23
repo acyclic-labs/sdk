@@ -141,7 +141,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<ReadObservation<'a, A, O>> {
         reference.validate(&mut Some(&mut io.history_io()))?;
         if reference.volume().provider() != &self.provider
-            || maximum_bytes == 0
             || reference.descriptor().byte_length() > maximum_bytes
         {
             return Err(io.invalid("content provider or size limit mismatch"));

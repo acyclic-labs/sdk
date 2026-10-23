@@ -803,3 +803,71 @@ fn revoked_policy(id: &str, action: Action) -> Result<Policy, Box<dyn Error>> {
     layer.push(deny);
     Ok(policy)
 }
+
+#[tokio::test]
+async fn empty_pinned_reads_keep_zero_byte_bounds_and_current_authority()
+-> Result<(), Box<dyn Error>> {
+    let fixture = Fixture::new().await?;
+    let verifier = fixture.issuer.verifier(&mut None)?;
+    let writer = ContentGrant::verify(
+        &verifier,
+        &fixture.scope,
+        &fixture.volume,
+        VolumeOperation::Write,
+        4096,
+        &mut None,
+    )?;
+    let empty = fixture
+        .host
+        .put_content(
+            &fixture.volume,
+            &writer,
+            "secrets/empty",
+            b"",
+            "text/plain",
+            "empty",
+            4096,
+            &IdempotencyKey::new("empty")?,
+            None,
+            Default::default(),
+        )
+        .await?;
+    let grant = ContentGrant::verify_read(&verifier, &fixture.scope, &empty)?;
+    let reader = fixture.reader(&fixture.scope)?;
+    assert!(
+        fixture
+            .host
+            .read_content(&empty, &grant, 0, None)
+            .await?
+            .is_empty()
+    );
+    reader.verify(&empty, 0, None)?.await?;
+    assert!(
+        fixture
+            .host
+            .read_content(&fixture.file, &grant, 0, None)
+            .await
+            .is_err()
+    );
+    assert!(reader.verify(&fixture.file, 0, None)?.await.is_err());
+    for (path, expired) in [(false, false), (true, true)] {
+        let scoped = fixture.narrowed(path, expired)?;
+        assert!(
+            fixture
+                .reader(&scoped)?
+                .verify(&empty, 0, None)?
+                .await
+                .is_err()
+        );
+    }
+    fixture.policy(true, 2).await?;
+    assert!(
+        fixture
+            .host
+            .read_content(&empty, &grant, 0, None)
+            .await
+            .is_err()
+    );
+    assert!(reader.verify(&empty, 0, None)?.await.is_err());
+    Ok(())
+}

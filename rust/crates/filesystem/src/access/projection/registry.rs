@@ -1,6 +1,12 @@
 use super::State;
 
-pub(super) type Key = (crate::VolumeId, u64);
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) struct Volume {
+    pub(super) owner: [u8; 16],
+    pub(super) id: crate::VolumeId,
+}
+
+pub(super) type Key = (Volume, u64);
 type Tree = Option<Box<Node>>;
 
 // Each registration owns one node. Tree rotations and removal move boxes,
@@ -23,7 +29,7 @@ pub(super) struct Node {
 }
 
 impl Registry {
-    pub(super) fn counts(&self, volume: crate::VolumeId) -> State {
+    pub(super) fn counts(&self, volume: Volume) -> State {
         let lower = prefix(&self.root, volume, false);
         let upper = prefix(&self.root, volume, true);
         State {
@@ -34,7 +40,7 @@ impl Registry {
 
     pub(super) fn insert(
         &mut self,
-        volume: crate::VolumeId,
+        volume: Volume,
         projection: bool,
     ) -> Result<Key, crate::FsError> {
         let next = self.next.checked_add(1).ok_or(crate::WorkError::Overflow)?;
@@ -186,7 +192,7 @@ fn remove(tree: Tree, key: Key) -> (Tree, Option<Box<Node>>) {
     (Some(balance(node)), removed)
 }
 
-fn prefix(tree: &Tree, volume: crate::VolumeId, inclusive: bool) -> State {
+fn prefix(tree: &Tree, volume: Volume, inclusive: bool) -> State {
     let mut current = tree;
     let mut sum = State::default();
     while let Some(node) = current {

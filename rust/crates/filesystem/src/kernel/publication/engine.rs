@@ -169,7 +169,8 @@ where
     // The lease spans validation and the authority CAS. It excludes new physical
     // projections; existing projections admit only candidates preserving policy.
     let (_projection_fence, projected) =
-        crate::access::projection::publication(request.volume_id).map_err(E::from)?;
+        crate::access::projection::publication(authority.operation_claims(), request.volume_id)
+            .map_err(E::from)?;
     if projected {
         projection::check(
             objects,

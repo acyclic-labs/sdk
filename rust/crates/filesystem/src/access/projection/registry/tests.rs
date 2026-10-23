@@ -1,8 +1,11 @@
 use super::*;
 use proptest::prelude::*;
 
-fn volume(id: u8) -> crate::VolumeId {
-    crate::VolumeId::from_bytes([id; 16])
+fn volume(id: u8) -> Volume {
+    Volume {
+        owner: [id / 4; 16],
+        id: crate::VolumeId::from_bytes([id % 4; 16]),
+    }
 }
 
 fn invariant(tree: &Tree, lower: Option<Key>, upper: Option<Key>) -> (usize, State) {
@@ -27,7 +30,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
     fn rotations_and_removals_preserve_each_volumes_live_leases(
-        steps in prop::collection::vec((0u8..4, any::<bool>(), any::<bool>(), any::<usize>()), 0..192),
+        steps in prop::collection::vec((0u8..8, any::<bool>(), any::<bool>(), any::<usize>()), 0..192),
     ) {
         let mut registry = Registry::default();
         let mut live = Vec::new();
@@ -42,7 +45,7 @@ proptest! {
                 prop_assert!(removed.left.is_none() && removed.right.is_none());
             }
             invariant(&registry.root, None, None);
-            for id in 0..4 {
+            for id in 0..8 {
                 let mut expected = State::default();
                 for (_, projection) in live.iter().filter(|(key, _)| key.0 == volume(id)) {
                     expected.projections += usize::from(*projection);

@@ -63,8 +63,11 @@ impl<'a> AdmittedSelection<'a> {
                 "materialization requires a process-owned policy authority",
             ));
         }
-        let policy =
-            projection::enter(workspace.id().volume_id()).map_err(MountSourceError::from)?;
+        let policy = projection::enter(
+            workspace.volume.fs.operation_claims(),
+            workspace.id().volume_id(),
+        )
+        .map_err(MountSourceError::from)?;
         let (binding, view) = fresh(options, workspace, generation, work, materialize).await?;
         Ok(Self {
             options,

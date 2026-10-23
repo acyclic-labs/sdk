@@ -3,9 +3,9 @@ use crate::sync::Arc;
 use crate::sync::Mutex;
 mod registry;
 
-// A volume id denotes one authority. Distinct embedded stores reusing an id
-// conservatively share exclusion. Remote authorities need a distributed lease
-// and are refused by ProjFS admission.
+// Exclusion belongs to a provider owner and volume. Independent stores may
+// derive identical volume ids; adapters sharing a provider share its owner id.
+// Remote authorities still require a distributed lease for ProjFS admission.
 #[derive(Default)]
 struct ProjectionPolicies {
     // Terminal lock: neither backend I/O nor another lock runs under it.
@@ -28,22 +28,39 @@ static POLICIES: std::sync::OnceLock<ProjectionPolicies> = std::sync::OnceLock::
 #[cfg(acyclic_fs_loom)]
 loom::lazy_static! { static ref POLICIES: ProjectionPolicies = ProjectionPolicies::default(); }
 
-fn register(volume: crate::VolumeId, projection: bool) -> Result<(Lease, bool), crate::FsError> {
+fn register(
+    owner: &crate::OperationClaims,
+    volume: crate::VolumeId,
+    projection: bool,
+) -> Result<(Lease, bool), crate::FsError> {
     #[cfg(not(acyclic_fs_loom))]
     let policies = POLICIES.get_or_init(ProjectionPolicies::default);
     #[cfg(acyclic_fs_loom)]
     let policies = &*POLICIES;
-    ProjectionPolicies::enter(policies, volume, projection)
+    ProjectionPolicies::enter(
+        policies,
+        registry::Volume {
+            owner: owner.owner_identity(),
+            id: volume,
+        },
+        projection,
+    )
 }
 
-pub(crate) fn enter(volume: crate::VolumeId) -> Result<Lease, crate::FsError> {
-    register(volume, true).map(|(lease, _)| lease)
+pub(crate) fn enter(
+    owner: &crate::OperationClaims,
+    volume: crate::VolumeId,
+) -> Result<Lease, crate::FsError> {
+    register(owner, volume, true).map(|(lease, _)| lease)
 }
 
 // Registration is linearized with projection admission. No backend I/O or CAS
 // runs under the registry lock; the returned lease excludes admission until CAS.
-pub(crate) fn publication(volume: crate::VolumeId) -> Result<(Lease, bool), crate::FsError> {
-    register(volume, false)
+pub(crate) fn publication(
+    owner: &crate::OperationClaims,
+    volume: crate::VolumeId,
+) -> Result<(Lease, bool), crate::FsError> {
+    register(owner, volume, false)
 }
 pub(crate) fn check_policy(projected: bool, changed: bool) -> Result<(), crate::FsError> {
     if projected && changed {
@@ -55,7 +72,7 @@ pub(crate) fn check_policy(projected: bool, changed: bool) -> Result<(), crate::
 impl ProjectionPolicies {
     fn enter(
         owner: &Self,
-        volume: crate::VolumeId,
+        volume: registry::Volume,
         projection: bool,
     ) -> Result<(Registration<'_>, bool), crate::FsError> {
         let mut entries = owner
@@ -95,13 +112,15 @@ mod model {
         loom::model(move || {
             let volume = crate::VolumeId::from_bytes([1; 16]);
             let revision = Arc::new(crate::sync::atomic::AtomicUsize::new(0));
+            let owner = Arc::new(crate::OperationClaims::default());
             let publisher = loom::thread::spawn({
+                let owner = Arc::clone(&owner);
                 let revision = Arc::clone(&revision);
                 move || {
                     let (lease, projected) = if omit_publication_lease {
                         (None, false)
                     } else {
-                        let (lease, projected) = publication(volume).unwrap();
+                        let (lease, projected) = publication(&owner, volume).unwrap();
                         (Some(lease), projected)
                     };
                     // The real publication reducer checks the candidate metadata
@@ -120,7 +139,7 @@ mod model {
             let mut overlap = false;
             let before_admission =
                 late_admission.then(|| revision.load(crate::sync::atomic::Ordering::SeqCst));
-            if let Ok(lease) = enter(volume) {
+            if let Ok(lease) = enter(&owner, volume) {
                 let pinned = before_admission
                     .unwrap_or_else(|| revision.load(crate::sync::atomic::Ordering::SeqCst));
                 loom::thread::yield_now();
@@ -131,7 +150,7 @@ mod model {
             if overlap {
                 observed.store(true, std::sync::atomic::Ordering::Relaxed);
             }
-            assert!(publication(volume).is_ok());
+            assert!(publication(&owner, volume).is_ok());
         });
         assert!(
             !violated.load(std::sync::atomic::Ordering::Relaxed),
@@ -173,7 +192,7 @@ mod properties {
         #![proptest_config(ProptestConfig::with_cases(32))]
         #[test]
         fn fresh_owner_handles_share_exclusion_until_the_last_lease_retires(steps in prop::collection::vec(0u8..4, 0..48)) {
-            let volume = crate::VolumeId::from_bytes([1; 16]);
+            let volume = registry::Volume { owner: [0; 16], id: crate::VolumeId::from_bytes([1; 16]) };
             let policies = Arc::new(ProjectionPolicies::default());
             let mut projections = Vec::new();
             let mut editors = Vec::new();

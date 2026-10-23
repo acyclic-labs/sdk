@@ -15,7 +15,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         if !self.volume.fs.has_process_policy_owner() {
             return Err(WorkspaceError::AccessDenied);
         }
-        let policy = crate::access::projection::enter(self.id.volume_id())?;
+        let policy = crate::access::projection::enter(
+            self.volume.fs.operation_claims(),
+            self.id.volume_id(),
+        )?;
         let result = operation().await;
         drop(policy);
         Ok(result)

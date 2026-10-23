@@ -54,7 +54,12 @@ async fn set_metadata(protected: bool) -> Result<(), Box<dyn Error>> {
     )?;
     let before = unbounded!(workspace, head())?.id();
     let projection = protected
-        .then(|| crate::access::projection::enter(workspace.id().volume_id()))
+        .then(|| {
+            crate::access::projection::enter(
+                workspace.volume.fs.operation_claims(),
+                workspace.id().volume_id(),
+            )
+        })
         .transpose()?;
     assert_projection_denied(&commit(&mut transaction).await);
     assert_eq!(unbounded!(workspace, head())?.id(), before);
@@ -114,7 +119,12 @@ async fn join(protected: bool) -> Result<(), Box<dyn Error>> {
     };
     let before = unbounded!(parent, head())?.id();
     let projection = protected
-        .then(|| crate::access::projection::enter(parent.id().volume_id()))
+        .then(|| {
+            crate::access::projection::enter(
+                parent.volume.fs.operation_claims(),
+                parent.id().volume_id(),
+            )
+        })
         .transpose()?;
     assert_projection_denied(
         &plan
@@ -160,7 +170,10 @@ async fn unchanged_policy_publishes_and_inflight_cas_excludes_new_projection()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let workspace = unbounded!(fs, create_workspace("publication-projection"))?;
-    let projection = crate::access::projection::enter(workspace.id().volume_id())?;
+    let projection = crate::access::projection::enter(
+        workspace.volume.fs.operation_claims(),
+        workspace.id().volume_id(),
+    )?;
     workspace
         .write_text("/ordinary", "unrestricted content publication")
         .await?;
@@ -171,6 +184,7 @@ async fn unchanged_policy_publishes_and_inflight_cas_excludes_new_projection()
         write_access_policy(&denied_policy(), NamedAttributeWriteMode::Create)
     )?;
     let volume = workspace.id().volume_id();
+    let shared = fs.clone();
     editor
         .commit(
             crate::OperationId::new(),
@@ -182,7 +196,7 @@ async fn unchanged_policy_publishes_and_inflight_cas_excludes_new_projection()
             &CancellationToken::new(),
             move |_| async move {
                 assert!(
-                    crate::access::projection::enter(volume).is_err(),
+                    crate::access::projection::enter(shared.operation_claims(), volume).is_err(),
                     "projection entered an in-flight policy CAS"
                 );
                 Ok::<_, crate::OperationFailure<FsError>>(crate::OperationReceipt {
@@ -192,7 +206,7 @@ async fn unchanged_policy_publishes_and_inflight_cas_excludes_new_projection()
             },
         )
         .await?;
-    assert!(crate::access::projection::enter(volume).is_ok());
+    assert!(crate::access::projection::enter(fs.operation_claims(), volume).is_ok());
     Ok(())
 }
 
@@ -218,4 +232,67 @@ proptest::proptest! {
             proptest::prop_assert!(matches!(bounded, WorkspaceError::Work(actual) if actual == work));
         }
     }
+}
+
+async fn independent_policy_owners(use_foreign_owner: bool) -> Result<(), Box<dyn Error>> {
+    let first = Fs::memory();
+    let second = Fs::memory();
+    let workspace = unbounded!(first, create_workspace("provider-policy-domain"))?;
+    let other = unbounded!(second, create_workspace("provider-policy-domain"))?;
+    assert_eq!(workspace.id(), other.id());
+    let recomposed = Fs::new(
+        first.authority().clone(),
+        first.objects().clone(),
+        first.capabilities(),
+    );
+    let shared = unbounded!(recomposed, open_workspace("provider-policy-domain"))?;
+    assert_eq!(
+        first.operation_claims().owner_identity(),
+        recomposed.operation_claims().owner_identity()
+    );
+    assert_ne!(
+        first.operation_claims().owner_identity(),
+        second.operation_claims().owner_identity()
+    );
+    let owner = if use_foreign_owner {
+        second.operation_claims()
+    } else {
+        first.operation_claims()
+    };
+    let projection = crate::access::projection::enter(owner, workspace.id().volume_id())?;
+    let mut independent = current(&other, true).await?;
+    unbounded!(
+        independent,
+        write_access_policy(&denied_policy(), NamedAttributeWriteMode::Create)
+    )?;
+    assert!(
+        publish(&mut independent).await.is_ok(),
+        "independent owner policy publication was blocked"
+    );
+    let mut transaction = unbounded!(shared, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(
+        transaction.checkout,
+        write_access_policy(&denied_policy(), NamedAttributeWriteMode::Create)
+    )?;
+    let before = unbounded!(workspace, head())?.id();
+    assert_projection_denied(&commit(&mut transaction).await);
+    assert_eq!(unbounded!(workspace, head())?.id(), before);
+    drop(projection);
+    commit(&mut transaction).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn equal_volume_ids_in_independent_providers_keep_separate_policy_leases()
+-> Result<(), Box<dyn Error>> {
+    independent_policy_owners(false).await
+}
+
+#[tokio::test]
+#[should_panic(expected = "independent owner policy publication was blocked")]
+async fn binding_a_policy_lease_to_the_wrong_provider_is_detected() {
+    assert!(
+        independent_policy_owners(true).await.is_ok(),
+        "negative control setup failed"
+    );
 }
