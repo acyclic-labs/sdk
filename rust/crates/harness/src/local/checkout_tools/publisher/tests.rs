@@ -751,12 +751,13 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
     )
     .map_err(storage)?;
     let tools = publisher.tools.clone();
+    let shell_grant = format!("tool:call:{}", crate::tools::shell::PLATFORM.name);
     let all = Capabilities::new(
         fixture
             .signed
             .capabilities()
             .iter()
-            .chain(["tool:call:bash", "tool:call:fs"]),
+            .chain([shell_grant.as_str(), "tool:call:fs"]),
     );
     super::super::access::require_mount_access(
         tools.workspace.view().workspace(),
@@ -790,21 +791,23 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
             async move {
                 let context = ToolContext::new(Arc::new(task), OperationId::new(), "policy-call", None)?;
                 let invocation = ToolInvocation { operation_id: context.operation_id(), call_id: context.call_id().into(),
-                    name: name.clone(), arguments: serde_json::json!({"command": if name == "bash" { "cat secrets/key" } else { "grep secret" }}) };
-                Ok::<_, Error>(matches!(tools.execute(invocation, Some(context)).await,
-                    Err(Error::FilesystemAccessConfiguration(_))))
+                    name: name.clone(), arguments: serde_json::json!({"command": if name == "fs" { "grep secret" } else { "cat secrets/key" }}) };
+                match tools.execute(invocation, Some(context)).await {
+                    Err(Error::FilesystemAccessConfiguration(_)) => Ok::<_, Error>(()),
+                    result => Err(Error::Invalid(format!("{name} must reject filesystem access configuration: {result:?}"))),
+                }
             }
         })?)?;
         let runtime = bindings.build(None)?;
-        let definition = runtime.task::<String, bool>("raw-policy@1")?;
-        for name in ["bash", "fs"] {
+        let definition = runtime.task::<String, ()>("raw-policy@1")?;
+        for name in [crate::tools::shell::PLATFORM.name, "fs"] {
             assert_eq!(
                 runtime
                     .spawn(&definition, name.into())
                     .await?
                     .result()
                     .await?,
-                crate::Outcome::Succeeded(true)
+                crate::Outcome::Succeeded(())
             );
         }
         Ok(())
