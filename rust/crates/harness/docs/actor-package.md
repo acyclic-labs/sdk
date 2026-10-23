@@ -103,7 +103,8 @@ stock worker lives in the package. Its command subscription runs on the host
 executor. Interactive and headless clients publish request files and observe
 results; neither client owns the worker future. Detachment stops idle request
 admission, while an already selected request drains its effects and publications
-before the last owner retires native mounts.
+before the last owner retires native mounts. Normal interactive/headless shutdown
+stops admission and joins settlement before the process closes its executor.
 
 The package tests exercise shared histories on memory and local-disk providers,
 interrupted inbox/outbox/cancellation/placement recovery, and the stock bundle

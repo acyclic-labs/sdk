@@ -48,17 +48,18 @@ impl CommandSession<dyn acyclic_stream::StreamProvider> {
 }
 
 /// Observe a runtime-owned command subscription while presenting its files.
-/// Closing presentation detaches admission without cancelling admitted work.
+/// Closing presentation stops admission and joins admitted work before returning.
 pub async fn with_local_commands<T, E: From<Error>>(
     local: Arc<LocalHarness>,
     session: OperationId,
     presentation: impl std::future::Future<Output = std::result::Result<T, E>>,
 ) -> std::result::Result<T, E> {
-    let subscription = crate::package::harness::CommandSubscription::start(
+    let mut subscription = crate::package::harness::CommandSubscription::start(
         local,
         &acyclic_stream::session::runtime::PlatformExecutor,
         session,
         false,
     );
-    super::scheduling::drive_command_owner(subscription, presentation).await
+    let attachment = subscription.take_attachment();
+    super::scheduling::drive_command_owner(subscription, presentation, || drop(attachment)).await
 }

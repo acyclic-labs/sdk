@@ -35,7 +35,7 @@ impl ToolExecutor for GateTool {
     }
 }
 
-async fn history(runtime_owned: bool, only_session: bool) -> Result<bool> {
+async fn history(runtime_owned: bool, only_session: bool, join_shutdown: bool) -> Result<bool> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let project = volume(directory.path()).await?;
     let provider = scripted([
@@ -80,6 +80,38 @@ async fn history(runtime_owned: bool, only_session: bool) -> Result<bool> {
         })
         .await?;
     let request = commands.next_request().await?;
+    if join_shutdown {
+        let (closing, closed) = futures::channel::oneshot::channel();
+        let presentation = async move {
+            boundary.await.unwrap();
+            closing.send(()).unwrap();
+            Ok::<(), Error>(())
+        };
+        let work = Box::pin(crate::client::with_local_commands(
+            local.clone(),
+            session,
+            presentation,
+        ));
+        let futures::future::Either::Right((Ok(()), mut work)) =
+            futures::future::select(work, closed).await
+        else {
+            panic!("shutdown must first reach the blocked effect");
+        };
+        // The old wrapper returned here and let the CLI stop Tokio. The actual
+        // client boundary must remain pending until its worker publishes.
+        use futures::FutureExt;
+        assert!(work.as_mut().now_or_never().is_none());
+        release.send(()).unwrap();
+        work.await?;
+        commands.observe_change().await?;
+        while commands.output_page(0)?.is_none() {
+            commands.observe_change().await?;
+        }
+        assert_eq!(provider.requests().len(), 2);
+        drop(commands);
+        crate::client::disconnect_local(local).await?;
+        return Ok(true);
+    }
     if runtime_owned {
         let (finished, settled) = futures::channel::oneshot::channel();
         let executor = ObservedExecutor {
@@ -124,13 +156,19 @@ async fn history(runtime_owned: bool, only_session: bool) -> Result<bool> {
 #[tokio::test]
 async fn command_subscriptions_finish_admitted_work_after_client_detach() -> Result<()> {
     for only_session in [false, true] {
-        assert!(Box::pin(history(true, only_session)).await?);
+        assert!(Box::pin(history(true, only_session, false)).await?);
     }
     Ok(())
 }
 
 #[tokio::test]
 async fn negative_control_presentation_owned_execution_drops_the_effect() -> Result<()> {
-    assert!(!Box::pin(history(false, true)).await?);
+    assert!(!Box::pin(history(false, true, false)).await?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn client_shutdown_joins_the_blocked_tool_before_returning() -> Result<()> {
+    assert!(Box::pin(history(true, false, true)).await?);
     Ok(())
 }

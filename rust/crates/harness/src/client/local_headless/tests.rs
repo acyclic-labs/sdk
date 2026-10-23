@@ -82,6 +82,8 @@ async fn unsaved_indeterminate_owner_result_preserves_exit_class() -> Result<()>
     let mut client = LocalFileClient::open(local.clone(), operation).await?;
     // The recovery owner cannot establish an outcome. Its original request
     // remains in the outbox; no fabricated terminal execution file is written.
+    drop(client.attachment.take());
+    client.host.as_mut().await?;
     client.host = Box::pin(async move { Err(Error::Indeterminate(operation)) });
     let request = prepare_local_prompt(operation, "uncertain request")?;
     let outcome =

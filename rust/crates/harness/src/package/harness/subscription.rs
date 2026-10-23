@@ -18,7 +18,7 @@ use std::{
 /// requests. Work already admitted by its subscription remains runtime-owned.
 pub struct CommandSubscription {
     completion: oneshot::Receiver<Result<()>>,
-    _attachment: oneshot::Sender<()>,
+    attachment: Option<oneshot::Sender<()>>,
 }
 
 impl Future for CommandSubscription {
@@ -36,6 +36,12 @@ impl Future for CommandSubscription {
 }
 
 impl CommandSubscription {
+    /// Separate admission lifetime from settlement so client shutdown can stop
+    /// new requests and still join all runtime-owned work.
+    pub(crate) fn take_attachment(&mut self) -> Option<oneshot::Sender<()>> {
+        self.attachment.take()
+    }
+
     /// Install a subscription on the caller's runtime executor. Its handle is
     /// disposable; only the executor owns the admitted command's future.
     pub fn start(
@@ -58,7 +64,7 @@ impl CommandSubscription {
         }));
         Self {
             completion,
-            _attachment: attachment,
+            attachment: Some(attachment),
         }
     }
 }

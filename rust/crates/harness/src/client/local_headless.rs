@@ -93,6 +93,7 @@ pub struct LocalFileClient {
     initial: bool,
     submitted: bool,
     host: Pin<Box<dyn Future<Output = Result<()>>>>,
+    attachment: Option<futures::channel::oneshot::Sender<()>>,
     host_done: bool,
     host_error: Option<Error>,
     drain_through: u64,
@@ -111,13 +112,16 @@ impl LocalFileClient {
             },
         )
         .await?;
+        let mut subscription = crate::package::harness::CommandSubscription::start(
+            local.clone(),
+            &acyclic_stream::session::runtime::PlatformExecutor,
+            operation,
+            true,
+        );
+        let attachment = subscription.take_attachment();
         Ok(Self {
-            host: Box::pin(crate::package::harness::CommandSubscription::start(
-                local.clone(),
-                &acyclic_stream::session::runtime::PlatformExecutor,
-                operation,
-                true,
-            )),
+            host: Box::pin(subscription),
+            attachment,
             local,
             operation,
             query,
@@ -138,10 +142,18 @@ impl LocalFileClient {
                 .query
                 .file(&key(self.operation, TaskFile::Request)?)
                 .is_some();
+        let mut settlement = Ok(());
         if requested && !self.host_done && self.outcome()?.is_none() {
             // The one-request headless owner returns after saving its outcome.
             // Keep polling it until native work and publication have settled.
-            let _ = self.host.as_mut().await;
+            settlement = self.host.as_mut().await;
+            self.host_done = true;
+        }
+        // Even a published outcome precedes worker teardown. Stop idle follow
+        // and join before the process can shut down its executor.
+        drop(self.attachment.take());
+        if !self.host_done {
+            settlement = self.host.as_mut().await;
         }
         let Self {
             local, host, query, ..
@@ -149,7 +161,10 @@ impl LocalFileClient {
         drop(host);
         drop(query);
         super::disconnect_local(local).await?;
-        outcome
+        match outcome {
+            Err(error) => Err(error),
+            Ok(value) => settlement.map(|()| value),
+        }
     }
 
     fn initial(&mut self, output: &mut impl Write) -> Result<()> {

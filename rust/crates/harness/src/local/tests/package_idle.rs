@@ -47,3 +47,37 @@ async fn detaching_an_idle_subscription_releases_the_last_runtime_owner() -> Res
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn client_shutdown_releases_idle_worker_before_executor_shutdown() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let project = volume(directory.path()).await?;
+    let local =
+        Arc::new(LocalHarness::open(volume_config(directory.path(), project, text())?).await?);
+    let owner = Arc::downgrade(&local);
+    crate::client::with_local_commands(local, OperationId::new(), async { Ok::<(), Error>(()) })
+        .await?;
+    assert!(
+        owner.upgrade().is_none(),
+        "joined shutdown must retire the final runtime owner"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn headless_shutdown_releases_idle_worker_before_executor_shutdown() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let project = volume(directory.path()).await?;
+    let local =
+        Arc::new(LocalHarness::open(volume_config(directory.path(), project, text())?).await?);
+    let owner = Arc::downgrade(&local);
+    let (client, _) = crate::client::connect_local(local, OperationId::new()).await?;
+    client
+        .finish(Ok(crate::client::HeadlessOutcome::Completed))
+        .await?;
+    assert!(
+        owner.upgrade().is_none(),
+        "headless finish must join its idle worker"
+    );
+    Ok(())
+}
