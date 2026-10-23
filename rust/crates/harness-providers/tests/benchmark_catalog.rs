@@ -1,4 +1,4 @@
-//! The benchmark generator must satisfy GraphCoder's shipping catalogue parser.
+//! The benchmark generator must satisfy the shipping `GraphCoder` catalogue parser.
 #![cfg(not(target_arch = "wasm32"))]
 
 use acyclic_harness_providers::{Credentials, Registry};
