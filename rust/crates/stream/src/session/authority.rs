@@ -81,6 +81,19 @@ pub(super) struct Binding {
     requested: wire::SessionFilter,
     filter_digest: [u8; 32],
 }
+
+fn stream_resource(path: Option<&StreamPath>) -> String {
+    let mut resource = String::from("streams:/");
+    if let Some(path) = path {
+        for (index, component) in path.as_str().split('/').enumerate() {
+            if index != 0 {
+                resource.push('/');
+            }
+            resource.push_str(&acyclic_auth::encode_component(component.as_bytes()));
+        }
+    }
+    resource
+}
 impl Authority {
     /// Binds a canonical authenticated audience and presenting account.
     pub fn new(
@@ -243,7 +256,7 @@ impl Authority {
             children: false,
             credential_revision: slots.entries.get(&slot).ok_or(Rejection::Forbidden)?.0,
             slot,
-            resource: format!("streams:/{}", path.as_str()),
+            resource: stream_resource(Some(path)),
             requested,
             filter_digest: [0; 32],
         };
@@ -263,7 +276,7 @@ impl Authority {
             children: true,
             credential_revision: slots.entries.get(&slot).ok_or(Rejection::Forbidden)?.0,
             slot,
-            resource: format!("streams:/{}", parent.map_or("", StreamPath::as_str)),
+            resource: stream_resource(parent),
             requested,
             filter_digest: [0; 32],
         };
@@ -282,7 +295,7 @@ impl Authority {
             children: true,
             credential_revision: binding.credential_revision,
             slot: binding.slot,
-            resource: format!("streams:/{}", child.as_str()),
+            resource: stream_resource(Some(child)),
             requested: binding.requested.clone(),
             filter_digest: binding.filter_digest,
         };

@@ -423,3 +423,41 @@ async fn live_sessions_close_idle_and_queued_follows_before_disclosure() {
         }
     }
 }
+
+#[test]
+fn canonical_resource_bindings_preserve_reserved_names_unicode_and_literal_escapes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let auth = authority(State::new());
+    for (path, canonical, alias) in [
+        (".acyclic/fs/volume", "streams:/%2Eacyclic/fs/volume", "%2Eacyclic/fs/volume"),
+        ("café/release.v1", "streams:/caf%C3%A9/release%2Ev1", "caf%C3%A9/release.v1"),
+        ("key%name/child", "streams:/key%25name/child", "key%25name/child"),
+    ] {
+        let bytes = signed::root(|block| {
+            block.certificates.as_mut().expect("fixture certificates").keys
+                .first_mut().expect("fixture key").key.grants = GrantSet {
+                    grants: vec![Grant { kind: GrantKind::Resource(ResourceGrant {
+                        resource: ResourcePattern { name: canonical.into(), prefix: true },
+                        actions: vec!["streams/follow".into(), "streams/list".into()],
+                    }) }],
+                };
+        });
+        let mut slots = Slots::default();
+        auth.register(&mut slots, 0, &bytes, 2)?;
+        let path = StreamPath::new(path)?;
+        let (binding, _) = auth.bind(&slots, 0, &path, Default::default(), 1)
+            .map_err(|_| "canonical stream follow rejected")?;
+        assert_eq!(binding.resource, canonical);
+        assert!(matches!(bind(&auth, &slots, alias), Err(Rejection::Forbidden)));
+        let mut children = auth.bind_children(&slots, 0, None, Default::default(), 1)
+            .map_err(|_| "ancestor listing rejected")?;
+        assert!(auth.permits_child(&slots, &mut children, &path, 1)
+            .map_err(|_| "canonical child rejected")?);
+        assert!(!auth.permits_child(&slots, &mut children, &StreamPath::new(alias)?, 1)
+            .map_err(|_| "alias listing failed")?);
+        let exact = auth.bind_children(&slots, 0, Some(&path), Default::default(), 1)
+            .map_err(|_| "canonical child parent rejected")?;
+        assert_eq!(exact.resource, canonical);
+    }
+    Ok(())
+}
