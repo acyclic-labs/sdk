@@ -75,6 +75,16 @@ if [ "${browser_status[1]}" != 0 ]; then
   browser_rc=2
 fi
 echo "GATE_BROWSER_WALL seconds=$((SECONDS-browser_started)) rc=$browser_rc"
+loom_started=$SECONDS
+echo "GATE_HARNESS_LOOM_START target=$cache/loom"
+CARGO_TARGET_DIR="$cache/loom" bash scripts/check-harness-models.sh 2>&1 | tee .gate-harness-loom.out
+loom_status=("${PIPESTATUS[@]}")
+loom_rc=${loom_status[0]}
+if [ "${loom_status[1]}" != 0 ]; then
+  echo 'error: gate could not retain harness Loom output'
+  loom_rc=2
+fi
+echo "GATE_HARNESS_LOOM_WALL seconds=$((SECONDS-loom_started)) rc=$loom_rc"
 wait "$clippy"
 echo "GATE_CLIPPY rc=$(cat .gate-clippy.rc)"
 if [ "$(cat .gate-clippy.rc)" != 0 ]; then sed 's/^/GATE_CLIPPY_RAW /' .gate-clippy.out; fi
@@ -89,11 +99,12 @@ grep -aE '^GATE_FEATURES_(CACHE|WALL) ' .gate-features.out
 if [ "$(cat .gate-features.rc)" != 0 ]; then cat .gate-features.out; fi
 rc=$targets_rc; [ "$rc" != 0 ] || rc=$docs_rc
 [ "$rc" != 0 ] || rc=$browser_rc
+[ "$rc" != 0 ] || rc=$loom_rc
 # A partial auxiliary step must not leave the main baseline falsely green.
 if [ "$rc" = 0 ] && { [ "$(cat .gate-clippy.rc)" != 0 ] || [ "$(cat .gate-features.rc)" != 0 ]; }; then rc=1; fi
 if [ "$targets_rc" = 0 ] && [ "$docs_rc" = 0 ]; then
   echo "GATE_TEST_COVERAGE all-targets+doc packages=$members"
 fi
-echo "GATE_WALL seconds=$((SECONDS-started)) test_rc=$targets_rc doc_rc=$docs_rc browser_rc=$browser_rc"
+echo "GATE_WALL seconds=$((SECONDS-started)) test_rc=$targets_rc doc_rc=$docs_rc browser_rc=$browser_rc loom_rc=$loom_rc"
 echo "GATE_DONE rc=$rc"
 exit "$rc"

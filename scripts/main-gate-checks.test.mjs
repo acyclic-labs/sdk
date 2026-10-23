@@ -31,6 +31,7 @@ esac
     chmodSync(cargo, 0o755);
     writeFileSync(join(cwd, "scripts/check-browser-targets.sh"), '#!/bin/bash\necho "browser target check: fixture"\necho "$CARGO_TARGET_DIR" > browser-target\necho "browser" >> calls\nif [ "$BROWSER_RC" != 0 ]; then echo "error: browser diagnostic on stderr" >&2; fi\nexit "$BROWSER_RC"\n');
     writeFileSync(join(cwd, "scripts/gate-feature-matrix.sh"), "#!/bin/bash\necho 'feature matrix: 104/104 sets ok in 1.0s'\nexit \"$FEATURE_RC\"\n");
+    writeFileSync(join(cwd, "scripts/check-harness-models.sh"), "#!/bin/bash\nexit 0\n");
     for (const [target, doc, features, browser, expected, early = false] of [[0, 0, 0, 0, 0], [101, 0, 0, 0, 101], [0, 101, 0, 0, 101], [0, 0, 1, 0, 1], [0, 0, 0, 101, 101], [101, 0, 0, 0, 101, true]]) {
       writeFileSync(join(cwd, "calls"), "");
       const result = spawnSync("bash", [runner, "--each-feature", "--locked", "-p", "harness", "--all-features", "--no-fail-fast", "--", "--skip", "known-hang"], {
