@@ -581,13 +581,15 @@ fn tool_matchers_use_declared_names_and_exact_identifiers() -> Result<()> {
     let mut hooks = Hooks::default();
     hooks.add_json(
         json!({"hooks":{"PreToolUse":[
-        {"matcher":"Bash","hooks":[{"type":"command","command":"guard"}]},
-        {"matcher":"PowerShell","hooks":[{"type":"command","command":"windows-guard"}]},
-        {"matcher":"shell","hooks":[{"type":"command","command":"shell-guard"}]},
-        {"matcher":"Edit","hooks":[{"type":"command","command":"edit"}]},
-        {"matcher":"Edit|Write","hooks":[{"type":"command","command":"changes"}]},
-        {"matcher":"fs","hooks":[{"type":"command","command":"fs"}]}
-    ]}}).to_string().as_bytes(),
+            {"matcher":"Bash","hooks":[{"type":"command","command":"guard"}]},
+            {"matcher":"PowerShell","hooks":[{"type":"command","command":"windows-guard"}]},
+            {"matcher":"shell","hooks":[{"type":"command","command":"shell-guard"}]},
+            {"matcher":"Edit","hooks":[{"type":"command","command":"edit"}]},
+            {"matcher":"Edit|Write","hooks":[{"type":"command","command":"changes"}]},
+            {"matcher":"fs","hooks":[{"type":"command","command":"fs"}]}
+        ]}})
+        .to_string()
+        .as_bytes(),
     )?;
     for (name, commands) in [
         ("shell", vec!["shell-guard"]),

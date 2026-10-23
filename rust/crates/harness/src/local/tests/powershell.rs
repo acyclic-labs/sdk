@@ -99,11 +99,7 @@ async fn scripted_powershell_reads_writes_runs_and_captures_exit_code() -> Resul
             "write",
             json!({"path":"from-write.txt", "text":"file tool input", "media_type":"text/plain", "display_name":"from-write.txt"}),
         ),
-        call(
-            "shell",
-            "shell",
-            json!({"command": command, "cwd":"src"}),
-        ),
+        call("shell", "shell", json!({"command": command, "cwd":"src"})),
         call(
             "scratch",
             "shell",
@@ -184,11 +180,7 @@ async fn powershell_cancellation_kills_parent_and_descendant() -> Result<()> {
         marker.display().to_string().replace('\'', "''")
     );
     let provider = scripted([
-        call(
-            "running",
-            "shell",
-            json!({"command":script, "timeout":5}),
-        ),
+        call("running", "shell", json!({"command":script, "timeout":5})),
         ScriptedTurn::Text("unexpected completion".into()),
     ]);
     let harness = LocalHarness::open(

@@ -29,7 +29,10 @@ pub fn local_harness_config(
         let mut config = config;
         config.environment_platform = crate::native_environment::PlatformPolicy::Fixture {
             os: std::env::consts::OS.into(),
-            shell: crate::native_environment::PlatformPolicy::Native.facts().1.into(),
+            shell: crate::native_environment::PlatformPolicy::Native
+                .facts()
+                .1
+                .into(),
         };
         config
     };
