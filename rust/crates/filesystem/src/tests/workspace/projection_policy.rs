@@ -194,15 +194,19 @@ async fn unchanged_policy_publishes_and_inflight_cas_excludes_new_projection()
             crate::PublicationPermit::Unrestricted,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-            move |_| async move {
-                assert!(
-                    crate::access::projection::enter(shared.operation_claims(), volume).is_err(),
-                    "projection entered an in-flight policy CAS"
-                );
-                Ok::<_, crate::OperationFailure<FsError>>(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                })
+            move |_| {
+                let shared = shared.clone();
+                async move {
+                    assert!(
+                        crate::access::projection::enter(shared.operation_claims(), volume)
+                            .is_err(),
+                        "projection entered an in-flight policy CAS"
+                    );
+                    Ok::<_, crate::OperationFailure<FsError>>(crate::OperationReceipt {
+                        value: (),
+                        work: crate::WorkCounters::UNCHARGED,
+                    })
+                }
             },
         )
         .await?;

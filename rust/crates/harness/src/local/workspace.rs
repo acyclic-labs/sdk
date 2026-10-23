@@ -387,9 +387,15 @@ pub(super) async fn open(
     )?;
     if let Some(setup) = &setup {
         volumes::attach(
-            filesystem, &store, setup, &mut mounts,
-            attach.authority.ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?,
-        ).await?;
+            filesystem,
+            &store,
+            setup,
+            &mut mounts,
+            attach
+                .authority
+                .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?,
+        )
+        .await?;
         Box::pin(volumes::parents::bind(&view, setup, &mounts, &cancellation)).await?;
     }
     let context_line = mounts.context_line();
@@ -410,7 +416,9 @@ pub(super) async fn open(
         mounted: None,
         filesystem: filesystem.clone(),
         store,
-        mount_authority: attach.authority.map(|(issuer, agent)| (Arc::new(issuer.clone()), agent)),
+        mount_authority: attach
+            .authority
+            .map(|(issuer, agent)| (Arc::new(issuer.clone()), agent)),
         identity,
         state,
         context_line,

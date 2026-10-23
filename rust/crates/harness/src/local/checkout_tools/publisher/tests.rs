@@ -62,14 +62,20 @@ async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
         workspace::open(
             &filesystem,
             &workspace::Attach {
-                volume: &project, scratch: &private, directory: state.path(),
-                operation: acyclic_fs::OperationId::new(), native_mounts: false,
+                volume: &project,
+                scratch: &private,
+                directory: state.path(),
+                operation: acyclic_fs::OperationId::new(),
+                native_mounts: false,
                 authority: None,
             },
             acyclic_fs::hold_root(directory.path()).map_err(storage)?,
             false,
             workspace::OwnerState {
-                store: acyclic_fs::LocalCoreStateStore::open_shared_owner(state.path().join("workspace")).map_err(storage)?,
+                store: acyclic_fs::LocalCoreStateStore::open_shared_owner(
+                    state.path().join("workspace"),
+                )
+                .map_err(storage)?,
                 processes: None,
             },
         )
@@ -331,7 +337,11 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
     // the tool again. It must repair the checkout as well as return its ref,
     // finishing the write's pending capture as a replayed write would.
     let recovered = publisher
-        .observe_staged_once(operation, 1024, crate::conversation::ContentAccess::default())?
+        .observe_staged_once(
+            operation,
+            1024,
+            crate::conversation::ContentAccess::default(),
+        )?
         .await?
         .0
         .ok_or_else(|| Error::Invalid("the committed upload was not recovered".into()))?;
@@ -987,7 +997,8 @@ async fn a_written_file_ref_is_immediately_editable() -> Result<()> {
             "result.txt",
             b"before edit\n",
             "text/plain",
-            "result.txt", crate::conversation::ContentAccess::default(),
+            "result.txt",
+            crate::conversation::ContentAccess::default(),
         )?
         .await?;
     // Before the fix the returned version named the staged generation, and
@@ -1022,15 +1033,17 @@ async fn a_foreign_change_after_a_write_still_conflicts() -> Result<()> {
             "result.txt",
             b"agent bytes\n",
             "text/plain",
-            "result.txt", crate::conversation::ContentAccess::default(),
+            "result.txt",
+            crate::conversation::ContentAccess::default(),
         )?
         .await?;
     let path = directory.path().join("result.txt");
     std::fs::write(&path, b"user bytes\n").map_err(storage)?;
-    let conflict = match publisher.stage_at(OperationId::new(), &written, b"overwrite\n", None, None) {
-        Ok(staged) => staged.await.err(),
-        Err(error) => Some(error),
-    };
+    let conflict =
+        match publisher.stage_at(OperationId::new(), &written, b"overwrite\n", None, None) {
+            Ok(staged) => staged.await.err(),
+            Err(error) => Some(error),
+        };
     let conflict = conflict.ok_or_else(|| Error::Invalid("stale reference was accepted".into()))?;
     assert_eq!(
         conflict.code(),
@@ -1054,11 +1067,16 @@ async fn a_recovered_write_returns_the_written_reference() -> Result<()> {
             "result.txt",
             b"agent bytes\n",
             "text/plain",
-            "result.txt", crate::conversation::ContentAccess::default(),
+            "result.txt",
+            crate::conversation::ContentAccess::default(),
         )?
         .await?;
     let (observed, _) = publisher
-        .observe_staged_once(operation, 1024, crate::conversation::ContentAccess::default())?
+        .observe_staged_once(
+            operation,
+            1024,
+            crate::conversation::ContentAccess::default(),
+        )?
         .await?;
     let observed = observed.ok_or_else(|| Error::Invalid("the write was not recovered".into()))?;
     assert_eq!(observed.version(), written.version());
@@ -1088,7 +1106,8 @@ async fn replay_after_an_interrupted_capture_is_editable(
             "result.txt",
             b"agent bytes\n",
             "text/plain",
-            "result.txt", crate::conversation::ContentAccess::default(),
+            "result.txt",
+            crate::conversation::ContentAccess::default(),
         )
     };
     KILL_BEFORE_CAPTURE.set(true);
@@ -1107,7 +1126,11 @@ async fn replay_after_an_interrupted_capture_is_editable(
     );
     REPLAY_SKIPS_CAPTURE.set(skip);
     let replayed = if recover {
-        match publisher.observe_staged_once(operation, 1024, crate::conversation::ContentAccess::default()) {
+        match publisher.observe_staged_once(
+            operation,
+            1024,
+            crate::conversation::ContentAccess::default(),
+        ) {
             Ok(observed) => observed.await.map(|(file, _)| file),
             Err(error) => Err(error),
         }
@@ -1200,7 +1223,8 @@ async fn a_recovered_write_keeps_its_reference_however_far_the_head_moves() -> R
             "result.txt",
             b"agent bytes\n",
             "text/plain",
-            "result.txt", crate::conversation::ContentAccess::default(),
+            "result.txt",
+            crate::conversation::ContentAccess::default(),
         )?
         .await?;
     let edit = OperationId::new();
@@ -1224,7 +1248,11 @@ async fn a_recovered_write_keeps_its_reference_however_far_the_head_moves() -> R
         workspace.remove("/buried").await.map_err(storage)?;
     }
     let (recovered, _) = publisher
-        .observe_staged_once(operation, 1024, crate::conversation::ContentAccess::default())?
+        .observe_staged_once(
+            operation,
+            1024,
+            crate::conversation::ContentAccess::default(),
+        )?
         .await?;
     let recovered =
         recovered.ok_or_else(|| Error::Invalid("the write was not recovered".into()))?;
@@ -1264,7 +1292,8 @@ async fn another_write_before_recovery_leaves_the_interrupted_capture_its_own() 
         b"agent bytes
 ",
         "text/plain",
-        "result.txt", crate::conversation::ContentAccess::default(),
+        "result.txt",
+        crate::conversation::ContentAccess::default(),
     ) {
         Ok(staged) => staged.await.err(),
         Err(error) => Some(error),
@@ -1281,11 +1310,16 @@ async fn another_write_before_recovery_leaves_the_interrupted_capture_its_own() 
             b"other bytes
 ",
             "text/plain",
-            "other.txt", crate::conversation::ContentAccess::default(),
+            "other.txt",
+            crate::conversation::ContentAccess::default(),
         )?
         .await?;
     let (recovered, _) = publisher
-        .observe_staged_once(operation, 1024, crate::conversation::ContentAccess::default())?
+        .observe_staged_once(
+            operation,
+            1024,
+            crate::conversation::ContentAccess::default(),
+        )?
         .await?;
     let recovered = recovered
         .ok_or_else(|| Error::Invalid("the interrupted write was not recovered".into()))?;

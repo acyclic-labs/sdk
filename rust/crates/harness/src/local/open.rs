@@ -246,8 +246,12 @@ impl Opening {
             processes: Some(fence_stale_processes(directory.join("processes")).await?),
         };
         let issuer = AuthorityIssuer::new(
-            "acyclic.local", owner.key,
-            Authority { kind: AggregateKind::Task, id: owner.task.to_string() },
+            "acyclic.local",
+            owner.key,
+            Authority {
+                kind: AggregateKind::Task,
+                id: owner.task.to_string(),
+            },
         );
         let attach = workspace::Attach {
             volume: &owner.project,
