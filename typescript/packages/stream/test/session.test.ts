@@ -38,6 +38,8 @@ test("session slots, filters and record headers survive the TypeScript bridge", 
   expect(renewal.body.value.credential).toEqual(new Uint8Array([4, 5]));
   await follow.return(undefined);
   await expect(client.registerCredential(-1, new Uint8Array([1]))).rejects.toThrow(RangeError);
+  await expect(client.registerCredential(0xffff_ffff, new Uint8Array([1]))).rejects.toMatchObject({ code: "capacity" });
+  await expect(client.registerCredential(0, new Uint8Array(StreamLimit.MAX_COMMAND_BYTES + 1))).rejects.toMatchObject({ code: "limit_exceeded" });
   expect(() => client.followData(create(SessionFollowSchema, { resource: "streams:/scoped" }), { from: 0n, credential: 0x1_0000_0000 })).toThrow(RangeError);
 });
 

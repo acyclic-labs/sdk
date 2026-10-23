@@ -20,9 +20,15 @@ impl WasmSession {
 
     /// Adds, replaces or drops a bounded credential slot on every pooled session.
     #[wasm_bindgen(js_name = registerCredential)]
-    pub fn register_credential(&self, slot: u32, credential: &[u8]) -> Result<(), JsValue> {
+    pub fn register_credential(&self, slot: u32, credential: js_sys::Uint8Array) -> Result<(), JsValue> {
+        if slot as usize >= crate::session::Limits::default().channels {
+            return Err(js_error(StreamError::Capacity));
+        }
+        if credential.length() as usize > MAX_COMMAND_BYTES {
+            return Err(js_error(StreamError::LimitExceeded));
+        }
         self.client
-            .register_credential(slot, bytes::Bytes::copy_from_slice(credential))
+            .register_credential(slot, bytes::Bytes::from(credential.to_vec()))
             .map_err(js_error)
     }
 

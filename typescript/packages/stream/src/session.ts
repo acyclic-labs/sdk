@@ -45,9 +45,7 @@ export class StreamSessions {
 
   async registerCredential(slot: number, credential: Uint8Array): Promise<void> {
     validateCredentialSlot(slot);
-    const captured = credential.slice();
-    await ensureStreamWasm();
-    try { this.#inner.registerCredential(slot, captured); }
+    try { this.#inner.registerCredential(slot, credential); }
     catch (error) { throw streamError(error, "session"); }
   }
 
