@@ -186,7 +186,10 @@ fn instruction_environment(body: &Value, workspace: &Path, model: &str) -> Resul
     let environment = [
         format!("<cwd>{cwd}</cwd>"),
         format!("<os>{}</os>", std::env::consts::OS),
-        "<shell>bash</shell>".to_owned(),
+        format!(
+            "<shell>{}</shell>",
+            if cfg!(windows) { "PowerShell" } else { "bash" }
+        ),
         "<current_date>".to_owned(),
         "<timezone>UTC</timezone>".to_owned(),
         format!("<model>{model}</model>"),
