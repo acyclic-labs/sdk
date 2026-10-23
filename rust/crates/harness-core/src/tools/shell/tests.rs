@@ -64,3 +64,29 @@ proptest! {
         prop_assert_eq!(parsed, arguments);
     }
 }
+
+// Check the actual model-visible registry, independently of PLATFORM.name.
+#[test]
+fn model_visible_shell_name_is_platform_independent() -> crate::Result<()> {
+    let definitions = crate::tools::defaults()?.definitions(None)?;
+    assert!(definitions.iter().any(|tool| tool.name == "shell"));
+    assert!(
+        !definitions
+            .iter()
+            .any(|tool| matches!(tool.name.as_str(), "bash" | "powershell"))
+    );
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_shell_name_keeps_powershell_execution() -> crate::Result<()> {
+    model_visible_shell_name_is_platform_independent()?;
+    assert_eq!(PLATFORM.executables, &["pwsh.exe", "powershell.exe"]);
+    assert!(PLATFORM.description.contains("PowerShell syntax"));
+    assert_eq!(
+        crate::native_environment::PlatformPolicy::Native.facts().1,
+        "PowerShell"
+    );
+    Ok(())
+}

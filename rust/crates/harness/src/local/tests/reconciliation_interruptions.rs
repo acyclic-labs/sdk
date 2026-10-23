@@ -126,7 +126,7 @@ async fn sweep(text: &str) -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state_directory = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([
-        super::checked_commands::call(0, "bash", "printf base > upstream.txt"),
+        super::checked_commands::call(0, "shell", "printf base > upstream.txt"),
         super::checked_commands::call(1, "fs", "commit -m base"),
         super::checked_commands::call(2, "fs", "checkout -b agents/child"),
         ScriptedTurn::Text("done".into()),
@@ -273,7 +273,7 @@ async fn negative_control(text: &str) -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state_directory = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([
-        super::checked_commands::call(0, "bash", "printf base > upstream.txt"),
+        super::checked_commands::call(0, "shell", "printf base > upstream.txt"),
         super::checked_commands::call(1, "fs", "commit -m base"),
         super::checked_commands::call(2, "fs", "checkout -b agents/child"),
         ScriptedTurn::Text("done".into()),

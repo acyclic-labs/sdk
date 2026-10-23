@@ -29,7 +29,7 @@ pub fn local_harness_config(
         let mut config = config;
         config.environment_platform = crate::native_environment::PlatformPolicy::Fixture {
             os: std::env::consts::OS.into(),
-            shell: crate::tools::shell::PLATFORM.name.into(),
+            shell: crate::native_environment::PlatformPolicy::Native.facts().1.into(),
         };
         config
     };
@@ -79,7 +79,7 @@ mod tests {
         assert!(matches!(
             config.environment_platform,
             crate::native_environment::PlatformPolicy::Fixture { shell, .. }
-                if shell == crate::tools::shell::PLATFORM.name
+                if shell == crate::native_environment::PlatformPolicy::Native.facts().1
         ));
     }
 }

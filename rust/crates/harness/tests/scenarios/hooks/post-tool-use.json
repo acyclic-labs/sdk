@@ -20,7 +20,7 @@
  "expect": {
   "results": {
    "call": {
-    "name": "bash",
+    "name": "shell",
     "content": {
      "kind": "json",
      "value": {
@@ -37,7 +37,7 @@
    {
     "messages": [
      {
-      "$contains": "Use the stock bash tool."
+      "$contains": "Use the stock shell tool."
      }
     ]
    },
@@ -74,7 +74,7 @@
     "expect": {
       "results": {
         "call": {
-          "name": "powershell"
+          "name": "shell"
         }
       }
     }

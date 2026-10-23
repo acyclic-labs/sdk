@@ -8,7 +8,7 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "seed-private",
-          "name": "bash",
+          "name": "shell",
           "arguments": {
             "command": "printf parent-private > .volumes/scratch/parent-secret"
           }
@@ -78,7 +78,7 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "child-shell",
-          "name": "bash",
+          "name": "shell",
           "arguments": {
             "command": "test ! -e .volumes/scratch/parent-secret && printf child-private > .volumes/scratch/parent-secret && printf shell-result > child.txt && printf child-shell-ok"
           }
@@ -115,7 +115,7 @@
               "content": {
                 "kind": "tool_result",
                 "call_id": "child-shell",
-                "name": "bash",
+                "name": "shell",
                 "content": {
                   "kind": "json",
                   "value": {
@@ -147,7 +147,7 @@
             "type": "event",
             "kind": "tool_call",
             "call_id": "seed-private",
-            "name": "powershell",
+            "name": "shell",
             "arguments": {
               "command": "[IO.File]::WriteAllText('.volumes/scratch/parent-secret', 'parent-private', [Text.UTF8Encoding]::new($false))"
             }
@@ -217,7 +217,7 @@
             "type": "event",
             "kind": "tool_call",
             "call_id": "child-shell",
-            "name": "powershell",
+            "name": "shell",
             "arguments": {
               "command": "if (Test-Path -LiteralPath .volumes/scratch/parent-secret) { exit 1 }; [IO.File]::WriteAllText('.volumes/scratch/parent-secret', 'child-private', [Text.UTF8Encoding]::new($false)); [IO.File]::WriteAllText('child.txt', 'shell-result', [Text.UTF8Encoding]::new($false)); [Console]::Write('child-shell-ok')"
             }
@@ -242,7 +242,7 @@
                 "content": {
                   "kind": "tool_result",
                   "call_id": "child-shell",
-                  "name": "powershell",
+                  "name": "shell",
                   "content": {
                     "kind": "json",
                     "value": {

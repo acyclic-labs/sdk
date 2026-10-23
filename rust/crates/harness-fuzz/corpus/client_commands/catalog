@@ -25,7 +25,7 @@
   {"name":"theme","aliases":[],"description":"Switch theme or open the picker","arguments":"text","action":{"kind":"theme"}},
   {"name":"export","aliases":["logs","diagnostics"],"description":"Export diagnostics","arguments":"none","action":{"request":{"kind":"export"},"kind":"request"}},
   {"name":"feedback","aliases":["report","bug"],"description":"Open feedback","arguments":"none","action":{"query":"feedback","kind":"select"}},
-  {"name":"shell","aliases":["run","sh"],"description":"Run a shell command","arguments":"required_text","action":{"tool":"bash","kind":"tool"}},
+  {"name":"shell","aliases":["run","sh"],"description":"Run a shell command","arguments":"required_text","action":{"tool":"shell","kind":"tool"}},
   {"name":"delegate","aliases":["agent","spawn"],"description":"Delegate a task to a new agent","arguments":"required_text","action":{"tool":"spawn","kind":"tool"}},
   {"name":"search","aliases":["web"],"description":"Search the web","arguments":"required_text","action":{"tool":"web_search","kind":"tool"}},
   {"name":"fetch","aliases":["get","curl"],"description":"Fetch a URL","arguments":"required_text","action":{"tool":"url_fetch","kind":"tool"}}

@@ -134,10 +134,10 @@ async fn reopen_selects_the_persisted_branch_before_capture_and_can_checkout_mai
     let state = tempfile::tempdir().map_err(super::super::storage)?;
     std::fs::create_dir(directory.path().join(".git")).map_err(super::super::storage)?;
     let first = commands(&[
-        ("bash", "printf main > note.txt"),
+        ("shell", "printf main > note.txt"),
         ("fs", "commit -m main"),
         ("fs", "checkout -b agents/child"),
-        ("bash", "printf child > note.txt"),
+        ("shell", "printf child > note.txt"),
     ]);
     let harness = LocalHarness::open(
         super::checkout_config(directory.path(), (model()?, first.clone()))?
@@ -155,7 +155,7 @@ async fn reopen_selects_the_persisted_branch_before_capture_and_can_checkout_mai
 
     let resumed = commands(&[
         ("fs", "status"),
-        ("bash", "printf after-reopen > note.txt"),
+        ("shell", "printf after-reopen > note.txt"),
         ("fs", "checkout main"),
         ("fs", "status"),
     ]);
@@ -201,13 +201,13 @@ async fn default_write_publishes_to_the_selected_checkout_and_bash_reads_it() ->
     };
     let provider = scripted([
         write(0, "main file"),
-        super::checked_commands::call(1, "bash", "cat from-write.txt"),
+        super::checked_commands::call(1, "shell", "cat from-write.txt"),
         super::checked_commands::call(2, "fs", "commit -m initial"),
         super::checked_commands::call(3, "fs", "checkout -b agents/child"),
         write(4, "child file"),
-        super::checked_commands::call(5, "bash", "cat from-write.txt"),
+        super::checked_commands::call(5, "shell", "cat from-write.txt"),
         super::checked_commands::call(6, "fs", "checkout main"),
-        super::checked_commands::call(7, "bash", "cat from-write.txt"),
+        super::checked_commands::call(7, "shell", "cat from-write.txt"),
         ScriptedTurn::Text("done".into()),
     ]);
     let harness = LocalHarness::open(
@@ -446,13 +446,13 @@ async fn arriving_directories_remain_watched_after_creation_and_rename() -> Resu
     let provider = scripted([
         super::checked_commands::call(
             0,
-            "bash",
+            "shell",
             "mkdir -p sub/deep; printf first > sub/deep/note.txt",
         ),
-        super::checked_commands::call(1, "bash", "printf created-edit > sub/deep/note.txt"),
+        super::checked_commands::call(1, "shell", "printf created-edit > sub/deep/note.txt"),
         ScriptedTurn::Text("done".into()),
-        super::checked_commands::call(2, "bash", "mv sub moved"),
-        super::checked_commands::call(3, "bash", "printf renamed-edit > moved/deep/note.txt"),
+        super::checked_commands::call(2, "shell", "mv sub moved"),
+        super::checked_commands::call(3, "shell", "printf renamed-edit > moved/deep/note.txt"),
         ScriptedTurn::Text("done".into()),
     ]);
     let harness = LocalHarness::open(

@@ -128,7 +128,7 @@ impl Fixture {
 }
 async fn projection(chunks: &[String], tokens: &[u16], structured: bool, omit_file: bool) {
     let mut fixture = Fixture::new().await;
-    let invocation = json!({"call_id":"call", "name":"bash", "arguments":{"command":"pwd"}});
+    let invocation = json!({"call_id":"call", "name":"shell", "arguments":{"command":"pwd"}});
     let call = key(".tasks/t/turns/7/tools/call/request.json");
     fixture
         .append(Write::new(

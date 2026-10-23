@@ -29,7 +29,7 @@ pub(super) fn fixture(
     stdout: &str,
     stderr: &str,
 ) -> TestResult<(Files, Calls, Results)> {
-    let call = ToolCall::new("call".into(), "bash".into(), json!({"command":"unused"}));
+    let call = ToolCall::new("call".into(), "shell".into(), json!({"command":"unused"}));
     let invocation = ToolInvocation::for_model_call(
         operation,
         0,
@@ -66,7 +66,7 @@ pub(super) fn fixture(
         vec![(0, call)],
         BTreeMap::from([(
             "call".into(),
-            json!({"name":"bash","content":{"kind":"json","value":value}}),
+            json!({"name":"shell","content":{"kind":"json","value":value}}),
         )]),
     ))
 }

@@ -8,7 +8,7 @@
        {
         "type": "command",
         "shell": "sh",
-        "command": "grep -q '\"prompt\":\"Use the stock bash tool.\"' && printf HOOK-PROMPT-WREN"
+        "command": "grep -q '\"prompt\":\"Use the stock shell tool.\"' && printf HOOK-PROMPT-WREN"
        }
       ]
      }
@@ -19,7 +19,7 @@
  "expect": {
   "results": {
    "call": {
-    "name": "bash",
+    "name": "shell",
     "content": {
      "kind": "json",
      "value": {
@@ -61,7 +61,7 @@
                 {
                   "type": "command",
                   "shell": "powershell",
-                  "command": "$inputObject=[Console]::In.ReadToEnd() | ConvertFrom-Json; if ($inputObject.prompt -eq 'Use the stock bash tool.') { [Console]::Write('HOOK-PROMPT-WREN') } else { exit 1 }"
+                  "command": "$inputObject=[Console]::In.ReadToEnd() | ConvertFrom-Json; if ($inputObject.prompt -eq 'Use the stock shell tool.') { [Console]::Write('HOOK-PROMPT-WREN') } else { exit 1 }"
                 }
               ]
             }
@@ -72,7 +72,7 @@
     "expect": {
       "results": {
         "call": {
-          "name": "powershell"
+          "name": "shell"
         }
       }
     }

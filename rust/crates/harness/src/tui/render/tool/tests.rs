@@ -63,7 +63,7 @@ fn completed(out: usize, err: usize, chunk: usize, success: bool, duplicate: boo
     put(
         &mut views,
         ToolFile::Request,
-        br#"{"name":"bash","arguments":{}}"#.to_vec(),
+        br#"{"name":"shell","arguments":{}}"#.to_vec(),
     );
     for (index, bytes) in stdout.as_bytes().chunks(chunk).enumerate() {
         put(&mut views, ToolFile::Stdout(index as u64), bytes.to_vec());

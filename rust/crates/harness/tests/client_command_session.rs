@@ -104,7 +104,7 @@ async fn saved_shell_catalog_and_request_reopen_with_their_original_identity() -
     publish(
         &volume,
         "commands/catalog.json",
-        br#"[{"name":"shell","description":"Run a shell command","arguments":"required_text","action":{"kind":"tool","tool":"bash"}}]"#.to_vec(),
+        br#"[{"name":"shell","description":"Run a shell command","arguments":"required_text","action":{"kind":"tool","tool":"shell"}}]"#.to_vec(),
     ).await?;
     let mut client = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;
     client.submit("/shell echo saved", &DeniedReader).await?;
@@ -115,11 +115,11 @@ async fn saved_shell_catalog_and_request_reopen_with_their_original_identity() -
         .consume(&request, |_, _, intent| async move {
             let encoded =
                 serde_json::to_value(&intent).map_err(|error| Error::Invalid(error.to_string()))?;
-            assert_eq!(encoded.get("tool"), Some(&json!("bash")));
+            assert_eq!(encoded.get("tool"), Some(&json!("shell")));
             assert_eq!(
                 intent,
                 CommandResolution::Tool {
-                    tool: CommandTool::Bash,
+                    tool: CommandTool::Shell,
                     input: json!({"command":"echo saved"}),
                 }
             );
@@ -176,7 +176,7 @@ async fn catalog_and_external_requests_are_observed_through_the_cursor_follow() 
     );
     let operation = OperationId::new();
     let resolution = CommandResolution::Tool {
-        tool: CommandTool::Bash,
+        tool: CommandTool::Shell,
         input: json!({"command":"echo hi"}),
     };
     publish(
@@ -580,7 +580,7 @@ proptest! {
             let mut client = CommandSession::open(volume, session_id(), 32_768, 128).await.unwrap();
             client.submit("/shell echo original", &DeniedReader).await.unwrap();
             let mut fabricated = client.next_request().await.unwrap();
-            fabricated.bytes = serde_json::to_vec(&json!({"kind":"tool","tool":"bash","input":{"command":text}})).unwrap().into();
+            fabricated.bytes = serde_json::to_vec(&json!({"kind":"tool","tool":"shell","input":{"command":text}})).unwrap().into();
             let result = client.consume(&fabricated, |_, _, _| async { panic!("fabricated input reached dispatch") }).await;
             prop_assert!(matches!(result, Err(Error::Unauthorized(_))));
             Ok(())

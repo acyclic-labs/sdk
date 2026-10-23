@@ -123,7 +123,7 @@ fn worker_keeps_resume_input_live(broken: bool) {
                 worker = Some(Box::pin(effect));
             };
             let shell = CommandResolution::Tool {
-                tool: CommandTool::Bash,
+                tool: CommandTool::Shell,
                 input: serde_json::json!({"command":"echo ready"}),
             };
             let mut input = Box::pin(async {

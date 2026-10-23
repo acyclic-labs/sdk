@@ -7,15 +7,15 @@ async fn git_reconciliation_publishes_parent_changes_at_close_and_recovery() -> 
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([
-        super::checked_commands::call(0, "bash", "printf base > note.txt"),
+        super::checked_commands::call(0, "shell", "printf base > note.txt"),
         super::checked_commands::call(1, "fs", "commit -m base"),
         super::checked_commands::call(2, "fs", "checkout -b agents/child"),
         ScriptedTurn::Text("done".into()),
         super::checked_commands::call(3, "fs", "status"),
-        super::checked_commands::call(4, "bash", "test $(cat upstream.txt) = closed"),
+        super::checked_commands::call(4, "shell", "test $(cat upstream.txt) = closed"),
         ScriptedTurn::Text("done".into()),
         super::checked_commands::call(5, "fs", "status"),
-        super::checked_commands::call(6, "bash", "test $(cat upstream.txt) = recovered"),
+        super::checked_commands::call(6, "shell", "test $(cat upstream.txt) = recovered"),
         ScriptedTurn::Text("done".into()),
     ]);
     let harness = LocalHarness::open(
@@ -83,10 +83,10 @@ async fn recovered_branch_switch_is_selected_even_when_the_command_needs_retry()
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([
-        super::checked_commands::call(0, "bash", "printf main > note.txt"),
+        super::checked_commands::call(0, "shell", "printf main > note.txt"),
         super::checked_commands::call(1, "fs", "commit -m main"),
         super::checked_commands::call(2, "fs", "checkout -b agents/child"),
-        super::checked_commands::call(3, "bash", "printf child > note.txt"),
+        super::checked_commands::call(3, "shell", "printf child > note.txt"),
         ScriptedTurn::Text("done".into()),
     ]);
     let harness = LocalHarness::open(
@@ -153,7 +153,7 @@ async fn recovered_branch_switch_is_selected_even_when_the_command_needs_retry()
     let tools = harness.tools();
     for (name, command, recovered) in [
         ("fs", "status", true),
-        ("bash", "printf selected > note.txt", false),
+        ("shell", "printf selected > note.txt", false),
         ("fs", "status", false),
     ] {
         let invocation = ToolInvocation {
@@ -244,22 +244,22 @@ async fn projected_merge_conflicts_are_visible_and_resolvable_in_the_same_stock_
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([
-        super::checked_commands::call(0, "bash", "printf 'base\n' > note.txt"),
+        super::checked_commands::call(0, "shell", "printf 'base\n' > note.txt"),
         super::checked_commands::call(1, "fs", "commit -m base"),
         super::checked_commands::call(2, "fs", "checkout -b topic"),
-        super::checked_commands::call(3, "bash", "printf 'child\n' > note.txt"),
+        super::checked_commands::call(3, "shell", "printf 'child\n' > note.txt"),
         super::checked_commands::call(4, "fs", "commit -m child"),
         super::checked_commands::call(5, "fs", "checkout main"),
-        super::checked_commands::call(6, "bash", "printf 'parent\n' > note.txt"),
+        super::checked_commands::call(6, "shell", "printf 'parent\n' > note.txt"),
         super::checked_commands::call(7, "fs", "commit -m parent"),
         super::checked_commands::call(8, "fs", "merge topic"),
         super::checked_commands::call(9, "fs", "status"),
         super::checked_commands::call(10, "fs", "log"),
-        super::checked_commands::call(11, "bash", "false && printf 'wrong\n' > note.txt"),
+        super::checked_commands::call(11, "shell", "false && printf 'wrong\n' > note.txt"),
         super::checked_commands::call(12, "fs", "merge --continue"),
         super::checked_commands::call(
             13,
-            "bash",
+            "shell",
             "grep -q '^<<<<<<<' note.txt && mv note.txt renamed.txt && printf 'resolved\n' > renamed.txt",
         ),
         super::checked_commands::call(14, "fs", "merge --continue"),

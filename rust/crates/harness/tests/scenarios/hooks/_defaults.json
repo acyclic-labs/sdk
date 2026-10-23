@@ -1,6 +1,6 @@
 {
  "driver": "local",
- "prompt": "Use the stock bash tool.",
+ "prompt": "Use the stock shell tool.",
  "seed": {
   "plans/a.md": "before\n"
  },
@@ -10,7 +10,7 @@
     "type": "event",
     "kind": "tool_call",
     "call_id": "call",
-    "name": "bash",
+    "name": "shell",
     "arguments": {
      "command": "printf changed > plans/a.md; printf visible"
     }
@@ -79,7 +79,7 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "call",
-          "name": "powershell",
+          "name": "shell",
           "arguments": {
             "command": "[IO.File]::WriteAllText('plans/a.md', 'changed', [Text.UTF8Encoding]::new($false)); [Console]::Write('visible')"
           }

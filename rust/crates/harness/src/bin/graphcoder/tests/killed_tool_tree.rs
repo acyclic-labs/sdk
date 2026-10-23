@@ -149,7 +149,7 @@ use oracle::Tree;
 
 fn bash_call(command: &str) -> String {
     let call = json!({"type":"response.output_item.done","output_index":0,"item":{
-        "type":"function_call","call_id":"orphan","name":"bash",
+        "type":"function_call","call_id":"orphan","name":"shell",
         "arguments":json!({"command":command}).to_string()
     }});
     format!(

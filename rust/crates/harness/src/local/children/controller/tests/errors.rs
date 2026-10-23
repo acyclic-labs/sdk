@@ -93,7 +93,7 @@ async fn exercise(parent_fails: bool) -> Result<()> {
     let mut turns = vec![ScriptedTurn::Events(vec![
         ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
             "shell".into(),
-            "bash".into(),
+            "shell".into(),
             serde_json::json!({"command":shell}),
         ))),
         ScriptedEvent::Event(ModelEvent::Completed {

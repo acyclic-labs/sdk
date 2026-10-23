@@ -92,7 +92,7 @@ pub enum CommandTaskScope {
 #[serde(rename_all = "snake_case")]
 pub enum CommandTool {
     /// Execute a shell command through the platform shell tool owner.
-    Bash,
+    Shell,
     /// Fork/spawn an agent through the task owner.
     Spawn,
     /// Search the web through the configured search owner.
@@ -105,7 +105,7 @@ impl CommandTool {
     #[doc(hidden)]
     pub fn input(self, arguments: &str) -> serde_json::Value {
         let key = match self {
-            Self::Bash => "command",
+            Self::Shell => "command",
             Self::Spawn => "task",
             Self::WebSearch => "query",
             Self::UrlFetch => "url",

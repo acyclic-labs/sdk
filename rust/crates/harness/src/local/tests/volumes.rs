@@ -8,7 +8,7 @@ async fn fs_volume_qualifier_selects_only_a_granted_mount() -> Result<()> {
     let provider = scripted([
         super::checked_commands::call(
             0,
-            "bash",
+            "shell",
             "printf root > root-file; printf data > .volumes/scratch/data-file",
         ),
         super::checked_commands::call(1, "fs", "status --volume scratch"),
@@ -115,11 +115,11 @@ async fn reopened_checkout_recovers_its_selected_branch_from_the_git_catalog() -
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state_directory = tempfile::tempdir().map_err(super::super::storage)?;
     let first = scripted([
-        super::checked_commands::call(0, "bash", "printf base > note"),
+        super::checked_commands::call(0, "shell", "printf base > note"),
         super::checked_commands::call(1, "fs", "add note"),
         super::checked_commands::call(2, "fs", "commit -m base"),
         super::checked_commands::call(3, "fs", "checkout -b topic"),
-        super::checked_commands::call(4, "bash", "printf child > note"),
+        super::checked_commands::call(4, "shell", "printf child > note"),
         ScriptedTurn::Text("branched".into()),
     ]);
     let repository;
@@ -136,7 +136,7 @@ async fn reopened_checkout_recovers_its_selected_branch_from_the_git_catalog() -
     let second = scripted([
         super::checked_commands::call(
             0,
-            "bash",
+            "shell",
             "test \"$(cat note)\" = child && printf resumed > after",
         ),
         super::checked_commands::call(1, "fs", "status"),
@@ -219,7 +219,7 @@ async fn bash_crosses_granted_volumes_without_capturing_a_mount_in_the_project()
         ]),
         super::checked_commands::call(
             1,
-            "bash",
+            "shell",
             r#"test "$ACYCLIC_VOLUME_SCRATCH_MODE" = rw && cp seed .volumes/scratch/seed && IFS= read -r text < .volumes/scratch/seed && printf '%s' "$text" > copied && printf scratch > .volumes/scratch/created && test ! -e .volumes/journal"#,
         ),
         super::checked_commands::call(2, "fs", "status"),
@@ -382,7 +382,7 @@ async fn file_tool_mount_path_is_published_only_to_its_selected_volume() -> Resu
         ]),
         super::checked_commands::call(
             1,
-            "bash",
+            "shell",
             r#"test "$(cat .volumes/scratch/note)" = 'scratch bytes'"#,
         ),
         ScriptedTurn::Text("published".into()),

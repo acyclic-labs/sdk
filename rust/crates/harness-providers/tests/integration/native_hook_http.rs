@@ -70,7 +70,7 @@ async fn serve(
             .map_err(|_| std::io::Error::other("request recorder closed"))?;
         let event = if step == 0 {
             json!({"type":"response.output_item.done","output_index":0,"item":{
-                "type":"function_call","call_id":"bash-call","name":"bash",
+                "type":"function_call","call_id":"bash-call","name":"shell",
                 "arguments":"{\"command\":\"printf original > executed\"}"}})
         } else {
             json!({"type":"response.output_text.delta","delta":if step == 1 {"provisional"} else {"done"}})

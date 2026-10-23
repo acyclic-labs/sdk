@@ -19,17 +19,17 @@ async fn descendant_named_volume_survives_branch_switch_and_routes_bash_cwd() ->
     let directory = crate::client_commands::client_local::Directory::new().unwrap();
     let calls = [
         (
-            "bash",
+            "shell",
             json!({"command":"printf private > .volumes/scratch/child-private"}),
         ),
         (
-            "bash",
+            "shell",
             json!({"command":"cat child-private", "cwd":".volumes/scratch"}),
         ),
         ("fs", json!({"command":"git --volume scratch status"})),
         ("fs", json!({"command":"git switch -c selected-child"})),
         (
-            "bash",
+            "shell",
             json!({"command":"cat child-private; test ! -f ../../child-private", "cwd":".volumes/scratch"}),
         ),
     ];
@@ -106,12 +106,12 @@ async fn child_restore_is_visible_to_the_next_model_bash_without_a_branch_switch
     let directory = crate::client_commands::client_local::Directory::new().unwrap();
     let provider = provider(
         [
-            ("bash", "printf original > marker"),
+            ("shell", "printf original > marker"),
             ("fs", "git add marker"),
             ("fs", "git commit -m baseline"),
-            ("bash", "printf changed > marker"),
+            ("shell", "printf changed > marker"),
             ("fs", "git restore --source HEAD -- marker"),
-            ("bash", "cat marker"),
+            ("shell", "cat marker"),
         ]
         .into_iter()
         .enumerate()
@@ -364,7 +364,7 @@ async fn child_shell_writes_and_model_bash_share_only_the_child_fork() -> Result
                 acyclic_harness::model::ModelEvent::ToolCall(
                     acyclic_harness::model::ToolCall::new(
                         "child-read".into(),
-                        "bash".into(),
+                        "shell".into(),
                         json!({"command":"cat marker"}),
                     ),
                 ),
@@ -427,7 +427,7 @@ async fn child_shell_writes_and_model_bash_share_only_the_child_fork() -> Result
                 call_id,
                 name,
                 content: acyclic_harness::model::ToolResultContent::Json { value },
-            } if call_id == "child-read" && name == "bash" => Some(value),
+            } if call_id == "child-read" && name == "shell" => Some(value),
             _ => None,
         })
         .expect("model did not receive its child bash result");
@@ -612,7 +612,7 @@ async fn clear_all_pages_an_archive_larger_than_its_enumeration_bound() -> Resul
                     OperationId::new(),
                     None,
                     CommandResolution::Tool {
-                        tool: acyclic_harness::client::CommandTool::Bash,
+                        tool: acyclic_harness::client::CommandTool::Shell,
                         input: json!({"command":42}),
                     }
                 )
@@ -865,13 +865,13 @@ async fn descendants_inherit_selected_branches_and_reopen_their_original_forks()
     };
     let provider = provider([
         call("parent-switch", "fs", "git switch -c parent-branch"),
-        call("parent-write", "bash", "printf parent-branch > marker"),
+        call("parent-write", "shell", "printf parent-branch > marker"),
         ScriptedTurn::Text("parent ready".into()),
         call("child-switch", "fs", "git switch -c child-branch"),
-        call("child-write", "bash", "printf child-branch > marker"),
+        call("child-write", "shell", "printf child-branch > marker"),
         ScriptedTurn::Text("child ready".into()),
         call("later-switch", "fs", "git switch -c later-branch"),
-        call("later-write", "bash", "printf later-branch > marker"),
+        call("later-write", "shell", "printf later-branch > marker"),
         ScriptedTurn::Text("later ready".into()),
     ]);
     let model = Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)?;

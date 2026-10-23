@@ -303,7 +303,7 @@ fuzz_target!(|data: &[u8]| {
             assert!(!selection.files().contains_key(&plan));
             // Result metadata is untrusted; it may describe status but must
             // never copy the result's output into the transcript a second time.
-            file_views::tool(&mut documents, &owner.id, "bash", "");
+            file_views::tool(&mut documents, &owner.id, "shell", "");
             // Exercise the nonstreaming parser too; streaming output itself is
             // covered by the shared chunk/replay property and live renderer.
             file_views::remove(

@@ -28,7 +28,7 @@
   },
   "results": {
    "call": {
-    "name": "bash",
+    "name": "shell",
     "content": {
      "kind": "json",
      "value": {
@@ -71,7 +71,7 @@
       },
       "results": {
         "call": {
-          "name": "powershell"
+          "name": "shell"
         }
       }
     }

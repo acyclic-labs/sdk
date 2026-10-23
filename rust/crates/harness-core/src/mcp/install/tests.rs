@@ -80,7 +80,7 @@ async fn installation_is_additive_filtered_and_uses_the_retained_connection() ->
             Tool {
                 hook_names: &["Bash"],
                 definition: ToolDefinition {
-                    name: "bash".into(),
+                    name: "shell".into(),
                     revision: "1".into(),
                     description: payload,
                     input_schema: json!({"type":"object"}),
@@ -89,7 +89,7 @@ async fn installation_is_additive_filtered_and_uses_the_retained_connection() ->
                 },
                 executor: Arc::new(crate::mcp::remote::RemoteTool {
                     server: "existing".into(),
-                    name: "bash".into(),
+                    name: "shell".into(),
                     output_schema: None,
                     transport: remote.clone(),
                 }),
@@ -136,11 +136,11 @@ async fn installation_is_additive_filtered_and_uses_the_retained_connection() ->
             .iter()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
-        ["bash", "mcp.configured.read"]
+        ["shell", "mcp.configured.read"]
     );
     let original = installed
         .tools
-        .get("bash", None, None)?
+        .get("shell", None, None)?
         .expect("existing tool");
     assert_eq!(original.definition.description.as_ptr(), pointer);
     assert_eq!(original.hook_names, &["Bash"]);

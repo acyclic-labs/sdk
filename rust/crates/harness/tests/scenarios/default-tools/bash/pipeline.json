@@ -1,4 +1,4 @@
-{"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"bash",
+{"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"shell",
   "arguments":{"command":"printf changed | cat > plans/a.md; printf pipe"}},{"type":"event","kind":"completed","metadata":null}],"done"],
  "expect":{"results":{"call":{"content":{"value":{"stdout":"pipe"}}}}},
  "platforms":{
@@ -9,7 +9,7 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "call",
-          "name": "powershell",
+          "name": "shell",
           "arguments": {
             "command": "'changed' | ForEach-Object { [IO.File]::WriteAllText('plans/a.md', $_, [Text.UTF8Encoding]::new($false)) }; [Console]::Write('pipe')"
           }

@@ -114,7 +114,7 @@ async fn child_tool_failure_is_a_typed_wait_result_and_parent_completes() -> Res
             ScriptedTurn::Events(vec![
                 ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
                     "child-tool".into(),
-                    "bash".into(),
+                    "shell".into(),
                     serde_json::json!({"command":"true"}),
                 ))),
                 ScriptedEvent::Event(ModelEvent::Completed {

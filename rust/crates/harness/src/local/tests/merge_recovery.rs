@@ -6,11 +6,11 @@ use super::*;
 fn write(index: usize, path: &str, text: &str) -> ScriptedTurn {
     let (tool, command) = if cfg!(windows) {
         (
-            "powershell",
+            "shell",
             format!("Set-Content -LiteralPath {path} -Value '{text}'"),
         )
     } else {
-        ("bash", format!("printf '{text}\\n' > {path}"))
+        ("shell", format!("printf '{text}\\n' > {path}"))
     };
     super::checked_commands::call(index, tool, &command)
 }

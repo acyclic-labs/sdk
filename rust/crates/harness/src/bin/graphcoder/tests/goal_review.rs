@@ -108,7 +108,7 @@ async fn file_guidance_and_blocked_exit_survive_live_edits_and_reopen() {
             "hello",
             (true, true),
             Some(tool(
-                "bash",
+                "shell",
                 json!({"command":"rm .volumes/scratch/GOAL.md"}),
             )),
             false,
@@ -117,7 +117,7 @@ async fn file_guidance_and_blocked_exit_survive_live_edits_and_reopen() {
             "hello",
             (false, true),
             Some(tool(
-                "bash",
+                "shell",
                 json!({"command":"rm .volumes/scratch/plans/release.md && rmdir .volumes/scratch/plans"}),
             )),
             false,

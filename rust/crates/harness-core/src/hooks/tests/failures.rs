@@ -68,7 +68,7 @@ async fn imported_on_failure_controls_a_missing_guard() -> Result<()> {
             let output = hooks
                 .run_commands(
                     event,
-                    &json!({"tool_name":"bash"}),
+                    &json!({"tool_name":"shell"}),
                     &registry()?,
                     65_536,
                     |_, _| {

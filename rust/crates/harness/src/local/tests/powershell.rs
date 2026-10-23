@@ -31,7 +31,7 @@ async fn direct_shell_command_uses_native_powershell() -> Result<()> {
     assert!(matches!(
         resolution,
         crate::client::CommandResolution::Tool {
-            tool: crate::client::CommandTool::Bash,
+            tool: crate::client::CommandTool::Shell,
             ..
         }
     ));
@@ -101,12 +101,12 @@ async fn scripted_powershell_reads_writes_runs_and_captures_exit_code() -> Resul
         ),
         call(
             "shell",
-            "powershell",
+            "shell",
             json!({"command": command, "cwd":"src"}),
         ),
         call(
             "scratch",
-            "powershell",
+            "shell",
             json!({"command":"[Console]::Write((Get-Content -Raw scratch.txt))", "cwd":".volumes/scratch"}),
         ),
         ScriptedTurn::Text("done".into()),
@@ -186,7 +186,7 @@ async fn powershell_cancellation_kills_parent_and_descendant() -> Result<()> {
     let provider = scripted([
         call(
             "running",
-            "powershell",
+            "shell",
             json!({"command":script, "timeout":5}),
         ),
         ScriptedTurn::Text("unexpected completion".into()),
@@ -262,7 +262,7 @@ async fn powershell_approval_patterns_block_execution() -> Result<()> {
     let provider = scripted([
         call(
             "denied",
-            "powershell",
+            "shell",
             json!({"command":"Set-Content -LiteralPath forbidden.txt -Value executed"}),
         ),
         ScriptedTurn::Text("done".into()),

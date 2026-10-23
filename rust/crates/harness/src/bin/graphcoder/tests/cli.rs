@@ -595,7 +595,7 @@ const EFFECT: &str = "effect.txt";
 
 fn tool_call() -> String {
     let call = json!({"type":"response.output_item.done","output_index":0,"item":{
-        "type":"function_call","call_id":"interrupted","name":"bash",
+        "type":"function_call","call_id":"interrupted","name":"shell",
         "arguments":json!({"command":format!("printf x >> {EFFECT}; exec sleep 30")}).to_string()
     }});
     format!(

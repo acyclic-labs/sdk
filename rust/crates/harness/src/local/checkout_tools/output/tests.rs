@@ -76,7 +76,7 @@ async fn client_goal_write_between_bash_chunks_preserves_the_command() -> Result
     chunk.channel = Some(crate::task_volume::Channel::Text);
     harness.task_files().inner.append(head, &chunk).await?;
     let mut output =
-        Output::open(&context, Arc::clone(harness.task_files()), b"bash".to_vec()).await?;
+        Output::open(&context, Arc::clone(harness.task_files()), b"shell".to_vec()).await?;
     output = tokio::task::spawn_blocking(move || {
         output.observe(ProcessOutput::Stdout(b"before"))?;
         Ok::<_, std::io::Error>(output)

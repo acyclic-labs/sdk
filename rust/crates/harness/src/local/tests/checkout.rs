@@ -6,19 +6,19 @@ use super::checked_commands::call;
 
 const COMMANDS: [(&str, &str); 8] = [
     (
-        "bash",
+        "shell",
         "printf original > note.txt; printf remove > doomed.txt",
     ),
     ("fs", "add note.txt"),
     ("fs", "commit -m initial"),
     (
-        "bash",
+        "shell",
         "printf changed > note.txt; mkdir nested; mv doomed.txt nested/moved.txt",
     ),
     ("fs", "diff"),
     ("fs", "diff"),
     (
-        "bash",
+        "shell",
         "rm nested/moved.txt; printf final > note.txt; printf visible",
     ),
     ("fs", "status"),
@@ -347,8 +347,8 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
             .capability(VolumeOperation::Write, &mut None)?;
         let tool = harness
             .tools()
-            .get("bash", None, None)?
-            .ok_or_else(|| Error::NotFound("bash".into()))?;
+            .get("shell", None, None)?
+            .ok_or_else(|| Error::NotFound("shell".into()))?;
         proptest::test_runner::TestRunner::new(ProptestConfig {
             source_file: Some(file!()),
             ..ProptestConfig::with_cases(64)
@@ -356,7 +356,7 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
         .run(
             &(0u8..32, any::<[u8; 16]>(), "[a-z]{1,32}"),
             |(mask, bytes, call)| {
-                let grants = [read.as_str(), write.as_str(), "tool:call:bash"]
+                let grants = [read.as_str(), write.as_str(), "tool:call:shell"]
                     .into_iter()
                     .enumerate()
                     .filter(|(index, _)| mask & (1 << index) != 0)
@@ -381,7 +381,7 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
                     } else {
                         format!("{call}-other")
                     },
-                    name: "bash".into(),
+                    name: "shell".into(),
                     arguments: json!({"command":"true"}),
                 };
                 prop_assert_eq!(

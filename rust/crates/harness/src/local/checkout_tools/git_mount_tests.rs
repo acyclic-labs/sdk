@@ -114,12 +114,12 @@ async fn in_place_git_advances_switched_and_unswitched_mounts_once() -> Result<(
         if switched {
             execute(&tools, &task, "fs", "git switch -c selected").await?;
         }
-        execute(&tools, &task, "bash", "printf original > marker").await?;
+        execute(&tools, &task, "shell", "printf original > marker").await?;
         execute(&tools, &task, "fs", "git add marker").await?;
         execute(&tools, &task, "fs", "git commit -m baseline").await?;
         for command in ["git status", "git restore --source HEAD -- marker"] {
             if command.contains("restore") {
-                execute(&tools, &task, "bash", "printf changed > marker").await?;
+                execute(&tools, &task, "shell", "printf changed > marker").await?;
             }
             let workspace = mounted_workspace(&tools, &task).await?;
             let before = workspace.mount_advances.load(Ordering::Relaxed);
@@ -135,7 +135,7 @@ async fn in_place_git_advances_switched_and_unswitched_mounts_once() -> Result<(
                 "unacknowledged publication"
             );
             assert_eq!(
-                execute(&tools, &task, "bash", "cat marker").await?.value["stdout"],
+                execute(&tools, &task, "shell", "cat marker").await?.value["stdout"],
                 "original"
             );
         }

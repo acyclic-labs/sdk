@@ -8,7 +8,7 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "seed-private",
-          "name": "bash",
+          "name": "shell",
           "arguments": {
             "command": "printf parent-private > .volumes/scratch/parent-secret"
           }
@@ -78,7 +78,7 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "child-shell",
-          "name": "bash",
+          "name": "shell",
           "arguments": {
             "command": "test ! -e .volumes/scratch/parent-secret && printf child-private > .volumes/scratch/parent-secret && printf shell-result > child.txt && printf child-shell-ok"
           }
@@ -110,7 +110,7 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "side-shell",
-          "name": "bash",
+          "name": "shell",
           "arguments": {
             "command": "printf side-result > side.txt; cat side.txt"
           }
@@ -142,7 +142,7 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "main-shell",
-          "name": "bash",
+          "name": "shell",
           "arguments": {
             "command": "test ! -e side.txt && cat child.txt"
           }
@@ -179,7 +179,7 @@
               "content": {
                 "kind": "tool_result",
                 "call_id": "child-shell",
-                "name": "bash",
+                "name": "shell",
                 "content": {
                   "kind": "json",
                   "value": {
@@ -199,7 +199,7 @@
               "content": {
                 "kind": "tool_result",
                 "call_id": "side-shell",
-                "name": "bash",
+                "name": "shell",
                 "content": {
                   "kind": "json",
                   "value": {
@@ -219,7 +219,7 @@
               "content": {
                 "kind": "tool_result",
                 "call_id": "main-shell",
-                "name": "bash",
+                "name": "shell",
                 "content": {
                   "kind": "json",
                   "value": {
@@ -252,7 +252,7 @@
             "type": "event",
             "kind": "tool_call",
             "call_id": "seed-private",
-            "name": "powershell",
+            "name": "shell",
             "arguments": {
               "command": "[IO.File]::WriteAllText('.volumes/scratch/parent-secret', 'parent-private', [Text.UTF8Encoding]::new($false))"
             }
@@ -322,7 +322,7 @@
             "type": "event",
             "kind": "tool_call",
             "call_id": "child-shell",
-            "name": "powershell",
+            "name": "shell",
             "arguments": {
               "command": "& ([scriptblock]::Create((Get-Content -Raw checkout-child-shell.ps1)))"
             }
@@ -354,7 +354,7 @@
             "type": "event",
             "kind": "tool_call",
             "call_id": "side-shell",
-            "name": "powershell",
+            "name": "shell",
             "arguments": {
               "command": "& ([scriptblock]::Create((Get-Content -Raw checkout-side-shell.ps1)))"
             }
@@ -386,7 +386,7 @@
             "type": "event",
             "kind": "tool_call",
             "call_id": "main-shell",
-            "name": "powershell",
+            "name": "shell",
             "arguments": {
               "command": "& ([scriptblock]::Create((Get-Content -Raw checkout-main-shell.ps1)))"
             }
@@ -411,7 +411,7 @@
                 "content": {
                   "kind": "tool_result",
                   "call_id": "child-shell",
-                  "name": "powershell",
+                  "name": "shell",
                   "content": {
                     "kind": "json",
                     "value": {
@@ -431,7 +431,7 @@
                 "content": {
                   "kind": "tool_result",
                   "call_id": "side-shell",
-                  "name": "powershell",
+                  "name": "shell",
                   "content": {
                     "kind": "json",
                     "value": {
@@ -451,7 +451,7 @@
                 "content": {
                   "kind": "tool_result",
                   "call_id": "main-shell",
-                  "name": "powershell",
+                  "name": "shell",
                   "content": {
                     "kind": "json",
                     "value": {

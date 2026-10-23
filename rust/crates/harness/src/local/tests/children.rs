@@ -18,7 +18,7 @@ async fn child_pre_tool_hook_uses_its_own_checkout_and_grants() -> Result<()> {
         ScriptedTurn::Events(vec![
             ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
                 "child-call".into(),
-                "bash".into(),
+                "shell".into(),
                 json!({"command":"printf tool > tool.txt"}),
             ))),
             ScriptedEvent::Event(ModelEvent::Completed {

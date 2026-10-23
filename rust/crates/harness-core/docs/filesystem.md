@@ -9,7 +9,7 @@ opens a normal checkout lazily with `filesystem-local,native-execution`. Owner
 credentials and durable state live in the per-user local data directory under
 `acyclic/harness/<canonical-path-hash>`; nothing is created in the checkout.
 `LocalHarnessConfig::new(directory, (model, provider)).volume(volume)` selects an existing local project
-volume with `filesystem-local`; `native-execution` binds bash/fs to a persistent
+volume with `filesystem-local`; `native-execution` binds shell/fs to a persistent
 private checkout of that volume. Both selections create an owner issuer, signed
 tool grants, durable task host, execution journals and private scratch.
 
@@ -27,3 +27,9 @@ and volume manifest; the host supplies credentials and publication permits.
 Recovery uses retained journals and receipts, and preserves uncertain outcomes.
 
 See the [adapter API](https://docs.rs/acyclic-harness/latest/acyclic_harness/filesystem/).
+
+The model-visible command tool is `shell` on every platform. It runs bash on
+Linux/macOS and PowerShell 7 (or Windows PowerShell 5.1) on Windows; the
+environment context records that command language. Hook matchers accept `shell`
+and the host aliases `Bash` and `PowerShell`. A hook command's `shell` field
+continues to select its interpreter.

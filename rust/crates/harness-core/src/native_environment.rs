@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 /// Platform facts supplied by a native composition or an isolated fixture.
 #[derive(Clone, Debug)]
 pub enum PlatformPolicy {
-    /// Platform of the host executing the bound Bash tool.
+    /// Platform of the host executing the bound shell tool.
     Native,
     /// Explicit facts, without process discovery.
     Fixture {
@@ -21,7 +21,10 @@ impl PlatformPolicy {
     /// Resolves platform facts through the native environment seam.
     pub fn facts(&self) -> (&str, &str) {
         match self {
-            Self::Native => (std::env::consts::OS, "bash"),
+            Self::Native => (
+                std::env::consts::OS,
+                if cfg!(windows) { "PowerShell" } else { "bash" },
+            ),
             Self::Fixture { os, shell } => (os, shell),
         }
     }

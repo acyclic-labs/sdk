@@ -15,7 +15,7 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "append",
-          "name": "bash",
+          "name": "shell",
           "arguments": {
             "command": "printf 'PARENT_ONLY\n' >> parent.txt"
           }
@@ -101,7 +101,7 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "inspect",
-          "name": "bash",
+          "name": "shell",
           "arguments": {
             "command": "ls -la; cat calc.py"
           }
@@ -117,7 +117,7 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "edit",
-          "name": "bash",
+          "name": "shell",
           "arguments": {
             "command": "python3 - <<'PY'\nfrom pathlib import Path\np = Path('calc.py')\np.write_bytes(p.read_bytes().replace(b'return a - b', b'return a + b'))\nPath('child-new.txt').write_bytes(b'CHILD_NEW\\n')\nPY"
           }
@@ -133,7 +133,7 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "test",
-          "name": "bash",
+          "name": "shell",
           "arguments": {
             "command": "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -v"
           }
@@ -200,7 +200,7 @@
             "type": "event",
             "kind": "tool_call",
             "call_id": "append",
-            "name": "powershell",
+            "name": "shell",
             "arguments": {
               "command": "[IO.File]::AppendAllText('parent.txt', \"PARENT_ONLY`n\", [Text.UTF8Encoding]::new($false))"
             }
@@ -286,7 +286,7 @@
             "type": "event",
             "kind": "tool_call",
             "call_id": "inspect",
-            "name": "powershell",
+            "name": "shell",
             "arguments": {
               "command": "Get-ChildItem -Force; [Console]::Write([IO.File]::ReadAllText('calc.py'))"
             }
@@ -302,7 +302,7 @@
             "type": "event",
             "kind": "tool_call",
             "call_id": "edit",
-            "name": "powershell",
+            "name": "shell",
             "arguments": {
               "command": "[IO.File]::WriteAllText('calc.py', ([IO.File]::ReadAllText('calc.py').Replace('return a - b', 'return a + b')), [Text.UTF8Encoding]::new($false)); [IO.File]::WriteAllText('child-new.txt', \"CHILD_NEW`n\", [Text.UTF8Encoding]::new($false))"
             }
@@ -318,7 +318,7 @@
             "type": "event",
             "kind": "tool_call",
             "call_id": "test",
-            "name": "powershell",
+            "name": "shell",
             "arguments": {
               "command": "$env:PYTHONDONTWRITEBYTECODE='1'; python -m unittest discover -v; exit $LASTEXITCODE"
             }

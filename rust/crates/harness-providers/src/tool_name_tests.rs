@@ -229,7 +229,7 @@ fn mcp_tools_keep_server_qualified_names_independent_of_position() {
         vec![
             "acyclic.read_file",
             "acyclic.write_file",
-            "bash",
+            "shell",
             "mcp.docs.search",
         ],
         vec![

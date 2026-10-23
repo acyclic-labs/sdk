@@ -39,17 +39,17 @@ async fn configured_volume_binds_bash_and_fs_and_reopens_the_selected_branch() -
         ]),
         super::checked_commands::call(
             1,
-            "bash",
+            "shell",
             "cat existing.txt note.txt; printf shell > shell.txt",
         ),
         super::checked_commands::call(2, "fs", "commit -m volume"),
         super::checked_commands::call(3, "fs", "checkout -b agents/child"),
-        super::checked_commands::call(4, "bash", "printf child > note.txt"),
+        super::checked_commands::call(4, "shell", "printf child > note.txt"),
         ScriptedTurn::Text("done".into()),
         super::checked_commands::call(5, "fs", "status"),
-        super::checked_commands::call(6, "bash", "cat note.txt"),
+        super::checked_commands::call(6, "shell", "cat note.txt"),
         super::checked_commands::call(7, "fs", "checkout main"),
-        super::checked_commands::call(8, "bash", "cat note.txt shell.txt"),
+        super::checked_commands::call(8, "shell", "cat note.txt shell.txt"),
         ScriptedTurn::Text("done".into()),
     ]);
     let harness = LocalHarness::open(

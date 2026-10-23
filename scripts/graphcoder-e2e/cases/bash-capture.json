@@ -11,7 +11,7 @@
         "tools": [
           {
             "id": "bash",
-            "name": "bash",
+            "name": "shell",
             "arguments": {
               "command": "printf 'BASH_E2E_CONTENT\\n' > bash.txt; cat bash.txt"
             }

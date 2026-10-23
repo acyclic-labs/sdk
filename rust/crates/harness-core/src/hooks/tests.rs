@@ -36,7 +36,7 @@ async fn early_stdin_closure_preserves_a_deny_with_a_large_tool_payload() -> Res
             HookEvent::PreToolUse,
             &root,
             &root,
-            &json!({"tool_name":"bash", "tool_input":{"payload":"x".repeat(1_048_576)}}),
+            &json!({"tool_name":"shell", "tool_input":{"payload":"x".repeat(1_048_576)}}),
             &registry()?,
         )
         .await?;
@@ -103,7 +103,7 @@ async fn exec_form_placeholders_launch_guards_without_retokenizing_paths_or_argu
                 HookEvent::PreToolUse,
                 root,
                 &cwd,
-                &json!({"tool_name":"bash"}),
+                &json!({"tool_name":"shell"}),
                 &registry()?,
             )
             .await?;
@@ -498,7 +498,7 @@ async fn failure_policy_controls_blocking_and_always_finishes_other_hooks() -> R
                 let output = hooks
                     .run_commands(
                         event,
-                        &json!({"tool_name":"bash"}),
+                        &json!({"tool_name":"shell"}),
                         &registry,
                         65_536,
                         |hook, _| {
@@ -581,14 +581,16 @@ fn tool_matchers_use_declared_names_and_exact_identifiers() -> Result<()> {
     let mut hooks = Hooks::default();
     hooks.add_json(
         json!({"hooks":{"PreToolUse":[
-        {"matcher":crate::tools::shell::PLATFORM.hook_names[0],"hooks":[{"type":"command","command":"guard"}]},
+        {"matcher":"Bash","hooks":[{"type":"command","command":"guard"}]},
+        {"matcher":"PowerShell","hooks":[{"type":"command","command":"windows-guard"}]},
+        {"matcher":"shell","hooks":[{"type":"command","command":"shell-guard"}]},
         {"matcher":"Edit","hooks":[{"type":"command","command":"edit"}]},
         {"matcher":"Edit|Write","hooks":[{"type":"command","command":"changes"}]},
         {"matcher":"fs","hooks":[{"type":"command","command":"fs"}]}
     ]}}).to_string().as_bytes(),
     )?;
     for (name, commands) in [
-        (crate::tools::shell::PLATFORM.name, vec!["guard"]),
+        ("shell", vec!["guard", "windows-guard", "shell-guard"]),
         ("edit", vec!["edit", "changes"]),
         ("write", vec!["changes"]),
         ("fs", vec!["fs"]),
@@ -814,7 +816,7 @@ async fn invalid_structured_output_obeys_failure_policy_without_partial_decision
                 let output = hooks
                     .run_commands(
                         event,
-                        &json!({"tool_name":"bash"}),
+                        &json!({"tool_name":"shell"}),
                         &registry,
                         65_536,
                         |hook, _| {
@@ -868,7 +870,7 @@ async fn matching_hooks_run_concurrently_and_merge_in_config_order() -> Result<(
     ]}]}}"#,
     )?;
     let registry = registry()?;
-    let input = json!({"tool_name":"bash"});
+    let input = json!({"tool_name":"shell"});
     let started = Cell::new(0);
     let (first_tx, first_rx) = oneshot::channel();
     let (second_tx, second_rx) = oneshot::channel();
