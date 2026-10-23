@@ -362,7 +362,7 @@ fn invalidate_session(reason: &str, state: &State, bytes: &[u8], sender: &LiveSe
     match reason {
         "revoked" => {
             let capability =
-                verify::verify(&bytes, &signed::Snapshot::default(), signed::NOW).unwrap();
+                verify::verify(bytes, &signed::Snapshot::default(), signed::NOW).unwrap();
             state.publish(
                 signed::Snapshot {
                     revoked_blocks: vec![*capability.block_ids().first().unwrap()],
@@ -667,7 +667,7 @@ fn filesystem_context_rejects_forged_expired_and_wrong_audience_credentials() {
         fs_token("fs:/volume", |block| {
             block.caveats.push(Caveat {
                 kind: CaveatKind::ExpiresAtUnixSeconds(signed::NOW),
-            })
+            });
         }),
         fs_token("fs:/volume", |block| {
             block.caveats.push(Caveat {
@@ -675,7 +675,7 @@ fn filesystem_context_rejects_forged_expired_and_wrong_audience_credentials() {
                     name: "workers:/other".into(),
                     prefix: false,
                 }),
-            })
+            });
         }),
     ] {
         auth.register(&mut slots, 0, &bytes, 2).unwrap();
