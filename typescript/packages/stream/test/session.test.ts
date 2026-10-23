@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { create } from "@bufbuild/protobuf";
-import { SessionFilterSchema, SessionFollowSchema } from "../generated/proto/stream/v1/session_pb.js";
+import { SessionFollowSchema } from "../generated/proto/stream/v1/session_pb.js";
 import { StreamSessions } from "../src/session.js";
 import { SessionQueue } from "../src/session-queue.js";
-import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
+import { SessionFilterSchema, StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import type { SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
 import { SessionNode, checkpoint } from "./session-node.js";
 

@@ -15,7 +15,7 @@ export type SessionConnect = (node: wire.SessionNode | undefined, signal: AbortS
 
 /** A requested filter is intersected with the selected credential by the node. */
 export interface SessionOptions {
-  readonly filter?: wire.SessionFilter;
+  readonly filter?: NonNullable<wire.SessionSubscription["filter"]>;
   readonly credential?: number;
   readonly signal?: AbortSignal;
 }
