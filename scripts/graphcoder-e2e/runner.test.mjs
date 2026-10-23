@@ -12,8 +12,8 @@ test("owner exit permits recovery before a live descendant releases inherited pi
   const processes = new Processes();
   let descendant;
   try {
-    const leaf = "console.log(JSON.stringify({pid:process.pid}));process.stdin.resume()";
-    const parent = `const {spawn}=require('node:child_process');spawn(process.execPath,['-e',${JSON.stringify(leaf)}],{stdio:'inherit',windowsHide:true})`;
+    const leaf = "require('node:net').createServer().listen(0,'127.0.0.1',()=>console.log(JSON.stringify({pid:process.pid})))";
+    const parent = `const {spawn}=require('node:child_process');spawn(process.execPath,['-e',${JSON.stringify(leaf)}],{stdio:'inherit',detached:true,windowsHide:true})`;
     const owner = processes.start(process.execPath, ["-e", parent]);
     descendant = (await new Events(owner.child.stdout, owner.closed).wait(event => event.pid)).pid;
     let pipesClosed = false;
