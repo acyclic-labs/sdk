@@ -35,8 +35,8 @@ fn authority() -> Authority {
     }
 }
 
-/// A reducer and `events` valid lifecycle commands (Pending, then Active/Waiting).
-fn workload(events: u64) -> (Reducer, Vec<Command>) {
+/// Keeps runtime signing custody with a reducer and its valid lifecycle commands.
+fn workload(events: u64) -> (AuthorityIssuer, Reducer, Vec<Command>) {
     let issuer = AuthorityIssuer::new("bench", [7; 32], authority());
     let scope = issuer
         .issue(
@@ -69,7 +69,7 @@ fn workload(events: u64) -> (Reducer, Vec<Command>) {
             },
         })
         .collect();
-    (reducer, commands)
+    (issuer, reducer, commands)
 }
 
 #[divan::bench(args = [100, 1000])]
@@ -79,7 +79,7 @@ fn reducer_apply(bencher: Bencher, events: u64) {
             usize::try_from(events).unwrap_or_else(failed),
         ))
         .with_inputs(|| workload(events))
-        .bench_local_values(|(mut reducer, commands)| {
+        .bench_local_values(|(_issuer, mut reducer, commands)| {
             for command in commands {
                 reducer.apply(&command).unwrap_or_else(failed);
             }
@@ -90,7 +90,7 @@ fn reducer_apply(bencher: Bencher, events: u64) {
 /// Canonical JSON digest over every committed event.
 #[divan::bench(args = [1, 4, 100, 1000])]
 fn reducer_snapshot(bencher: Bencher, events: u64) {
-    let (mut reducer, commands) = workload(events);
+    let (_issuer, mut reducer, commands) = workload(events);
     for command in commands {
         reducer.apply(&command).unwrap_or_else(failed);
     }
@@ -107,7 +107,7 @@ fn reducer_snapshot(bencher: Bencher, events: u64) {
 
 #[divan::bench(args = [0, 65536])]
 fn reducer_plan(bencher: Bencher, reason_bytes: usize) {
-    let (reducer, mut commands) = workload(1);
+    let (_issuer, reducer, mut commands) = workload(1);
     let mut command = commands
         .pop()
         .unwrap_or_else(|| failed("missing lifecycle command"));
@@ -120,7 +120,7 @@ fn reducer_plan(bencher: Bencher, reason_bytes: usize) {
 
 #[divan::bench(args = [0, 65536])]
 fn command_hash_floor(bencher: Bencher, reason_bytes: usize) {
-    let (_, mut commands) = workload(1);
+    let (_issuer, _, mut commands) = workload(1);
     let mut command = commands
         .pop()
         .unwrap_or_else(|| failed("missing lifecycle command"));
@@ -145,7 +145,7 @@ fn command_hash_floor(bencher: Bencher, reason_bytes: usize) {
 fn reducer_snapshot_accounted(bencher: Bencher, events: u64) {
     use acyclic_harness::filesystem::PreparationIo;
     use acyclic_harness::store::HistoryWork;
-    let (mut reducer, commands) = workload(events);
+    let (_issuer, mut reducer, commands) = workload(events);
     for command in commands {
         reducer.apply(&command).unwrap_or_else(failed);
     }
@@ -177,7 +177,7 @@ fn reducer_snapshot_accounted(bencher: Bencher, events: u64) {
 
 #[divan::bench(args = [1, 4, 100, 1000])]
 fn snapshot_hash_floor(bencher: Bencher, events: u64) {
-    let (mut reducer, commands) = workload(events);
+    let (_issuer, mut reducer, commands) = workload(events);
     for command in commands {
         reducer.apply(&command).unwrap_or_else(failed);
     }
@@ -215,7 +215,7 @@ fn snapshot_hash_floor(bencher: Bencher, events: u64) {
 
 #[divan::bench(args = [1, 4, 16, 64, 256, 1024])]
 fn reducer_restore(bencher: Bencher, events: u64) {
-    let (mut reducer, commands) = workload(events);
+    let (issuer, mut reducer, commands) = workload(events);
     for command in commands {
         reducer.apply(&command).unwrap_or_else(failed);
     }
@@ -223,7 +223,6 @@ fn reducer_restore(bencher: Bencher, events: u64) {
         .snapshot(usize::MAX, &mut None)
         .unwrap_or_else(failed)
         .0;
-    let issuer = AuthorityIssuer::new("bench", [7; 32], authority());
     bencher
         .counter(ItemsCount::new(
             usize::try_from(events).unwrap_or_else(failed),
@@ -245,7 +244,7 @@ fn reducer_restore(bencher: Bencher, events: u64) {
 fn reducer_restore_accounted(bencher: Bencher, events: u64) {
     use acyclic_harness::filesystem::PreparationIo;
     use acyclic_harness::store::HistoryWork;
-    let (mut reducer, commands) = workload(events);
+    let (issuer, mut reducer, commands) = workload(events);
     for command in commands {
         reducer.apply(&command).unwrap_or_else(failed);
     }
@@ -253,7 +252,6 @@ fn reducer_restore_accounted(bencher: Bencher, events: u64) {
         .snapshot(usize::MAX, &mut None)
         .unwrap_or_else(failed)
         .0;
-    let issuer = AuthorityIssuer::new("bench", [7; 32], authority());
     bencher
         .with_inputs(|| {
             (
