@@ -1567,6 +1567,22 @@ async fn tree_applying_commands_keep_the_directories_of_reserved_paths() -> Resu
         read_text(&main, "/.volumes").await?.as_deref(),
         Some(&b"user\n"[..])
     );
+    // A user file where the reserved path's parent would be holds no
+    // reserved path: looking one up through it is absence, so it restores.
+    write_text(&main, "/.volumes", b"changed\n").await?;
+    run_reserving(
+        &fs,
+        &store,
+        &main,
+        repo,
+        &reserved,
+        &["restore", "--source", "a", ".volumes"],
+    )
+    .await?;
+    assert_eq!(
+        read_text(&main, "/.volumes").await?.as_deref(),
+        Some(&b"user\n"[..])
+    );
     Ok(())
 }
 

@@ -126,6 +126,13 @@ pub enum WorkspaceError {
 }
 
 impl WorkspaceError {
+    /// Whether the path names nothing: it is missing, or an ancestor is not
+    /// a directory, so no entry can exist beneath it.
+    #[must_use]
+    pub const fn is_absent(&self) -> bool {
+        matches!(self, Self::NotFound | Self::NotDirectory)
+    }
+
     pub(crate) fn path(error: impl fmt::Display) -> Self {
         Self::Path(error.to_string())
     }
@@ -287,6 +294,7 @@ impl From<FsError> for WorkspaceError {
             FsError::SourceSnapshotStale => Self::StaleSource,
             FsError::NotFound => Self::NotFound,
             FsError::NotDirectory
+            | FsError::Path(crate::kernel::PathLookupError::NotDirectory)
             | FsError::Mutation(crate::kernel::GenerationMutationError::NotDirectory) => {
                 Self::NotDirectory
             }

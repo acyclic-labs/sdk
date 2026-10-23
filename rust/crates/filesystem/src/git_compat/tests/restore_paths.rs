@@ -172,3 +172,44 @@ async fn a_whole_tree_restore_keeps_the_directory_of_a_reserved_path() {
             .is_err()
     );
 }
+
+/// A user file where a reserved path's parent would be holds no reserved
+/// path, so restoring it proceeds: the lookup of the reserved path through
+/// that file is absence, not a failure.
+#[tokio::test]
+async fn a_file_over_a_reserved_parent_restores() {
+    let cancel = CancellationToken::new();
+    let workspace = memory_workspace("git-restore-reserved-file-parent").await;
+    let mut saved = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x85; 16])).await;
+    saved.write_text("/.volumes", "saved").await.expect("file");
+    let source = publish_fixture(saved).await;
+    let mut live = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x86; 16])).await;
+    live.remove("/.volumes", WorkBudget::UNBOUNDED, &cancel)
+        .await
+        .expect("remove");
+    live.write_text("/.volumes", "live").await.expect("file");
+    let current = publish_fixture(live).await;
+    let policy = GitIgnorePolicy::default().reserving([".volumes/scratch"]);
+    let paths = git_paths_preserving_reserved(
+        &current,
+        Some(&source),
+        &policy,
+        [".volumes".to_owned()],
+        &cancel,
+    )
+    .await
+    .expect("a lookup through a file is absence");
+    assert_eq!(paths, [".volumes"]);
+    assert!(restored(&workspace, &source, &current, &paths).await);
+    let head = workspace
+        .head(WorkBudget::UNBOUNDED, &cancel)
+        .await
+        .expect("head")
+        .value;
+    let bytes = head
+        .read("/.volumes", 64, WorkBudget::UNBOUNDED, &cancel)
+        .await
+        .expect("restored file")
+        .value;
+    assert_eq!(bytes.as_ref(), b"saved");
+}

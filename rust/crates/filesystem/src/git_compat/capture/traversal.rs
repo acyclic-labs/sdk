@@ -33,7 +33,7 @@ where
                 std::str::from_utf8(&contents).map_err(|_| GitCaptureError::NonPortableName)?;
             GitIgnorePolicy::parse(contents)
         }
-        Err(WorkspaceError::NotFound) => GitIgnorePolicy::default(),
+        Err(error) if error.is_absent() => GitIgnorePolicy::default(),
         Err(error) => return Err(error.into()),
     };
     policies.insert(directory.to_owned(), policy);

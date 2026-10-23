@@ -33,7 +33,7 @@ pub async fn git_merge_resolution<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             .await
         {
             Ok(receipt) => receipt.value,
-            Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => continue,
+            Err(failure) if failure.error.is_absent() => continue,
             Err(failure) => return Err(failure.error.into()),
         };
         if stat.kind == FileKind::Directory {

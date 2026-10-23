@@ -198,7 +198,7 @@ where
         .await
     {
         Ok(receipt) => Ok(Some(receipt.value.kind)),
-        Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => Ok(None),
+        Err(failure) if failure.error.is_absent() => Ok(None),
         Err(failure) => Err(failure.error.into()),
     }
 }
@@ -267,7 +267,7 @@ where
         {
             Ok(receipt) if receipt.value.kind != FileKind::Directory => {}
             Ok(_) => continue,
-            Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => continue,
+            Err(failure) if failure.error.is_absent() => continue,
             Err(failure) => return Err(failure.error.into()),
         }
         if already_tracked.contains(path)

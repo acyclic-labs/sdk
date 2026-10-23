@@ -290,12 +290,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
                     cancellation,
                 )
                 .await
-                .map_err(|error| match error {
-                    FsError::Path(crate::kernel::PathLookupError::NotDirectory) => {
-                        WorkspaceError::NotDirectory
-                    }
-                    error => error.into(),
-                })?;
+                .map_err(WorkspaceError::from)?;
             for entry in &lookup.entries {
                 accounting.charge(crate::WorkCounters {
                     bytes_copied: std::mem::size_of::<Option<FileKind>>() as u64,
