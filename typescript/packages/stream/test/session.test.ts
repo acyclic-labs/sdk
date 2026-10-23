@@ -1,9 +1,45 @@
 import { expect, test } from "bun:test";
+import { create } from "@bufbuild/protobuf";
+import { SessionFilterSchema, SessionFollowSchema } from "../generated/proto/stream/v1/session_pb.js";
 import { StreamSessions } from "../src/session.js";
 import { SessionQueue } from "../src/session-queue.js";
 import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import type { SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
 import { SessionNode, checkpoint } from "./session-node.js";
+
+test("session slots, filters and record headers survive the TypeScript bridge", async () => {
+  const node = new SessionNode();
+  node.append("scoped");
+  const record = node.history.get("scoped")![0]!;
+  record.keys = [new Uint8Array([4])];
+  record.attributes = [{ $typeName: "acyclic.stream.v1.Attribute", name: "owner", value: new Uint8Array([9]) }];
+  const client = new StreamSessions(node.connect);
+  const credential = new Uint8Array([1, 2, 3]);
+  const registration = client.registerCredential(2, credential);
+  credential.fill(0);
+  await registration;
+  const filter = create(SessionFilterSchema, { keys: [{ start: new Uint8Array([4]), end: new Uint8Array([5]) }] });
+  const follow = client.follow("scoped", { from: 0n, credential: 2, filter });
+  const first = (await follow.next()).value!;
+  expect(first.keys).toEqual(record.keys);
+  expect(first.attributes).toEqual(record.attributes);
+  const hello = node.received.find(frame => frame.body.case === "hello")!;
+  if (hello.body.case !== "hello") throw new Error("missing hello");
+  expect(hello.body.value.credentials[2]).toEqual(new Uint8Array([1, 2, 3]));
+  const interest = node.received.find(frame => frame.body.case === "interest")!;
+  if (interest.body.case !== "interest") throw new Error("missing interest");
+  expect(interest.body.value.upsert[0]!.credential).toBe(2);
+  expect(interest.body.value.upsert[0]!.filter).toEqual(filter);
+  await client.registerCredential(2, new Uint8Array([4, 5]));
+  await node.until(() => node.received.some(frame => frame.body.case === "credential"));
+  const renewal = node.received.find(frame => frame.body.case === "credential")!;
+  if (renewal.body.case !== "credential") throw new Error("missing renewal");
+  expect(renewal.body.value.slot).toBe(2);
+  expect(renewal.body.value.credential).toEqual(new Uint8Array([4, 5]));
+  await follow.return(undefined);
+  await expect(client.registerCredential(-1, new Uint8Array([1]))).rejects.toThrow(RangeError);
+  expect(() => client.followData(create(SessionFollowSchema, { resource: "streams:/scoped" }), { from: 0n, credential: 0x1_0000_0000 })).toThrow(RangeError);
+});
 
 test("concurrent follows share a node connection and remove every interest", async () => {
   const node = new SessionNode();

@@ -1,6 +1,5 @@
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
-import { ChildrenRequestSchema, ChildrenResponseSchema } from "../generated/proto/stream/v1/stream_pb.js";
 import { WasmSession, type WasmFollow } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm, validateSequenceValue, streamResource } from "./contract.js";
 import { streamError } from "./wasm-error.js";
@@ -13,6 +12,17 @@ export interface SessionTransport {
   close(): void;
 }
 export type SessionConnect = (node: wire.SessionNode | undefined, signal: AbortSignal) => Promise<SessionTransport>;
+
+/** A requested filter is intersected with the selected credential by the node. */
+export interface SessionOptions {
+  readonly filter?: wire.SessionFilter;
+  readonly credential?: number;
+  readonly signal?: AbortSignal;
+}
+
+function validateCredentialSlot(slot: number): void {
+  if (!Number.isInteger(slot) || slot < 0 || slot > 0xffff_ffff) throw new RangeError("credential slot must be an unsigned 32-bit integer");
+}
 
 /** Platform I/O adapter; all session state and recovery belong to Rust. */
 export class StreamSessions {
@@ -33,32 +43,63 @@ export class StreamSessions {
     }, acknowledge);
   }
 
-  async *follow(path: string, options: FollowOptions): AsyncGenerator<EncodedRecord> {
+  async registerCredential(slot: number, credential: Uint8Array): Promise<void> {
+    validateCredentialSlot(slot);
+    const captured = credential.slice();
+    await ensureStreamWasm();
+    try { this.#inner.registerCredential(slot, captured); }
+    catch (error) { throw streamError(error, "session"); }
+  }
+
+  async *follow(path: string, options: FollowOptions & SessionOptions): AsyncGenerator<EncodedRecord> {
     for await (const data of this.followData(create(wire.SessionFollowSchema, { resource: streamResource(path), delivery: wire.SessionDelivery.ALL }), options)) {
       if (data.item.case !== "record") throw new Error("Rust ALL cursor returned a non-record item");
       const record = data.item.value;
-      yield { sequence: record.sequence, value: record.value, commitId: commitId(record.commitId), committedAtMicros: record.committedAtMicros };
+      yield { sequence: record.sequence, value: record.value, keys: record.keys, attributes: record.attributes, commitId: commitId(record.commitId), committedAtMicros: record.committedAtMicros };
     }
   }
 
-  followData(follow: wire.SessionFollow, options: FollowOptions): AsyncGenerator<wire.SessionData> {
-    const input = toBinary(wire.SessionFollowSchema, follow);
-    const { from, signal } = options;
+  followData(follow: wire.SessionFollow, options: FollowOptions & SessionOptions): AsyncGenerator<wire.SessionData> {
+    const { from } = options;
     validateSequenceValue(from);
-    return this.#cursor(() => this.#inner.followData(input, from), signal,
-      bytes => fromBinary(wire.SessionDataSchema, bytes));
+    const subscription = create(wire.SessionSubscriptionSchema, {
+      resume: { next: from }, kind: { case: "follow", value: follow },
+      ...(options.filter === undefined ? {} : { filter: options.filter }),
+      credential: options.credential ?? 0,
+    });
+    return this.#data(this.subscribe(subscription, options.signal));
   }
 
-  children(request: ChildrenRequest): AsyncGenerator<StreamChild> {
+  async *#data(frames: AsyncIterable<wire.SessionFrame>): AsyncGenerator<wire.SessionData> {
+    for await (const frame of frames) {
+      if (frame.body.case === "watermark") continue;
+      if (frame.body.case !== "data") throw new Error("Rust follow cursor returned a non-data frame");
+      yield frame.body.value;
+    }
+  }
+
+  children(request: ChildrenRequest & SessionOptions): AsyncGenerator<StreamChild> {
     const { parent, signal, limit } = request;
-    const input = toBinary(ChildrenRequestSchema, create(ChildrenRequestSchema, {
-      limit, ...(parent === undefined ? {} : { parent }),
-    }));
-    return this.#cursor(() => this.#inner.children(input), signal, bytes => {
-      const child = fromBinary(ChildrenResponseSchema, bytes).child;
-      if (child === undefined) throw new Error("Rust child cursor omitted a child");
-      return child;
+    const subscription = create(wire.SessionSubscriptionSchema, {
+      resume: { next: 0n }, credential: request.credential ?? 0,
+      ...(request.filter === undefined ? {} : { filter: request.filter }),
+      kind: { case: "children", value: { limit, ...(parent === undefined ? {} : { parent }) } },
     });
+    return this.#children(this.#data(this.subscribe(subscription, signal)));
+  }
+
+  async *#children(data: AsyncIterable<wire.SessionData>): AsyncGenerator<StreamChild> {
+    for await (const item of data) {
+      if (item.item.case !== "child") throw new Error("Rust child cursor omitted a child");
+      yield item.item.value;
+    }
+  }
+
+  subscribe(subscription: wire.SessionSubscription, signal?: AbortSignal): AsyncGenerator<wire.SessionFrame> {
+    validateCredentialSlot(subscription.credential);
+    const input = toBinary(wire.SessionSubscriptionSchema, subscription);
+    return this.#cursor(() => this.#inner.subscribe(input), signal,
+      bytes => fromBinary(wire.SessionFrameSchema, bytes));
   }
 
   async *#cursor<T>(open: () => WasmFollow, signal: AbortSignal | undefined,

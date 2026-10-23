@@ -68,7 +68,7 @@ export class SessionNode {
     for (let index = 0; index < count; index += 1) {
       const commit = new Uint8Array(32);
       new DataView(commit.buffer).setBigUint64(0, BigInt(history.length + 1), true);
-      history.push({ $typeName: "acyclic.stream.v1.Record", sequence: BigInt(history.length), value: new Uint8Array([7]), commitId: commit, committedAtMicros: 0n });
+      history.push({ $typeName: "acyclic.stream.v1.Record", sequence: BigInt(history.length), value: new Uint8Array([7]), keys: [], attributes: [], commitId: commit, committedAtMicros: 0n });
     }
     for (const connection of this.connections) this.pump(connection);
   }

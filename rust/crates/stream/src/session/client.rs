@@ -573,6 +573,15 @@ impl Client {
         subscription: wire::SessionSubscription,
     ) -> Result<BoxProviderStream<'static, Result<wire::SessionFrame, StreamError>>, StreamError>
     {
+        self.subscribe_with_ack(subscription, true).await
+    }
+
+    pub(crate) async fn subscribe_with_ack(
+        &self,
+        subscription: wire::SessionSubscription,
+        acknowledge: bool,
+    ) -> Result<BoxProviderStream<'static, Result<wire::SessionFrame, StreamError>>, StreamError>
+    {
         if subscription.channel.is_some() {
             return Err(StreamError::InvalidArgument);
         }
@@ -589,7 +598,7 @@ impl Client {
             self.open_subscription(
                 kind,
                 resume,
-                true,
+                acknowledge,
                 true,
                 subscription.filter,
                 subscription.credential,
