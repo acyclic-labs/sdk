@@ -66,7 +66,7 @@ fn gate_commit(
         }],
         mutations: vec![CommitMutation::Append {
             path,
-            records: vec![body],
+            records: vec![body.into()],
         }],
         idempotency_key: key,
     })
@@ -302,8 +302,8 @@ async fn missing_and_corrupt_gates_fail_authority_reopen() -> TestResult {
             request.mutations.push(CommitMutation::Append {
                 path,
                 records: vec![
-                    acyclic_stream::OwnedBytes::from_static(PUBLICATION_GATE_FREE),
-                    acyclic_stream::OwnedBytes::copy_from_slice(gate),
+                    acyclic_stream::OwnedBytes::from_static(PUBLICATION_GATE_FREE).into(),
+                    acyclic_stream::OwnedBytes::copy_from_slice(gate).into(),
                 ],
             });
         }
@@ -444,7 +444,7 @@ async fn reservations_exclude_writers_and_recover_the_original_head() -> TestRes
         stream
             .commit(gate_commit(
                 next,
-                acyclic_stream::OwnedBytes::from_static(PUBLICATION_GATE_FREE),
+                acyclic_stream::OwnedBytes::from_static(PUBLICATION_GATE_FREE).into(),
                 release_key(next)?
             )?)
             .await?,
@@ -532,7 +532,7 @@ async fn release_refuses_a_committed_different_request_or_mutation_family() -> T
                 stream
                     .append(AppendRequest {
                         path: stream_path(reservation.authority_id, "/publication-gate")?,
-                        records: vec![value],
+                        records: vec![value.into()],
                         if_tail: Some(reservation.gate_tail),
                         idempotency_key: Some(key)
                     })
@@ -593,7 +593,7 @@ impl ReleaseSpy {
                 self.inner
                     .append(AppendRequest {
                         path: path.clone(),
-                        records: vec![acyclic_stream::OwnedBytes::from_static(b"closed")],
+                        records: vec![acyclic_stream::OwnedBytes::from_static(b"closed").into()],
                         if_tail: Some(1),
                         idempotency_key: Some(
                             stream_key(b"close-lease", path.as_str().as_bytes())
@@ -721,8 +721,8 @@ impl StreamProvider for ReleaseSpy {
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         self.inner.fork(request).await
     }
-    async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        self.inner.follow(path, from).await
+    async fn follow(&self, path: StreamPath, from: u64, filter: acyclic_stream::FollowFilter) -> Result<RecordStream, StreamError> {
+        self.inner.follow(path, from, filter).await
     }
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
         self.inner.children(request).await

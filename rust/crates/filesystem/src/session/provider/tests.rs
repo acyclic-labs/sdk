@@ -97,6 +97,7 @@ async fn baseline(sub: &Subscription, input: &[Bytes]) -> RecordStream {
             crate::distributed::authority_records_path(sub.volume_id).unwrap(),
             2,
             anchor,
+            Default::default(),
         )
         .await
         .unwrap()

@@ -36,6 +36,7 @@ mod checkout;
 mod commit;
 mod content;
 mod diff;
+mod namespace_view;
 mod errors;
 mod extents;
 mod fork_options;

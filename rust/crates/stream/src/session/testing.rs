@@ -17,19 +17,26 @@ impl AuthorityState for State {
         Box::pin(future::pending())
     }
 }
+/// Public verifier for the deterministic qualification account.
 pub fn authority() -> Arc<Authority> {
-    Arc::new(
-        Authority::new(
-            Arc::new(State),
-            "workers:/test".into(),
-            Some("account".into()),
-        )
-        .unwrap(),
-    )
+    Arc::new(Authority {
+        state: Arc::new(State),
+        audience: "workers:/test".into(),
+        holder: Some("account".into()),
+    })
 }
+
+/// Signed workload credential for the deterministic qualification account.
 pub fn credential() -> Bytes {
     signed::root(|block| {
-        block.certificates.as_mut().unwrap().keys[0].key.grants = GrantSet {
+        let Some(key) = block
+            .certificates
+            .as_mut()
+            .and_then(|certificates| certificates.keys.first_mut())
+        else {
+            return;
+        };
+        key.key.grants = GrantSet {
             grants: vec![Grant {
                 kind: GrantKind::Resource(ResourceGrant {
                     resource: ResourcePattern {
@@ -44,9 +51,9 @@ pub fn credential() -> Bytes {
     .into()
 }
 #[cfg(test)]
-pub(super) fn slots() -> authority::Slots {
+pub(in crate::session) fn slots() -> Slots {
     let auth = authority();
-    let mut slots = authority::Slots::default();
+    let mut slots = Slots::default();
     auth.register(
         &mut slots,
         0,
@@ -57,7 +64,7 @@ pub(super) fn slots() -> authority::Slots {
     slots
 }
 #[cfg(test)]
-pub(super) fn binding() -> authority::Binding {
+pub(in crate::session) fn binding() -> Binding {
     authority()
         .bind(
             &slots(),

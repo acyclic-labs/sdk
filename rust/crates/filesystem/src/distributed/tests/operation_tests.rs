@@ -288,7 +288,7 @@ async fn open_lease(
         .append(AppendRequest {
             path: path.clone(),
             if_tail: Some(0),
-            records: vec![acyclic_stream::OwnedBytes::from_static(b"open")],
+            records: vec![acyclic_stream::OwnedBytes::from_static(b"open").into()],
             idempotency_key: Some(stream_key(b"open-lease", path.as_str().as_bytes())?),
         })
         .await?;
@@ -434,7 +434,7 @@ async fn fork_lease_rejection_and_closed_lease_replay_preserve_atomic_publicatio
             .append(AppendRequest {
                 path: path.clone(),
                 if_tail: Some(1),
-                records: vec![acyclic_stream::OwnedBytes::from_static(b"closed")],
+                records: vec![acyclic_stream::OwnedBytes::from_static(b"closed").into()],
                 idempotency_key: Some(stream_key(b"close-lease", path.as_str().as_bytes())?),
             })
             .await?;
@@ -613,7 +613,7 @@ async fn operation_locators_reject_corruption_and_separately_published_records()
                 .append(AppendRequest {
                     path: work.path(id, "/records", None)?,
                     if_tail: Some(2),
-                    records: vec![encoded],
+                    records: vec![encoded.into()],
                     idempotency_key: Some(stream_key(b"separate-record", &[invalid])?),
                 })
                 .await?;
@@ -639,9 +639,9 @@ async fn operation_locators_reject_corruption_and_separately_published_records()
             )?
         };
         let records = if invalid == 5 {
-            vec![value.clone(), value]
+            vec![value.clone().into(), value.into()]
         } else {
-            vec![value]
+            vec![value.into()]
         };
         stream
             .commit(CommitRequest {

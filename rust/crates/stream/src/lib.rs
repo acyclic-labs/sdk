@@ -103,6 +103,8 @@ pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
     reason = "generated prost and tonic bindings"
 )]
 pub mod wire {
+    // All session data variants have total equality, including repeated headers.
+    impl Eq for SessionData {}
     include!(concat!(env!("OUT_DIR"), "/acyclic.stream.v1.rs"));
 }
 /// Canonical public descriptor set used by compatibility gates.

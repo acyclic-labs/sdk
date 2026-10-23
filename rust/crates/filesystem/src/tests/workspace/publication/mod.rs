@@ -125,11 +125,12 @@ impl acyclic_stream::StreamProvider for CutStream {
         &self,
         path: acyclic_stream::StreamPath,
         from: u64,
+        filter: acyclic_stream::FollowFilter,
     ) -> Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> {
         if self.fails_now() {
             return Err(acyclic_stream::StreamError::Unavailable);
         }
-        self.inner.follow(path, from).await
+        self.inner.follow(path, from, filter).await
     }
 
     async fn children(

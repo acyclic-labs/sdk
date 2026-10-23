@@ -291,8 +291,8 @@ pub(crate) use publication::closure_limits;
 use publication::durable_head;
 #[cfg(not(target_arch = "wasm32"))]
 use read_accounting::native_pinned_allocation;
-use read_accounting::readonly_cleanup_standalone;
-use read_accounting::readonly_standalone_live;
+pub(crate) use read_accounting::readonly_cleanup_standalone;
+pub(crate) use read_accounting::readonly_standalone_live;
 pub use reader::PinnedReader;
 use rebase::probe_limits;
 pub use resolved_read::FileDescription;

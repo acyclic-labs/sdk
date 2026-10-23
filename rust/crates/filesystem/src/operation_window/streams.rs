@@ -133,7 +133,7 @@ impl<P: acyclic_stream::StreamProvider> OperationWindowStore for StreamOperation
             conditions.push(acyclic_stream::CommitCondition::Absent { path: path.clone() });
             mutations.push(acyclic_stream::CommitMutation::Append {
                 path,
-                records: vec![acyclic_stream::OwnedBytes::from_static(b"active")],
+                records: vec![acyclic_stream::OwnedBytes::from_static(b"active").into()],
             });
         }
         for (lease_id, lease) in &before {
@@ -147,7 +147,7 @@ impl<P: acyclic_stream::StreamProvider> OperationWindowStore for StreamOperation
             });
             mutations.push(acyclic_stream::CommitMutation::Append {
                 path,
-                records: vec![acyclic_stream::OwnedBytes::from_static(b"fenced")],
+                records: vec![acyclic_stream::OwnedBytes::from_static(b"fenced").into()],
             });
         }
         let mut hasher = blake3::Hasher::new();

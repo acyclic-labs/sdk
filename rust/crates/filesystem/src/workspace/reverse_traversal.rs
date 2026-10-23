@@ -86,7 +86,7 @@ fn reverse_insert(
     Ok(())
 }
 
-fn reverse_sort(
+pub(super) fn reverse_sort(
     records: &mut NamespaceRecords,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
@@ -166,35 +166,13 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
     }
     let bytes_count = bytes.0.as_ref().map_or(0, workspace_vec_bytes);
     reverse_drop(bytes, bytes_count, accounting)?;
-    let namespace_root = NamespacePath::new(Vec::new(), limits).map_err(FsError::from)?;
-    if let Some(record) = crate::kernel::lookup_path_async_with_accounting(
-        volume.fs.objects(),
+    let view = super::namespace_view::NamespaceView {
+        objects: volume.fs.objects(),
+        config: volume.config(),
         root,
-        &namespace_root,
-        volume.config(),
-        accounting,
-        cancellation,
-        None,
-    )
-    .await?
-    .record
-        && binary_search_with_accounting(ids, accounting, |id| id.cmp(&record.file_id))?.is_ok()
-    {
-        let allocation = accounting.claim_owned(0, 0)?;
-        reverse_insert(
-            &mut matches.0.records,
-            &mut matches.1,
-            (
-                NamespacePath::new(Vec::new(), limits).map_err(FsError::from)?,
-                allocation,
-            ),
-            record,
-            accounting,
-        )?;
-    }
-    if !walk_namespace(
-        volume,
-        root,
+    };
+    if !collect_namespace(
+        &view,
         ids,
         maximum_entries,
         &mut matches,
@@ -312,19 +290,64 @@ async fn answer_from_cache<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     Ok(false)
 }
 
+pub(crate) async fn collect_namespace<O: AsyncObjectStore>(
+    view: &super::namespace_view::NamespaceView<'_, O>,
+    ids: &[FileId],
+    maximum_entries: u32,
+    matches: &mut (NamespaceRecordSearch, KernelOwnedAllocation),
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<bool, FsError> {
+    let limits = view.config.limits;
+    let namespace_root = NamespacePath::new(Vec::new(), limits).map_err(FsError::from)?;
+    if let Some(record) = crate::kernel::lookup_path_async_with_accounting(
+        view.objects,
+        view.root,
+        &namespace_root,
+        view.config,
+        accounting,
+        cancellation,
+        None,
+    )
+    .await?
+    .record
+        && binary_search_with_accounting(ids, accounting, |id| id.cmp(&record.file_id))?.is_ok()
+    {
+        let allocation = accounting.claim_owned(0, 0)?;
+        reverse_insert(
+            &mut matches.0.records,
+            &mut matches.1,
+            (
+                NamespacePath::new(Vec::new(), limits).map_err(FsError::from)?,
+                allocation,
+            ),
+            record,
+            accounting,
+        )?;
+    }
+    walk_namespace(
+        view,
+        ids,
+        maximum_entries,
+        matches,
+        accounting,
+        cancellation,
+    )
+    .await
+}
+
 /// Walks the namespace from its root, inserting every path that binds one of
 /// `ids` into `matches`. Returns false when the walk stopped at
 /// `maximum_entries` before examining every entry.
-async fn walk_namespace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    volume: &Volume<A, O>,
-    root: &crate::kernel::GenerationRoot,
+async fn walk_namespace<O: AsyncObjectStore>(
+    view: &super::namespace_view::NamespaceView<'_, O>,
     ids: &[FileId],
     maximum_entries: u32,
     matches: &mut (NamespaceRecordSearch, KernelOwnedAllocation),
     accounting: &mut KernelAccounting<'_>,
     cancellation: &crate::CancellationToken,
 ) -> Result<bool, FsError> {
-    let limits = volume.config.limits;
+    let limits = view.config.limits;
     let namespace_root = NamespacePath::new(Vec::new(), limits).map_err(FsError::from)?;
     let allocation = accounting.claim_owned(0, 0)?;
     let mut pending = (Vec::new(), allocation);
@@ -335,10 +358,8 @@ async fn walk_namespace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     while let Some(directory) = pending.0.pop() {
         let mut after: Option<(LogicalName, KernelOwnedAllocation)> = None;
         loop {
-            let (page, allocation) =
-                crate::facade::list_directory_records_to_file_root_with_accounting(
-                    volume,
-                    root,
+            let (page, allocation) = view
+                .list(
                     &directory.0,
                     after.as_ref().map(|name| &name.0),
                     maximum_entries
@@ -425,7 +446,7 @@ async fn walk_namespace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 
 /// Releases one listed directory page.
 fn drop_page(
-    page: (crate::DirectoryRecordPage, KernelOwnedAllocation),
+    page: (super::namespace_view::NamespacePage, KernelOwnedAllocation),
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
     let page_bytes = workspace_vec_bytes(&page.0.entries)

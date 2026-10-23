@@ -72,7 +72,7 @@ fn digest(
     ))?;
     let mut bytes = (b"acyclic.stream.request.v1\0".len() + b"commit".len()) as u64;
     bytes = bytes
-        .checked_add(1 + 8 + path.as_str().len() as u64 + 8 + 8 + record.len() as u64)
+        .checked_add(1 + 8 + path.as_str().len() as u64 + 8 + record.hash_bytes())
         .ok_or(crate::WorkError::Overflow)?;
     for condition in &request.conditions {
         let (path, scalar) = match condition {

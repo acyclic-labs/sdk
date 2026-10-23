@@ -81,7 +81,12 @@ where
                     #[cfg(test)]
                     acyclic_test_support::differential::record(("checked_follow", anchor.next));
                     provider
-                        .follow_checked(path, anchor.next, anchor.preceding_commit_id)
+                        .follow_checked(
+                            path,
+                            anchor.next,
+                            anchor.preceding_commit_id,
+                            Default::default(),
+                        )
                         .await
                         .map_err(history_error)?
                 } else {
@@ -119,7 +124,7 @@ where
                         .map_err(history_error)?;
                     check_record_deletion(&subscription, &preceding)?;
                     provider
-                        .follow_checked(path, from, preceding.commit_id)
+                        .follow_checked(path, from, preceding.commit_id, Default::default())
                         .await
                         .map_err(history_error)?
                 };
@@ -277,7 +282,7 @@ where
         .map_err(history_error)?;
     check_record_deletion(&subscription, &head)?;
     let mut records = provider
-        .follow_checked(path, tail, head.commit_id)
+        .follow_checked(path, tail, head.commit_id, Default::default())
         .await
         .map_err(history_error)?;
     while let Some(record) = records.next().await {

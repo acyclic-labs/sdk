@@ -446,8 +446,9 @@ mod source_bound_lost_ack {
             &self,
             path: StreamPath,
             from: u64,
+            filter: acyclic_stream::FollowFilter,
         ) -> Result<acyclic_stream::RecordStream, StreamError> {
-            self.inner.follow(path, from).await
+            self.inner.follow(path, from, filter).await
         }
 
         async fn children(

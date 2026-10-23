@@ -1,8 +1,8 @@
 //! Session filesystem conformance.
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::session::{Cursor, Provider, Publication, Subscription};
-use acyclic_fs_wire::wire::filesystem::v2 as wire;
 use acyclic_fs::{CancellationToken, Fs, WorkBudget};
+use acyclic_fs_wire::wire::filesystem::v2 as wire;
 use acyclic_stream::session::{self as engine, PublicationProvider};
 use acyclic_stream::{StreamError, wire as session};
 use bytes::Bytes;
@@ -220,6 +220,7 @@ impl Connection {
         let (sender, receiver) = mpsc::unbounded();
         let output = engine::serve_with_publications(
             stream,
+            engine::testing::authority(),
             Some(provider),
             "local".into(),
             engine::Limits::default(),
@@ -229,6 +230,7 @@ impl Connection {
             0,
             Body::Hello(session::SessionHello {
                 version: 1,
+                credentials: vec![engine::testing::credential()],
                 client_id: Bytes::from_static(b"fs-client"),
                 destination_node: "local".into(),
                 receive_bytes: if credit { 1_000_000 } else { 0 },
@@ -246,6 +248,8 @@ impl Connection {
                         generation: 1,
                     }),
                     resume: Some(resume),
+                    credential: 0,
+                    filter: None,
                     kind: Some(session::session_subscription::Kind::FsPublications(
                         sub.encode()?,
                     )),

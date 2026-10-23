@@ -244,7 +244,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         work.remaining()?;
         let request = acyclic_stream::AppendRequest {
             path,
-            records: vec![acyclic_stream::OwnedBytes::from_static(AUTHORITY_RETIRED)],
+            records: vec![acyclic_stream::OwnedBytes::from_static(AUTHORITY_RETIRED).into()],
             if_tail: Some(0),
             idempotency_key: Some(stream_key(b"retire-authority", &authority.into_bytes())?),
         };

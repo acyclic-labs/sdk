@@ -12,7 +12,7 @@ pub(super) fn native_pinned_allocation(
     }
 }
 
-pub(super) fn readonly_standalone_live(accounting: &KernelAccounting<'_>) -> Option<u64> {
+pub(crate) fn readonly_standalone_live(accounting: &KernelAccounting<'_>) -> Option<u64> {
     match accounting {
         KernelAccounting::Standalone { allocations, .. } => Some(allocations.live_bytes()),
         KernelAccounting::BorrowedStandalone { allocations, .. } => Some(allocations.live_bytes()),
@@ -21,7 +21,7 @@ pub(super) fn readonly_standalone_live(accounting: &KernelAccounting<'_>) -> Opt
     }
 }
 
-pub(super) fn readonly_cleanup_standalone(
+pub(crate) fn readonly_cleanup_standalone(
     accounting: &mut KernelAccounting<'_>,
     before: Option<u64>,
     retained: u64,

@@ -74,8 +74,9 @@ impl StreamProvider for PausingStream {
         &self,
         path: StreamPath,
         from: u64,
+        filter: acyclic_stream::FollowFilter,
     ) -> Result<acyclic_stream::RecordStream, StreamError> {
-        self.inner.follow(path, from).await
+        self.inner.follow(path, from, filter).await
     }
 
     async fn children(
@@ -1117,7 +1118,7 @@ async fn failed_atomic_generation_fork_leaves_no_destination_lineage()
     streams
         .append(AppendRequest {
             path: StreamPath::new(format!("{prefix}/records"))?,
-            records: vec![OwnedBytes::from_static(b"conflict")],
+            records: vec![OwnedBytes::from_static(b"conflict").into()],
             if_tail: Some(0),
             idempotency_key: None,
         })

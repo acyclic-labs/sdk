@@ -16,7 +16,7 @@ use wire::{session_data::Item, session_frame::Body, session_subscription::Kind};
 mod authority;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
-pub mod testing;
+pub use authority::testing;
 pub use authority::{Authority, AuthorityState, TrustSnapshot};
 mod sources;
 #[cfg(acyclic_stream_loom)]

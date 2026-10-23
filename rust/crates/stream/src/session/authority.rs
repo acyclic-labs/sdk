@@ -1,4 +1,7 @@
 //! Public trust, credential slots and immutable subscription ceilings.
+#[cfg(any(test, feature = "test-support"))]
+#[path = "testing.rs"]
+pub mod testing;
 use super::*;
 use acyclic_auth::{
     authority::{PolicyDecision, Request, Target},

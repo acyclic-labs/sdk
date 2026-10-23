@@ -55,8 +55,13 @@ impl StreamProvider for History {
         }
         self.inner.read(request).await
     }
-    async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        self.inner.follow(path, from).await
+    async fn follow(
+        &self,
+        path: StreamPath,
+        from: u64,
+        filter: acyclic_stream::FollowFilter,
+    ) -> Result<RecordStream, StreamError> {
+        self.inner.follow(path, from, filter).await
     }
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
         self.inner.children(request).await
@@ -72,10 +77,11 @@ impl StreamProvider for History {
         path: StreamPath,
         from: u64,
         anchor: CommitId,
+        filter: acyclic_stream::FollowFilter,
     ) -> Result<RecordStream, StreamError> {
         if self.unchecked {
             let tail = self.inner.tail(path.clone()).await?;
-            return self.inner.follow(path, from.min(tail)).await;
+            return self.inner.follow(path, from.min(tail), filter).await;
         }
         if from - 1 < self.floor {
             return Err(StreamError::PrefixNotRetained);
@@ -85,7 +91,7 @@ impl StreamProvider for History {
             if *after {
                 opened = Some(
                     self.inner
-                        .follow_checked(path.clone(), from, anchor)
+                        .follow_checked(path.clone(), from, anchor, filter.clone())
                         .await?,
                 );
             }
@@ -94,7 +100,11 @@ impl StreamProvider for History {
         }
         let records = match opened {
             Some(records) => records,
-            None => self.inner.follow_checked(path, from, anchor).await?,
+            None => {
+                self.inner
+                    .follow_checked(path, from, anchor, filter)
+                    .await?
+            }
         };
         Ok(Box::pin(records.skip(self.skip as usize)))
     }

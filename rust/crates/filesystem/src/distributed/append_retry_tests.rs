@@ -287,7 +287,7 @@ async fn a_malformed_operation_locator_is_still_corrupt() -> TestResult {
         stream
             .append(acyclic_stream::AppendRequest {
                 path: work.operation_path(authority, proposed(3).operation_id)?,
-                records: vec![acyclic_stream::OwnedBytes::from_static(b"foreign")],
+                records: vec![acyclic_stream::OwnedBytes::from_static(b"foreign").into()],
                 if_tail: None,
                 idempotency_key: None,
             })

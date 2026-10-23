@@ -1,5 +1,57 @@
 use super::*;
 
+#[cfg(not(target_arch = "wasm32"))]
+async fn raw_changed_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    changes: &ChangeSet<A, O>,
+    maximum_entries: u32,
+    original: &crate::NativeMaterializationWork,
+    cancellation: &CancellationToken,
+) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
+    let mut accounting = KernelAccounting::native(original, cancellation);
+    let from = changes
+        .from
+        .workspace
+        .open_checkout(
+            GenerationSelector::Exact(changes.from.id),
+            CheckoutMode::read_only_pinned(),
+            &mut accounting,
+            cancellation,
+        )
+        .await?;
+    let to = changes
+        .to
+        .workspace
+        .open_checkout(
+            GenerationSelector::Exact(changes.to.id),
+            CheckoutMode::read_only_pinned(),
+            &mut accounting,
+            cancellation,
+        )
+        .await?;
+    let result = super::super::diff::changed_paths_in_roots(
+        [
+            super::super::namespace_view::NamespaceView {
+                objects: changes.from.workspace.volume.fs.objects(),
+                config: changes.from.workspace.volume.config(),
+                root: from.value.root(),
+            },
+            super::super::namespace_view::NamespaceView {
+                objects: changes.to.workspace.volume.fs.objects(),
+                config: changes.to.workspace.volume.config(),
+                root: to.value.root(),
+            },
+        ],
+        &changes.changes,
+        maximum_entries,
+        &mut accounting,
+        cancellation,
+    )
+    .await;
+    to.retire(&mut accounting)?;
+    from.retire(&mut accounting)?;
+    result
+}
+
 #[tokio::test]
 async fn semantic_change_set_and_overlap_conflict_are_exact() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
@@ -181,6 +233,18 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
             .changed_paths(64, &original, &cancellation)
             .await?;
         assert_eq!(native_paths, paths);
+        let (raw_paths, raw_guard) =
+            raw_changed_paths(&native_changes, 64, &original, &cancellation).await?;
+        assert_eq!(
+            raw_paths, paths,
+            "kernel and facade endpoint deltas must agree"
+        );
+        drop(raw_paths);
+        drop(raw_guard);
+        assert!(matches!(
+            raw_changed_paths(&native_changes, 1, &original, &cancellation).await,
+            Err(WorkspaceError::ChangedPathLimit)
+        ));
         drop(native_paths);
         drop(path_guard);
         assert!(matches!(
@@ -201,6 +265,11 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
             assert!(
                 native_changes
                     .changed_paths(64, &denied, &cancellation)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                raw_changed_paths(&native_changes, 64, &denied, &cancellation)
                     .await
                     .is_err()
             );
