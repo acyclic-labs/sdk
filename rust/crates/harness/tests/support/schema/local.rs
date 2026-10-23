@@ -31,7 +31,7 @@ pub(super) struct Expectations {
     pub files: BTreeMap<String, Option<String>>,
     pub diffs: Option<BTreeMap<String, Value>>,
     pub results: Option<BTreeMap<String, Value>>,
-    /// Effective arguments of calls a PreToolUse hook rewrote, by call id.
+    /// Effective arguments of calls a `PreToolUse` hook rewrote, by call id.
     /// The published tool request carries these instead of the model's.
     #[serde(default)]
     pub arguments: BTreeMap<String, Value>,
