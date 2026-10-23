@@ -16,6 +16,7 @@
   "acyclic-fs-base",
   "acyclic-fs-wire",
   "acyclic-fs",
+  "acyclic-markdown-work",
   "acyclic-markdown",
   "acyclic-harness-tui",
   "acyclic-harness-core",
