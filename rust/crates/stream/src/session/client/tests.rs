@@ -208,6 +208,7 @@ async fn moved_resumes_applied_cursor_and_dialing_does_not_block_other_channels(
         None,
         connect,
     );
+    client.register_credential(0, crate::session::testing::credential())?;
     let mut moving = client
         .follow(StreamPath::new("move")?, 1, crate::FollowFilter::default())
         .await?;
@@ -690,6 +691,7 @@ async fn children_move_and_reconnect_from_the_yielded_opaque_cursor() -> TestRes
         None,
         connect,
     );
+    client.register_credential(0, crate::session::testing::credential())?;
     let mut children = client
         .children(crate::ChildrenRequest {
             parent: Some(StreamPath::new("agents")?),

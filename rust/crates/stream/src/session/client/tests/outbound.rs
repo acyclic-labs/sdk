@@ -158,6 +158,7 @@ async fn a_peer_that_stops_reading_controls_cannot_stall_healthy_nodes_or_cancel
             None,
             connect,
         );
+        client.register_credential(0, crate::session::testing::credential())?;
         phase.set("opening redirected healthy follow");
         let mut records = client
             .follow(

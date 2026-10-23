@@ -416,6 +416,7 @@ async fn moved_owner_withdraws() -> TestResult {
         None,
         connect,
     );
+    client.register_credential(0, crate::session::testing::credential())?;
     let a_origin = origin(&subscriber, true);
     let moving = a_origin
         .scope(client.follow(StreamPath::new("move")?, 1, crate::FollowFilter::default()))
@@ -524,6 +525,7 @@ fn cancelling_the_dial_origin_releases_its_span_while_b_waits_for_welcome() -> T
             Some(credential),
             std::sync::Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
         );
+        client.register_credential(0, crate::session::testing::credential())?;
         let a_origin = origin(&subscriber, true);
         let mut a = Box::pin(a_origin.scope(client.follow(
             StreamPath::new("events")?,

@@ -104,6 +104,7 @@ async fn checked_move_and_reconnect_use_the_yielded_commit_instead_of_buffered_r
         None,
         connect,
     );
+    client.register_credential(0, crate::session::testing::credential())?;
     let path = StreamPath::new("events")?;
     let mut records = client
         .follow_checked(

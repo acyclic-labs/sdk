@@ -20,6 +20,7 @@ async fn malformed_discovery_closes_only_its_node_and_keeps_later_opens_live() -
             None,
             connect,
         );
+        client.register_credential(0, crate::session::testing::credential())?;
         let mut healthy = client
             .follow(
                 StreamPath::new("healthy")?,

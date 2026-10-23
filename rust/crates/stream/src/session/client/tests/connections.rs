@@ -342,6 +342,7 @@ async fn reconnect_pushes_a_generation_without_new_records() -> TestResult {
         None,
         Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
     );
+    client.register_credential(0, crate::session::testing::credential())?;
     let connections = client.connections();
     let _idle = client
         .follow(StreamPath::new("idle")?, 1, crate::FollowFilter::default())
