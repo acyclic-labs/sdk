@@ -273,9 +273,14 @@ impl ControlPlane {
             if route.lifecycle.needs_mount() || discarding_agents.contains(&route.agent_id) {
                 self.validate_route_paths(&route)?;
                 fs::create_dir_all(&route.mount_path).map_err(display)?;
+                // Fence names are derived from the canonical physical path.
+                // Windows adds its verbatim prefix when the provider opens the
+                // parent; use that same spelling before checking for a fence.
+                #[cfg(windows)]
+                let mount_path = route.mount_path.canonicalize().map_err(display)?;
                 #[cfg(windows)]
                 for root in route.roots.values() {
-                    let path = route.mount_path.join(root.mount_name());
+                    let path = mount_path.join(root.mount_name());
                     let [fence, ..] =
                         acyclic_fs::native_mount_control_paths(&path).map_err(display)?;
                     if !fence.try_exists().map_err(display)? {

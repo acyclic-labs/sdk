@@ -9,168 +9,240 @@ fn projected_mount_writer_child() {
 }
 
 #[test]
-fn recursive_publication_is_direct_parent_only() {
-    run_large_stack("recursive-publication", || async {
-        let fixture = Fixture::new();
-        fs::write(fixture.root.join("base.txt"), b"base").unwrap();
-        let mut control = ControlPlane::open(fixture.data.clone()).await.unwrap();
-        control
-            .session_start(json!({"session_id":"session","cwd":fixture.root}))
-            .await
-            .unwrap();
-        control
-            .user_prompt(json!({"session_id":"session","turn_id":"root-turn"}))
-            .unwrap();
-        for (parent, child, turn) in [
-            ("root-turn", "child", "child-turn"),
-            ("child-turn", "grandchild", "grandchild-turn"),
-        ] {
-            control
-                .pre_tool(json!({"session_id":"session","turn_id":parent,
-                "tool_use_id":format!("spawn-{child}"),"tool_name":"spawn_agent","tool_input":{}}))
-                .await
-                .unwrap();
-            control
-                .subagent_start(json!({"session_id":"session","turn_id":turn,
-                "agent_id":child,"agent_type":"explorer"}))
-                .await
-                .unwrap();
-        }
-        let child_path = control.state.routes["child"].active_path().unwrap();
-        let grandchild_path = control.state.routes["grandchild"].active_path().unwrap();
-        assert_ne!(child_path, grandchild_path);
-        for (turn, tool, path) in [
-            ("child-turn", "parent-read", &child_path),
-            ("grandchild-turn", "descendant-read", &grandchild_path),
-        ] {
-            control
-                .pre_tool(
-                    json!({"session_id":"session","turn_id":turn,"tool_use_id":tool,
-                "tool_name":"Read","tool_input":{"path":path.join("base.txt")}}),
-                )
-                .await
-                .unwrap();
-        }
-        control
-            .post_tool(json!({"session_id":"session","turn_id":"grandchild-turn",
-            "tool_use_id":"descendant-read","tool_name":"Read"}))
-            .await
-            .unwrap();
-        let writer = acyclic_native_runtime::process_output(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "tests::recursive::projected_mount_writer_child",
-                    "--ignored",
-                ])
-                .env(
-                    "ACYCLIC_TEST_PROJECTED_WRITE_PATH",
-                    child_path.join("base.txt"),
-                ),
-            std::time::Duration::from_secs(120),
-            8 * 1024 * 1024,
-        )
-        .unwrap();
-        assert!(
-            writer.status.success(),
-            "{}",
-            String::from_utf8_lossy(&writer.stderr)
-        );
-        control
-            .post_tool(json!({"session_id":"session","turn_id":"child-turn",
-            "tool_use_id":"parent-read","tool_name":"Read"}))
-            .await
-            .unwrap();
-        let grandchild = control
-            .workspace(&control.state.routes["grandchild"])
-            .await
-            .unwrap();
-        assert_eq!(
-            grandchild
-                .read(
-                    "/base.txt",
-                    32,
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new()
-                )
-                .await
-                .unwrap()
-                .value
-                .as_ref(),
-            b"late parent"
-        );
-        let mut transaction = grandchild
-            .begin_transaction(
-                IdempotencyKey::new(),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .unwrap()
-            .value;
-        transaction
-            .write_text("/nested.txt", "nested")
-            .await
-            .unwrap();
-        transaction
-            .commit(
-                None,
-                acyclic_fs::PublicationPermit::Unrestricted,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-                |_| async {
-                    Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
-                        acyclic_fs::OperationReceipt {
-                            value: (),
-                            work: acyclic_fs::WorkCounters::default(),
-                        },
-                    )
+fn pending_discard_recovery_respects_the_durable_mount_cursor() {
+    run_large_stack("discard-mount-cursor", || async {
+        for cut in ["context", "unmount", "workspace"] {
+            if crash_case().is_some_and(|requested| requested != cut) {
+                continue;
+            }
+            let fixture = crash_test_process(
+                "tests::recursive::pending_discard_recovery_respects_the_durable_mount_cursor",
+                cut,
+                |fixture| async move {
+                    fs::write(fixture.root.join("base.txt"), b"base").unwrap();
+                    let mut control = ControlPlane::open(fixture.data.clone()).await.unwrap();
+                    control
+                        .session_start(json!({"session_id":"session","cwd":fixture.root}))
+                        .await
+                        .unwrap();
+                    control
+                        .user_prompt(json!({"session_id":"session","turn_id":"root-turn"}))
+                        .unwrap();
+                    control
+                        .pre_tool(json!({"session_id":"session","turn_id":"root-turn",
+                    "tool_use_id":"spawn","tool_name":"spawn_agent","tool_input":{}}))
+                        .await
+                        .unwrap();
+                    control
+                        .subagent_start(json!({"session_id":"session","turn_id":"child-turn",
+                    "agent_id":"child"}))
+                        .await
+                        .unwrap();
+                    match cut {
+                        "context" => control.fail_after_context_discard = true,
+                        "unmount" => {
+                            control.fail_next_unmount.insert("child".into());
+                        }
+                        "workspace" => control.fail_after_discard_delete = true,
+                        _ => unreachable!(),
+                    }
+                    let error = control
+                        .agent_discard(json!({"agent":"child","_caller_turn_id":"root-turn"}))
+                        .await
+                        .unwrap_err();
+                    assert!(error.starts_with("injected "), "{cut}: {error}");
+                    let pending = &control.state.pending_discards["child"];
+                    let agent = pending.agents.front().unwrap();
+                    assert_eq!(agent.mount_detached, cut == "workspace", "{cut}");
+                    assert_eq!(control.mounts.contains_key("child"), cut != "workspace");
+                    if agent.mount_detached {
+                        assert!(!agent.path.exists());
+                    }
+                    control
                 },
             )
-            .await
-            .unwrap();
-        drop(transaction);
-        assert!(
-            control
-                .agent_merge(json!({"agent":"grandchild","_caller_turn_id":"root-turn"}))
+            .await;
+            let recovered = ControlPlane::open(fixture.data.clone())
                 .await
-                .is_err()
-        );
-        assert!(!fixture.root.join("nested.txt").exists());
-        control
-            .agent_merge(json!({"agent":"grandchild","_caller_turn_id":"child-turn"}))
-            .await
-            .unwrap();
-        assert!(!fixture.root.join("nested.txt").exists());
-        control
-            .agent_merge(json!({"agent":"child","_caller_turn_id":"root-turn"}))
-            .await
-            .unwrap();
-        assert_eq!(
-            fs::read(fixture.root.join("nested.txt")).unwrap(),
-            b"nested"
-        );
-        assert_eq!(
-            fs::read(fixture.root.join("base.txt")).unwrap(),
-            b"late parent"
-        );
+                .unwrap_or_else(|error| panic!("{cut}: {error}"));
+            assert!(recovered.state.routes.is_empty(), "{cut}");
+            assert!(recovered.state.pending_discards.is_empty(), "{cut}");
+            assert!(recovered.mounts.is_empty(), "{cut}");
+            assert_eq!(fs::read(fixture.root.join("base.txt")).unwrap(), b"base");
+            recovered.shutdown().await.unwrap();
+        }
+    });
+}
 
-        control.fail_next_unmount.insert("grandchild".into());
-        assert!(
-            control
-                .agent_discard(json!({"agent":"child","_caller_turn_id":"root-turn"}))
-                .await
-                .is_err()
-        );
-        control.fail_after_discard_delete = true;
-        assert!(
-            control
-                .agent_discard(json!({"agent":"child","_caller_turn_id":"root-turn"}))
-                .await
-                .is_err()
-        );
-        drop(grandchild);
-        control.crash().await.unwrap();
+#[test]
+fn recursive_publication_is_direct_parent_only() {
+    run_large_stack("recursive-publication", || async {
+        let fixture = crash_test_process(
+            "tests::recursive::recursive_publication_is_direct_parent_only",
+            "recursive",
+            |fixture| async move {
+                fs::write(fixture.root.join("base.txt"), b"base").unwrap();
+                let mut control = ControlPlane::open(fixture.data.clone()).await.unwrap();
+                control
+                    .session_start(json!({"session_id":"session","cwd":fixture.root}))
+                    .await
+                    .unwrap();
+                control
+                    .user_prompt(json!({"session_id":"session","turn_id":"root-turn"}))
+                    .unwrap();
+                for (parent, child, turn) in [
+                    ("root-turn", "child", "child-turn"),
+                    ("child-turn", "grandchild", "grandchild-turn"),
+                ] {
+                    control
+                        .pre_tool(json!({"session_id":"session","turn_id":parent,
+                "tool_use_id":format!("spawn-{child}"),"tool_name":"spawn_agent","tool_input":{}}))
+                        .await
+                        .unwrap();
+                    control
+                        .subagent_start(json!({"session_id":"session","turn_id":turn,
+                "agent_id":child,"agent_type":"explorer"}))
+                        .await
+                        .unwrap();
+                }
+                let child_path = control.state.routes["child"].active_path().unwrap();
+                let grandchild_path = control.state.routes["grandchild"].active_path().unwrap();
+                assert_ne!(child_path, grandchild_path);
+                for (turn, tool, path) in [
+                    ("child-turn", "parent-read", &child_path),
+                    ("grandchild-turn", "descendant-read", &grandchild_path),
+                ] {
+                    control
+                        .pre_tool(
+                            json!({"session_id":"session","turn_id":turn,"tool_use_id":tool,
+                "tool_name":"Read","tool_input":{"path":path.join("base.txt")}}),
+                        )
+                        .await
+                        .unwrap();
+                }
+                control
+                    .post_tool(json!({"session_id":"session","turn_id":"grandchild-turn",
+            "tool_use_id":"descendant-read","tool_name":"Read"}))
+                    .await
+                    .unwrap();
+                let writer = acyclic_native_runtime::process_output(
+                    std::process::Command::new(std::env::current_exe().unwrap())
+                        .args([
+                            "--exact",
+                            "tests::recursive::projected_mount_writer_child",
+                            "--ignored",
+                        ])
+                        .env(
+                            "ACYCLIC_TEST_PROJECTED_WRITE_PATH",
+                            child_path.join("base.txt"),
+                        ),
+                    std::time::Duration::from_secs(120),
+                    8 * 1024 * 1024,
+                )
+                .unwrap();
+                assert!(
+                    writer.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&writer.stderr)
+                );
+                control
+                    .post_tool(json!({"session_id":"session","turn_id":"child-turn",
+            "tool_use_id":"parent-read","tool_name":"Read"}))
+                    .await
+                    .unwrap();
+                let grandchild = control
+                    .workspace(&control.state.routes["grandchild"])
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    grandchild
+                        .read(
+                            "/base.txt",
+                            32,
+                            WorkBudget::UNBOUNDED,
+                            &CancellationToken::new()
+                        )
+                        .await
+                        .unwrap()
+                        .value
+                        .as_ref(),
+                    b"late parent"
+                );
+                let mut transaction = grandchild
+                    .begin_transaction(
+                        IdempotencyKey::new(),
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                    )
+                    .await
+                    .unwrap()
+                    .value;
+                transaction
+                    .write_text("/nested.txt", "nested")
+                    .await
+                    .unwrap();
+                transaction
+                    .commit(
+                        None,
+                        acyclic_fs::PublicationPermit::Unrestricted,
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                        |_| async {
+                            Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
+                                acyclic_fs::OperationReceipt {
+                                    value: (),
+                                    work: acyclic_fs::WorkCounters::default(),
+                                },
+                            )
+                        },
+                    )
+                    .await
+                    .unwrap();
+                drop(transaction);
+                assert!(
+                    control
+                        .agent_merge(json!({"agent":"grandchild","_caller_turn_id":"root-turn"}))
+                        .await
+                        .is_err()
+                );
+                assert!(!fixture.root.join("nested.txt").exists());
+                control
+                    .agent_merge(json!({"agent":"grandchild","_caller_turn_id":"child-turn"}))
+                    .await
+                    .unwrap();
+                assert!(!fixture.root.join("nested.txt").exists());
+                control
+                    .agent_merge(json!({"agent":"child","_caller_turn_id":"root-turn"}))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    fs::read(fixture.root.join("nested.txt")).unwrap(),
+                    b"nested"
+                );
+                assert_eq!(
+                    fs::read(fixture.root.join("base.txt")).unwrap(),
+                    b"late parent"
+                );
+
+                control.fail_next_unmount.insert("grandchild".into());
+                assert!(
+                    control
+                        .agent_discard(json!({"agent":"child","_caller_turn_id":"root-turn"}))
+                        .await
+                        .is_err()
+                );
+                control.fail_after_discard_delete = true;
+                assert!(
+                    control
+                        .agent_discard(json!({"agent":"child","_caller_turn_id":"root-turn"}))
+                        .await
+                        .is_err()
+                );
+                drop(grandchild);
+                control
+            },
+        )
+        .await;
         let recovered = ControlPlane::open(fixture.data.clone()).await.unwrap();
         assert!(recovered.state.routes.is_empty());
         assert!(recovered.state.pending_discards.is_empty());

@@ -1,5 +1,8 @@
 use super::*;
 
+mod crash;
+pub(super) use crash::{crash_case, crash_test_process};
+
 pub(super) struct Fixture {
     pub temporary: tempfile::TempDir,
     pub root: PathBuf,
