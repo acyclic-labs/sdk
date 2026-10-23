@@ -299,7 +299,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let lineage = self
             .fork_lineage_with_accounting(source, accounting, cancellation)
             .await?;
-        let (retention, retained, creation, payload_bytes) = fork_records_with_accounting(
+        let (retention, retained, mut creation, payload_bytes) = fork_records_with_accounting(
             source_volume,
             source_root,
             destination_id,
@@ -307,6 +307,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             idempotency_key.operation_id(),
             accounting,
         )?;
+        creation.publication = Some(crate::PublicationChanges::initial(
+            &self.inner.objects,
+            VolumeCreated {
+                volume_id,
+                config: source_volume.config,
+                initial_generation_root: fork_root.generation_root,
+            },
+            accounting,
+            cancellation,
+        ).await?);
         let fork = crate::WorkspaceForkCommit {
             lineage,
             destination: volume_authority_id(volume_id),

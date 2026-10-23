@@ -13,6 +13,7 @@ const BUDGET: WorkBudget = crate::performance::work_budget(1 << 28, 1 << 28);
 
 fn proposed(id: u8) -> ProposedCommit {
     ProposedCommit {
+        publication: None,
         operation_id: OperationId::from_bytes([id; 16]),
         fingerprint: Digest::from_bytes([id; 32]),
         payload: Bytes::from_static(b"publication"),

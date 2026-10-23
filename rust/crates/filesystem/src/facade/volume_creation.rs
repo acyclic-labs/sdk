@@ -218,7 +218,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 crate::kernel::encode_volume_created(creation, observe, allocation_error)
             })?;
         let capacity = encoded.0.capacity() as u64;
-        let commit = creation_commit(operation_id, encoded, accounting)?;
+        let mut commit = creation_commit(operation_id, encoded, accounting)?;
+        commit.publication = Some(crate::PublicationChanges::initial(
+            &self.inner.objects, creation, accounting, cancellation,
+        ).await?);
         let hold = self
             .flush_publication(
                 crate::PublicationScope::Closure {
@@ -454,6 +457,7 @@ pub(super) fn creation_commit(
         payload.bytes = allocation.bytes();
         let payload = Bytes::from_owner(payload);
         return Ok(ProposedCommit {
+            publication: None,
             operation_id,
             fingerprint,
             payload,
@@ -467,6 +471,7 @@ pub(super) fn creation_commit(
     let payload = Bytes::from(encoded.0);
     accounting.record_completed(owner)?;
     Ok(ProposedCommit {
+        publication: None,
         operation_id,
         fingerprint,
         payload,

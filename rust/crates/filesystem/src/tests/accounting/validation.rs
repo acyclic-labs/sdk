@@ -218,6 +218,7 @@ async fn current_objects_and_offline_authority_cannot_substitute_for_original_pr
         .create_first_record(
             id,
             ProposedCommit {
+                publication: None,
                 operation_id: initial.operation_id,
                 fingerprint: initial.fingerprint,
                 payload: initial.payload.clone(),

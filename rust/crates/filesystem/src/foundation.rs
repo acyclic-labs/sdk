@@ -278,6 +278,8 @@ impl Head {
 /// One canonical opaque operation submitted to authority.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProposedCommit {
+    /// Kernel-authenticated namespace changes committed atomically with a volume publication.
+    pub publication: Option<crate::PublicationChanges>,
     /// Stable retry identity.
     pub operation_id: OperationId,
     /// Digest of the complete semantic command and caller-visible preconditions.

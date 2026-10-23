@@ -22,6 +22,7 @@ fn request(id: AuthorityId, head: Head) -> GuardedAppend {
         epoch: head.epoch,
         expected: head,
         commit: ProposedCommit {
+            publication: None,
             operation_id: OperationId::from_bytes([0x91; 16]),
             fingerprint: Digest::from_bytes([0x92; 32]),
             payload: bytes::Bytes::from_static(b"canonical configuration bytes"),
@@ -148,14 +149,17 @@ async fn first_record_is_atomic_idempotent_and_matches_ordinary_publication()
     );
     for changed in [
         ProposedCommit {
+            publication: None,
             payload: bytes::Bytes::from_static(b"different configuration bytes"),
             ..proposed.clone()
         },
         ProposedCommit {
+            publication: None,
             operation_id: OperationId::from_bytes([0x93; 16]),
             ..proposed.clone()
         },
         ProposedCommit {
+            publication: None,
             fingerprint: Digest::from_bytes([0x94; 32]),
             ..proposed
         },

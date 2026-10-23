@@ -38,6 +38,7 @@ pub(super) fn publish(store: &MemoryAuthorityStore, expected: Head, operation: u
                 epoch: expected.epoch,
                 expected,
                 commit: ProposedCommit {
+                    publication: None,
                     operation_id: OperationId::from_bytes([operation; 16]),
                     fingerprint: Digest::from_bytes([operation; 32]),
                     payload: bytes::Bytes::from_static(b"generation"),

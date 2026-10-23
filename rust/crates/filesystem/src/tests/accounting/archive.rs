@@ -43,6 +43,7 @@ async fn evidence(
             digest: record.previous_digest,
         },
         commit: ProposedCommit {
+            publication: None,
             operation_id: record.operation_id,
             fingerprint: record.fingerprint,
             payload: record.payload.clone(),

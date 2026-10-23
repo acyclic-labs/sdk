@@ -349,6 +349,7 @@ impl StreamsAuthorityRecord {
     #[must_use]
     pub fn proposed_commit(&self) -> ProposedCommit {
         ProposedCommit {
+            publication: None,
             operation_id: self.operation_id,
             fingerprint: self.fingerprint,
             payload: self.payload.clone(),
@@ -565,6 +566,7 @@ mod tests {
 
     fn proposal() -> ProposedCommit {
         ProposedCommit {
+            publication: None,
             operation_id: OperationId::from_bytes([1; 16]),
             fingerprint: Digest::from_bytes([2; 32]),
             payload: Bytes::from_static(b"canonical-operation"),

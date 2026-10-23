@@ -339,6 +339,7 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
         AppendOutcome::AlreadyCommitted(first_commit.clone())
     );
     let conflict = ProposedCommit {
+        publication: None,
         fingerprint: Digest::from_bytes([10; 32]),
         ..first
     };
@@ -705,6 +706,7 @@ async fn indexed_db_forks_and_creates_in_one_transaction_and_resolves_retries()
 
 fn proposal(operation: u8, fingerprint: u8, payload: Bytes) -> ProposedCommit {
     ProposedCommit {
+        publication: None,
         operation_id: OperationId::from_bytes([operation; 16]),
         fingerprint: Digest::from_bytes([fingerprint; 32]),
         payload,

@@ -47,6 +47,7 @@ fn object(bytes: &[u8]) -> (ObjectId, OwnedBytes) {
 
 fn proposal(operation: u8, fingerprint: u8) -> ProposedCommit {
     ProposedCommit {
+        publication: None,
         operation_id: OperationId::from_bytes([operation; 16]),
         fingerprint: Digest::from_bytes([fingerprint; 32]),
         payload: Bytes::from(vec![operation, fingerprint]),

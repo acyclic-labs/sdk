@@ -135,7 +135,7 @@ impl<'a> AuthorityWork<'a> {
         self.plain_bytes(buffer.0)
     }
 
-    fn plain_bytes(&mut self, buffer: Vec<u8>) -> Result<Bytes, AuthorityStoreError> {
+    pub(super) fn plain_bytes(&mut self, buffer: Vec<u8>) -> Result<Bytes, AuthorityStoreError> {
         let owner = WorkCounters {
             allocation_operations: u64::from(buffer.capacity() != buffer.len()),
             ..WorkCounters::UNCHARGED

@@ -788,6 +788,7 @@ async fn concurrent_stale_cas_and_epoch_fencing_preserve_exactly_once_replay()
         __authority_work.receipt(__authority_result)
     })?;
     let proposal = |operation, fingerprint, payload| ProposedCommit {
+        publication: None,
         operation_id: OperationId::from_bytes([operation; 16]),
         fingerprint: Digest::from_bytes([fingerprint; 32]),
         payload: bytes::Bytes::from_static(payload),

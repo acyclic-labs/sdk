@@ -21,6 +21,11 @@ struct HeaderData {
 pub struct RecordHeaders(Option<Arc<HeaderData>>);
 
 impl RecordHeaders {
+    /// Allocation claimed before constructing nonempty header control storage.
+    /// Providers additionally fund the supplied vectors, names and byte owners.
+    pub const fn control_bytes() -> usize {
+        std::mem::size_of::<HeaderData>() + 2 * std::mem::size_of::<usize>()
+    }
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn from_native_parts(
         keys: Vec<OwnedBytes>,

@@ -134,6 +134,7 @@ fn commit_under_lease(bencher: Bencher, native: bool) {
             expected: head,
             permit,
             commit: ProposedCommit {
+                publication: None,
                 operation_id: OperationId::from_bytes([13; 16]),
                 fingerprint: Digest::from_bytes([17; 32]),
                 payload: Bytes::from_static(b"body"),

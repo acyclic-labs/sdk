@@ -175,6 +175,7 @@ async fn memory_stores_expose_the_complete_async_contract() -> Result<(), Box<dy
                 epoch: Epoch::GENESIS,
                 expected: head,
                 commit: ProposedCommit {
+                    publication: None,
                     operation_id: operation,
                     fingerprint: Digest::from_bytes([0x43; 32]),
                     payload: bytes::Bytes::from_static(b"payload"),
@@ -231,6 +232,7 @@ async fn adapters_reject_cancellation_and_sequential_read_failures()
         epoch: Epoch::GENESIS,
         expected: head,
         commit: ProposedCommit {
+            publication: None,
             operation_id: operation,
             fingerprint: Digest::from_bytes([0x53; 32]),
             payload: bytes::Bytes::from_static(b"cancelled"),
@@ -322,12 +324,14 @@ async fn default_guarded_fork_preserves_owner_rejection_and_rejects_managed_perm
         lineage: None,
         destination: AuthorityId::from_bytes([0x91; 16]),
         creation: ProposedCommit {
+            publication: None,
             operation_id: OperationId::from_bytes([0x92; 16]),
             fingerprint: Digest::from_bytes([0x93; 32]),
             payload: bytes::Bytes::from_static(b"creation"),
         },
         retention: AuthorityId::from_bytes([0x94; 16]),
         retained: ProposedCommit {
+            publication: None,
             operation_id: OperationId::from_bytes([0x95; 16]),
             fingerprint: Digest::from_bytes([0x96; 32]),
             payload: bytes::Bytes::from_static(b"retention"),

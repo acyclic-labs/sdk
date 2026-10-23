@@ -70,6 +70,7 @@ proptest! {
             let result = authority.compare_and_append(acyclic_fs::GuardedAppend {
                 authority_id, epoch: head.epoch, expected: head,
                 commit: acyclic_fs::ProposedCommit {
+                    publication: None,
                     operation_id: acyclic_fs::OperationId::from_bytes([2; 16]),
                     fingerprint: acyclic_fs::Digest::from_bytes([3; 32]),
                     payload: bytes::Bytes::from_static(b"lease-codec-property"),

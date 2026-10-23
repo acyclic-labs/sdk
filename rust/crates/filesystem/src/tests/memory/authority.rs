@@ -16,6 +16,7 @@ async fn authority_is_fenced_and_replay_is_bounded() -> Result<(), Box<dyn std::
         }
     };
     let commit = ProposedCommit {
+        publication: None,
         operation_id: OperationId::from_bytes([2; 16]),
         fingerprint: Digest::from_bytes([3; 32]),
         payload: bytes::Bytes::from_static(b"payload"),
@@ -69,6 +70,7 @@ async fn authority_payload_and_replay_bounds_preserve_forward_progress()
         }
     };
     let commit = ProposedCommit {
+        publication: None,
         operation_id: OperationId::from_bytes([12; 16]),
         fingerprint: Digest::from_bytes([13; 32]),
         payload: bytes::Bytes::from_static(b"ab"),
@@ -104,6 +106,7 @@ async fn authority_payload_and_replay_bounds_preserve_forward_progress()
         })
     ));
     let oversized = ProposedCommit {
+        publication: None,
         operation_id: OperationId::from_bytes([14; 16]),
         fingerprint: Digest::from_bytes([15; 32]),
         payload: bytes::Bytes::from_static(b"abc"),
@@ -154,6 +157,7 @@ async fn replay_stops_at_the_payload_bound_after_contiguous_progress()
                 Epoch::GENESIS,
                 head,
                 ProposedCommit {
+                    publication: None,
                     operation_id: OperationId::from_bytes(operation),
                     fingerprint: Digest::from_bytes(fingerprint),
                     payload,
@@ -223,6 +227,7 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
     let operation_id = OperationId::from_bytes([22; 16]);
     let fingerprint = Digest::from_bytes([23; 32]);
     let proposed = ProposedCommit {
+        publication: None,
         operation_id,
         fingerprint,
         payload: bytes::Bytes::from_static(b"durable"),
@@ -242,6 +247,7 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
     ));
     assert!(matches!(
         provider!(store, compare_and_append(authority_id, Epoch::GENESIS, genesis, ProposedCommit {
+                    publication: None,
                     fingerprint: Digest::from_bytes([24; 32]),
                     ..proposed
                 }), WorkBudget::UNBOUNDED)?
@@ -276,6 +282,7 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
             Epoch::GENESIS,
             genesis,
             ProposedCommit {
+                publication: None,
                 operation_id: OperationId::from_bytes([26; 16]),
                 fingerprint: Digest::from_bytes([27; 32]),
                 payload: bytes::Bytes::from_static(b"stale"),
@@ -306,6 +313,7 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
             Epoch::GENESIS,
             fenced_head,
             ProposedCommit {
+                publication: None,
                 operation_id: OperationId::from_bytes([28; 16]),
                 fingerprint: Digest::from_bytes([29; 32]),
                 payload: bytes::Bytes::from_static(b"fenced"),

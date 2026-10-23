@@ -181,6 +181,7 @@ pub fn decode_historical_generation_evidence(
                 epoch,
                 expected,
                 commit: ProposedCommit {
+                    publication: None,
                     operation_id,
                     fingerprint,
                     payload,

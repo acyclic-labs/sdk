@@ -72,6 +72,7 @@ use native::*;
 mod append;
 mod authority;
 mod bindings;
+mod changes;
 mod head_payload;
 #[cfg(test)]
 #[cfg(all(acyclic_fs_loom, not(acyclic_loom)))]

@@ -45,6 +45,7 @@ async fn created_with(
             .create_first_record(
                 AUTHORITY,
                 ProposedCommit {
+                    publication: None,
                     operation_id: OperationId::from_bytes([8; 16]),
                     fingerprint: Digest::from_bytes([9; 32]),
                     payload,

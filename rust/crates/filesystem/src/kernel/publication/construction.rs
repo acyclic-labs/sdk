@@ -50,6 +50,7 @@ pub(super) fn prepare_publication_commit(
         Bytes::from(payload.value)
     };
     Ok(ProposedCommit {
+        publication: None,
         operation_id: request.operation_id,
         fingerprint,
         payload,

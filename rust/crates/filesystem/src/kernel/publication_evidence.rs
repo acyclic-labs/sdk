@@ -263,6 +263,7 @@ pub fn decode_generation_publication_evidence(
         epoch: writer_epoch,
         expected,
         commit: ProposedCommit {
+            publication: None,
             operation_id,
             fingerprint,
             payload,

@@ -57,6 +57,7 @@ async fn stream_lease_gate_fences_one_writer_without_fencing_its_peer() {
             epoch: head.epoch,
             expected: head,
             commit: ProposedCommit {
+                publication: None,
                 operation_id: OperationId::from_bytes([71; 16]),
                 fingerprint: Digest::from_bytes([72; 32]),
                 payload: Bytes::from_static(b"first"),
@@ -77,6 +78,7 @@ async fn stream_lease_gate_fences_one_writer_without_fencing_its_peer() {
             epoch: head.epoch,
             expected: head,
             commit: ProposedCommit {
+                publication: None,
                 operation_id: OperationId::from_bytes([73; 16]),
                 fingerprint: Digest::from_bytes([74; 32]),
                 payload: Bytes::from_static(b"second"),
@@ -101,6 +103,7 @@ async fn stream_lease_gate_fences_one_writer_without_fencing_its_peer() {
             epoch: unrelated_head.epoch,
             expected: unrelated_head,
             commit: ProposedCommit {
+                publication: None,
                 operation_id: OperationId::from_bytes([75; 16]),
                 fingerprint: Digest::from_bytes([76; 32]),
                 payload: Bytes::from_static(b"cross-authority"),
@@ -160,6 +163,7 @@ async fn provider_deadline_fences_without_a_separate_expiry_sweep() {
             epoch: head.epoch,
             expected: head,
             commit: ProposedCommit {
+                publication: None,
                 operation_id: OperationId::from_bytes([83; 16]),
                 fingerprint: Digest::from_bytes([84; 32]),
                 payload: Bytes::from_static(b"expired"),
@@ -243,6 +247,7 @@ async fn bounded_publication_close_renewal_expiry_interleavings_preserve_peer_au
                             epoch: head.epoch,
                             expected: head,
                             commit: ProposedCommit {
+                                publication: None,
                                 operation_id: OperationId::from_bytes([92; 16]),
                                 fingerprint: Digest::from_bytes([93; 32]),
                                 payload: Bytes::from_static(b"first"),
@@ -291,6 +296,7 @@ async fn bounded_publication_close_renewal_expiry_interleavings_preserve_peer_au
                     epoch: head.epoch,
                     expected: head,
                     commit: ProposedCommit {
+                        publication: None,
                         operation_id: OperationId::from_bytes(
                             [94 + u8::try_from(index).expect("two leases"); 16],
                         ),
@@ -410,6 +416,7 @@ async fn stream_renewal_fences_old_permit_before_its_original_deadline() {
                 epoch: before.epoch,
                 expected: before,
                 commit: ProposedCommit {
+                    publication: None,
                     operation_id: OperationId::from_bytes(
                         [if index == 4 { 102 } else { 102 + index }; 16],
                     ),

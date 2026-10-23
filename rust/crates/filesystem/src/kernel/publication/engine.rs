@@ -129,7 +129,7 @@ where
     let operation_context =
         permit_context(intent.operation_context, fingerprint_permit, accounting)
             .map_err(E::from)?;
-    let commit = prepare_publication_commit(
+    let mut commit = prepare_publication_commit(
         request,
         operation_context,
         intent.original_evidence,
@@ -166,6 +166,9 @@ where
             output.1,
         ));
     }
+    commit.publication = crate::PublicationChanges::between(
+        objects, authority, request, &output.0.root, accounting, cancellation,
+    ).await.map_err(E::from)?;
     // The lease spans validation and the authority CAS. It excludes new physical
     // projections; existing projections admit only candidates preserving policy.
     let (_projection_fence, projected) =

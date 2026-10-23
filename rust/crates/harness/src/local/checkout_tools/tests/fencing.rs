@@ -75,6 +75,7 @@ fn publication_after_revocation(broken: bool, fork: bool) {
             epoch: head.epoch,
             expected: head,
             commit: acyclic_fs::ProposedCommit {
+                publication: None,
                 operation_id: acyclic_fs::OperationId::from_bytes([3; 16]),
                 fingerprint: acyclic_fs::Digest::from_bytes([4; 32]),
                 payload: bytes::Bytes::from_static(b"model-publication"),

@@ -1347,6 +1347,7 @@ async fn append_source_fact_with_identity<A: AsyncAuthorityStore, O: AsyncObject
             expected.epoch,
             expected,
             ProposedCommit {
+                publication: None,
                 operation_id,
                 fingerprint,
                 payload: Bytes::from(payload),
