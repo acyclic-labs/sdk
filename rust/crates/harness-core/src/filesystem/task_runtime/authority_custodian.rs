@@ -99,7 +99,7 @@ where
                 .ok_or_else(|| Error::Unauthorized("source workload deadline overflows".into()))?;
             derived.with_workload_expiry(
                 expires,
-                &issuer.public_workload_trust(),
+                &issuer.public_workload_trust()?,
                 issuer.audience(),
                 now,
             )

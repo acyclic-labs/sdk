@@ -141,6 +141,35 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    let grants = mount_capabilities(workspace, writable)?;
+    let scope = issuer.issue("native-volume", &grants, agent, None, &mut None)?;
+    let verifier = issuer.verifier(&mut None)?;
+    let generation = workspace.head(work, work.cancellation()).await?.id();
+    authenticated_mount_options(
+        workspace,
+        generation,
+        NativeAccessAuthority {
+            verifier: &verifier,
+            scope: &scope,
+            ceiling: &grants,
+        },
+        writable,
+        work,
+    )
+    .await
+    // This host owns the callback ledger; it has no borrowed native execution
+    // whose physical input capture must be billed through an external lease.
+    .map(|options| options.native_context(work, None, None))
+}
+
+pub(super) fn mount_capabilities<A, O>(
+    workspace: &Workspace<A, O>,
+    writable: bool,
+) -> Result<crate::Capabilities>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+{
     use acyclic_fs::access::{Action, Capability, Generations, Grant, ResourcePattern};
     let capability = Capability {
         layers: vec![vec![Grant {
@@ -162,27 +191,9 @@ where
         }]],
         expires_at: None,
     };
-    let grants = crate::Capabilities::new([capability
+    Ok(crate::Capabilities::new([capability
         .to_scope_label()
-        .map_err(|error| Error::Invalid(error.to_string()))?]);
-    let scope = issuer.issue("native-volume", &grants, agent, None, &mut None)?;
-    let verifier = issuer.verifier(&mut None)?;
-    let generation = workspace.head(work, work.cancellation()).await?.id();
-    authenticated_mount_options(
-        workspace,
-        generation,
-        NativeAccessAuthority {
-            verifier: &verifier,
-            scope: &scope,
-            ceiling: &grants,
-        },
-        writable,
-        work,
-    )
-    .await
-    // This host owns the callback ledger; it has no borrowed native execution
-    // whose physical input capture must be billed through an external lease.
-    .map(|options| options.native_context(work, None, None))
+        .map_err(|error| Error::Invalid(error.to_string()))?]))
 }
 
 /// Compile persisted policy and retain the same authenticated refresh owner.

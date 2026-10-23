@@ -28,7 +28,7 @@ fn committed_events_attest_admission_without_persisting_bearer_scopes() -> Resul
         use prost::Message;
         let admission = AdmittedCapabilityProto::decode(event.attestation.as_slice())
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        let trust = owner.public_workload_trust();
+        let trust = owner.public_workload_trust()?;
         for encoded in [&admission.workload, &admission.receipt] {
             let sealed = verify::verify(encoded, &trust, admission.admitted_at_unix_seconds)
                 .map_err(|error| Error::Invalid(error.to_string()))?;

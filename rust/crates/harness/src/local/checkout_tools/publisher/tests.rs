@@ -8,6 +8,7 @@ thread_local! {
 }
 
 struct Fixture {
+    _runtime: AuthorityIssuer,
     files: Arc<LocalFilesystem>,
     project: VolumeRef,
     verifier: AuthorityVerifier,
@@ -125,6 +126,7 @@ async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
     Ok((
         directory,
         Fixture {
+            _runtime: issuer,
             files,
             project,
             verifier,
@@ -225,7 +227,9 @@ async fn task_mount_options_require_and_retain_the_authenticated_volume_owner() 
     ));
     let issuer = AuthorityIssuer::new("publisher", [17; 32], fixture.verifier.audience().clone());
     let agent = fixture.signed.agent().expect("fixture agent");
-    workspace.mount_authority = Some((Arc::new(issuer), agent));
+    workspace.mount_authority = Some(crate::filesystem::NativeMountAuthority::new(
+        &issuer, agent,
+    )?);
     let options = workspace
         .mount_options(workspace.view().workspace())
         .await?;

@@ -314,14 +314,13 @@ impl AuthorityIssuer {
 
     /// Public local account anchors. Callers must authenticate keyring updates
     /// independently before using a changed snapshot for workload verification.
-    #[must_use]
-    pub fn public_workload_trust(&self) -> acyclic_auth::trust::Snapshot {
+    pub fn public_workload_trust(&self) -> Result<acyclic_auth::trust::Snapshot> {
         self.runtime
             .public
             .trust
             .read()
-            .expect("runtime trust poisoned")
-            .clone()
+            .map(|trust| trust.clone())
+            .map_err(|_| Error::Storage("runtime trust poisoned".into()))
     }
 
     /// Revokes this workload and every descendant at this runtime's public trust boundary.
@@ -416,7 +415,7 @@ impl AuthorityIssuer {
         parent.attenuate_workload(
             id,
             capabilities,
-            &self.public_workload_trust(),
+            &self.public_workload_trust()?,
             &self.audience,
             workload::now(),
         )
@@ -561,8 +560,10 @@ impl PartialEq for AuthorityVerifier {
             && self.audience == other.audience
             && self.public.metadata_key == other.public.metadata_key
             && (std::sync::Arc::ptr_eq(&self.public, &other.public)
-                || *self.public.trust.read().expect("runtime trust poisoned")
-                    == *other.public.trust.read().expect("runtime trust poisoned"))
+                || match (self.public.trust.read(), other.public.trust.read()) {
+                    (Ok(left), Ok(right)) => *left == *right,
+                    _ => false,
+                })
     }
 }
 impl Eq for AuthorityVerifier {}
@@ -670,6 +671,24 @@ impl AuthorityVerifier {
         (self.id.capacity() as u64)
             .checked_add(self.audience.id.capacity() as u64)
             .ok_or_else(|| Error::Invalid("verifier owned byte count overflows".into()))
+    }
+
+    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+    pub(crate) fn admit_native_descendant(
+        &self,
+        parent: &Scope,
+        id: &str,
+        capabilities: &Capabilities,
+        agent: Option<AgentId>,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Scope> {
+        let runtime = self.admission.runtime()?;
+        AuthorityIssuer {
+            id: self.id.clone(),
+            audience: self.audience.clone(),
+            runtime,
+        }
+        .issue_derived(parent, id, capabilities, agent, work)
     }
 
     /// Copies the verifier using the caller's ledger.

@@ -361,7 +361,7 @@ impl Fixture {
             effect_id: id,
             attempt_id: attempt,
             effect_kind: state.0.effect_kind.clone(),
-            request: state.0.request.clone(),
+            request: state.0.request.as_ref().clone(),
             request_digest: state.0.request_digest,
             guarantee: state.0.guarantee,
         }

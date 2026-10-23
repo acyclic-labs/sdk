@@ -254,10 +254,10 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
         &workspace.store,
         &acyclic_fs::hold_root(task.path()).map_err(storage)?,
         &mut rebound,
-        (
-            harness.issuer.as_ref().unwrap(),
-            harness.signed.agent().unwrap(),
-        ),
+        workspace
+            .mount_authority
+            .as_ref()
+            .ok_or(Error::FilesystemAccessConfiguration("test mount owner"))?,
     )
     .await?;
     let rebound = rebound.named(Some("scratch"))?.1;

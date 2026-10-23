@@ -151,7 +151,7 @@ impl PiRootProvider {
         if state.0.provider != ROOT_ALLOCATION_PROVIDER
             || state.0.effect_kind != ROOT_ALLOCATION_EFFECT
             || state.0.guarantee != EffectGuarantee::AtMostOnce
-            || state.0.request != plan.request
+            || state.0.request.as_ref() != &plan.request
             || state.0.result_schema != plan.result_schema
             || state.0.attempts.as_slice() != [attempt]
             || !matches!(
@@ -316,7 +316,7 @@ impl EffectProvider for PiRootProvider {
             if request.effect_id != effect
                 || request.provider != original.0.provider
                 || request.effect_kind != original.0.effect_kind
-                || request.request != original.0.request
+                || &request.request != original.0.request.as_ref()
                 || request.guarantee != original.0.guarantee
                 || request.request_digest != original.0.request_digest
             {

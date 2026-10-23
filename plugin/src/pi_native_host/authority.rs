@@ -341,7 +341,7 @@ impl PiNativeCommandHost {
             || plan.provider != effect.provider
             || plan.guarantee != effect.guarantee
             || plan.effect_kind != effect.effect_kind
-            || plan.request != effect.request
+            || &plan.request != effect.request.as_ref()
             || plan.result_schema != effect.result_schema
         {
             return Err(unauthorized(

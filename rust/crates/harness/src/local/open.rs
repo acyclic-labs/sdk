@@ -16,6 +16,7 @@ struct Opening {
 }
 
 struct Storage {
+    issuer: AuthorityIssuer,
     directory: PathBuf,
     owner: owner::Owner,
     files: Arc<LocalFilesystem>,
@@ -178,6 +179,14 @@ impl Opening {
         .map_err(storage)?;
         let provider_ref = owner.project.provider();
         let files = FilesystemHost::new(filesystem.clone(), provider_ref, None)?;
+        let issuer = AuthorityIssuer::new(
+            "acyclic.local",
+            owner.key,
+            Authority {
+                kind: AggregateKind::Task,
+                id: owner.task.to_string(),
+            },
+        );
         let PrivateVolumes {
             scratch,
             journal,
@@ -185,7 +194,7 @@ impl Opening {
         } = PrivateVolumes::open(&files, &owner).await?;
         #[cfg(feature = "native-execution")]
         let workspace = self
-            .workspace(&filesystem, &directory, &owner, &scratch, checkout)
+            .workspace(&filesystem, &directory, &owner, &scratch, checkout, &issuer)
             .await?;
         #[cfg(feature = "native-execution")]
         let files = match &workspace {
@@ -212,6 +221,7 @@ impl Opening {
             self.user_roots(),
         )?;
         Ok(Storage {
+            issuer,
             directory,
             owner,
             files,
@@ -231,6 +241,7 @@ impl Opening {
         owner: &owner::Owner,
         scratch: &VolumeRef,
         checkout: Option<owner::Checkout>,
+        issuer: &AuthorityIssuer,
     ) -> Result<Option<Arc<workspace::LocalWorkspace>>> {
         // This standalone composition owns its private companion namespace.
         // Retain the existing owned WAL instead of reopening/checkpointing it
@@ -245,21 +256,13 @@ impl Opening {
             store,
             processes: Some(fence_stale_processes(directory.join("processes")).await?),
         };
-        let issuer = AuthorityIssuer::new(
-            "acyclic.local",
-            owner.key,
-            Authority {
-                kind: AggregateKind::Task,
-                id: owner.task.to_string(),
-            },
-        );
         let attach = workspace::Attach {
             volume: &owner.project,
             scratch,
             directory,
             operation: workspace::attach_operation(owner.task),
             native_mounts: self.native_mounts,
-            authority: Some((&issuer, owner.agent)),
+            authority: Some((issuer, owner.agent)),
         };
         let workspace = match &self.config.project {
             LocalProject::Workspace(_) => {
@@ -289,6 +292,7 @@ impl Opening {
 
     async fn finish(self, opened: Storage) -> Result<LocalHarness> {
         let Storage {
+            issuer,
             directory,
             owner,
             files,
@@ -307,14 +311,6 @@ impl Opening {
             )
             .await
             .map_err(storage)?,
-        );
-        let issuer = AuthorityIssuer::new(
-            "acyclic.local",
-            owner.key,
-            Authority {
-                kind: AggregateKind::Task,
-                id: owner.task.to_string(),
-            },
         );
         let verifier = issuer.verifier(&mut None)?;
         let (runtime, signed, task_files) = runtime::open(runtime::Configuration {

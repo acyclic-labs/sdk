@@ -134,9 +134,10 @@ pub use mailbox_machine::MailboxModelMachine;
 pub(crate) use native_execution::journal::preparation_owner;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_execution::{
-    BorrowedNativeVolumeBinding, NativeAccessAuthority, NativeMountedVolume, NativePreparationRoot,
-    NativeViewPublicationError, NativeVolumeView, authenticated_mount_options, owner_mount_options,
-    require_unrestricted_volume_access, require_unrestricted_workspace_read,
+    BorrowedNativeVolumeBinding, NativeAccessAuthority, NativeMountAuthority, NativeMountedVolume,
+    NativePreparationRoot, NativeViewPublicationError, NativeVolumeView,
+    authenticated_mount_options, owner_mount_options, require_unrestricted_volume_access,
+    require_unrestricted_workspace_read,
 };
 #[cfg(all(
     feature = "native-execution",

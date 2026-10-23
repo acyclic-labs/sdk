@@ -231,7 +231,7 @@ pub(super) fn issue(
                 },
             ],
             SigningKey::from_bytes(&entropy()),
-            &issuer.public_workload_trust(),
+            &issuer.public_workload_trust()?,
             timestamp,
         )
         .map_err(unauthorized)?;

@@ -112,7 +112,7 @@ pub(super) async fn attach(
     store: &acyclic_fs::LocalCoreStateStore,
     root: &acyclic_fs::HeldRoot,
     mounts: &mut Mounts,
-    authority: (&AuthorityIssuer, AgentId),
+    authority: &crate::filesystem::NativeMountAuthority,
 ) -> Result<()> {
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
@@ -137,15 +137,10 @@ pub(super) async fn attach(
         if let Some(parent) = Path::new(relative).parent() {
             held_directories(root, parent)?;
         }
-        let options = crate::filesystem::owner_mount_options(
-            &source,
-            authority.0,
-            Some(authority.1),
-            !mount.mode.read_only(),
-            &work,
-        )
-        .await?
-        .publication(MountPublication::Manual);
+        let options = authority
+            .mount_options(&source, !mount.mode.read_only(), &work)
+            .await?
+            .publication(MountPublication::Manual);
         #[cfg(windows)]
         recover_volume_after_crash(root.path(), Path::new(relative), source.id().volume_id())?;
         acyclic_fs::WorkspaceGraph::new(store.clone())

@@ -79,7 +79,7 @@ fn workload_holders_attenuate_with_public_trust_and_revocation_invalidates_desce
 -> Result<()> {
     let issuer = fixture();
     let audience = issuer.audience.clone();
-    let mut trust = issuer.public_workload_trust();
+    let mut trust = issuer.public_workload_trust()?;
     let parent = issuer.issue(
         "owner",
         &Capabilities::new(["tool:call:read", "tool:call:write"]),
@@ -140,18 +140,18 @@ fn an_offline_deadline_cannot_be_widened_by_a_later_child() -> Result<()> {
     )?;
     let bounded = root.with_workload_expiry(
         now + 2,
-        &runtime.public_workload_trust(),
+        &runtime.public_workload_trust()?,
         runtime.audience(),
         now,
     )?;
     let widened = bounded.with_workload_expiry(
         now + 100,
-        &runtime.public_workload_trust(),
+        &runtime.public_workload_trust()?,
         runtime.audience(),
         now,
     )?;
     widened.verify_workload(
-        &runtime.public_workload_trust(),
+        &runtime.public_workload_trust()?,
         runtime.audience(),
         now + 1,
         &mut None,
@@ -159,7 +159,7 @@ fn an_offline_deadline_cannot_be_widened_by_a_later_child() -> Result<()> {
     assert!(
         widened
             .verify_workload(
-                &runtime.public_workload_trust(),
+                &runtime.public_workload_trust()?,
                 runtime.audience(),
                 now + 2,
                 &mut None

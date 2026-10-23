@@ -8,26 +8,24 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    pub(super) fn append_with_chunks<'a>(
-        &'a self,
+    pub(super) async fn append_with_chunks(
+        &self,
         operation: OperationId,
         expected_tail: Option<u64>,
-        key: &'a str,
-        event: &'a ExecutionEvent,
-        io: Option<&'a PreparationIo>,
-    ) -> impl std::future::Future<Output = Result<bool>> + acyclic_stream::ProviderTask + 'a {
-        async move {
-            let accepted = self
-                .append_validated(operation, expected_tail, key, event, io)
-                .await?;
-            if accepted {
-                crate::conversation::BoundedContentFuture::new(io, || {
-                    self.publish_chunk(key, event, io)
-                })?
-                .await?;
-            }
-            Ok(accepted)
+        key: &str,
+        event: &ExecutionEvent,
+        io: Option<&PreparationIo>,
+    ) -> Result<bool> {
+        let accepted = self
+            .append_validated(operation, expected_tail, key, event, io)
+            .await?;
+        if accepted {
+            crate::conversation::BoundedContentFuture::new(io, || {
+                self.publish_chunk(key, event, io)
+            })?
+            .await?;
         }
+        Ok(accepted)
     }
 
     pub(super) async fn publish_chunk(

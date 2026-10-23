@@ -74,7 +74,12 @@ struct Provider(
 impl Provider {
     fn revoke(&self) -> Result<()> {
         self.0.fetch_add(1, Ordering::SeqCst);
-        if let Some((issuer, scope)) = self.1.lock().unwrap().take() {
+        if let Some((issuer, scope)) = self
+            .1
+            .lock()
+            .map_err(|_| Error::Storage("test provider lock poisoned".into()))?
+            .take()
+        {
             issuer.revoke_workload(&scope)?;
         }
         Ok(())
@@ -184,7 +189,9 @@ fn fixture() -> Result<Fixture> {
     .enumerate()
     {
         reducer.apply(&crate::core::Command {
-            operation_id: crate::OperationId::from_bytes([ordinal as u8 + 1; 16]),
+            operation_id: crate::OperationId::from_bytes(
+                [u8::try_from(ordinal).map_err(|error| Error::Invalid(error.to_string()))? + 1; 16],
+            ),
             idempotency_key: crate::IdempotencyKey(format!("{ordinal}")),
             expected_revision: ordinal as u64,
             scope: scope.clone(),

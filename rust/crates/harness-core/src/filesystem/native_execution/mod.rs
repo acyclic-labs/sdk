@@ -20,6 +20,8 @@ use std::{
     sync::Arc,
 };
 mod access;
+mod mount_authority;
+pub use mount_authority::NativeMountAuthority;
 #[cfg(feature = "filesystem-local")]
 mod local_owner;
 pub use access::{

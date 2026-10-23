@@ -54,7 +54,7 @@ pub struct LocalWorkspace {
     >,
     pub(super) filesystem: acyclic_fs::LocalFs,
     pub(super) store: LocalCoreStateStore,
-    pub(super) mount_authority: Option<(Arc<AuthorityIssuer>, AgentId)>,
+    pub(super) mount_authority: Option<crate::filesystem::NativeMountAuthority>,
     pub(super) identity: acyclic_fs::NativeRootIdentity,
     // Lock order: view state -> volume projection -> coordinator -> command-local
     // cache or native completion, then task-file index -> provider visibility -> provider state.
@@ -86,14 +86,15 @@ impl LocalWorkspace {
         &self,
         workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
     ) -> Result<acyclic_fs::MountOptions> {
-        let (issuer, agent) = self
+        let authority = self
             .mount_authority
             .as_ref()
             .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        crate::filesystem::owner_mount_options(workspace, issuer, Some(*agent), true, &work)
+        authority
+            .mount_options(workspace, true, &work)
             .await
             .map(|options| options.publication(acyclic_fs::MountPublication::Manual))
     }
@@ -119,7 +120,7 @@ impl LocalWorkspace {
         volumes::link(path, &mut mounts)?;
         #[cfg(not(any(target_os = "linux", windows)))]
         {
-            let (issuer, agent) = self
+            let authority = self
                 .mount_authority
                 .as_ref()
                 .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?;
@@ -128,7 +129,7 @@ impl LocalWorkspace {
                 &self.store,
                 &acyclic_fs::hold_root(path).map_err(storage)?,
                 &mut mounts,
-                (issuer, *agent),
+                authority,
             )
             .await?;
         }
@@ -183,7 +184,7 @@ impl LocalWorkspace {
             return Err(Error::FilesystemAccessConfiguration("child mount owner"));
         };
         let agent = *agent;
-        let (issuer, _) = self
+        let authority = self
             .mount_authority
             .as_ref()
             .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?;
@@ -195,13 +196,13 @@ impl LocalWorkspace {
             .as_ref()
             .ok_or(Error::FilesystemAccessConfiguration("child mount owner"))?;
         owner.validate_scope(context.effective_scope(), None)?;
-        let signed = issuer.issue(
-            "child-checkout",
-            context.effective_scope().grants(),
-            Some(agent),
-            None,
-            &mut None,
-        )?;
+        let signed = authority.created_scope(context).await?;
+        if signed.agent() != Some(agent)
+            || signed.capabilities() != context.effective_scope().grants()
+        {
+            return Err(Error::Unauthorized("child mount workload differs".into()));
+        }
+        let authority = authority.for_scope(&signed)?;
         // Bind auxiliary volumes outside the sparse projection. Linux's
         // elevated mount helper cannot traverse an owner-only FUSE parent.
         let root = self
@@ -220,7 +221,7 @@ impl LocalWorkspace {
             &self.store,
             &root,
             &mut mounts,
-            (issuer, agent),
+            &authority,
         )
         .await?;
         Ok((Arc::new(mounts), signed))
@@ -379,6 +380,10 @@ pub(super) async fn open(
         .register_root(view.workspace())
         .await
         .map_err(storage)?;
+    let mount_authority = attach
+        .authority
+        .map(|(issuer, agent)| crate::filesystem::NativeMountAuthority::new(issuer, agent))
+        .transpose()?;
     let mut mounts = mounts::owner(
         &path,
         volume,
@@ -391,8 +396,8 @@ pub(super) async fn open(
             &store,
             setup,
             &mut mounts,
-            attach
-                .authority
+            mount_authority
+                .as_ref()
                 .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?,
         )
         .await?;
@@ -416,9 +421,7 @@ pub(super) async fn open(
         mounted: None,
         filesystem: filesystem.clone(),
         store,
-        mount_authority: attach
-            .authority
-            .map(|(issuer, agent)| (Arc::new(issuer.clone()), agent)),
+        mount_authority,
         identity,
         state,
         context_line,

@@ -45,7 +45,7 @@ impl AdmissionPort {
     pub(super) fn new(runtime: &Arc<RuntimeSigner>) -> Self {
         Self(Arc::downgrade(runtime))
     }
-    fn runtime(&self) -> Result<Arc<RuntimeSigner>> {
+    pub(in crate::core::authority) fn runtime(&self) -> Result<Arc<RuntimeSigner>> {
         self.0
             .upgrade()
             .ok_or_else(|| Error::Unauthorized("runtime signing custody is closed".into()))
@@ -90,7 +90,7 @@ mod tests {
         let public = AuthorityVerifier::from_public(
             "runtime".into(),
             runtime.audience.clone(),
-            runtime.public_workload_trust(),
+            runtime.public_workload_trust()?,
             verifier.public_checkpoint_key(),
         )?;
         public.verify(&scope, &mut None)?;

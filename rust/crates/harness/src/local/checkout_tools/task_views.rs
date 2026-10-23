@@ -215,7 +215,8 @@ impl CheckoutTools {
                 .workspace
                 .mount_authority
                 .as_ref()
-                .and_then(|(issuer, _)| signed.agent().map(|agent| (Arc::clone(issuer), agent))),
+                .map(|authority| authority.for_scope(signed))
+                .transpose()?,
         };
         let (active, pending) = workspace.selected_view().await?;
         let selected = active.as_ref().unwrap_or_else(|| workspace.view());

@@ -282,7 +282,7 @@ impl TaskCommandHost for PiNativeCommandHost {
                     if bound.plan.0.provider != effect.provider
                         || bound.plan.0.guarantee != effect.guarantee
                         || bound.plan.0.effect_kind != effect.effect_kind
-                        || bound.plan.0.request != effect.request
+                        || &bound.plan.0.request != effect.request.as_ref()
                         || bound.plan.0.result_schema != effect.result_schema
                     {
                         return Err(unauthorized(
