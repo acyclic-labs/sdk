@@ -40,6 +40,10 @@ if ! python Q:/lanes/gate-affected.py "$W" "$base" --output "$W/.gate-selection.
 fi
 cp "$W/.gate-selection.json" "$log.scope.json"
 cp Q:/lanes/pr-gate-checks.sh "$W/.gate-checks.sh"
+cp Q:/lanes/gate-test-runner.sh "$W/.gate-test-runner.sh"
+# The coordinator helper also protects PRs based on an older source runner.
+printf '\nexport GATE_TEST_RUNNER_SCRIPT=.gate-test-runner.sh\n' > "$W/.gate-runner-env"
+sed -i '2r '"$W/.gate-runner-env" "$W/.gate-checks.sh"
 if [ "$(tr -d '\r' < "$W/.gate-scope-mode")" = full ] || grep -qx 'acyclic-native-runtime' "$W/.gate-clippy-packages" "$W/.gate-tests-packages"; then
   echo 'GATE_WINDOWS_RUNTIME_REQUIRED target=x86_64-pc-windows-gnu package=acyclic-native-runtime features=all targets=all' >> "$log"
 fi

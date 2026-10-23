@@ -6,6 +6,10 @@ This directory is the maintained source for the coordinator's bb2 runtime.
 under `/home/var/bin` on bb2. `buildbox.mjs` and the receipt module install in
 WSL's `/home/var/bin`. `coordinator/pr-gate.sh` installs as `Q:/lanes/pr-gate.sh`;
 `../pr-gate-checks.sh` installs as `Q:/lanes/pr-gate-checks.sh`.
+`coordinator/gate-checks.sh` installs as `Q:/lanes/gate-checks.sh`, and
+`../gate-test-runner.sh` installs as `Q:/lanes/gate-test-runner.sh`.
+Both main and PR dispatch verify the linked libFuzzer driver before replacing
+libtest arguments, so an ordinary test with the same basename stays a test.
 
 Before installing, preserve the existing `.bak-gatespeed` backup and take an
 immediate snapshot. Compare live hashes with the revision read before editing.
@@ -42,7 +46,7 @@ Run tooling tests **on bb2**, without compiling Rust:
 
 ```sh
 python3 scripts/buildbox/runtime.test.py
-node --test scripts/buildbox/generated.test.mjs scripts/pr-gate-checks.test.mjs
+node --test scripts/buildbox/generated.test.mjs scripts/pr-gate-checks.test.mjs scripts/gate-test-runner.test.mjs
 ```
 
 They cover JSON metadata stdout with a deliberate stdout-contamination mutant,

@@ -62,7 +62,7 @@ cargo metadata --locked --offline --no-deps --format-version 1 > .gate-pr-metada
 node -e 'const m=JSON.parse(require("fs").readFileSync(".gate-pr-metadata.json","utf8"));for(const p of m.packages) if(p.metadata?.["cargo-fuzz"]) for(const t of p.targets) if(t.kind.includes("bin"))console.log(t.name)' > .gate-fuzz-bins || exit 2
 export GATE_FUZZ_TEST_BIN_FILE="$PWD/.gate-fuzz-bins"
 export GATE_BASE_TEST_RUNNER=${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:-}
-export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$PWD/scripts/gate-test-runner.sh"
+export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$PWD/${GATE_TEST_RUNNER_SCRIPT:-scripts/gate-test-runner.sh}"
 chmod +x "$CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER" || exit 2
 # Keep registry dependencies warm, but never reuse workspace codegen from an
 # interrupted job or another boot. Cargo's incremental objects can survive an
