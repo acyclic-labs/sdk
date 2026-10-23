@@ -21,6 +21,25 @@ struct HeaderData {
 pub struct RecordHeaders(Option<Arc<HeaderData>>);
 
 impl RecordHeaders {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn from_native_parts(
+        keys: Vec<OwnedBytes>,
+        attributes: Vec<Attribute>,
+        mut allocation: acyclic_native_runtime::ReadAllocation,
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<Self> {
+        let mut control = acyclic_native_runtime::ReadAllocation::new(
+            meter,
+            std::mem::size_of::<HeaderData>() + 2 * std::mem::size_of::<usize>(),
+        )?;
+        allocation.absorb(&mut control)?;
+        Ok(Self(Some(Arc::new(HeaderData {
+            keys,
+            attributes,
+            _allocation: Some(allocation),
+        }))))
+    }
+
     /// Admit strictly sorted unique keys and attribute names. Producers supply
     /// canonical order; the provider never silently changes retry identities.
     pub fn new(keys: Vec<OwnedBytes>, attributes: Vec<Attribute>) -> Result<Self, StreamError> {

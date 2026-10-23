@@ -2,9 +2,21 @@
 use crate::{AppendRecord, Attribute, RecordHeaders, StreamError, wire};
 use prost::Message;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod native;
 #[cfg(test)]
 mod tests;
 mod view;
+
+/// Borrowed path-local facts used by a provider's funded change producer.
+pub struct ChangeEntryRef<'a> {
+    /// Canonical indexed key, with the same order as the resulting headers.
+    pub key: &'a [u8],
+    /// Nonempty semantic operation name.
+    pub operation: &'a str,
+    /// Metadata belonging only to this key; never file contents.
+    pub metadata: &'a [u8],
+}
 
 const ATTRIBUTE: &str = "acyclic.record";
 const FORMAT: &[u8] = b"changes/v1";
