@@ -31,6 +31,10 @@ CONTROLS = [
      "if self._installed_environment is not environment:",
      "if self._installed_environment is None:",
      "test_harbor.HarborContracts.test_install_run_and_failed_reinstall_fence_execution"),
+    ("failed outer setup retains authority", "graphcoder_harbor.py",
+     "async def setup(self, environment):\n        self._installed_environment = None",
+     "async def setup(self, environment):",
+     "test_harbor.HarborContracts.test_install_run_and_failed_reinstall_fence_execution"),
 ]
 
 

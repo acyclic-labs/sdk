@@ -19,8 +19,11 @@ class Environment:
         self.commands = []
         self.uploads = {}
         self.reject = False
+        self.transport_failure = False
 
     async def exec(self, command, **kwargs):
+        if self.transport_failure:
+            raise RuntimeError("fixture transport failure before install")
         self.commands.append(command)
         if self.reject:
             return SimpleNamespace(return_code=7, stdout="", stderr="fixture install rejected")
@@ -48,6 +51,7 @@ class HarborContracts(unittest.IsolatedAsyncioTestCase):
         environment = Environment()
         with self.assertRaisesRegex(RuntimeError, "not installed"):
             await agent.run("hello", environment, None)
+
         self.binary.write_bytes(b"replaced after construction")
         await agent.setup(environment)
         self.assertEqual(environment.uploads[agent.binary], self.original)
@@ -61,6 +65,14 @@ class HarborContracts(unittest.IsolatedAsyncioTestCase):
         environment.reject = True
         with self.assertRaises(RuntimeError):
             await agent.install(environment)
+        with self.assertRaisesRegex(RuntimeError, "not installed"):
+            await agent.run("hello", environment, None)
+
+        environment.reject = False
+        await agent.setup(environment)
+        environment.transport_failure = True
+        with self.assertRaisesRegex(RuntimeError, "transport failure"):
+            await agent.setup(environment)
         with self.assertRaisesRegex(RuntimeError, "not installed"):
             await agent.run("hello", environment, None)
 

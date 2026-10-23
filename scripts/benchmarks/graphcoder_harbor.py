@@ -34,6 +34,10 @@ class GraphCoder(BaseInstalledAgent):
         self.binary = self.state + "/graphcoder"
         self._installed_environment = None
 
+    async def setup(self, environment):
+        self._installed_environment = None
+        await super().setup(environment)
+
     async def install(self, environment):
         self._installed_environment = None
         # Task images must provide the native mount prerequisites. Never alter
