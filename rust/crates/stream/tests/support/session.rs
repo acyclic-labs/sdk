@@ -102,7 +102,6 @@ impl Counts {
     fn observe_interest(&self, interest: &wire::SessionInterest) -> Result<(), StreamError> {
         self.removals
             .fetch_add(interest.remove.len(), Ordering::Relaxed);
-        self.changed.notify_one();
         for subscription in &interest.upsert {
             if matches!(subscription.kind, Some(Kind::Children(_))) {
                 self.children.fetch_add(1, Ordering::Relaxed);
@@ -118,7 +117,6 @@ impl Counts {
                             .map_err(|_| StreamError::Unavailable)?
                             .push((channel.channel_id, channel.generation, resume.next));
                     }
-                    self.changed.notify_one();
                     if let (Some(channel), Some(Kind::Follow(follow))) =
                         (subscription.channel, &subscription.kind)
                     {
@@ -138,6 +136,8 @@ impl Counts {
                 _ => {}
             }
         }
+        // Publish the entire interest before waking readers of resumes and guards.
+        self.changed.notify_one();
         Ok(())
     }
     /// Count one outbound data frame of `session`.
@@ -366,5 +366,79 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.server.abort();
+    }
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    use std::{
+        future::Future as _,
+        sync::atomic::AtomicBool,
+        task::{Context, Poll, Wake, Waker},
+    };
+
+    #[derive(Default)]
+    struct InterestWake {
+        counts: Arc<Counts>,
+        woke: AtomicBool,
+        complete: AtomicBool,
+    }
+
+    impl Wake for InterestWake {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            let resumed = self
+                .counts
+                .resumes
+                .lock()
+                .expect("resumes")
+                .contains(&(1, 2, 4));
+            let guarded = self.counts.guards.lock().expect("guards").contains(&(
+                1,
+                2,
+                Bytes::from_static(b"yielded-anchor"),
+            ));
+            self.complete.store(resumed && guarded, Ordering::Relaxed);
+            self.woke.store(true, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn interest_notification_publishes_resume_and_guard_together() {
+        let observer = Arc::new(InterestWake::default());
+        let waker = Waker::from(Arc::clone(&observer));
+        let mut context = Context::from_waker(&waker);
+        let mut changed = std::pin::pin!(observer.counts.changed.notified());
+        assert_eq!(changed.as_mut().poll(&mut context), Poll::Pending);
+
+        observer
+            .counts
+            .observe_interest(&wire::SessionInterest {
+                revision: 1,
+                upsert: vec![wire::SessionSubscription {
+                    channel: Some(wire::SessionChannel {
+                        channel_id: 1,
+                        generation: 2,
+                    }),
+                    resume: Some(wire::SessionCursor {
+                        next: 4,
+                        opaque: Bytes::new(),
+                    }),
+                    kind: Some(Kind::Follow(wire::SessionFollow {
+                        preceding_commit_id: Bytes::from_static(b"yielded-anchor"),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+            .expect("observe interest");
+
+        assert!(observer.woke.load(Ordering::Relaxed));
+        assert!(observer.complete.load(Ordering::Relaxed));
     }
 }
