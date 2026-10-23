@@ -110,6 +110,48 @@ where
     Ok(true)
 }
 
+/// A file publication's owed capture: its operation and staged generation.
+pub(in crate::local) type OwedWrite = (acyclic_fs::OperationId, GitGenerationRef);
+
+/// The capture this checkout owes a file publication's physical write.
+pub(in crate::local) async fn owed_write(workspace: &LocalWorkspace) -> Result<Option<OwedWrite>> {
+    let root = workspace.view().workspace().id();
+    Ok(GitCompatStore::load(&workspace.store, root)
+        .await
+        .map_err(storage)?
+        .and_then(|state| state.write_capture))
+}
+
+/// Replaces the owed write capture, exactly when it is still `expected`.
+pub(in crate::local) async fn replace_owed_write(
+    workspace: &LocalWorkspace,
+    expected: Option<OwedWrite>,
+    replacement: Option<OwedWrite>,
+) -> Result<()> {
+    let root = workspace.view().workspace().id();
+    let mut state = GitCompatStore::load(&workspace.store, root)
+        .await
+        .map_err(storage)?
+        .unwrap_or_else(|| GitCompatState::new("main", root));
+    if state.write_capture != expected {
+        return Err(Error::Conflict("owed write capture changed".into()));
+    }
+    let revision = state.revision;
+    state.revision = revision
+        .checked_add(1)
+        .ok_or_else(|| Error::Conflict("Git state revision overflow".into()))?;
+    state.write_capture = replacement;
+    if !GitCompatStore::compare_and_swap(&workspace.store, root, revision, state)
+        .await
+        .map_err(storage)?
+    {
+        return Err(Error::Conflict(
+            "Git state changed while recording a write's capture".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub(super) async fn publish<F, Fut>(
     workspace: &LocalWorkspace,
     view: &workspace::View,

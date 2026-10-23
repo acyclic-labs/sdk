@@ -93,7 +93,7 @@ impl CheckoutTools {
             bool,
         )>,
     ) -> Result<()> {
-        let (physical, view) = selected;
+        let (physical, _) = selected;
         if let Some(mount) = &physical.mounted {
             mount
                 .sync_with_permit(permit, &mount.native_work()?, move |_| {
@@ -109,6 +109,76 @@ impl CheckoutTools {
                 .map_err(|failure| failure.cause)?;
             return Ok(());
         }
+        // A file publication's physical write is owed a capture of its own.
+        // Finish it first, so this capture never records that write.
+        self.finish_owed_write(selected, slot, permit).await?;
+        self.capture_changes(selected, slot, operation, phase, permit)
+            .await
+    }
+
+    /// Records, before a file publication's physical write, that the write
+    /// is owed its own capture on its staged generation. A capture another
+    /// write still owes is finished first.
+    pub(in crate::local) async fn owe_write_capture(
+        &self,
+        selected: (&LocalWorkspace, &workspace::View),
+        slot: &mut Option<Cursor>,
+        owed: reconciliation::OwedWrite,
+    ) -> Result<()> {
+        let (physical, _) = selected;
+        let current = reconciliation::owed_write(physical).await?;
+        if current == Some(owed) {
+            return Ok(());
+        }
+        if current.is_some() {
+            self.finish_owed_write(selected, slot, PublicationPermit::Unrestricted)
+                .await?;
+        }
+        reconciliation::replace_owed_write(physical, None, Some(owed)).await
+    }
+
+    /// Captures a file publication's physical write under the write's own
+    /// operation while its staged generation is still the head, then clears
+    /// the debt. Once the head has moved on nothing is left to capture.
+    pub(in crate::local) async fn finish_owed_write(
+        &self,
+        selected: (&LocalWorkspace, &workspace::View),
+        slot: &mut Option<Cursor>,
+        permit: PublicationPermit,
+    ) -> Result<()> {
+        let (physical, view) = selected;
+        let Some(owed) = reconciliation::owed_write(physical).await? else {
+            return Ok(());
+        };
+        let (operation, staged) = owed;
+        let head = view
+            .workspace()
+            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map_err(storage)?
+            .value;
+        if staged.workspace_id == view.workspace().id() && head.id() == staged.generation {
+            self.capture_changes(
+                selected,
+                slot,
+                OperationId::from_bytes(operation.into_bytes()),
+                1,
+                permit,
+            )
+            .await?;
+        }
+        reconciliation::replace_owed_write(physical, Some(owed), None).await
+    }
+
+    async fn capture_changes(
+        &self,
+        selected: (&LocalWorkspace, &workspace::View),
+        slot: &mut Option<Cursor>,
+        operation: OperationId,
+        phase: u8,
+        permit: PublicationPermit,
+    ) -> Result<()> {
+        let (physical, view) = selected;
         let cancellation = CancellationToken::new();
         let workspace = view.workspace();
         let options = &self.capture_options;

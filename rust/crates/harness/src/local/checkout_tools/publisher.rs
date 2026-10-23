@@ -156,35 +156,39 @@ impl CheckoutPublisher {
         operation: OperationId,
         file: FileRef,
     ) -> Result<FileRef> {
+        // The physical write carries host metadata (mode, owner, times) that
+        // the staged generation cannot predict, so it is owed a capture of
+        // its own, under the write's operation, so the agent's own write is
+        // not observed later as a foreign change to its file. The debt is
+        // recorded durably before the write reaches disk. This write
+        // finishes it under the same lock; after an interruption, the next
+        // capture of this checkout finishes it first, whichever command or
+        // replay that is, while the staged generation is still the head. One
+        // operation may publish several paths, so the capture's identity
+        // names the path too.
+        let selected = (&*self.tools.workspace, view);
+        let owed = (
+            publication_operation(operation, file.path()),
+            acyclic_fs::GitGenerationRef {
+                workspace_id: view.workspace().id(),
+                generation: self.staged_generation(&file)?,
+            },
+        );
+        self.tools
+            .owe_write_capture(selected, watcher, owed)
+            .await?;
         self.materialize(view, operation, &file).await?;
         #[cfg(test)]
         if tests::KILL_BEFORE_CAPTURE.get() {
             return Err(Error::Storage("killed before the write's capture".into()));
         }
-        // The physical write carries host metadata (mode, owner, times) that
-        // the staged generation cannot predict. Capture it now, under the
-        // same lock, so the agent's own write is not observed later as a
-        // foreign change to its file. The capture is pending exactly while
-        // the staged generation is still the head: a replay after an
-        // interrupted capture finishes it, and a replay after any later
-        // commit never reuses this capture's identity for other content. One
-        // operation may publish several paths, so the capture's identity
-        // names the path too.
-        let pending = self.head_is_staged(view, &file).await?;
         #[cfg(test)]
-        let pending = pending && !tests::REPLAY_SKIPS_CAPTURE.get();
-        if pending {
-            self.tools
-                .capture(
-                    (&self.tools.workspace, view),
-                    watcher,
-                    write_capture(operation, file.path()),
-                    1,
-                    PublicationPermit::Unrestricted,
-                    None,
-                )
-                .await?;
+        if tests::REPLAY_SKIPS_CAPTURE.get() {
+            return self.observed(view, operation, file).await;
         }
+        self.tools
+            .finish_owed_write(selected, watcher, PublicationPermit::Unrestricted)
+            .await?;
         self.observed(view, operation, file).await
     }
 
@@ -265,21 +269,6 @@ impl CheckoutPublisher {
         Ok(acyclic_fs::GenerationId::new(
             acyclic_fs::Digest::from_bytes(staged.as_resource().key().try_into().map_err(storage)?),
         ))
-    }
-
-    /// Whether the head is still the generation that staged `file`, so the
-    /// capture of its physical write has not committed.
-    async fn head_is_staged(&self, view: &workspace::View, file: &FileRef) -> Result<bool> {
-        let head = view
-            .workspace()
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map_err(storage)?
-            .value;
-        Ok(head.id() == self.staged_generation(file)?)
     }
 
     async fn materialize(

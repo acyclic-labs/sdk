@@ -753,3 +753,84 @@ async fn a_recovered_write_keeps_its_reference_however_far_the_head_moves() -> R
     assert!(matches!(&retried, Err(Error::Conflict(_))), "{retried:?}");
     Ok(())
 }
+
+// Another write between an interrupted capture and its recovery cannot take
+// the interrupted write's capture: the next capture first finishes the
+// capture the interrupted write durably owes, under that write's own
+// operation. Recovery then returns that capture, the reference an
+// uninterrupted write returns. Negative control: when the other write's
+// capture records the interrupted write as its own, no capture exists under
+// the write's operation and recovery returns the staged reference.
+#[tokio::test]
+async fn another_write_before_recovery_leaves_the_interrupted_capture_its_own() -> Result<()> {
+    let (directory, _state, harness, publisher) = fixture().await?;
+    let operation = OperationId::new();
+    KILL_BEFORE_CAPTURE.set(true);
+    let interrupted = match publisher.stage_once(
+        operation,
+        "result.txt",
+        b"agent bytes
+",
+        "text/plain",
+        "result.txt",
+        None,
+    ) {
+        Ok(staged) => staged.await.err(),
+        Err(error) => Some(error),
+    };
+    KILL_BEFORE_CAPTURE.set(false);
+    assert!(
+        interrupted.is_some(),
+        "the first attempt was not interrupted"
+    );
+    publisher
+        .stage_once(
+            OperationId::new(),
+            "other.txt",
+            b"other bytes
+",
+            "text/plain",
+            "other.txt",
+            None,
+        )?
+        .await?;
+    let (recovered, _) = publisher
+        .observe_staged_once(operation, 1024, None)?
+        .await?;
+    let recovered = recovered
+        .ok_or_else(|| Error::Invalid("the interrupted write was not recovered".into()))?;
+    let key = acyclic_fs::IdempotencyKey::from_bytes(
+        super::super::capture::capture_operation(write_capture(operation, "result.txt"), 1)
+            .into_bytes(),
+    );
+    let capture = harness
+        .workspace
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("checkout".into()))?
+        .view()
+        .workspace()
+        .operation_generation(
+            key,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(storage)?
+        .value
+        .ok_or_else(|| Error::Invalid("another write took the interrupted capture".into()))?;
+    assert_eq!(
+        recovered.version(),
+        hex::encode(capture.id().digest().into_bytes())
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("result.txt")).map_err(storage)?,
+        b"agent bytes
+"
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("other.txt")).map_err(storage)?,
+        b"other bytes
+"
+    );
+    Ok(())
+}

@@ -46,6 +46,13 @@ pub struct GitCompatState {
     /// Native publication owed after reconciling this exact source generation.
     /// Cleared only once the publication journal acknowledges the checkout.
     pub checkout_reconciliation: Option<(OperationId, GitGenerationRef)>,
+    /// The capture owed to a file publication's physical write: the
+    /// capture's operation and the staged generation it commits on. Recorded
+    /// before the write reaches disk and cleared once that capture is done,
+    /// so no other operation's capture can record the write as its own.
+    /// Records written before it existed owe nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write_capture: Option<(OperationId, GitGenerationRef)>,
     /// Active first-parent bisection, if any.
     pub bisect: Option<GitBisectState>,
 }
@@ -78,6 +85,7 @@ impl GitCompatState {
             stash: Vec::new(),
             pending: None,
             checkout_reconciliation: None,
+            write_capture: None,
             bisect: None,
         }
     }
