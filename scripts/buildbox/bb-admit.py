@@ -32,6 +32,14 @@ def identity(pid):
         return Path('/proc/sys/kernel/random/boot_id').read_text().strip()+':'+stat[19]
     except OSError: return None
 
+def live_pidfd(pid,birth):
+    if not birth or identity(pid)!=birth:return None
+    try:fd=os.pidfd_open(pid)
+    except ProcessLookupError:return None
+    if identity(pid)!=birth:
+        os.close(fd);return None
+    return fd
+
 
 def atomic(file, value):
     tmp = str(file)+'.'+str(os.getpid())+'.tmp'
@@ -100,11 +108,12 @@ def serve():
     # Recover only exact PID birth identities; a reused PID never owns a lease.
     for journal in ROOT.glob('lease-*.json'):
         t=json.loads(journal.read_text())
-        if identity(t['pid'])==t['identity']:
+        fd=live_pidfd(t['pid'],t['identity'])
+        if fd is not None:
             t['conn']=None; t['journal']=journal
             sched.running[t['cls']]+=1; sched.shares[(t['cls'],t['tenant'])]+=1
             sched.critical+=t['tier']==0; sched.proof+=t['tier']==3
-            fd=os.pidfd_open(t['pid']); t['pidfd']=fd; jobs[fd]=t
+            t['pidfd']=fd; jobs[fd]=t
             sel.register(fd,selectors.EVENT_READ,'done')
         else: journal.unlink()
     # One startup scan adopts wrappers from the old client-side admission.
@@ -131,8 +140,8 @@ def serve():
         except (OSError,ValueError): pass
         t={'id':'legacy-'+str(pid),'pid':pid,'identity':birth,'cls':'compile','tier':2,'tenant':tenant,'conn':None}
         t['journal']=ROOT/('lease-'+t['id']+'.json'); atomic(t['journal'],{k:t[k] for k in ['id','pid','identity','tier','tenant','cls']})
-        try: fd=os.pidfd_open(pid)
-        except ProcessLookupError: t['journal'].unlink(); continue
+        fd=live_pidfd(pid,birth)
+        if fd is None:t['journal'].unlink();continue
         t['pidfd']=fd;jobs[fd]=t;sel.register(fd,selectors.EVENT_READ,'done')
         sched.running['compile']+=1;sched.shares[('compile',tenant)]+=1
     atomic(ROOT/'daemon.json',{'pid':os.getpid(),'identity':identity(os.getpid()),'limits':limits,'caps':caps,'source_sha256':SOURCE_SHA256})

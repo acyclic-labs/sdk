@@ -573,7 +573,8 @@ function launchScript(src, tkey, rel, argv, J, pathPre = '', repo = 'cloud', bas
   const cargoJob = path.basename(argv[0]) === 'cargo';
   const flavor = ''; const TD = `${J}.targets`; const SH = '';
   const jobHostTarget = `${TD}/.host-targets/${path.basename(hostTarget(src))}`;
-  const exportSpec = { prefix: J, cwd: `/work/src/${rel}`, paths: (process.env.BUILD_SLOT_REMOTE_FETCH || '').split(/\s+/).filter(Boolean), build: cargoJob };
+  const exportSpec = { prefix: J, cwd: `/work/src/${rel}`, paths: (process.env.BUILD_SLOT_REMOTE_FETCH || '').split(/\s+/).filter(Boolean), build: cargoJob,
+    targetMapping: glibcPin ? { triple: GLIBC_TRIPLE, profiles: [...glibcPin.dirs] } : null };
   const leaseFile = `/mnt/bb/locks/wt-sdk/${path.basename(src).replace(/\.prep$/, '')}.lock`;
   const rustEnv = cargoJob && COLD ? 'export RUSTC=/home/var/bin/bigstack/rustc; export RUSTC_WRAPPER=' : cargoJob ? `export RUSTC=/home/var/bin/bigstack/rustc
 if [ "\${BB_CACHE_DISABLED:-}" = 1 ]; then export RUSTC_WRAPPER=; else export RUSTC_WRAPPER=/home/var/bin/sccache-rustc; fi` : `unset RUSTC RUSTC_WRAPPER; export CARGO_TARGET_DIR="$BB_JOB_TARGET"`;
@@ -653,7 +654,8 @@ receipt_done() {
   [ ! -f $J.interrupted ] || category=interrupted
   [ ! -f $J.cancelled ] || category=cancelled
   rm -rf -- ${TD}
-  node $J.receipt-tool.mjs finish $J.receipt-meta.v2.json $rc $category
+  node $J.receipt-tool.mjs finish $J.receipt-meta.v2.json $rc $category >> $J.out 2>> $J.err
+  finished=$?; [ $finished = 0 ] || rc=$finished
   echo $rc > $J.rc.tmp && mv $J.rc.tmp $J.rc
 }
 trap receipt_done EXIT

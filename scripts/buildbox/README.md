@@ -18,6 +18,8 @@ new ticket handshakes wait in flock.
 
 Each job has private mode-0700 HOME, XDG directories, TMPDIR and targets under
 `/mnt/bb/jobs/job-*`. Targets are deleted at exit and on interrupted-job recovery.
+Recovery also removes the generated wrapper's outer `.targets` and `.tmp`
+directories. A cleanup refusal produces an INFRA receipt and exit status.
 Gate phases use that same lifetime. This supersedes persistent gate target
 caches. `/mnt/bb/sccache`, installed Cargo/rustup toolchains and
 `/mnt/bb/toolchains/cargo-xwin` persist. All wrapper diagnostics go to stderr;
@@ -28,7 +30,9 @@ permits uncached execution. The real-home inventory excludes only the shared
 The remote wrapper archives declared `BUILD_SLOT_REMOTE_FETCH` outputs before
 target cleanup. The client extracts those archives and removes them after
 copy-back. A failed export is INFRA. No target cache is retained to support
-copy-back. Native callers must export artifacts they want to retain before
+copy-back. Glibc-pinned cross builds map the remote target-triple directory back
+to the caller's requested local profile path; missing declared paths fail export.
+Native callers must export artifacts they want to retain before
 returning. SDK source copies use the newest directory/index/HEAD mtime for the
 12-hour age limit, plus a cap of 128 copies. Leased or live legacy copies are
 preserved. If active copies prevent meeting the cap, admission refuses with an
@@ -46,7 +50,9 @@ binary stdout, mode bits, the restricted inventory exclusion, real leaks,
 unreadable-directory cleanup, artifact export, target cleanup after SIGKILL and
 its interrupted terminal receipt, age/count pruning and active-copy negatives,
 admission disk refusal on fd 2, rolling upgrade, tenant caps/fairness and server
-endpoint isolation. PR dispatch tests prove `--all-targets` and separate doctests
+endpoint isolation. Recovery rejects absent/reused process identities and exits
+between identity lookup and pidfd creation. Generated-wrapper kill tests include
+the previous missing outer cleanup as a negative control. PR dispatch tests prove `--all-targets` and separate doctests
 for all selected/reverse-dependent packages, preserve failure status and logs,
 and demonstrate the old target selection's false pass. The existing main runner
 owns bounded fuzz execution through `../gate-test-runner.sh`.

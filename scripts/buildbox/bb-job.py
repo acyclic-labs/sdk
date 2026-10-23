@@ -208,7 +208,7 @@ def run(argv):
         except OSError as error:
             runtime['cleanup_error']=str(error);atomic(runtimefile,runtime)
             print('[buildbox] cleanup INFRA: '+str(error),file=sys.stderr,flush=True)
-            raise
+            return 224
         runtime['home_removed']=True; runtime['targets_removed']=True; atomic(runtimefile,runtime)
         for unit in units:unit.close()
 
@@ -224,6 +224,16 @@ def cleanup_runtime(file):
     runtime['home_removed']=True
     if runtime.get('targets_policy')=='job-owned':runtime['targets_removed']=True
     atomic(file,runtime)
+
+def cleanup_outer(prefix):
+    prefix=Path(prefix)
+    if prefix.parent.resolve()!=JOBS.resolve() or prefix.name in ['', '.', '..']:
+        raise ValueError('refusing outer cleanup outside /mnt/bb/jobs')
+    for suffix in ['.targets','.tmp']:
+        path=Path(str(prefix)+suffix)
+        if path.is_symlink():path.unlink()
+        elif path.exists():remove_home(path)
+    return {'outer_targets_removed':True,'outer_tmp_removed':True}
 
 def stop_job(file):
     item=json.loads(Path(file).read_text()); pid=item['pid']
@@ -241,5 +251,6 @@ def stop_job(file):
 
 if __name__=='__main__':
     if sys.argv[1:2]==['cleanup']: cleanup_runtime(sys.argv[2])
+    elif sys.argv[1:2]==['cleanup-outer']:print(json.dumps(cleanup_outer(sys.argv[2])))
     elif sys.argv[1:2]==['stop-job']:stop_job(sys.argv[2])
     else: raise SystemExit(run(sys.argv[1:]))

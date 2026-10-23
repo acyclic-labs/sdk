@@ -28,19 +28,20 @@ class RuntimeTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory(prefix='r19-runtime-',dir='/mnt/bb/tmp')
         self.d=Path(self.temp.name)
     def tearDown(self):self.temp.cleanup()
-    def worker(self,negative=False):
+    def worker(self,negative=False,cleanup_failure=False):
         shutil.copyfile(HERE/'job_exports.py',self.d/'job_exports.py')
         source=(HERE/'bb-job.py').read_text()
         source=source.replace("real_home=Path('/home/var')",f'real_home=Path({str(self.d/"real-home")!r})')
         source=source.replace("'disk_free':disk()", "'disk_free':[{'path':'fixture','free_percent':50}]")
         if negative:source=source.replace("file=sys.stderr,flush=True", "flush=True")
+        if cleanup_failure:source=source.replace('try:remove_home(job)','try:raise OSError("cleanup control")')
         p=self.d/('negative.py' if negative else 'worker.py');p.write_text(source);return p
-    def run_job(self,argv,negative=False,extra=None):
+    def run_job(self,argv,negative=False,extra=None,cleanup_failure=False):
         meta=self.d/'fixture.receipt-meta.v2.json';meta.write_text('{}')
         env={**os.environ,'PATH':'/home/var/.cargo/bin:'+os.environ['PATH'], 'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1'}
         env.pop('BB_JOB_ACTIVE',None);env.pop('BB_ADMITTED',None)
         env.update(extra or {})
-        result=subprocess.run([sys.executable,str(self.worker(negative)),*argv],cwd=self.d,env=env,capture_output=True)
+        result=subprocess.run([sys.executable,str(self.worker(negative,cleanup_failure)),*argv],cwd=self.d,env=env,capture_output=True)
         return result,json.loads(Path(str(meta)+'.runtime').read_text())
     def test_cargo_metadata_stdout_through_build_slot_and_negative_control(self):
         (self.d/'Cargo.toml').write_text('[package]\nname="gate-stdout-fixture"\nversion="0.0.0"\nedition="2024"\n')
@@ -112,6 +113,26 @@ sys.stdout.buffer.write(bytes(range(256)))
         self.assertIn(b'[buildbox] export INFRA:',result.stderr)
         self.assertIn('export_error',runtime);self.assertTrue(runtime['targets_removed'])
 
+    def test_glibc_pinned_export_keeps_the_requested_local_path(self):
+        prefix=Path('/mnt/bb/jobs')/('r19-glibc-'+str(os.getpid()));Path(str(prefix)+'.t0').touch()
+        target=self.d/'target';p=target/'x86_64-unknown-linux-gnu/debug/tool';p.parent.mkdir(parents=True);p.write_bytes(b'linux-binary')
+        spec={'prefix':str(prefix),'cwd':str(self.d),'paths':['/work/target/debug/tool'],'build':True}
+        try:
+            with self.assertRaises(FileNotFoundError):exports.prepare(spec,str(target)) # old mapping loses the binary
+            exports.prepare({**spec,'targetMapping':{'triple':'x86_64-unknown-linux-gnu','profiles':['debug','release']}},str(target))
+            import tarfile
+            manifest=json.loads(Path(str(prefix)+'.exports/manifest.json').read_text())
+            with tarfile.open(manifest[0]['archive']) as tar:
+                self.assertEqual(tar.getnames(),['debug/tool']);self.assertEqual(tar.extractfile('debug/tool').read(),b'linux-binary')
+        finally:Path(str(prefix)+'.t0').unlink();shutil.rmtree(str(prefix)+'.exports',ignore_errors=True)
+
+    def test_cleanup_failure_has_infra_status_and_retains_child_output(self):
+        result,runtime=self.run_job([sys.executable,'-c','print("child output",end="")'],cleanup_failure=True)
+        try:
+            self.assertEqual(result.returncode,224,result.stderr.decode());self.assertEqual(result.stdout,b'child output')
+            self.assertIn('cleanup control',runtime['cleanup_error']);self.assertIn(b'cleanup INFRA',result.stderr)
+        finally:job.remove_home(Path(runtime['hermetic_home']))
+
     def test_pruning_age_count_leases_active_process_and_metadata(self):
         root=self.d/'wt-sdk';root.mkdir();mirror=self.d/'sdk.git';locks=self.d/'locks';locks.mkdir()
         now=time.time()
@@ -159,10 +180,12 @@ sys.stdout.buffer.write(bytes(range(256)))
 
     def test_upgrade_barrier_drains_existing_jobs_without_admitting_new_tickets(self):
         root=self.d/'admit';root.mkdir()
+        (root/'lease-stale.json').write_text(json.dumps({'pid':999999999,'identity':None}))
         env={**os.environ,'BB_ADMIT_ROOT':str(root),'BB_ADMIT_WRAPPED_COMMAND':'1'}
         first=subprocess.Popen([sys.executable,str(HERE/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c','import time;time.sleep(.3)'],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         until=time.monotonic()+2
-        while not list(root.glob('lease-*')) and time.monotonic()<until:time.sleep(.01)
+        while not any(p.name!='lease-stale.json' for p in root.glob('lease-*')) and time.monotonic()<until:time.sleep(.01)
+        self.assertTrue(any(p.name!='lease-stale.json' for p in root.glob('lease-*')))
         marker=self.d/'new-ticket'
         with (root/'upgrade.lock').open('a') as lock:
             fcntl.flock(lock,fcntl.LOCK_EX)
@@ -174,10 +197,20 @@ sys.stdout.buffer.write(bytes(range(256)))
             bad=subprocess.run([sys.executable,str(negative),'lane','cloud','--','true'],env=env,capture_output=True,timeout=2)
             self.assertEqual(bad.returncode,0)
         second.communicate(timeout=2);self.assertEqual(second.returncode,0);self.assertTrue(marker.exists())
+        self.assertFalse((root/'lease-stale.json').exists())
         daemon=json.loads((root/'daemon.json').read_text())
         import hashlib
         self.assertEqual(daemon['source_sha256'],hashlib.sha256((HERE/'bb-admit.py').read_bytes()).hexdigest())
         os.kill(daemon['pid'],15)
+
+    def test_recovered_leases_need_identity_and_survive_pidfd_exit_race(self):
+        with patch.object(admit.os,'pidfd_open') as opened:
+            self.assertIsNone(admit.live_pidfd(999999999,None));opened.assert_not_called()
+        with patch.object(admit,'identity',return_value='birth'),patch.object(admit.os,'pidfd_open',side_effect=ProcessLookupError):
+            self.assertIsNone(admit.live_pidfd(999999999,'birth'))
+        # The previous None == None recovery attempts pidfd_open and crashes.
+        with self.assertRaises(ProcessLookupError):
+            if admit.identity(999999999)==None:os.pidfd_open(999999999)
 
     def test_killed_job_receipt_cleans_ephemeral_targets(self):
         worker=self.worker();receipt=self.d/'receipt.mjs';receipts=self.d/'receipts'
@@ -210,6 +243,52 @@ sys.stdout.buffer.write(bytes(range(256)))
             process.stdout.close();process.stderr.close()
 
     def ticket(self,seq,tenant,tier=2):return {'seq':seq,'tenant':tenant,'tier':tier,'cls':'compile'}
+
+    def test_killed_generated_wrapper_cleans_outer_scratch_with_negative_control(self):
+        worker=self.worker()
+        generator=self.d/'generator.mjs';generator.write_text((HERE/'buildbox.mjs').read_text()+'\nexport {launchScript};\n')
+        receipt_source=(HERE/'buildbox-receipt.mjs').read_text().replace('/home/var/bin/bb-job.py',str(worker)).replace('interval = 1000','interval = 20')
+        (self.d/'buildbox-receipt.mjs').write_text(receipt_source)
+        for negative in [False,True]:
+            prefix=Path('/mnt/bb/jobs')/f'r19-wrapper-{os.getpid()}-{negative}'
+            marker=self.d/f'wrapper-ready-{negative}'
+            probe=self.d/'generate-wrapper.mjs'
+            probe.write_text('''import {launchScript} from './generator.mjs';import fs from 'node:fs';
+const prefix=process.argv[2];
+const id={commit:'a'.repeat(40),tree:'b'.repeat(40),content:'c'.repeat(64),forced:[],autocrlf:'false',groups:'e30='};
+const script=launchScript('/mnt/bb/wt-sdk/fixture.0','sdk/fixture','.', ['true'],prefix,'','sdk','',id,60,true,{repo:'sdk',argv:['true'],pr_number:1415});
+const wrapped=[...script.matchAll(/echo ([A-Za-z0-9+/=]+) \\| base64 -d > \\$J\\.(sh|wrap|admitted)\\b/g)].find(m=>m[2]==='wrap');
+let body=Buffer.from(wrapped[1],'base64').toString();
+body=body.slice(0,body.indexOf('mkdir -p /mnt/bb/locks/wt-sdk')).replace('recover /mnt/bb/jobs','recover '+process.argv[3]);
+fs.writeFileSync(prefix+'.wrap',body);
+const meta=script.match(/echo ([A-Za-z0-9+/=]+) \\| base64 -d > \\$J\\.receipt-meta\\.v2\\.json/);
+fs.writeFileSync(prefix+'.receipt-meta.v2.json',Buffer.from(meta[1],'base64'));
+''')
+            subprocess.run([job.NODE,str(probe),str(prefix),str(self.d)],check=True,capture_output=True)
+            source=receipt_source.replace("if (m.side === 'bb2' && m.job_prefix) {",'if (false) {') if negative else receipt_source
+            Path(str(prefix)+'.receipt-tool.mjs').write_text(source)
+            code=f'from pathlib import Path;import time;Path({str(marker)!r}).touch();time.sleep(60)'
+            import shlex
+            with Path(str(prefix)+'.wrap').open('a') as wrapper:
+                wrapper.write(f'\nmkdir -p "$J.targets" "$J.tmp"\nprintf scratch > "$J.targets/object"\nprintf scratch > "$J.tmp/object"\nexport BUILD_SLOT_RECEIPT_META="$J.receipt-meta.v2.json"\nsetsid {shlex.join([sys.executable,str(worker),sys.executable,"-c",code])} &\npayload=$!\nnode "$J.receipt-tool.mjs" job "$J.receipt-meta.v2.json" "$payload"\nwait "$payload"\n')
+            process=subprocess.Popen(['bash',str(prefix)+'.wrap'],env={**os.environ,'PATH':str(Path(job.NODE).parent)+':'+os.environ['PATH']},stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+            try:
+                until=time.monotonic()+4
+                while not marker.exists() and time.monotonic()<until:time.sleep(.01)
+                self.assertTrue(marker.exists())
+                process.kill();process.wait(timeout=2)
+                receipt=Path(str(prefix)+'.receipt.json');until=time.monotonic()+5
+                while not receipt.exists() and time.monotonic()<until:time.sleep(.01)
+                data=json.loads(receipt.read_text())
+                self.assertEqual((data['exit_status'],data['termination']),(137,'interrupted'))
+                self.assertTrue(data['home_removed']);self.assertTrue(data['targets_removed'])
+                for suffix in ['.targets','.tmp']:self.assertEqual(Path(str(prefix)+suffix).exists(),negative)
+                self.assertEqual(bool(data.get('outer_targets_removed')),not negative)
+            finally:
+                if process.poll() is None:process.kill();process.wait()
+                process.stdout.close();process.stderr.close();job.cleanup_outer(prefix)
+                for p in prefix.parent.glob(prefix.name+'.*'):
+                    if p.is_file():p.unlink()
 
     def test_fair_share_and_fifo_negative(self):
         s=admit.Scheduler({'compile':1,'other':1,'light':10},{'graphcoder':3,'cloud':3})

@@ -8,12 +8,14 @@ const here=path.dirname(new URL(import.meta.url).pathname);
 test('remote wrappers parse, retain isolation and archive outputs before cleanup',()=>{
  const cwd=fs.mkdtempSync(path.join(tmpdir(),'job-shell-'));
  try{
-  fs.writeFileSync(path.join(cwd,'generator.mjs'),fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8')+'\nexport { launchScript };\n');
+  fs.writeFileSync(path.join(cwd,'generator.mjs'),fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8')+'\nexport { launchScript, pinGlibc };\n');
   fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
-  const probe=String.raw`import {launchScript} from './generator.mjs';
+  const probe=String.raw`import {launchScript,pinGlibc} from './generator.mjs';
 import fs from 'node:fs';
 import {spawnSync} from 'node:child_process';
-for(const argv of [['bash','-c','echo okay'],['cargo','metadata','--format-version','1']]){
+process.env.BUILD_SLOT_REMOTE_FETCH='/work/target/debug/tool';process.env.BUILD_SLOT_GLIBC='2.35';
+for(const input of [['bash','-c','echo okay'],['cargo','metadata','--format-version','1'],['cargo','build']]){
+const argv=pinGlibc(input);
 const id={commit:'a'.repeat(40),tree:'b'.repeat(40),content:'c'.repeat(64),forced:[],autocrlf:'false',groups:'e30='};
 const script=launchScript('/mnt/bb/wt-sdk/fixture.0','sdk/fixture','.',argv,'/mnt/bb/jobs/fixture','','sdk','',id,60,true,{repo:'sdk',argv});
 const bodies=[script,...[...script.matchAll(/echo ([A-Za-z0-9+/=]+) \| base64 -d > \$J\.(sh|wrap|admitted)\b/g)].map(m=>Buffer.from(m[1],'base64').toString())];
@@ -22,6 +24,7 @@ for(const body of bodies){const r=spawnSync('bash',['-n'],{input:body,encoding:'
 const inner=bodies[1];
 if(!inner.includes('CARGO_TARGET_DIR="$BB_JOB_TARGET"'))throw Error('target escaped job lifetime');
 if(!inner.includes('BB_JOB_EXPORT_SPEC='))throw Error('outputs not archived');
+if(input[1]==='build' && !inner.includes('"targetMapping":{"triple":"x86_64-unknown-linux-gnu","profiles":["debug","release"]}'))throw Error('glibc-pinned output mapping lost');
 if(!bodies[2].includes('rm -rf -- /mnt/bb/jobs/fixture.targets'))throw Error('outer targets not cleaned');
 if(script.includes('/mnt/bb/targets/sdk/fixture'))throw Error('persistent target survived');
 }
@@ -45,6 +48,23 @@ test('executor failure cannot inherit a successful Cargo payload verdict',()=>{
    const result=spawnSync('bash',['-c',script],{encoding:'utf8',env:{...process.env,HOME:cwd}});
    assert.equal(result.status,expected,result.stdout+result.stderr);
    if(expected)assert.match(result.stdout,/INFRA.*executor exited rc=/);
+  }
+ }finally{fs.rmSync(cwd,{recursive:true,force:true});}
+});
+
+test('outer cleanup failure is INFRA and the former status handling is a negative control',()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'outer-cleanup-status-'));
+ try{
+  const helper=path.join(cwd,'refuse.py');fs.writeFileSync(helper,'import sys\nprint("forced outer cleanup refusal",file=sys.stderr)\nsys.exit(1)\n');
+  const source=fs.readFileSync(path.join(here,'buildbox-receipt.mjs'),'utf8').replaceAll('/home/var/bin/bb-job.py',helper);
+  for(const [negative,expected] of [[false,224],[true,0]]){
+   const module=path.join(cwd,`receipt-${negative}.mjs`);fs.writeFileSync(module,negative?source.replaceAll("if (Number(rc) === 0) { rc = 224; category = 'infra'; }",''):source);
+   const meta=path.join(cwd,`meta-${negative}.json`);const receipt=path.join(cwd,`done-${negative}.json`);
+   fs.writeFileSync(meta,JSON.stringify({side:'bb2',job_prefix:'/mnt/bb/jobs/cleanup-control',receipt_file:receipt,argv:[],worktree:cwd,admission_start:new Date().toISOString()}));
+   const result=spawnSync(process.execPath,[module,'finish',meta,'0','command'],{encoding:'utf8'});
+   assert.equal(result.status,expected,result.stderr);
+   const terminal=JSON.parse(fs.readFileSync(receipt));assert.equal(terminal.exit_status,expected);
+   assert.equal(terminal.termination,negative?'command':'infra');assert.match(terminal.outer_cleanup_error,/forced outer cleanup refusal/);
   }
  }finally{fs.rmSync(cwd,{recursive:true,force:true});}
 });

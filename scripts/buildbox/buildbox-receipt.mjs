@@ -81,7 +81,19 @@ export function finish(metaFile, rc, category, extra = {}) {
     if (runtime && m.side === 'bb2') {
       const clean = spawnSync('python3', ['/home/var/bin/bb-job.py', 'cleanup', runtimeFile], { encoding: 'utf8', timeout: 30000 });
       runtime = read(runtimeFile);
-      if (clean.status !== 0) runtime.cleanup_error = String(clean.stderr || clean.error);
+      if (clean.status !== 0) {
+        runtime.cleanup_error = String(clean.stderr || clean.error);
+        if (Number(rc) === 0) { rc = 224; category = 'infra'; }
+      }
+    }
+    if (m.side === 'bb2' && m.job_prefix) {
+      const clean = spawnSync('python3', ['/home/var/bin/bb-job.py', 'cleanup-outer', m.job_prefix], { encoding: 'utf8', timeout: 30000 });
+      runtime ||= {};
+      if (clean.status === 0) Object.assign(runtime, JSON.parse(clean.stdout));
+      else {
+        runtime.outer_cleanup_error = String(clean.stderr || clean.error);
+        if (Number(rc) === 0) { rc = 224; category = 'infra'; }
+      }
     }
     const exec = read(metaFile + '.exec');
     const out = { exec_start: null, toolchain: null, ...m, ...exec, end: new Date().toISOString(), exit_status: Number(rc), termination: category,
@@ -235,7 +247,8 @@ export async function runBb(script, args) {
     return rc;
   } finally {
     for (const [sig, handler] of handlers) process.removeListener(sig, handler);
-    finish(file, rc, termination || 'infra');
+    const terminal = finish(file, rc, termination || 'infra');
+    if (terminal && terminal.exit_status !== rc) return terminal.exit_status;
   }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -244,7 +257,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   else if (op === 'arm') arm(file, read(file), rc);
   else if (op === 'job') atomic(file + '.job', { pid: Number(rc), identity: processIdentity(rc) });
   else if (op === 'exec') process.stderr.write('BUILD_SLOT_EXEC=' + JSON.stringify(execution(file)) + '\n');
-  else if (op === 'finish') finish(file, rc, category);
+  else if (op === 'finish') {
+    const terminal = finish(file, rc, category);
+    if (terminal && terminal.exit_status !== Number(rc)) process.exitCode = terminal.exit_status;
+  }
   else if (op === 'watch') await watch(file);
   else if (op === 'recover') recover(file);
   else throw new Error(`unknown receipt operation: ${op}`);
