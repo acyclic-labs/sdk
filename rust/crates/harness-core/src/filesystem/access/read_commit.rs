@@ -80,8 +80,10 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> ReadObservation<'a, A, O> 
         self.reference
             .descriptor()
             .verify(&bytes, &mut Some(&mut io.history_io()))?;
-        self.confirm().await?;
         fork_preparer_io::retain(&self.generation, Some(io)).await?;
+        // Fence disclosure after both the read and retention have completed.
+        // A separate pre-retention observation repeats the same metadata work
+        // without protecting any returned bytes.
         self.confirm().await?;
         Ok(bytes)
     }
