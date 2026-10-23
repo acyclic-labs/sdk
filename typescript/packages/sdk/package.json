@@ -15,7 +15,13 @@
     "directory": "typescript/packages/sdk"
   },
   "type": "module",
-  "exports": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./addressing": {
+      "types": "./dist/addressing.d.ts",
+      "default": "./dist/addressing.js"
+    }
+  },
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
@@ -37,7 +43,8 @@
     "@acyclic-labs/machines": "0.2.0",
     "@acyclic-labs/inference": "0.2.0",
     "@acyclic-labs/actors": "0.2.0",
-    "@acyclic-labs/workers": "0.2.0"
+    "@acyclic-labs/workers": "0.2.0",
+    "@acyclic-labs/auth": "0.2.0"
   },
   "devDependencies": {
     "@bufbuild/protobuf": "2.16.0",

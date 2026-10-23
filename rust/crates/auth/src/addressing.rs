@@ -1,6 +1,7 @@
 //! Resource identity is exactly (account, id). Both components are opaque,
 //! nonempty byte strings. No kind, digest, generation or normalization is added.
-//! Wire and storage use the same two u64 big-endian length-prefixed fields.
+//! The view's encoding uses two u64 big-endian length-prefixed fields.
+//! Existing account-scoped RPC and storage fields remain unchanged.
 //! Decoding is a left inverse of encoding, so this representation is injective.
 
 mod dns;
@@ -45,6 +46,10 @@ impl AccountId {
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
+    /// Recover the original account field without copying or normalization.
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.0
+    }
 }
 
 /// Validated opaque resource id; product-specific creation rules still apply.
@@ -60,6 +65,10 @@ impl ResourceId {
     /// Exact original bytes.
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
+    }
+    /// Recover the original resource id field without copying or normalization.
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.0
     }
 }
 
@@ -84,6 +93,10 @@ impl ResourceIdentity {
     pub fn from_parts(account: AccountId, id: ResourceId) -> Self {
         Self { account, id }
     }
+    /// Recover both original fields for existing account-scoped APIs.
+    pub fn into_parts(self) -> (AccountId, ResourceId) {
+        (self.account, self.id)
+    }
     /// Account component.
     pub const fn account(&self) -> &AccountId {
         &self.account
@@ -96,8 +109,8 @@ impl ResourceIdentity {
     pub fn encoded_len(&self) -> usize {
         16 + self.account.0.len() + self.id.0.len()
     }
-    /// Canonical wire and storage encoding: u64-BE account length, account bytes,
-    /// u64-BE id length, id bytes. There are no other fields.
+    /// Canonical encoding of this view: u64-BE account length, account bytes,
+    /// u64-BE id length, id bytes. Existing RPC/storage formats do not change.
     pub fn encode(&self) -> Vec<u8> {
         let mut output = Vec::with_capacity(self.encoded_len());
         for field in [self.account.as_bytes(), self.id.as_bytes()] {

@@ -8,12 +8,40 @@ async fn addressing_preserves_explicit_create_already_exists_and_recreation()
         name: "addressing-fixture".into(),
     };
     let identity = reference.identity(b"account-a")?;
+    let (account, retained) =
+        crate::addressing::ResourceIdentity::decode(&identity.encode())?.into_parts();
+    let restored = wire::BucketRef {
+        name: String::from_utf8(retained.into_bytes())?,
+    };
+    assert_eq!(restored, reference);
+    assert_eq!(account.into_bytes(), b"account-a");
     assert_ne!(identity, reference.identity(b"account-b")?);
+    let dotted = wire::BucketRef {
+        name: "fixture.bucket".into(),
+    };
+    let dotted_identity = dotted.identity(b"account-a")?;
+    assert_eq!(dotted_identity.id().as_bytes(), b"fixture.bucket");
+    assert_eq!(
+        dotted_identity.hostname("example.com"),
+        Err(crate::addressing::DnsError::InvalidCharacter)
+    );
+    assert!(crate::v1::request::bucket_name(&dotted.name).is_ok());
+    let created = provider
+        .create_bucket(wire::CreateBucketRequest {
+            name: dotted.name.clone(),
+            mutation: None,
+        })
+        .await?;
+    assert_eq!(created.bucket.ok_or("missing dotted bucket")?, dotted);
     assert_eq!(
         identity,
         acyclic_stream::StreamPath::new(&reference.name)?.identity(b"account-a")?
     );
     let longest_path = acyclic_stream::StreamPath::new("s".repeat(acyclic_stream::MAX_PATH_BYTES))?;
+    let restored = acyclic_stream::StreamPath::new(std::str::from_utf8(
+        longest_path.identity(b"account-a")?.id().as_bytes(),
+    )?)?;
+    assert_eq!(restored.as_str(), longest_path.as_str());
     assert_eq!(
         longest_path.identity(b"account-a")?.id().as_bytes().len(),
         acyclic_stream::MAX_PATH_BYTES

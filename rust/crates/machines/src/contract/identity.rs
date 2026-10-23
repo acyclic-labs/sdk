@@ -82,6 +82,12 @@ mod resource_identity_tests {
         let identity = id.identity(b"account")?;
         assert_eq!(identity.id().as_bytes(), id.as_bytes());
         assert_eq!(identity.account().as_bytes(), b"account");
+        let (account, retained) =
+            crate::addressing::ResourceIdentity::decode(&identity.encode())?.into_parts();
+        let restored = super::MachineId(uuid::Uuid::from_slice(retained.as_bytes())?);
+        assert_eq!(account.into_bytes(), b"account");
+        assert_eq!(restored, id);
+        assert_ne!(retained.as_bytes(), id.to_string().as_bytes());
         Ok(())
     }
 }

@@ -10,6 +10,26 @@ fn actor_id_matches_existing_presence_rule() {
 }
 
 #[test]
+fn addressing_wraps_actor_wire_id_without_normalization() -> Result<(), Box<dyn std::error::Error>>
+{
+    for raw in ["  ", "cafe\u{301}", "caf\u{e9}", "parent/actor:1"] {
+        let id = ActorId::new(raw.to_owned())?;
+        let view = id.identity(b"account")?;
+        let (account, retained) =
+            crate::addressing::ResourceIdentity::decode(&view.encode())?.into_parts();
+        let restored = ActorId::new(String::from_utf8(retained.into_bytes())?)?;
+        assert_eq!(account.into_bytes(), b"account");
+        assert_eq!(restored, id);
+        assert_eq!(restored.as_str(), raw);
+    }
+    assert_ne!(
+        ActorId::new("cafe\u{301}".into())?.identity(b"account")?,
+        ActorId::new("caf\u{e9}".into())?.identity(b"account")?
+    );
+    Ok(())
+}
+
+#[test]
 fn typescript_export_includes_error_roots_with_esm_imports() {
     let output = std::env::temp_dir().join(format!(
         "acyclic-actors-typescript-export-{}",

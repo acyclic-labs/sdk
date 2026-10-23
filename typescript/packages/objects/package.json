@@ -47,6 +47,10 @@
     "./grpc": {
       "default": "./dist/v1-grpc.js",
       "types": "./dist/v1-grpc.d.ts"
+    },
+    "./addressing": {
+      "types": "./dist/addressing.d.ts",
+      "default": "./dist/addressing.js"
     }
   },
   "types": "./dist/index.d.ts",
@@ -66,7 +70,8 @@
     "@acyclic-labs/actors": "0.2.0",
     "@bufbuild/protobuf": "2.16.0",
     "@connectrpc/connect": "2.2.0",
-    "@connectrpc/connect-node": "2.2.0"
+    "@connectrpc/connect-node": "2.2.0",
+    "@acyclic-labs/auth": "0.2.0"
   },
   "devDependencies": {
     "@types/bun": "1.4.2",

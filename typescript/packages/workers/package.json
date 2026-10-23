@@ -20,7 +20,11 @@
       "types": "./dist/manifest.d.ts",
       "default": "./dist/manifest.js"
     },
-    "./manifest.wasm": "./generated/wasm/acyclic_manifest_bg.wasm"
+    "./manifest.wasm": "./generated/wasm/acyclic_manifest_bg.wasm",
+    "./addressing": {
+      "types": "./dist/addressing.d.ts",
+      "default": "./dist/addressing.js"
+    }
   },
   "types": "./dist/index.d.ts",
   "files": [
@@ -43,7 +47,8 @@
   "dependencies": {
     "@bufbuild/protobuf": "2.16.0",
     "@acyclic-labs/actors": "0.2.0",
-    "@acyclic-labs/objects": "0.2.0"
+    "@acyclic-labs/objects": "0.2.0",
+    "@acyclic-labs/auth": "0.2.0"
   },
   "devDependencies": {
     "typescript": "7.0.2",

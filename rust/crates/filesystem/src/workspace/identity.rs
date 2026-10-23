@@ -5,15 +5,6 @@ use super::*;
 pub struct WorkspaceName(Arc<(String, KernelOwnedAllocation)>);
 
 impl WorkspaceName {
-    /// Global pair using the retained workspace name as the resource id.
-    pub fn identity(
-        &self,
-        account: &[u8],
-    ) -> Result<acyclic_auth::addressing::ResourceIdentity, acyclic_auth::addressing::IdentityError>
-    {
-        acyclic_auth::addressing::ResourceIdentity::new(account, self.as_str().as_bytes())
-    }
-
     /// Canonicalizes a name under the supplied work limits.
     pub fn new<W: crate::facade::FsWork>(
         name: impl AsRef<str>,
@@ -144,6 +135,15 @@ impl fmt::Display for WorkspaceName {
 pub struct WorkspaceId([u8; 16]);
 
 impl WorkspaceId {
+    /// Global view of the existing persisted 16-byte workspace id.
+    pub fn identity(
+        self,
+        account: &[u8],
+    ) -> Result<acyclic_auth::addressing::ResourceIdentity, acyclic_auth::addressing::IdentityError>
+    {
+        acyclic_auth::addressing::ResourceIdentity::new(account, &self.0)
+    }
+
     /// Restores a stable workspace identity from canonical bytes.
     pub const fn from_bytes(bytes: [u8; 16]) -> Self {
         Self(bytes)
