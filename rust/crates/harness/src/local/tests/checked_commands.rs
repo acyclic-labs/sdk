@@ -39,3 +39,31 @@ pub(super) fn call(index: usize, name: &str, command: &str) -> ScriptedTurn {
         }),
     ])
 }
+
+/// Advances a scripted task until it finishes, failing only once it stops
+/// making progress: no model request for a whole idle window. A wall-clock
+/// bound on the whole scenario misreads a runnable scenario that a loaded
+/// test run delays as stalled, while a scenario that really stops still
+/// fails within two windows.
+pub(super) async fn advance_until_idle(
+    harness: &LocalHarness,
+    task: crate::TaskId,
+    provider: &ScriptedModelProvider,
+) -> Result<()> {
+    const IDLE: std::time::Duration = std::time::Duration::from_secs(20);
+    let commands = harness.commands()?;
+    let checked = Checked(&commands);
+    let advance = harness.advance(task, &checked);
+    tokio::pin!(advance);
+    let mut requests = provider.request_count();
+    loop {
+        if let Ok(result) = tokio::time::timeout(IDLE, &mut advance).await {
+            return result;
+        }
+        let made = provider.request_count();
+        if made == requests {
+            return Err(Error::Conflict("the scenario stalled".into()));
+        }
+        requests = made;
+    }
+}

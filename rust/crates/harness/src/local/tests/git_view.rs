@@ -98,14 +98,7 @@ async fn scenario(
     else {
         panic!("durable admission")
     };
-    let commands = harness.commands()?;
-    tokio::time::timeout(
-        std::time::Duration::from_secs(20),
-        harness.advance(task_id, &super::checked_commands::Checked(&commands)),
-    )
-    .await
-    .map_err(|_| Error::Conflict("the scenario stalled".into()))??;
-    drop(commands);
+    super::checked_commands::advance_until_idle(&harness, task_id, &provider).await?;
     assert_eq!(harness.resume(task_id).await?.text, "done");
     let requests = provider.requests();
     let results: std::collections::BTreeMap<_, _> = requests
