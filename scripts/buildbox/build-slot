@@ -1,0 +1,21 @@
+#!/bin/bash
+# Native bb2 commands share the same admission, receipts and isolated home as
+# Windows/WSL-dispatched jobs. Nested commands reuse their enclosing lease.
+set -u
+export PATH=/home/var/tools/node24/node-v24.3.0-linux-x64/bin:/home/var/.cargo/bin:/home/var/bin:/usr/local/bin:/usr/bin:/bin
+if [ "${BUILD_SLOT_RECEIPT_WRAPPED:-}" != 1 ]; then
+  export BUILD_SLOT_DEFER_EXEC=1
+  exec node /home/var/bin/buildbox-receipt.mjs run-bb "$0" "$@"
+fi
+unset BUILD_SLOT_RECEIPT_WRAPPED
+while [[ "${1:-}" = --remote || "${1:-}" = --local || "${1:-}" = --cold ]]; do [ "$1" != --cold ] || export BB_CACHE_DISABLED=1; shift; done
+[ "$#" -gt 0 ] || exit 2
+if [ "${1##*/}" = cargo ]; then
+  unset CARGO_INCREMENTAL
+  export CARGO_PROFILE_DEV_INCREMENTAL=true CARGO_PROFILE_TEST_INCREMENTAL=true CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
+
+fi
+export BUILD_SLOT=buildbox
+if [ "${BB_ADMITTED:-}" = 1 ] || [ "${BB_JOB_ACTIVE:-}" = 1 ]; then exec python3 /home/var/bin/bb-job.py "$@"; fi
+tenant=${BUILD_SLOT_TENANT:-graphcoder}; tier=${BUILD_SLOT_TIER:-lane}
+exec /home/var/bin/bb-admit "$tier" "$tenant" -- "$@"

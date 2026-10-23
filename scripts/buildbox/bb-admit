@@ -1,0 +1,12 @@
+#!/bin/bash
+set -u
+export PATH=/home/var/tools/node24/node-v24.3.0-linux-x64/bin:/home/var/.cargo/bin:/home/var/bin:/usr/bin:/bin
+# Direct on-box admission has the same terminal receipt as build-slot. Existing
+# remote/native wrappers already own a receipt spanning the admission wait.
+if [ -z "${BUILD_SLOT_RECEIPT_META:-}" ]; then
+  export BUILD_SLOT_DEFER_EXEC=1
+  BUILD_SLOT_RECEIPT_ARGV=$(python3 -c 'import json,sys;print(json.dumps(sys.argv[4:]))' "$@")
+  export BUILD_SLOT_RECEIPT_ARGV
+  exec node /home/var/bin/buildbox-receipt.mjs run-bb "$0" "$@"
+fi
+exec python3 /home/var/bin/bb-admit.py "$@"
