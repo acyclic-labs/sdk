@@ -176,16 +176,14 @@ impl CheckoutTools {
                 {
                     return Err(std::io::Error::other("hook workspace root was replaced"));
                 }
+                // Completes when the journal confirms the fence or reports
+                // it lost; no wall-clock deadline applies.
                 runtime.block_on(async {
-                    tokio::time::timeout(
-                        std::time::Duration::from_millis(u64::from(output::CONTROL_TIMEOUT_MS)),
-                        check_owner
-                            .verify_owner(None)
-                            .map_err(std::io::Error::other)?,
-                    )
-                    .await
-                    .map_err(std::io::Error::other)?
-                    .map_err(std::io::Error::other)
+                    check_owner
+                        .verify_owner(None)
+                        .map_err(std::io::Error::other)?
+                        .await
+                        .map_err(std::io::Error::other)
                 })
             };
             // Hooks share the shell's native execution scope: bound volumes are

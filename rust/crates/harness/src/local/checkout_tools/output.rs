@@ -11,7 +11,21 @@ use acyclic_stream::OwnedBytes;
 #[cfg(not(acyclic_harness_loom))]
 mod tests;
 
+/// The native contract's bound on one host control check. Checkout checks
+/// never apply it as a wall-clock deadline: each completes when the journal
+/// answers or the task fence is lost, so host load can delay a successful
+/// command but never fail it.
 pub(super) const CONTROL_TIMEOUT_MS: u32 = 1000;
+
+/// Waits, from a native capture worker, for a fenced journal step: an output
+/// publication or an owner check. It completes when the journal answers or
+/// reports the fence lost, never on a wall-clock deadline.
+pub(super) fn await_fence<T, F: std::future::Future<Output = std::io::Result<T>>>(
+    runtime: &tokio::runtime::Handle,
+    step: impl FnOnce() -> F,
+) -> std::io::Result<T> {
+    crate::filesystem::native_process::capture::wait_control(runtime, step)
+}
 
 pub(super) struct Output {
     pub(super) owner: Arc<TaskJournalOwner<LocalStream>>,
@@ -118,15 +132,14 @@ impl Output {
         *sequence = sequence
             .checked_add(1)
             .ok_or_else(|| std::io::Error::other("tool output sequence overflow"))?;
+        // The chunk is published when the journal accepts it under the task
+        // fence; a lost fence fails the publication. No wall-clock deadline
+        // applies, so a loaded host delays the command's output, never fails it.
         let runtime = self.runtime.clone();
-        crate::filesystem::native_process::capture::wait_control(&runtime, || async {
-            tokio::time::timeout(
-                std::time::Duration::from_millis(u64::from(CONTROL_TIMEOUT_MS)),
-                self.publish(file, bytes.to_vec().into()),
-            )
-            .await
-            .map_err(std::io::Error::other)?
-            .map_err(std::io::Error::other)
+        await_fence(&runtime, || async {
+            self.publish(file, bytes.to_vec().into())
+                .await
+                .map_err(std::io::Error::other)
         })?;
         self.sequence = next;
         Ok(())

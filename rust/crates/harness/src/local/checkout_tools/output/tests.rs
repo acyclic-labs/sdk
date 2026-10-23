@@ -180,3 +180,28 @@ async fn client_goal_write_between_bash_chunks_preserves_the_command() -> Result
     harness.disconnect_unfinished().await?;
     Ok(())
 }
+
+// Regression: under host load the journal can answer a fenced publication
+// after more than the native control bound. The step must still complete, so
+// a successful command is never reported as a failed capture. Negative
+// control: bounding `await_fence` by `CONTROL_TIMEOUT_MS` fails this test with
+// "deadline has elapsed", the main-gate failure of the bash scenarios.
+#[test]
+fn a_fence_step_held_past_the_control_bound_still_completes() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_time()
+        .build()
+        .unwrap();
+    let held = std::time::Duration::from_millis(u64::from(CONTROL_TIMEOUT_MS) + 250);
+    let handle = runtime.handle().clone();
+    let completed = std::thread::spawn(move || {
+        await_fence(&handle, || async move {
+            tokio::time::sleep(held).await;
+            Ok::<_, std::io::Error>(7)
+        })
+    })
+    .join()
+    .unwrap();
+    assert_eq!(completed.unwrap(), 7);
+}

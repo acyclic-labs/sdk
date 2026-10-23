@@ -60,14 +60,13 @@ impl CheckoutTools {
                         "checkout root was replaced",
                     ));
                 }
-                native_process::capture::wait_control(&runtime, || async {
-                    tokio::time::timeout(
-                        std::time::Duration::from_millis(u64::from(output::CONTROL_TIMEOUT_MS)),
-                        check_owner.verify(false, &mut None),
-                    )
-                    .await
-                    .map_err(native_process::capture::control_error)?
-                    .map_err(native_process::capture::control_error)
+                // Completes when the journal confirms the fence or reports
+                // it lost; no wall-clock deadline applies.
+                output::await_fence(&runtime, || async {
+                    check_owner
+                        .verify(false, &mut None)
+                        .await
+                        .map_err(native_process::capture::control_error)
                 })
             },
             (state, files, claims),
