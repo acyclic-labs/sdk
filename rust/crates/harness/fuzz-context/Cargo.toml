@@ -9,6 +9,11 @@ cargo-fuzz = true
 
 [workspace]
 
+[features]
+# Included harness sources use the including crate's feature namespace.
+default = ["filesystem"]
+filesystem = ["acyclic-harness/filesystem"]
+
 [dependencies]
 libfuzzer-sys = "0.4"
 serde_json = "1"

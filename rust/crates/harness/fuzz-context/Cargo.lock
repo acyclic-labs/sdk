@@ -73,14 +73,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-differential"
+version = "0.2.0"
+
+[[package]]
 name = "acyclic-fs"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-fs-base",
+ "acyclic-fs-wire",
  "acyclic-native-runtime",
  "acyclic-objects",
- "acyclic-proto-build",
  "acyclic-stream",
  "async-trait",
  "blake3",
@@ -90,7 +94,6 @@ dependencies = [
  "cap-std",
  "cc",
  "dirs",
- "fs2",
  "fuser",
  "futures",
  "hex",
@@ -124,6 +127,16 @@ name = "acyclic-fs-base"
 version = "0.2.0"
 dependencies = [
  "diffy",
+]
+
+[[package]]
+name = "acyclic-fs-wire"
+version = "0.2.0"
+dependencies = [
+ "acyclic-proto-build",
+ "prost",
+ "tonic",
+ "tonic-prost",
 ]
 
 [[package]]
@@ -203,6 +216,8 @@ name = "acyclic-harness-core"
 version = "0.2.0"
 dependencies = [
  "acyclic-actors",
+ "acyclic-auth",
+ "acyclic-differential",
  "acyclic-fs",
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -213,6 +228,7 @@ dependencies = [
  "blake3",
  "bytes",
  "dirs",
+ "ed25519-dalek",
  "futures",
  "getrandom 0.3.4",
  "hex",
@@ -243,6 +259,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "which",
+ "zeroize",
 ]
 
 [[package]]
@@ -278,6 +295,7 @@ dependencies = [
 name = "acyclic-native-runtime"
 version = "0.2.0"
 dependencies = [
+ "blake3",
  "bytes",
  "compio-buf",
  "compio-driver",
@@ -302,7 +320,6 @@ dependencies = [
  "async-trait",
  "blake3",
  "bytes",
- "fs2",
  "futures",
  "getrandom 0.4.3",
  "hex",
@@ -339,7 +356,6 @@ dependencies = [
  "async-trait",
  "base64 0.23.1",
  "bytes",
- "fs2",
  "futures",
  "js-sys",
  "loom",
@@ -1276,16 +1292,6 @@ dependencies = [
  "io-lifetimes 2.0.4",
  "rustix",
  "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "fs2"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
-dependencies = [
- "libc",
- "winapi",
 ]
 
 [[package]]
