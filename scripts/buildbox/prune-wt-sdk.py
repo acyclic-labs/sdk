@@ -34,7 +34,7 @@ def active_sources(proc=Path('/proc')):
 
 def prune(root,mirror,locks,max_age=43200,max_count=128,active=None,now=None):
     root=root.resolve();mirror=mirror.resolve();locks.mkdir(parents=True,exist_ok=True)
-    if not root.is_dir():return {'removed':[],'remaining':0,'held':[]}
+    if not root.is_dir():return {'removed':[],'remaining':0,'held':[],'over_cap':False}
     active=active_sources() if active is None else active;now=time.time() if now is None else now
     removed=[];held=[]
     with (locks/'prune.lock').open('a') as global_lock:

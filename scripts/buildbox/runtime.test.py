@@ -128,6 +128,7 @@ sys.stdout.buffer.write(bytes(range(256)))
         result=pruner.prune(root,mirror,locks,max_count=1,active=set(),now=now)
         self.assertEqual(result['remaining'],1);self.assertTrue(recent_git.exists())
     def test_pruner_removes_unreadable_targets_without_following_symlinks(self):
+        self.assertFalse(pruner.prune(self.d/'missing',self.d/'mirror',self.d/'locks',active=set())['over_cap'])
         root=self.d/'wt-sdk';root.mkdir();p=root/'old';(p/'target/deep').mkdir(parents=True)
         (p/'target/deep/object').write_bytes(b'x');(p/'target').chmod(0)
         outside=self.d/'keep';outside.mkdir();(outside/'object').write_bytes(b'keep')
