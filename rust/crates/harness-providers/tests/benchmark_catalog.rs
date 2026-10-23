@@ -25,7 +25,13 @@ fn generated_benchmark_catalog_loads_and_old_incomplete_features_fail()
     let mut registry = Registry::new(Credentials::explicit(BTreeMap::new()))?;
     registry.load_catalog(file.path())?;
     registry.resolve("benchmark/fixture")?;
-    let model = &registry.catalog()["benchmark"].models["fixture"];
+    let model = registry
+        .catalog()
+        .get("benchmark")
+        .ok_or("missing benchmark provider")?
+        .models
+        .get("fixture")
+        .ok_or("missing benchmark model")?;
     assert!(model.features.tools);
     assert!(!model.features.images);
     assert_eq!(model.capacity.context_tokens, 100);
@@ -33,12 +39,15 @@ fn generated_benchmark_catalog_loads_and_old_incomplete_features_fail()
 
     // Preserve the exact old generator shape as a production-parser negative.
     let mut incomplete: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    incomplete["benchmark"]["models"]["fixture"]["features"]
-        .as_object_mut()
-        .expect("generated feature object")
+    incomplete
+        .pointer_mut("/benchmark/models/fixture/features")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or("missing generated feature object")?
         .remove("images");
     std::fs::write(file.path(), serde_json::to_vec(&incomplete)?)?;
-    let error = registry.load_catalog(file.path()).err().expect("old shape must fail");
+    let Err(error) = registry.load_catalog(file.path()) else {
+        return Err("old shape must fail".into());
+    };
     assert!(error.to_string().contains("images"), "{error}");
     Ok(())
 }
