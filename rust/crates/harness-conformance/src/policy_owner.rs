@@ -94,10 +94,26 @@ pub(crate) async fn collect<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
     struct Input {}
     let _: Input = serde_json::from_value(recipe)?;
     let cancellation = CancellationToken::new();
+    let lifecycle = if filesystem.capabilities().durable {
+        acyclic_fs::Lifecycle::Durable
+    } else {
+        acyclic_fs::Lifecycle::Ephemeral
+    };
     let source = filesystem
-        .create_workspace("policy-owner-source", WorkBudget::UNBOUNDED, &cancellation)
+        .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
+            "policy-owner-source",
+            acyclic_fs::VolumeInitialization {
+                config: acyclic_fs::VolumeConfig::portable(lifecycle),
+                access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
+            },
+            acyclic_fs::OperationId::new(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            None,
+        )
         .await?
-        .value;
+        .value
+        .workspace();
     let forked = fork(&source, "policy-owner-child").await.is_ok();
     let mut checkout = source
         .checkout(

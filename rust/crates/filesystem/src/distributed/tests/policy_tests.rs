@@ -148,10 +148,16 @@ async fn wire_fork_accepts_stream_backend_policy_owner() -> TestResult {
     };
     use tonic::Request;
     let fs = filesystem();
-    let token = CancellationToken::new();
-    fs.create_workspace("wire-source", WorkBudget::UNBOUNDED, &token)
-        .await?;
     let service = crate::FilesystemWireService::new(fs, crate::FilesystemWireLimits::default())?;
+    service
+        .create_workspace(Request::new(wire::CreateWorkspaceRequest {
+            name: "wire-source".into(),
+            profile: wire::FilesystemProfile::Portable as i32,
+            operation: Some(wire::OperationOptions {
+                idempotency_key: vec![6; 16],
+            }),
+        }))
+        .await?;
     let source = service
         .open_workspace(Request::new(wire::OpenWorkspaceRequest {
             selector: Some(wire::open_workspace_request::Selector::Name(
@@ -188,7 +194,7 @@ async fn policy_cut_admission_preserves_cancellation_and_budget() -> TestResult 
         .value;
     let invoked = std::cell::Cell::new(false);
     let mut budget = WorkBudget::UNBOUNDED;
-    budget.items_examined = 0;
+    budget.authority_records_read = 0;
     let result = source
         .with_stable_policy(budget, &token, || async {
             invoked.set(true);
