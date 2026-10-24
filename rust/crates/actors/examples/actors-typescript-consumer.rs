@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }),
             placement_anchor: true,
         }],
-        idempotency_key: "create-typescript-consumer".into(),
+        idempotency_key: "deploy-typescript-consumer".into(),
     };
     validate_deployment(&request)?;
     let limits = request

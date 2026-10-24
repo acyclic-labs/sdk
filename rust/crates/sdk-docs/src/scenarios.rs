@@ -99,7 +99,7 @@ pub const SCENARIOS: &[Scenario] = &[
         package: "acyclic-actors",
         example: "actors-typescript-consumer",
         source_path: "rust/crates/actors/examples/actors-typescript-consumer.rs",
-        operation: "encode-create-request",
+        operation: "encode-namespace-deployment",
         kind: ScenarioKind::ActorsTypescriptConsumer,
         mode: ScenarioMode::ExecuteLocal,
         features: &[],

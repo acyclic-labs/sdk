@@ -31,13 +31,35 @@ host-supplied admittedIdentity, and a separate runtime-owned `actor` namespace.
 Construct Rust contexts through `GuestContext::builder`. Host metadata
 uses `AdmittedCaller::new`, `CallerCapability::new` and `RuntimeHandle::new` for
 validated construction without serde. These check representation, not authority.
-The identity projection contains accountId, orgId, principal, credentialId, actorId, expiry and an optional
+The identity projection contains accountId, namespace, orgId, principal, credentialId, actorId, expiry and an optional
 versioned opaque capability handle for S1 forwarding/attenuation. It is neither
 a bearer token nor a second auth chain. The host authenticates it; public request
 headers cannot install it. It is null for Stream, timer, restore and checkpoint.
 The runtime namespace reserves actor id/class and optional versioned handles for
 sockets, auto-response, alarms (setAlarm/schedule), SQL over the fs volume, and
 waitUntil. Their implementations belong to their feature/runtime owners, not env.
+
+Namespace deployments own code, configuration, bindings and jurisdiction. Actors
+have the plain `(account, namespace, id)` address and activate on invocation;
+`namespace.get(id)` is local. Missing legacy namespace metadata resolves to
+`__default`, without rewriting an existing actor ID. New deployments cannot claim
+that reserved namespace. Serializable actor references contain addresses only.
+
+Hosts dispatch through Rust `GuestActivation` or TypeScript
+`DurableObjectActivation`. Restore/initialization completes once before any
+delivery. `blockConcurrencyWhile` gates new deliveries; initialization failure or
+cancellation fences the heap. Rust checkpoint capture waits for all active
+handlers, while ordinary handlers can interleave across awaits. Each delivery
+receives its own admitted caller and retry metadata, checked against the complete
+activation address.
+
+`ScopedDurableObjectState` (Rust) and `DurableObjectState` (TypeScript) pass that
+address to the host for the sole alarm, storage deletion and hibernating sockets.
+Alarm handlers receive validated retry metadata. Socket APIs cover tags,
+attachments, auto-response and message/close/error delivery. The Cloud host owns
+alarm persistence, activation fencing and the socket engine; these adapters do
+not implement them. See [the parity contract](actors-workers-parity.md) for the
+exact SDK/Cloud boundary.
 
 Restore produces logical state. The host wraps it in `GuestState`; event, fetch
 and checkpoint receive shared handles. `state.with` permits only a synchronous

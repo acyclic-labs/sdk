@@ -22,6 +22,7 @@
   "arena/packages/jev/train/README.md",
   "conformance/runner-protocol/README.md",
   "docs/actors-guest.md",
+  "docs/actors-workers-parity.md",
   "docs/ci-releases.md",
   "docs/instruction-skill-composition.md",
   "docs/mcp-composition.md",

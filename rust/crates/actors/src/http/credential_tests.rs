@@ -5,6 +5,52 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+#[tokio::test]
+async fn deployment_kind_mismatch_is_rejected_before_credentials_or_io()
+-> Result<(), Box<dyn std::error::Error>> {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = calls.clone();
+    let client = Client::with_credential_provider(
+        "https://fixture.invalid",
+        CredentialProvider::new(move || {
+            seen.fetch_add(1, Ordering::Relaxed);
+            std::future::ready(Err(acyclic_auth::credential::CredentialError::Invalid))
+        }),
+        1024,
+    )?;
+    let worker = wire::DeploymentRequest {
+        name: "worker".into(),
+        code_sha256: vec![1; 32],
+        idempotency_key: "deployment".into(),
+        worker_limits: Some(wire::WorkerLimits {
+            cpu_millis: 1,
+            memory_bytes: 1,
+            timeout_millis: 1,
+        }),
+        ..Default::default()
+    };
+    // Negative control: generic envelope admission accepts this valid Worker.
+    crate::domain::DeploymentRequest::try_from(worker.clone())?;
+    assert!(matches!(client.deploy_namespace(&worker).await, Err(Error::InvalidArgument)));
+    let namespace = wire::DeploymentRequest {
+        worker_limits: None,
+        limits: Some(wire::ActorLimits {
+            handler_timeout_millis: 1,
+            memory_bytes: 1,
+            checkpoint_bytes: 1,
+        }),
+        ..worker.clone()
+    };
+    crate::domain::DeploymentRequest::try_from(namespace.clone())?;
+    assert!(matches!(client.deploy_worker(&namespace).await, Err(Error::InvalidArgument)));
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+    // Correct operation alternatives proceed as far as credential admission.
+    assert!(matches!(client.deploy_worker(&worker).await, Err(Error::Credential(_))));
+    assert!(matches!(client.deploy_namespace(&namespace).await, Err(Error::Credential(_))));
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+    Ok(())
+}
+
 #[test]
 fn credential_callbacks_preserve_current_headers_and_fail_before_transport() {
     let runtime = tokio::runtime::Builder::new_current_thread()

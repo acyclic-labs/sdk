@@ -58,7 +58,8 @@ proptest! {
     fn actor_triples_are_injective_and_disjoint(
         account in prop::collection::vec(any::<u8>(), 1..256),
         namespace in "[A-Za-z0-9_.-]{1,128}", id in "[A-Za-z0-9_.-]{1,128}",
-        other in "[A-Za-z0-9_.-]{1,128}"
+        other_account in prop::collection::vec(any::<u8>(), 1..256),
+        other_namespace in "[A-Za-z0-9_.-]{1,128}", other_id in "[A-Za-z0-9_.-]{1,128}"
     ) {
         let value = ActorReference::new(&account, namespace.as_bytes(), id.as_bytes())?;
         let bytes = value.encode();
@@ -66,9 +67,8 @@ proptest! {
         prop_assert!(ResourceIdentity::decode(&bytes).is_err());
         let pair = ResourceIdentity::new(&account, id.as_bytes())?.encode();
         prop_assert!(ActorReference::decode(&pair).is_err());
-        let other = format!("{}{}", other.get(..127).unwrap_or(&other), if namespace == other { "a" } else { "b" });
-        if namespace != other {
-            let changed = ActorReference::new(&account, other.as_bytes(), id.as_bytes())?;
+        let changed = ActorReference::new(&other_account, other_namespace.as_bytes(), other_id.as_bytes())?;
+        if value != changed {
             prop_assert_ne!(value.encode(), changed.encode());
         }
     }

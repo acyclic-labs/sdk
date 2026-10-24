@@ -16,7 +16,7 @@ test('operational names cannot hide under product documentation', () => {
 
 test('product documentation, production receipts and parser fixture bytes remain supported', () => {
   for (const path of [
-    'README.md', 'docs/ci-releases.md', 'docs/resource-identity.md',
+    'README.md', 'docs/ci-releases.md', 'docs/resource-identity.md', 'docs/actors-workers-parity.md',
     'rust/crates/harness/docs/client/QUALIFICATION.md',
     'typescript/packages/harness/docs/client-views.md', '.github/pull_request_template.md',
     'rust/crates/conformance/schemas/qualification-receipt.schema.json',

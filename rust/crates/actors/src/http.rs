@@ -166,9 +166,8 @@ macro_rules! operations {
     ($(($method:ident, $index:literal, $input:ident, $output:ident)),+ $(,)?) => {
         $(/// Executes the canonical HTTP operation.
         pub async fn $method(&self, request: &wire::$input) -> Result<wire::$output, Error> {
-            let route = HTTP_ROUTES.get($index).ok_or(Error::InvalidArgument)?.1;
+            let (method, route) = *HTTP_ROUTES.get($index).ok_or(Error::InvalidArgument)?;
             crate::domain::$input::try_from(request.clone()).map_err(|_| Error::InvalidArgument)?;
-            let method = if stringify!($method) == "deploy_worker" { "DeployWorker" } else { "" };
             crate::client::validate_operation(method, request).map_err(|_| Error::InvalidArgument)?;
             self.call(
                 route,

@@ -657,10 +657,14 @@ mod credential_tests;
 
 /// Apply operation-specific constraints on shared deployment envelopes before I/O.
 pub(crate) fn validate_operation(request_name: &str, request: &impl Message) -> Result<(), Error> {
-    if matches!(request_name, "DeployWorker" | "DeployNamespace") {
+    // RPC descriptors use UpperCamelCase; HTTP_ROUTES exposes lowerCamelCase.
+    // Both dispatchers select their operation before reaching this shared check.
+    if request_name.eq_ignore_ascii_case("DeployWorker")
+        || request_name.eq_ignore_ascii_case("DeployNamespace")
+    {
         let deployment = wire::DeploymentRequest::decode(request.encode_to_vec().as_slice())
             .map_err(|e| Error::Configuration(e.to_string()))?;
-        if request_name == "DeployNamespace" {
+        if request_name.eq_ignore_ascii_case("DeployNamespace") {
             if deployment.limits.is_none() || deployment.worker_limits.is_some() {
                 return Err(Error::Configuration(
                     "namespace deploy requires actor limits".into(),
