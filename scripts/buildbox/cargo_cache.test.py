@@ -338,6 +338,14 @@ class CargoStorageAdmission(unittest.TestCase):
         self.rejected(['check'], {**self.env, 'BB_JOB_HOME': ''}, 'current job custody')
         self.launched(['check', '--target-dir', str(self.job / 'target/nested')])
         self.launched(['check', '--target-dir', str(self.job / 'target/../other-target')])
+        with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp', prefix='job-nested-control-') as temporary:
+            nested = Path(temporary) / 'jobs' / 'job-owned'
+            nested.mkdir(parents=True)
+            env = {**self.env, 'BB_JOB_HOME': str(nested / 'home'),
+                   'CARGO_TARGET_DIR': str(nested / 'target')}
+            self.launched(['check'], env)
+            self.rejected(['check', '--target-dir', str(self.job / 'target')], env,
+                          message='outside the current job')
 
     def test_every_compilation_entry_and_runtime_arguments_pass_admission(self):
         for verb in ('build', 'check', 'clippy', 'test', 'bench', 'run', 'doc', 'rustc',

@@ -44,8 +44,12 @@ def require_job_target(path, env):
     home = Path(env.get('BB_JOB_HOME', '')).absolute()
     job = home.parent
     if (not env.get('BB_JOB_HOME') or home.name != 'home'
-            or job.parent != Path('/mnt/bb/jobs') or job.is_symlink()):
+            or not job.is_dir() or job.is_symlink()):
         raise RuntimeError('Cargo target requires current job custody')
+    # The launcher owns its job directory. Nested launchers and their controls
+    # can choose another data-disk parent; containment, not its spelling, owns
+    # the target. The filesystem requirement applies to that job as well.
+    require_data_path(job)
     if path.is_relative_to(job.resolve()):
         return reading
     file = env.get('BUILD_SLOT_RECEIPT_META')
