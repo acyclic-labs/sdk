@@ -44,6 +44,7 @@ mod tests;
 #[cfg(test)]
 mod wire_layout;
 pub(in crate::core) use crate::fork::copy_seed;
+pub(crate) use authority::VerifiedScope;
 pub(crate) use copying::{
     copy, copy_authority, copy_boxed, copy_copy_vector, copy_event, copy_provider, copy_resource,
     copy_text, copy_vector, reserve_copy_vector,

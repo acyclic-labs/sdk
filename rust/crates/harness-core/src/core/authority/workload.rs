@@ -35,7 +35,7 @@ impl Claims {
         }
     }
 }
-fn unauthorized(error: impl std::fmt::Display) -> Error {
+pub(super) fn unauthorized(error: impl std::fmt::Display) -> Error {
     Error::Unauthorized(format!("workload capability rejected: {error}"))
 }
 pub(super) fn now() -> u64 {

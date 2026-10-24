@@ -1,7 +1,9 @@
 //! Aggregate identity and host-issued authorization.
 use super::*;
 mod runtime_signing;
+mod verified_scope;
 mod workload;
+pub(crate) use verified_scope::VerifiedScope;
 /// Kind of independently ordered durable aggregate.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

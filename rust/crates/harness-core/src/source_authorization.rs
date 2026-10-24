@@ -251,7 +251,7 @@ impl ProjectSourceAuthorization {
     }
 
     #[cfg(feature = "filesystem")]
-    pub(crate) fn verify_scope(
+    pub(crate) fn verify_scope_binding(
         &self,
         verifier: &AuthorityVerifier,
         work: &mut Option<&mut dyn HistoryIo>,
@@ -265,7 +265,7 @@ impl ProjectSourceAuthorization {
             && capabilities.next() == Some(label.as_str())
             && capabilities.next().is_none()
         {
-            verifier.verify(&self.policy_scope, work)
+            Ok(())
         } else {
             Err(guarded_boundary(
                 work,

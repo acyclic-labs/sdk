@@ -5,9 +5,11 @@ use prost::Message;
 use std::collections::HashSet;
 use zeroize::Zeroizing;
 
+mod current;
 mod effective;
 mod signer;
 mod wire;
+pub use current::{TrustEvidence, TrustEvidenceStorage};
 pub use effective::{Effective, ScopedFilter, ScopedPin};
 pub use signer::CertifiedSigner;
 
@@ -288,62 +290,7 @@ impl VerifiedCapability {
         trust: &(impl Trust + ?Sized),
         now_unix_seconds: u64,
     ) -> Result<(), VerifyError> {
-        if now_unix_seconds < self.not_before || now_unix_seconds >= self.expires_at {
-            return Err(VerifyError::Time);
-        }
-        let certificates = self.blocks[0]
-            .certificates
-            .as_ref()
-            .ok_or(VerifyError::Malformed)?;
-        let id = &certificates.birth.birth.account_id;
-        let environments = trust.environment_keys(&certificates.birth.birth.environment)?;
-        if !environments.contains(&self.environment_issuer) {
-            return Err(VerifyError::Trust);
-        }
-        let account = trust.account(id)?;
-        if self.blocks.iter().any(|block| {
-            environments
-                .iter()
-                .chain(account.issuer_keys)
-                .any(|key| block.next_public_key.as_slice() == key)
-        }) {
-            return Err(VerifyError::RepeatedKey);
-        }
-        if !self
-            .issuers
-            .iter()
-            .all(|issuer| account.issuer_keys.contains(issuer))
-        {
-            return Err(VerifyError::Trust);
-        }
-        for cert in &certificates.keys {
-            if cert.key.key_epoch < account.minimum_key_epoch
-                || trust.revoked(
-                    id,
-                    RevocationCheck::Key {
-                        id: &cert.key.key_id,
-                        epoch: cert.key.key_epoch,
-                    },
-                )?
-            {
-                return Err(VerifyError::Revoked);
-            }
-            for parent in &cert.key.parent_revocation_ids {
-                let parent = parent
-                    .as_slice()
-                    .try_into()
-                    .map_err(|_| VerifyError::Malformed)?;
-                if trust.revoked(id, RevocationCheck::Block(parent))? {
-                    return Err(VerifyError::Revoked);
-                }
-            }
-        }
-        for block in &self.ids {
-            if trust.revoked(id, RevocationCheck::Block(block))? {
-                return Err(VerifyError::Revoked);
-            }
-        }
-        Ok(())
+        current::check(self, trust, now_unix_seconds)
     }
 
     /// Authorize against fresh revocations/time and the owner's policy result.

@@ -413,7 +413,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        record.verify_scope(&self.verifier, quota.work())?;
+        record.verify_scope_binding(&self.verifier, quota.work())?;
+        self.verifier.verify(&record.policy_scope, quota.work())?;
         if &record.owner != self.verifier.audience() || record.caller_task != parent {
             return Err(crate::store::guarded_boundary(
                 quota.work(),

@@ -99,7 +99,7 @@ impl<T> MountTable<T> {
             .ok_or_else(|| Error::NotFound("volume is not mounted in this task view".into()))
     }
 
-    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+    /// Mutable mounts in canonical path order, independent of the source backend.
     #[doc(hidden)]
     pub fn mounts_mut(&mut self) -> impl Iterator<Item = (&str, &mut Mount<T>)> {
         self.entries
