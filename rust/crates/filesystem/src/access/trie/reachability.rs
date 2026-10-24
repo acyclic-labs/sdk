@@ -37,7 +37,10 @@ impl PathTrie {
         else {
             return actions;
         };
-        let Some(initial) = seen.get_mut(start) else {
+        let Some(initial) = self
+            .state_index(start)
+            .and_then(|index| seen.get_mut(index))
+        else {
             return 0;
         };
         *initial = true;
@@ -47,7 +50,8 @@ impl PathTrie {
                 let Ok(next) = self.step(state, ch) else {
                     continue;
                 };
-                let Some(visited) = seen.get_mut(next) else {
+                let Some(visited) = self.state_index(next).and_then(|index| seen.get_mut(index))
+                else {
                     return 0;
                 };
                 if !*visited {

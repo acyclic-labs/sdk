@@ -2,8 +2,8 @@ use super::*;
 use crate::sync::atomic::{AtomicBool, Ordering};
 use acyclic_stream::{
     AppendOutcome, AppendRequest, ChildStream, ChildrenRequest, CommitId, CommittedEnvelope,
-    ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation, MemoryStream, ReadRequest,
-    RecordStream, StreamBounds, StreamError, StreamProvider,
+    FollowFilter, ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation, MemoryStream,
+    ReadRequest, RecordStream, StreamBounds, StreamError, StreamProvider,
 };
 use std::cell::Cell;
 use std::future::Future;
@@ -133,7 +133,12 @@ impl StreamProvider for ModelStream {
     async fn fork(&self, _: ForkRequest) -> Result<ForkReceipt, StreamError> {
         Err(StreamError::Unsupported)
     }
-    async fn follow(&self, _: StreamPath, _: u64) -> Result<RecordStream, StreamError> {
+    async fn follow(
+        &self,
+        _: StreamPath,
+        _: u64,
+        _: FollowFilter,
+    ) -> Result<RecordStream, StreamError> {
         Err(StreamError::Unsupported)
     }
     async fn children(&self, _: ChildrenRequest) -> Result<ChildStream, StreamError> {
@@ -177,7 +182,7 @@ fn durable(sequence: u64, previous_digest: Digest, body: &'static [u8]) -> Durab
 
 fn request(
     suffix: &str,
-    records: Vec<acyclic_stream::OwnedBytes>,
+    records: Vec<acyclic_stream::AppendRecord>,
     key: u8,
     tail: Option<u64>,
 ) -> CommitRequest {
@@ -251,7 +256,7 @@ fn check(change: Change, broken: bool, cut: Option<usize>, calls: Arc<CallCount>
         )),
         Change::Retire => Some(request(
             "/retirement",
-            vec![acyclic_stream::OwnedBytes::from_static(AUTHORITY_RETIRED)],
+            vec![acyclic_stream::AppendRecord::from(AUTHORITY_RETIRED)],
             3,
             None,
         )),

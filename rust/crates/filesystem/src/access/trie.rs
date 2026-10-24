@@ -546,7 +546,7 @@ impl PathTrie {
     /// This uses the compiled decisions, including capability intersections.
     #[must_use]
     pub fn allows_every_path(&self, actions: &[Action], now: u64) -> bool {
-        (0..self.state_count()).all(|state| {
+        self.state_ids().all(|state| {
             actions
                 .iter()
                 .all(|action| self.decision(state, *action, now).allowed)
@@ -585,7 +585,8 @@ impl PathTrie {
         };
         match (suffix(source), suffix(destination)) {
             (Ok(from), Ok(to)) if from == to => true,
-            _ => (0..self.state_count())
+            _ => self
+                .state_ids()
                 .all(|state| self.action_mask(state, now) == source.action_mask(now)),
         }
     }
@@ -690,11 +691,36 @@ impl PathTrie {
     }
 
     fn state_count(&self) -> usize {
+        if let Some(states) = self
+            .shared
+            .as_ref()
+            .and_then(|binding| binding.reachable.as_ref())
+        {
+            return states.len();
+        }
         self.states.len()
             * self
                 .shared
                 .as_ref()
                 .map_or(1, |binding| binding.policy.states.len())
+    }
+
+    fn state_ids(&self) -> impl Iterator<Item = usize> + '_ {
+        let reachable = self
+            .shared
+            .as_ref()
+            .and_then(|binding| binding.reachable.as_ref());
+        (0..self.state_count()).map(move |index| reachable.map_or(index, |states| states[index]))
+    }
+
+    fn state_index(&self, state: usize) -> Option<usize> {
+        self.shared
+            .as_ref()
+            .and_then(|binding| binding.reachable.as_ref())
+            .map_or_else(
+                || (state < self.state_count()).then_some(state),
+                |states| states.binary_search(&state).ok(),
+            )
     }
 
     fn action_mask(&self, state: usize, now: u64) -> u16 {
@@ -1006,6 +1032,7 @@ struct CompiledStates {
     valid_until: Option<u64>,
 }
 
+#[derive(Clone, Copy)]
 struct Compilation<'a> {
     policy: &'a Policy,
     principal: &'a Principal,
