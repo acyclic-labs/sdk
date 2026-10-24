@@ -117,6 +117,14 @@ impl<'a> RuntimeAdmission<'a> {
     }
 }
 
+/// Authenticated immutable receipt and workload belonging to one exact record.
+/// Authorization still checks current trust, time and the product's bindings.
+pub struct AuthenticatedAdmission<'a> {
+    record: &'a AdmittedCapability,
+    receipt: VerifiedCapability,
+    workload: VerifiedCapability,
+}
+
 impl AdmittedCapability {
     /// Verifies one historical payload under current public trust and revocations.
     /// The runtime receipt authenticates the old clock value; fresh admissions
@@ -128,8 +136,20 @@ impl AdmittedCapability {
         request: &Request<'_>,
         payload: [u8; 32],
     ) -> Result<VerifiedCapability, VerifyError> {
+        self.authenticate_history(trust, request.now_unix_seconds)?
+            .authorize_history(trust, request, payload)
+    }
+
+    /// Authenticates both sealed chains once, borrowing the immutable record.
+    /// The product may derive scope facts from the workload before consuming
+    /// this value to authorize the historical payload under fresh public trust.
+    pub fn authenticate_history(
+        &self,
+        trust: &dyn Trust,
+        now_unix_seconds: u64,
+    ) -> Result<AuthenticatedAdmission<'_>, VerifyError> {
         let admitted = self.admitted_at_unix_seconds;
-        if admitted > request.now_unix_seconds {
+        if admitted > now_unix_seconds {
             return Err(VerifyError::Time);
         }
         let receipt = verify::verify(&self.receipt, trust, admitted)?;
@@ -138,19 +158,46 @@ impl AdmittedCapability {
         if !receipt.is_sealed() || receipt.block_ids().len() != 1 {
             return Err(VerifyError::Signature);
         }
-        let name = receipt_resource(&self.workload);
+        let workload = verify::verify(&self.workload, trust, admitted)?;
+        if !workload.is_sealed() || receipt.account_id()? != workload.account_id()? {
+            return Err(VerifyError::Signature);
+        }
+        Ok(AuthenticatedAdmission {
+            record: self,
+            receipt,
+            workload,
+        })
+    }
+}
+
+impl AuthenticatedAdmission<'_> {
+    /// The exact authenticated workload, available for immutable scope facts.
+    #[must_use]
+    pub const fn workload(&self) -> &VerifiedCapability {
+        &self.workload
+    }
+
+    /// Consumes the authentication and checks both chains against current
+    /// public trust and the exact historical payload, audience and action.
+    pub fn authorize_history(
+        self,
+        trust: &dyn Trust,
+        request: &Request<'_>,
+        payload: [u8; 32],
+    ) -> Result<VerifiedCapability, VerifyError> {
+        let admitted = self.record.admitted_at_unix_seconds;
+        if admitted > request.now_unix_seconds {
+            return Err(VerifyError::Time);
+        }
+        let name = receipt_resource(&self.record.workload);
         let receipt_facts = receipt_facts(request, payload, admitted)?;
-        receipt.authorize(
+        self.receipt.authorize(
             trust,
             &receipt_request(request, &name, &receipt_facts, admitted),
             PolicyDecision::Allow,
         )?;
-        let token = verify::verify(&self.workload, trust, admitted)?;
-        if !token.is_sealed() || receipt.account_id()? != token.account_id()? {
-            return Err(VerifyError::Signature);
-        }
         let attributes = facts(request, payload, admitted)?;
-        token.authorize(
+        self.workload.authorize(
             trust,
             &Request {
                 now_unix_seconds: admitted,
@@ -159,7 +206,7 @@ impl AdmittedCapability {
             },
             PolicyDecision::Allow,
         )?;
-        Ok(token)
+        Ok(self.workload)
     }
 }
 

@@ -813,6 +813,14 @@ impl AuthorityVerifier {
         event: &Event,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
+        self.verify_event_capability(event, work).map(|_| ())
+    }
+
+    fn verify_event_capability(
+        &self,
+        event: &Event,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<acyclic_auth::verify::VerifiedCapability> {
         if event.scope.issuer != self.id {
             return Err(Error::Unauthorized(
                 "event admission attestation is invalid".into(),
@@ -838,7 +846,7 @@ impl AuthorityVerifier {
         &self,
         event: &Event,
         work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<()> {
+    ) -> Result<acyclic_auth::verify::VerifiedCapability> {
         let digest = self.event_digest(event, work)?;
         workload::verify_record(
             self,
@@ -1035,6 +1043,7 @@ impl AuthorityVerifier {
             &["effect:run", &provider],
             work,
         )
+        .map(|_| ())
     }
 }
 

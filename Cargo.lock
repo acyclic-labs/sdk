@@ -87,6 +87,7 @@ dependencies = [
 name = "acyclic-auth"
 version = "0.2.0"
 dependencies = [
+ "acyclic-differential",
  "acyclic-contract-derive",
  "acyclic-proto-build",
  "acyclic-test-support",

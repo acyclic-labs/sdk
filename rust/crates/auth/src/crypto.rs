@@ -52,12 +52,18 @@ pub(crate) fn public_key(bytes: &[u8]) -> Result<VerifyingKey, VerifyError> {
     Ok(key)
 }
 
+/// One actual strict signature verification, observable across test crates.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SignatureVerification;
 pub(crate) fn verify_signature(
     key: &VerifyingKey,
     message: &[u8],
     signature: &[u8],
 ) -> Result<(), VerifyError> {
     let signature = Signature::from_slice(signature).map_err(|_| VerifyError::Signature)?;
+    #[cfg(any(test, feature = "test-support"))]
+    acyclic_differential::record(SignatureVerification);
     key.verify_strict(message, &signature)
         .map_err(|_| VerifyError::Signature)
 }

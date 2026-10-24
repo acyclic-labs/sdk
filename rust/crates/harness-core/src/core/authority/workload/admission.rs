@@ -54,7 +54,7 @@ pub(in crate::core::authority) fn verify_record(
     expected: Option<&RecordedScope>,
     required: &[&str],
     work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<()> {
+) -> Result<VerifiedCapability> {
     if let Some(io) = work.as_deref() {
         io.check_cancellation()?;
     }
@@ -64,16 +64,14 @@ pub(in crate::core::authority) fn verify_record(
     }
     let admitted: AdmittedCapability = envelope.try_into().map_err(unauthorized)?;
     let trust = verifier.public.trust.read().map_err(unauthorized)?;
-    let capability = verify::verify(
-        &admitted.workload,
-        &*trust,
-        admitted.admitted_at_unix_seconds,
-    )
-    .map_err(unauthorized)?;
+    let authenticated = admitted
+        .authenticate_history(&*trust, now())
+        .map_err(unauthorized)?;
+    let capability = authenticated.workload();
     if capability.account_id().map_err(unauthorized)? != verifier.id {
         return Err(unauthorized("foreign admission account"));
     }
-    let (attributes, last) = scope_facts(&capability, true)?;
+    let (attributes, last) = scope_facts(capability, true)?;
     if last.issuer != verifier.id
         || expected.is_some_and(|scope| {
             last.id != scope.id
@@ -90,8 +88,8 @@ pub(in crate::core::authority) fn verify_record(
         ));
     }
     let name = resource(&verifier.audience)?;
-    admitted
-        .verify_history(
+    authenticated
+        .authorize_history(
             &*trust,
             &Request {
                 target: Target::Resource {
@@ -109,8 +107,7 @@ pub(in crate::core::authority) fn verify_record(
             },
             payload,
         )
-        .map_err(unauthorized)?;
-    Ok(())
+        .map_err(unauthorized)
 }
 
 pub(in crate::core::authority) fn live_record(
@@ -118,16 +115,11 @@ pub(in crate::core::authority) fn live_record(
     event: &Event,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<VerifiedCapability> {
-    verifier.verify_event(event, work)?;
-    let envelope =
-        AdmittedCapabilityProto::decode(event.attestation.as_slice()).map_err(unauthorized)?;
-    let admitted: AdmittedCapability = envelope.try_into().map_err(unauthorized)?;
-    verify::verify(
-        &admitted.workload,
-        &*verifier.public.trust.read().map_err(unauthorized)?,
-        now(),
-    )
-    .map_err(unauthorized)
+    let capability = verifier.verify_event_capability(event, work)?;
+    capability
+        .check(&*verifier.public.trust.read().map_err(unauthorized)?, now())
+        .map_err(unauthorized)?;
+    Ok(capability)
 }
 
 fn scope_facts(

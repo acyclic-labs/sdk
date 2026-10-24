@@ -124,6 +124,7 @@ which = { version = "8.0.6", optional = true }
 tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util"] }
 
 [dev-dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
 acyclic-test-support = { path = "../test-support" }
 # Hooks record under cfg(test) too, so lib tests observe them without test-support.
 acyclic-differential = { version = "=0.2.0", path = "../differential" }

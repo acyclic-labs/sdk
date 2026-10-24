@@ -168,3 +168,107 @@ fn an_offline_deadline_cannot_be_widened_by_a_later_child() -> Result<()> {
     );
     Ok(())
 }
+
+fn expired_historical_event(issuer: &AuthorityIssuer) -> Result<Event> {
+    let admitted_at = 100;
+    let name = resource(&issuer.audience)?;
+    let trust = issuer.public_workload_trust()?;
+    let signer = signer(
+        &issuer.id,
+        &issuer.runtime.workload,
+        admitted_at,
+        &name,
+        None,
+    )?;
+    let mut scope = Scope {
+        id: "expired-history".into(),
+        capabilities: Capabilities::new(["event:append"]),
+        agent: None,
+        issuer: issuer.id.clone(),
+        parent_proof: None,
+        proof: Box::new([0; 32]),
+        workload: vec![],
+    };
+    let capability = signer
+        .mint(
+            vec![
+                claims(&scope, 0)?,
+                Caveat {
+                    kind: CaveatKind::Grants(grant(&name)),
+                },
+                Caveat {
+                    kind: CaveatKind::Audience(ResourcePattern {
+                        name: name.clone(),
+                        prefix: false,
+                    }),
+                },
+            ],
+            SigningKey::from_bytes(&[101; 32]),
+            &trust,
+            admitted_at,
+        )
+        .map_err(unauthorized)?;
+    retain(&mut scope, &capability, &mut None)?;
+    let attributes = RecordAttributes::try_new(vec![Attribute {
+        name: format!("{CLAIM}0"),
+        value: serde_json::to_vec(&Claims::from_scope(&scope)).map_err(unauthorized)?,
+    }])
+    .map_err(unauthorized)?;
+    let mut event = Event {
+        revision: 1,
+        operation_id: OperationId::from_bytes([102; 16]),
+        intent_digest: [103; 32],
+        scope: RecordedScope::from_wire(
+            scope.id.clone(),
+            scope.capabilities.clone(),
+            scope.issuer.clone(),
+            scope.agent,
+        ),
+        attestation: vec![],
+        causal_parent: None,
+        payload: EventPayload::LifecycleTransitioned {
+            from: LifecycleState::Pending,
+            to: LifecycleState::Active,
+            reason: None,
+        },
+    };
+    let verifier = issuer.verifier(&mut None)?;
+    let payload = verifier.event_digest(&event, &mut None)?;
+    let admitted = acyclic_auth::admission::RuntimeAdmission::new(&signer, &trust, admitted_at)
+        .record(
+            &capability,
+            &Request {
+                target: Target::Resource {
+                    action: ACTION,
+                    resource: &name,
+                },
+                audience: &name,
+                holder: Some(&issuer.id),
+                now_unix_seconds: admitted_at,
+                keys: &[],
+                attributes: &attributes,
+                usage: &usage(),
+                cpu_millis: 0,
+                memory_bytes: 0,
+            },
+            payload,
+            &[104; 32],
+        )
+        .map_err(unauthorized)?;
+    event.attestation = AdmittedCapabilityProto::from(admitted).encode_to_vec();
+    Ok(event)
+}
+
+#[test]
+fn expired_history_remains_verifiable_but_cannot_become_live_authority() -> Result<()> {
+    let issuer = fixture();
+    let event = expired_historical_event(&issuer)?;
+    let verifier = issuer.verifier(&mut None)?;
+    assert!(now() >= 100 + CERTIFICATE_SECONDS);
+    verifier.verify_event(&event, &mut None)?;
+    assert!(
+        live_record(&verifier, &event, &mut None).is_err(),
+        "historical receipt resurrected expired live workload authority",
+    );
+    Ok(())
+}
