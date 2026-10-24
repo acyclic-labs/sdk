@@ -38,38 +38,36 @@ impl<A, O> FilesystemHost<A, O> {
                 "Filesystem adapter requires the filesystem provider family",
             ));
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let provider = match io {
-            Some(io) => provider.clone_with_io(io)?,
-            None => provider.clone(),
-        };
-        if let Some(io) = io {
-            io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-            io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        let _native_custody = io
-            .filter(|io| io.original_native_work().is_some())
-            .map(|io| io.take_native_custody(io.owned_since(before)?))
-            .transpose()?;
-        Ok(Arc::new(Self {
-            filesystem,
-            provider,
-            workspace_binding: None,
-            #[cfg(test)]
-            publication_pause: None,
-            #[cfg(all(
-                feature = "filesystem-local",
-                feature = "native-execution",
-                not(target_arch = "wasm32")
-            ))]
-            native_skills: Arc::new(crate::sync::SyncMutex::new(std::collections::HashMap::new())),
-            #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-            project_family: None,
-            #[cfg(not(target_arch = "wasm32"))]
-            _native_custody,
-        }))
+        crate::executor::with_history_io(io, |work| {
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let provider = crate::core::copy_provider(provider, &mut quota)?;
+            if quota.work().is_some() {
+                quota.retain(std::mem::size_of::<Self>() as u64)?;
+                quota
+                    .observer()?
+                    .allocation_attempt(std::mem::size_of::<Self>() as u64)?;
+            }
+            let _native_custody = quota.into_custody()?;
+            Ok(Arc::new(Self {
+                filesystem,
+                provider,
+                workspace_binding: None,
+                #[cfg(test)]
+                publication_pause: None,
+                #[cfg(all(
+                    feature = "filesystem-local",
+                    feature = "native-execution",
+                    not(target_arch = "wasm32")
+                ))]
+                native_skills: Arc::new(crate::sync::SyncMutex::new(
+                    std::collections::HashMap::new(),
+                )),
+                #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+                project_family: None,
+                #[cfg(not(target_arch = "wasm32"))]
+                _native_custody,
+            }))
+        })
     }
 }
 

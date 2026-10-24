@@ -224,6 +224,21 @@ impl<'a, 'b> Quota<'a, 'b> {
     pub(crate) fn transfer(&mut self) {
         self.bytes = 0;
     }
+    /// Move this construction's exact storage into its native output owner.
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn into_custody(mut self) -> Result<NativeCustody> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let custody = match self.work.as_deref_mut() {
+            Some(io) if io.original_native_work().is_some() => {
+                Some(io.take_native_custody(self.bytes)?)
+            }
+            _ => None,
+        };
+        #[cfg(target_arch = "wasm32")]
+        let custody = None;
+        self.transfer();
+        Ok(custody)
+    }
     pub(crate) fn json_error(&mut self, error: Error) -> Error {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut error = error;

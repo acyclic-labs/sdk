@@ -48,44 +48,48 @@ impl<A, O> FilesystemContentVerifier<A, O> {
                 "content admission limit must be positive",
             ));
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let (verifier, scope) = crate::executor::with_history_io(io, |work| -> Result<_> {
+        crate::executor::with_history_io(io, |work| -> Result<_> {
             verifier.verify(scope, work)?;
-            Ok((verifier.copy(work)?, scope.copy(work)?))
-        })?;
-        if let Some(io) = io {
-            io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-            io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
-            let authority_bytes = (std::mem::size_of::<AuthorityVerifier>()
-                + std::mem::size_of::<Scope>()
-                + 4 * std::mem::size_of::<usize>()) as u64;
-            io.retain_owned(authority_bytes)?;
-            io.allocation_attempt(1)?;
-            io.allocation_attempt(1)?;
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        let _native_metadata = match io.filter(|io| io.original_native_work().is_some()) {
-            Some(io) => {
-                io.retain_owned(
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let verifier = verifier.copy_in_quota(&mut quota)?;
+            let scope = scope.copy_in_quota(&mut quota)?;
+            if quota.work().is_some() {
+                quota.retain(std::mem::size_of::<Self>() as u64)?;
+                quota
+                    .observer()?
+                    .allocation_attempt(std::mem::size_of::<Self>() as u64)?;
+                let authority_bytes = (std::mem::size_of::<AuthorityVerifier>()
+                    + std::mem::size_of::<Scope>()
+                    + 4 * std::mem::size_of::<usize>())
+                    as u64;
+                quota.retain(authority_bytes)?;
+                quota.observer()?.allocation_attempt(1)?;
+                quota.observer()?.allocation_attempt(1)?;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if quota
+                .work()
+                .as_deref()
+                .is_some_and(|io| io.original_native_work().is_some())
+            {
+                quota.retain(
                     (std::mem::size_of::<acyclic_fs::NativeAllocation>()
                         + 2 * std::mem::size_of::<usize>()) as u64,
                 )?;
-                io.allocation_attempt(1)?;
-                Some(Arc::new(io.take_native_custody(io.owned_since(before)?)?))
+                quota.observer()?.allocation_attempt(1)?;
             }
-            None => None,
-        };
-        Ok(Arc::new(Self {
-            host,
-            verifier: Arc::new(verifier),
-            scope: Arc::new(scope),
-            creation: None,
-            exact_file: None,
-            maximum_bytes,
-            #[cfg(not(target_arch = "wasm32"))]
-            _native_metadata,
-        }))
+            let _native_metadata = quota.into_custody()?.map(Arc::new);
+            Ok(Arc::new(Self {
+                host,
+                verifier: Arc::new(verifier),
+                scope: Arc::new(scope),
+                creation: None,
+                exact_file: None,
+                maximum_bytes,
+                #[cfg(not(target_arch = "wasm32"))]
+                _native_metadata,
+            }))
+        })
     }
 }
 

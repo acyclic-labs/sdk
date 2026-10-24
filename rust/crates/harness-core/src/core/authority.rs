@@ -219,10 +219,11 @@ impl Scope {
 
     /// Copies the immutable grant under the caller's optional ledger.
     pub fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
-        CodecQuota::produce(work, |quota| {
-            copy(self, quota, |scope, _| scope.logical_owned_bytes())
-        })
-        .map(|(scope, _)| scope)
+        CodecQuota::produce(work, |quota| self.copy_in_quota(quota)).map(|(scope, _)| scope)
+    }
+
+    pub(crate) fn copy_in_quota(&self, quota: &mut CodecQuota<'_, '_>) -> Result<Self> {
+        copy(self, quota, |scope, _| scope.logical_owned_bytes())
     }
 
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
@@ -696,18 +697,19 @@ impl AuthorityVerifier {
 
     /// Copies the verifier using the caller's ledger.
     pub fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
-        if work.is_none() {
+        CodecQuota::produce(work, |quota| self.copy_in_quota(quota)).map(|(verifier, _)| verifier)
+    }
+
+    pub(crate) fn copy_in_quota(&self, quota: &mut CodecQuota<'_, '_>) -> Result<Self> {
+        if quota.work().is_none() {
             return Ok(self.clone());
         }
-        let mut quota = CodecQuota::new(work, 0)?;
-        let copied = Self {
-            id: copying::copy_text(&self.id, &mut quota)?,
+        Ok(Self {
+            id: copying::copy_text(&self.id, quota)?,
             public: self.public.clone(),
             admission: self.admission.clone(),
-            audience: copying::copy_authority(&self.audience, &mut quota)?,
-        };
-        quota.transfer();
-        Ok(copied)
+            audience: copying::copy_authority(&self.audience, quota)?,
+        })
     }
 
     /// Verifies issuer identity and the complete immutable grant.

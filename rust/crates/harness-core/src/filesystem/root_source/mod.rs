@@ -9,8 +9,6 @@ use crate::{
         ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider,
     },
 };
-#[cfg(not(target_arch = "wasm32"))]
-use acyclic_fs::WorkCounters;
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, LazySnapshotRef, WorkBudget};
 use std::sync::Arc;
 
@@ -36,35 +34,28 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         io: Option<&PreparationIo>,
     ) -> Result<Arc<Self>> {
         with_history_io(io, |work| host.provider.validate(work))?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let owner = with_history_io(io, |work| match work.as_deref_mut() {
-            Some(work) => work.clone_authority(owner),
-            None => Ok(owner.clone()),
-        })?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let _native_custody = match io.filter(|io| io.original_native_work().is_some()) {
-            Some(io) => {
-                io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-                let bytes = io
-                    .owned_bytes()?
-                    .checked_sub(before)
-                    .ok_or_else(|| io.invalid("root source custody underflows"))?;
-                let custody = io.take_native_custody(bytes)?;
-                custody.work().charge(WorkCounters {
-                    allocation_operations: 1,
-                    ..Default::default()
-                })?;
-                Some(custody)
-            }
-            None => None,
-        };
-        Ok(Arc::new(Self {
-            host,
-            owner,
-            graph_root,
+        with_history_io(io, |work| {
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let owner = crate::core::copy_authority(owner, &mut quota)?;
             #[cfg(not(target_arch = "wasm32"))]
-            _native_custody,
-        }))
+            if quota
+                .work()
+                .as_deref()
+                .is_some_and(|io| io.original_native_work().is_some())
+            {
+                quota.retain(std::mem::size_of::<Self>() as u64)?;
+                quota
+                    .observer()?
+                    .allocation_attempt(std::mem::size_of::<Self>() as u64)?;
+            }
+            let _native_custody = quota.into_custody()?;
+            Ok(Arc::new(Self {
+                host,
+                owner,
+                graph_root,
+                #[cfg(not(target_arch = "wasm32"))]
+                _native_custody,
+            }))
+        })
     }
 }

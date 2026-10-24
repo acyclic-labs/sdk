@@ -190,14 +190,19 @@ impl VolumeRef {
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
-        if work.is_none() {
+        crate::wire_codec::CodecQuota::produce(work, |quota| self.copy_in_quota(quota))
+            .map(|(volume, _)| volume)
+    }
+
+    pub(crate) fn copy_in_quota(
+        &self,
+        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    ) -> Result<Self> {
+        if quota.work().is_none() {
             return Ok(self.clone());
         }
-        self.validate(work)?;
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let volume = self.clone_in_quota(&mut quota)?;
-        quota.transfer();
-        Ok(volume)
+        self.validate(quota.work())?;
+        self.clone_in_quota(quota)
     }
 
     pub(crate) fn clone_in_quota(
@@ -339,19 +344,28 @@ impl ContentGrant {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
         boundary: impl FnOnce(&Scope, &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<Boundary>,
     ) -> Result<Self> {
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        crate::wire_codec::CodecQuota::produce(work, |quota| {
+            Self::build_in_quota(verifier, scope, quota, boundary)
+        })
+        .map(|(grant, _)| grant)
+    }
+
+    fn build_in_quota(
+        verifier: &AuthorityVerifier,
+        scope: &Scope,
+        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+        boundary: impl FnOnce(&Scope, &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<Boundary>,
+    ) -> Result<Self> {
         let authority = verifier.authenticate_scope(scope, quota.work())?;
         quota.adopt(authority.logical_owned_bytes()?)?;
-        let boundary = boundary(authority.scope(), &mut quota)?;
-        let grant = Self {
+        let boundary = boundary(authority.scope(), quota)?;
+        Ok(Self {
             authority,
             volume: boundary.volume,
             operation: boundary.operation,
             exact_file: boundary.exact_file,
             directory_prefix: boundary.directory_prefix,
-        };
-        quota.transfer();
-        Ok(grant)
+        })
     }
 
     /// Borrows the authenticated grant for the persisted-policy decision.
@@ -464,7 +478,21 @@ impl ContentGrant {
         maximum_bytes: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
-        Self::build(verifier, scope, work, |scope, quota| {
+        crate::wire_codec::CodecQuota::produce(work, |quota| {
+            Self::verify_in_quota(verifier, scope, volume, operation, maximum_bytes, quota)
+        })
+        .map(|(grant, _)| grant)
+    }
+
+    pub(crate) fn verify_in_quota(
+        verifier: &AuthorityVerifier,
+        scope: &Scope,
+        volume: &VolumeRef,
+        operation: VolumeOperation,
+        maximum_bytes: u64,
+        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    ) -> Result<Self> {
+        Self::build_in_quota(verifier, scope, quota, |scope, quota| {
             Self::check_volume(scope, volume, operation, maximum_bytes, quota.work())?;
             Ok(Boundary {
                 volume: volume.clone_in_quota(quota)?,

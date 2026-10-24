@@ -219,8 +219,6 @@ where
             maximum_bytes: maximum_payload_bytes,
             io,
         } = binding;
-        #[cfg(not(target_arch = "wasm32"))]
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         if workflow_id.is_empty()
             || workflow_id == "."
             || workflow_id == ".."
@@ -244,36 +242,30 @@ where
                 .unwrap_or(u64::MAX);
             ContentGrant::authorize_volume(verifier, scope, volume, operation, maximum, &mut work)?;
         }
-        let volume = volume.copy(&mut work)?;
-        let verifier = verifier.copy(&mut work)?;
-        let scope = scope.copy(&mut work)?;
-        let (path_hold, path) = {
-            let path = crate::executor::with_history_io(io, |work| {
-                crate::executor::preparation_format(
-                    format_args!("harness/v2/workflows/{workflow_id}"),
-                    work,
-                )
-            })?;
-            let path_hold = io
-                .map(|io| io.guard_owned(path.capacity() as u64))
-                .transpose()?;
-            (path_hold, path)
-        };
+        let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
+        let volume = volume.copy_in_quota(&mut quota)?;
+        let verifier = verifier.copy_in_quota(&mut quota)?;
+        let scope = scope.copy_in_quota(&mut quota)?;
+        let path = crate::executor::preparation_format(
+            format_args!("harness/v2/workflows/{workflow_id}"),
+            quota.work(),
+        )?;
+        quota.adopt(path.capacity() as u64)?;
         let (stream_hold, validated) = Self::observation_stream(&stream, &path, io)?;
         drop(validated);
         drop(stream_hold);
         #[cfg(not(target_arch = "wasm32"))]
-        let native_metadata = if let Some(io) = io.filter(|io| io.original_native_work().is_some())
+        if quota
+            .work()
+            .as_deref()
+            .is_some_and(|io| io.original_native_work().is_some())
         {
-            io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-            io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
-            Some(io.take_native_custody(io.owned_since(before)?)?)
-        } else {
-            None
-        };
-        if let Some(held) = path_hold {
-            held.into_retained()?;
+            quota.retain(std::mem::size_of::<Self>() as u64)?;
+            quota
+                .observer()?
+                .allocation_attempt(std::mem::size_of::<Self>() as u64)?;
         }
+        let _native_metadata = quota.into_custody()?;
         Ok(Arc::new(Self {
             stream,
             host,
@@ -284,7 +276,7 @@ where
             maximum_payload_bytes,
             owner: None,
             #[cfg(not(target_arch = "wasm32"))]
-            _native_metadata: native_metadata,
+            _native_metadata,
         }))
     }
 

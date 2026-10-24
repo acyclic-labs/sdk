@@ -163,8 +163,6 @@ where
             maximum_bytes: maximum_payload_bytes,
             io,
         } = binding;
-        #[cfg(not(target_arch = "wasm32"))]
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let invalid = |reason: &'static str| {
             #[cfg(not(target_arch = "wasm32"))]
             if io.is_some_and(|io| io.original_native_work().is_some()) {
@@ -205,10 +203,11 @@ where
         let mut work = observer
             .as_mut()
             .map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        let volume = volume.copy(&mut work)?;
-        let verifier = verifier.copy(&mut work)?;
-        let schemas = schemas.copy(&mut work)?;
-        let scope = scope.copy(&mut work)?;
+        let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
+        let volume = volume.copy_in_quota(&mut quota)?;
+        let verifier = verifier.copy_in_quota(&mut quota)?;
+        let schemas = schemas.copy(quota.work())?;
+        let scope = scope.copy_in_quota(&mut quota)?;
         let interactions = match verifier.audience().kind {
             crate::core::AggregateKind::Conversation => Some(FilesystemInteractionHost::new(
                 stream.clone(),
@@ -226,11 +225,7 @@ where
             crate::core::AggregateKind::Task => None,
             _ => unreachable!("execution authority validated before assembly"),
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        let _native_metadata = io
-            .filter(|io| io.original_native_work().is_some())
-            .map(|io| io.take_native_custody(io.owned_since(before)?))
-            .transpose()?;
+        let _native_metadata = quota.into_custody()?;
         Ok(Self {
             stream,
             host,

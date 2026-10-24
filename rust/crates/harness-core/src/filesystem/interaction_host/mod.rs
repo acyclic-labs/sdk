@@ -62,9 +62,7 @@ where
             maximum_bytes,
             io,
         } = binding;
-        #[cfg(not(target_arch = "wasm32"))]
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let result = with_history_io(io, |work| {
+        with_history_io(io, |work| {
             verifier.verify_audience(authority, work)?;
             if authority.kind != crate::core::AggregateKind::Conversation
                 || private_volume.class() != VolumeClass::AgentPrivate
@@ -87,26 +85,32 @@ where
                     work,
                 )?;
             }
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let verifier = verifier.copy_in_quota(&mut quota)?;
+            let schemas = schemas.copy(quota.work())?;
+            let owner_scope = owner_scope.copy_in_quota(&mut quota)?;
+            let private_volume = private_volume.copy_in_quota(&mut quota)?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if quota
+                .work()
+                .as_deref()
+                .is_some_and(|io| io.original_native_work().is_some())
+            {
+                quota.retain(std::mem::size_of::<Self>() as u64)?;
+            }
+            let _native_metadata = quota.into_custody()?;
             Ok(Self {
                 stream,
                 host,
-                verifier: verifier.copy(work)?,
-                schemas: schemas.copy(work)?,
-                owner_scope: owner_scope.copy(work)?,
-                private_volume: private_volume.copy(work)?,
+                verifier,
+                schemas,
+                owner_scope,
+                private_volume,
                 maximum_bytes,
                 #[cfg(not(target_arch = "wasm32"))]
-                _native_metadata: None,
+                _native_metadata,
             })
-        })?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut result = result;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-            io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-            result._native_metadata = Some(io.take_native_custody(io.owned_since(before)?)?);
-        }
-        Ok(result)
+        })
     }
 }
 

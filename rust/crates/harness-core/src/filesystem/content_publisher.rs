@@ -39,10 +39,9 @@ impl<A, O> FilesystemContentPublisher<A, O> {
                 "content publication limit must be positive and finite",
             ));
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let (volume, grant) = crate::executor::with_history_io(io, |work| -> Result<_> {
-            let grant = ContentGrant::verify(
+        crate::executor::with_history_io(io, |work| -> Result<_> {
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let grant = ContentGrant::verify_in_quota(
                 verifier,
                 scope,
                 volume,
@@ -50,28 +49,26 @@ impl<A, O> FilesystemContentPublisher<A, O> {
                 io.map(|io| io.remaining().map(|remaining| remaining.bytes_encoded))
                     .transpose()?
                     .unwrap_or(u64::MAX),
-                work,
+                &mut quota,
             )?;
-            Ok((volume.copy(work)?, grant))
-        })?;
-        if let Some(io) = io {
-            io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-            io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        let _native_metadata = io
-            .filter(|io| io.original_native_work().is_some())
-            .map(|io| io.take_native_custody(io.owned_since(before)?))
-            .transpose()?;
-        Ok(Arc::new(Self {
-            host,
-            volume,
-            grant,
-            maximum_bytes,
-            creation: None,
-            #[cfg(not(target_arch = "wasm32"))]
-            _native_metadata,
-        }))
+            let volume = volume.copy_in_quota(&mut quota)?;
+            if quota.work().is_some() {
+                quota.retain(std::mem::size_of::<Self>() as u64)?;
+                quota
+                    .observer()?
+                    .allocation_attempt(std::mem::size_of::<Self>() as u64)?;
+            }
+            let _native_metadata = quota.into_custody()?;
+            Ok(Arc::new(Self {
+                host,
+                volume,
+                grant,
+                maximum_bytes,
+                creation: None,
+                #[cfg(not(target_arch = "wasm32"))]
+                _native_metadata,
+            }))
+        })
     }
 }
 

@@ -69,7 +69,7 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
                 "project controller requires a parent conversation",
             ));
         }
-        let (verifier, scope, project, retained) = crate::executor::with_history_io(io, |work| {
+        crate::executor::with_history_io(io, |work| {
             verifier.verify_audience(parent.authority(), work)?;
             verifier.verify(scope, work)?;
             if scope.agent().is_none()
@@ -87,35 +87,19 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
                     "parent project belongs to another provider",
                 ));
             }
-            let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-            let copied = (verifier.copy(work)?, scope.copy(work)?, project.copy(work)?);
-            let retained = io
-                .map(PreparationIo::owned_bytes)
-                .transpose()?
-                .unwrap_or(0)
-                .checked_sub(before)
-                .ok_or_else(|| {
-                    reject(
-                        crate::wire::ErrorCode::Invalid,
-                        "parent project controller custody underflows",
-                    )
-                })?;
-            Ok((copied.0, copied.1, copied.2, retained))
-        })?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let native_custody = io
-            .filter(|io| io.original_native_work().is_some())
-            .map(|io| io.take_native_custody(retained))
-            .transpose()?;
-        #[cfg(target_arch = "wasm32")]
-        let _ = retained;
-        Ok(Self {
-            host,
-            project,
-            verifier,
-            scope,
-            #[cfg(not(target_arch = "wasm32"))]
-            native_custody,
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let verifier = verifier.copy_in_quota(&mut quota)?;
+            let scope = scope.copy_in_quota(&mut quota)?;
+            let project = project.copy_in_quota(&mut quota)?;
+            let _native_custody = quota.into_custody()?;
+            Ok(Self {
+                host,
+                project,
+                verifier,
+                scope,
+                #[cfg(not(target_arch = "wasm32"))]
+                native_custody: _native_custody,
+            })
         })
     }
 
