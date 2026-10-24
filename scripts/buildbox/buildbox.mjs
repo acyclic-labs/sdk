@@ -865,6 +865,7 @@ const missingTools = () => HOST_TOOLS.filter((t) => spawnSync('sh', ['-c', `comm
 const VCACHE = process.env.BUILD_SLOT_VERDICT_DIR || '/home/var/.cache/buildbox/verdicts';
 const VC_TTL_MS = 7 * 86400e3; const VC_MAX_BYTES = 32 << 20;
 const cacheable = (argv) => jobClass(argv) === 'compile' && !COLD && !process.env.BUILD_SLOT_REMOTE_FETCH &&
+  !process.env.BUILD_SLOT_GATE_LOG &&
   process.env.BUILD_SLOT_VERDICT_CACHE !== '0' && process.env.BUILD_SLOT_STRESS !== '1' &&
   !/^proof-/.test(process.env.BUILD_SLOT_LABEL || '') && !/^proof-/.test(path.basename(process.cwd()));
 function verdictKey(repo, id, rel, argv, base = '') {  // base: the merge-base with main (affected-tests style scripts diff against it)

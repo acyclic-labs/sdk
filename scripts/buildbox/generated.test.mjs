@@ -6,6 +6,23 @@ import {tmpdir} from 'node:os';
 import test from 'node:test';
 const here=path.dirname(new URL(import.meta.url).pathname);
 
+test('gate execution never replays a historical PASS verdict',async()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'gate-no-verdict-replay-'));
+ const saved={...process.env};
+ try{
+  const module=path.join(cwd,'generator.mjs');
+  fs.writeFileSync(module,fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8')+'\nexport { cacheable };\n');
+  fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  const {cacheable}=await import(module);
+  delete process.env.BUILD_SLOT_REMOTE_FETCH;delete process.env.BUILD_SLOT_STRESS;
+  process.env.BUILD_SLOT_LABEL='gate-execution-control';process.env.BUILD_SLOT_VERDICT_CACHE='1';
+  delete process.env.BUILD_SLOT_GATE_LOG;
+  assert.equal(cacheable(['cargo','check']),true,'negative control: generic historical verdict replay is otherwise enabled');
+  process.env.BUILD_SLOT_GATE_LOG='actual-gate.log';
+  assert.equal(cacheable(['cargo','check']),false);
+ }finally{for(const key of Object.keys(process.env))if(!(key in saved))delete process.env[key];Object.assign(process.env,saved);fs.rmSync(cwd,{recursive:true,force:true});}
+});
+
 test('exact private inputs preserve source times across fresh checkouts',async()=>{
  const cwd=fs.mkdtempSync(path.join(tmpdir(),'source-clock-'));
  try{
