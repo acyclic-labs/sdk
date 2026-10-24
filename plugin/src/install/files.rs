@@ -25,58 +25,39 @@ pub(crate) fn object_entry<'a>(
 }
 
 pub(crate) fn write_json_with_backup(path: &Path, value: &Value) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(display)?;
-    }
-    let backup = path.with_extension(format!(
-        "{}.acyclic-backup",
-        path.extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or("json")
-    ));
-    if path.exists() && !backup.exists() {
-        fs::copy(path, &backup).map_err(display)?;
-    }
-    let temporary = path.with_extension("acyclic-next");
     let bytes = serde_json::to_vec_pretty(value).map_err(display)?;
-    acyclic_native_runtime::private_file::publish(
-        path,
-        &temporary,
-        acyclic_native_runtime::RenameMode::Replace,
-        |file| {
-            use std::io::Write as _;
-            file.write_all(&bytes)
-        },
-        |_| Ok(()),
-    )
-    .map_err(display)
+    write_with_backup(path, &bytes, "json")
 }
 
 pub(crate) fn write_text_with_backup(path: &Path, value: &str) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(display)?;
-    }
+    write_with_backup(path, value.as_bytes(), "txt")
+}
+
+fn write_with_backup(path: &Path, bytes: &[u8], extension: &str) -> Result<(), String> {
+    use std::io::Write as _;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(display)?;
     let backup = path.with_extension(format!(
         "{}.acyclic-backup",
         path.extension()
             .and_then(|extension| extension.to_str())
-            .unwrap_or("txt")
+            .unwrap_or(extension)
     ));
     if path.exists() && !backup.exists() {
         fs::copy(path, &backup).map_err(display)?;
     }
-    let temporary = path.with_extension("acyclic-next");
-    acyclic_native_runtime::private_file::publish(
-        path,
-        &temporary,
-        acyclic_native_runtime::RenameMode::Replace,
-        |file| {
-            use std::io::Write as _;
-            file.write_all(value.as_bytes())
-        },
-        |_| Ok(()),
-    )
-    .map_err(display)
+    // An interrupted attempt owns only its unique sidecar. A subsequent
+    // publisher never adopts, truncates, or removes another attempt's file.
+    let mut staged =
+        acyclic_native_runtime::private_file::StagedFile::create(parent, ".acyclic-install-")
+            .map_err(display)?;
+    staged.as_file_mut().write_all(bytes).map_err(display)?;
+    staged
+        .publish(path, acyclic_native_runtime::RenameMode::Replace)
+        .map_err(display)
 }
 
 pub(crate) fn executable_on_path(name: &str) -> bool {

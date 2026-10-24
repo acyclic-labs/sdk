@@ -333,8 +333,40 @@ pub fn read_with<T, E: From<io::Error>>(
     maximum: u64,
     read: impl FnOnce(&mut std::io::Take<File>, u64) -> Result<T, E>,
 ) -> Result<T, E> {
-    use std::io::Read as _;
     let file = open(path, false)?;
+    read_held_with(path, file, maximum, read)
+}
+
+/// Read an existing owner for a format upgrade. On Windows, an inherited owner
+/// descriptor is tightened before any read. Protected records and other OSes
+/// take the strict path. Tightening requires an exclusive, unaliased regular
+/// file owned by the current user; explicit public
+/// DACLs and foreign ownership are refused. This does not generate credentials.
+pub fn read_for_upgrade_with<T, E: From<io::Error>>(
+    path: &Path,
+    maximum: u64,
+    read: impl FnOnce(&mut std::io::Take<File>, u64) -> Result<T, E>,
+) -> Result<T, E> {
+    #[cfg(windows)]
+    let file = match open(path, false) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            windows::open_for_upgrade(path).map_err(windows::io_error)?
+        }
+        Err(error) => return Err(error.into()),
+    };
+    #[cfg(not(windows))]
+    let file = open(path, false)?;
+    read_held_with(path, file, maximum, read)
+}
+
+fn read_held_with<T, E: From<io::Error>>(
+    path: &Path,
+    file: File,
+    maximum: u64,
+    read: impl FnOnce(&mut std::io::Take<File>, u64) -> Result<T, E>,
+) -> Result<T, E> {
+    use std::io::Read as _;
     let length = file.metadata()?.len();
     if length > maximum {
         return Err(io::Error::from(io::ErrorKind::InvalidData).into());

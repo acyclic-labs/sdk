@@ -129,10 +129,17 @@ fn private_legacy_owner_migrates_once_without_changing_its_original_identity() {
             "project".into(), VolumeClass::Project, VolumeOwner::Project("project".into()), &mut None).unwrap(),
         "workspace": null, "workspace_identity": null, "workspace_incarnation": null
     })).unwrap();
+    #[cfg(not(windows))]
     let mut file = acyclic_native_runtime::private_file::create(&path).unwrap();
+    // Reproduce the former writer's inherited Windows DACL, not the new
+    // private writer. The strict reader is the old rejected-upgrade control.
+    #[cfg(windows)]
+    let mut file = fs::File::create(&path).unwrap();
     serde_json::to_writer(&mut file, &owner).unwrap();
     drop(file);
     assert_eq!(fs::read(&path).unwrap().first(), Some(&b'{')); // Old plaintext reader control.
+    #[cfg(windows)]
+    assert!(acyclic_native_runtime::private_file::read(&path, 65_536).is_err());
     let migrated = Owner::load(&path).unwrap();
     assert_eq!(migrated.key, owner.key);
     assert_eq!(migrated.agent, owner.agent);

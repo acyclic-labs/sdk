@@ -1,6 +1,43 @@
 use super::*;
 
 #[test]
+fn abandoned_install_staging_cannot_block_either_serializer_or_be_adopted() {
+    use std::io::Write as _;
+    let directory = tempfile::tempdir().unwrap();
+    for extension in ["json", "txt"] {
+        let path = directory
+            .path()
+            .join(format!("settings-{extension}.{extension}"));
+        let abandoned = path.with_extension("acyclic-next");
+        let mut held = acyclic_native_runtime::private_file::create(&abandoned).unwrap();
+        held.write_all(b"interrupted attempt").unwrap();
+        // Restore the fixed-name mechanism: it refuses the next install before
+        // writing. The corrected serializers leave this other owner untouched.
+        assert!(
+            acyclic_native_runtime::private_file::publish(
+                &path,
+                &abandoned,
+                acyclic_native_runtime::RenameMode::Replace,
+                |_| panic!("occupied staging admitted"),
+                |_| Ok(()),
+            )
+            .is_err()
+        );
+        if extension == "json" {
+            write_json_with_backup(&path, &json!({"complete":true})).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Value>(&fs::read(&path).unwrap()).unwrap(),
+                json!({"complete":true})
+            );
+        } else {
+            write_text_with_backup(&path, "complete").unwrap();
+            assert_eq!(fs::read_to_string(&path).unwrap(), "complete");
+        }
+        assert_eq!(fs::read(&abandoned).unwrap(), b"interrupted attempt");
+    }
+}
+
+#[test]
 fn pi_install_preserves_foreign_settings_and_refuses_modified_ownership() {
     let fixture = Fixture::new();
     let settings = fixture.data.join("settings.json");

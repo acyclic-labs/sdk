@@ -366,7 +366,7 @@ impl Owner {
 
     fn load(path: &Path) -> Result<Self> {
         use acyclic_native_runtime::{owner_record, private_file};
-        let record = private_file::read_with(path, 65_536, |file, length| {
+        let record = private_file::read_for_upgrade_with(path, 65_536, |file, length| {
             let mut bytes = owner_record::SecretBytes(Vec::with_capacity(
                 usize::try_from(length + 1).map_err(std::io::Error::other)?,
             ));

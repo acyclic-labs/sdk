@@ -14,7 +14,7 @@ use windows::{
         Storage::FileSystem::*,
         System::Threading::{GetCurrentProcess, OpenProcessToken},
     },
-    core::PCWSTR,
+    core::{BOOL, PCWSTR},
 };
 
 // windows::core wraps Win32 status in HRESULT, whereas std::io classifies the
@@ -131,7 +131,29 @@ pub(super) fn process_user_id(process: *mut std::ffi::c_void) -> io::Result<Vec<
 
 /// Checks a file has a protected DACL granting full access only to its current user.
 pub(super) fn is_private(file: &File) -> io::Result<bool> {
-    use windows::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+    check_security(file, false)
+}
+
+/// Tighten an inherited legacy descriptor only while exclusively holding the
+/// original, unaliased inode owned by this process user. No bytes are read first.
+pub(super) fn open_for_upgrade(path: &Path) -> io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .access_mode(GENERIC_READ.0 | READ_CONTROL.0 | WRITE_DAC.0)
+        .share_mode(0)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
+        .open(path)?;
+    if !file.metadata()?.is_file() || !check_security(&file, true)? || !is_private(&file)? {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    Ok(file)
+}
+
+fn check_security(file: &File, upgrade_inherited: bool) -> io::Result<bool> {
+    use windows::Win32::Security::Authorization::{
+        GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo,
+    };
     let mut information = BY_HANDLE_FILE_INFORMATION::default();
     // SAFETY: the held file handle and initialized output are live for this call.
     unsafe {
@@ -158,17 +180,45 @@ pub(super) fn is_private(file: &File) -> io::Result<bool> {
             Some(&mut descriptor),
         )
         .ok()?;
-        let check = (|| -> windows::core::Result<bool> {
+        let check = (|| -> io::Result<bool> {
             let mut token = [0usize; 16];
             let current = user(GetCurrentProcess(), &mut token)?;
             let mut control = 0;
             let mut revision = 0;
             GetSecurityDescriptorControl(descriptor, &mut control, &mut revision)?;
-            if control & SE_DACL_PROTECTED.0 == 0
-                || acl.is_null()
-                || (*acl).AceCount != 1
-                || !EqualSid(owner, current).is_ok()
-            {
+            if !EqualSid(owner, current).is_ok() {
+                return Ok(false);
+            }
+            if control & SE_DACL_PROTECTED.0 == 0 && upgrade_inherited {
+                // The existing owner is authenticated before permissions change.
+                // Explicit nonprivate descriptors are never silently adopted.
+                with_security(|attributes| {
+                    let mut present = BOOL::default();
+                    let mut defaulted = BOOL::default();
+                    let mut private_acl = std::ptr::null_mut();
+                    // SAFETY: with_security retains the descriptor and ACL for
+                    // this closure; file exclusively owns a valid held handle.
+                    GetSecurityDescriptorDacl(
+                        PSECURITY_DESCRIPTOR(attributes.lpSecurityDescriptor),
+                        &mut present,
+                        &mut private_acl,
+                        &mut defaulted,
+                    )?;
+                    SetSecurityInfo(
+                        HANDLE(file.as_raw_handle()),
+                        SE_FILE_OBJECT,
+                        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                        None,
+                        None,
+                        Some(private_acl),
+                        None,
+                    )
+                    .ok()?;
+                    Ok(())
+                })?;
+                return Ok(true);
+            }
+            if control & SE_DACL_PROTECTED.0 == 0 || acl.is_null() || (*acl).AceCount != 1 {
                 return Ok(false);
             }
             let mut ace = std::ptr::null_mut();

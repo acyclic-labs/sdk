@@ -252,3 +252,37 @@ fn a_staging_collision_cannot_claim_that_an_original_owner_was_published() -> io
     assert!(!destination.exists());
     Ok(())
 }
+
+#[cfg(windows)]
+#[test]
+fn inherited_owner_upgrade_tightens_before_read_and_rejects_live_or_aliased_files() -> io::Result<()>
+{
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("legacy-owner");
+    let mut writer = File::create(&path)?;
+    writer.write_all(b"original identity")?;
+    // The old strict path cannot open inherited legacy records. A live writer
+    // also prevents the guarded upgrade from acquiring exclusive ownership.
+    assert!(read(&path, 100).is_err());
+    assert!(
+        read_for_upgrade_with::<(), io::Error>(&path, 100, |_, _| panic!("live writer admitted"))
+            .is_err()
+    );
+    drop(writer);
+    let alias = directory.path().join("alias");
+    fs::hard_link(&path, &alias)?;
+    assert!(
+        read_for_upgrade_with::<(), io::Error>(&path, 100, |_, _| panic!("alias admitted"))
+            .is_err()
+    );
+    fs::remove_file(alias)?;
+    let bytes = read_for_upgrade_with(&path, 100, |file, _| {
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok::<_, io::Error>(bytes)
+    })?;
+    assert_eq!(bytes, b"original identity");
+    assert!(is_private(&open(&path, false)?)?);
+    assert_eq!(read(&path, 100)?.0, bytes);
+    Ok(())
+}
