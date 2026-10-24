@@ -17,6 +17,16 @@ impl<A, O> Mount<A, O> {
         &self.destination
     }
 
+    /// Authenticated post-mount native root witness owned by this live session.
+    #[must_use]
+    pub fn native_root_identity(&self) -> Option<crate::NativeRootIdentity> {
+        self.session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(NativeMountSession::native_root_identity)
+    }
+
     /// Retirement has started; the existing cleanup owner must finish before reuse.
     #[must_use]
     pub fn is_retiring(&self) -> bool {

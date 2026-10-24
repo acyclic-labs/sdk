@@ -500,7 +500,7 @@ async fn finish_publication<'io>(
     crate::executor::with_history_io(io, |work| file.descriptor().verify(expected.bytes, work))?;
     content
         .reader
-        .verify(file, file.descriptor().byte_length(), io)?
+        .verify_publication(file, file.descriptor().byte_length(), io)?
         .await?;
     let (file, hold) = output;
     #[cfg(feature = "filesystem")]

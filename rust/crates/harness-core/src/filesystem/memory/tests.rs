@@ -14,6 +14,8 @@ use crate::test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn};
 
 mod access;
 mod content;
+mod publication_cost;
+mod publication_evidence;
 
 fn synthetic_token_count(
     request: &crate::model::PreparedModelRequest,

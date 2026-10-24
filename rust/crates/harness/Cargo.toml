@@ -180,6 +180,9 @@ wasm-bindgen-futures.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "=0.3.67"
 
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Memory"] }
+
 [lints]
 workspace = true
 

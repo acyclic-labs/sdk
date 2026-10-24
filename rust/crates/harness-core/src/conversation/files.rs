@@ -161,7 +161,7 @@ impl FileDescriptor {
 }
 
 /// An immutable version of a file within a scoped volume.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub struct FileRef {
@@ -173,9 +173,39 @@ pub struct FileRef {
     pub(super) descriptor: FileDescriptor,
     #[serde(deserialize_with = "deserialize_label")]
     pub(super) display_name: String,
+    // Wire identities carry no evidence of an in-process publication.
+    #[cfg(feature = "filesystem")]
+    #[serde(skip)]
+    #[schemars(skip)]
+    publication: Option<crate::filesystem::PublicationWitness>,
 }
 
+impl PartialEq for FileRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.volume == other.volume
+            && self.path == other.path
+            && self.version == other.version
+            && self.descriptor == other.descriptor
+            && self.display_name == other.display_name
+    }
+}
+impl Eq for FileRef {}
+
 impl FileRef {
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn publication_witness(&self) -> Option<&crate::filesystem::PublicationWitness> {
+        self.publication.as_ref()
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn with_publication_witness(
+        mut self,
+        witness: crate::filesystem::PublicationWitness,
+    ) -> Self {
+        self.publication = Some(witness);
+        self
+    }
+
     pub(crate) fn identity_digest(
         &self,
         maximum_bytes: u64,
@@ -192,6 +222,10 @@ impl FileRef {
     pub(crate) fn with_version(mut self, version: String) -> Result<Self> {
         validate_label(&version, &mut None)?;
         self.version = version;
+        #[cfg(feature = "filesystem")]
+        {
+            self.publication = None;
+        }
         Ok(self)
     }
 
@@ -210,6 +244,8 @@ impl FileRef {
             version,
             descriptor,
             display_name,
+            #[cfg(feature = "filesystem")]
+            publication: None,
         };
         value.validate(work)?;
         Ok(value)
@@ -254,6 +290,10 @@ impl FileRef {
     ) -> Result<()> {
         validate_label(&version, work)?;
         self.version = version;
+        #[cfg(feature = "filesystem")]
+        {
+            self.publication = None;
+        }
         Ok(())
     }
 
@@ -380,6 +420,8 @@ impl FileRef {
                 media_type: crate::core::copy_text(&self.descriptor.media_type, quota)?,
             },
             display_name: crate::core::copy_text(&self.display_name, quota)?,
+            #[cfg(feature = "filesystem")]
+            publication: self.publication.clone(),
         })
     }
 }
@@ -389,10 +431,26 @@ crate::core::ownership::owned_struct!(FileDescriptor {
     byte_length,
     media_type
 });
-crate::core::ownership::owned_struct!(FileRef {
-    volume,
-    path,
-    version,
-    descriptor,
-    display_name
-});
+impl crate::core::ownership::OwnedBytes for FileRef {
+    fn owned_heap_bytes(&self) -> Result<u64> {
+        let Self {
+            volume,
+            path,
+            version,
+            descriptor,
+            display_name,
+            // The inline witness is covered by FileRef's enclosing slot. Its
+            // shared domain retains its own original allocation custody;
+            // cloning its Arc does not allocate another domain.
+            #[cfg(feature = "filesystem")]
+                publication: _,
+        } = self;
+        crate::core::owned_sum([
+            volume.owned_heap_bytes()?,
+            path.owned_heap_bytes()?,
+            version.owned_heap_bytes()?,
+            descriptor.owned_heap_bytes()?,
+            display_name.owned_heap_bytes()?,
+        ])
+    }
+}

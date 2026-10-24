@@ -4,7 +4,7 @@ use acyclic_fs::{GitCompatState, GitCompatStore, GitGenerationRef};
 
 // Lock order: the existing checkout guard is outermost. Git-state CAS
 // returns owned data and releases its leaf record lock before any native
-// publication or owner callback. Open completes recovery before exposing tools.
+// publication or owner callback. Mutating entry points recover before effects.
 pub(in crate::local) type Pending = (acyclic_fs::OperationId, GitGenerationRef);
 
 pub(in crate::local) async fn prepare(

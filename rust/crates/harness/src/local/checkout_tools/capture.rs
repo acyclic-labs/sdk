@@ -117,7 +117,7 @@ impl CheckoutTools {
         // A file publication's physical write is owed a capture of its own.
         // Finish it first, so this capture never records that write.
         self.finish_owed_write(selected, slot, permit).await?;
-        self.capture_changes(selected, slot, operation, phase, permit)
+        self.capture_changes(selected, slot, operation, phase, permit, None)
             .await
     }
 
@@ -156,19 +156,38 @@ impl CheckoutTools {
             return Ok(());
         };
         let (operation, staged) = owed;
+        let capture = capture_operation(OperationId::from_bytes(operation.into_bytes()), 1);
+        // A clean settlement can retain the staged content-addressed root.
+        // Its durable operation record, rather than a changed head, fences
+        // replay from capturing edits made after the original write.
+        let settled = view
+            .workspace()
+            .operation_generation(
+                acyclic_fs::IdempotencyKey::from_bytes(capture.into_bytes()),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(storage)?
+            .value
+            .is_some();
         let head = view
             .workspace()
             .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
             .map_err(storage)?
             .value;
-        if staged.workspace_id == view.workspace().id() && head.id() == staged.generation {
+        if !settled
+            && staged.workspace_id == view.workspace().id()
+            && head.id() == staged.generation
+        {
             self.capture_changes(
                 selected,
                 slot,
                 OperationId::from_bytes(operation.into_bytes()),
                 1,
                 permit,
+                Some(staged.generation.digest()),
             )
             .await?;
         }
@@ -182,6 +201,7 @@ impl CheckoutTools {
         operation: OperationId,
         phase: u8,
         permit: PublicationPermit,
+        settlement: Option<acyclic_fs::Digest>,
     ) -> Result<()> {
         let (physical, view) = selected;
         let cancellation = CancellationToken::new();
@@ -222,12 +242,12 @@ impl CheckoutTools {
             &cancellation,
         )
         .await?;
-        if checkout.has_pending_mutations() {
+        if checkout.has_pending_mutations() || settlement.is_some() {
             let operation = capture_operation(operation, phase);
             let committed = checkout
                 .commit(
                     operation,
-                    None,
+                    settlement,
                     None,
                     None,
                     permit,

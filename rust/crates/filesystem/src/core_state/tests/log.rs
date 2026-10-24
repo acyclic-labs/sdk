@@ -175,11 +175,11 @@ fn checkpoint_batches_family_barriers_before_discarding_the_wal() {
         let before = work.receipt();
         log.checkpoint(&namespace).unwrap();
         if native {
-            // Eleven physical record-file barriers plus six distinct family
-            // directory barriers. The commit already flushed its WAL frame.
+            // Eleven record-file barriers, six family directories and their
+            // one shared namespace parent. Apple also drains the device once.
             assert_eq!(
                 work.receipt().durability_operations - before.durability_operations,
-                keys.len() as u64 + 6,
+                keys.len() as u64 + 7 + u64::from(cfg!(target_os = "macos")),
                 "checkpoint flushed the same family repeatedly"
             );
         }
@@ -249,13 +249,18 @@ fn checkpoint_reuses_each_native_family_parent_for_all_records() {
     let one = checkpoint(1);
     let two = checkpoint(2);
     // A creating leaf open is a backend write. Windows enforces its file kind
-    // during the open; Unix needs one metadata read. Parent traversal,
-    // creation, validation and flushing are per family.
+    // during the open; Unix needs one metadata read. Apple also reads the
+    // held leaf's device identity before staging its durability barrier.
+    // Parent traversal, creation, validation and flushing are per family.
     assert_eq!(
         two.backend_read_operations - one.backend_read_operations,
-        u64::from(!cfg!(windows)),
+        u64::from(!cfg!(windows)) + u64::from(cfg!(target_os = "macos")),
         "checkpoint reopened the same native family parent per record"
     );
     assert_eq!(two.durability_operations - one.durability_operations, 1);
     assert_eq!(two.object_bytes_written - one.object_bytes_written, 4);
 }
+
+mod device_batch;
+
+mod resident_index;

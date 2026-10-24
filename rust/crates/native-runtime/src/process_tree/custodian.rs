@@ -1,113 +1,324 @@
-//! The Windows custodian of a custodied tree: a small process that holds the
-//! tree's Job, and so its name, until every member has fully exited, and
-//! kills the tree when its owner exits. A reopened owner's fence therefore
-//! finds a Job by name for as long as any member may still run, and "not
-//! found" means the tree is gone. The tree's record names its custodian, so
-//! the fence also awaits the custodian's exit. Records are never the
-//! custodian's to remove: each has one remover, its live owner or the
-//! reopened owner's fence.
-//!
-//! The custodian is the owner's own executable, started with [`SWITCH`] set:
-//! a CRT initializer runs it before the host's `main`, in every executable
-//! that links this crate, so no host has to dispatch it. Kill-on-close stays
-//! on the Job, so a killed custodian leaves the owner's handle to kill the
-//! tree when the owner exits.
-
+//! One lazy custodian per host keeps independent Jobs alive until their members
+//! have fully exited. Each Job has its own completion event, so fencing one
+//! owner never waits for an unrelated live Job or for the shared daemon to exit.
 use std::collections::BTreeMap;
 use std::ffi::c_void;
-use std::io::{self, BufRead as _, BufReader, Read as _, Write as _};
-use std::os::windows::io::AsRawHandle as _;
+use std::io::{self, BufRead as _, BufReader, Write as _};
+use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::os::windows::process::CommandExt as _;
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use windows_sys::Win32::Foundation::{
-    CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE,
-    WAIT_FAILED,
+use std::process::{Child, ChildStdout, Command, Stdio};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
-use windows_sys::Win32::System::IO::{
-    CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED, PostQueuedCompletionStatus,
-};
-use windows_sys::Win32::System::JobObjects::{
-    IsProcessInJob, JOBOBJECT_ASSOCIATE_COMPLETION_PORT, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
-    JobObjectAssociateCompletionPortInformation, JobObjectBasicAccountingInformation,
-    QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
-};
-use windows_sys::Win32::System::Threading::{
-    CREATE_NO_WINDOW, ExitProcess, GetCurrentProcess, GetProcessId, GetProcessTimes, INFINITE,
-    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-    RegisterWaitForSingleObject, UnregisterWaitEx, WT_EXECUTEONLYONCE, WaitForSingleObject,
-};
+use windows_sys::Win32::Foundation::*;
+use windows_sys::Win32::System::IO::*;
+use windows_sys::Win32::System::JobObjects::*;
+use windows_sys::Win32::System::Threading::*;
 
-/// The environment variable that makes a process a custodian.
+mod server;
 const SWITCH: &str = "ACYCLIC_PROCESS_CUSTODIAN";
-/// The line a custodian writes once it watches the Job.
 const READY: &str = "ready";
-/// The Job message that a process joined it; its value is the PID.
 const JOB_OBJECT_MSG_NEW_PROCESS: u32 = 6;
-/// The completion key the owner watch posts once the owner has exited.
 const OWNER_EXITED: usize = usize::MAX;
-/// The completion key a member's wait posts once it has exited; the
-/// message carries its PID.
 const MEMBER_EXITED: usize = usize::MAX - 1;
+const COMMAND: usize = usize::MAX - 2;
+static HOST: Mutex<Option<Host>> = Mutex::new(None);
+static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
 #[used]
 #[unsafe(link_section = ".CRT$XCU")]
 static ENTRY: extern "C" fn() = entry;
 
-/// Runs before `main`: serves as a custodian only when started as one.
 extern "C" fn entry() {
     if std::env::var_os(SWITCH).is_none() {
         return;
     }
-    let code = u32::from(serve().is_err());
-    // SAFETY: ends this custodian without returning to the host's startup.
+    let code = u32::from(server::serve().is_err());
+    // SAFETY: the daemon must not return into its host executable's main.
     unsafe { ExitProcess(code) }
 }
 
-/// Starts the custodian of `job` and names it in the tree's `record`, then
-/// returns once it watches the still-empty Job.
-pub(super) fn launch(job: HANDLE, record: &mut super::custody::Record) -> io::Result<Child> {
-    // Keeps the initializer, and so the entry, in every linked executable
-    // that can start a custodian.
-    std::hint::black_box(&ENTRY);
-    let mut custodian = Command::new(std::env::current_exe()?)
-        .env(SWITCH, "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()?;
-    let handed = hand_over(&mut custodian, job)
-        .and_then(|()| record.name_custodian(&identity(custodian.as_raw_handle().cast())?));
-    if handed.is_err() {
-        let _ = custodian.kill();
-        let _ = custodian.wait();
+struct Host {
+    child: Child,
+    output: BufReader<ChildStdout>,
+    identity: String,
+}
+struct Starting(Option<Child>);
+impl Drop for Starting {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
-    handed.map(|()| custodian)
+}
+impl Drop for Host {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+impl Host {
+    fn start() -> io::Result<Self> {
+        std::hint::black_box(&ENTRY);
+        let child = Command::new(std::env::current_exe()?)
+            .env(SWITCH, "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()?;
+        let mut starting = Starting(Some(child));
+        let admitted = (|| {
+            let child = starting.0.as_mut().ok_or(io::ErrorKind::BrokenPipe)?;
+            // SAFETY: this process and the fresh daemon are live; synchronize
+            // access lets that single daemon watch the host for its lifetime.
+            let owner = unsafe {
+                duplicate(
+                    GetCurrentProcess(),
+                    child.as_raw_handle(),
+                    PROCESS_SYNCHRONIZE,
+                    0,
+                )
+            }?;
+            writeln!(
+                child.stdin.as_mut().ok_or(io::ErrorKind::BrokenPipe)?,
+                "{}",
+                owner.expose_provenance()
+            )?;
+            let output = BufReader::new(child.stdout.take().ok_or(io::ErrorKind::BrokenPipe)?);
+            let identity = identity(child.as_raw_handle())?;
+            let child = starting.0.take().ok_or(io::ErrorKind::BrokenPipe)?;
+            let mut host = Self {
+                child,
+                output,
+                identity,
+            };
+            host.ready()?;
+            Ok(host)
+        })();
+        // A failed startup has accepted no Jobs. Host owns any successfully
+        // admitted child; before that point the local startup guard reaps it.
+        admitted
+    }
+    fn ready(&mut self) -> io::Result<()> {
+        let mut line = String::new();
+        self.output.read_line(&mut line)?;
+        if line.trim_end() == READY {
+            Ok(())
+        } else {
+            Err(io::Error::other(
+                "the process custodian did not acknowledge admission",
+            ))
+        }
+    }
+    fn send(&mut self, message: &str) -> io::Result<()> {
+        let input = self.child.stdin.as_mut().ok_or(io::ErrorKind::BrokenPipe)?;
+        writeln!(input, "{message}")?;
+        input.flush()?;
+        self.ready()
+    }
 }
 
-fn hand_over(custodian: &mut Child, job: HANDLE) -> io::Result<()> {
-    let target: HANDLE = custodian.as_raw_handle().cast();
-    // SAFETY: duplicating this process's owned Job handle into the custodian.
-    let job = unsafe { duplicate(job, target, 0, DUPLICATE_SAME_ACCESS) }?;
-    // SAFETY: a synchronize-only handle to this process, for the custodian.
-    let owner = unsafe { duplicate(GetCurrentProcess(), target, PROCESS_SYNCHRONIZE, 0) }?;
-    let mut input = custodian.stdin.take().ok_or(io::ErrorKind::BrokenPipe)?;
-    write!(
-        input,
-        "{}\n{}\n",
-        job.expose_provenance(),
-        owner.expose_provenance()
-    )?;
-    drop(input);
-    let mut ready = String::new();
-    BufReader::new(custodian.stdout.take().ok_or(io::ErrorKind::BrokenPipe)?)
-        .read_line(&mut ready)?;
-    if ready.trim_end() == READY {
-        Ok(())
-    } else {
-        Err(io::Error::other("the process custodian did not start"))
+/// A completion handle stays with the parent's Job handle, including while a
+/// completed Job remains named. The daemon retains its copy through reaping.
+pub(super) struct Completion(OwnedHandle);
+impl Completion {
+    fn create(name: &[u16]) -> io::Result<Self> {
+        let name = completion_name(name);
+        // SAFETY: a fresh named manual-reset event, owned on success.
+        let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, name.as_ptr()) };
+        if event.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let error = io::Error::last_os_error();
+        // SAFETY: CreateEventW transferred this handle.
+        let event = Self(unsafe { OwnedHandle::from_raw_handle(event) });
+        if error.raw_os_error() == Some(ERROR_ALREADY_EXISTS.cast_signed()) {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
+        Ok(event)
     }
+    pub(super) fn open(name: &[u16]) -> io::Result<Option<Self>> {
+        let name = completion_name(name);
+        // SAFETY: opens the exact recorded Job's completion event.
+        let event = unsafe { OpenEventW(SYNCHRONIZATION_SYNCHRONIZE, 0, name.as_ptr()) };
+        if event.is_null() {
+            let error = io::Error::last_os_error();
+            return if error.raw_os_error() == Some(ERROR_FILE_NOT_FOUND.cast_signed()) {
+                Ok(None)
+            } else {
+                Err(error)
+            };
+        }
+        // SAFETY: OpenEventW transferred this handle.
+        Ok(Some(Self(unsafe { OwnedHandle::from_raw_handle(event) })))
+    }
+}
+
+fn completion_name(name: &[u16]) -> Vec<u16> {
+    name.iter()
+        .copied()
+        .take_while(|unit| *unit != 0)
+        .chain(".complete".encode_utf16())
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+pub(super) struct Registration {
+    key: usize,
+    host: String,
+    completion: Option<Completion>,
+    activated: bool,
+}
+impl Registration {
+    fn activate_inner(&mut self) -> io::Result<()> {
+        if self.activated {
+            return Ok(());
+        }
+        let mut slot = HOST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let host = slot
+            .as_mut()
+            .filter(|host| host.identity == self.host)
+            .ok_or(io::ErrorKind::BrokenPipe)?;
+        host.send(&format!("A {}", self.key))?;
+        self.activated = true;
+        Ok(())
+    }
+    pub(super) fn activate(mut self) -> io::Result<Completion> {
+        self.activate_inner()?;
+        self.completion
+            .take()
+            .ok_or_else(|| io::ErrorKind::BrokenPipe.into())
+    }
+}
+impl Drop for Registration {
+    fn drop(&mut self) {
+        let _ = self.activate_inner();
+    }
+}
+
+/// Registers an empty Job before any member can start. A separate activation
+/// after the spawn attempt lets the daemon retire even an aborted empty Job.
+pub(super) fn launch(
+    name: &[u16],
+    record: &mut super::custody::Record,
+) -> io::Result<Registration> {
+    let completion = Completion::create(name)?;
+    let key = SEQUENCE
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |key| {
+            key.checked_add(1).filter(|next| *next < COMMAND)
+        })
+        .map_err(|_| io::ErrorKind::OutOfMemory)?;
+    let name =
+        String::from_utf16(name.strip_suffix(&[0]).unwrap_or(name)).map_err(io::Error::other)?;
+    if name.chars().any(char::is_whitespace) {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    let mut slot = HOST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(host) = slot.as_mut()
+        && host.child.try_wait()?.is_some()
+    {
+        *slot = None;
+    }
+    if slot.is_none() {
+        *slot = Some(Host::start()?);
+    }
+    let host = slot.as_mut().ok_or(io::ErrorKind::BrokenPipe)?;
+    let identity = host.identity.clone();
+    let registered = host.send(&format!("R {key} {name}"));
+    drop(slot);
+    // An uncertain acknowledgement still activates the empty registration
+    // during rollback, so it cannot retain one Job forever in a live daemon.
+    let registration = Registration {
+        key,
+        host: identity.clone(),
+        completion: Some(completion),
+        activated: false,
+    };
+    registered?;
+    record.name_custodian(&identity)?;
+    Ok(registration)
+}
+
+/// A fence waits for this Job's reaping event. Daemon death retains the old
+/// kill-on-close recovery path after the fence's direct member wait, without
+/// ever waiting for the lifetime of an unrelated shared daemon.
+pub(super) fn await_completion(completion: Option<&Completion>, identity: &str) -> io::Result<()> {
+    let Some(process) = recorded_process(identity)? else {
+        return Ok(());
+    };
+    let Some(completion) = completion else {
+        // SAFETY: the pinned recorded daemon process.
+        return if unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } == WAIT_OBJECT_0 {
+            Ok(())
+        } else {
+            Err(io::Error::other(
+                "live custodian has no Job completion event",
+            ))
+        };
+    };
+    let handles = [completion.0.as_raw_handle(), process.as_raw_handle()];
+    // SAFETY: these two owned handles remain live throughout the wait.
+    match unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, INFINITE) } {
+        WAIT_OBJECT_0 => Ok(()),
+        value if value == WAIT_OBJECT_0 + 1 => Ok(()),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
+fn recorded_process(identity: &str) -> io::Result<Option<OwnedHandle>> {
+    let Some((pid, created)) = identity
+        .split_once('-')
+        .and_then(|(pid, created)| Some((pid.parse::<u32>().ok()?, created.parse::<u64>().ok()?)))
+    else {
+        return Err(io::ErrorKind::InvalidData.into());
+    };
+    let Some(process) = open_process(PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, pid)?
+    else {
+        return Ok(None);
+    };
+    if creation_time(process.as_raw_handle())? == created {
+        Ok(Some(process))
+    } else {
+        Ok(None)
+    }
+}
+
+fn open_process(access: u32, pid: u32) -> io::Result<Option<OwnedHandle>> {
+    // SAFETY: opens an unshared handle, owned on success.
+    let process = unsafe { OpenProcess(access, 0, pid) };
+    if process.is_null() {
+        let error = io::Error::last_os_error();
+        return if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER.cast_signed()) {
+            Ok(None)
+        } else {
+            Err(error)
+        };
+    }
+    // SAFETY: OpenProcess transferred this handle.
+    Ok(Some(unsafe { OwnedHandle::from_raw_handle(process) }))
+}
+
+/// Pins a listed PID only if the opened process still belongs to this Job.
+/// Both live admission and stale-owner fencing use the same failure policy.
+pub(in crate::process_tree) fn member(job: HANDLE, pid: u32) -> io::Result<Option<OwnedHandle>> {
+    let Some(process) = open_process(PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, pid)?
+    else {
+        return Ok(None);
+    };
+    let mut member = 0;
+    // SAFETY: the retained process handle and supplied Job handle, with a
+    // writable membership result. Failure conveys no membership evidence.
+    if unsafe { IsProcessInJob(process.as_raw_handle(), job, &raw mut member) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((member != 0).then_some(process))
 }
 
 /// A process's PID and creation time, which no later process shares.
@@ -131,40 +342,6 @@ fn creation_time(process: HANDLE) -> io::Result<u64> {
         return Err(io::Error::last_os_error());
     }
     Ok(u64::from(creation.dwHighDateTime) << 32 | u64::from(creation.dwLowDateTime))
-}
-
-/// Waits for the custodian of `identity`, as a record names it, if it still
-/// runs: it exits only once every member of its tree has.
-pub(super) fn await_custodian(identity: &str) -> io::Result<()> {
-    let Some((pid, created)) = identity
-        .split_once('-')
-        .and_then(|(pid, created)| Some((pid.parse::<u32>().ok()?, created.parse::<u64>().ok()?)))
-    else {
-        return Err(io::ErrorKind::InvalidData.into());
-    };
-    // SAFETY: opening a handle to the recorded PID; owned below.
-    let process = unsafe {
-        OpenProcess(
-            PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
-            0,
-            pid,
-        )
-    };
-    if process.is_null() {
-        return Ok(());
-    }
-    let waited = creation_time(process).and_then(|time| {
-        // Another process with a reused PID is no custodian of this tree.
-        // SAFETY: the owned process handle.
-        if time == created && unsafe { WaitForSingleObject(process, INFINITE) } == WAIT_FAILED {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
-        }
-    });
-    // SAFETY: the handle opened above.
-    unsafe { CloseHandle(process) };
-    waited
 }
 
 /// Duplicates `source` into `target`, returning its value there.
@@ -198,107 +375,6 @@ unsafe fn duplicate(
     Ok(duplicated)
 }
 
-/// The custodian: watches the Job, kills it when the owner exits, and
-/// exits once no member remains.
-fn serve() -> io::Result<()> {
-    let mut input = String::new();
-    io::stdin().read_to_string(&mut input)?;
-    let mut lines = input.lines();
-    let mut handle = || -> io::Result<HANDLE> {
-        let value = lines
-            .next()
-            .and_then(|line| line.parse::<usize>().ok())
-            .ok_or(io::ErrorKind::InvalidInput)?;
-        Ok(std::ptr::with_exposed_provenance_mut(value))
-    };
-    let job = handle()?;
-    let owner = handle()?;
-    // SAFETY: a new completion port, not yet tied to any file.
-    let port = unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, std::ptr::null_mut(), 0, 1) };
-    if port.is_null() {
-        return Err(io::Error::last_os_error());
-    }
-    let association = JOBOBJECT_ASSOCIATE_COMPLETION_PORT {
-        CompletionKey: job,
-        CompletionPort: port,
-    };
-    // SAFETY: the handed-over Job and an initialized association.
-    if unsafe {
-        SetInformationJobObject(
-            job,
-            JobObjectAssociateCompletionPortInformation,
-            (&raw const association).cast(),
-            u32::try_from(size_of::<JOBOBJECT_ASSOCIATE_COMPLETION_PORT>())
-                .map_err(|_| io::ErrorKind::InvalidInput)?,
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    let mut output = io::stdout();
-    writeln!(output, "{READY}")?;
-    output.flush()?;
-    let (owner_watch, job_watch, port_watch) = (
-        owner.expose_provenance(),
-        job.expose_provenance(),
-        port.expose_provenance(),
-    );
-    std::thread::spawn(move || {
-        let owner: HANDLE = std::ptr::with_exposed_provenance_mut(owner_watch);
-        let job: HANDLE = std::ptr::with_exposed_provenance_mut(job_watch);
-        let port: HANDLE = std::ptr::with_exposed_provenance_mut(port_watch);
-        // SAFETY: handles this custodian owns for its whole life.
-        unsafe {
-            WaitForSingleObject(owner, INFINITE);
-            TerminateJobObject(job, 1);
-            PostQueuedCompletionStatus(port, 0, OWNER_EXITED, std::ptr::null());
-        }
-    });
-    PORT.store(port.expose_provenance(), Ordering::Relaxed);
-    let mut members = Members::default();
-    loop {
-        let mut message = 0;
-        let mut key = 0;
-        let mut overlapped: *mut OVERLAPPED = std::ptr::null_mut();
-        // SAFETY: the owned port and writable outputs.
-        if unsafe {
-            GetQueuedCompletionStatus(
-                port,
-                &raw mut message,
-                &raw mut key,
-                &raw mut overlapped,
-                INFINITE,
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-        if key == job.addr() && message == JOB_OBJECT_MSG_NEW_PROCESS {
-            // The message carries the new member's PID.
-            members.admit(job, u32::try_from(overlapped.addr()).unwrap_or(0))?;
-        }
-        if key == MEMBER_EXITED {
-            members.release(message);
-        }
-        // Job messages are notifications whose delivery is not guaranteed:
-        // once the owner has exited, every listed member is admitted too.
-        if key == OWNER_EXITED {
-            for pid in super::custody::members(job)? {
-                members.admit(job, pid)?;
-            }
-        }
-        // A member stops counting as active before its process has fully
-        // exited, so the Job goes only once no member is active and every
-        // admitted one has signaled its exit.
-        if members.is_empty() && active_processes(job)? == 0 {
-            break;
-        }
-    }
-    // SAFETY: the Job handle; closing it lets the name go only now.
-    unsafe { CloseHandle(job) };
-    Ok(())
-}
-
 /// The completion port that member exit waits post to; one per custodian.
 static PORT: AtomicUsize = AtomicUsize::new(0);
 
@@ -324,42 +400,33 @@ impl Members {
         if self.0.contains_key(&pid) {
             return Ok(());
         }
-        // SAFETY: opening a handle to a PID; owned below.
-        let process = unsafe {
-            OpenProcess(
-                PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
-                0,
-                pid,
-            )
-        };
-        if process.is_null() {
+        let Some(process) = member(job, pid)? else {
             return Ok(());
-        }
-        let mut member = 0;
+        };
         let mut wait: HANDLE = std::ptr::null_mut();
-        // SAFETY: owned process and Job handles and a writable result; the
-        // wait reports once, with the PID as its context.
-        let watched = unsafe {
-            IsProcessInJob(process, job, &raw mut member) != 0
-                && member != 0
-                && RegisterWaitForSingleObject(
-                    &raw mut wait,
-                    process,
-                    Some(member_exited),
-                    std::ptr::with_exposed_provenance(pid as usize),
-                    INFINITE,
-                    WT_EXECUTEONLYONCE,
-                ) != 0
-        };
-        if watched {
-            self.0.insert(pid, (process, wait));
-            return Ok(());
+        // SAFETY: this retained member's handle and a writable wait handle;
+        // the wait reports once, with the PID as its context.
+        if unsafe {
+            RegisterWaitForSingleObject(
+                &raw mut wait,
+                process.as_raw_handle(),
+                Some(member_exited),
+                std::ptr::with_exposed_provenance(pid as usize),
+                INFINITE,
+                WT_EXECUTEONLYONCE,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
         }
-        let error = io::Error::last_os_error();
-        // SAFETY: the handle opened above.
-        unsafe { CloseHandle(process) };
-        // Only a failed registration of a member is an error.
-        if member != 0 { Err(error) } else { Ok(()) }
+        self.0.insert(
+            pid,
+            (
+                std::os::windows::io::IntoRawHandle::into_raw_handle(process),
+                wait,
+            ),
+        );
+        Ok(())
     }
 
     /// Releases the member `pid`, whose exit its wait reported.
@@ -398,4 +465,53 @@ fn active_processes(job: HANDLE) -> io::Result<u32> {
         return Err(io::Error::last_os_error());
     }
     Ok(accounting.ActiveProcesses)
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    #[test]
+    fn opening_failure_is_not_a_process_exit_witness() {
+        // SAFETY: this test's thread-local last-error slot.
+        unsafe { SetLastError(0) };
+        // Unsupported access bits cause a real OpenProcess failure against
+        // this still-running process, without changing its security policy.
+        let opened = open_process(u32::MAX, std::process::id());
+        // SAFETY: read this thread's actual OpenProcess failure cause.
+        let code = unsafe { GetLastError() };
+        eprintln!("CUSTODIAN_OPEN_FAILURE native_error={code} result={opened:?}");
+        assert_ne!(code, 0, "the OS must reject the requested access");
+        assert!(
+            opened.is_err(),
+            "an inaccessible live process must not be classified as exited"
+        );
+    }
+
+    #[test]
+    fn an_invalid_job_cannot_prove_a_live_process_is_not_a_member() {
+        let mut members = Members::default();
+        let admitted = members.admit(INVALID_HANDLE_VALUE, std::process::id());
+        eprintln!("CUSTODIAN_MEMBERSHIP_FAILURE result={admitted:?}");
+        assert!(
+            admitted.is_err(),
+            "a failed Job query must not classify a live process as a nonmember"
+        );
+        assert!(members.is_empty());
+    }
+
+    #[test]
+    fn a_recorded_process_requires_both_its_pid_and_creation_time() -> io::Result<()> {
+        let process = open_process(
+            PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+            std::process::id(),
+        )?
+        .ok_or(io::ErrorKind::NotFound)?;
+        let recorded = identity(process.as_raw_handle())?;
+        assert!(recorded_process(&recorded)?.is_some());
+        let created = creation_time(process.as_raw_handle())?;
+        let reused = format!("{}-{}", std::process::id(), created ^ 1);
+        assert!(recorded_process(&reused)?.is_none());
+        Ok(())
+    }
 }

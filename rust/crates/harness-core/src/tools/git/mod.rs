@@ -59,6 +59,10 @@ pub(crate) struct WorkspaceGitExecutor<'a, F> {
     pub current: LocalWorkspace,
     /// Demand-backed workspace view.
     pub lazy_current: View<'a>,
+    /// Exact native inspection retained only for this read command.
+    pub inspection: Option<(GitTreeRef, acyclic_fs::NativeGitView<'a>)>,
+    /// Inspection commands never exactify or recover durable views.
+    pub read_only: bool,
     /// Compatibility repository identity.
     pub repository_id: acyclic_fs::WorkspaceId,
     /// Current ignore policy.
@@ -117,14 +121,18 @@ mod failure;
 pub use failure::Failure;
 mod executor;
 mod materialize;
+mod readonly;
 mod resolve;
 mod restore;
+pub use commands::is_read_only;
 pub(crate) use commands::{git_apply_patch, git_policy, git_workspace_tree, run_git_command};
 pub(crate) use materialize::RootMaterializingGitExecutor;
 #[doc(hidden)]
 pub use materialize::publish_checkout_transition;
 
 mod run;
+#[doc(hidden)]
+pub use run::inspect_with_guard;
 #[doc(hidden)]
 pub use run::run_with_guard;
 pub use run::{Output, Workspace, run};

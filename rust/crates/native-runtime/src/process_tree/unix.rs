@@ -16,7 +16,27 @@ pub(super) fn observe_exit_id(
     id: libc::id_t,
     meter: Option<&dyn crate::NativeReadMeter>,
 ) -> io::Result<Option<ExitStatus>> {
-    let flags = libc::WEXITED | libc::WNOWAIT | libc::WNOHANG;
+    exit_status_id(id, meter, libc::WEXITED | libc::WNOWAIT | libc::WNOHANG)
+}
+
+/// A failed Darwin process registration names an owned child already exiting.
+/// Wait for its terminal status without reaping or subscribing to a lost edge.
+#[cfg(any(target_vendor = "apple", test))]
+pub(super) fn await_exiting_id(
+    id: libc::id_t,
+    meter: Option<&dyn crate::NativeReadMeter>,
+) -> io::Result<ExitStatus> {
+    exit_status_id(id, meter, libc::WEXITED | libc::WNOWAIT)?
+        .ok_or_else(|| io::Error::other("exiting child has no terminal status"))
+}
+
+fn exit_status_id(
+    id: libc::id_t,
+    meter: Option<&dyn crate::NativeReadMeter>,
+    flags: libc::c_int,
+) -> io::Result<Option<ExitStatus>> {
+    #[cfg(test)]
+    super::exit_wait::observed();
     loop {
         // SAFETY: initialized OS output storage and the exclusively owned
         // child's ID. WNOWAIT retains the leader until group termination,
@@ -581,53 +601,17 @@ impl Guard {
 }
 
 #[cfg(target_vendor = "apple")]
-fn group_has_no_live_members(
-    group: libc::pid_t,
-    meter: Option<&dyn crate::NativeReadMeter>,
-) -> io::Result<bool> {
-    let deadline = std::time::Instant::now() + super::ProcessTree::TERMINATION_TIMEOUT;
-    loop {
-        if group_snapshot_has_no_live_members(group, meter)? {
-            return Ok(true);
-        }
-        if std::time::Instant::now() >= deadline {
-            return Ok(false);
-        }
-        super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-            std::thread::sleep(super::ProcessTree::TERMINATION_POLL_INTERVAL);
-            Ok(())
-        })?;
-    }
-}
+#[path = "apple_group_wait.rs"]
+mod apple_group_wait;
 
 #[cfg(target_vendor = "apple")]
-fn group_snapshot_has_no_live_members(
+pub(super) fn group_has_no_live_members(
     group: libc::pid_t,
     meter: Option<&dyn crate::NativeReadMeter>,
 ) -> io::Result<bool> {
-    let mut members = [0_i32; 2];
-    let bytes = i32::try_from(std::mem::size_of_val(&members)).map_err(io::Error::other)?;
-    let id = u32::try_from(group).map_err(io::Error::other)?;
-    // libproc returns zero both for an empty list and for an errno failure.
-    let read = super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-        // SAFETY: thread-local errno and a writable, correctly sized PID array.
-        Ok(unsafe {
-            *libc::__error() = 0;
-            libc::proc_listpids(2, id, members.as_mut_ptr().cast(), bytes)
-        })
-    })?;
-    if read <= 0 {
-        let error = io::Error::last_os_error();
-        return if read == 0 && error.raw_os_error() == Some(0) {
-            Ok(true)
-        } else {
-            Err(error)
-        };
-    }
-    if read == i32::try_from(std::mem::size_of::<libc::pid_t>()).map_err(io::Error::other)?
-        && members.first() == Some(&group)
-    {
-        return Ok(observe_exit_id(id, meter)?.is_some());
-    }
-    Ok(false)
+    apple_group_wait::wait(group, meter)
 }
+
+#[cfg(test)]
+#[path = "termination_wait_tests.rs"]
+mod termination_wait_tests;

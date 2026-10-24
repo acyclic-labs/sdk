@@ -211,6 +211,7 @@ pub(super) fn par_bench(args: &[String]) -> Result<(), Failure> {
                     |_| Ok(acyclic_native_runtime::ProcessInput::default()),
                     None,
                     None,
+                    None,
                 )
                 .map_err(|failure| failure.error)?;
             if !output.status.success() {

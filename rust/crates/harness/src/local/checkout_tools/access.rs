@@ -33,7 +33,7 @@ impl CheckoutTools {
         ceiling: &Capabilities,
     ) -> Result<()> {
         let state = acyclic_fs::GitCompatStore::load(
-            &self.workspace.store,
+            &self.workspace.store.inspecting(),
             self.workspace.view().workspace().id(),
         )
         .await
@@ -76,7 +76,7 @@ impl CheckoutTools {
             let workspace = acyclic_fs::WorkspaceResolver::resolve(
                 &(
                     self.workspace.filesystem.clone(),
-                    acyclic_fs::WorkspaceGraph::new(self.workspace.store.clone()),
+                    acyclic_fs::WorkspaceGraph::new(self.workspace.store.inspecting()),
                 ),
                 id,
             )

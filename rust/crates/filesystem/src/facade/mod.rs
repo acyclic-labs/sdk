@@ -158,6 +158,10 @@ mod rename_bindings;
 pub(crate) use extents::seek_record_extent_with_accounting;
 mod fork;
 mod fs;
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+mod inspection;
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+pub use inspection::{NativeGitInspectionError, NativeGitView, ReadOnlyGeneration};
 mod generation;
 mod generation_cache;
 mod generation_position;

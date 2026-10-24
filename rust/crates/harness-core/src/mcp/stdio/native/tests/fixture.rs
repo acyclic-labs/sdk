@@ -82,6 +82,7 @@ fn coalesced_notification_and_request_preserve_both_protocol_lines() -> Result<(
             },
             None,
             None,
+            None,
         )
         .map_err(|failure| invalid(failure.error))?;
     assert!(pending.is_empty());

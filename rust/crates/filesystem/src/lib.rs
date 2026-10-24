@@ -207,6 +207,8 @@ pub use facade::{
 };
 #[cfg(any(test, all(feature = "memory", feature = "distributed")))]
 pub use facade::{MemoryAuthorityBackend, MemoryFs, MemoryObjectBackend};
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+pub use facade::{NativeGitInspectionError, NativeGitView, ReadOnlyGeneration};
 pub use foundation::{
     AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES, AuthorityId, CheckoutId, Digest, DurableCommit, Epoch,
     FileId, GenerationId, Head, MountId, OperationId, ProposedCommit, Sequence, VolumeId, WatchId,

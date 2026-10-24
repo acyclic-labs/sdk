@@ -2,6 +2,10 @@ use super::*;
 
 /// Durable bindings and content-addressed source facts.
 pub trait LazyWorkspaceStore: Clone + Send + Sync + 'static {
+    /// Selects reads that never publish recovery or cache state.
+    fn for_inspection(&self) -> Self {
+        self.clone()
+    }
     /// Loads a workspace using the caller's accounting context.
     fn load_lazy_workspace(
         &self,

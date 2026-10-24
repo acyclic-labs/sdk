@@ -1,3 +1,4 @@
+mod rebind;
 use super::{FilesystemHost, PreparationIo, UploadRecord};
 use crate::executor::stock_boundary;
 use crate::{

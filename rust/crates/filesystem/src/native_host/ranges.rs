@@ -89,8 +89,6 @@ fn fill_unix_ranges<W: SourceDemandReadWork>(
     allocation: &mut W::Allocation,
     work: &mut W,
 ) -> Result<(), DemandError> {
-    let element = std::mem::size_of::<HostDataRange>();
-
     let seek = |offset: u64, kind: i32, work: &mut W| {
         let offset = libc::off_t::try_from(offset).map_err(|_| DemandError::InvalidRequest)?;
         loop {
@@ -106,18 +104,62 @@ fn fill_unix_ranges<W: SourceDemandReadWork>(
             }
         }
     };
-    let mut offset = offset;
+    fill_unix_ranges_with(
+        (offset, end),
+        maximum_ranges,
+        ranges,
+        allocation,
+        work,
+        seek,
+    )
+}
+
+#[cfg(unix)]
+fn fill_unix_ranges_with<W: SourceDemandReadWork>(
+    (start, end): (u64, u64),
+    maximum_ranges: u32,
+    ranges: &mut Vec<HostDataRange>,
+    allocation: &mut W::Allocation,
+    work: &mut W,
+    mut seek: impl FnMut(u64, i32, &mut W) -> Result<u64, DemandError>,
+) -> Result<(), DemandError> {
+    let unavailable = |error: &DemandError| {
+        matches!(
+            error,
+            DemandError::Io(error) if matches!(
+                error.raw_os_error(),
+                Some(libc::ENOTTY | libc::ENOTSUP | libc::EINVAL)
+            )
+        )
+    };
+    let mut offset = start;
     while offset < end {
-        let data = match seek(offset, libc::SEEK_DATA, work) {
-            Err(DemandError::Io(error)) if error.raw_os_error() == Some(libc::ENXIO) => {
-                break;
+        let queried: Result<Option<(u64, u64)>, DemandError> = (|| {
+            let data = match seek(offset, libc::SEEK_DATA, work) {
+                Err(DemandError::Io(error)) if error.raw_os_error() == Some(libc::ENXIO) => {
+                    return Ok(None);
+                }
+                result => result?,
+            };
+            if data >= end {
+                return Ok(None);
             }
-            result => result?,
+            Ok(Some((data, seek(data, libc::SEEK_HOLE, work)?.min(end))))
+        })();
+        let (data, hole) = match queried {
+            Err(error) if unavailable(&error) => {
+                // Sparse allocation is an optional source capability. When
+                // unavailable, one conservative range admits every byte;
+                // absence of a range report can never become missing data.
+                ranges.clear();
+                offset = start;
+                (start, end)
+            }
+            result => match result? {
+                Some(range) => range,
+                None => break,
+            },
         };
-        if data >= end {
-            break;
-        }
-        let hole = seek(data, libc::SEEK_HOLE, work)?.min(end);
         if hole <= data || data < offset || ranges.len() == maximum_ranges as usize {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -125,46 +167,65 @@ fn fill_unix_ranges<W: SourceDemandReadWork>(
             )
             .into());
         }
-        if ranges.len() == ranges.capacity() {
-            let wanted = ranges.len() + 1;
-            let grown = ranges
-                .capacity()
-                .saturating_mul(2)
-                .max(4)
-                .min(maximum_ranges as usize)
-                .max(wanted);
-            let available = work.remaining()?.peak_allocation_bytes;
-            let capacity = if grown
-                .checked_mul(element)
-                .is_some_and(|bytes| bytes as u64 <= available)
-            {
-                grown
-            } else {
-                wanted
-            };
-            let (mut replacement, next) = buffer(capacity, work)?;
-            let copied = copy_work((ranges.len() * element) as u64);
-            if let Err(error) = work.started_io(copied) {
-                drop(replacement);
-                work.release(next)?;
-                return Err(error);
-            }
-            replacement.append(ranges);
-            drop(std::mem::replace(ranges, replacement));
-            work.release(std::mem::replace(allocation, next))?;
-        }
-        work.started_io(WorkCounters {
-            items_examined: 1,
-            bytes_copied: element as u64,
-            ..WorkCounters::UNCHARGED
-        })?;
-        ranges.push(HostDataRange {
-            offset: data,
-            length: hole - data,
-        });
+        append_unix_range(
+            ranges,
+            allocation,
+            HostDataRange {
+                offset: data,
+                length: hole - data,
+            },
+            maximum_ranges,
+            work,
+        )?;
         offset = hole;
     }
 
+    Ok(())
+}
+
+#[cfg(unix)]
+fn append_unix_range<W: SourceDemandReadWork>(
+    ranges: &mut Vec<HostDataRange>,
+    allocation: &mut W::Allocation,
+    range: HostDataRange,
+    maximum_ranges: u32,
+    work: &mut W,
+) -> Result<(), DemandError> {
+    let element = std::mem::size_of::<HostDataRange>();
+    if ranges.len() == ranges.capacity() {
+        let wanted = ranges.len() + 1;
+        let grown = ranges
+            .capacity()
+            .saturating_mul(2)
+            .max(4)
+            .min(maximum_ranges as usize)
+            .max(wanted);
+        let available = work.remaining()?.peak_allocation_bytes;
+        let capacity = if grown
+            .checked_mul(element)
+            .is_some_and(|bytes| bytes as u64 <= available)
+        {
+            grown
+        } else {
+            wanted
+        };
+        let (mut replacement, next) = buffer(capacity, work)?;
+        let copied = copy_work((ranges.len() * element) as u64);
+        if let Err(error) = work.started_io(copied) {
+            drop(replacement);
+            work.release(next)?;
+            return Err(error);
+        }
+        replacement.append(ranges);
+        drop(std::mem::replace(ranges, replacement));
+        work.release(std::mem::replace(allocation, next))?;
+    }
+    work.started_io(WorkCounters {
+        items_examined: 1,
+        bytes_copied: element as u64,
+        ..WorkCounters::UNCHARGED
+    })?;
+    ranges.push(range);
     Ok(())
 }
 
@@ -270,4 +331,97 @@ fn fill_windows_ranges<W: SourceDemandReadWork>(
     ranges.truncate(used);
 
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod range_capability_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        #[test]
+        fn unavailable_sparse_queries_never_omit_admitted_source_bytes(
+            start in 0u64..4096, length in 1u64..4096, hole_query in any::<bool>(),
+            error_index in 0usize..3,
+        ) {
+            let codes = [libc::ENOTTY, libc::ENOTSUP, libc::EINVAL];
+            let cancellation = crate::CancellationToken::new();
+            let mut work = crate::demand::DemandWork::new(crate::WorkBudget {
+                allocation_operations: 1, peak_allocation_bytes: 4096, backend_read_operations: 8,
+                items_examined: 16, bytes_copied: 4096,
+                ..crate::WorkBudget::default()
+            }, &cancellation);
+            let (mut ranges, mut allocation) = buffer::<HostDataRange,_>(0, &mut work).unwrap();
+            let mut calls = 0;
+            fill_unix_ranges_with((start,start+length), 1, &mut ranges, &mut allocation, &mut work,
+                |offset, kind, work| {
+                    work.started_io(READ)?;
+                    calls += 1;
+                    if hole_query && kind == libc::SEEK_DATA { Ok(offset) }
+                    else { Err(DemandError::Io(io::Error::from_raw_os_error(codes[error_index]))) }
+                }).unwrap();
+            prop_assert_eq!(calls, if hole_query {2} else {1});
+            prop_assert_eq!(ranges.len(),1);
+            prop_assert_eq!(ranges[0].offset,start);
+            prop_assert_eq!(ranges[0].length,length);
+            drop(ranges);
+            work.release(allocation).unwrap();
+            prop_assert_eq!(work.work.allocation_operations,1);
+            prop_assert_eq!(work.live_allocation_bytes(),0);
+        }
+
+        #[test]
+        fn losing_the_sparse_capability_discards_an_incomplete_prefix(
+            start in 0u64..4096, prior_ranges in 1usize..4,
+            error_index in 0usize..3, hole_query in any::<bool>(),
+        ) {
+            let length = prior_ranges as u64 * 2 + 8;
+            let codes = [libc::ENOTTY, libc::ENOTSUP, libc::EINVAL];
+            let cancellation = crate::CancellationToken::new();
+            let mut work = crate::demand::DemandWork::new(crate::WorkBudget {
+                allocation_operations: 1, peak_allocation_bytes: 4096, backend_read_operations: 16,
+                items_examined: 64, bytes_copied: 4096,
+                ..crate::WorkBudget::default()
+            }, &cancellation);
+            let (mut ranges, mut allocation) = buffer::<HostDataRange,_>(0, &mut work).unwrap();
+            let mut calls = 0;
+            fill_unix_ranges_with((start,start+length), 4, &mut ranges, &mut allocation, &mut work,
+                |offset, kind, work| {
+                    work.started_io(READ)?;
+                    calls += 1;
+                    if calls <= prior_ranges * 2 { Ok(offset + 1) }
+                    else if hole_query && kind == libc::SEEK_DATA { Ok(offset) }
+                    else { Err(DemandError::Io(io::Error::from_raw_os_error(codes[error_index]))) }
+                }).unwrap();
+            prop_assert_eq!(calls, prior_ranges * 2 + if hole_query {2} else {1});
+            prop_assert_eq!(ranges.len(),1);
+            prop_assert_eq!(ranges[0].offset,start);
+            prop_assert_eq!(ranges[0].length,length);
+            drop(ranges);
+            work.release(allocation).unwrap();
+            prop_assert_eq!(work.work.allocation_operations,1);
+            prop_assert_eq!(work.live_allocation_bytes(),0);
+        }
+    }
+
+    #[test]
+    fn a_real_source_io_failure_never_becomes_a_dense_range() {
+        let mut work = ordinary_work();
+        let (mut ranges, mut allocation) = buffer::<HostDataRange, _>(0, &mut work).unwrap();
+        let result = fill_unix_ranges_with(
+            (0, 16),
+            1,
+            &mut ranges,
+            &mut allocation,
+            &mut work,
+            |_, _, _| Err(DemandError::Io(io::Error::from_raw_os_error(libc::EIO))),
+        );
+        assert!(
+            matches!(result,Err(DemandError::Io(error)) if error.raw_os_error()==Some(libc::EIO))
+        );
+        assert!(ranges.is_empty());
+        drop(ranges);
+        work.release(allocation).unwrap();
+    }
 }

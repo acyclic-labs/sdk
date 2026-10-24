@@ -129,7 +129,7 @@ fn run_cut(
         .env("ACYCLIC_CORE_STATE_CRASH_ACKNOWLEDGED", &acknowledged)
         .env("ACYCLIC_CORE_STATE_CRASH_POINT", point.to_string())
         .env("ACYCLIC_CORE_STATE_CRASH_REPORT", &report)
-        .stdout(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
     if owned {
         child.env("ACYCLIC_CORE_STATE_CRASH_OWNED", "1");
@@ -137,18 +137,21 @@ fn run_cut(
     let mut tree = acyclic_native_runtime::ProcessTree::spawn(&mut child).unwrap();
     let mut cut_reached = false;
     let outcome = tree.wait_with_output(
-        std::time::Duration::from_secs(120),
-        0,
+        std::time::Duration::from_secs(2),
+        4096,
         None,
-        || {
-            if report.try_exists()? {
+        || Ok(()),
+        |output| {
+            if let acyclic_native_runtime::ProcessOutput::Stdout(bytes) = output
+                && bytes.contains(&0)
+            {
+                assert!(report.try_exists()?);
                 cut_reached = true;
-                Err(std::io::ErrorKind::Interrupted.into())
-            } else {
-                Ok(())
+                return Err(std::io::ErrorKind::Interrupted.into());
             }
+            Ok(acyclic_native_runtime::ProcessInput::default())
         },
-        |_| Ok(acyclic_native_runtime::ProcessInput::default()),
+        None,
         None,
         None,
     );
@@ -270,4 +273,17 @@ fn a_panicking_cut_still_drains_every_other_cut_before_returning() {
     });
     assert!(result.is_err());
     assert_eq!(finished.load(Ordering::SeqCst), 36);
+}
+
+#[test]
+fn silent_crash_cut_notifies_capture_before_its_deadline() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = crash_store(&directory.path().join("reference"), true);
+    let mut snapshots = vec![core_snapshot(&store)];
+    for step in 0..CRASH_GROUPS[0].end {
+        crash_step(&store, step);
+        snapshots.push(core_snapshot(&store));
+    }
+    drop(store);
+    assert_eq!(run_cut(directory.path(), &snapshots, true, 1), None);
 }

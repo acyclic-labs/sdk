@@ -276,7 +276,7 @@ impl LocalWorkspace {
         self.selection_reads
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root = self.view.workspace().id();
-        acyclic_fs::GitCompatRepository::new(root, self.store.clone())
+        acyclic_fs::GitCompatRepository::new(root, self.store.inspecting())
             .checkout_selection()
             .await
             .map_err(storage)
@@ -296,7 +296,7 @@ impl LocalWorkspace {
         let selected = acyclic_fs::WorkspaceResolver::resolve(
             &(
                 self.filesystem.clone(),
-                acyclic_fs::WorkspaceGraph::new(self.store.clone()),
+                acyclic_fs::WorkspaceGraph::new(self.store.inspecting()),
             ),
             selected,
         )

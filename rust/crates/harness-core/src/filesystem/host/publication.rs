@@ -284,6 +284,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         } else {
             None
         };
-        Ok((recorded.0.0, payload))
+        Ok((self.seal_publication(recorded.0.0, Some(io))?, payload))
     }
 }

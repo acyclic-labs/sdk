@@ -32,7 +32,7 @@ impl Hooks {
             input.into(),
             registry,
             65_536,
-            Arc::new(|| Ok(())),
+            (Arc::new(|| Ok(())), None),
         )
         .await
     }
@@ -45,9 +45,10 @@ impl Hooks {
         input: HookInput<'_>,
         registry: &ToolRegistry,
         maximum_bytes: u64,
-        check: HookCheck,
+        control: (HookCheck, Option<acyclic_native_runtime::ProcessWake>),
     ) -> Result<HookOutput> {
         let (workspace, cwd) = paths;
+        let (check, wake) = control;
         if self.bindings.is_empty() {
             return Ok(HookOutput::default());
         }
@@ -59,6 +60,7 @@ impl Hooks {
                 Arc::clone(&request),
                 Arc::clone(&check),
                 quota,
+                wake.clone(),
             )
         })
         .await
@@ -70,10 +72,12 @@ pub(super) async fn run_hook(
     request: Arc<(PathBuf, PathBuf, Vec<u8>)>,
     owner_check: HookCheck,
     maximum_bytes: usize,
+    owner_wake: Option<acyclic_native_runtime::ProcessWake>,
 ) -> Result<(Option<i32>, Vec<u8>, Vec<u8>)> {
     acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
-    let cancellation = HookCancellation::new();
+    let cancellation = HookCancellation::new().map_err(Error::process_io)?;
     let cancelled = Arc::clone(&cancellation.0);
+    let wake = cancellation.1.clone();
     run_blocking_io(
         move || {
             if maximum_bytes == 0 {
@@ -96,6 +100,14 @@ pub(super) async fn run_hook(
                 .stderr(Stdio::piped());
             check().map_err(Error::process_io)?;
             let mut tree = ProcessTree::spawn(&mut command).map_err(Error::process_io)?;
+            let has_owner = owner_wake.is_some();
+            let signals = [wake.clone(), owner_wake.unwrap_or(wake)];
+            let signals = if has_owner {
+                signals.as_slice()
+            } else {
+                let [cancel, _] = &signals;
+                std::slice::from_ref(cancel)
+            };
             let output = tree
                 .wait_with_output(
                     Duration::from_millis(hook.timeout_ms),
@@ -105,6 +117,7 @@ pub(super) async fn run_hook(
                     |_| Ok(ProcessInput::default()),
                     None,
                     None,
+                    Some(signals),
                 )
                 .map_err(|failure| {
                     Error::process_exit(
@@ -179,17 +192,21 @@ pub(super) fn expand_exec_path<'a>(
     }
 }
 
-struct HookCancellation(Arc<AtomicBool>);
+struct HookCancellation(Arc<AtomicBool>, acyclic_native_runtime::ProcessWake);
 
 impl HookCancellation {
-    fn new() -> Self {
-        Self(Arc::new(AtomicBool::new(false)))
+    fn new() -> std::io::Result<Self> {
+        Ok(Self(
+            Arc::new(AtomicBool::new(false)),
+            acyclic_native_runtime::ProcessWake::new()?,
+        ))
     }
 }
 
 impl Drop for HookCancellation {
     fn drop(&mut self) {
         self.0.store(true, Ordering::Release);
+        let _ = self.1.stop();
     }
 }
 

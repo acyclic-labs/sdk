@@ -1,21 +1,20 @@
 //! Tool output is replayable task files, published under the current task fence.
 use super::*;
-use crate::{
-    durable_host::TaskJournalOwner,
-    task_volume::{Component, FileKey, Generation, TaskFile, TaskFiles, ToolFile, Write},
-};
+use crate::{durable_host::TaskJournalOwner, task_volume::TaskFiles};
 use acyclic_native_runtime::ProcessOutput;
-use acyclic_stream::OwnedBytes;
+use std::time::Duration;
+use tokio::sync::{Mutex, Notify, oneshot};
 
-#[cfg(test)]
-#[cfg(not(acyclic_harness_loom))]
+#[cfg(all(test, not(acyclic_harness_loom)))]
 mod tests;
+mod writer;
 
 /// The native contract's bound on one host control check. Checkout checks
 /// never apply it as a wall-clock deadline: each completes when the journal
 /// answers or the task fence is lost, so host load can delay a successful
 /// command but never fail it.
 pub(super) const CONTROL_TIMEOUT_MS: u32 = 1000;
+const OUTPUT_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Waits, from a native capture worker, for a fenced journal step: an output
 /// publication or an owner check. It completes when the journal answers or
@@ -29,127 +28,193 @@ pub(super) fn await_fence<T, F: std::future::Future<Output = std::io::Result<T>>
 
 pub(super) struct Output {
     pub(super) owner: Arc<TaskJournalOwner<LocalStream>>,
-    volume: Arc<TaskFiles<acyclic_stream::LocalStream>>,
-    generation: Generation,
-    task: Component,
-    call: Component,
-    sequence: (u64, u64),
-    step: u64,
+    writer: Arc<Mutex<writer::Writer>>,
+    ready: Arc<Notify>,
+    stop: Option<oneshot::Sender<()>>,
+    timer: Option<tokio::task::JoinHandle<()>>,
     runtime: tokio::runtime::Handle,
+    finished: bool,
+    pub(super) health: Health,
+}
+
+#[derive(Clone, Default)]
+pub(super) struct Health(Arc<std::sync::Mutex<HealthState>>);
+
+#[derive(Default)]
+struct HealthState {
+    failure: Option<String>,
+    wake: Option<acyclic_native_runtime::ProcessWake>,
+}
+
+impl Health {
+    pub(super) fn check(&self) -> std::io::Result<()> {
+        match self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .failure
+            .as_ref()
+        {
+            Some(cause) => Err(std::io::Error::other(cause.clone())),
+            None => Ok(()),
+        }
+    }
+
+    pub(super) fn wake_on_failure(
+        &self,
+        wake: acyclic_native_runtime::ProcessWake,
+    ) -> std::io::Result<()> {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let failed = state.failure.is_some();
+        if failed {
+            wake.stop()?;
+        }
+        state.wake = Some(wake);
+        drop(state);
+        Ok(())
+    }
+
+    fn fail(&self, cause: impl std::fmt::Display) {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.failure.get_or_insert_with(|| cause.to_string());
+        let wake = state.wake.clone();
+        drop(state);
+        if let Some(wake) = wake {
+            let _ = wake.stop();
+        }
+    }
 }
 
 impl Output {
     pub(super) async fn open(
         context: &ToolContext,
-        volume: Arc<TaskFiles<acyclic_stream::LocalStream>>,
+        volume: Arc<TaskFiles<LocalStream>>,
         request: Vec<u8>,
     ) -> Result<Self> {
-        let owner = context.task().ordinary_journal_owner::<LocalStream>()?;
-        let task = Component::new(owner.task_id().to_string())?;
-        // Runtime operation IDs are canonical and unique across model turns.
-        // The request retains the provider's call_id unchanged.
-        let call = Component::new(context.operation_id().to_string())?;
-        let turn = volume
-            .inner
-            .model_turn(
-                task.clone(),
-                Component::new(context.model_turn.0.to_string())?,
-                context.model_turn.1,
-                None,
-            )
-            .await?;
-        let generation = volume.inner.head().await?;
-        let mut output = Self {
+        let writer = writer::Writer::open(context, volume, request).await?;
+        let owner = Arc::clone(&writer.owner);
+        let writer = Arc::new(Mutex::new(writer));
+        let ready = Arc::new(Notify::new());
+        let health = Health::default();
+        let (stop, stopped) = oneshot::channel();
+        let timer = tokio::spawn(flush_ready(
+            writer.clone(),
+            ready.clone(),
+            health.clone(),
+            stopped,
+        ));
+        Ok(Self {
             owner,
-            volume,
-            generation,
-            task,
-            call,
-            sequence: (0, 0),
-            step: turn,
+            writer,
+            ready,
+            stop: Some(stop),
+            timer: Some(timer),
             runtime: tokio::runtime::Handle::current(),
-        };
-        output.publish(ToolFile::Request, request.into()).await?;
-        Ok(output)
+            finished: false,
+            health,
+        })
     }
 
-    async fn publish(&mut self, file: ToolFile, bytes: OwnedBytes) -> Result<()> {
-        let settlement = matches!(file, ToolFile::Result);
-        let write = Write::new(
-            FileKey::Task {
-                task: self.task.clone(),
-                file: TaskFile::Tool {
-                    turn: self.step,
-                    call: self.call.clone(),
-                    file,
-                },
-            },
-            bytes,
-        );
-        let owner = self.owner.as_ref();
-        self.generation = crate::task_volume::publish(
-            &self.volume.inner,
-            self.generation,
-            &write,
-            || async move {
-                let condition = owner
-                    .condition(
-                        if settlement {
-                            crate::distributed::JournalWrite::Settlement
-                        } else {
-                            crate::distributed::JournalWrite::Fresh
-                        },
-                        &mut None,
-                    )
-                    .await?;
-                Ok::<_, crate::Error>((
-                    vec![condition],
-                    if settlement {
-                        None
-                    } else {
-                        owner.deadline_epoch_ms()
-                    },
-                ))
-            },
-        )
-        .await?;
-        Ok(())
-    }
-
+    // Native capture invokes this callback on its blocking I/O worker. Most
+    // chunks only copy into the bounded buffer; full batches publish immediately.
     pub(super) fn observe(&mut self, chunk: ProcessOutput<'_>) -> std::io::Result<()> {
-        let (file, bytes, mut next) = match chunk {
-            ProcessOutput::Stdout(bytes) => {
-                (ToolFile::Stdout(self.sequence.0), bytes, self.sequence)
-            }
-            ProcessOutput::Stderr(bytes) => {
-                (ToolFile::Stderr(self.sequence.1), bytes, self.sequence)
-            }
-        };
-        let sequence = match &file {
-            ToolFile::Stdout(_) => &mut next.0,
-            _ => &mut next.1,
-        };
-        *sequence = sequence
-            .checked_add(1)
-            .ok_or_else(|| std::io::Error::other("tool output sequence overflow"))?;
-        // The chunk is published when the journal accepts it under the task
-        // fence; a lost fence fails the publication. No wall-clock deadline
-        // applies, so a loaded host delays the command's output, never fails it.
-        let runtime = self.runtime.clone();
-        await_fence(&runtime, || async {
-            self.publish(file, bytes.to_vec().into())
-                .await
-                .map_err(std::io::Error::other)
-        })?;
-        self.sequence = next;
+        self.health.check()?;
+        let mut writer = self.writer.blocking_lock();
+        self.health.check()?;
+        let was_empty = !writer.pending();
+        if let Err(cause) = writer.observe(chunk) {
+            self.health.fail(&cause);
+            return Err(cause);
+        }
+        if was_empty && writer.pending() {
+            self.ready.notify_one();
+        }
         Ok(())
     }
 
     pub(super) async fn finish(&mut self, result: &ToolResult) -> Result<()> {
-        self.publish(
-            ToolFile::Result,
-            serde_json::to_vec(&result.value).map_err(storage)?.into(),
-        )
-        .await
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(timer) = self.timer.take() {
+            timer.await.map_err(storage)?;
+        }
+        // Joining the timer closes its last failure publication. A command
+        // that ended before its wake was consumed cannot publish success.
+        self.health.check().map_err(storage)?;
+        self.writer.lock().await.finish(result).await?;
+        self.finished = true;
+        Ok(())
+    }
+}
+
+impl Drop for Output {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        let timer = self.timer.take();
+        let writer = Arc::clone(&self.writer);
+        // Capture owns Output until the physical worker has drained and reaped
+        // its process tree. If the awaiting caller disappears, that worker's
+        // final drop still settles the accepted bytes under the original fence.
+        self.runtime.spawn(async move {
+            if let Some(timer) = timer
+                && let Err(cause) = timer.await
+            {
+                tracing::error!(?cause, "tool output timer cleanup failed");
+            }
+            let mut writer = writer.lock().await;
+            let result = async {
+                writer.flush(false, true).await?;
+                writer.flush(true, true).await
+            }
+            .await;
+            if let Err(cause) = result {
+                tracing::error!(?cause, "captured tool output cleanup failed");
+            }
+        });
+    }
+}
+
+async fn flush_ready(
+    writer: Arc<Mutex<writer::Writer>>,
+    ready: Arc<Notify>,
+    health: Health,
+    mut stopped: oneshot::Receiver<()>,
+) {
+    loop {
+        tokio::select! {
+            biased;
+            _ = &mut stopped => return,
+            () = ready.notified() => {},
+        }
+        if !writer.lock().await.pending() {
+            continue;
+        }
+        tokio::select! {
+            biased;
+            _ = &mut stopped => return,
+            () = tokio::time::sleep(OUTPUT_FLUSH_INTERVAL) => {},
+        }
+        let mut writer = writer.lock().await;
+        let result = async {
+            writer.flush(false, false).await?;
+            writer.flush(true, false).await
+        }
+        .await;
+        if let Err(cause) = result {
+            health.fail(cause);
+            return;
+        }
     }
 }

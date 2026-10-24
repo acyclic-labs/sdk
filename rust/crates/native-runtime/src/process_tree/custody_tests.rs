@@ -261,6 +261,14 @@ fn reopened_owner_fence_returns_only_after_the_killed_owners_tree_is_dead() {
 /// The PID of the custodian the only record in `processes` names.
 #[cfg(windows)]
 fn custodian_of(processes: &Path) -> u32 {
+    custodian_identity(processes)
+        .split_once('-')
+        .and_then(|(pid, _)| pid.parse().ok())
+        .expect("the record names its custodian PID")
+}
+
+#[cfg(windows)]
+fn custodian_identity(processes: &Path) -> String {
     let mut records = fs::read_dir(processes).expect("records");
     let record = records
         .next()
@@ -271,8 +279,7 @@ fn custodian_of(processes: &Path) -> u32 {
     record
         .to_str()
         .and_then(|name| name.split_once("-custodian-"))
-        .and_then(|(_, custodian)| custodian.split_once('-'))
-        .and_then(|(pid, _)| pid.parse().ok())
+        .map(|(_, custodian)| custodian.to_owned())
         .expect("the record names its custodian")
 }
 
@@ -409,13 +416,73 @@ fn trees_of_two_custody_directories_in_one_process_never_share_a_job() {
         let tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
         (custody, tree)
     };
-    let (_first_custody, mut first) = spawn("first");
+    let (first_custody, mut first) = spawn("first");
     let (_second_custody, mut second) = spawn("second");
     let survivor = Watch::new(tree_pid(&second)).expect("running second tree");
-    first.terminate(None).expect("terminate first");
+    let (sent, received) = std::sync::mpsc::channel();
+    let fence = std::thread::spawn(move || {
+        let result = first_custody.fence_stale();
+        let _ = sent.send(result);
+    });
+    let fenced = received.recv_timeout(Duration::from_secs(1));
     let survived = !survivor.exited();
     second.terminate(None).expect("terminate second");
+    first.terminate(None).expect("terminate first");
+    let fenced = fenced.expect("one Job's fence must not wait for another live Job");
+    fence.join().expect("fence worker");
+    assert_eq!(fenced.expect("fence"), 1);
     assert!(survived, "ending one directory's tree ended another's");
+}
+
+/// Sequential trees retain distinct Jobs but reuse their host's custodian.
+#[cfg(windows)]
+#[test]
+fn sequential_jobs_reuse_one_host_custodian() {
+    let root = tempfile::tempdir().expect("root");
+    let mut custodians = Vec::new();
+    let mut micros = Vec::new();
+    for index in 0..4 {
+        let processes = root.path().join(index.to_string());
+        let custody = ProcessCustody::acquire(&processes).expect("custody");
+        let mut command = program(root.path());
+        let started = std::time::Instant::now();
+        let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
+        micros.push(started.elapsed().as_micros());
+        custodians.push(custodian_identity(&processes));
+        if index == 0 {
+            let custodian = custodian_of(&processes);
+            let before = handle_count(custodian);
+            for failed in 0..32 {
+                let custody =
+                    ProcessCustody::acquire(&root.path().join(format!("aborted-{failed}")))
+                        .expect("custody");
+                let mut command = Command::new(root.path().join("missing-program.exe"));
+                let error = ProcessTree::spawn_in_custody(&mut command, &custody)
+                    .err()
+                    .expect("missing program must fail admission");
+                assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+            }
+            let after = handle_count(custodian);
+            assert!(
+                after <= before + 16,
+                "aborted Jobs must retire from the shared custodian: {before} -> {after}"
+            );
+            assert!(
+                !Watch::new(tree_pid(&tree))
+                    .expect("first tree remains pinned")
+                    .exited(),
+                "a failed admission must not kill an unrelated live Job"
+            );
+        }
+        tree.terminate(None).expect("terminate");
+    }
+    eprintln!("CUSTODIAN_STARTUP calls=4 pids={custodians:?} elapsed_us={micros:?}");
+    assert!(
+        custodians
+            .first()
+            .is_some_and(|first| custodians.iter().all(|pid| pid == first)),
+        "sequential jobs must retain one custodian for their host"
+    );
 }
 
 /// Negative control: the same program outside custody survives its owner.

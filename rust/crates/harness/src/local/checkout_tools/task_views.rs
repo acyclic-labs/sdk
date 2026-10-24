@@ -5,6 +5,16 @@ use acyclic_fs::{
     kernel::KernelAccounting,
 };
 
+pub(super) async fn with_mount_owner<T>(
+    owner: &Arc<dyn crate::runtime::OwnedTaskMailbox>,
+    mount: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    owner.verify_owner(None)?.await?;
+    let mounted = mount.await?;
+    owner.verify_owner(None)?.await?;
+    Ok(mounted)
+}
+
 impl CheckoutTools {
     pub(super) async fn select(&self, context: &ToolContext) -> Result<Option<Arc<Self>>> {
         let (task, _) = context.task().owned_task_binding(None)?;
@@ -182,83 +192,80 @@ impl CheckoutTools {
         mounts: Option<Arc<workspace::Mounts>>,
         signed: &Scope,
     ) -> Result<Self> {
-        // Mount retirement may outlive the previous owner. Each
-        // live mount needs its own namespace so retiring it cannot
-        // detach a replacement owner's mount at the same path.
-        std::fs::create_dir_all(&self.workspace.mount_directory).map_err(storage)?;
-        let path = self
-            .workspace
-            .mount_directory
-            .join(crate::identity::fresh_uuid().to_string());
-        std::fs::create_dir(&path).map_err(storage)?;
-        let mut workspace = LocalWorkspace {
-            #[cfg(all(test, not(acyclic_harness_loom)))]
-            selection_reads: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(all(test, not(acyclic_harness_loom)))]
-            mount_advances: std::sync::atomic::AtomicUsize::new(0),
-            state: StateArc::new(AsyncMutex::new(State::new(
-                view.workspace().id(),
-                Arc::clone(&self.workspace.mounts),
-            ))),
-            mounts: mounts.unwrap_or_else(|| Arc::clone(&self.workspace.mounts)),
-            context_line: self.workspace.context_line().into(),
-            processes: self.workspace.processes.clone(),
-            path: path.clone(),
-            fresh: false,
-            import_source: false,
-            mount_directory: self.workspace.mount_directory.clone(),
-            view,
-            mounted: None,
-            identity: acyclic_fs::capture_root_identity(&path).map_err(storage)?,
-            filesystem: self.workspace.filesystem.clone(),
-            store: self.workspace.store.clone(),
-            mount_authority: self
+        with_mount_owner(owner, async {
+            // Mount retirement may outlive the previous owner. Each
+            // live mount needs its own namespace so retiring it cannot
+            // detach a replacement owner's mount at the same path.
+            std::fs::create_dir_all(&self.workspace.mount_directory).map_err(storage)?;
+            let path = self
                 .workspace
-                .mount_authority
-                .as_ref()
-                .map(|authority| authority.for_scope(signed))
-                .transpose()?,
-        };
-        let (active, pending) = workspace.selected_view().await?;
-        let selected = active.as_ref().unwrap_or_else(|| workspace.view());
-        let initial_view = selected.workspace().id();
-        let options = workspace.mount_options(selected.workspace()).await?;
-        let mounted = Arc::new(selected.mount(&path, options).await.map_err(storage)?);
-        workspace.path = path;
-        workspace.identity = acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)?;
-        workspace.mounted = Some(mounted);
-        workspace.mounts = workspace.mounts_at(&workspace.path).await?;
-        workspace.context_line = workspace.mounts.context_line();
-        reconciliation::recover_pending(
-            &workspace,
-            active.as_ref().unwrap_or_else(|| workspace.view()),
-            pending,
-            &|| async { owner.verify_owner(None)?.await },
-        )
-        .await?;
-        workspace.state = StateArc::new(AsyncMutex::new(State {
-            active,
-            initial_view,
-            workspace: None,
-            watcher: None,
-            children: Default::default(),
-            mounts: Arc::clone(&workspace.mounts),
-            initialized: true,
-        }));
-        let workspace = Arc::new(workspace);
-        let (capture_options, capture_policy) = capture::configuration(&workspace)?;
-        Ok(Self {
-            signed: signed.clone(),
-            workspace: Arc::clone(&workspace),
-            read_grant: self.read_grant.clone(),
-            write_grant: self.write_grant.clone(),
-            capture_options,
-            capture_policy,
-            clock: Arc::clone(&self.clock),
-            task_files: Arc::clone(&self.task_files),
-            state: StateArc::clone(&workspace.state),
-            selected: true,
+                .mount_directory
+                .join(crate::identity::fresh_uuid().to_string());
+            std::fs::create_dir(&path).map_err(storage)?;
+            let mut workspace = LocalWorkspace {
+                #[cfg(all(test, not(acyclic_harness_loom)))]
+                selection_reads: std::sync::atomic::AtomicUsize::new(0),
+                #[cfg(all(test, not(acyclic_harness_loom)))]
+                mount_advances: std::sync::atomic::AtomicUsize::new(0),
+                state: StateArc::new(AsyncMutex::new(State::new(
+                    view.workspace().id(),
+                    Arc::clone(&self.workspace.mounts),
+                ))),
+                mounts: mounts.unwrap_or_else(|| Arc::clone(&self.workspace.mounts)),
+                context_line: self.workspace.context_line().into(),
+                processes: self.workspace.processes.clone(),
+                path: path.clone(),
+                fresh: false,
+                import_source: false,
+                mount_directory: self.workspace.mount_directory.clone(),
+                view,
+                mounted: None,
+                identity: acyclic_fs::capture_root_identity(&path).map_err(storage)?,
+                filesystem: self.workspace.filesystem.clone(),
+                store: self.workspace.store.clone(),
+                mount_authority: self
+                    .workspace
+                    .mount_authority
+                    .as_ref()
+                    .map(|authority| authority.for_scope(signed))
+                    .transpose()?,
+            };
+            let (active, _) = workspace.selected_view().await?;
+            let selected = active.as_ref().unwrap_or_else(|| workspace.view());
+            let initial_view = selected.workspace().id();
+            let options = workspace.mount_options(selected.workspace()).await?;
+            let mounted = Arc::new(selected.mount(&path, options).await.map_err(storage)?);
+            workspace.path = path;
+            workspace.identity =
+                acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)?;
+            workspace.mounted = Some(mounted);
+            workspace.mounts = workspace.mounts_at(&workspace.path).await?;
+            workspace.context_line = workspace.mounts.context_line();
+            workspace.state = StateArc::new(AsyncMutex::new(State {
+                active,
+                initial_view,
+                workspace: None,
+                watcher: None,
+                children: Default::default(),
+                mounts: Arc::clone(&workspace.mounts),
+                initialized: true,
+            }));
+            let workspace = Arc::new(workspace);
+            let (capture_options, capture_policy) = capture::configuration(&workspace)?;
+            Ok(Self {
+                signed: signed.clone(),
+                workspace: Arc::clone(&workspace),
+                read_grant: self.read_grant.clone(),
+                write_grant: self.write_grant.clone(),
+                capture_options,
+                capture_policy,
+                clock: Arc::clone(&self.clock),
+                task_files: Arc::clone(&self.task_files),
+                state: StateArc::clone(&workspace.state),
+                selected: true,
+            })
         })
+        .await
     }
     // The caller owns this checkout's state guard. A sparse mount follows one
     // workspace; switching selects a separate mount instead of staging across

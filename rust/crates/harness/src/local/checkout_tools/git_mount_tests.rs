@@ -126,9 +126,10 @@ async fn in_place_git_advances_switched_and_unswitched_mounts_once() -> Result<(
             execute(&tools, &task, "fs", command).await?;
             let advances = workspace.mount_advances.load(Ordering::Relaxed) - before;
             eprintln!("{command}, switched={switched}: advances={advances}");
+            let expected = usize::from(command.contains("restore"));
             assert_eq!(
-                advances, 1,
-                "{command}, switched={switched}: expected one final native advance",
+                advances, expected,
+                "{command}, switched={switched}: expected {expected} native advances",
             );
             assert!(
                 workspace.checkout_selection().await?.1.is_none(),

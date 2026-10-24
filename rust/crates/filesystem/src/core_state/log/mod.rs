@@ -2,7 +2,7 @@ use super::*;
 
 #[derive(Debug)]
 pub(super) struct CoreLog {
-    pub(super) file: File,
+    pub(super) file: Arc<File>,
     /// Bytes appended to the log.
     pub(super) length: u64,
     /// Bytes of the log known to be durable.
@@ -15,6 +15,8 @@ pub(super) struct CoreLog {
     pub(super) broken: bool,
     pub(super) slots: Option<crate::materializer::NativeAllocation>,
     pub(super) residents_control: Option<crate::materializer::NativeAllocation>,
+    // Last: the shared file and its control block must be released first.
+    pub(super) file_control: Option<crate::materializer::NativeAllocation>,
 }
 
 impl CoreLog {
@@ -37,7 +39,9 @@ impl CoreLog {
             ._allocation
             .as_ref()
             .map(|allocation| allocation.work());
-        if let Some(work) = work {
+        if !root.inspection
+            && let Some(work) = work
+        {
             self.adopt_native(work)?;
         }
         let copy = |value: &RecordValue| {
@@ -62,7 +66,6 @@ impl CoreLog {
             let residents = self.residents();
             if let Some(index) = residents.position(key, work)? {
                 return residents
-                    .0
                     .get(index)
                     .ok_or(LocalCoreStateStoreError::Integrity)?
                     .value
@@ -75,6 +78,11 @@ impl CoreLog {
         let paths = key.paths(root)?;
         if let Some(work) = work {
             native_records::check(work, cancellation.unwrap_or(work.cancellation()))?;
+        }
+        if root.inspection {
+            return records::read_recoverable_mode::<Option<T>>(&paths, false).map(|value| {
+                value.and_then(|(value, allocation)| value.map(|value| (value, allocation)))
+            });
         }
         let value = match work {
             Some(work) => read_file::<Option<T>>(&paths.current, work, maximum_bytes)?
@@ -104,12 +112,7 @@ impl CoreLog {
         }
         let output = record.value.as_ref().map(copy).transpose()?.flatten();
         let mut residents = self.residents();
-        if let Some(work) = work {
-            let needed = residents.0.len() + 1;
-            let Residents(values, slots) = &mut *residents;
-            reserve_slots(values, needed, work, slots)?;
-        }
-        residents.0.push(record);
+        residents.install_loaded(record, work)?;
         Ok(output)
     }
 
@@ -151,6 +154,12 @@ pub(super) fn crash_point(label: &str, flushed: u64) {
         let pending = report.with_extension("pending");
         std::fs::write(&pending, format!("{label}\n{flushed}")).unwrap();
         std::fs::rename(pending, report).unwrap();
+        // Publish readiness after the report and before parking with the WAL
+        // guards held, so the supervisor never polls the report directory.
+        let mut notification = std::io::stdout().lock();
+        notification.write_all(&[0]).unwrap();
+        notification.flush().unwrap();
+        drop(notification);
         // Keep every log/resident guard and file alive until the parent's
         // process-tree kill. An abort can invoke platform crash reporting;
         // neither that latency nor graceful shutdown is part of this cut.

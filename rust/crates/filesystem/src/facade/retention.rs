@@ -212,7 +212,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         })
     }
 
-    pub(super) async fn checkpoint_root<W: FsWork>(
+    pub(crate) async fn checkpoint_root<W: FsWork>(
         &self,
         budget: W,
         cancellation: &CancellationToken,

@@ -6,6 +6,9 @@ use crate::{
 };
 use futures::TryStreamExt;
 
+mod output;
+use output::OutputStreams;
+
 impl LocalHarness {
     pub(super) async fn summary_source(&self, target: TaskId) -> Result<SummarySource> {
         let (cut, selection, identity) = super::checkpoints::capture_selection(
@@ -32,22 +35,7 @@ impl LocalHarness {
         let same_task = selected
             .as_ref()
             .filter(|(_, checkpoint)| checkpoint.boundary.task == target);
-        let admission = self.runtime.task_host().observe_admission(target).await?;
-        let owner = self
-            .runtime
-            .harness()
-            .durable_context(target, admission.operation_id, None)
-            .await?;
-        let command: WorkflowCommand = serde_json::from_value(
-            admission
-                .input
-                .get("model")
-                .ok_or_else(|| Error::Invalid("selected task has no model context".into()))?
-                .clone(),
-        )
-        .map_err(storage)?;
-        let bytes = owner.read_file(&command.payload, None).await?;
-        let input: ModelTaskCommand = serde_json::from_slice(&bytes).map_err(storage)?;
+        let input = self.summary_input(target).await?;
         let prior = match &selected {
             Some((selection, checkpoint)) => {
                 Some(self.retained_text::<true>(selection, checkpoint).await?)
@@ -75,58 +63,22 @@ impl LocalHarness {
             )
             .await?;
         } else {
-            let snapshot = self
-                .task_files
-                .inner
-                .heads(&query, frozen.cloned(), self.limits.context_messages)
-                .await
-                .map_err(storage)?;
-            // `now` is the boundary for this capture. A concurrent writer must not
-            // contribute records newer than it; snapshot_at handles that cut.
-            let snapshot = if snapshot.cursor.position == through.position {
-                snapshot
-            } else {
-                self.task_files
-                    .inner
-                    .heads(&query, Some(through.clone()), self.limits.context_messages)
-                    .await
-                    .map_err(storage)?
-            };
-            for file in snapshot.files {
-                if raw_prompt.is_some()
-                    && matches!(
-                        file.key,
-                        FileKey::Task {
-                            file: TaskFile::TurnRequest(_),
-                            ..
-                        }
-                    )
-                {
-                    continue;
-                }
-                for bytes in file.segments {
-                    append_bytes(
-                        &mut text,
-                        &file.key,
-                        Some(Channel::Text),
-                        &bytes,
-                        self.limits,
-                    )?;
-                }
-            }
+            self.append_snapshot(&mut text, &query, &through, raw_prompt.is_some())
+                .await?;
         }
         let mut outcome_included =
             same_task.is_some_and(|(_, checkpoint)| checkpoint.boundary.outcome_included);
         // An explicit rewind is an exact history view, including its outcome.
-        if !outcome_included && frozen.is_none() {
-            if let Some(outcome) = self.runtime.task_host().outcome(target).await? {
-                append_source(
-                    &mut text,
-                    &serde_json::to_string(&outcome).map_err(storage)?,
-                    self.limits,
-                )?;
-                outcome_included = true;
-            }
+        if !outcome_included
+            && frozen.is_none()
+            && let Some(outcome) = self.runtime.task_host().outcome(target).await?
+        {
+            append_source(
+                &mut text,
+                &serde_json::to_string(&outcome).map_err(storage)?,
+                self.limits,
+            )?;
+            outcome_included = true;
         }
         let mut context = Context::default();
         context.messages.push(ModelMessage {
@@ -148,6 +100,71 @@ impl LocalHarness {
         })
     }
 
+    async fn summary_input(&self, target: TaskId) -> Result<ModelTaskCommand> {
+        let admission = self.runtime.task_host().observe_admission(target).await?;
+        let owner = self
+            .runtime
+            .harness()
+            .durable_context(target, admission.operation_id, None)
+            .await?;
+        let command: WorkflowCommand = serde_json::from_value(
+            admission
+                .input
+                .get("model")
+                .ok_or_else(|| Error::Invalid("selected task has no model context".into()))?
+                .clone(),
+        )
+        .map_err(storage)?;
+        let bytes = owner.read_file(&command.payload, None).await?;
+        serde_json::from_slice(&bytes).map_err(storage)
+    }
+
+    async fn append_snapshot(
+        &self,
+        text: &mut String,
+        query: &Query,
+        through: &crate::task_volume::Cursor,
+        skip_requests: bool,
+    ) -> Result<()> {
+        // Reuse the current materialized index when it is the admitted cut.
+        // A later producer may also overflow the file bound, so retry that
+        // case at the immutable cut rather than rejecting an earlier history.
+        let snapshot = match self
+            .task_files
+            .inner
+            .heads(query, None, self.limits.context_messages)
+            .await
+        {
+            Ok(snapshot) if snapshot.cursor == *through => snapshot,
+            Ok(_) | Err(crate::task_volume::Error::LimitExceeded) => self
+                .task_files
+                .inner
+                .heads(query, Some(through.clone()), self.limits.context_messages)
+                .await
+                .map_err(storage)?,
+            Err(cause) => return Err(storage(cause)),
+        };
+        let mut output = OutputStreams::default();
+        for file in snapshot.files {
+            if skip_requests
+                && matches!(
+                    file.key,
+                    FileKey::Task {
+                        file: TaskFile::TurnRequest(_),
+                        ..
+                    }
+                )
+            {
+                continue;
+            }
+            for bytes in file.segments {
+                output.observe(&file.key, &bytes, self.limits)?;
+                append_bytes(text, &file.key, Some(Channel::Text), &bytes, self.limits)?;
+            }
+        }
+        output.append(text, self.limits)
+    }
+
     pub(in crate::local) async fn append_turns(
         &self,
         text: &mut String,
@@ -164,6 +181,7 @@ impl LocalHarness {
         }
         let query = Query::Turns(Component::new(task.to_string()).map_err(storage)?);
         let mut cursor = from.clone();
+        let mut output = OutputStreams::default();
         let mut changes = self
             .task_files
             .inner
@@ -177,6 +195,7 @@ impl LocalHarness {
                 .map_err(storage)?
                 .ok_or_else(|| Error::Invalid("summary history ended before its cut".into()))?;
             for file in change.file.iter().chain(&change.files) {
+                output.observe(&file.key, &file.bytes, self.limits)?;
                 if requests
                     || matches!(
                         file.key,
@@ -194,7 +213,7 @@ impl LocalHarness {
             }
             cursor = change.cursor;
         }
-        Ok(())
+        output.append(text, self.limits)
     }
 }
 

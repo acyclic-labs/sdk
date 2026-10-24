@@ -19,10 +19,10 @@ use sync::Mutex as CompletionMutex;
 
 #[cfg(target_vendor = "apple")]
 mod apple;
-#[cfg(target_os = "linux")]
-mod linux;
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 mod held_sync;
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 pub use held_sync::sync_descriptor_once;
 pub mod obs;
@@ -45,6 +45,7 @@ use windows::{read_at as read_at_impl, write_all_at as write_all_at_impl};
 pub use process_tree::PreparedClosedProcess;
 pub use process_tree::{
     CaptureInput, ProcessCaptureFailure, ProcessCustody, ProcessInput, ProcessOutput, ProcessTree,
+    ProcessWake,
 };
 
 mod file;

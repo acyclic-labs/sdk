@@ -1,3 +1,4 @@
+use super::super::capture_wait::pending::{Cleanup, Event};
 use std::ffi::c_void;
 use std::io;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
@@ -9,7 +10,7 @@ use windows_sys::Win32::System::Power::{
     UnregisterSuspendResumeNotification,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateEventW, CreateWaitableTimerExW, INFINITE,
+    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, INFINITE,
     SYNCHRONIZATION_SYNCHRONIZE, SetEvent, SetWaitableTimerEx, TIMER_MODIFY_STATE,
     WaitForMultipleObjects,
 };
@@ -17,42 +18,55 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     DEVICE_NOTIFY_CALLBACK, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMESUSPEND,
 };
 
-pub(in crate::process_tree) struct ResumeNotification {
-    pub(in crate::process_tree) event: OwnedHandle,
+pub(in crate::process_tree) struct ResumeNotification<'a> {
+    pub(in crate::process_tree) event: Event<'a>,
     registration: isize,
+    cleanup: Cleanup<'a>,
 }
-impl ResumeNotification {
+impl<'a> ResumeNotification<'a> {
     pub(in crate::process_tree) fn new() -> io::Result<Self> {
-        // SAFETY: unnamed auto-reset event, owned on success.
-        let event = unsafe { CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) };
-        if event.is_null() {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: successful creation transfers one fresh owned event handle.
-        let event = unsafe { OwnedHandle::from_raw_handle(event) };
+        Self::new_with_meter(None)
+    }
+
+    pub(in crate::process_tree) fn new_with_meter(
+        meter: Option<&'a dyn crate::NativeReadMeter>,
+    ) -> io::Result<Self> {
+        let cleanup = Cleanup::new(meter)?;
+        let event = Event::new(meter, false)?;
         let parameters = DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS {
             Callback: Some(resume_notification),
             Context: event.as_raw_handle(),
         };
         // SAFETY: registration copies the callback parameters; its context is
         // only this retained kernel handle, with no borrowed Rust allocation.
-        let registration = unsafe {
-            RegisterSuspendResumeNotification(
-                (&raw const parameters).cast_mut().cast(),
-                DEVICE_NOTIFY_CALLBACK,
-            )
-        };
-        if registration == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(Self {
+        let (registration, recorded) =
+            super::super::pipe_operation_attempt(meter, crate::NativeOperationKind::Write, || {
+                // SAFETY: callback parameters are copied and retain this event.
+                let registration = unsafe {
+                    RegisterSuspendResumeNotification(
+                        (&raw const parameters).cast_mut().cast(),
+                        DEVICE_NOTIFY_CALLBACK,
+                    )
+                };
+                if registration == 0 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(registration)
+                }
+            })?;
+        let registration = registration?;
+        let notification = Self {
             event,
             registration,
-        })
+            cleanup,
+        };
+        recorded?;
+        Ok(notification)
     }
 }
-impl Drop for ResumeNotification {
+impl Drop for ResumeNotification<'_> {
     fn drop(&mut self) {
+        let _ = self.cleanup.record();
         // SAFETY: this exclusively owned registration is cancelled before
         // releasing the event handle carried by its callback.
         unsafe { UnregisterSuspendResumeNotification(self.registration) };
@@ -118,7 +132,7 @@ pub(in crate::process_tree) fn wait_with_resume(
     child: &mut Child,
     deadline: Instant,
     mut timer: Option<OwnedHandle>,
-    resume: &ResumeNotification,
+    resume: &ResumeNotification<'_>,
     mut now: impl FnMut() -> Instant,
 ) -> io::Result<ExitStatus> {
     loop {

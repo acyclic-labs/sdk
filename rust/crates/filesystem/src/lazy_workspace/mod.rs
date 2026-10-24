@@ -104,6 +104,8 @@ pub(crate) use qualification::NativeSnapshotContext;
 pub use selected_plan::SelectedImportPlan;
 mod binding;
 mod exactify;
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+mod inspection;
 mod materialize;
 mod overlay;
 mod path;

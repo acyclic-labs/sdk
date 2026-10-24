@@ -264,31 +264,11 @@ mod unix {
             else {
                 continue;
             };
-            let Ok(stat) = fs::read_to_string(entry.path().join("stat")) else {
-                continue;
-            };
-            // Fields after the command name: state, ppid, pgrp.
-            let mut fields = stat
-                .rsplit_once(')')
-                .map(|(_, rest)| rest.split_whitespace())
-                .into_iter()
-                .flatten();
-            let state = fields.next();
-            let member = fields
-                .nth(1)
-                .and_then(|pgrp| pgrp.parse::<libc::pid_t>().ok());
-            if member != Some(group) || matches!(state, Some("Z" | "X")) {
+            if !linux_group_member(&entry.path().join("stat"), group)? {
                 continue;
             }
-            // SAFETY: pidfd_open takes a PID and zero flags.
-            let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
-            if let Ok(fd) = libc::c_int::try_from(fd)
-                && fd >= 0
-            {
-                // SAFETY: the descriptor pidfd_open just returned.
-                watches.push(unsafe {
-                    <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd)
-                });
+            if let Some(watch) = linux_pin_member(group, pid)? {
+                watches.push(watch);
             }
         }
         if watches.is_empty() {
@@ -311,30 +291,110 @@ mod unix {
         Ok(true)
     }
 
+    #[cfg(target_os = "linux")]
+    fn linux_group_member(path: &Path, group: libc::pid_t) -> io::Result<bool> {
+        let stat = match fs::read_to_string(path) {
+            Ok(stat) => stat,
+            Err(error)
+                if error.kind() == io::ErrorKind::NotFound
+                    || error.raw_os_error() == Some(libc::ESRCH) =>
+            {
+                return Ok(false);
+            }
+            Err(error) => return Err(error),
+        };
+        // Fields after the command name: state, ppid, pgrp. Invalid identity
+        // data is an observation failure, never evidence of nonmembership.
+        let (_, rest) = stat.rsplit_once(')').ok_or(io::ErrorKind::InvalidData)?;
+        let mut fields = rest.split_whitespace();
+        let state = fields.next().ok_or(io::ErrorKind::InvalidData)?;
+        let member = fields
+            .nth(1)
+            .ok_or(io::ErrorKind::InvalidData)?
+            .parse::<libc::pid_t>()
+            .map_err(|_| io::ErrorKind::InvalidData)?;
+        Ok(member == group && !matches!(state, "Z" | "X"))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_pin_member(
+        group: libc::pid_t,
+        pid: libc::pid_t,
+    ) -> io::Result<Option<std::os::fd::OwnedFd>> {
+        // SAFETY: pidfd_open takes a PID and zero flags.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        if fd < 0 {
+            let error = io::Error::last_os_error();
+            return if error.raw_os_error() == Some(libc::ESRCH) {
+                Ok(None)
+            } else {
+                Err(error)
+            };
+        }
+        let fd = libc::c_int::try_from(fd).map_err(io::Error::other)?;
+        // SAFETY: pidfd_open transferred this descriptor, retained through the
+        // second observation. A reused foreign PID can never be a wait target.
+        let watch = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+        if linux_group_member(
+            &Path::new("/proc").join(pid.to_string()).join("stat"),
+            group,
+        )? {
+            Ok(Some(watch))
+        } else {
+            Ok(None)
+        }
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    mod member_tests {
+        use super::*;
+
+        #[test]
+        fn a_pidfd_failure_cannot_prove_a_member_absent() {
+            let result = linux_pin_member(-1, 0);
+            eprintln!("LINUX_FENCE_OPEN_FAILURE result={result:?}");
+            let error = result.expect_err("stale fencing must reject a failed pidfd open");
+            assert_eq!(error.raw_os_error(), Some(libc::EINVAL));
+        }
+
+        #[test]
+        fn a_reused_pid_outside_the_group_is_not_a_wait_target() -> io::Result<()> {
+            let pid = libc::pid_t::try_from(std::process::id()).map_err(io::Error::other)?;
+            let pinned = linux_pin_member(-1, pid)?;
+            eprintln!(
+                "LINUX_FENCE_FOREIGN_PID retained={}",
+                usize::from(pinned.is_some())
+            );
+            assert!(
+                pinned.is_none(),
+                "a listed PID can name a live process outside the fenced group"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn unreadable_member_identity_cannot_prove_nonmembership() -> io::Result<()> {
+            let file = tempfile::NamedTempFile::new()?;
+            fs::write(file.path(), [0xff])?;
+            let result = linux_group_member(file.path(), -1);
+            eprintln!("LINUX_FENCE_STAT_FAILURE result={result:?}");
+            let error =
+                result.expect_err("a failed member identity read must not prove nonmembership");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            Ok(())
+        }
+    }
+
     #[cfg(target_vendor = "apple")]
     fn await_members(group: libc::pid_t) -> io::Result<bool> {
-        use super::super::warden::{group_members, next_exit, watch_exit};
-        let mut members = [0; 256];
-        let count = group_members(group, &mut members)?;
-        // SAFETY: kqueue has no preconditions.
-        let queue = unsafe { libc::kqueue() };
-        if queue < 0 {
-            return Err(io::Error::last_os_error());
+        // Stale-owner fencing uses the same complete, creation-fenced group
+        // enumeration as live termination. A fixed PID prefix cannot prove
+        // an entire group empty, and failed observations never acknowledge it.
+        if super::super::platform::group_has_no_live_members(group, None)? {
+            Ok(false)
+        } else {
+            Err(io::ErrorKind::TimedOut.into())
         }
-        // SAFETY: the queue just created.
-        let queue = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(queue) };
-        let mut live = 0_usize;
-        for member in members.iter().take(count).copied() {
-            if member > 0 && watch_exit(queue.as_raw_fd(), member)? {
-                live += 1;
-            }
-        }
-        let any = live > 0;
-        while live > 0 {
-            next_exit(queue.as_raw_fd())?;
-            live -= 1;
-        }
-        Ok(any)
     }
 }
 #[cfg(unix)]
@@ -343,6 +403,7 @@ use unix::fence;
 #[cfg(windows)]
 mod windows {
     use super::{Path, ProcessCustody, Record, fs, io};
+    use std::os::windows::io::{AsRawHandle as _, OwnedHandle};
     use std::sync::atomic::{AtomicU64, Ordering};
     use windows_sys::Win32::Foundation::{
         CloseHandle, ERROR_FILE_NOT_FOUND, FILETIME, HANDLE, WAIT_FAILED,
@@ -352,8 +413,7 @@ mod windows {
         QueryInformationJobObject, TerminateJobObject,
     };
     use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, GetProcessTimes, OpenProcess, PROCESS_SYNCHRONIZE,
-        WaitForMultipleObjects,
+        GetCurrentProcess, GetProcessTimes, WaitForMultipleObjects,
     };
 
     const PREFIX: &str = "acyclic-process-tree-";
@@ -431,6 +491,12 @@ mod windows {
             .split_once(CUSTODIAN)
             .map_or((name, None), |(name, custodian)| (name, Some(custodian)));
         let wide = job_name(name);
+        // Open completion before the Job: while the daemon still holds a
+        // live Job, its completion witness cannot disappear between opens.
+        let completion = custodian
+            .map(|_| super::super::custodian::Completion::open(&wide))
+            .transpose()?
+            .flatten();
         // SAFETY: a NUL-terminated name; the handle is owned on success.
         let job = unsafe { OpenJobObjectW(JOB_ACCESS, 0, wide.as_ptr()) };
         if job.is_null() {
@@ -439,11 +505,13 @@ mod windows {
                 return Err(error);
             }
         } else {
-            // A member leaves the Job's list before its process has fully
-            // exited; the custodian exits only once each has, so its exit
-            // ends the fence.
-            let fenced = terminate_and_await(job)
-                .and_then(|()| custodian.map_or(Ok(()), super::super::custodian::await_custodian));
+            // Job removal precedes full kernel exit. Its independent event
+            // is published only once the daemon's pinned members have exited.
+            let fenced = terminate_and_await(job).and_then(|()| {
+                custodian.map_or(Ok(()), |identity| {
+                    super::super::custodian::await_completion(completion.as_ref(), identity)
+                })
+            });
             // SAFETY: the Job handle opened above.
             unsafe { CloseHandle(job) };
             fenced?;
@@ -464,67 +532,236 @@ mod windows {
             if members.is_empty() {
                 return Ok(());
             }
-            let handles: Vec<HANDLE> = members
-                .iter()
-                // SAFETY: opening a synchronize-only handle to a listed PID.
-                .map(|pid| unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, *pid) })
-                .filter(|handle| !handle.is_null())
-                .collect();
-            let waited = handles.chunks(64).try_for_each(|chunk| {
+            let handles = pin_members(job, &members)?;
+            handles.chunks(64).try_for_each(|chunk| {
                 let count = u32::try_from(chunk.len()).map_err(|_| io::ErrorKind::InvalidInput)?;
+                let mut raw = [std::ptr::null_mut(); 64];
+                for (slot, handle) in raw.iter_mut().zip(chunk) {
+                    *slot = handle.as_raw_handle();
+                }
                 // SAFETY: up to 64 owned process handles; waits for all.
-                if unsafe { WaitForMultipleObjects(count, chunk.as_ptr(), 1, u32::MAX) }
+                if unsafe { WaitForMultipleObjects(count, raw.as_ptr(), 1, u32::MAX) }
                     == WAIT_FAILED
                 {
                     Err(io::Error::last_os_error())
                 } else {
                     Ok(())
                 }
-            });
-            for handle in handles {
-                // SAFETY: each handle opened above.
-                unsafe { CloseHandle(handle) };
-            }
-            waited?;
+            })?;
         }
     }
 
-    /// Lists the process IDs still in `job`.
-    pub(in crate::process_tree) fn members(job: HANDLE) -> io::Result<Vec<u32>> {
-        const CAPACITY: usize = 1024;
-        let header = std::mem::offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList)
-            / std::mem::size_of::<usize>();
-        let mut storage = vec![0_usize; header + CAPACITY];
-        let bytes = u32::try_from(storage.len() * std::mem::size_of::<usize>())
-            .map_err(|_| io::ErrorKind::InvalidInput)?;
-        // SAFETY: writable, suitably aligned storage of the stated size.
-        if unsafe {
-            QueryInformationJobObject(
-                job,
-                JobObjectBasicProcessIdList,
-                storage.as_mut_ptr().cast(),
-                bytes,
-                std::ptr::null_mut(),
-            )
-        } == 0
-        {
-            let error = io::Error::last_os_error();
-            // ERROR_MORE_DATA still fills the listed prefix.
-            if error.raw_os_error() != Some(234) {
-                return Err(error);
+    fn pin_members(job: HANDLE, members: &[u32]) -> io::Result<Vec<OwnedHandle>> {
+        let mut handles = Vec::new();
+        for pid in members {
+            if let Some(process) = super::super::custodian::member(job, *pid)? {
+                handles.push(process);
             }
         }
-        // SAFETY: the storage begins with the initialized fixed header.
-        let list = unsafe { &*storage.as_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() };
-        let listed = usize::try_from(list.NumberOfProcessIdsInList)
-            .map_err(|_| io::ErrorKind::InvalidData)?
-            .min(CAPACITY);
-        Ok(storage
-            .iter()
-            .skip(header)
-            .take(listed)
-            .filter_map(|pid| u32::try_from(*pid).ok())
-            .collect())
+        Ok(handles)
+    }
+
+    /// Lists one complete kernel page of the process IDs still in `job`.
+    pub(in crate::process_tree) fn members(job: HANDLE) -> io::Result<Vec<u32>> {
+        use super::super::job_members::{Page, collect_members};
+        let header = std::mem::offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList)
+            / size_of::<usize>();
+        if header != super::super::job_members::HEADER {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        collect_members(|storage| {
+            let bytes = storage
+                .len()
+                .checked_mul(size_of::<usize>())
+                .and_then(|bytes| u32::try_from(bytes).ok())
+                .ok_or(io::ErrorKind::InvalidInput)?;
+            // SAFETY: writable, suitably aligned storage, including the fixed
+            // header and at least one process slot, of exactly the stated size.
+            let queried = unsafe {
+                QueryInformationJobObject(
+                    job,
+                    JobObjectBasicProcessIdList,
+                    storage.as_mut_ptr().cast(),
+                    bytes,
+                    std::ptr::null_mut(),
+                )
+            };
+            let complete = if queried == 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() != Some(234) {
+                    return Err(error);
+                }
+                false
+            } else {
+                true
+            };
+            // SAFETY: success and ERROR_MORE_DATA both initialize the fixed
+            // header. No process slot is consumed before its count is checked.
+            let list = unsafe { &*storage.as_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() };
+            Ok(Page {
+                assigned: usize::try_from(list.NumberOfAssignedProcesses)
+                    .map_err(|_| io::ErrorKind::InvalidData)?,
+                listed: usize::try_from(list.NumberOfProcessIdsInList)
+                    .map_err(|_| io::ErrorKind::InvalidData)?,
+                complete,
+            })
+        })
+    }
+
+    #[cfg(test)]
+    mod member_tests {
+        use super::*;
+        #[test]
+        fn job_member_page_child() -> io::Result<()> {
+            use std::io::{Read as _, Write as _};
+            use std::os::windows::process::CommandExt as _;
+            use std::process::{Command, Stdio};
+            let Some(mode) = std::env::var_os("ACYCLIC_JOB_MEMBER_PAGE_CHILD") else {
+                return Ok(());
+            };
+            let mut descendant = None;
+            if mode == "parent" {
+                let child = Command::new(std::env::current_exe()?)
+                    .args([
+                        "--exact",
+                        "process_tree::custody::windows::member_tests::job_member_page_child",
+                        "--nocapture",
+                    ])
+                    .env("ACYCLIC_JOB_MEMBER_PAGE_CHILD", "leaf")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+                    .spawn()?;
+                println!("JOB_PAGE_CHILD={}", child.id());
+                std::io::stdout().flush()?;
+                descendant = Some(child);
+            }
+            let mut byte = [0];
+            std::io::stdin().read_exact(&mut byte)?;
+            if let Some(mut child) = descendant {
+                child.kill()?;
+                child.wait()?;
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn the_native_job_query_grows_to_include_a_live_descendant() -> io::Result<()> {
+            use std::io::BufRead as _;
+            use std::process::{Command, Stdio};
+            let directory = tempfile::tempdir()?;
+            let custody = super::super::ProcessCustody::open(directory.path())?;
+            let mut command = Command::new(std::env::current_exe()?);
+            command
+                .args([
+                    "--exact",
+                    "process_tree::custody::windows::member_tests::job_member_page_child",
+                    "--nocapture",
+                ])
+                .env("ACYCLIC_JOB_MEMBER_PAGE_CHILD", "parent")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+            let mut tree = crate::ProcessTree::spawn_in_custody(&mut command, &custody)?;
+            let mut output =
+                std::io::BufReader::new(tree.take_stdout().ok_or(io::ErrorKind::BrokenPipe)?);
+            let mut line = String::new();
+            let child_pid = loop {
+                line.clear();
+                if output.read_line(&mut line)? == 0 {
+                    return Err(io::ErrorKind::UnexpectedEof.into());
+                }
+                if let Some((_, pid)) = line.trim().rsplit_once("JOB_PAGE_CHILD=") {
+                    break pid.parse::<u32>().map_err(io::Error::other)?;
+                }
+            };
+            let root_pid = tree.child.as_ref().ok_or(io::ErrorKind::NotFound)?.id();
+            let record = tree.custody.as_ref().ok_or(io::ErrorKind::NotFound)?;
+            let name = record
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or(io::ErrorKind::InvalidData)?;
+            let name = name.split_once(CUSTODIAN).map_or(name, |(name, _)| name);
+            let wide = job_name(name);
+            // SAFETY: a NUL-terminated name of this live tree's owned Job.
+            let job = unsafe { OpenJobObjectW(JOB_ACCESS, 0, wide.as_ptr()) };
+            if job.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: OpenJobObjectW transferred this handle.
+            let job = unsafe { OwnedHandle::from_raw_handle(job) };
+            let mut observed = members(job.as_raw_handle())?;
+            observed.sort_unstable();
+            // Windows can create an additional console host in the Job. Its
+            // independent accounting count is the completeness oracle; known
+            // fixture PIDs prove that collection includes the live descendant.
+            use windows_sys::Win32::System::JobObjects::{
+                JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JobObjectBasicAccountingInformation,
+            };
+            // SAFETY: every bit pattern of the native accounting structure is valid.
+            let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION =
+                unsafe { std::mem::zeroed() };
+            // SAFETY: the retained live Job and complete writable native structure.
+            if unsafe {
+                QueryInformationJobObject(
+                    job.as_raw_handle(),
+                    JobObjectBasicAccountingInformation,
+                    (&raw mut accounting).cast(),
+                    u32::try_from(size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>())
+                        .map_err(io::Error::other)?,
+                    std::ptr::null_mut(),
+                )
+            } == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            eprintln!(
+                "JOB_MEMBER_NATIVE root={root_pid} descendant={child_pid} active={} observed={observed:?}",
+                accounting.ActiveProcesses
+            );
+            assert!(observed.contains(&root_pid) && observed.contains(&child_pid));
+            assert_eq!(
+                observed.len(),
+                usize::try_from(accounting.ActiveProcesses).map_err(io::Error::other)?,
+                "the complete page must include every active Job member"
+            );
+            tree.terminate(None)?;
+            Ok(())
+        }
+
+        use std::os::windows::io::FromRawHandle as _;
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
+
+        #[test]
+        fn stale_fencing_cannot_discard_a_membership_query_failure() {
+            let pinned = pin_members(INVALID_HANDLE_VALUE, &[std::process::id()]);
+            eprintln!("FENCE_MEMBERSHIP_FAILURE result={pinned:?}");
+            assert!(
+                pinned.is_err(),
+                "stale fencing must reject a failed Job membership query"
+            );
+        }
+
+        #[test]
+        fn stale_fencing_does_not_pin_an_unrelated_process_at_a_listed_pid() -> io::Result<()> {
+            // SAFETY: creates an empty unnamed Job, owned on success.
+            let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            if job.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: CreateJobObjectW transferred this handle.
+            let job = unsafe { OwnedHandle::from_raw_handle(job) };
+            let pinned = pin_members(job.as_raw_handle(), &[std::process::id()])?;
+            eprintln!("FENCE_FOREIGN_PID retained={}", pinned.len());
+            assert!(
+                pinned.is_empty(),
+                "a listed PID can name an unrelated process after exit"
+            );
+            Ok(())
+        }
     }
 }
 #[cfg(windows)]

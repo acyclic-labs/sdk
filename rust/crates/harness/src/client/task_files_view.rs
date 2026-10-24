@@ -213,7 +213,8 @@ impl<'a> ToolQueryView<'a> {
     pub fn request(&self) -> Option<&'a HeadFile> {
         self.task.files.get(&self.key(ToolFile::Request))
     }
-    /// The exact canonical tool result; absence means it has not been observed.
+    /// Terminal outcome metadata; process bytes are in `stdout` and `stderr`.
+    /// Absence means the result has not been observed.
     pub fn result(&self) -> Option<&'a HeadFile> {
         self.task.files.get(&self.key(ToolFile::Result))
     }

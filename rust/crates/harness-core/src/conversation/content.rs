@@ -213,6 +213,17 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         })
     }
 
+    /// Verifies a publication, reusing provider-owned evidence when available.
+    /// Untrusted or serialized references still require full verification.
+    fn verify_publication<'a>(
+        &'a self,
+        reference: &'a FileRef,
+        maximum_bytes: u64,
+        io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, ()>> {
+        self.verify(reference, maximum_bytes, io)
+    }
+
     /// Loads the manifest and verifies every member through its owning provider.
     fn verify_manifest<'a>(
         &'a self,
@@ -511,6 +522,31 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
             Ok(bytes)
         })
     }
+    fn verify_publication<'a>(
+        &'a self,
+        reference: &'a FileRef,
+        maximum_bytes: u64,
+        io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, ()>> {
+        if io.is_some() || self.volumes.contains_key(reference.volume()) {
+            return self
+                .bound_reader(reference.volume(), io)?
+                .verify_publication(reference, maximum_bytes, io);
+        }
+        reference.validate(&mut None)?;
+        let mount = self
+            .mount
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("content volume is not registered".into()))?;
+        BoundedContentFuture::new(io, || async move {
+            let (grant, reader) = mount.mount(reference).await?;
+            grant.require_file_read(reference, None)?;
+            reader
+                .verify_publication(reference, maximum_bytes, io)?
+                .await
+        })
+    }
+
     fn read_range<'a>(
         &'a self,
         reference: &'a FileRef,

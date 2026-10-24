@@ -71,6 +71,37 @@ pub(super) struct PendingStdin<'a> {
 }
 
 impl<'a> PendingStdin<'a> {
+    #[cfg(unix)]
+    pub(super) fn waiting_byte(&self) -> Option<u8> {
+        self.bytes.get(self.written).copied()
+    }
+
+    #[cfg(windows)]
+    pub(super) fn waiting_bytes(&self) -> Option<&[u8]> {
+        self.bytes
+            .get(self.written..)
+            .filter(|bytes| !bytes.is_empty())
+    }
+
+    #[cfg(windows)]
+    pub(super) fn advance_written(&mut self, actual: usize) -> io::Result<()> {
+        if actual > self.bytes.len().saturating_sub(self.written) {
+            return Err(io::Error::other(
+                "invalid asynchronous process input prefix",
+            ));
+        }
+        if actual == 0 {
+            if self.terminate_on_completion {
+                return Err(io::ErrorKind::BrokenPipe.into());
+            }
+            self.written = self.bytes.len();
+            self.complete = true;
+        } else {
+            self.written += actual;
+        }
+        Ok(())
+    }
+
     /// Measured exchange storage was claimed and allocated by the caller.
     pub(super) fn new_with_buffer(
         input: CaptureInput<'a>,
@@ -119,6 +150,7 @@ impl<'a> PendingStdin<'a> {
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<bool> {
         let mut progressed = false;
+        #[cfg(unix)]
         if self.written < self.bytes.len() {
             let suffix = self
                 .bytes

@@ -168,6 +168,8 @@ impl Drop for Saturation {
 #[derive(Default)]
 pub(super) struct ReadBudgetMeter {
     pub(super) used_operations: AtomicU64,
+    pub(super) read_attempts: AtomicU64,
+    pub(super) write_attempts: AtomicU64,
     used_bytes: AtomicU64,
     used_allocations: AtomicU64,
     examined_items: AtomicU64,
@@ -240,7 +242,13 @@ impl NativeReadMeter for ReadBudgetMeter {
     fn cancel_reserved_operations(&self, _: NativeOperationKind, count: u64) {
         assert!(self.used_operations.fetch_sub(count, Ordering::AcqRel) >= count);
     }
-    fn record_reserved_operation(&self, _: NativeOperationKind) -> io::Result<()> {
+    fn record_reserved_operation(&self, kind: NativeOperationKind) -> io::Result<()> {
+        if kind == NativeOperationKind::Read {
+            self.read_attempts.fetch_add(1, Ordering::AcqRel);
+        }
+        if kind == NativeOperationKind::Write {
+            self.write_attempts.fetch_add(1, Ordering::AcqRel);
+        }
         if self.cancel_after_operation {
             self.cancelled.store(true, Ordering::Release);
         }

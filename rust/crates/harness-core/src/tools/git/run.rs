@@ -40,7 +40,7 @@ pub async fn run(workspace: Workspace<'_>, args: &[String]) -> crate::Result<Out
 
 #[doc(hidden)]
 pub async fn run_with_guard<F, Fut>(
-    mut workspace: Workspace<'_>,
+    workspace: Workspace<'_>,
     args: &[String],
     before_effect: F,
 ) -> crate::Result<Output>
@@ -48,23 +48,73 @@ where
     F: Fn() -> Fut + Send + Sync,
     Fut: Future<Output = crate::Result<()>> + Send,
 {
+    Box::pin(run_inner(workspace, args, None, before_effect)).await
+}
+
+/// Runs an inspection with disposable working-tree objects and no publication.
+#[doc(hidden)]
+pub async fn inspect_with_guard<'a, F, Fut>(
+    workspace: Workspace<'a>,
+    args: &[String],
+    view: acyclic_fs::NativeGitView<'a>,
+    before_effect: F,
+) -> crate::Result<Output>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: Future<Output = crate::Result<()>> + Send,
+{
+    if !is_read_only(args) || workspace.lease.is_some() || workspace.checkout.is_some() {
+        return Err(Error::Invalid(
+            "native inspection requires a read-only command without publication authority".into(),
+        ));
+    }
+    Box::pin(run_inner(workspace, args, Some(view), before_effect)).await
+}
+
+async fn run_inner<'a, F, Fut>(
+    mut workspace: Workspace<'a>,
+    args: &[String],
+    inspection: Option<acyclic_fs::NativeGitView<'a>>,
+    before_effect: F,
+) -> crate::Result<Output>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: Future<Output = crate::Result<()>> + Send,
+{
     before_effect().await?;
+    let read_only = is_read_only(args);
     let permit = workspace.lease.as_ref().map_or(
         PublicationPermit::Unrestricted,
         OperationWindowLease::publication_permit,
     );
-    let patch = git_apply_patch(workspace.view, workspace.root, args).await?;
-    let (ignore, merge_drivers) = git_policy(workspace.view).await?;
+    let patch = Box::pin(git_apply_patch(workspace.view, workspace.root, args)).await?;
+    let (ignore, merge_drivers) = Box::pin(git_policy(if read_only {
+        View::Volume(workspace.view.workspace())
+    } else {
+        workspace.view
+    }))
+    .await?;
     let ignore = ignore.reserving(workspace.reserved);
     let repository =
         crate::filesystem::workspace_policy::git_view_policy("").reserving(workspace.reserved);
-    let tree = git_workspace_tree(workspace.view, args, Some(permit)).await?;
+    let tree = if read_only {
+        Box::pin(readonly::workspace_tree(workspace.view)).await?
+    } else {
+        Box::pin(git_workspace_tree(workspace.view, args, Some(permit))).await?
+    };
+    let store = if read_only {
+        workspace.store.inspecting()
+    } else {
+        workspace.store.clone()
+    };
     let executor = WorkspaceGitExecutor {
         before_effect: &before_effect,
         fs: workspace.filesystem,
-        store: workspace.store,
+        store: &store,
         current: workspace.view.workspace().clone(),
         lazy_current: workspace.view,
+        inspection: inspection.map(|view| (tree, view)),
+        read_only,
         repository_id: workspace.repository,
         ignore,
         repository,
@@ -76,13 +126,14 @@ where
     };
     if let Some(branch) = crate::tools::fs_command::agent_diff(args) {
         before_effect().await?;
-        let output = executor.diff_agent(branch, tree).await?;
+        let output = Box::pin(executor.diff_agent(branch, tree)).await?;
         before_effect().await?;
         return Ok(output);
     }
     let command = if let Some(identity) = workspace.checkout {
         execute(
             &workspace,
+            &store,
             args,
             tree,
             patch.as_deref(),
@@ -94,7 +145,18 @@ where
         )
         .await?
     } else {
-        execute(&workspace, args, tree, patch.as_deref(), &executor).await?
+        execute(&workspace, &store, args, tree, patch.as_deref(), &executor).await?
+    };
+    let command = match command {
+        Some(GitCommandOutput::Status(status)) => {
+            before_effect().await?;
+            // Keep native tree inspection's future independent of the complete
+            // command dispatch future (which also contains publication paths).
+            let status = Box::pin(executor.status_read_only(status)).await?;
+            before_effect().await?;
+            Some(GitCommandOutput::Status(status))
+        }
+        command => command,
     };
     Ok(Output {
         command: command.map(|output| without_host_paths(output, &executor.repository)),
@@ -130,19 +192,20 @@ fn without_host_paths(output: GitCommandOutput, repository: &GitIgnorePolicy) ->
 
 async fn execute<E: GitFilesystemExecutor<Error = Error>>(
     workspace: &Workspace<'_>,
+    store: &LocalCoreStateStore,
     args: &[String],
     tree: GitTreeRef,
     patch: Option<&[u8]>,
     executor: &E,
 ) -> crate::Result<Option<GitCommandOutput>> {
-    run_git_command(
-        &GitCompatRepository::new(workspace.repository, workspace.store.clone()),
+    Box::pin(run_git_command(
+        &GitCompatRepository::new(workspace.repository, store.clone()),
         args,
         tree,
         patch,
         workspace.author,
         workspace.authored_at_seconds,
         executor,
-    )
+    ))
     .await
 }

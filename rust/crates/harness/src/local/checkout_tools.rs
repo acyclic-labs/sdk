@@ -112,13 +112,10 @@ impl CheckoutTools {
         {
             let mut state = lock_owned(StateArc::clone(&shared)).await;
             if !state.initialized {
-                let (active, pending) = workspace.selected_view().await?;
+                let (active, _) = workspace.selected_view().await?;
                 state.active = active;
                 let view = state.active.as_ref().unwrap_or_else(|| workspace.view());
                 state.initial_view = view.workspace().id();
-                let view = state.active.as_ref().unwrap_or_else(|| workspace.view());
-                reconciliation::recover_pending(&workspace, view, pending, &|| async { Ok(()) })
-                    .await?;
                 state.watcher = if workspace.fresh {
                     Some(capture::Cursor::initial(&workspace, &capture_policy)?)
                 } else {
@@ -147,15 +144,6 @@ struct PreparedCommand {
     shell: Option<crate::tools::ShellInput>,
     fs: Option<crate::tools::FsCommand>,
     request: Vec<u8>,
-    maximum: usize,
-}
-
-struct ShellCommand<'a> {
-    invocation: &'a ToolInvocation,
-    context: &'a ToolContext,
-    shell: Option<crate::tools::ShellInput>,
-    request: Vec<u8>,
-    maximum: usize,
 }
 
 impl CheckoutTools {
@@ -169,7 +157,6 @@ impl CheckoutTools {
             shell,
             fs,
             request,
-            maximum,
         } = command;
         let result = serialized(&self.state, async |mut state| {
             let owner = context.task().owned_mailbox.as_ref().ok_or_else(|| {
@@ -187,104 +174,31 @@ impl CheckoutTools {
                 invocation.name == "fs",
             )
             .await?;
-            if reconciliation::recover(&workspace, view, &|| async {
-                owner.verify_owner(None)?.await
-            })
-            .await?
-            {
-                state.watcher = None;
+            let inspection = fs
+                .as_ref()
+                .is_some_and(|parsed| crate::tools::git::is_read_only(&parsed.arguments));
+            if !inspection {
+                if reconciliation::recover(&workspace, view, &|| async {
+                    owner.verify_owner(None)?.await
+                })
+                .await?
+                {
+                    state.watcher = None;
+                }
+                workspace::volumes::sync(&state.mounts).await?;
             }
-            workspace::volumes::sync(&state.mounts).await?;
             if let Some(parsed) = fs {
                 self.fs(parsed, context, &mut state, &workspace).await
             } else {
-                self.shell_checkout(
-                    ShellCommand {
-                        invocation: &invocation,
-                        context,
-                        shell,
-                        request,
-                        maximum,
-                    },
-                    state,
-                    &workspace,
-                )
-                .await
+                let input = shell.ok_or_else(|| Error::Invalid("shell input is absent".into()))?;
+                self.execute_shell(input, context, state, workspace, request)
+                    .await
             }
         })
         .await;
         #[cfg(test)]
         if let Err(error) = &result {
             eprintln!("checkout command {}: {error:?}", invocation.name);
-        }
-        result
-    }
-    async fn shell_checkout(
-        &self,
-        command: ShellCommand<'_>,
-        mut state: OwnedMutexGuard<State>,
-        workspace: &Arc<LocalWorkspace>,
-    ) -> Result<ToolResult> {
-        let ShellCommand {
-            invocation,
-            context,
-            shell,
-            request,
-            maximum,
-        } = command;
-        let State {
-            active, watcher, ..
-        } = &mut *state;
-        let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
-        self.capture(
-            (workspace, view),
-            watcher,
-            invocation.operation_id,
-            0,
-            PublicationPermit::Unrestricted,
-            Some((
-                context.task().ordinary_journal_owner::<LocalStream>()?,
-                false,
-            )),
-        )
-        .await?;
-        let input = shell.ok_or_else(|| Error::Invalid("shell input is absent".into()))?;
-        let files = output::Output::open(context, Arc::clone(&self.task_files), request).await?;
-        let mounts = Arc::clone(&state.mounts);
-        let publication = context.task().ordinary_journal_owner::<LocalStream>()?;
-        let (result, mut state, mut files) =
-            workspace::volumes::native_scope(&mounts, async |claims| {
-                let (result, state, files, claims) =
-                    self.shell(input, maximum, state, files, claims).await?;
-                if !result.as_ref().is_ok_and(|result| {
-                    result
-                        .value
-                        .get("stop")
-                        .is_none_or(|stop| stop.is_null() || stop["cleanup_completed"] == true)
-                }) {
-                    return Err(Error::Indeterminate(invocation.operation_id));
-                }
-                // Verify the journal owner before the scope publishes.
-                publication.verify(true, &mut None).await?;
-                Ok(((result, state, files), claims))
-            })
-            .await?;
-        let State {
-            active, watcher, ..
-        } = &mut *state;
-        let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
-        self.capture(
-            (workspace, view),
-            watcher,
-            invocation.operation_id,
-            1,
-            PublicationPermit::Unrestricted,
-            Some((Arc::clone(&publication), true)),
-        )
-        .await?;
-        publication.verify(true, &mut None).await?;
-        if let Ok(result) = &result {
-            files.finish(result).await?;
         }
         result
     }
@@ -423,15 +337,12 @@ impl ToolExecutor for CheckoutTools {
             } else {
                 None
             };
-            let maximum = context.effective_scope().limits().render_bytes;
-            let maximum = usize::try_from(maximum).map_err(storage)?;
             self.run_checkout_command(
                 PreparedCommand {
                     invocation,
                     shell,
                     fs,
                     request,
-                    maximum,
                 },
                 context,
             )

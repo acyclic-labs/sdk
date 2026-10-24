@@ -1,5 +1,6 @@
 use super::*;
 use proptest::prelude::*;
+mod inspection;
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 async fn fixture() -> TestResult<(

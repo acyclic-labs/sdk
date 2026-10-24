@@ -1,5 +1,6 @@
 //! The shared git facade over the active checkout view.
 use super::*;
+mod read;
 
 impl CheckoutTools {
     pub(super) fn fs_arguments(
@@ -38,10 +39,7 @@ impl CheckoutTools {
     ) -> Result<&'a Option<Arc<workspace::MountedVolume>>> {
         use acyclic_fs::access::Action;
         let (relative, mount) = workspace.mounts.named(parsed.volume.as_deref())?;
-        let read_only = matches!(
-            parsed.arguments[0].as_str(),
-            "diff" | "log" | "show" | "status"
-        );
+        let read_only = crate::tools::git::is_read_only(&parsed.arguments);
         for (action, operation) in std::iter::once((Action::Read, VolumeOperation::Read))
             .chain((!read_only).then_some((Action::Write, VolumeOperation::Write)))
         {
@@ -93,6 +91,202 @@ impl CheckoutTools {
             .as_ref()
             .ok_or_else(|| Error::Unauthorized("git command has no execution owner".into()))?;
         owner.verify_owner(None)?.await?;
+        if crate::tools::git::is_read_only(&parsed.arguments) {
+            return read::run(
+                self,
+                workspace,
+                view,
+                source.as_deref().map(|source| (source, native)),
+                &reserved,
+                &parsed.arguments,
+                context,
+            )
+            .await;
+        }
+        let lease = self
+            .begin_git_mutation(workspace, view, context, source.is_some(), native)
+            .await?;
+        let result = self
+            .execute_git_mutation(
+                workspace,
+                source.is_none().then_some((checkout, watcher)),
+                self.git_mutation_workspace(
+                    workspace,
+                    view,
+                    source.as_deref(),
+                    &reserved,
+                    lease.clone(),
+                ),
+                context,
+                &parsed.arguments,
+            )
+            .await;
+        let publication = self
+            .finish_git_mutation(
+                workspace,
+                view,
+                context,
+                source.is_some(),
+                &lease,
+                result
+                    .as_ref()
+                    .is_ok_and(|output| output.switched.is_some()),
+            )
+            .await?;
+        // In-place actions publish directly to the workspace, including conflict
+        // projections. Refresh its clean mount before another command can enter
+        // this checkout. Switched actions select their destination mount below.
+        let advanced = self
+            .advance_git_mutation(
+                workspace,
+                context,
+                source.is_some(),
+                native,
+                (
+                    result
+                        .as_ref()
+                        .is_ok_and(|output| output.switched.is_some()),
+                    publication.is_ok(),
+                ),
+            )
+            .await;
+        owner.verify_owner(None)?.await?;
+        self.complete_git_mutation(state, owner.as_ref(), result, publication, advanced)
+            .await
+    }
+
+    async fn complete_git_mutation(
+        &self,
+        state: &mut State,
+        owner: &dyn crate::runtime::OwnedTaskMailbox,
+        result: Result<crate::tools::git::Output>,
+        publication: Result<()>,
+        advanced: Result<()>,
+    ) -> Result<ToolResult> {
+        let output = match result {
+            Ok(output) => output,
+            Err(
+                error @ (Error::Conflict(_)
+                | Error::Invalid(_)
+                | Error::NotFound(_)
+                | Error::Unsupported(_)),
+            ) => {
+                publication?;
+                advanced?;
+                return Ok(crate::tools::rejected_input(error));
+            }
+            Err(error) => return Err(error),
+        };
+        if let Some(switched) = output.switched {
+            state.active = Some(switched.into_checkout()?);
+            self.selected_workspace(state, owner).await?;
+        }
+        // Persist the selected view in memory even when a recovered transition
+        // has no command result or closing the old workspace failed.
+        publication?;
+        advanced?;
+        let command = output.command.ok_or_else(|| {
+            Error::Conflict("recovered a pending fs transition; retry the command".into())
+        })?;
+        Ok(ToolResult {
+            value: serde_json::json!({"result": command}),
+        })
+    }
+
+    async fn execute_git_mutation(
+        &self,
+        workspace: &LocalWorkspace,
+        capture: Option<(&workspace::View, &mut Option<capture::Cursor>)>,
+        selected: crate::tools::git::Workspace<'_>,
+        context: &ToolContext,
+        arguments: &[String],
+    ) -> Result<crate::tools::git::Output> {
+        let owner = context
+            .task()
+            .owned_mailbox
+            .as_ref()
+            .ok_or_else(|| Error::Unauthorized("git command has no execution owner".into()))?;
+        owner.verify_owner(None)?.await?;
+        if let Some((checkout, watcher)) = capture {
+            let lease = selected.lease.as_ref().ok_or_else(|| {
+                Error::Unauthorized("git mutation has no publication lease".into())
+            })?;
+            self.capture(
+                (workspace, checkout),
+                watcher,
+                context.operation_id(),
+                0,
+                lease.publication_permit(),
+                Some((
+                    context.task().ordinary_journal_owner::<LocalStream>()?,
+                    false,
+                )),
+            )
+            .await?;
+        }
+        crate::tools::git::run_with_guard(selected, arguments, || async {
+            owner.verify_owner(None)?.await
+        })
+        .await
+    }
+
+    // Preparation errors stop immediately; a close error is retained until
+    // the selected view and physical mount have been reconciled by the caller.
+    async fn finish_git_mutation(
+        &self,
+        workspace: &LocalWorkspace,
+        view: crate::tools::git::View<'_>,
+        context: &ToolContext,
+        source: bool,
+        lease: &acyclic_fs::OperationWindowLease,
+        switched: bool,
+    ) -> Result<Result<()>> {
+        let coordinator = acyclic_fs::OperationWindowCoordinator::new(
+            workspace.filesystem.operation_window_store(),
+        );
+        let volume = view.workspace();
+        let before_close = head(view).await?;
+        if !source && !switched {
+            self.prepare_reconciliation(workspace, context, b"close", &before_close)
+                .await?;
+        }
+        let closed = coordinator
+            .finish_workspace(
+                volume,
+                lease,
+                acyclic_stream::UnixMillisClock::now_unix_millis(
+                    &acyclic_stream::SystemUnixMillisClock,
+                ),
+                acyclic_fs::OperationReconcileLimits::default(),
+            )
+            .await
+            .map_err(storage);
+        // Closing can rebase a child after the command has already published.
+        // A switched checkout belongs to the destination, so never apply the
+        // source workspace's reconciliation over it.
+        let publication = match closed {
+            Ok(acyclic_fs::WorkspaceOperationFinish::Reconciled(outcome)) => {
+                reconciliation_generation(outcome).map(|_| ())
+            }
+            Ok(_) => Ok(()),
+            Err(error) => Err(error),
+        };
+        Ok(publication)
+    }
+
+    async fn begin_git_mutation(
+        &self,
+        workspace: &LocalWorkspace,
+        view: crate::tools::git::View<'_>,
+        context: &ToolContext,
+        source: bool,
+        native: Option<&workspace::projection::Native>,
+    ) -> Result<acyclic_fs::OperationWindowLease> {
+        let owner = context
+            .task()
+            .owned_mailbox
+            .as_ref()
+            .ok_or_else(|| Error::Unauthorized("git command has no execution owner".into()))?;
         let (task, fence) = owner.task_binding();
         let lease_id = lease_identity(task, context.operation_id(), fence);
         let coordinator = acyclic_fs::OperationWindowCoordinator::new(
@@ -103,7 +297,7 @@ impl CheckoutTools {
             &acyclic_stream::SystemUnixMillisClock,
         );
         let before_recovery = head(view).await?;
-        if source.is_none() {
+        if !source {
             self.prepare_reconciliation(workspace, context, b"recover", &before_recovery)
                 .await?;
         }
@@ -120,7 +314,7 @@ impl CheckoutTools {
         };
         // With no recovered window the preparation marker covers no changes.
         // Acknowledge it without refreshing a mount that is already current.
-        if source.is_none() {
+        if !source {
             self.publish_reconciliation(workspace, context, recovered)
                 .await?;
         } else if recovered && let Some(native) = native {
@@ -140,134 +334,69 @@ impl CheckoutTools {
             )
             .await
             .map_err(storage)?;
-        let result = async {
+        Ok(lease)
+    }
+
+    async fn advance_git_mutation(
+        &self,
+        workspace: &LocalWorkspace,
+        context: &ToolContext,
+        source: bool,
+        native: Option<&workspace::projection::Native>,
+        outcome: (bool, bool),
+    ) -> Result<()> {
+        let owner = context
+            .task()
+            .owned_mailbox
+            .as_ref()
+            .ok_or_else(|| Error::Unauthorized("git command has no execution owner".into()))?;
+        let (switched, published) = outcome;
+        if let Some(native) = native {
             owner.verify_owner(None)?.await?;
-            if source.is_none() {
-                self.capture(
-                    (workspace, checkout),
-                    watcher,
-                    context.operation_id(),
-                    0,
-                    lease.publication_permit(),
-                    Some((
-                        context.task().ordinary_journal_owner::<LocalStream>()?,
-                        false,
-                    )),
-                )
-                .await?;
-            }
-            crate::tools::git::run_with_guard(
-                crate::tools::git::Workspace {
-                    filesystem: &workspace.filesystem,
-                    store: &workspace.store,
-                    view,
-                    root: source.as_ref().map_or(workspace.path.as_path(), |source| {
-                        source.destination.as_path()
-                    }),
-                    repository: if source.is_some() {
-                        volume.id()
-                    } else {
-                        workspace.view().workspace().id()
-                    },
-                    lease: Some(lease.clone()),
-                    checkout: (source.is_none() && workspace.mounted.is_none())
-                        .then_some(workspace.identity),
-                    reserved: &reserved,
-                    author: "LocalHarness",
-                    authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
-                        .unwrap_or(i64::MAX),
-                },
-                &parsed.arguments,
-                || async { owner.verify_owner(None)?.await },
-            )
-            .await
-        }
-        .await;
-        let before_close = head(view).await?;
-        if source.is_none()
-            && !result
-                .as_ref()
-                .is_ok_and(|output| output.switched.is_some())
-        {
-            self.prepare_reconciliation(workspace, context, b"close", &before_close)
-                .await?;
-        }
-        let closed = coordinator
-            .finish_workspace(
-                volume,
-                &lease,
-                acyclic_stream::UnixMillisClock::now_unix_millis(
-                    &acyclic_stream::SystemUnixMillisClock,
-                ),
-                acyclic_fs::OperationReconcileLimits::default(),
-            )
-            .await
-            .map_err(storage);
-        // Closing can rebase a child after the command has already published.
-        // A switched checkout belongs to the destination, so never apply the
-        // source workspace's reconciliation over it.
-        let publication = match closed {
-            Ok(acyclic_fs::WorkspaceOperationFinish::Reconciled(outcome)) => {
-                reconciliation_generation(outcome).map(|_| ())
-            }
-            Ok(_) => Ok(()),
-            Err(error) => Err(error),
-        };
-        // In-place actions publish directly to the workspace, including conflict
-        // projections. Refresh its clean mount before another command can enter
-        // this checkout. Switched actions select their destination mount below.
-        let advanced = async {
-            if let Some(native) = native {
-                owner.verify_owner(None)?.await?;
-                native.advance_to_head().await?;
-                owner.verify_owner(None)?.await?;
-            } else if source.is_none()
-                && !result
-                    .as_ref()
-                    .is_ok_and(|output| output.switched.is_some())
-            {
-                if publication.is_ok() {
-                    self.publish_reconciliation(workspace, context, true)
-                        .await?;
-                } else {
-                    reconciliation::advance_mount(workspace, &|| async {
-                        owner.verify_owner(None)?.await
-                    })
+            native.advance_to_head().await?;
+            owner.verify_owner(None)?.await?;
+        } else if !source && !switched {
+            if published {
+                self.publish_reconciliation(workspace, context, true)
                     .await?;
-                }
+            } else {
+                reconciliation::advance_mount(workspace, &|| async {
+                    owner.verify_owner(None)?.await
+                })
+                .await?;
             }
-            Ok::<(), Error>(())
         }
-        .await;
-        owner.verify_owner(None)?.await?;
-        let output = match result {
-            Ok(output) => output,
-            Err(
-                error @ (Error::Conflict(_)
-                | Error::Invalid(_)
-                | Error::NotFound(_)
-                | Error::Unsupported(_)),
-            ) => {
-                publication?;
-                advanced?;
-                return Ok(crate::tools::rejected_input(error));
-            }
-            Err(error) => return Err(error),
-        };
-        if let Some(switched) = output.switched {
-            *active = Some(switched.into_checkout()?);
-            self.selected_workspace(state, owner.as_ref()).await?;
+        Ok::<(), Error>(())
+    }
+
+    fn git_mutation_workspace<'a>(
+        &self,
+        workspace: &'a LocalWorkspace,
+        view: crate::tools::git::View<'a>,
+        source: Option<&'a workspace::MountedVolume>,
+        reserved: &'a [String],
+        lease: acyclic_fs::OperationWindowLease,
+    ) -> crate::tools::git::Workspace<'a> {
+        crate::tools::git::Workspace {
+            filesystem: &workspace.filesystem,
+            store: &workspace.store,
+            view,
+            root: source.map_or(workspace.path.as_path(), |source| {
+                source.destination.as_path()
+            }),
+            repository: if source.is_some() {
+                view.workspace().id()
+            } else {
+                workspace.view().workspace().id()
+            },
+            lease: Some(lease),
+            checkout: (source.is_none() && workspace.mounted.is_none())
+                .then_some(workspace.identity),
+            reserved,
+            author: "LocalHarness",
+            authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
+                .unwrap_or(i64::MAX),
         }
-        // Persist the selected view in memory even when a recovered transition
-        // has no command result or closing the old workspace failed.
-        publication?;
-        advanced?;
-        let command = output.command.ok_or_else(|| {
-            Error::Conflict("recovered a pending fs transition; retry the command".into())
-        })?;
-        Ok(ToolResult {
-            value: serde_json::json!({"result": command}),
-        })
     }
 
     async fn prepare_reconciliation(
@@ -280,7 +409,7 @@ impl CheckoutTools {
         let operation =
             reconciliation_operation(context.operation_id(), phase, from.id(), from.id());
         reconciliation::prepare(
-            &workspace,
+            workspace,
             operation,
             acyclic_fs::GitGenerationRef {
                 workspace_id: from.workspace().id(),
@@ -298,7 +427,7 @@ impl CheckoutTools {
     ) -> Result<()> {
         let state = workspace.selected_view().await?.0;
         let view = state.as_ref().unwrap_or_else(|| workspace.view());
-        reconciliation::publish(&workspace, view, refresh_mount, &|| async {
+        reconciliation::publish(workspace, view, refresh_mount, &|| async {
             context
                 .task()
                 .owned_mailbox

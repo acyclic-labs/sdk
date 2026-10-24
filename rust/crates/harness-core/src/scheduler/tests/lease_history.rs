@@ -55,8 +55,8 @@ enum Seen {
         expected: Vec<OperationId>,
     },
     State {
-        actual: State,
-        expected: State,
+        actual: Box<State>,
+        expected: Box<State>,
     },
     Owner {
         candidate: u8,
@@ -265,20 +265,20 @@ fn observe(
     })?;
     let actual = scheduler.operation(id(1)).unwrap();
     see.see(Seen::State {
-        actual: State {
+        actual: Box::new(State {
             reservation: actual.reservation.clone(),
             phase: actual.phase,
             cancelled: actual.cancellation_requested,
             outcome: actual.outcome.clone(),
             revision: actual.revision,
-        },
-        expected: State {
+        }),
+        expected: Box::new(State {
             reservation: expected.lease.map(held),
             phase: expected.phase,
             cancelled: expected.cancelled,
             outcome: expected.outcome.clone(),
             revision: expected.revision,
-        },
+        }),
     })?;
     let current = expected.lease.unwrap_or(0);
     for candidate in [current, current ^ 1, current + 2] {

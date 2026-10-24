@@ -1,5 +1,14 @@
 use super::*;
 
+/// Commands whose parsed forms only inspect the repository and working tree.
+#[must_use]
+pub fn is_read_only(argv: &[String]) -> bool {
+    matches!(
+        argv.first().map(String::as_str),
+        Some("diff" | "log" | "show" | "status")
+    )
+}
+
 /// Whether a command needs an exact working tree.
 ///
 /// A join is one: an unresolved host file reads as absent, so a branch that
@@ -43,7 +52,8 @@ pub(crate) async fn run_git_command<E: GitFilesystemExecutor<Error = Error>>(
     authored_at_seconds: i64,
     executor: &E,
 ) -> Result<Option<GitCommandOutput>, Error> {
-    if !git_transition_command(argv)
+    if !is_read_only(argv)
+        && !git_transition_command(argv)
         && repository
             .resume(executor)
             .await
