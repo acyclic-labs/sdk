@@ -38,12 +38,12 @@ class RuntimeTests(unittest.TestCase):
         if negative:source=source.replace("file=sys.stderr,flush=True", "flush=True")
         if cleanup_failure:source=source.replace('try:remove_home(job)','try:raise OSError("cleanup control")')
         p=self.d/('negative.py' if negative else 'worker.py');p.write_text(source);return p
-    def run_job(self,argv,negative=False,extra=None,cleanup_failure=False,gate=False):
+    def run_job(self,argv,negative=False,extra=None,cleanup_failure=False,gate=False,cwd=None):
         meta=self.d/'fixture.receipt-meta.v2.json';meta.write_text(json.dumps({'gate_log':'fixture.log'} if gate else {}))
         env={**os.environ,'PATH':'/home/var/.cargo/bin:'+os.environ['PATH'], 'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
         env.pop('BB_JOB_ACTIVE',None);env.pop('BB_ADMITTED',None)
         env.update(extra or {})
-        result=subprocess.run([sys.executable,str(self.worker(negative,cleanup_failure)),*argv],cwd=self.d,env=env,capture_output=True)
+        result=subprocess.run([sys.executable,str(self.worker(negative,cleanup_failure)),*argv],cwd=cwd or self.d,env=env,capture_output=True)
         return result,json.loads(Path(str(meta)+'.runtime').read_text()) if Path(str(meta)+'.runtime').exists() else {}
     def test_cargo_metadata_stdout_through_build_slot_and_negative_control(self):
         (self.d/'Cargo.toml').write_text('[package]\nname="gate-stdout-fixture"\nversion="0.0.0"\nedition="2024"\n')
@@ -104,27 +104,65 @@ sys.stdout.buffer.write(bytes(range(256)))
         home=self.real_home
         (home/'.cache').mkdir();(home/'.cache/existing').write_text('keep')
         alias=self.d/'alias';alias.symlink_to(home,target_is_directory=True)
-        for operation in [
+        operations=[
             f'Path({str(home/".cache/leak")!r}).write_text("bad")',
             f'Path({str(alias/".cache/leak")!r}).write_text("bad")',
             f'Path({str(home/".cache/existing")!r}).write_text("truncate")',
             f'Path({str(home/".cache/existing")!r}).unlink()',
-        ]:
-            result,runtime=self.run_job([sys.executable,'-c','from pathlib import Path;'+operation])
-            self.assertEqual(result.returncode,1,result.stderr.decode())
-            self.assertIn(b'Read-only file system',result.stderr)
-            self.assertFalse((home/'.cache/leak').exists())
-            self.assertEqual((home/'.cache/existing').read_text(),'keep')
-            self.assertEqual(runtime['home_guard']['writable'],False)
+        ]
         child=f'from pathlib import Path;Path({str(home/".cache/child")!r}).write_text("bad")'
-        result,_=self.run_job([sys.executable,'-c',f'import subprocess,sys;sys.exit(subprocess.call([sys.executable,"-c",{child!r}]))'])
-        self.assertEqual(result.returncode,1);self.assertFalse((home/'.cache/child').exists())
-        worker=self.worker();worker.write_text(worker.read_text().replace("if not os.statvfs('/home/var').f_flag & os.ST_RDONLY:","if False:").replace("runtime['home_guard']=protect_home(real_home)","runtime['home_guard']={'mechanism':'negative-control'}"))
+        # One enforced domain suffices for all operations. Starting a separate
+        # privileged namespace per attempted write measured over 10s for the
+        # full suite; execute every assertion without repeating that setup.
+        code=f'''import errno,subprocess,sys
+from pathlib import Path
+for operation in {operations!r}:
+ try:exec(operation)
+ except OSError as error:assert error.errno==errno.EROFS,(operation,error)
+ else:raise AssertionError('real HOME write was allowed: '+operation)
+ assert Path({str(home/'.cache/existing')!r}).read_text()=='keep'
+result=subprocess.run([sys.executable,'-c',{child!r}],capture_output=True)
+assert result.returncode==1 and b'Read-only file system' in result.stderr,result
+print('FIVE_WRITES_DENIED')
+'''
+        result,runtime=self.run_job([sys.executable,'-c',code])
+        self.assertEqual(result.returncode,0,result.stderr.decode());self.assertEqual(result.stdout,b'FIVE_WRITES_DENIED\n')
+        self.assertFalse((home/'.cache/leak').exists());self.assertFalse((home/'.cache/child').exists())
+        self.assertEqual((home/'.cache/existing').read_text(),'keep');self.assertFalse(runtime['home_guard']['writable'])
+        worker=self.worker();worker.write_text(worker.read_text().replace('if not namespace_ready:','if False:').replace("runtime['home_guard']=protect_home(real_home)","runtime['home_guard']={'mechanism':'negative-control'}"))
         meta=self.d/'negative.meta';meta.write_text('{}')
         env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
         env.pop('BB_JOB_ACTIVE',None)
         result=subprocess.run([sys.executable,str(worker),sys.executable,'-c',child],env=env,capture_output=True)
         self.assertEqual(result.returncode,0,result.stderr.decode());self.assertTrue((home/'.cache/child').exists())
+
+    def test_proc_roots_cannot_reach_an_outside_writable_home_view(self):
+        target=self.real_home/'proc-alias-write'
+        alias=Path('/proc')/str(os.getpid())/'root'/target.relative_to('/')
+        code=f'from pathlib import Path;Path({str(alias)!r}).write_text("fixture-only")'
+        result,runtime=self.run_job([sys.executable,'-c',code])
+        self.assertNotEqual(result.returncode,0);self.assertFalse(target.exists())
+        self.assertTrue(runtime['home_guard']['private_proc'])
+        worker=self.worker()
+        source=worker.read_text().replace("'--pid','--fork','--kill-child','--mount-proc',",'').replace('    require_private_proc()','    pass # old mount-only guard')
+        worker.write_text(source)
+        meta=self.d/'proc-negative.meta';meta.write_text('{}')
+        env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        env.pop('BB_JOB_ACTIVE',None)
+        bad=subprocess.run([sys.executable,str(worker),sys.executable,'-c',code],env=env,capture_output=True)
+        self.assertEqual(bad.returncode,0,bad.stderr.decode());self.assertTrue(target.exists())
+
+    def test_inherited_home_cwd_is_reopened_in_the_read_only_view(self):
+        code='from pathlib import Path;Path("relative-write").write_text("fixture-only")'
+        result,_=self.run_job([sys.executable,'-c',code],cwd=self.real_home)
+        self.assertEqual(result.returncode,1);self.assertIn(b'Read-only file system',result.stderr)
+        self.assertFalse((self.real_home/'relative-write').exists())
+        worker=self.worker();worker.write_text(worker.read_text().replace('    os.chdir(os.getcwd())','    pass # old inherited cwd mount'))
+        meta=self.d/'cwd-negative.meta';meta.write_text('{}')
+        env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        env.pop('BB_JOB_ACTIVE',None)
+        bad=subprocess.run([sys.executable,str(worker),sys.executable,'-c',code],cwd=self.real_home,env=env,capture_output=True)
+        self.assertEqual(bad.returncode,0,bad.stderr.decode());self.assertTrue((self.real_home/'relative-write').exists())
 
     def test_concurrent_other_tenant_writer_does_not_fail_job(self):
         home=self.real_home;cache=home/'.cache/cloud/bb2-tools';cache.mkdir(parents=True)

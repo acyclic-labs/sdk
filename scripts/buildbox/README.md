@@ -42,8 +42,13 @@ caches. `/mnt/bb/sccache`, installed Cargo/rustup toolchains and
 `/mnt/bb/toolchains/cargo-xwin` persist. All wrapper diagnostics go to stderr;
 stdout is the child's byte stream. A startup cache failure is explicit but
 permits uncached execution. A recursive read-only bind mount protects all
-of real `/home/var` in a private mount namespace inherited by every child,
-including nested build-slot. Kernel mount flags are verified at both entry points.
+of real `/home/var` in a private mount namespace inherited by every child.
+Each entry, including nested build-slot, also owns a PID namespace with a fresh
+proc mount: other processes' `/proc/<pid>/root` aliases cannot expose a writable
+host view of HOME. The constructor is unconditional; environment markers cannot
+bypass it. Kernel mount flags and private proc identity are verified.
+The inherited working directory is reopened through the protected namespace;
+relative paths cannot retain the old writable HOME mount.
 Only the job process tree is restricted; concurrent tenant writes cannot fail
 this job. No shared inventory or path exclusions remain. Unsupported kernels
 and writable inherited real-HOME stdio descriptors refuse execution as INFRA.

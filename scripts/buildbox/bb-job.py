@@ -43,9 +43,17 @@ def disk():
         readings.append({'path':path,'free_percent':pct,'free_bytes':s.f_bavail*s.f_frsize})
     return readings
 
+def require_private_proc():
+    # The launcher becomes PID 1 only in its new PID namespace, and a fresh
+    # proc mount must show that same numbering. Host /proc roots would expose
+    # another process's writable view of /home/var around the read-only bind.
+    if os.getpid()!=1 or not Path('/proc/self/stat').read_text().startswith('1 ('):
+        raise RuntimeError('real HOME requires a private PID namespace and proc mount')
+
 def protect_home(real_home):
     """Verify the inherited private read-only HOME mount, retaining setuid FUSE."""
     real_home=real_home.resolve(strict=True)
+    require_private_proc()
     for fd in [0,1,2]:
         try:
             link=os.readlink(f'/proc/self/fd/{fd}')
@@ -68,15 +76,14 @@ def protect_home(real_home):
     if str(real_home) not in mounts:raise RuntimeError('missing real HOME bind mount')
     if 'NoNewPrivs:\t1' in Path('/proc/self/status').read_text():
         raise RuntimeError('inherited no_new_privs disables required setuid FUSE')
-    return {'mechanism':'private-read-only-mount','real_home':str(real_home),'writable':False,'recursive':True}
+    return {'mechanism':'private-read-only-mount','real_home':str(real_home),'writable':False,'recursive':True,'private_proc':True}
 
 
 def mount_home_namespace():
     """Called as root only inside a newly unshared mount namespace."""
     if os.geteuid()!=0:raise RuntimeError('HOME namespace setup requires root')
     user_path=os.environ.pop('BB_JOB_NAMESPACE_PATH')
-    if os.readlink('/proc/self/ns/mnt')==os.readlink('/proc/1/ns/mnt'):
-        raise RuntimeError('refusing real HOME mount in the host namespace')
+    require_private_proc()
     subprocess.run(['mount','--rbind','/home/var','/home/var'],check=True)
     class MountAttr(ctypes.Structure):
         _fields_=[('attr_set',ctypes.c_uint64),('attr_clr',ctypes.c_uint64),('propagation',ctypes.c_uint64),('userns_fd',ctypes.c_uint64)]
@@ -84,6 +91,9 @@ def mount_home_namespace():
     libc=ctypes.CDLL(None,use_errno=True);attr=MountAttr(1,0,0,0)
     if libc.syscall(ctypes.c_long(442),ctypes.c_int(-100),ctypes.c_char_p(b'/home/var'),ctypes.c_uint(0x8000),ctypes.byref(attr),ctypes.sizeof(attr)):
         raise OSError(ctypes.get_errno(),'recursive read-only HOME mount')
+    # A cwd inherited from HOME still refers to the original writable mount.
+    # Resolve it again through this namespace before starting any payload.
+    os.chdir(os.getcwd())
     user=pwd.getpwnam('var')
     os.setgroups(os.getgrouplist(user.pw_name,user.pw_gid));os.setgid(user.pw_gid);os.setuid(user.pw_uid)
     # sudo's secure_path applies during privileged setup; restore the caller's
@@ -115,8 +125,9 @@ def private_git(job,real_home,source):
     if os.environ.get('BB_JOB_PRIVATE_MOUNT')!='1' or source!=Path('/work/src') or not (source/'.git').is_file():
         raise RuntimeError('HOME-backed Git metadata requires the private buildbox worktree namespace')
     own_ns=os.readlink('/proc/self/ns/mnt')
-    host_ns=subprocess.check_output(['sudo','-n','readlink','/proc/1/ns/mnt'],text=True).strip()
-    if own_ns==host_ns:raise RuntimeError('refusing private Git mount in the host namespace')
+    require_private_proc()
+    if not os.statvfs(real_home).f_flag & os.ST_RDONLY:
+        raise RuntimeError('refusing private Git mount without the read-only HOME boundary')
     head=git('rev-parse','HEAD')
     base=git_base(source)
     private=job/'git';subprocess.run(['git','init','--bare','--quiet',str(private)],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
@@ -223,17 +234,18 @@ def cost_receipt(env,server,started_cpu,started_cache_cpu,started_wall):
     return out
 
 
-def run(argv):
+def run(argv,namespace_ready=False):
     meta=os.environ.get('BUILD_SLOT_RECEIPT_META')
     if not meta: raise RuntimeError('bb-job requires a terminal-receipt owner')
     if 'NoNewPrivs:\t1' in Path('/proc/self/status').read_text():
         print('[buildbox] HOME guard INFRA: inherited no_new_privs disables required setuid FUSE',file=sys.stderr,flush=True)
         return 224
-    # The kernel mount flags, not a caller-supplied marker, decide whether a
-    # namespace is needed. No no_new_privs: fusermount3 must retain setuid.
-    if not os.statvfs('/home/var').f_flag & os.ST_RDONLY:
+    # Every entry, including a nested or forged-active entry, passes the same
+    # kernel namespace constructor. No environment marker can bypass it.
+    # No no_new_privs: fusermount3 must retain setuid.
+    if not namespace_ready:
         os.environ['BB_JOB_NAMESPACE_PATH']=os.environ.get('PATH','/usr/bin:/bin')
-        os.execvp('sudo',['sudo','-n','--preserve-env','unshare','--mount','--propagation','private',sys.executable,str(Path(__file__).resolve()),'home-namespace',*argv])
+        os.execvp('sudo',['sudo','-n','--preserve-env','unshare','--mount','--propagation','private','--pid','--fork','--kill-child','--mount-proc',sys.executable,str(Path(__file__).resolve()),'home-namespace',*argv])
     compiler_job=Path(argv[0]).name=='cargo' or bool(json.loads(Path(meta).read_text()).get('gate_log'))
     # Nested build-slot reuses the enclosing job's home/admission/server, rather
     # than consuming a second tenant slot or changing the tested environment.
@@ -404,7 +416,7 @@ def stop_job(file):
 
 if __name__=='__main__':
     if sys.argv[1:2]==['home-namespace']:
-        try:mount_home_namespace();result=run(sys.argv[2:])
+        try:mount_home_namespace();result=run(sys.argv[2:],namespace_ready=True)
         except (OSError,RuntimeError,subprocess.SubprocessError) as error:
             print('[buildbox] HOME guard INFRA: '+str(error),file=sys.stderr,flush=True);result=224
         raise SystemExit(result)
