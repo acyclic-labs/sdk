@@ -20,9 +20,9 @@ use windows::{
 // windows::core wraps Win32 status in HRESULT, whereas std::io classifies the
 // underlying Win32 code. Normalize exactly that facility at this OS boundary.
 pub(super) fn io_error(error: io::Error) -> io::Error {
-    match error.raw_os_error().map(|code| code as u32) {
+    match error.raw_os_error().map(i32::cast_unsigned) {
         Some(code) if code & 0xffff_0000 == 0x8007_0000 => {
-            io::Error::from_raw_os_error((code & 0xffff) as i32)
+            io::Error::from_raw_os_error((code & 0xffff).cast_signed())
         }
         _ => error,
     }
@@ -39,7 +39,8 @@ fn user(process: HANDLE, buffer: &mut [usize; 16]) -> windows::core::Result<PSID
             HANDLE(handle.as_raw_handle()),
             TokenUser,
             Some(buffer.as_mut_ptr().cast()),
-            std::mem::size_of_val(buffer) as u32,
+            u32::try_from(std::mem::size_of_val(buffer))
+                .map_err(|_| windows::core::Error::from(E_INVALIDARG))?,
             &mut length,
         )?;
         Ok((*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid)
@@ -49,7 +50,7 @@ fn user(process: HANDLE, buffer: &mut [usize; 16]) -> windows::core::Result<PSID
 /// Creates a new file with a protected DACL granting only its current user access.
 pub(super) fn create(path: &Path) -> io::Result<File> {
     let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    if name[..name.len() - 1].contains(&0) {
+    if name.strip_suffix(&[0]).is_none_or(|path| path.contains(&0)) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "NUL in credential path",
@@ -75,7 +76,7 @@ pub(super) fn create(path: &Path) -> io::Result<File> {
 
 pub(super) fn create_directory(path: &Path) -> io::Result<()> {
     let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    if name[..name.len() - 1].contains(&0) {
+    if name.strip_suffix(&[0]).is_none_or(|path| path.contains(&0)) {
         return Err(io::ErrorKind::InvalidInput.into());
     }
     with_security(|attributes| {
@@ -89,6 +90,7 @@ pub(super) fn create_directory(path: &Path) -> io::Result<()> {
 
 fn with_security<T>(action: impl FnOnce(&SECURITY_ATTRIBUTES) -> io::Result<T>) -> io::Result<T> {
     let mut token = [0usize; 16];
+    // SAFETY: GetCurrentProcess returns a borrowed pseudo-handle with no preconditions.
     let owner = user(unsafe { GetCurrentProcess() }, &mut token)?;
     let mut acl = [0usize; 32];
     let acl_pointer = acl.as_mut_ptr().cast::<ACL>();
@@ -98,7 +100,7 @@ fn with_security<T>(action: impl FnOnce(&SECURITY_ATTRIBUTES) -> io::Result<T>) 
     unsafe {
         InitializeAcl(
             acl_pointer,
-            std::mem::size_of_val(&acl) as u32,
+            u32::try_from(std::mem::size_of_val(&acl)).map_err(io::Error::other)?,
             ACL_REVISION,
         )?;
         AddAccessAllowedAce(acl_pointer, ACL_REVISION, FILE_ALL_ACCESS.0, owner)?;
@@ -107,7 +109,8 @@ fn with_security<T>(action: impl FnOnce(&SECURITY_ATTRIBUTES) -> io::Result<T>) 
         SetSecurityDescriptorDacl(security, true, Some(acl_pointer), false)?;
         SetSecurityDescriptorControl(security, SE_DACL_PROTECTED, SE_DACL_PROTECTED)?;
         let attributes = SECURITY_ATTRIBUTES {
-            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            nLength: u32::try_from(std::mem::size_of::<SECURITY_ATTRIBUTES>())
+                .map_err(io::Error::other)?,
             lpSecurityDescriptor: security.0,
             bInheritHandle: false.into(),
         };
@@ -122,6 +125,7 @@ pub(super) fn process_user_id(process: *mut std::ffi::c_void) -> io::Result<Vec<
     let sid = user(HANDLE(process), &mut buffer)?;
     // SAFETY: user returned a SID inside the retained aligned buffer.
     let length = unsafe { GetLengthSid(sid) } as usize;
+    // SAFETY: GetLengthSid describes the valid SID retained inside buffer above.
     Ok(unsafe { std::slice::from_raw_parts(sid.0.cast::<u8>(), length) }.to_vec())
 }
 

@@ -219,7 +219,7 @@ fn native_error_kinds_preserve_shared_create_and_reopen_semantics() -> io::Resul
     );
     #[cfg(windows)]
     {
-        let hresult = io::Error::from_raw_os_error(0x8007_0003_u32 as i32);
+        let hresult = io::Error::from_raw_os_error(0x8007_0003_u32.cast_signed());
         assert_ne!(
             hresult.kind(),
             io::ErrorKind::NotFound,
