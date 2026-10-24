@@ -1,53 +1,5 @@
 use super::*;
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-#[tokio::test]
-async fn volume_search_tool_restriction_preserves_the_issued_task_scope() -> Result<()> {
-    let harness = local_runtime(
-        TaskRegistry::default(),
-        &["read:project", "read:private"],
-        1,
-    )?;
-    let task = Arc::new(test_context(harness)?);
-    let context = ToolContext::new(Arc::clone(&task), OperationId::new(), "search", None)?;
-    let restricted = context.scoped(Capabilities::new(["read:private"]), task.scope().limits())?;
-    assert!(Arc::ptr_eq(&restricted.task, &task));
-    assert!(restricted.task().scope().grants().contains("read:project"));
-    assert!(
-        !restricted
-            .effective_scope()
-            .grants()
-            .contains("read:project")
-    );
-    assert!(
-        restricted
-            .effective_scope()
-            .grants()
-            .contains("read:private")
-    );
-    // Negative control: replacing TaskContext's scope changes the owner binding.
-    let replaced = task.scoped(Capabilities::new(["read:private"]), task.scope().limits())?;
-    assert_ne!(replaced.scope().grants(), task.scope().grants());
-    assert!(
-        restricted
-            .scoped(Capabilities::new(["read:project"]), task.scope().limits())
-            .is_err()
-    );
-    assert!(
-        restricted
-            .scoped(Capabilities::new(["read:foreign"]), task.scope().limits())
-            .is_err()
-    );
-    let mut larger = task.scope().limits();
-    larger.file_bytes += 1;
-    assert!(
-        restricted
-            .scoped(Capabilities::new(["read:private"]), larger)
-            .is_err()
-    );
-    Ok(())
-}
-
 #[tokio::test]
 async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Result<()> {
     let (mut root_policy, _, _) = native_policy_fixture_inputs();

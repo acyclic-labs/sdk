@@ -1,6 +1,7 @@
 use super::*;
-use acyclic_harness::test_support::fuzz_cases::client_offline as offline;
 use std::cell::Cell;
+#[path = "../../harness-fuzz/support/client_offline.rs"]
+mod offline;
 
 async fn lazy_quota(length: u64, copy_early: bool) {
     let outbox = volume(Arc::new(Provider::default()), "client/files").await;

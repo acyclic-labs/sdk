@@ -110,14 +110,12 @@ pub(super) fn sorted_names(directory: &std::path::Path) -> std::io::Result<Vec<S
 }
 
 pub(super) fn powershell(script: &str) -> std::io::Result<acyclic_native_runtime::ProcessTree> {
-    acyclic_native_runtime::ProcessTree::spawn(
-        acyclic_native_runtime::command::Command::new("powershell.exe").args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            script,
-        ]),
-    )
+    acyclic_native_runtime::ProcessTree::spawn(std::process::Command::new("powershell.exe").args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        script,
+    ]))
 }
 
 pub(super) fn succeeded(

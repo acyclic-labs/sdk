@@ -10,8 +10,7 @@ pub(crate) const MAXIMUM_BUILTIN_BYTES: u64 = 262_144;
 const BUILTIN_DIAGNOSTIC_LABEL_BYTES: u64 =
     acyclic_harness::preparation_serde_diagnostic_label_bytes() + 187;
 
-#[derive(Clone, Debug, Serialize, Deserialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum PiBuiltinIo {
     Read {
@@ -31,8 +30,7 @@ pub(crate) enum PiBuiltinIo {
     },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiBuiltinRequest {
     pub(crate) caller: TaskId,
@@ -51,6 +49,7 @@ impl PiBuiltinRequest {
         let decoded = crate::pi_root_provider::guarded_pi_decode::<Self>(
             &encoded.0,
             MAXIMUM_BUILTIN_BYTES * 2,
+            MAXIMUM_BUILTIN_BYTES * 4,
             acyclic_harness::wire::ErrorCode::Invalid,
             acyclic_harness::JsonValueSchema::None,
             BUILTIN_DIAGNOSTIC_LABEL_BYTES,
@@ -170,9 +169,6 @@ type Owner = acyclic_harness::durable_host::TaskJournalOwner<acyclic_stream::Loc
 fn is_absent(error: &Error) -> bool {
     match error {
         Error::NotFound(_) => true,
-        Error::NativeSource { source, .. } => {
-            matches!(source.as_ref(), acyclic_fs::LazyWorkspaceError::NotFound)
-        }
         Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Io(source),
             ..
@@ -197,25 +193,3 @@ use paths::{logical_path, scoped_variants, validate_path};
 pub(crate) use response::read_response;
 pub(crate) use root::authorize_owner;
 use working_view::{select_native_path, validate_declared_working_roles};
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn an_absent_lazy_path_lets_the_next_spelling_variant_run() {
-        let lazy = |source| Error::NativeSource {
-            source: Box::new(source),
-            custody: None,
-        };
-        assert!(is_absent(&lazy(acyclic_fs::LazyWorkspaceError::NotFound)));
-        // Negative controls: every other lazy failure stops the variant walk.
-        for other in [
-            acyclic_fs::LazyWorkspaceError::StaleSource,
-            acyclic_fs::LazyWorkspaceError::StaleCursor,
-            acyclic_fs::LazyWorkspaceError::NotRegularFile,
-        ] {
-            assert!(!is_absent(&lazy(other)));
-        }
-    }
-}

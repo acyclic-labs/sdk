@@ -100,7 +100,7 @@ mod tests {
                 .local_addr()
                 .map_err(|e| Error::Storage(e.to_string()))?;
             let operation = OperationId::from_bytes([9; 16]);
-            let server = acyclic_grpc_observability::task::spawn(async move {
+            let server = tokio::spawn(async move {
                 let (mut socket, _) = listener
                     .accept()
                     .await

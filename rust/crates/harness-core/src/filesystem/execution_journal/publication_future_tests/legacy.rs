@@ -20,8 +20,7 @@ fn unmetered_layout(mode: usize, future: impl std::future::Future) {
 }
 
 // Retained independently from both production tracing adapters. The original
-// allocates this frame; the unmetered representation (production's typed
-// `traced_future`, modelled per mode above) builds its producer in place.
+// allocates this frame; the expected unmetered representation embeds it inline.
 fn trace_frame<'a, T: 'a>(
     span: crate::obs::OperationSpan,
     future: impl std::future::Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a,
@@ -63,6 +62,23 @@ where
     crate::conversation::BoundedContentFuture::new(io, build)
 }
 
+// Independent concrete layout for the unmetered one-payload representation.
+// Keep trace_frame above unchanged as the original nested-box reference.
+fn single_payload_trace_frame<'a, T: 'a>(
+    span: crate::obs::OperationSpan,
+    future: impl std::future::Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a,
+) -> impl std::future::Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a {
+    use futures::FutureExt as _;
+    let context = span.clone();
+    context.scope(future.map(move |result| {
+        span.record("outcome", if result.is_ok() { "ok" } else { "err" });
+        if let Err(error) = &result {
+            span.record("error.kind", error.kind());
+        }
+        result
+    }))
+}
+
 pub(super) fn append<'a>(
     journal: &'a Journal,
     operation: OperationId,
@@ -70,18 +86,15 @@ pub(super) fn append<'a>(
     event: &'a ExecutionEvent,
     io: Option<&'a PreparationIo>,
 ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
-    unmetered_layout(
-        0,
-        crate::obs::traced_future(
-            || obs_span!("acyclic.harness.journal.append"),
-            || async move {
-                journal
-                    .append_with_chunks(operation, None, key, event, None)
-                    .await
-                    .map(|_| ())
-            },
-        ),
-    );
+    unmetered_layout(0, async move {
+        let span = obs_span!("acyclic.harness.journal.append");
+        single_payload_trace_frame(
+            span,
+            journal.append_with_chunks(operation, None, key, event, None),
+        )
+        .await
+        .map(|_| ())
+    });
     original_frame(0, io, || async move {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
@@ -119,18 +132,17 @@ pub(super) fn append_if_tail<'a>(
     event: &'a ExecutionEvent,
     io: Option<&'a PreparationIo>,
 ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
-    unmetered_layout(
-        1,
-        crate::obs::traced_future(
-            move || {
-                obs_span!(
-                    "acyclic.harness.journal.append_if_tail",
-                    rev = expected_tail
-                )
-            },
-            || journal.append_with_chunks(operation, Some(expected_tail), key, event, None),
-        ),
-    );
+    unmetered_layout(1, async move {
+        let span = obs_span!(
+            "acyclic.harness.journal.append_if_tail",
+            rev = expected_tail
+        );
+        single_payload_trace_frame(
+            span,
+            journal.append_with_chunks(operation, Some(expected_tail), key, event, None),
+        )
+        .await
+    });
     original_frame(1, io, || async move {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
@@ -162,23 +174,19 @@ pub(super) fn replay<'a>(
     maximum: u32,
     io: Option<&'a PreparationIo>,
 ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
-    unmetered_layout(
-        2,
-        crate::obs::traced_future(
-            move || {
-                obs_span!(
-                    "acyclic.harness.journal.replay",
-                    rev = after,
-                    items = crate::obs::Empty
-                )
-            },
-            || async move {
-                let records = journal.records(operation, after, maximum, None).await?;
-                crate::obs::obs_record!("items" = records.len());
-                Ok(records)
-            },
-        ),
-    );
+    unmetered_layout(2, async move {
+        let span = obs_span!(
+            "acyclic.harness.journal.replay",
+            rev = after,
+            items = crate::obs::Empty
+        );
+        single_payload_trace_frame(span, async move {
+            let records = journal.records(operation, after, maximum, None).await?;
+            crate::obs::obs_record!("items" = records.len());
+            Ok(records)
+        })
+        .await
+    });
     original_frame(2, io, || async move {
         if io.is_none() {
             let span = obs_span!(
@@ -207,17 +215,15 @@ pub(super) fn load<'a>(
     reference: &'a FileRef,
     io: Option<&'a PreparationIo>,
 ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-    unmetered_layout(
-        3,
-        crate::obs::traced_future(
-            || obs_span!("acyclic.harness.journal.load", bytes = crate::obs::Empty),
-            || async move {
-                let bytes = journal.load_content(reference, None).await?;
-                crate::obs::obs_record!("bytes" = bytes.len());
-                Ok(bytes)
-            },
-        ),
-    );
+    unmetered_layout(3, async move {
+        let span = obs_span!("acyclic.harness.journal.load", bytes = crate::obs::Empty);
+        single_payload_trace_frame(span, async move {
+            let bytes = journal.load_content(reference, None).await?;
+            crate::obs::obs_record!("bytes" = bytes.len());
+            Ok(bytes)
+        })
+        .await
+    });
     original_frame(3, io, || async move {
         if io.is_none() {
             let span = obs_span!("acyclic.harness.journal.load", bytes = crate::obs::Empty);
@@ -240,13 +246,14 @@ pub(super) fn stage<'a>(
     media: &'static str,
     io: Option<&'a PreparationIo>,
 ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
-    unmetered_layout(
-        4,
-        crate::obs::traced_future(
-            move || obs_span!("acyclic.harness.journal.stage", bytes = bytes.len()),
-            || journal.stage_with_io(operation, key, bytes, media, None),
-        ),
-    );
+    unmetered_layout(4, async move {
+        let span = obs_span!("acyclic.harness.journal.stage", bytes = bytes.len());
+        single_payload_trace_frame(
+            span,
+            journal.stage_with_io(operation, key, bytes, media, None),
+        )
+        .await
+    });
     #[cfg(not(target_arch = "wasm32"))]
     let native = match io.and_then(PreparationIo::original_native_work) {
         Some(work) => {

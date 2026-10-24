@@ -10,12 +10,7 @@ where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
 {
-    // Unmetered: git capture runs on unbounded budgets and holds no work ledger.
-    let (mut entries, nested_policies) =
-        crate::heap_future::erase(crate::heap_future::in_heap_unmetered(|| {
-            scan_git_capture_entries(&live)
-        }))
-        .await?;
+    let (mut entries, nested_policies) = scan_git_capture_entries(&live).await?;
     entries.sort_by(|left, right| {
         path_depth(&left.0)
             .cmp(&path_depth(&right.0))
@@ -51,16 +46,13 @@ where
             origin: None,
         });
     }
-    // Unmetered: git capture runs on unbounded budgets and holds no work ledger.
-    crate::heap_future::erase(crate::heap_future::in_heap_unmetered(|| {
-        apply_git_capture(
-            &live,
-            Some(&live),
-            None,
-            &excluded,
-            tracked_paths,
-            operation_id,
-        )
-    }))
+    apply_git_capture(
+        &live,
+        Some(&live),
+        None,
+        &excluded,
+        tracked_paths,
+        operation_id,
+    )
     .await
 }

@@ -1,5 +1,18 @@
 use super::*;
 
+pub(super) fn contains_path_with_work<W: SourceDemandReadWork>(
+    watches: &[(PathBuf, i32)],
+    path: &Path,
+    work: &mut W,
+) -> Result<bool, DemandError> {
+    for (candidate, _) in watches {
+        work.with_original_leaf(|work| work.started_io(ITEM))?;
+        if candidate == path {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
 pub(super) fn prepare_insert_with_work<W: SourceDemandReadWork>(
     watches: &mut Vec<(PathBuf, i32)>,
     path: &Path,
@@ -8,13 +21,7 @@ pub(super) fn prepare_insert_with_work<W: SourceDemandReadWork>(
     ownership: &SourcePayloadOwnership,
 ) -> Result<PathBuf, DemandError> {
     if watches.len() == watches.capacity() {
-        // Each discovered directory adds one descriptor. Exact one-slot
-        // growth copies the entire registered tree at every insertion.
-        let count = watches
-            .len()
-            .checked_mul(2)
-            .ok_or(WorkError::Overflow)?
-            .max(1);
+        let count = watches.len().checked_add(1).ok_or(WorkError::Overflow)?;
         let bytes = (count as u64)
             .checked_mul(std::mem::size_of::<(PathBuf, i32)>() as u64)
             .ok_or(WorkError::Overflow)?;
@@ -38,46 +45,6 @@ pub(super) fn prepare_insert_with_work<W: SourceDemandReadWork>(
     ownership.claim_retained(bytes, copied, work)?;
     Ok(path.to_path_buf())
 }
-
-#[cfg(test)]
-mod growth_tests {
-    use super::*;
-
-    #[test]
-    fn name_search_watch_registration_copies_linear_descriptor_bytes() {
-        let count = 5_000_u64;
-        let mut work = crate::native_host::ordinary_work();
-        let ownership = SourcePayloadOwnership::new(&mut work).unwrap();
-        let retained = AtomicU64::new(0);
-        let mut watches = Vec::new();
-        let mut path_bytes = 0;
-        for ordinal in 0..count {
-            let path = PathBuf::from(format!("directory-{ordinal:08}"));
-            path_bytes += path.as_os_str().len() as u64;
-            let owned =
-                prepare_insert_with_work(&mut watches, &path, &mut work, &retained, &ownership)
-                    .unwrap();
-            // Ordinary standalone work releases the retained path claim just
-            // as the registration caller does; no native descriptor is opened.
-            work.release(owned.as_os_str().len() as u64).unwrap();
-            watches.push((owned, ordinal as i32));
-        }
-        let slot = size_of::<(PathBuf, i32)>() as u64;
-        let descriptor_copies = work.receipt().bytes_copied - path_bytes;
-        assert!(descriptor_copies < 2 * count * slot);
-        assert_eq!(
-            retained.load(Ordering::Acquire),
-            watches.capacity() as u64 * slot
-        );
-        assert!(watches.capacity() < 2 * watches.len());
-        // Negative control: the former one-slot policy copies every earlier
-        // descriptor at each insertion, despite retaining the same final set.
-        let exact_growth_copies = (count - 1) * count / 2 * slot;
-        assert!(exact_growth_copies > 2 * count * slot);
-        assert_eq!(watches.len() as u64, count);
-    }
-}
-
 pub(super) fn proc_fd_path(descriptor: i32) -> ([u8; 24], usize) {
     let mut path = [0_u8; 24];
     let prefix = b"/proc/self/fd/";
@@ -395,28 +362,18 @@ impl Shared {
                         close_component(previous, work)?;
                     }
                     added = false;
-                    if watches.contains(&prefix, work)? {
+                    if contains_path_with_work(&watches, &prefix, work)? {
                         continue;
                     }
                     self.reserve_record_cleanup(work)?;
-                    let prepared = (|| {
-                        let slot = watches.prepare(
-                            &prefix,
-                            work,
-                            &self.retained_variable_bytes,
-                            &self.ownership,
-                        )?;
-                        let owned = prepare_insert_with_work(
-                            &mut watches.records,
-                            &prefix,
-                            work,
-                            &self.retained_variable_bytes,
-                            &self.ownership,
-                        )?;
-                        Ok::<_, DemandError>((owned, slot))
-                    })();
-                    let (owned, slot) = match prepared {
-                        Ok(prepared) => prepared,
+                    let owned = match prepare_insert_with_work(
+                        &mut watches,
+                        &prefix,
+                        work,
+                        &self.retained_variable_bytes,
+                        &self.ownership,
+                    ) {
+                        Ok(owned) => owned,
                         Err(error) => {
                             self.cancel_record_cleanup(work);
                             return Err(error);
@@ -433,7 +390,7 @@ impl Shared {
                     ) {
                         Ok(descriptor) => {
                             let capacity = owned.capacity() as u64;
-                            watches.insert(slot, owned, descriptor);
+                            watches.push((owned, descriptor));
 
                             self.retained_variable_bytes
                                 .fetch_add(capacity, Ordering::AcqRel);
@@ -508,19 +465,18 @@ impl Shared {
                 }
             }
             let copied = WorkCounters {
-                bytes_copied: u64::from(at + 1 != watches.len())
+                bytes_copied: ((watches.len() - at - 1) as u64)
                     .checked_mul(size_of::<(PathBuf, i32)>() as u64)
                     .ok_or(WorkError::Overflow)?,
                 ..WorkCounters::default()
             };
-            let slots = watches.prepare_remove(at, work)?;
             work.with_original_leaf(|work| work.work.admit(&copied, &work.budget))?;
             if !shared {
                 work.with_original_leaf(|work| work.started_io(WRITE))?;
                 hub::hub()?.remove(self.subscriber, descriptor, hub::Interest::All)?;
             }
             work.record(copied)?;
-            let (removed, _) = watches.remove(at, slots);
+            let (removed, _) = watches.remove(at);
             let bytes = removed.capacity() as u64;
 
             drop(removed);

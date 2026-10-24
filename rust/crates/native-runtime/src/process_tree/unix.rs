@@ -1,12 +1,11 @@
-#[cfg(test)]
-use crate::command::Child;
-use crate::command::Command;
 use std::io;
 use std::io::{Read, Write};
 pub(super) use std::os::fd::AsRawFd as Pipe;
 use std::os::unix::process::CommandExt as _;
 use std::os::unix::process::ExitStatusExt as _;
-use std::process::ExitStatus;
+#[cfg(test)]
+use std::process::Child;
+use std::process::{Command, ExitStatus};
 
 #[cfg(test)]
 pub(super) fn observe_exit(child: &Child) -> io::Result<Option<ExitStatus>> {
@@ -586,16 +585,16 @@ fn group_has_no_live_members(
     group: libc::pid_t,
     meter: Option<&dyn crate::NativeReadMeter>,
 ) -> io::Result<bool> {
-    let deadline = crate::deadline::now() + super::ProcessTree::TERMINATION_TIMEOUT;
+    let deadline = std::time::Instant::now() + super::ProcessTree::TERMINATION_TIMEOUT;
     loop {
         if group_snapshot_has_no_live_members(group, meter)? {
             return Ok(true);
         }
-        if crate::deadline::now() >= deadline {
+        if std::time::Instant::now() >= deadline {
             return Ok(false);
         }
         super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-            crate::deadline::sleep(super::ProcessTree::TERMINATION_POLL_INTERVAL);
+            std::thread::sleep(super::ProcessTree::TERMINATION_POLL_INTERVAL);
             Ok(())
         })?;
     }

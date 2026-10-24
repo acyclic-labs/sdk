@@ -8,7 +8,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         maximum: usize,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Vec<(String, SourceVersion)>, KernelOwnedAllocation), LazyWorkspaceError> {
-        let state = crate::heap_future::metered!(ctx, |ctx| self.state(ctx))?;
+        let state = self.state(ctx).await?;
         let mut pending = Owned::allocate(1, ctx)?;
         pending.value.push(state.overlay);
         let mut output = Owned::allocate(0, ctx)?;
@@ -74,7 +74,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<SourceVersion>, LazyWorkspaceError> {
-        let source = crate::heap_future::metered!(ctx, |ctx| self.state(ctx))?.source;
+        let source = self.state(ctx).await?.source;
         match self.source_lookup(source, path, ctx).await {
             Ok(node) => Ok(node.map(|n| n.version)),
             Err(LazyWorkspaceError::Demand(DemandError::Absent | DemandError::NotDirectory)) => {

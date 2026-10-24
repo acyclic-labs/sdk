@@ -27,7 +27,7 @@ function exercise(selected, seed, code = implementation) {
   let calls = 0;
   let writes = 0;
   const context = {
-    root, compatibilityArtifacts, packagedTypeScriptBindings, dirname, join, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
+    root, packagedTypeScriptBindings, dirname, join, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
     process: { platform: process.platform },
     writeFileSync: (path, bytes) => { writes++; writeFileSync(path, bytes); },
     spawnSync: (_command, args) => {

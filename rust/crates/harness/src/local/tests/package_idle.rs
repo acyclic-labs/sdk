@@ -55,7 +55,7 @@ async fn client_shutdown_releases_idle_worker_before_executor_shutdown() -> Resu
     let local =
         Arc::new(LocalHarness::open(volume_config(directory.path(), project, text())?).await?);
     let owner = Arc::downgrade(&local);
-    crate::client::with_local_commands(local, OperationId::new(), || async { Ok::<(), Error>(()) })
+    crate::client::with_local_commands(local, OperationId::new(), async { Ok::<(), Error>(()) })
         .await?;
     assert!(
         owner.upgrade().is_none(),

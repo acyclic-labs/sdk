@@ -9,7 +9,6 @@ pub(super) struct Api {
     pub(super) stream_create: StreamCreate,
     pub(super) stream_set_dispatch_queue: StreamSetDispatchQueue,
     pub(super) stream_start: StreamStart,
-    pub(super) stream_flush_async: StreamFlushAsync,
     pub(super) stream_stop: StreamAction,
     pub(super) stream_invalidate: StreamAction,
     pub(super) stream_release: StreamAction,
@@ -104,7 +103,6 @@ impl Api {
                     c"FSEventStreamSetDispatchQueue" as StreamSetDispatchQueue
                 ),
                 stream_start: function!(c"FSEventStreamStart" as StreamStart),
-                stream_flush_async: function!(c"FSEventStreamFlushAsync" as StreamFlushAsync),
                 stream_stop: function!(c"FSEventStreamStop" as StreamAction),
                 stream_invalidate: function!(c"FSEventStreamInvalidate" as StreamAction),
                 stream_release: function!(c"FSEventStreamRelease" as StreamAction),

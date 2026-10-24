@@ -88,15 +88,13 @@ pub(super) async fn open(
         &mut None,
     )?;
     let projection_files = Arc::new(
-        acyclic_fs::in_heap(|| {
-            crate::task_volume::TaskFiles::open(
-                config.stream.clone(),
-                config.task_volume,
-                config.verifier,
-                &signed,
-                config.limits.file_bytes,
-            )
-        })
+        crate::task_volume::TaskFiles::open(
+            config.stream.clone(),
+            config.task_volume,
+            config.verifier,
+            &signed,
+            config.limits.file_bytes,
+        )
         .await?,
     );
     let task_files = Arc::new(projection_files.reopen_erased().await?);
@@ -106,30 +104,26 @@ pub(super) async fn open(
         None,
     )?);
     let machines = code.registry()?;
-    let creations: [Arc<dyn crate::resource_preparation::ResourceCreationProvider>; 1] = [creation];
-    let resumable = crate::durable_tool::ResumableToolRegistry::default();
-    let mut runtime = acyclic_fs::in_heap(|| {
-        LocalTaskRuntime::open(
-            config.stream,
-            config.files.clone(),
-            config.journal,
-            Some(config.scratch),
-            config.verifier,
-            &signed,
-            &scope,
-            code.tasks(),
-            &machines,
-            config.tools,
-            config.session_limits,
-            config.concurrency,
-            config.limits.file_bytes,
-            config.clock.clone(),
-            None,
-            &creations,
-            &resumable,
-            None,
-        )
-    })
+    let mut runtime = LocalTaskRuntime::open(
+        config.stream,
+        config.files.clone(),
+        config.journal,
+        Some(config.scratch),
+        config.verifier,
+        &signed,
+        &scope,
+        code.tasks(),
+        &machines,
+        config.tools,
+        config.session_limits,
+        config.concurrency,
+        config.limits.file_bytes,
+        config.clock.clone(),
+        None,
+        &[creation],
+        &crate::durable_tool::ResumableToolRegistry::default(),
+        None,
+    )
     .await?
     .with_authority_custodian(config.issuer)?
     .with_output_volume(config.project, None)?
@@ -139,15 +133,13 @@ pub(super) async fn open(
     let runtime = match config.workspace {
         Some(workspace) => {
             let tools = Arc::new(
-                acyclic_fs::in_heap(|| {
-                    checkout_tools::CheckoutTools::new(
-                        workspace,
-                        config.project,
-                        config.clock,
-                        &signed,
-                        Arc::clone(&projection_files),
-                    )
-                })
+                checkout_tools::CheckoutTools::new(
+                    workspace,
+                    config.project,
+                    config.clock,
+                    &signed,
+                    Arc::clone(&projection_files),
+                )
                 .await?,
             );
             let publisher = checkout_tools::publisher::CheckoutPublisher::new(

@@ -221,10 +221,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         ) {
             return Err(FsError::RefreshNotAllowed);
         }
-        // Each kernel step runs in a paid heap frame; this frame holds none.
-        let (candidate_object, candidate_head) = crate::heap_future::metered!(erased accounting, |accounting| self
-                .volume
-                .resolve_head_generation(accounting, cancellation))?;
+        let (candidate_object, candidate_head) = self
+            .volume
+            .resolve_head_generation(accounting, cancellation)
+            .await?;
         let (probe, probe_allocation) = AuthenticatedGenerationProbe::new_with_accounting(
             &self.volume.fs.inner.objects,
             probe_limits(self.volume.config),
@@ -237,31 +237,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             probe: &probe.0,
             working: self.root.file_table,
         };
-        let base = GenerationId::new(self.root.base.digest);
-        let classified = async {
-            Ok::<_, FsError>(
-                crate::heap_future::metered!(erased accounting, |accounting| {
-                    crate::kernel::classify_rebase_settling_with_accounting(
-                        &working,
-                        base,
-                        GenerationId::new(candidate_object.digest),
-                        &dependencies,
-                        maximum_conflicts,
-                        accounting,
-                        cancellation,
-                    )
-                }),
-            )
-        }
+        let classified = crate::kernel::classify_rebase_settling_with_accounting(
+            &working,
+            GenerationId::new(self.root.base.digest),
+            GenerationId::new(candidate_object.digest),
+            &dependencies,
+            maximum_conflicts,
+            accounting,
+            cancellation,
+        )
         .await
-        .and_then(|classified| {
-            classified.map_err(|error| match error {
-                crate::kernel::ClassifyRebaseFailure::Probe(error)
-                | crate::kernel::ClassifyRebaseFailure::Accounting(error) => error,
-                crate::kernel::ClassifyRebaseFailure::ZeroConflictLimit => {
-                    FsError::Rebase(RebaseError::ZeroConflictLimit)
-                }
-            })
+        .map_err(|error| match error {
+            crate::kernel::ClassifyRebaseFailure::Probe(error)
+            | crate::kernel::ClassifyRebaseFailure::Accounting(error) => error,
+            crate::kernel::ClassifyRebaseFailure::ZeroConflictLimit => {
+                FsError::Rebase(RebaseError::ZeroConflictLimit)
+            }
         });
         let retired = {
             let (probe, _allocation) = probe;
@@ -285,29 +276,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             self.authority_head = Some(candidate_head);
             return Ok(classified);
         }
-        let (candidate_root, allocation) = crate::heap_future::metered!(erased accounting, |accounting| {
-            crate::kernel::read_generation_root_with_accounting(
-                &self.volume.fs.inner.objects,
-                candidate_object,
-                self.volume.config,
-                accounting,
-                cancellation,
-            )
-        })?;
+        let (candidate_root, allocation) = crate::kernel::read_generation_root_with_accounting(
+            &self.volume.fs.inner.objects,
+            candidate_object,
+            self.volume.config,
+            accounting,
+            cancellation,
+        )
+        .await?;
         let candidate_bytes = root_parent_bytes(&candidate_root)?;
         let candidate = Owned::new(candidate_root, allocation, candidate_bytes);
         let outcome = async {
             if candidate.value.volume_id != self.volume.id {
                 return Err(FsError::VolumeMismatch);
             }
-            let Some((root, allocation)) = crate::heap_future::metered!(erased accounting, |accounting| self
+            let Some((root, allocation)) = self
                 .rebase_private_candidate_with_accounting(
                     candidate_object,
                     &candidate.value,
                     maximum_conflicts,
                     accounting,
                     cancellation,
-                ))?
+                )
+                .await?
             else {
                 return Ok(None);
             };

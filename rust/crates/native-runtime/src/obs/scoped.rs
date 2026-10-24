@@ -74,17 +74,10 @@ impl<T: Future> Future for Scoped<T> {
             return Poll::Pending;
         };
         match this.context.as_ref() {
-            Some(context) => context.in_scope(|| poll_future(inner.as_mut(), cx)),
-            None => poll_future(inner.as_mut(), cx),
+            Some(context) => context.in_scope(|| inner.as_mut().poll(cx)),
+            None => inner.as_mut().poll(cx),
         }
     }
-}
-
-// Both context branches call the same poll frame. Inlining the producer into
-// each branch reserves its locals twice while the selected branch is running.
-#[inline(never)]
-fn poll_future<F: Future>(future: Pin<&mut F>, cx: &mut Context<'_>) -> Poll<F::Output> {
-    future.poll(cx)
 }
 impl<T: futures_core::Stream> futures_core::Stream for Scoped<T> {
     type Item = T::Item;

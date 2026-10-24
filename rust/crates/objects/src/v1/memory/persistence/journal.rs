@@ -12,41 +12,6 @@ impl Journal {
         }
         Ok(())
     }
-    pub(in crate::v1::memory) fn validate_bodies(
-        &self,
-        before: &State,
-        state: &State,
-        pending: Option<&PendingObject>,
-    ) -> Result<(), Error> {
-        let bodies = changed(Some(&before.buckets), &state.buckets)
-            .flat_map(|(name, bucket)| {
-                changed(
-                    before.buckets.get(name).map(|bucket| &bucket.objects),
-                    &bucket.objects,
-                )
-            })
-            .map(|(_, object)| object)
-            .map(|object| &object.body)
-            .chain(
-                changed(Some(&before.uploads), &state.uploads)
-                    .flat_map(|(id, upload)| {
-                        changed(
-                            before.uploads.get(id).map(|upload| &upload.parts),
-                            &upload.parts,
-                        )
-                    })
-                    .map(|(_, part)| part)
-                    .map(|(_, body)| body),
-            );
-        for body in bodies.chain(
-            pending
-                .and_then(|change| change.value.as_ref())
-                .map(|value| &value.body),
-        ) {
-            self.validate_body(body)?;
-        }
-        Ok(())
-    }
     pub(in crate::v1::memory) fn check(&self) -> Result<(), Error> {
         if self.poisoned.load(Ordering::Acquire) {
             Err(Unavailable.into())
@@ -136,7 +101,7 @@ impl Journal {
         publication: &mut Publication,
     ) -> Result<Vec<u8>, NativeObjectsError> {
         let mut inline_data = Vec::new();
-        for (name, bucket) in changed(Some(&before.buckets), &next.buckets.clone()) {
+        for (name, bucket) in &next.buckets.clone() {
             let keys = changed_keys(before.buckets.get(name), bucket, publication)?;
             if keys.is_empty() {
                 continue;
@@ -150,13 +115,32 @@ impl Journal {
                 object.body = self.prepare_inline(&object.body, &mut inline_data, publication)?;
             }
         }
-        for (id, snapshot) in changed(Some(&before.uploads), &next.uploads.clone()) {
-            let upload = next.uploads.get_mut(id).ok_or(Error::from(Unavailable))?;
-            for (number, _) in changed(
-                before.uploads.get(id).map(|old| &old.parts),
-                &snapshot.parts,
-            ) {
-                let (_, body) = upload
+        let uploads = next.uploads.clone();
+        for change in before.uploads.diff(&uploads) {
+            let (id, upload) = match change {
+                imbl::ordmap::DiffItem::Add(id, upload)
+                | imbl::ordmap::DiffItem::Update {
+                    new: (id, upload), ..
+                } => (id, upload),
+                imbl::ordmap::DiffItem::Remove(..) => continue,
+            };
+            let empty = OrdMap::new();
+            let old = before
+                .uploads
+                .get(id)
+                .map_or(&empty, |upload| &upload.parts);
+            for change in old.diff(&upload.parts) {
+                let number = match change {
+                    imbl::ordmap::DiffItem::Add(number, _)
+                    | imbl::ordmap::DiffItem::Update {
+                        new: (number, _), ..
+                    } => number,
+                    imbl::ordmap::DiffItem::Remove(..) => continue,
+                };
+                let (_, body) = next
+                    .uploads
+                    .get_mut(id)
+                    .ok_or(Error::from(Unavailable))?
                     .parts
                     .get_mut(number)
                     .ok_or(Error::from(Unavailable))?;

@@ -15,14 +15,28 @@ pub async fn run(
     inline: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let authority = local.client_owner();
-    let own_task = acyclic_harness::TaskId::parse(&authority.id)?;
-    let files = local.task_files();
-    let mut client =
-        client::TaskFileClient::observe_task(files.as_ref(), &authority, own_task, 1024, 4 << 20)
-            .await?;
+    let mut client = client::TaskFileClient::observe_task(
+        local.task_files().as_ref(),
+        &authority,
+        acyclic_harness::TaskId::parse(&authority.id)?,
+        1024,
+        4 * 1024 * 1024,
+    )
+    .await?;
     let reader = local.client_reader()?;
     let mut commands = client::local_ui(&local, &operation.to_string(), &authority).await?;
-    let (tty, mut terminal) = open_terminal(inline)?;
+    let mut tty = Tty::open()?;
+    // Synchronized output follows the probed modes in the session journal.
+    tty.negotiate(&Environment::capture())?;
+    tty.setup(if inline {
+        ScreenMode::Inline
+    } else {
+        ScreenMode::Alternate
+    })?;
+    let (tty, output) = tty.split();
+    let terminal_size =
+        || crossterm::terminal::size().map(|(width, height)| Size::new(width, height));
+    let mut terminal = FrameTerminal::new(output, terminal_size()?)?;
     let mut events = client::terminal_events(tty);
     // Events of the current read not yet handled; the read presents one frame.
     let mut batch = client::InputBatch::new();
@@ -39,8 +53,14 @@ pub async fn run(
     client.follow_commands(&commands).await?;
     let mut documents = client::local_documents(&local, client.views_mut()).await?;
     loop {
-        let task = commands.active_task().unwrap_or(own_task);
-        client.follow_task(files.as_ref(), task).await?;
+        client
+            .follow_task(
+                local.task_files().as_ref(),
+                commands
+                    .active_task()
+                    .unwrap_or(acyclic_harness::TaskId::parse(&authority.id)?),
+            )
+            .await?;
         renderer.update_files(&client, &authority);
         if commands.exit_requested()? {
             return Ok(());
@@ -109,28 +129,6 @@ pub async fn run(
         .await?;
         prompt_files.save(&mut commands, &mut input).await?;
     }
-}
-
-fn terminal_size() -> std::io::Result<Size> {
-    crossterm::terminal::size().map(|(width, height)| Size::new(width, height))
-}
-
-/// Opens the controlling terminal in the session's screen mode: its input
-/// side and the frame terminal that presents to its output.
-fn open_terminal(
-    inline: bool,
-) -> Result<(Tty, FrameTerminal<tui::term::Output>), Box<dyn std::error::Error>> {
-    let mut tty = Tty::open()?;
-    // Synchronized output follows the probed modes in the session journal.
-    tty.negotiate(&Environment::capture())?;
-    tty.setup(if inline {
-        ScreenMode::Inline
-    } else {
-        ScreenMode::Alternate
-    })?;
-    let (tty, output) = tty.split();
-    let terminal = FrameTerminal::new(output, terminal_size()?)?;
-    Ok((tty, terminal))
 }
 
 /// The presentation boundary shared by the executable and its file-backed Rig.

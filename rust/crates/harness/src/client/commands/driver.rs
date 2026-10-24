@@ -84,7 +84,7 @@ where
                 &resolution,
                 Box::pin(consume(&mut session, &request, execute.clone())),
                 || {
-                    acyclic_grpc_observability::task::join_set(&mut effects, effect);
+                    effects.spawn(effect);
                 },
             )
             .await;

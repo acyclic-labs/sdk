@@ -38,11 +38,6 @@ macro_rules! typed_reference {
             }
         }
 
-        impl crate::HeapLayout for $name {
-            const LAYOUT: &'static crate::heap_layout::JsonLayout =
-                <ResourceRef as crate::HeapLayout>::LAYOUT;
-        }
-
         impl<'de> Deserialize<'de> for $name {
             fn deserialize<D: Deserializer<'de>>(
                 deserializer: D,

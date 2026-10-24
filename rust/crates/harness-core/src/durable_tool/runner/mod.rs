@@ -93,7 +93,6 @@ impl<'tools> DurableToolRunner<'tools> {
                 .map(crate::store::HistoryContentFuture::Native);
         }
         Ok(crate::store::HistoryContentFuture::Ordinary {
-            // Unbudgeted: `io` comes only from native work, which returned above.
             future: Box::pin(future()),
             frame_bytes: 0,
         })

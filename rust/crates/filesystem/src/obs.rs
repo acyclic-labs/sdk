@@ -201,7 +201,7 @@ mod worker_context_tests {
                 let origin_seen = Arc::new(Mutex::new(Evidence::default()));
                 let foreign_seen = Arc::new(Mutex::new(Evidence::default()));
 
-                let origin = acyclic_test_support::capture::dispatch(
+                let origin = tracing::Dispatch::new(
                     tracing_subscriber::registry()
                         .with(
                             Capture(Arc::clone(&origin_seen), Default::default()).with_filter(
@@ -216,7 +216,7 @@ mod worker_context_tests {
                             tracing_subscriber::filter::LevelFilter::TRACE
                         }),
                 );
-                let foreign = acyclic_test_support::capture::dispatch(
+                let foreign = tracing::Dispatch::new(
                     tracing_subscriber::registry()
                         .with(Capture(Arc::clone(&foreign_seen), Default::default())),
                 );
@@ -294,15 +294,14 @@ mod worker_context_tests {
         for filtered in [false, true] {
             let seen = Arc::new(Mutex::new(Evidence::default()));
 
-            let origin =
-                acyclic_test_support::capture::dispatch(tracing_subscriber::registry().with(
-                    Capture(Arc::clone(&seen), Default::default()).with_filter(
-                        tracing_subscriber::filter::filter_fn(move |metadata| {
-                            !filtered || metadata.name() != "frame_operation"
-                        }),
-                    ),
-                ));
-            let foreign = acyclic_test_support::capture::dispatch(tracing_subscriber::registry());
+            let origin = tracing::Dispatch::new(tracing_subscriber::registry().with(
+                Capture(Arc::clone(&seen), Default::default()).with_filter(
+                    tracing_subscriber::filter::filter_fn(move |metadata| {
+                        !filtered || metadata.name() != "frame_operation"
+                    }),
+                ),
+            ));
+            let foreign = tracing::Dispatch::new(tracing_subscriber::registry());
             let future = tracing::dispatcher::with_default(&origin, || {
                 let root = tracing::info_span!("frame_root");
                 let caller = tracing::info_span!(parent: &root, "frame_caller");
@@ -340,7 +339,7 @@ mod worker_context_tests {
         for visible in [false, true] {
             let evidence = Arc::new(Mutex::new(Evidence::default()));
 
-            let dispatch = acyclic_test_support::capture::dispatch(
+            let dispatch = tracing::Dispatch::new(
                 tracing_subscriber::registry()
                     .with(tracing_subscriber::filter::filter_fn(move |metadata| {
                         metadata.name() == "callback_parent"
@@ -402,10 +401,9 @@ mod worker_context_tests {
         use tracing::instrument::WithSubscriber as _;
         let evidence = Arc::new(Mutex::new(Evidence::default()));
         let (closed_tx, closed_rx) = mpsc::channel();
-        let dispatch =
-            acyclic_test_support::capture::dispatch(tracing_subscriber::registry().with(
-                Capture(Arc::clone(&evidence), Default::default()).and_then(NotifyClose(closed_tx)),
-            ));
+        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(
+            Capture(Arc::clone(&evidence), Default::default()).and_then(NotifyClose(closed_tx)),
+        ));
         let (started_tx, started_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let (caller, operation) = tracing::dispatcher::with_default(&dispatch, || {
@@ -413,7 +411,7 @@ mod worker_context_tests {
             let operation = tracing::info_span!(parent: &caller, "worker_operation", outcome = tracing::field::Empty, error.kind = tracing::field::Empty);
             (caller, super::OperationSpan::new(operation))
         });
-        let unrelated = acyclic_test_support::capture::dispatch(tracing_subscriber::registry());
+        let unrelated = tracing::Dispatch::new(tracing_subscriber::registry());
         async {
             let worker_span = operation.clone();
             let mut job = None;

@@ -41,18 +41,15 @@ where
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)
             .map_err(Error::from)?;
-        let before_effect = || self.validate();
-        acyclic_fs::in_heap(|| {
-            publish_checkout_transition(
-                self.root,
-                self.source_root_identity,
-                self.inner.store,
-                operation_id,
-                from,
-                to_generation,
-                &before_effect,
-            )
-        })
+        publish_checkout_transition(
+            self.root,
+            self.source_root_identity,
+            self.inner.store,
+            operation_id,
+            from,
+            to_generation,
+            &|| self.validate(),
+        )
         .await
     }
 }
@@ -164,7 +161,7 @@ where
             operation_id,
             from: from.id(),
             to,
-            excluded_names: &crate::workspace::RESERVED_NAMES,
+            excluded_names: &[".git", ".system", ".volumes"],
             options: &options,
             budget: WorkBudget::UNBOUNDED,
             cancellation: &cancellation,

@@ -166,6 +166,3 @@ fn reply_xattr(reply: ReplyXattr, value: &[u8], size: u32, span: &tracing::Span)
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(all(feature = "fuzzing", target_os = "linux"))]
-pub(crate) use mount::fuzz_reply;

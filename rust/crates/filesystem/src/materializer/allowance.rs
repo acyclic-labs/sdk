@@ -13,7 +13,7 @@ pub(crate) struct NativeResourceAllowance {
     pub(super) parent: Option<Arc<Self>>,
     pub(super) metadata: NativeAllocation,
 }
-#[derive(Debug, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub(super) struct NativeResourceState {
     work: WorkCounters,
     pending: WorkCounters,
@@ -135,12 +135,7 @@ impl NativeResourceAllowance {
         }
         let mut apply = || {
             let mut state = self.lock();
-            let mut next = NativeResourceState {
-                work: state.work,
-                pending: state.pending,
-                allocations: state.allocations.unframed_snapshot(),
-                poisoned: state.poisoned,
-            };
+            let mut next = *state;
             change(self, &mut next)?;
             operation()?;
             *state = next;

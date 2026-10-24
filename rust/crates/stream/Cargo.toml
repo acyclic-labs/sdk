@@ -1,5 +1,4 @@
 [package]
-autotests = false
 include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "build/**", "vendor/**", "examples/**", "tests/**", "benches/**", "conformance/**", "fixtures/**", "fuzz/corpus/**"]
 name = "acyclic-stream"
 version = "0.2.0"
@@ -17,10 +16,6 @@ build = "build.rs"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
-
-[[example]]
-name = "local-group-bench"
-required-features = ["local"]
 
 [[example]]
 name = "http-conformance"
@@ -87,7 +82,6 @@ loom = { version = "0.7.2", features = ["futures"] }
 
 [dev-dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
-proptest.workspace = true
 tokio = { version = "1.48.0", features = ["macros", "rt", "test-util"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
@@ -118,31 +112,3 @@ tempfile = "3.27.0"
 
 [lints]
 workspace = true
-
-[[test]]
-name = "browser_follow_model"
-path = "tests/browser_follow_model.rs"
-
-[[test]]
-name = "client_pool_loom"
-path = "tests/client_pool_loom.rs"
-
-[[test]]
-name = "client_session_loom"
-path = "tests/client_session_loom.rs"
-
-[[test]]
-name = "http_response_core"
-path = "tests/http_response_core.rs"
-
-[[test]]
-name = "local_follow_loom"
-path = "tests/local_follow_loom.rs"
-
-[[test]]
-name = "local_group_model"
-path = "tests/local_group_model.rs"
-
-[[test]]
-name = "local_replay_model"
-path = "tests/local_replay_model.rs"

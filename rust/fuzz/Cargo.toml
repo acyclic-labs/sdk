@@ -8,7 +8,7 @@ publish = false
 cargo-fuzz = true
 
 [features]
-memory-paths = ["dep:serde_json", "dep:acyclic-harness"]
+memory-paths = ["dep:serde_json"]
 proto-descriptors = ["dep:acyclic-proto-build"]
 default = ["native"]
 native = ["dep:acyclic-fs", "dep:acyclic-harness", "dep:prost", "dep:serde_json"]
@@ -16,7 +16,7 @@ native = ["dep:acyclic-fs", "dep:acyclic-harness", "dep:prost", "dep:serde_json"
 [dependencies]
 acyclic-proto-build = { path = "../../compatibility", optional = true }
 acyclic-fs = { path = "../crates/filesystem", default-features = false, optional = true }
-acyclic-harness = { path = "../crates/harness", default-features = false, features = ["filesystem-local", "native-execution", "grpc", "test-support"], optional = true }
+acyclic-harness = { path = "../crates/harness", default-features = false, features = ["filesystem-local", "native-execution", "grpc"], optional = true }
 libfuzzer-sys = "0.4"
 prost = { workspace = true, optional = true }
 serde_json = { version = "1", optional = true }

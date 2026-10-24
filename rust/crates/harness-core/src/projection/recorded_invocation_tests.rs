@@ -1,6 +1,7 @@
 #![cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 
-use crate::test_support::recorded_invocation_input as input;
+#[path = "../../../harness-fuzz/fuzz_targets/recorded_invocation_input.rs"]
+mod input;
 use crate::{OperationId, conversation::Limits, tool::ToolInvocation};
 use input::Record;
 use proptest::prelude::*;

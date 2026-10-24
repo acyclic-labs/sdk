@@ -20,7 +20,6 @@ pub(super) fn native_image(
     io: Option<&PreparationIo>,
 ) -> Result<FileProjectionPolicy> {
     allocate(std::mem::size_of::<NativeMediaPolicy>() as u64, io)?;
-    // Charged above: `allocate` charges the policy box.
     Ok(FileProjectionPolicy::Native(Box::new(NativeMediaPolicy {
         intent: NativeMediaIntent::Image {
             detail: ImageDetail::Auto,

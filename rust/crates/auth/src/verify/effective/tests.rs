@@ -1,6 +1,6 @@
 //! Count caveat visits on the production iterator, independently of timing.
 use super::*;
-use crate::fuzzing::signed;
+use crate::testing as signed;
 use proptest::prelude::*;
 
 fn holder(count: usize) -> VerifiedCapability {

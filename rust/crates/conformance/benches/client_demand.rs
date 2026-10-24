@@ -3,8 +3,13 @@
     clippy::unwrap_used,
     reason = "benchmark setup failure stops measurement"
 )]
+#[path = "../../harness/tests/support/client/mod.rs"]
+#[allow(
+    dead_code,
+    reason = "benchmark shares the domain fixture, not every adversarial evidence constructor"
+)]
+mod support;
 use acyclic_harness::client::*;
-use acyclic_harness::test_support::fuzz_cases::client_numbers as support;
 use divan::Bencher;
 use support::*;
 

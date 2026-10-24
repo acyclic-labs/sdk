@@ -3,7 +3,7 @@ use crate::wire_codec::CodecQuota;
 use physical::{add, claim_slots, closed_clone, copy_text, resources_bytes, slots};
 
 /// Pinned resumable entrypoint and result schema.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct EntrypointRef {
     /// Namespaced entrypoint name.
@@ -18,7 +18,7 @@ pub struct EntrypointRef {
 }
 
 /// Provider-neutral logical resource quantities.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(
     feature = "wasm",
@@ -26,7 +26,7 @@ pub struct EntrypointRef {
 )]
 pub struct ResourceRequest(pub BTreeMap<String, u64>);
 /// Immutable root-session ceilings shared by descendants.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionLimits {
     /// Maximum simultaneously reserved tasks.
@@ -57,7 +57,7 @@ impl SessionLimits {
 }
 
 /// Lifetime owner of durable work.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DurableOwner {
@@ -81,7 +81,7 @@ impl DurableOwner {
 }
 
 /// Structured parent and stable logical child slot.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ParentLink {
     /// Parent operation.
@@ -92,7 +92,7 @@ pub struct ParentLink {
 }
 
 /// Durable structured-concurrency policy.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Orchestration {
@@ -115,7 +115,7 @@ pub enum Orchestration {
 }
 
 /// Immutable declaration of one durable operation.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(hashmap_as_object))]
 pub struct OperationSpec {
@@ -179,7 +179,7 @@ impl OperationSpec {
 }
 
 /// Pinned logical resource allocation and worker placement.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Reservation {
     /// Provider lease identity.
@@ -190,7 +190,7 @@ pub struct Reservation {
     pub admitted: ResourceRequest,
 }
 /// Exact durable reservation fence.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LeaseFence {
     /// Provider lease identity.
     pub reservation_id: String,

@@ -269,6 +269,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .await?;
         let hold = io.guard_bytes(&bytes)?;
         let bytes = (bytes, hold);
+        fork_preparer_io::retain(original, Some(io)).await?;
         let version_bytes = version_hold.bytes();
         version_hold.into_retained()?;
         recorded.1.adopt(version_bytes)?;

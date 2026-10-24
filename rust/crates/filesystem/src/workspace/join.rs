@@ -116,31 +116,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
         let mut accounting = work.accounting(cancellation);
         let result = async {
             self.validate_workspaces()?;
-            let source_id = crate::heap_future::metered!((&mut accounting), |accounting| {
-                self.source.checkout_accounted(
+            let source_id = self
+                .source
+                .checkout_accounted(
                     GenerationSelector::Head,
                     CheckoutMode::read_only_pinned(),
-                    accounting,
+                    &mut accounting,
                     cancellation,
                 )
-            })?
-            .generation_id();
-            let (target_id, authority_head) =
-                crate::heap_future::metered!((&mut accounting), |accounting| {
-                    self.target.volume.fs.workspace_head_state(
-                        &self.target.volume,
-                        accounting,
-                        cancellation,
-                    )
-                })?;
-            crate::heap_future::metered!((&mut accounting), |accounting| {
-                self.target.checkout_accounted(
+                .await?
+                .generation_id();
+            let (target_id, authority_head) = self
+                .target
+                .volume
+                .fs
+                .workspace_head_state(&self.target.volume, &mut accounting, cancellation)
+                .await?;
+            self.target
+                .checkout_accounted(
                     GenerationSelector::Exact(target_id),
                     CheckoutMode::read_only_pinned(),
-                    accounting,
+                    &mut accounting,
                     cancellation,
                 )
-            })?;
+                .await?;
             let source = Generation {
                 workspace: self.source.clone(),
                 id: source_id,
@@ -151,9 +150,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
                 id: target_id,
                 publication_closure: None,
             };
-            crate::heap_future::metered!((&mut accounting), |accounting| {
-                self.plan_generations(source, target, authority_head, accounting, cancellation)
-            })
+            self.plan_generations(
+                source,
+                target,
+                authority_head,
+                &mut accounting,
+                cancellation,
+            )
+            .await
         }
         .await;
         work.finish(result, &accounting)

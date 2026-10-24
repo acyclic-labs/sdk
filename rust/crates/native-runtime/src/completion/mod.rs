@@ -58,14 +58,6 @@ impl<T> NativeCompletion<T> {
         state: Arc<CompletionMutex<CompletionState<T>>>,
         pool: &'static LazyLock<io::Result<NativeWorkers>>,
     ) -> Self {
-        #[cfg(feature = "test-support")]
-        {
-            let actor = crate::deadline::simulation::accept();
-            state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .actor = actor;
-        }
         Self {
             #[cfg(feature = "test-support")]
             test_completion: None,

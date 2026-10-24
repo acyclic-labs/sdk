@@ -13,6 +13,8 @@ use crate::foundation::{
     Sequence, VolumeId,
 };
 
+use crate::heap_future::in_heap;
+
 use crate::kernel::{
     list_attributes_async_with_accounting, lookup_file_record_async_with_accounting,
     lookup_path_async_with_accounting, lookup_paths_with_accounting,
@@ -109,7 +111,7 @@ use std::mem::size_of;
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 use std::path::{Path, PathBuf};
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 use std::sync::{OnceLock, Weak};

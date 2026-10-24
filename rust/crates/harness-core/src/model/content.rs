@@ -1,7 +1,7 @@
 use super::*;
 
 /// One provider-neutral prompt item.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelMessage {
     /// Semantic prompt role.
@@ -10,7 +10,7 @@ pub struct ModelMessage {
     pub content: ModelContent,
 }
 /// Closed semantic prompt roles.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelRole {
@@ -25,7 +25,7 @@ pub enum ModelRole {
 }
 
 /// Transient model-visible text or structured parts.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 #[allow(
     clippy::large_enum_variant,
@@ -42,7 +42,7 @@ pub enum ModelContent {
 }
 
 /// Structured content requiring an explicit provider projection.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[allow(
     clippy::large_enum_variant,
@@ -83,7 +83,7 @@ pub enum ModelContentPart {
 }
 
 /// Nonrecursive text and file data inside a tool result.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[allow(
     clippy::large_enum_variant,
@@ -107,7 +107,7 @@ pub enum ModelDataPart {
 }
 
 /// Complete model-visible tool projection envelope.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ToolResultContent {
@@ -116,7 +116,6 @@ pub enum ToolResultContent {
         /// Schema-defined JSON value.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
         #[serde(deserialize_with = "crate::deserialize_json_value")]
-        #[heap_layout(as = serde_json::Value)]
         value: Value,
     },
     /// Ordered nonrecursive data.

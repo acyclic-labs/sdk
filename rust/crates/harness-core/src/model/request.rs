@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::mem::size_of;
 
 /// Complete immutable provider-neutral model request.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelRequest {
     /// Pinned model selection.

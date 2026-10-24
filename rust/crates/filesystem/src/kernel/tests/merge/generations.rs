@@ -639,7 +639,7 @@ async fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage
         guard.bytes(),
         (root.parents.capacity() * std::mem::size_of::<GenerationId>()) as u64
     );
-    let changes = (crate::kernel::diff_file_records_with_accounting::<_, false>(
+    let changes = (crate::kernel::diff_file_records_with_accounting(
         &store,
         Some(ours_table),
         Some(root.file_table),

@@ -1,5 +1,6 @@
 use super::*;
-use sdk_docs::sync as cache;
+#[path = "../../../sdk-docs/src/sync.rs"]
+mod cache;
 
 static PACKAGE: cache::Mutex<Option<cache::Arc<(Fixture, BTreeMap<String, Vec<u8>>)>>> =
     cache::Mutex::new(None);

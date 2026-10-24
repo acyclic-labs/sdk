@@ -1,4 +1,0 @@
-{
-  "faults":[{"type":"status","code":500,"retry_after":0}],
-  "turns":["recovered"], "expect":{"text":"recovered","request_count":2}
-}

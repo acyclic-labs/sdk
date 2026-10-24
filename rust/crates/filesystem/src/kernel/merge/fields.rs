@@ -169,7 +169,7 @@ async fn merge_metadata_async<S: AsyncObjectStore>(
         .map(Some)
 }
 
-pub(in crate::kernel) async fn write_metadata<S: AsyncObjectStore>(
+async fn write_metadata<S: AsyncObjectStore>(
     store: &S,
     metadata: FileMetadata,
     accounting: &mut KernelAccounting<'_>,
@@ -217,7 +217,7 @@ async fn empty_tree_async<S: AsyncObjectStore>(
     .await
 }
 
-pub(in crate::kernel) async fn read_metadata<S: AsyncObjectStore>(
+async fn read_metadata<S: AsyncObjectStore>(
     store: &S,
     object: ObjectId,
     limits: DecodeLimits,

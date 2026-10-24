@@ -8,21 +8,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
     ) -> Result<crate::kernel::FileRecord, DrivenJoinError> {
         let file_id = conflict_file_id(key)
             .ok_or_else(|| DrivenJoinError::UnsupportedResolution(key.clone()))?;
-        let volume = &self.target_head.workspace.volume;
-        // Unmetered: conflict staging runs on unbounded budgets and holds no work ledger.
-        let record = crate::heap_future::in_heap_unmetered(|| {
-            volume
-                .fs
-                .workspace_conflict_record(volume, self.target_head.id, file_id)
-        })
-        .await?
-        .ok_or(WorkspaceError::InvalidMergeResolution)?;
-        // Unmetered: conflict staging runs on unbounded budgets and holds no work ledger.
-        crate::heap_future::in_heap_unmetered(|| {
-            volume.fs.stage_merge_regular_record(volume, record, bytes)
-        })
-        .await
-        .map_err(Into::into)
+        let record = self
+            .target_head
+            .workspace
+            .volume
+            .fs
+            .workspace_conflict_record(
+                &self.target_head.workspace.volume,
+                self.target_head.id,
+                file_id,
+            )
+            .await?
+            .ok_or(WorkspaceError::InvalidMergeResolution)?;
+        self.target_head
+            .workspace
+            .volume
+            .fs
+            .stage_merge_regular_record(&self.target_head.workspace.volume, record, bytes)
+            .await
+            .map_err(Into::into)
     }
 
     /// Expands exact kernel conflicts into immutable, driver-ready values.
@@ -293,7 +297,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                     .value,
             ));
         }
-        // The join boxes its own frame on its own ledger.
         let outcome = self
             .target_head
             .workspace

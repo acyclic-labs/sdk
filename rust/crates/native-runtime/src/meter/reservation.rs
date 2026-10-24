@@ -61,16 +61,6 @@ impl<M: std::ops::Deref<Target: NativeReadMeter>> NativeByteReservation<M> {
         self.meter
             .record_reserved_bytes(self.kind, maximum, actual as u64)
     }
-
-    /// Records a completed prefix while retaining its unused credit.
-    pub fn record_partial(&mut self, actual: usize) -> io::Result<()> {
-        let maximum = self.maximum.as_mut().ok_or(io::ErrorKind::InvalidInput)?;
-        *maximum = maximum
-            .checked_sub(actual as u64)
-            .ok_or(io::ErrorKind::InvalidData)?;
-        self.meter
-            .record_reserved_bytes(self.kind, actual as u64, actual as u64)
-    }
 }
 
 impl<M: std::ops::Deref<Target: NativeReadMeter>> Drop for NativeByteReservation<M> {

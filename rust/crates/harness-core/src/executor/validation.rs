@@ -1,6 +1,9 @@
 //! Schema admission and diagnostic formatting on the invocation ledger.
 use crate::executor::json::JsonCodecCharge;
-use crate::executor::json::{JsonBounds, JsonValueSchema, admit_value_layout};
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use crate::executor::json::{
+    JsonBounds, JsonValueSchema, json_owned_value_shape_bounded, json_value_decode_owned_bytes,
+};
 use crate::store::history::HistoryIo;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use crate::wire::ErrorCode;
@@ -114,25 +117,56 @@ fn admit_schema_value(value: &serde_json::Value, scope: &mut CodecQuota<'_, '_>)
     if scope.work().is_none() {
         return Ok(());
     }
-    // The validator holds what a decoded copy of the value holds, charged at
-    // each position of the `Value` layout while walking the resident value.
-    let (_, layout) = admit_value_layout(
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if scope
+        .work()
+        .as_deref()
+        .and_then(HistoryIo::original_native_work)
+        .is_some()
+    {
+        let shape = json_owned_value_shape_bounded(
+            value,
+            JsonBounds {
+                maximum_bytes: u64::MAX,
+                maximum_items: u64::MAX,
+                maximum_depth: 256,
+            },
+            JsonValueSchema::None,
+            &mut |charge| scope.observer()?.codec_charge(charge),
+        )?;
+        let owned = json_value_decode_owned_bytes(shape)?;
+        let observer = scope.observer()?;
+        observer.admit_owned(owned)?;
+        observer.retain_owned(owned)?;
+        return scope.adopt(owned);
+    }
+    let bytes = crate::store::history::canonical_bytes_with_work(
         value,
-        JsonBounds {
-            maximum_bytes: u64::MAX,
-            maximum_items: u64::MAX,
-            maximum_depth: 256,
-        },
-        JsonValueSchema::None,
-        <serde_json::Value as crate::HeapLayout>::LAYOUT,
-        None,
-        &mut |charge| scope.observer()?.codec_charge(charge),
+        acyclic_stream::MAX_RECORD_BYTES as u64,
+        scope.work(),
     )?;
-    let owned = layout.bytes();
+    scope.adopt(bytes.capacity() as u64)?;
+    let items = (bytes.len() as u64)
+        .checked_add(1)
+        .ok_or_else(|| Error::Invalid("schema data witness overflow".into()))?;
+    let slots = std::mem::size_of::<serde_json::Value>()
+        .max(std::mem::size_of::<(String, serde_json::Value)>()) as u64;
+    let owned = items
+        .checked_mul(slots)
+        .and_then(|size| size.checked_mul(8))
+        .and_then(|size| {
+            (bytes.len() as u64)
+                .checked_mul(4)
+                .and_then(|strings| size.checked_add(strings))
+        })
+        .ok_or_else(|| Error::Invalid("schema data scope overflow".into()))?;
     let observer = scope.observer()?;
     observer.admit_owned(owned)?;
     observer.retain_owned(owned)?;
-    scope.adopt(owned)
+    scope.adopt(owned)?;
+    let capacity = bytes.capacity() as u64;
+    drop(bytes);
+    scope.relinquish(capacity)
 }
 
 fn schema_error(
@@ -158,7 +192,6 @@ fn schema_error(
         scope.transfer();
         return Error::NativeSchema {
             code: ErrorCode::Invalid,
-            // Unbudgeted: an error source, boxed only as the work fails, to report it.
             source: Box::new(source),
             custody: Some(custody),
         };

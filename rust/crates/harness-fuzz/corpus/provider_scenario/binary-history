@@ -1,1 +1,0 @@
-{"history_expect":{"messages":[{"role":"tool","content":{"kind":"tool_result","call_id":"call","name":"wait","content":{"kind":"json","value":{"answer":"child finished"}}}}]},"wire_request":{"input":[{"type":"function_call","call_id":"call","name":"wait","arguments":"{}"},{"type":"function_call_output","call_id":"call","output":"{\"answer\":\"child finished\"}"}]}}

@@ -263,8 +263,3 @@ fn register(
 mod path_tests;
 #[cfg(test)]
 mod tests;
-
-#[cfg(all(feature = "test-support", feature = "mcp-stdio"))]
-mod fuzzing;
-#[cfg(all(feature = "test-support", feature = "mcp-stdio"))]
-pub use fuzzing::check as fuzz_executable;

@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { compatibilityArtifacts, packagedTypeScriptBindings, writeChanged } from "./generated-bindings.mjs";
+import { packagedTypeScriptBindings, writeChanged } from "./generated-bindings.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -16,13 +16,8 @@ export function generateProto(packages = new Set(packagedTypeScriptBindings.flat
   if (bindings.length === 0) return;
   const paths = bindings.map(([stem]) => {
     const family = stem.split("/")[0];
-    // A family's crate is wherever its published schema lives, so moving a
-    // schema between crates moves its generation input with it. The shared
-    // handshake and validation options have one canonical owner each.
-    const crate = family === "protocol" ? "rust/crates/harness-core"
-      : family === "validation" ? "rust/crates/contract-derive"
-      : compatibilityArtifacts[family].schemaDigest.slice(0, compatibilityArtifacts[family].schemaDigest.indexOf("/proto/"));
-    return `${crate}/proto/${stem.replace(/_pb$/, ".proto")}`;
+    const owner = family === "protocol" || family === "harness" ? "harness-core" : family === "validation" ? "contract-derive" : family === "filesystem" ? "filesystem-wire" : family;
+    return `rust/crates/${owner}/proto/${stem.replace(/_pb$/, ".proto")}`;
   });
   /** @type {Map<string, Set<string>>} */
   const outputs = new Map();

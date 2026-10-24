@@ -132,31 +132,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             if !self.same_deployment(&volume.fs) {
                 return Err(WorkspaceError::ForeignGeneration);
             }
-            let publication = crate::heap_future::metered!((&mut accounting), |accounting| {
-                self.retention_publication_with_accounting(
+            let publication = self
+                .retention_publication_with_accounting(
                     volume,
                     ObjectId {
                         kind: ObjectKind::GenerationRoot,
                         digest: generation.digest(),
                     },
-                    accounting,
+                    &mut accounting,
                     cancellation,
                 )
-            })?;
-            // A refused frame still retires the publication below.
-            let result = async {
-                crate::heap_future::metered!((&mut accounting), |accounting| {
-                    self.flush_publication(
-                        crate::PublicationScope::Closure {
-                            objects: &publication.value.objects,
-                            proven_at: publication.value.proven_at,
-                        },
-                        accounting,
-                        cancellation,
-                    )
-                })
-            }
-            .await;
+                .await?;
+            let result = self
+                .flush_publication(
+                    crate::PublicationScope::Closure {
+                        objects: &publication.value.objects,
+                        proven_at: publication.value.proven_at,
+                    },
+                    &mut accounting,
+                    cancellation,
+                )
+                .await;
             publication.retire(&mut accounting)?;
             result.map_err(Into::into)
         }
@@ -418,20 +414,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<StagedContent> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
-        // The staging frame is paid for on the operation's own ledger.
-        let result = async {
-            crate::heap_future::metered!((&mut accounting), |accounting| {
-                self.stage_content_with_accounting(
+        in_heap(move || async move {
+            let mut accounting = KernelAccounting::standalone(budget, cancellation);
+            let result = self
+                .stage_content_with_accounting(
                     source,
                     maximum_source_bytes,
-                    accounting,
+                    &mut accounting,
                     cancellation,
                 )
-            })
-        }
-        .await;
-        measured(result, &accounting)
+                .await;
+            measured(result, &accounting)
+        })
+        .await
     }
 
     pub(crate) async fn stage_content_with_accounting<R: AsyncBlobSource>(

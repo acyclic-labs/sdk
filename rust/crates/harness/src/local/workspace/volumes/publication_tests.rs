@@ -7,19 +7,17 @@ fn write_projected(path: &Path, bytes: &[u8]) -> Result<()> {
         // ProjFS suppresses notifications for its provider process. Exercise
         // the physical command boundary from a separate client process.
         let output = acyclic_native_runtime::process_output(
-            acyclic_native_runtime::command::Command::new(
-                std::env::current_exe().map_err(storage)?,
-            )
-            .args([
-                "--exact",
-                "local::workspace::volumes::publication_tests::external_projection_writer",
-                "--nocapture",
-            ])
-            .env("ACYCLIC_TEST_PROJECTION_PATH", path)
-            .env(
-                "ACYCLIC_TEST_PROJECTION_BYTES",
-                std::str::from_utf8(bytes).map_err(storage)?,
-            ),
+            std::process::Command::new(std::env::current_exe().map_err(storage)?)
+                .args([
+                    "--exact",
+                    "local::workspace::volumes::publication_tests::external_projection_writer",
+                    "--nocapture",
+                ])
+                .env("ACYCLIC_TEST_PROJECTION_PATH", path)
+                .env(
+                    "ACYCLIC_TEST_PROJECTION_BYTES",
+                    std::str::from_utf8(bytes).map_err(storage)?,
+                ),
             std::time::Duration::from_secs(5),
             4096,
         )

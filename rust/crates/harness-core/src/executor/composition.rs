@@ -214,7 +214,6 @@ impl Executor for StockExecutor {
         input: TurnInput,
         journal: &'a dyn ExecutionJournal,
     ) -> BoxFuture<'a, Result<TurnOutput>> {
-        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move {
             let bound = self
                 .clone()
@@ -228,7 +227,6 @@ impl Executor for StockExecutor {
         input: TurnInput,
         journal: &'a dyn ExecutionJournal,
     ) -> BoxFuture<'a, Result<TurnOutput>> {
-        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move { self.execute_progress(input, journal).await?.into_output() })
     }
 

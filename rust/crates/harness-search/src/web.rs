@@ -4,14 +4,14 @@ use crate::{
     tool::{ToolDefinition, schema},
 };
 
-#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema, crate::HeapLayout)]
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 enum WebOutput<T> {
     Succeeded(T),
     Rejected(WebRejection),
 }
 
-#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema, crate::HeapLayout)]
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 enum WebRejection {
     Rejected {
@@ -22,7 +22,7 @@ enum WebRejection {
 }
 
 /// Only model-correctable failures belong in the published tool contract.
-#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema, crate::HeapLayout)]
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum WebRejectionCode {
     Invalid,

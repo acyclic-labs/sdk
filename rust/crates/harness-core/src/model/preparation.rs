@@ -13,11 +13,19 @@ impl crate::filesystem::PreparationRecord for ModelPrefix {
     fn diagnostic_label_bytes() -> u64 {
         MODEL_DIAGNOSTIC_LABEL_BYTES
     }
+    fn maximum_slot_bytes() -> u64 {
+        <ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
+    }
 }
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ToolResultContent {
     fn diagnostic_label_bytes() -> u64 {
         MODEL_DIAGNOSTIC_LABEL_BYTES
+    }
+    fn maximum_slot_bytes() -> u64 {
+        <ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
+            .max(<crate::context::Context as crate::filesystem::PreparationRecord>::maximum_slot_bytes())
+            .max(std::mem::size_of::<Self>() as u64)
     }
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
         crate::executor::json::JsonValueSchema::ToolResultContent

@@ -1,6 +1,7 @@
 //! Callback path codecs without intermediate platform strings.
 
-use acyclic_fs::fuzzing::callback_path;
+#[path = "../../src/native_mount/projfs/callback_path.rs"]
+mod callback_path;
 use proptest::prelude::*;
 #[cfg(windows)]
 #[path = "../support/projfs_legacy_path.rs"]

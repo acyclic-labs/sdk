@@ -315,6 +315,21 @@ async fn reopening_after_hook_completion_reuses_its_outcome_without_relaunching(
 
 #[tokio::test]
 async fn start_failures_are_retained_and_only_explicit_failure_policy_blocks() -> Result<()> {
+    // The workflow runs on a worker, so logging uses the process subscriber.
+    // Isolate that subscriber rather than changing another parallel test's log.
+    if !std::env::args().any(|arg| arg == "hook-log-child") {
+        let child = std::process::Command::new(std::env::current_exe().map_err(super::super::storage)?)
+            .args(["--exact", "local::tests::hook_lifecycle::start_failures_are_retained_and_only_explicit_failure_policy_blocks",
+                "--nocapture", "--skip", "hook-log-child"])
+            .output().map_err(super::super::storage)?;
+        assert!(
+            child.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        return Ok(());
+    }
     let warnings = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink = Arc::clone(&warnings);
     let subscriber = tracing_subscriber::fmt()
@@ -323,13 +338,7 @@ async fn start_failures_are_retained_and_only_explicit_failure_policy_blocks() -
         .with_max_level(tracing::Level::WARN)
         .with_writer(move || WarningWriter(Arc::clone(&sink)))
         .finish();
-    use tracing::instrument::WithSubscriber as _;
-    check_start_failures(warnings)
-        .with_subscriber(subscriber)
-        .await
-}
-
-async fn check_start_failures(warnings: Arc<std::sync::Mutex<Vec<u8>>>) -> Result<()> {
+    tracing::subscriber::set_global_default(subscriber).map_err(super::super::storage)?;
     use crate::task_volume::{FileKey, Query, TaskFile};
     for block in [false, true] {
         warnings.lock().unwrap().clear();

@@ -141,9 +141,9 @@ fn runnable(candidate: &Path) -> bool {
 }
 
 /// A command for the host CLI `name` as installed on `PATH`.
-pub(crate) fn host_command(name: &str) -> Result<acyclic_native_runtime::command::Command, String> {
+pub(crate) fn host_command(name: &str) -> Result<std::process::Command, String> {
     find_executable(name)
-        .map(acyclic_native_runtime::command::Command::new)
+        .map(std::process::Command::new)
         .ok_or_else(|| format!("cannot find the `{name}` command on PATH"))
 }
 

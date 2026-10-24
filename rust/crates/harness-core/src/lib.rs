@@ -22,17 +22,6 @@
 #[cfg(test)]
 acyclic_test_support::counting_allocator!();
 
-// The `HeapLayout` derive names this crate by its package path.
-extern crate self as acyclic_harness_core;
-
-/// Heap layouts that bound every typed JSON decode before it allocates.
-#[doc(hidden)]
-pub mod heap_layout {
-    pub use crate::executor::json::layout::{Alloc, HeapLayout, JsonLayout, markers};
-    pub use acyclic_contract_derive::HeapLayout;
-}
-pub use heap_layout::HeapLayout;
-
 #[cfg(any(
     test,
     feature = "test-support",
@@ -63,7 +52,6 @@ mod accounting_trace {
 }
 pub mod agent_loop;
 pub mod bundle;
-pub mod charged_box;
 #[doc(hidden)]
 pub mod command_request;
 pub mod context;
@@ -196,6 +184,3 @@ pub use process_error::ProcessError;
 /// Cargo-provided build metadata, isolated from ambient user environment discovery.
 #[doc(hidden)]
 pub mod build_metadata;
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod test_capture;

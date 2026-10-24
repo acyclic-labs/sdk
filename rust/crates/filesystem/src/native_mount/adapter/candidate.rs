@@ -72,17 +72,14 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
         .ok_or(MountSourceError::NativeWork(
             crate::NativeTreeMaterializationError::InvalidLayout,
         ))?;
-    // The diff and the directory walk are deep; each runs from its own
-    // allocation.
-    let (diff, allocation) = crate::heap_future::in_heap_claimed(&native, || {
-        base.candidate_diff(
+    let (diff, allocation) = base
+        .candidate_diff(
             candidate,
             MAXIMUM_EXACT_INSTALL_CHANGES,
             &native,
             cancellation,
         )
-    })?
-    .await?;
+        .await?;
     let mut inputs = InputBuffers::new(carrier)?;
     let crate::kernel::KernelOwnedAllocation::NativeOriginal(mut allocation) = allocation else {
         unreachable!("native candidate diff");
@@ -119,17 +116,15 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
         installed.nodes.push(change.file_id);
     }
     inputs.release(file_buffer_bytes)?;
-    let directories = crate::heap_future::in_heap_claimed(&native, || {
-        installed_directories(
-            base,
-            candidate,
-            scope,
-            &diff.bindings,
-            &mut inputs,
-            &native,
-            cancellation,
-        )
-    })?
+    let directories = installed_directories(
+        base,
+        candidate,
+        scope,
+        &diff.bindings,
+        &mut inputs,
+        &native,
+        cancellation,
+    )
     .await?;
     for binding in diff.bindings {
         install_binding_change(

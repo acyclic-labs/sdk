@@ -6,12 +6,7 @@ use wasm_bindgen::closure::Closure;
 pub(super) struct Publications {
     channel: web_sys::BroadcastChannel,
     pub(super) interests: crate::interest::Interests<Key>,
-    pub(super) follows: RefCell<
-        std::collections::BTreeMap<
-            StreamPath,
-            Arc<crate::query_sync::SyncMutex<crate::follow_index::FollowIndex>>,
-        >,
-    >,
+    pub(super) follows: RefCell<std::collections::BTreeMap<StreamPath, Arc<crate::query_sync::SyncMutex<crate::follow_index::FollowIndex>>>>,
     target: Rc<RefCell<Weak<Inner>>>,
     refresh: Rc<crate::interest::Refresh>,
     _receive: Closure<dyn FnMut(web_sys::MessageEvent)>,
@@ -40,23 +35,13 @@ impl Publications {
             _receive: receive,
         })
     }
-    pub(super) fn follow_index(
-        &self,
-        path: &StreamPath,
-    ) -> Arc<crate::query_sync::SyncMutex<crate::follow_index::FollowIndex>> {
-        self.follows
-            .borrow_mut()
-            .entry(path.clone())
-            .or_default()
-            .clone()
+    pub(super) fn follow_index(&self, path: &StreamPath) -> Arc<crate::query_sync::SyncMutex<crate::follow_index::FollowIndex>> {
+        self.follows.borrow_mut().entry(path.clone()).or_default().clone()
     }
     pub(super) fn invalidate_follows(&self) {
         let indices: Vec<_> = self.follows.borrow().values().cloned().collect();
         for index in indices {
-            index
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .invalidate();
+            index.lock().unwrap_or_else(std::sync::PoisonError::into_inner).invalidate();
         }
     }
     pub(super) fn publish(&self) -> Result<(), StreamError> {

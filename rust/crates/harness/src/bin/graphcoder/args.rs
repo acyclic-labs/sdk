@@ -33,10 +33,10 @@ pub struct Args {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn headless_modes_use_explicit_jsonl_identity_and_reject_mixed_formats() {
-        use super::Args;
-        use clap::Parser as _;
         assert!(Args::try_parse_from(["graphcoder", "-p", "hello"]).is_ok());
         assert!(Args::try_parse_from(["graphcoder", "--input-format", "jsonl"]).is_err());
         assert!(
@@ -65,8 +65,6 @@ mod tests {
 
     #[test]
     fn removed_host_and_fixture_entrypoints_cannot_be_selected() {
-        use super::Args;
-        use clap::Parser as _;
         for option in ["--session", "--prepare-scenario", "--fixture", "--headless"] {
             assert!(
                 Args::try_parse_from(["graphcoder", option, "unused"]).is_err(),

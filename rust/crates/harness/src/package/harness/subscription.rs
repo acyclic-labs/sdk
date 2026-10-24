@@ -52,13 +52,12 @@ impl CommandSubscription {
     ) -> Self {
         let (attachment, detached) = oneshot::channel();
         let (settled, completion) = oneshot::channel();
-        executor.spawn(acyclic_fs::in_heap(|| async move {
-            let result =
-                acyclic_fs::in_heap(|| run_requests(&local, session, only_session, detached)).await;
+        executor.spawn(Box::pin(async move {
+            let result = run_requests(&local, session, only_session, detached).await;
             // The final connection or runtime worker retires native mounts,
             // after all admitted effects and publications have finished.
             let cleanup = match Arc::into_inner(local) {
-                Some(local) => acyclic_fs::in_heap(|| local.disconnect()).await,
+                Some(local) => local.disconnect().await,
                 None => Ok(()),
             };
             let _ = settled.send(result.and(cleanup));
@@ -90,41 +89,32 @@ async fn run_requests(
     else {
         return Ok(());
     };
-    let mut commands = acyclic_fs::in_heap(|| async {
-        CommandSession::open(
-            Arc::new(
-                local
-                    .task_files()
-                    .inner
-                    .reopen()
-                    .await
-                    .map_err(|error| Error::Storage(error.to_string()))?,
-            ),
-            uuid::Uuid::from_bytes(session.into_bytes()),
-            65_536,
-            4096,
-        )
-        .await
-    })
+    let mut commands = CommandSession::open(
+        Arc::new(
+            local
+                .task_files()
+                .inner
+                .reopen()
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        ),
+        uuid::Uuid::from_bytes(session.into_bytes()),
+        65_536,
+        4096,
+    )
     .await?;
     loop {
         // Detachment may stop an idle follow, never an admitted handler/effect.
-        let request = match futures::future::select(
-            &mut detached,
-            acyclic_fs::in_heap(|| commands.next_request()),
-        )
-        .await
-        {
-            Either::Left(_) => return Ok(()),
-            Either::Right((request, _)) => request?,
-        };
+        let request =
+            match futures::future::select(&mut detached, Box::pin(commands.next_request())).await {
+                Either::Left(_) => return Ok(()),
+                Either::Right((request, _)) => request?,
+            };
         if only_session && !matches!(request.key, crate::task_volume::FileKey::Session { .. }) {
             continue;
         }
-        if let Err(error) =
-            acyclic_fs::in_heap(|| execute_request(&mut commands, local, &request)).await
-        {
-            if acyclic_fs::in_heap(|| commands.failure_is_saved(&request, &error)).await? {
+        if let Err(error) = execute_request(&mut commands, local, &request).await {
+            if commands.failure_is_saved(&request, &error).await? {
                 if only_session {
                     return Ok(());
                 }
@@ -155,11 +145,11 @@ pub(crate) async fn execute_request<P: acyclic_stream::StreamProvider + ?Sized>(
         .consume_with_recovery::<true, _, _, _, _>(
             request,
             |operation, target, resolution| {
-                acyclic_fs::in_heap(|| execute(local, operation, target, resolution, &settings))
+                Box::pin(execute(local, operation, target, resolution, &settings))
             },
             |operation, target, resolution| {
                 let settings = &settings;
-                acyclic_fs::in_heap(|| async move {
+                async move {
                     if !matches!(
                         &resolution,
                         CommandResolution::Prompt { .. }
@@ -174,12 +164,9 @@ pub(crate) async fn execute_request<P: acyclic_stream::StreamProvider + ?Sized>(
                         return Err(Error::Indeterminate(operation));
                     }
                     let task = crate::runtime::task_id_for_admission(operation);
-                    match acyclic_fs::in_heap(|| local.resume(task)).await {
+                    match local.resume(task).await {
                         Err(Error::NotFound(_)) => {
-                            acyclic_fs::in_heap(|| {
-                                execute(local, operation, target, resolution, settings)
-                            })
-                            .await
+                            Box::pin(execute(local, operation, target, resolution, settings)).await
                         }
                         output => {
                             let mut value = serde_json::to_value(output?)
@@ -194,7 +181,7 @@ pub(crate) async fn execute_request<P: acyclic_stream::StreamProvider + ?Sized>(
                             Ok(value)
                         }
                     }
-                })
+                }
             },
         )
         .await
@@ -208,18 +195,16 @@ async fn execute(
     settings: &serde_json::Value,
 ) -> Result<serde_json::Value> {
     let target = target.filter(|task| task.to_string() != local.client_owner().id);
-    let _driving = acyclic_fs::in_heap(|| local.driver_claim(operation)).await;
-    let mut result = acyclic_fs::in_heap(|| {
-        local.dispatch_configured_command(operation, target, resolution, settings)
-    })
-    .await?;
+    let _driving = local.driver_claim(operation).await;
+    let mut result = local
+        .dispatch_configured_command(operation, target, resolution, settings)
+        .await?;
     if result.get("admission_operation").is_some() {
         let task = result
             .get("task")
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| Error::Invalid("command admission has no task".into()))?;
-        let task = crate::TaskId::parse(task)?;
-        let output = serde_json::to_value(acyclic_fs::in_heap(|| local.resume(task)).await?)
+        let output = serde_json::to_value(local.resume(crate::TaskId::parse(task)?).await?)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         result
             .as_object_mut()

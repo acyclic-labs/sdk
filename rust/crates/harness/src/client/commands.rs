@@ -628,15 +628,3 @@ fn require_directory(kind: PrivateDirectoryEntryKind) -> Result<()> {
     }
     Ok(())
 }
-
-#[cfg(feature = "test-support")]
-mod fuzz_parser;
-/// Exercises command syntax, template expansion and catalog resolution.
-#[cfg(feature = "test-support")]
-pub use fuzz_parser::check as fuzz_command_parser;
-
-/// Splits a command for the shared syntax oracle.
-#[cfg(feature = "test-support")]
-pub fn fuzz_split_command(input: &str, maximum: u64) -> Result<Option<(&str, &str)>> {
-    syntax::split(input, maximum)
-}

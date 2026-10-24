@@ -26,7 +26,7 @@ pub use selection::{
 use serde::{Deserialize, Serialize};
 
 /// Model-visible messages and their exact canonical provenance.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SelectedModelContext {
     /// Selected source identities at the pinned revision.
     pub selection: ModelContextSelection,

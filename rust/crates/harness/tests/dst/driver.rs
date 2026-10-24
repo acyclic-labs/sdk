@@ -207,7 +207,7 @@ fn a_replay_without_a_scripted_process_refuses_the_os() {
         tokio::time::pause();
         let mut driver = Driver::new(71, None);
         let capture = entry(async {
-            let command = acyclic_native_runtime::command::Command::new("must-not-spawn");
+            let command = std::process::Command::new("must-not-spawn");
             acyclic_native_runtime::testing::capture_process(
                 ProcessCapture {
                     command: &command,

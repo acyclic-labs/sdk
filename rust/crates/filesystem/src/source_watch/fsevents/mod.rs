@@ -14,8 +14,8 @@ use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 mod events;
 #[cfg(test)]
@@ -41,14 +41,6 @@ struct Shared {
     stream_bytes: AtomicU64,
     delivery: Arc<Delivery>,
     ownership: SourcePayloadOwnership,
-    progress: Mutex<DeliveredEvents>,
-    delivered: Condvar,
-}
-
-#[derive(Default)]
-struct DeliveredEvents {
-    last_id: u64,
-    wrapped: bool,
 }
 
 impl NativeSourceWatch {
@@ -82,8 +74,6 @@ impl NativeSourceWatch {
                 stream_bytes: AtomicU64::new(0),
                 delivery,
                 ownership,
-                progress: Mutex::new(DeliveredEvents::default()),
-                delivered: Condvar::new(),
             });
             let handler_bytes = super::arc_control_bytes::<Arc<Shared>>();
             work.claim(handler_bytes)?;
@@ -92,21 +82,9 @@ impl NativeSourceWatch {
             let reader = shared.clone();
             let handler = Arc::new(move |events: EventBatch<'_>| {
                 let mut work = reader.delivery.callback_work();
-                let last_id = events.last_id();
-                let wrapped = events.ids_wrapped();
                 if let Err(error) = reader.events(events.iter(), &mut work) {
                     reader.delivery.failed_with_work(error, &mut work);
-                } else {
-                    // A fence may acknowledge an ID only after the sink has
-                    // accepted every change in that batch, including overflow.
-                    let mut progress = reader
-                        .progress
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner);
-                    progress.last_id = progress.last_id.max(last_id.unwrap_or(0));
-                    progress.wrapped |= wrapped;
                 }
-                reader.delivered.notify_all();
             });
             let mut stream = EventStream::start(
                 std::slice::from_ref(&shared.root),
@@ -138,7 +116,7 @@ impl NativeSourceWatch {
 
     pub(crate) fn fence_with_work<W: SourceDemandReadWork>(
         &self,
-        timeout: Duration,
+        _timeout: Duration,
         work: &mut W,
     ) -> Result<bool, DemandError> {
         work.check()?;
@@ -147,56 +125,14 @@ impl NativeSourceWatch {
             items_examined: 1,
             ..READ
         })?;
-        if !std::fs::symlink_metadata(&self.shared.root)
+        if std::fs::symlink_metadata(&self.shared.root)
             .is_ok_and(|metadata| identity(&metadata) == self.shared.held)
         {
-            if self.delivery().exact.swap(false, Ordering::AcqRel) {
-                self.delivery().deliver(&[HostChange::Everything], work)?;
-            }
-            return Ok(false);
-        }
-        let target = {
-            let stream = self.stream.lock().unwrap_or_else(PoisonError::into_inner);
-            stream
-                .as_ref()
-                .map(|stream| stream.flush_target(work))
-                .transpose()?
-                .flatten()
-        };
-        let Some(target) = target else {
             self.delivery().deliver(&[HostChange::Unconfirmed], work)?;
-            return Ok(false);
-        };
-        // No stream or delivery mutex is held while a callback is in flight.
-        // It may stop this watch or release its final external owner.
-        let started = Instant::now();
-        let mut progress = self
-            .shared
-            .progress
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        loop {
-            work.check()?;
-            self.delivery().take_failure(work)?;
-            if progress.wrapped || !self.delivery().is_exact() {
-                return Ok(false);
-            }
-            if progress.last_id >= target {
-                return Ok(true);
-            }
-            let remaining = timeout.saturating_sub(started.elapsed());
-            if remaining.is_zero() {
-                drop(progress);
-                self.delivery().deliver(&[HostChange::Unconfirmed], work)?;
-                return Ok(false);
-            }
-            let (next, _) = self
-                .shared
-                .delivered
-                .wait_timeout(progress, remaining.min(Duration::from_millis(10)))
-                .unwrap_or_else(PoisonError::into_inner);
-            progress = next;
+        } else if self.delivery().exact.swap(false, Ordering::AcqRel) {
+            self.delivery().deliver(&[HostChange::Everything], work)?;
         }
+        Ok(false)
     }
 
     #[cfg(test)]
@@ -327,7 +263,6 @@ impl crate::fsevents::StreamTerminal for Shared {
         }
         self.delivery.exact.store(false, Ordering::Release);
         self.stream_bytes.store(0, Ordering::Release);
-        self.delivered.notify_all();
     }
 }
 

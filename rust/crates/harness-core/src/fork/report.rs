@@ -2,7 +2,7 @@
 use super::*;
 use crate::core::OwnedBytes;
 /// Prepared capture report; no child is visible until its seed is published.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ForkReport {
     /// The original immutable request.

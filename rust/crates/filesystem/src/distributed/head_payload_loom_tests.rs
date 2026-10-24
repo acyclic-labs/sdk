@@ -306,14 +306,12 @@ fn check(change: Change, broken: bool, cut: Option<usize>, calls: Arc<CallCount>
             };
             let mut work = AuthorityWork::new(BUDGET, token);
             let result = if !broken || !matches!(change, Change::Retire) {
-                // Unmetered: the model checks the read, not its frame.
-                ready(crate::heap_future::in_heap_unmetered(|| {
+                ready(crate::heap_future::in_heap(|| {
                     store.head_payload(ID, 32, &mut work)
                 }))
             } else {
                 // Deliberate broken variant of the same production function.
-                // Unmetered: the model checks the read, not its frame.
-                ready(crate::heap_future::in_heap_unmetered(|| {
+                ready(crate::heap_future::in_heap(|| {
                     store.head_payload_checked::<false>(ID, 32, &mut work)
                 }))
             };

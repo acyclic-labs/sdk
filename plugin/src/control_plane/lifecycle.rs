@@ -85,9 +85,7 @@ impl ControlPlane {
     }
 
     #[cfg(test)]
-    fn standalone_release_barriers(
-        &mut self,
-    ) -> Vec<acyclic_native_runtime::OwnershipReleaseBarrier> {
+    fn standalone_release_barriers(&mut self) -> Vec<acyclic_native_runtime::OwnershipReleaseBarrier> {
         let mut barriers = Vec::new();
         if self.owns_local_root {
             barriers.extend(self.fs.local_root_release_barrier());
@@ -278,7 +276,7 @@ impl ControlPlane {
                     }
                     continue;
                 }
-                if let Err(error) = fs_call(mount.unmount()).await {
+                if let Err(error) = Box::pin(mount.unmount()).await {
                     first_error.get_or_insert_with(|| {
                         format!("cannot unmount agent '{agent_id}' during shutdown: {error}")
                     });
@@ -286,7 +284,7 @@ impl ControlPlane {
             }
             let pending_mounts = std::mem::take(&mut self.pending_mounts);
             for (key, mount) in pending_mounts {
-                if let Err(error) = fs_call(mount.unmount()).await {
+                if let Err(error) = Box::pin(mount.unmount()).await {
                     first_error.get_or_insert_with(|| {
                         format!(
                             "cannot unmount prepared spawn '{}' during shutdown: {error}",
@@ -324,11 +322,14 @@ impl ControlPlane {
 async fn wait_for_standalone_release(
     barriers: Vec<acyclic_native_runtime::OwnershipReleaseBarrier>,
 ) -> Result<(), String> {
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        while barriers.iter().any(|barrier| !barrier.is_released()) {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        async {
+            while barriers.iter().any(|barrier| !barrier.is_released()) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        },
+    )
     .await
     .map_err(|_| "standalone control retained filesystem or core-state handles".to_owned())
 }

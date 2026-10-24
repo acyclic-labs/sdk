@@ -1,7 +1,7 @@
 use super::*;
 
 /// Immutable append-only shared model prefix segment.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelPrefix {
     version: u32,

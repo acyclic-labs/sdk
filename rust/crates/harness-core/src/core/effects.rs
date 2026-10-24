@@ -1,8 +1,6 @@
 use super::*;
 /// Strength advertised by an external effect provider.
-#[derive(
-    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
-)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectGuarantee {
     /// Provider proves one externally observable application.
@@ -14,7 +12,7 @@ pub enum EffectGuarantee {
 }
 
 /// Current durable status of an effect.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum EffectStatus {
     /// Effect is durable but has not been dispatched.
@@ -45,7 +43,7 @@ impl EffectStatus {
 }
 
 /// Host-attested provider observation accepted by the pure reducer.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EffectAttestation {
     /// Provider that produced the observation.
     pub provider: String,
@@ -62,7 +60,6 @@ pub struct EffectAttestation {
     /// Terminal or explicitly unknown result.
     pub status: EffectStatus,
     #[serde(with = "super::capability_bytes")]
-    #[heap_layout(as = crate::heap_layout::markers::Base64Bytes)]
     pub(in crate::core) proof: Vec<u8>,
 }
 
@@ -80,7 +77,7 @@ impl EffectAttestation {
 }
 
 /// Complete durable projection of one external effect.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EffectState {
     /// Provider selected before dispatch.
     pub provider: String,

@@ -1,7 +1,7 @@
 //! capture fork protocol.
 use super::*;
 /// Result of one selected provider capture.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Capture {
     /// Exact immutable resource revision was captured.
@@ -15,7 +15,7 @@ pub enum Capture {
 }
 
 /// A source revision and the corresponding child-visible retained revision.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CapturedResource {
     /// Exact parent revision selected for capture.
@@ -25,7 +25,7 @@ pub struct CapturedResource {
 }
 
 /// An optional resource that was not captured, with its exact reconciliation
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ForkOmission {
     /// Exact optional selection requested by the caller.
@@ -35,7 +35,7 @@ pub struct ForkOmission {
 }
 
 /// Explicit child-bound operations for one selected session-shared volume.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SharedGrant {
     /// Exact shared volume selected in the fork seed.
@@ -47,7 +47,7 @@ pub struct SharedGrant {
 }
 
 /// Parent-authorized, exact-version read access to a reference for a child agent.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReferenceGrant {
     /// Pinned file identity whose bytes may be resolved.

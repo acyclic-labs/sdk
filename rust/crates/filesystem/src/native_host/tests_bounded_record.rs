@@ -2,19 +2,6 @@ use super::*;
 
 #[cfg(target_os = "linux")]
 #[test]
-fn name_search_does_not_enter_another_native_mount() -> Result<(), Box<dyn std::error::Error>> {
-    let mut work = ordinary_work();
-    let root = HostRoot::open(Path::new("/"), &mut work)?;
-    assert!(root.same_mount(Path::new(""), &mut work)?);
-    assert!(!root.same_mount(Path::new("proc"), &mut work)?);
-    // Negative control: ordinary capability-relative directory opening can
-    // enter proc; a successful open alone cannot enforce the walk boundary.
-    assert!(root.open_dir_held(Path::new("proc"), &mut work).is_ok());
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-#[test]
 fn held_canonical_directory_does_not_scan_unrelated_siblings()
 -> Result<(), Box<dyn std::error::Error>> {
     let temporary = tempfile::tempdir()?;

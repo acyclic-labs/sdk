@@ -156,9 +156,7 @@ pub(super) async fn drive<F: Future>(
         {
             let mut state = schedule.state.lock().unwrap();
             if event.name == "task:submitted"
-                && (event
-                    .detail
-                    .contains("append harness/v3/coordinator/events ")
+                && (event.detail.contains("append harness/v3/coordinator/events ")
                     || (event.detail.starts_with("commit ")
                         && event.detail.contains("\"harness/v3/coordinator/events\"")))
             {

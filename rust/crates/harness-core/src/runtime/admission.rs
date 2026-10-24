@@ -1,7 +1,7 @@
 use super::*;
 
 /// Provider-neutral, owner-attested execution route pinned at admission.
-#[derive(Clone, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionPlacement {
     /// Versioned execution provider that qualified and owns this route.
@@ -40,7 +40,7 @@ impl ExecutionPlacement {
 }
 
 /// Exact owner-retained task admission.
-#[derive(Clone, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskAdmissionRecord {
     /// Idempotent admission operation.
@@ -81,7 +81,7 @@ pub(super) struct CanonicalTaskAdmission<'a> {
 }
 
 /// One owner-retained direct task child, independent of fork ancestry.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TaskChild {
     /// Stable parent slot, independent of completion order.
     pub slot: String,
@@ -90,7 +90,7 @@ pub struct TaskChild {
 }
 
 /// Bounded hierarchy observation; a changed revision invalidates continuation.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TaskChildrenPage {
     /// Retained owner revision observed for this page.
     pub revision: u64,
@@ -474,19 +474,19 @@ impl TaskAdmissionRecord {
                     maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64,
                     maximum_depth: 256,
                 },
+                0,
                 Some(crate::wire::ErrorCode::Invalid),
                 crate::executor::json::JsonValueSchema::TaskAdmissionRecord,
                 &mut |charge| match charge {
-                    crate::executor::json::JsonCodecCharge::Admission {
-                        maximum_owned_bytes,
-                        value_shape,
-                    } => {
+                    crate::executor::json::JsonCodecCharge::Admission { value_shape, .. } => {
+                        let containers =
+                            crate::executor::json::json_value_decode_owned_bytes(value_shape)?;
                         let diagnostics = crate::executor::json::json_typed_diagnostic_owned_bytes(
                             value_shape,
                             crate::executor::json::preparation_serde_diagnostic_label_bytes(),
                             Some(crate::wire::ErrorCode::Invalid),
                         )?;
-                        let bytes = maximum_owned_bytes
+                        let bytes = containers
                             .checked_add(diagnostics)
                             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>() as u64))
                             .ok_or_else(|| {

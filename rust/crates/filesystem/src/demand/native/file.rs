@@ -286,14 +286,13 @@ impl DemandFile for NativeDemandFile {
         }
         let file = self.clone();
         let (answer, answered) = std::sync::mpsc::sync_channel(1);
-        let spawned = acyclic_grpc_observability::task::named_thread(
-            std::thread::Builder::new().name("acyclic-remote-read".to_owned()),
-            move || {
+        let spawned = std::thread::Builder::new()
+            .name("acyclic-remote-read".to_owned())
+            .spawn(move || {
                 let result = file.read(offset, length, &mut context);
                 BLOCKED_REMOTE_READS.fetch_sub(1, Ordering::AcqRel);
                 let _ = answer.send((result, context));
-            },
-        );
+            });
         if spawned.is_err() {
             BLOCKED_REMOTE_READS.fetch_sub(1, Ordering::AcqRel);
             return Err(DemandError::SourceUnavailable);

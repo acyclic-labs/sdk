@@ -19,7 +19,6 @@ wasm-bindgen.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-acyclic-auth = { path = "../auth", features = ["fuzzing"] }
 ed25519-dalek = "=3.0.0"
 proptest.workspace = true
 

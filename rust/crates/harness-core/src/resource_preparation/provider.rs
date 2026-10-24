@@ -84,7 +84,7 @@ pub trait ResourceCreationProvider: acyclic_stream::ProviderPlatform {
 }
 
 /// Exact provider evidence for a created resource.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceCreationProofRef {
     /// Pinned creator contract.

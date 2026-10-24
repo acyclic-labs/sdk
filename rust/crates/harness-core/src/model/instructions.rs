@@ -156,7 +156,6 @@ pub(crate) fn project_instruction(
             path: crate::core::copy_text(identity.path, &mut quota)?,
         };
         quota.transfer();
-        // Charged above: the quota retains the box's bytes.
         Ok::<_, Error>(Box::new(value))
     })?;
     Ok(ModelMessage {

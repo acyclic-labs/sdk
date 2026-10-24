@@ -13,34 +13,32 @@ where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
 {
-    let cancellation = CancellationToken::new();
-    // Unmetered: git capture runs on unbounded budgets and holds no work ledger.
-    let live = crate::heap_future::erase(crate::heap_future::in_heap_unmetered(|| {
-        workspace.head(WorkBudget::UNBOUNDED, &cancellation)
-    }))
-    .await
-    .map(|receipt| receipt.value)
-    .map_err(|failure| failure.error)?;
+    let live = workspace
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)?;
     // A capture that still holds host-owned paths is rebuilt from the live
     // tree, so no later commit inherits them.
     if policy.tracks_reserved(already_tracked) {
         return capture_git_compatible_generation(workspace, policy, already_tracked, operation_id)
             .await;
     }
-    // Unmetered: git capture runs on unbounded budgets and holds no work ledger.
-    let changes = crate::heap_future::erase(crate::heap_future::in_heap_unmetered(|| {
-        previous_live.diff_to(&live, u32::MAX, WorkBudget::UNBOUNDED, &cancellation)
-    }))
-    .await
-    .map(|receipt| receipt.value.0)
-    .map_err(|failure| failure.error)?;
-    // Unmetered: git capture runs on unbounded budgets and holds no work ledger.
-    let changed = crate::heap_future::erase(crate::heap_future::in_heap_unmetered(|| {
-        changes.changed_paths(u32::MAX, WorkBudget::UNBOUNDED, &cancellation)
-    }))
-    .await
-    .map(|receipt| receipt.value.0)
-    .map_err(|failure| failure.error)?;
+    let changes = previous_live
+        .diff_to(
+            &live,
+            u32::MAX,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value.0)
+        .map_err(|failure| failure.error)?;
+    let changed = changes
+        .changed_paths(u32::MAX, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .map(|receipt| receipt.value.0)
+        .map_err(|failure| failure.error)?;
     let mut portable = Vec::with_capacity(changed.len());
     for change in changed {
         let path = portable_changed_path(&change.path)?;
@@ -73,17 +71,14 @@ where
         } else {
             (previous_live, &mut before_policies)
         };
-        // Unmetered: git capture runs on unbounded budgets and holds no work ledger.
-        let allowed = crate::heap_future::erase(crate::heap_future::in_heap_unmetered(|| {
-            git_path_eligible_with_root_at(
-                generation,
-                policies,
-                policy,
-                &path,
-                is_directory,
-                already_tracked,
-            )
-        }))
+        let allowed = git_path_eligible_with_root_at(
+            generation,
+            policies,
+            policy,
+            &path,
+            is_directory,
+            already_tracked,
+        )
         .await?;
         if tracked || tracked_descendant || allowed {
             eligible.push(path.clone());
@@ -104,16 +99,13 @@ where
         });
     }
 
-    // Unmetered: git capture runs on unbounded budgets and holds no work ledger.
-    crate::heap_future::erase(crate::heap_future::in_heap_unmetered(|| {
-        apply_git_capture(
-            previous_capture,
-            Some(previous_live),
-            Some(&live),
-            &eligible,
-            tracked_paths,
-            operation_id,
-        )
-    }))
+    apply_git_capture(
+        previous_capture,
+        Some(previous_live),
+        Some(&live),
+        &eligible,
+        tracked_paths,
+        operation_id,
+    )
     .await
 }

@@ -2,7 +2,7 @@ use super::*;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
-#[derive(Deserialize, crate::HeapLayout)]
+#[derive(Deserialize)]
 struct CommandHook {
     #[serde(rename = "type")]
     kind: String,
@@ -19,7 +19,7 @@ struct CommandHook {
     on_failure: OnFailure,
 }
 
-#[derive(Default, Deserialize, crate::HeapLayout)]
+#[derive(Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum OnFailure {
     #[default]
@@ -63,14 +63,14 @@ impl CommandHook {
     }
 }
 
-#[derive(Deserialize, crate::HeapLayout)]
+#[derive(Deserialize)]
 struct Group {
     #[serde(default)]
     matcher: String,
     hooks: Vec<CommandHook>,
 }
 
-#[derive(Deserialize, crate::HeapLayout)]
+#[derive(Deserialize)]
 pub(crate) struct Document {
     #[serde(default)]
     pub(crate) hooks: BTreeMap<String, Value>,

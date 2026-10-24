@@ -9,8 +9,7 @@ use std::{
 
 pub(crate) const MAXIMUM_ROOT_PATH_BYTES: usize = 128 * 1024;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum PiRootIntent {
     ScratchOnly {},

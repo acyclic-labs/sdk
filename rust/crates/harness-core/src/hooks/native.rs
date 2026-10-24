@@ -1,10 +1,10 @@
 use super::*;
-use acyclic_native_runtime::command::{Command, Stdio};
 use acyclic_native_runtime::{
     CaptureInput, ProcessInput, ProcessTree, run_blocking_io, shell_command,
 };
 use std::{
     path::{Path, PathBuf},
+    process::{Command, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},

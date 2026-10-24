@@ -13,7 +13,7 @@ use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
 /// Disposition returned after checking a turn's committed selection.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnDisposition {
     /// No selection existed; the caller may dispatch the model.
@@ -27,7 +27,7 @@ pub enum TurnDisposition {
 }
 
 /// Rust-owned result of deterministic turn preparation.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TurnPreparation {
     /// Stable user message identity derived from the operation.

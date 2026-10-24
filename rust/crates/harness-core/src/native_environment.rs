@@ -67,7 +67,6 @@ pub fn variable_with_user_locations(name: &str, discover_user: bool) -> Option<O
 }
 
 /// Resolves one process variable through the native environment seam.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn variable(name: &str) -> Option<OsString> {
     variable_with_user_locations(name, true)
 }

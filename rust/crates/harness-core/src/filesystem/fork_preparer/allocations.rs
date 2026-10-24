@@ -29,7 +29,7 @@ pub(super) fn seed_creation_volumes(seed: &ForkSeed) -> Result<impl Iterator<Ite
     .flatten())
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AllocationClaim {
     pub(super) operation_id: OperationId,
@@ -220,8 +220,29 @@ impl bounded_io::UploadRecord for Capture {
         }
     }
 }
+fn fork_collection_slot_bytes() -> u64 {
+    use std::mem::size_of;
+    [
+        size_of::<ForkSelection>(),
+        size_of::<Capture>(),
+        size_of::<SharedGrant>(),
+        size_of::<ReferenceGrant>(),
+        size_of::<FileRef>(),
+        size_of::<String>(),
+        size_of::<(String, serde_json::Value)>(),
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(0) as u64
+        + 2 * 5
+            * size_of::<(
+                serde::__private229::de::Content<'static>,
+                serde::__private229::de::Content<'static>,
+            )>() as u64
+}
+
 macro_rules! fork_preparation_records {
-    ($($record:ty => $schema:ident),+ $(,)?) => {$(
+    ($($record:ty => $schema:ident => $slot:expr),+ $(,)?) => {$(
         impl bounded_io::PreparationRecord for $record {
             fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
                 crate::core::owned_sum([
@@ -229,17 +250,41 @@ macro_rules! fork_preparation_records {
                     bounded_io::UploadRecord::logical_owned_bytes(self)?,
                 ]).map(Some)
             }
+            fn maximum_slot_bytes() -> u64 { $slot }
+            fn decode_owned_allowance(
+                shape: crate::executor::json::JsonValueShape, scratch: u64, input: u64,
+                code: Option<crate::wire::ErrorCode>,
+            ) -> Result<u64> {
+                let nodes = shape.lexical_items().checked_add(shape.virtual_items());
+                let nodes = nodes.map(|nodes| if shape.unresolved_raw() { nodes.max(input) } else { nodes });
+                // Input is held by the caller; admit only DTO slots, strings and decoder scratch.
+                nodes.and_then(|nodes| nodes.checked_mul(Self::maximum_slot_bytes()))
+                    .and_then(|slots| slots.checked_mul(8))
+                    .and_then(|slots| input.checked_mul(2).and_then(|strings| slots.checked_add(strings)))
+                    .and_then(|bytes| bytes.checked_add(scratch))
+                    .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>() as u64))
+                    .ok_or_else(|| {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if let Some(code) = code {
+                            return Error::NativeBoundary { code, reason: "fork decode storage overflows" };
+                        }
+                        let _ = code;
+                        Error::Invalid("fork decode storage overflows".into())
+                    })
+            }
             fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema { crate::executor::json::JsonValueSchema::$schema }
         }
     )+};
 }
 fork_preparation_records!(
-    ForkRequest => ForkRequest,
-    ForkReport => ForkReport,
-    AllocationClaim => None,
-    Capture => None,
-    [u8; 32] => None,
-    Uuid => None,
+    ForkRequest => ForkRequest => fork_collection_slot_bytes(),
+    ForkReport => ForkReport => fork_collection_slot_bytes(),
+    // Claim collections contain only strings; its one tagged owner needs Content scratch.
+    AllocationClaim => None => (std::mem::size_of::<String>()
+        + 2 * std::mem::size_of::<(serde::__private229::de::Content<'static>, serde::__private229::de::Content<'static>)>()) as u64,
+    Capture => None => fork_collection_slot_bytes(),
+    [u8; 32] => None => 0,
+    Uuid => None => 0,
 );
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
@@ -591,7 +636,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 preparation,
             )
             .await?;
-            if *prior != binding {
+            if prior != binding {
                 return Err(stock_boundary(
                     io,
                     crate::wire::ErrorCode::Conflict,

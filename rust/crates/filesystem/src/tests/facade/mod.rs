@@ -619,7 +619,6 @@ mod adoption;
 mod attributes;
 mod content;
 mod creation;
-mod dependency_delta;
 mod detached;
 mod fault_creation;
 mod fault_mutations;

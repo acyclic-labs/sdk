@@ -1,5 +1,6 @@
 //! Verification and cached admission costs for short capability chains.
-use acyclic_auth::fuzzing::signed;
+#[path = "../tests/common/signed.rs"]
+mod signed;
 use acyclic_auth::{authority::PolicyDecision, contract::*, verify::verify};
 use std::{hint::black_box, time::Instant};
 

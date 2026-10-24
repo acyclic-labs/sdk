@@ -341,18 +341,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 return Err(NativeTreeMaterializationError::InvalidLayout.into());
             }
         }
-        // Boxed: each step's frame stays out of this one.
-        crate::heap_future::metered!(erased accounting, |accounting| {
-            self.admit_mutation_names_with_accounting(
-                &mut operations,
-                &mut operations_allocation,
-                accounting,
-                cancellation,
-            )
-        })?;
-        let captured = crate::heap_future::metered!(erased accounting, |accounting| {
-            self.capture_mutation_dependencies_with_accounting(&operations, accounting, cancellation)
-        })?;
+        self.admit_mutation_names_with_accounting(
+            &mut operations,
+            &mut operations_allocation,
+            accounting,
+            cancellation,
+        )
+        .await?;
+        let captured = self
+            .capture_mutation_dependencies_with_accounting(&operations, accounting, cancellation)
+            .await?;
         let extension = self.dependencies.proof().prepare_mutations(
             captured.value,
             self.volume.config.limits.maximum_checkout_dependencies,
@@ -372,18 +370,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .ok_or(WorkError::Overflow)?,
         )?;
         let final_input_bytes = Self::mutation_input_owned_bytes(&operations, accounting)?;
-        // Boxed: the generation mutation frame stays out of every caller's.
-        let produced = crate::heap_future::metered!(erased accounting, |accounting| {
-            crate::kernel::apply_generation_mutations_retaining_with_accounting(
-                &self.volume.fs.inner.objects,
-                &self.root,
-                operations,
-                self.volume.config,
-                self.authored_operation_id.and_then(OperationId::time_ns),
-                accounting,
-                cancellation,
-            )
-        });
+        let produced = crate::kernel::apply_generation_mutations_retaining_with_accounting(
+            &self.volume.fs.inner.objects,
+            &self.root,
+            operations,
+            self.volume.config,
+            accounting,
+            cancellation,
+        )
+        .await;
         let (receipt, returned_operations, allocation) = produced?;
         let mut working = (receipt.root, allocation);
         drop(returned_operations);
@@ -396,6 +391,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             accounting.release_owned(&mut staged.1, staged_names)?;
             return Ok(());
         }
+        accounting.charge(WorkCounters {
+            bytes_copied: size_of::<CheckoutDependencies>() as u64,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let mut prepared_dependencies = self.dependencies.proof().dependencies.clone();
         let producer = &self.dependencies.data_custody;
         let held = match accounting {
             #[cfg(not(target_arch = "wasm32"))]
@@ -435,36 +435,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     .transpose()?
             }
         };
-        // Proof access stays exclusive through admission and root-control
-        // transfer. Observing checkouts cannot insert between preparation and commit.
-        let mut proof = self.dependencies.proof();
-        let mut finish = || match &mut working.1 {
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelOwnedAllocation::NativeOriginal(allocation) => {
-                cancellation.check()?;
-                let scope = allocation.work().checkout_control_sink(producer)?;
-                allocation
-                    .transfer_checkout_control(producer, &scope)
-                    .map_err(FsError::from)
-            }
-            KernelOwnedAllocation::Standalone => {
-                Self::root_control_claim(&working.0, Some(producer))
-            }
-        };
-        let control = if working.0.file_table == self.base_root.file_table {
-            // Returning to the base removes prior mutations, rather than extending
-            // the proof. Keep that replacement isolated until root admission succeeds.
-            accounting.charge(WorkCounters {
-                bytes_copied: size_of::<CheckoutDependencies>() as u64,
-                ..WorkCounters::UNCHARGED
-            })?;
-            let mut prepared_dependencies = proof.dependencies.clone();
+        if working.0.file_table == self.base_root.file_table {
             prepared_dependencies.clear_mutations();
             drop(staged.0);
             accounting.release_owned(&mut staged.1, staged_names)?;
-            let control = finish()?;
-            proof.dependencies = prepared_dependencies;
-            control
         } else {
             match accounting {
                 #[cfg(not(target_arch = "wasm32"))]
@@ -472,16 +446,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     let KernelOwnedAllocation::NativeOriginal(allocation) = &mut staged.1 else {
                         unreachable!("original captured names retain original custody");
                     };
-                    proof.dependencies.commit_with_original_data_custody_then(
+                    prepared_dependencies.commit_with_original_data_custody(
                         staged.0,
                         producer,
                         allocation,
                         original,
                         cancellation,
-                        |_| finish(),
-                    )?
+                    )?;
+                    // Duplicate keys have already physically died in commit.
+                    allocation.release(allocation.bytes())?;
                 }
-                _ => proof.dependencies.commit_with_data_custody_then(
+                _ => prepared_dependencies.commit_with_data_custody(
                     staged.0,
                     Some(producer),
                     |bytes, operations, copied, items| {
@@ -496,13 +471,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                         }
                         accounting.charge(delta)
                     },
-                    finish,
                 )?,
             }
+        }
+        let control = match &mut working.1 {
+            #[cfg(not(target_arch = "wasm32"))]
+            KernelOwnedAllocation::NativeOriginal(allocation) => {
+                cancellation.check()?;
+                let scope = allocation.work().checkout_control_sink(producer)?;
+                allocation.transfer_checkout_control(producer, &scope)?
+            }
+            KernelOwnedAllocation::Standalone => {
+                Self::root_control_claim(&working.0, Some(producer))?
+            }
         };
-        drop(proof);
-        // All fallible work succeeded before the dependency and root installation.
+        // No fallible work follows the transfer into the actual root producer.
         self.root.set(self.root.base, working.0, control, held);
+        self.dependencies.proof().dependencies = prepared_dependencies;
         Ok(())
     }
 

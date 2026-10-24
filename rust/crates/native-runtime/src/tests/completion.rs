@@ -2,7 +2,7 @@ use super::*;
 
 fn failed_child(test: &str, marker: &str, message: &str) -> io::Result<()> {
     let output = crate::process_output(
-        crate::command::Command::new(std::env::current_exe()?)
+        std::process::Command::new(std::env::current_exe()?)
             .args(["--exact", test, "--nocapture"])
             .env(marker, "1"),
         Duration::from_secs(120),
@@ -197,42 +197,5 @@ fn measured_sync_wait_cancellation_wake_drains_real_read_prefix() -> io::Result<
         assert_eq!(meter.read.load(Ordering::Acquire), 3);
         assert_eq!(meter.memory.load(Ordering::Acquire), 0);
     }
-    Ok(())
-}
-
-#[cfg(feature = "test-support")]
-#[tokio::test(flavor = "current_thread")]
-async fn measured_sync_wait_virtual_deadline_notifies_and_drains_the_original_worker()
--> io::Result<()> {
-    use crate::deadline::{Deadline, Waiter, simulation::Clock};
-    initialize_native_io_services()?;
-    let clock = Clock::new();
-    let meter = Arc::new(ReadBudgetMeter::new(0, 0));
-    let release = Arc::new(Waiter::new());
-    let worker_release = release.clone();
-    let mut calls = 0;
-    let value = clock
-        .scope(async {
-            let task = run_blocking_io(
-                move || {
-                    worker_release.wait(None);
-                    42
-                },
-                Some((meter.clone(), false)),
-            )?;
-            task.wait(
-                Some(Deadline::after(Duration::from_secs(5)).instant()),
-                std::future::pending(),
-                || {
-                    calls += 1;
-                    release.notify();
-                },
-            )
-        })
-        .await?;
-    assert_eq!(value, 42);
-    assert_eq!(calls, 1);
-    assert_eq!(clock.advances(), [Duration::from_secs(5)]);
-    assert_eq!(meter.memory.load(Ordering::Acquire), 0);
     Ok(())
 }

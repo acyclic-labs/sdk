@@ -1,4 +1,8 @@
 //! Native callback stack limits.
+#![allow(
+    unsafe_code,
+    reason = "probes the callback thread's stack with volatile reads below the stack pointer"
+)]
 
 use super::adapter::{CheckoutMountSource, SharedCheckout};
 use super::lazy::LazyMountSource;
@@ -20,7 +24,41 @@ type Lazy = LazyWorkspace<
 type Authored = CheckoutMountSource<LocalAuthorityBackend, LocalObjectBackend>;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+const PAINTED: usize = 8 << 20;
+const PATTERN: u8 = 0xA5;
 const CONTENT: u32 = 64 * 1024;
+
+#[inline(never)]
+fn paint() -> usize {
+    let mut region = [PATTERN; PAINTED];
+    std::hint::black_box(&mut region);
+    region.as_ptr() as usize
+}
+
+fn deepest_stack<T: Send>(callback: impl FnOnce() -> T + Send) -> (T, usize) {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(2 * PAINTED)
+            .spawn_scoped(scope, || {
+                let lowest = paint();
+                let result = callback();
+                let untouched = (0..PAINTED)
+                    .take_while(|offset| {
+                        // SAFETY: the region is this thread's own stack below
+                        // every live frame, still mapped, and written by
+                        // nothing else; it is only read, byte by byte.
+                        let byte =
+                            unsafe { std::ptr::read_volatile((lowest + offset) as *const u8) };
+                        byte == PATTERN
+                    })
+                    .count();
+                (result, PAINTED - untouched)
+            })
+            .expect("spawn the measured callback thread")
+            .join()
+            .expect("the measured callback completes")
+    })
+}
 
 fn measure<T: Send>(
     kind: &str,
@@ -35,8 +73,7 @@ fn measure<T: Send>(
     } else {
         *release
     };
-    let (result, used) =
-        tokio::task::block_in_place(|| acyclic_test_support::stack::deepest_stack(callback));
+    let (result, used) = tokio::task::block_in_place(|| deepest_stack(callback));
     assert!(
         used.div_ceil(1024) <= budget,
         "{kind}: {} KiB exceeds {budget} KiB",

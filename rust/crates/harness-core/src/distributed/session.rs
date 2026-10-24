@@ -87,7 +87,6 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         }
         let events = [
             SchedulerEvent::Declared {
-                // Charged above: `admit_allocation` holds the box's bytes and attempt.
                 spec: Box::new(spec),
             },
             SchedulerEvent::SessionConfigured {
@@ -235,7 +234,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         for (position, (key, event)) in positions.iter_mut().zip(keys.iter().zip(events)) {
             let mut custody = CodecQuota::new(work, 0)?;
             let Some((digest, existing, revision, commit_id)) =
-                self.read_indexed_intent(key, custody.work()).await?
+                read_intent(&self.client, key, Some(self.revision), custody.work()).await?
             else {
                 continue;
             };

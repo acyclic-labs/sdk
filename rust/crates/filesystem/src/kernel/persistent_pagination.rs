@@ -4,10 +4,10 @@ use super::allocation::{
     AllocationLedger, KernelAccounting, KernelOwnedAllocation, VisitedObjectSet,
 };
 use super::list::{DirectoryReadError as Error, DirectoryReadFailure as Failure};
-use super::persistent_btree::entries::Entries;
-use super::persistent_btree::{Child, Format, children_within, leaf_within};
-use super::persistent_io;
+use super::persistent_btree::{Child, Format, Page, children_within, leaf_within};
+use super::persistent_io::{self, OwnedPage};
 use super::persistent_point::{Owned, retire_allocation, split_allocation};
+use super::search::partition_point_with_accounting;
 use super::{CanonicalDecodeError, DecodeLimits};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
@@ -16,8 +16,6 @@ use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectReadRequest};
 use std::mem::size_of;
 use std::ops::Bound;
-
-mod accept;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Receipt<V> {
@@ -410,12 +408,11 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         Ok(bytes)
     }
 
-    fn leaf_bounds<'b>(
+    fn leaf_bounds(
         &mut self,
-        values: impl Into<Entries<'b, F::Value>>,
+        values: &[F::Value],
         pending: &Pending<F::Key>,
     ) -> Result<bool, Failure> {
-        let values = values.into();
         let examined = WorkCounters {
             items_examined: if values.is_empty() { 0 } else { 2 },
             ..WorkCounters::default()
@@ -432,12 +429,11 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         Ok(within)
     }
 
-    fn child_bounds<'b>(
+    fn child_bounds(
         &mut self,
-        children: impl Into<Entries<'b, Child<F::Key>>>,
+        children: &[Child<F::Key>],
         pending: &Pending<F::Key>,
     ) -> Result<bool, Failure> {
-        let children = children.into();
         let examined = WorkCounters {
             items_examined: if children.is_empty() { 0 } else { 2 },
             ..WorkCounters::default()
@@ -454,16 +450,12 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         Ok(within)
     }
 
-    fn value_start<'b>(
-        &mut self,
-        values: impl Into<Entries<'b, F::Value>>,
-    ) -> Result<usize, Failure> {
-        let values = values.into();
+    fn value_start(&mut self, values: &[F::Value]) -> Result<usize, Failure> {
         let bound = self.bound;
         if matches!(bound, Bound::Unbounded) {
             return Ok(0);
         }
-        let result = values.partition(self.accounting, |value| {
+        let result = partition_point_with_accounting(values, self.accounting, |value| {
             let key = F::key(value);
             match bound {
                 Bound::Included(cursor) => key < cursor,
@@ -474,19 +466,287 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         result.map_err(|error| self.failure(error))
     }
 
-    fn child_start<'b>(
-        &mut self,
-        children: impl Into<Entries<'b, Child<F::Key>>>,
-    ) -> Result<usize, Failure> {
-        let children = children.into();
+    fn child_start(&mut self, children: &[Child<F::Key>]) -> Result<usize, Failure> {
         let cursor = match self.bound {
             Bound::Included(cursor) | Bound::Excluded(cursor) => cursor,
             Bound::Unbounded => return Ok(0),
         };
-        let result = children.partition(self.accounting, |child| child.first <= *cursor);
+        let result = partition_point_with_accounting(children, self.accounting, |child| {
+            child.first <= *cursor
+        });
         result
             .map(|index| index.saturating_sub(1))
             .map_err(|error| self.failure(error))
+    }
+
+    fn accept(
+        &mut self,
+        decoded: OwnedPage<F>,
+        allocation: KernelOwnedAllocation,
+        mut pending: Pending<F::Key>,
+    ) -> Result<(), Failure> {
+        let result = {
+            let mut allocation = allocation;
+            #[cfg(not(target_arch = "wasm32"))]
+            let native_custody = decoded.native_custody;
+            let logical_bytes = decoded.logical_bytes;
+            let page = decoded.page;
+            let result = match page {
+                persistent_io::PageLease::Owned(Page::Leaf(values)) => {
+                    self.accept_leaf_owned(values, logical_bytes, &mut allocation, &pending)
+                }
+                persistent_io::PageLease::Owned(Page::Internal(children)) => self
+                    .accept_internal_owned(children, logical_bytes, &mut allocation, &mut pending),
+                persistent_io::PageLease::Shared { page, .. } => {
+                    // Keep the decoded cache's original guard through the entire callback.
+                    let result = match page.as_ref() {
+                        Page::Leaf(values) => self.accept_shared_leaf(values, &pending),
+                        Page::Internal(children) => {
+                            self.accept_shared_internal_state(children, &mut pending)
+                        }
+                    };
+                    drop(page);
+                    result
+                }
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            drop(native_custody);
+            result
+        };
+        pending
+            .retire(self.accounting)
+            .map_err(|error| self.failure(error))?;
+        result?;
+        Ok(())
+    }
+
+    fn accept_shared_leaf(
+        &mut self,
+        values: &[F::Value],
+        pending: &Pending<F::Key>,
+    ) -> Result<(), Failure> {
+        if !self.leaf_bounds(values, pending)? {
+            return Err(failed(Error::ChildBoundsMismatch, self.accounting.spent()));
+        }
+        let start = self.value_start(values)?;
+        for value in values
+            .iter()
+            .skip(start)
+            .take(self.target.saturating_sub(self.values.len()))
+        {
+            self.examine_value(value)?;
+            let prefix = begin_custody_leaf(self.accounting, self.data_custody)
+                .map_err(|error| self.failure(error))?;
+            let result = persistent_io::clone_value::<F>(
+                value,
+                self.limits.maximum_name_bytes,
+                self.accounting,
+                None,
+                0,
+            );
+            let completed = finish_custody_leaf(self.accounting, self.data_custody, prefix);
+            let (cloned, allocation) = result.map_err(|error| self.failure(error))?;
+            let nested = F::value_owned_bytes(&cloned);
+            let cloned = Owned::new(cloned, allocation, nested);
+            if let Err(error) = completed {
+                cloned
+                    .retire(self.accounting)
+                    .map_err(|error| self.failure(error))?;
+                return Err(self.failure(error));
+            }
+            self.push_value(cloned)?;
+        }
+        Ok(())
+    }
+
+    fn accept_shared_internal_state(
+        &mut self,
+        children: &[Child<F::Key>],
+        pending: &mut Pending<F::Key>,
+    ) -> Result<(), Failure> {
+        if !self.child_bounds(children, pending)? {
+            return Err(failed(Error::ChildBoundsMismatch, self.accounting.spent()));
+        }
+        let start = self.child_start(children)?;
+        let height = self.next_height(pending.height)?;
+        let end = start
+            .saturating_add(
+                self.target
+                    .saturating_sub(self.values.len())
+                    .saturating_add(1),
+            )
+            .min(children.len());
+        if let Some(child) = children.get(end) {
+            self.successor_page = Some(child.page);
+        }
+        let mut next_lower: Option<Owned<F::Key>> = None;
+        let result = (|| {
+            for (offset, child) in children.iter().enumerate().take(end).skip(start).rev() {
+                let lower = self.clone_key(&child.first)?;
+                let upper = next_lower.take().or_else(|| pending.upper.take());
+                let previous = if offset == start {
+                    Ok(None)
+                } else {
+                    self.clone_key(&child.first).map(Some)
+                };
+                let previous = match previous {
+                    Ok(previous) => previous,
+                    Err(failure) => {
+                        self.retire_bounds(Some(lower), upper)?;
+                        return Err(failure);
+                    }
+                };
+                if let Err(failure) = self.push_pending(Pending {
+                    page: child.page,
+                    lower: Some(lower),
+                    upper,
+                    height,
+                }) {
+                    self.retire_bounds(previous, None)?;
+                    return Err(failure);
+                }
+                next_lower = previous;
+            }
+            Ok(())
+        })();
+        self.retire_bounds(next_lower, None)?;
+        result
+    }
+
+    fn next_height(&self, height: u16) -> Result<u16, Failure> {
+        height
+            .checked_add(1)
+            .filter(|&next| next <= self.limits.maximum_page_height)
+            .ok_or_else(|| failed(Error::HeightExceeded, self.accounting.spent()))
+    }
+
+    fn retire_bounds(
+        &mut self,
+        lower: Option<Owned<F::Key>>,
+        upper: Option<Owned<F::Key>>,
+    ) -> Result<(), Failure> {
+        if let Some(lower) = lower {
+            lower
+                .retire(self.accounting)
+                .map_err(|error| self.failure(error))?;
+        }
+        if let Some(upper) = upper {
+            upper
+                .retire(self.accounting)
+                .map_err(|error| self.failure(error))?;
+        }
+        Ok(())
+    }
+
+    fn accept_leaf_owned(
+        &mut self,
+        values: Vec<F::Value>,
+        decoded_bytes: u64,
+        allocation: &mut KernelOwnedAllocation,
+        pending: &Pending<F::Key>,
+    ) -> Result<(), Failure> {
+        let mut retained_nested = 0_u64;
+        let result = (|| {
+            if !self.leaf_bounds(&values, pending)? {
+                return Err(failed(Error::ChildBoundsMismatch, self.accounting.spent()));
+            }
+            let start = self.value_start(&values)?;
+            // Iterator destruction drops every skipped/unselected item and the source buffer.
+            for value in values.into_iter().skip(start) {
+                if self.values.len() == self.target {
+                    break;
+                }
+                let nested = self.examine_value(&value)?;
+                let tag =
+                    split_allocation(allocation, nested).map_err(|error| self.failure(error))?;
+                retained_nested = retained_nested
+                    .checked_add(nested)
+                    .ok_or_else(|| failed(Error::AllocationFailed, self.accounting.spent()))?;
+                self.push_value(Owned::new(value, tag, nested))?;
+            }
+            Ok(())
+        })();
+        let released = decoded_bytes
+            .checked_sub(retained_nested)
+            .ok_or_else(|| failed(Error::TraversalState, self.accounting.spent()))?;
+        if matches!(allocation, KernelOwnedAllocation::Standalone) {
+            retire_allocation(KernelOwnedAllocation::Standalone, released, self.accounting)
+                .map_err(|error| self.failure(error))?;
+        }
+        result
+    }
+
+    fn accept_internal_owned(
+        &mut self,
+        children: Vec<Child<F::Key>>,
+        decoded_bytes: u64,
+        allocation: &mut KernelOwnedAllocation,
+        pending: &mut Pending<F::Key>,
+    ) -> Result<(), Failure> {
+        let mut moved_nested = 0_u64;
+        let mut next_lower: Option<Owned<F::Key>> = None;
+        let result = (|| {
+            if !self.child_bounds(&children, pending)? {
+                return Err(failed(Error::ChildBoundsMismatch, self.accounting.spent()));
+            }
+            let start = self.child_start(&children)?;
+            let height = self.next_height(pending.height)?;
+            let end = start
+                .saturating_add(
+                    self.target
+                        .saturating_sub(self.values.len())
+                        .saturating_add(1),
+                )
+                .min(children.len());
+            if let Some(child) = children.get(end) {
+                self.successor_page = Some(child.page);
+            }
+            let mut children = children;
+            children.truncate(end);
+            let mut tail = children.drain(start..);
+            while let Some(child) = tail.next_back() {
+                let previous = if tail.len() == 0 {
+                    None
+                } else {
+                    Some(self.clone_key(&child.first)?)
+                };
+                let bytes = F::key_owned_bytes(&child.first);
+                let tag = match split_allocation(allocation, bytes) {
+                    Ok(tag) => tag,
+                    Err(error) => {
+                        self.retire_bounds(previous, None)?;
+                        return Err(self.failure(error));
+                    }
+                };
+                moved_nested = moved_nested
+                    .checked_add(bytes)
+                    .ok_or_else(|| failed(Error::AllocationFailed, self.accounting.spent()))?;
+                let lower = Owned::new(child.first, tag, bytes);
+                let upper = next_lower.take().or_else(|| pending.upper.take());
+                if let Err(failure) = self.push_pending(Pending {
+                    page: child.page,
+                    lower: Some(lower),
+                    upper,
+                    height,
+                }) {
+                    self.retire_bounds(previous, None)?;
+                    return Err(failure);
+                }
+                next_lower = previous;
+            }
+            drop(tail);
+            drop(children);
+            Ok(())
+        })();
+        self.retire_bounds(next_lower, None)?;
+        let released = decoded_bytes
+            .checked_sub(moved_nested)
+            .ok_or_else(|| failed(Error::TraversalState, self.accounting.spent()))?;
+        if matches!(allocation, KernelOwnedAllocation::Standalone) {
+            retire_allocation(KernelOwnedAllocation::Standalone, released, self.accounting)
+                .map_err(|error| self.failure(error))?;
+        }
+        result
     }
 
     fn clone_key(&mut self, key: &F::Key) -> Result<Owned<F::Key>, Failure> {

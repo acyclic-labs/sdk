@@ -126,6 +126,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .read_range_if_unchanged(&original, &path, range, io, io.cancellation())
                 .await,
         )?;
+        fork_preparer_io::retain(selected, Some(io)).await?;
         if io.original_native_work().is_none() {
             io.retain_owned(chunk.bytes.retained_capacity().unwrap_or(0) as u64)?;
         }

@@ -2,9 +2,7 @@ use super::*;
 
 /// Exact immutable UTF-8 file read arguments.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[derive(
-    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadFileInput {
     /// Owner-authorized immutable source.
@@ -17,9 +15,7 @@ pub struct ReadFileInput {
 
 /// Single-operation UTF-8 publication arguments.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[derive(
-    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WriteFileInput {
     /// Valid public destination path.
@@ -34,9 +30,7 @@ pub struct WriteFileInput {
 
 /// Exact replacement against one pinned file generation.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[derive(
-    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EditFileInput {
     /// Owner-authorized immutable source.
@@ -51,9 +45,7 @@ pub struct EditFileInput {
 
 /// Explicit single-file V4A update arguments.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[derive(
-    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PatchFileInput {
     /// Owner-authorized immutable source generation.
@@ -66,9 +58,7 @@ pub struct PatchFileInput {
 
 /// Canonical successful write/edit result, independent of model projection.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[derive(
-    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FileResult {
     /// Exact retained publication result with workspace and content identity.

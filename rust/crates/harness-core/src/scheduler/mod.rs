@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct TaskModelClaims {
     ceiling: u64,
     attempts: BTreeMap<OperationId, BTreeMap<u32, [u8; 32]>>,
@@ -46,7 +46,7 @@ impl TaskModelClaims {
 }
 
 /// Pure projection of dependency, capacity, ownership and cancellation events.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Scheduler {
     operations: BTreeMap<OperationId, OperationState>,
     child_slots: BTreeMap<(OperationId, String), OperationId>,

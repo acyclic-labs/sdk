@@ -6,40 +6,12 @@ pub struct HostStatReader {
     buffer: Vec<u64>,
     next: usize,
     filled: usize,
-    #[cfg(target_os = "linux")]
-    position: u64,
     #[cfg(windows)]
     volume_serial_number: u32,
 }
 
 impl HostStatReader {
     pub(super) const BUFFER_BYTES: usize = 64 * 1024;
-    #[cfg(target_os = "linux")]
-    pub(crate) const fn position(&self) -> u64 {
-        self.position
-    }
-    /// Restore an opaque getdents cookie after the caller validates the
-    /// directory's identity and mtime/ctime token. Never interpret it as bytes.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn seek_position<W: NativeHostWork>(
-        &mut self,
-        position: u64,
-        work: &mut W,
-    ) -> Result<(), W::Error> {
-        let position = i64::try_from(position).map_err(|_| W::invalid_request())?;
-        work.attempt_io(READ, || {
-            // SAFETY: the held directory is live; the cookie is checked for
-            // representability and came from this unchanged directory.
-            if unsafe { libc::lseek(self.directory.as_raw_fd(), position, libc::SEEK_SET) } < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        })?;
-        self.position = position as u64;
-        self.next = Self::BUFFER_BYTES;
-        self.filled = Self::BUFFER_BYTES;
-        Ok(())
-    }
     #[cfg(test)]
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
         (self.buffer.capacity() * 8) as u64
@@ -95,19 +67,6 @@ impl HostStatReader {
                 }
             }
             work.started_io(ITEM)?;
-            #[cfg(target_os = "linux")]
-            let position = {
-                // SAFETY: name() below validates the complete record header.
-                // The bounded prefix is checked before reading the cookie.
-                let bytes = unsafe {
-                    std::slice::from_raw_parts(self.buffer.as_ptr().cast::<u8>(), self.filled)
-                };
-                let start = self.next.checked_add(8).ok_or(crate::WorkError::Overflow)?;
-                let cookie = bytes.get(start..start + 8).ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "missing directory cookie")
-                })?;
-                u64::from_ne_bytes(cookie.try_into().map_err(|_| W::invalid_request())?)
-            };
             let (end, native_name) = self.name()?;
             #[cfg(unix)]
             let raw_name = native_name.to_bytes();
@@ -115,10 +74,6 @@ impl HostStatReader {
             let raw_name = native_name;
             if raw_name == [46] || raw_name == [46, 46] {
                 self.next = end;
-                #[cfg(target_os = "linux")]
-                {
-                    self.position = position;
-                }
                 continue;
             }
             let copied = copy_work(std::mem::size_of_val(raw_name) as u64);
@@ -167,10 +122,6 @@ impl HostStatReader {
                 }
             };
             self.next = end;
-            #[cfg(target_os = "linux")]
-            {
-                self.position = position;
-            }
             return Ok(Some((HostListedEntry { name, stat }, allocation)));
         }
     }
@@ -411,8 +362,6 @@ pub(crate) fn read_dir_held<W: NativeHostWork>(
             buffer,
             next: HostStatReader::BUFFER_BYTES,
             filled: HostStatReader::BUFFER_BYTES,
-            #[cfg(target_os = "linux")]
-            position: 0,
             #[cfg(windows)]
             volume_serial_number,
         },

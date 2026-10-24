@@ -57,179 +57,153 @@ pub(crate) use obs_span;
 #[derive(Clone, Copy)]
 pub(crate) struct OperationSpan;
 
-/// Runs `future` inside `span` and records its outcome there.
-#[cfg(not(target_arch = "wasm32"))]
-fn traced_frame<T, F: Future<Output = crate::Result<T>>>(
-    span: OperationSpan,
-    future: F,
-) -> impl Future<Output = crate::Result<T>> {
-    let context = span.clone();
-    context.scope(async move {
-        let result = future.await;
-        span.record("outcome", if result.is_ok() { "ok" } else { "err" });
-        if let Err(error) = &result {
-            span.record("error.kind", error.kind());
-        }
-        result
-    })
-}
-
-/// Spans are not recorded on wasm32, so the frame is the future itself.
-#[cfg(target_arch = "wasm32")]
-fn traced_frame<T, F: Future<Output = crate::Result<T>>>(_: OperationSpan, future: F) -> F {
-    future
-}
-
 /// Boxes a trait method's future inside `span` and records its outcome there.
-///
-/// `create` builds the future inside the heap allocation's own short frame,
-/// so neither this function nor the caller's poll frame ever holds it.
-#[inline(never)]
-pub(crate) fn traced<'a, T: 'a, F>(
+pub(crate) fn traced<'a, T: 'a>(
     span: OperationSpan,
-    create: impl FnOnce() -> F,
-) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<T>>
-where
-    F: Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a,
-{
-    // Unbudgeted: a caller that holds a live budget uses `traced_on`.
-    acyclic_fs::in_heap(move || traced_frame(span, create()))
-}
-
-/// [`traced`] where an allocation budget is live: the whole frame is charged
-/// on `io` before it is made, and a refused frame is never built.
-#[cfg(feature = "filesystem")]
-#[inline(never)]
-pub(crate) fn traced_on<'a, T: 'a, F>(
-    io: Option<&crate::executor::PreparationIo>,
-    span: OperationSpan,
-    create: impl FnOnce() -> F,
-) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<T>>
-where
-    F: Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a,
-{
-    match crate::charged_box::charged_frame(io, move || traced_frame(span, create())) {
-        Ok(frame) => frame,
-        // Unbudgeted: a refused frame holds only its error.
-        Err(error) => Box::pin(async move { Err(error) }),
+    future: impl Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a,
+) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<T>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let context = span.clone();
+        Box::pin(context.scope(async move {
+            let result = future.await;
+            span.record("outcome", if result.is_ok() { "ok" } else { "err" });
+            if let Err(error) = &result {
+                span.record("error.kind", error.kind());
+            }
+            result
+        }))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let OperationSpan = span;
+        Box::pin(future)
     }
 }
 
-/// [`traced`] where no allocation budget can exist: without the filesystem
-/// there is no budget to charge.
-#[cfg(not(feature = "filesystem"))]
-pub(crate) fn traced_on<'a, T: 'a, F>(
-    _: Option<&crate::executor::PreparationIo>,
+// The unmetered caller supplies the one required trait-erasure box. Keep the
+// existing boxed path above intact for admitted future layouts and charges.
+#[cfg(any(feature = "filesystem", all(test, not(target_arch = "wasm32"))))]
+#[inline(always)]
+pub(crate) fn traced_future<'a, T: 'a>(
     span: OperationSpan,
-    create: impl FnOnce() -> F,
-) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<T>>
-where
-    F: Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a,
-{
-    // Unbudgeted: no budget exists without the filesystem.
-    traced(span, create)
-}
+    future: impl Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a,
+) -> impl Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use futures::FutureExt as _;
 
-#[cfg(any(feature = "filesystem", all(test, not(target_arch = "wasm32"))))]
-mod typed;
-#[cfg(any(feature = "filesystem", all(test, not(target_arch = "wasm32"))))]
-pub(crate) use typed::traced_future;
+        let context = span.clone();
+        // Poll the underlying future in place. A forwarding async block retains
+        // its initial future and await state, duplicating large journal frames.
+        context.scope(future.map(move |result| {
+            span.record("outcome", if result.is_ok() { "ok" } else { "err" });
+            if let Err(error) = &result {
+                span.record("error.kind", error.kind());
+            }
+            result
+        }))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let OperationSpan = span;
+        future
+    }
+}
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn traced_future_retains_one_payload_and_records_only_when_ready() {
-    capture::sync(|seen| {
-        use std::{
-            future::Future,
-            pin::Pin,
-            task::{Context, Poll},
-        };
+    use std::{
+        future::Future,
+        pin::Pin,
+        task::{Context, Poll},
+    };
 
-        struct Payload {
-            bytes: [u8; 8192],
-            ready: bool,
-        }
+    struct Payload {
+        bytes: [u8; 8192],
+        ready: bool,
+    }
 
-        impl Future for Payload {
-            type Output = crate::Result<()>;
+    impl Future for Payload {
+        type Output = crate::Result<()>;
 
-            fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-                assert!(self.bytes.iter().all(|byte| *byte == 7));
-                if !self.ready {
-                    self.ready = true;
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
-                } else {
-                    Poll::Ready(Err(crate::Error::Invalid("fixture refusal".into())))
-                }
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            assert!(self.bytes.iter().all(|byte| *byte == 7));
+            if !self.ready {
+                self.ready = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            } else {
+                Poll::Ready(Err(crate::Error::Invalid("fixture refusal".into())))
             }
         }
+    }
 
-        let span = obs_span!(INFO, "acyclic.harness.test.payload");
-        let future = traced_future(
-            move || span,
-            || Payload {
-                bytes: [7; 8192],
-                ready: false,
-            },
-        );
-        // This is an ownership bound, independent of the particular payload size:
-        // the tracing adapter must not retain a second copy of its child future.
-        assert!(std::mem::size_of_val(&future) < 2 * std::mem::size_of::<Payload>());
-        futures::pin_mut!(future);
-        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
-        assert!(future.as_mut().poll(&mut cx).is_pending());
-        assert!(!capture::has(
-            &seen,
-            "acyclic.harness.test.payload",
-            "outcome",
-            "err"
-        ));
-        assert!(matches!(
-            future.as_mut().poll(&mut cx),
-            Poll::Ready(Err(crate::Error::Invalid(reason))) if reason == "fixture refusal"
-        ));
-        assert!(capture::has(
-            &seen,
-            "acyclic.harness.test.payload",
-            "outcome",
-            "err"
-        ));
-    });
+    let (seen, _guard) = capture::install();
+    let span = obs_span!(INFO, "acyclic.harness.test.payload");
+    let future = traced_future(
+        span,
+        Payload {
+            bytes: [7; 8192],
+            ready: false,
+        },
+    );
+    // This is an ownership bound, independent of the particular payload size:
+    // the tracing adapter must not retain a second copy of its child future.
+    assert!(std::mem::size_of_val(&future) < 2 * std::mem::size_of::<Payload>());
+    futures::pin_mut!(future);
+    let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+    assert!(future.as_mut().poll(&mut cx).is_pending());
+    assert!(!capture::has(
+        &seen,
+        "acyclic.harness.test.payload",
+        "outcome",
+        "err"
+    ));
+    assert!(matches!(
+        future.as_mut().poll(&mut cx),
+        Poll::Ready(Err(crate::Error::Invalid(reason))) if reason == "fixture refusal"
+    ));
+    assert!(capture::has(
+        &seen,
+        "acyclic.harness.test.payload",
+        "outcome",
+        "err"
+    ));
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[test]
 fn filtered_operation_cannot_record_failure_on_its_parent() {
-    capture::sync(|seen| {
-        let parent = obs_span!(INFO, "acyclic.harness.test.parent");
-        parent.in_scope(|| {
-            for boxed in [false, true] {
-                let span = OperationSpan::new(tracing::Span::none());
-                let future =
-                    std::future::ready(Err::<(), _>(crate::Error::Invalid("test failure".into())));
-                let result = if boxed {
-                    futures::executor::block_on(traced(span, || future))
-                } else {
-                    futures::executor::block_on(traced_future(|| span, || future))
-                };
-                assert!(result.is_err());
-            }
-        });
-        assert!(!capture::has(
-            &seen,
-            "acyclic.harness.test.parent",
-            "outcome",
-            "err"
-        ));
-        assert!(capture::has(
-            &seen,
-            "acyclic.harness.test.parent",
-            "outcome",
-            ""
-        ));
+    let (seen, _guard) = capture::install();
+    let parent = obs_span!(INFO, "acyclic.harness.test.parent");
+    parent.in_scope(|| {
+        for boxed in [false, true] {
+            let span = OperationSpan::new(tracing::Span::none());
+            let future =
+                std::future::ready(Err::<(), _>(crate::Error::Invalid("test failure".into())));
+            let result = if boxed {
+                futures::executor::block_on(traced(span, future))
+            } else {
+                futures::executor::block_on(traced_future(span, future))
+            };
+            assert!(result.is_err());
+        }
     });
+    assert!(!capture::has(
+        &seen,
+        "acyclic.harness.test.parent",
+        "outcome",
+        "err"
+    ));
+    assert!(capture::has(
+        &seen,
+        "acyclic.harness.test.parent",
+        "outcome",
+        ""
+    ));
 }
 
 /// Span-test capture layer shared by the crate's test modules.
@@ -288,33 +262,16 @@ pub(crate) mod capture {
         }
     }
 
-    /// Captures synchronous work without exposing a thread guard to async tests.
-    pub(crate) fn sync<T>(test: impl FnOnce(Seen) -> T) -> T {
-        let (seen, dispatch) = subscriber();
-        tracing::dispatcher::with_default(&dispatch, || test(seen))
-    }
-
-    fn subscriber() -> (Seen, tracing::Dispatch) {
+    /// Captures this thread's spans until the guard drops.
+    pub(crate) fn install() -> (Seen, impl Sized) {
         use tracing_subscriber::layer::SubscriberExt as _;
+        let second = tracing::Dispatch::new(tracing_subscriber::registry());
         let seen = Seen::default();
-        let dispatch = acyclic_test_support::capture::dispatch(
+        let guard = tracing::subscriber::set_default(
             tracing_subscriber::registry().with(Capture(Arc::clone(&seen))),
         );
-        (seen, dispatch)
+        (seen, (guard, second))
     }
-
-    /// Installs the test's subscriber only while its future is being polled.
-    /// Spawned tasks must carry this dispatcher with `with_current_subscriber`.
-    pub(crate) async fn run<T, F: Future<Output = T>>(test: impl FnOnce(Seen) -> F) -> T {
-        use tracing::instrument::WithSubscriber as _;
-        let (seen, dispatch) = subscriber();
-        async move { test(seen).await }
-            .with_subscriber(dispatch)
-            .await
-    }
-
-    #[cfg(test)]
-    mod tests;
 
     pub(crate) fn has(seen: &Seen, span: &str, field: &str, value: &str) -> bool {
         let seen = seen.lock().unwrap();

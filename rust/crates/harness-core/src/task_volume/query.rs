@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// Folder selectors have bounded matching cost and allocate no per-chunk paths.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub enum Query {
@@ -39,9 +39,6 @@ pub enum Query {
     Root,
     /// Command definitions and workspace files used by the input UI.
     Inputs,
-    /// Bounded completion publications: the composed catalog, themes, and the
-    /// owner-filtered search result and progress files. Source trees are absent.
-    Completions,
     /// Declarative UI settings, keymap and theme files.
     Config,
     /// Editable Markdown files in the private volume's plans folder.
@@ -132,20 +129,6 @@ impl Query {
         };
         let minimum = Component(Arc::from(""));
         let maximum = Component(Arc::from("\u{10ffff}"));
-        if self == &Self::Completions {
-            return [
-                "commands/catalog.json",
-                "commands/themes.json",
-                "search/results.json",
-                "search/progress.json",
-            ]
-            .into_iter()
-            .map(|path| {
-                let key = FileKey::Input(InputPath(path.into()));
-                (Included(key.clone()), Included(key))
-            })
-            .collect();
-        }
         if let Self::TaskSession { task, session } = self {
             let mut ranges = Self::Session(session.clone()).ranges();
             ranges.push(range(
@@ -228,7 +211,7 @@ impl Query {
                 Included(FileKey::Input(InputPath("config/".into()))),
                 Included(FileKey::Input(InputPath("config/\u{10ffff}".into()))),
             ),
-            Self::Inputs | Self::Completions => (
+            Self::Inputs => (
                 Included(FileKey::Input(InputPath(String::new()))),
                 Included(FileKey::Input(InputPath("\u{10ffff}".into()))),
             ),
@@ -379,13 +362,6 @@ impl Query {
             (Self::Children, FileKey::Child { .. }) => true,
             (Self::Child(wanted), FileKey::Child { reference, .. }) => wanted == reference,
             (Self::Inputs, FileKey::Input(path)) => !path.0.starts_with("config/"),
-            (Self::Completions, FileKey::Input(path)) => matches!(
-                path.0.as_str(),
-                "commands/catalog.json"
-                    | "commands/themes.json"
-                    | "search/results.json"
-                    | "search/progress.json"
-            ),
             (Self::Config, FileKey::Input(path)) => matches!(
                 path.0.as_str(),
                 "config/settings.json" | "config/keymap.json" | "config/theme.json"

@@ -41,7 +41,7 @@ impl Executor {
         let cancellation = context.task().invocation_cancellation();
         #[cfg(not(feature = "filesystem"))]
         let cancellation = None;
-        let files = acyclic_fs::in_heap(|| bound_files(&context)).await?;
+        let files = bound_files(&context).await?;
         let value = match self.0 {
             "spawn" => {
                 let input: SpawnInput =
@@ -321,9 +321,9 @@ impl ToolExecutor for Executor {
         invocation: ToolInvocation,
         context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
-        acyclic_fs::in_heap(|| async move {
+        Box::pin(async move {
             let operation = invocation.operation_id;
-            acyclic_fs::in_heap(|| self.run(invocation, context, false))
+            self.run(invocation, context, false)
                 .await?
                 .ok_or(Error::Indeterminate(operation))
         })
@@ -333,7 +333,7 @@ impl ToolExecutor for Executor {
         invocation: ToolInvocation,
         context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-        acyclic_fs::in_heap(|| self.run(invocation, context, true))
+        Box::pin(self.run(invocation, context, true))
     }
 }
 fn component(value: String) -> Result<Component> {

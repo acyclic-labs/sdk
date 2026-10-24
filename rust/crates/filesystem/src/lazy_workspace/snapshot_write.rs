@@ -100,7 +100,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             .await;
             return Ok((TransactionCommit::AlreadyCommitted(original), proof));
         }
-        let state = crate::heap_future::metered!(ctx, |ctx| self.state(ctx))?;
+        let state = self.state(ctx).await?;
         if state.source != basis.source
             || state.overlay != basis.overlay
             || state.shadows != basis.shadows

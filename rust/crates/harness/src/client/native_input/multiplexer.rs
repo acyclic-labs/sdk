@@ -49,7 +49,7 @@ async fn model<const BROKEN: bool>(motions: usize) {
         .unwrap();
     client.follow_commands(&commands).await.unwrap();
     let mut prompt = PromptInput::new(Editor::new("draft"));
-    let mut completions = CompletionFiles::observe(volume.as_ref(), &mut prompt, None)
+    let mut completions = CompletionFiles::observe(volume.as_ref(), &mut prompt, None, 128)
         .await
         .unwrap();
     let mut observed = volume.observe(Query::Inputs, None, 128).await.unwrap();

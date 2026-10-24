@@ -11,8 +11,10 @@ use acyclic_harness_tui::{
 };
 use proptest::prelude::*;
 
-use acyclic_harness_tui::fuzzing::completion_deltas as deltas;
-use acyclic_harness_tui::fuzzing::completion_sequences as sequences;
+#[path = "../support/completion_deltas.rs"]
+mod deltas;
+#[path = "../support/completion_sequences.rs"]
+mod sequences;
 
 #[test]
 fn unicode_theme_completion_preserves_the_configured_name() {
@@ -62,16 +64,11 @@ fn fuzz_negative_control_rejects_a_dropped_mention_marker() {
     assert!(sequences::exercise_broken(b"negative control").is_ok());
 }
 
-fn files(menu: &mut CompletionMenu, editor: &Editor) {
-    let query = completion_request(editor)
-        .map(|r| r.query)
-        .unwrap_or_default();
-    let paths = ["src/readme.md", "src/a b.rs", "界/👩‍💻.rs", "@memo.rs"];
-    menu.set_file(
-        "search/results.json",
-        Some(&serde_json::to_vec(&serde_json::json!({"query":query,"paths":paths})).unwrap()),
-    )
-    .unwrap();
+fn files(menu: &mut CompletionMenu) {
+    for path in ["src/readme.md", "src/a b.rs", "界/👩‍💻.rs", "@memo.rs"] {
+        let result = menu.set_file(&format!("workspace/{path}"), Some(b""));
+        assert!(result.is_ok(), "{result:?}");
+    }
 }
 fn commands(menu: &mut CompletionMenu) {
     let result = menu.set_file(
@@ -84,19 +81,13 @@ fn commands(menu: &mut CompletionMenu) {
     );
     assert!(result.is_ok(), "{result:?}");
 }
-fn single(menu: &mut CompletionMenu, editor: &Editor, value: &str) {
+fn single(menu: &mut CompletionMenu, value: &str) {
     menu.clear_files();
-    let query = completion_request(editor)
-        .map(|r| r.query)
-        .unwrap_or_default();
-    menu.set_file(
-        "search/results.json",
-        Some(&serde_json::to_vec(&serde_json::json!({"query":query,"paths":[value]})).unwrap()),
-    )
-    .unwrap();
+    let result = menu.set_file(&format!("workspace/{value}"), Some(b""));
+    assert!(result.is_ok(), "{result:?}");
 }
 fn refresh_files(menu: &mut CompletionMenu, editor: &Editor) {
-    files(menu, editor);
+    files(menu);
     menu.refresh(editor);
 }
 fn refresh_commands(menu: &mut CompletionMenu, editor: &Editor) {
@@ -190,7 +181,7 @@ fn prompt_controller_accepts_completion_before_submit_and_prioritizes_escape() {
     );
 
     input.editor.set_text("@srm", 2);
-    files(&mut input.completion, &input.editor);
+    files(&mut input.completion);
     input.refresh_completions();
     assert!(
         input
@@ -202,7 +193,7 @@ fn prompt_controller_accepts_completion_before_submit_and_prioritizes_escape() {
     assert_eq!(input.editor.text(), "@srm");
 
     input.busy = true;
-    files(&mut input.completion, &input.editor);
+    files(&mut input.completion);
     input.refresh_completions();
     assert!(
         input
@@ -350,7 +341,7 @@ fn popup_snapshot_and_geometry_stay_within_terminal_bounds()
 fn unicode_popup_rows_are_clipped_by_display_cells() -> Result<(), Box<dyn std::error::Error>> {
     let editor = Editor::new("@");
     let mut menu = CompletionMenu::default();
-    single(&mut menu, &editor, "界👩‍💻e\u{301}");
+    single(&mut menu, "界👩‍💻e\u{301}");
     menu.refresh(&editor);
     for width in 1u16..=12 {
         let mut terminal = Terminal::new(TestBackend::new(width, 3))?;
@@ -398,7 +389,7 @@ fn acceptance_reuses_an_existing_separator_and_rejects_invalid_values() {
     assert_eq!(editor.text(), "read @src/readme.md rest");
     for value in ["", "bad\nvalue", "bad\"value", "bad\u{1b}value"] {
         let mut editor = Editor::new("@");
-        single(&mut menu, &editor, value);
+        single(&mut menu, value);
         menu.refresh(&editor);
         assert!(!menu.active(&editor));
         assert!(!menu.key(
@@ -417,7 +408,7 @@ fn completing_before_whitespace_starts_the_next_argument_and_preserves_pastes() 
     use acyclic_harness_tui::PromptInput;
     let mut input = PromptInput::new(Editor::new("@srm old"));
     input.editor.set_cursor(4, false);
-    files(&mut input.completion, &input.editor);
+    files(&mut input.completion);
     input.refresh_completions();
     assert!(
         input
@@ -496,7 +487,7 @@ proptest! {
         let original = format!("before @x{suffix} after");
         let mut editor = Editor::new(&original);
         editor.set_cursor(8, false);
-        let mut menu = CompletionMenu::default(); single(&mut menu, &editor, &path); menu.refresh(&editor);
+        let mut menu = CompletionMenu::default(); single(&mut menu, &path); menu.refresh(&editor);
         prop_assert!(menu.accept(&mut editor, 0));
         let token = if path.chars().any(char::is_whitespace) { format!("@\"{path}\"") } else { format!("@{path}") };
         let accepted = format!("before {token} after");
@@ -593,7 +584,7 @@ fn unicode_casefold_keeps_the_source_spelling() {
         assert!(fuzzy_score(query, path).is_some());
         let mut editor = Editor::new(&format!("@{query}"));
         let mut menu = CompletionMenu::default();
-        single(&mut menu, &editor, path);
+        single(&mut menu, path);
         menu.refresh(&editor);
         assert!(menu.accept(&mut editor, 0));
         assert_eq!(editor.text(), format!("@{path} "));
@@ -604,7 +595,7 @@ fn unicode_casefold_keeps_the_source_spelling() {
 fn leaving_a_dismissed_request_allows_the_same_token_in_a_new_draft() {
     let mut editor = Editor::new("@src");
     let mut menu = CompletionMenu::default();
-    files(&mut menu, &editor);
+    files(&mut menu);
     menu.refresh(&editor);
     menu.dismiss(&editor);
     menu.refresh(&editor);
@@ -637,7 +628,7 @@ fn unicode_data_mappings_are_matched_in_both_directions() {
 fn moving_before_a_cached_mention_after_an_edit_still_accepts_without_submit() {
     use acyclic_harness_tui::PromptInput;
     let mut input = PromptInput::new(Editor::new("@src @src"));
-    files(&mut input.completion, &input.editor);
+    files(&mut input.completion);
     input.refresh_completions();
     input.committed_text("/", 0);
     input.editor.set_cursor(4, false);

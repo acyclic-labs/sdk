@@ -46,7 +46,7 @@ fn explicit_state_directory_is_used_by_a_fresh_registry() -> Result<(), Box<dyn 
     for name_suffix in ["first-state", "second-state"] {
         let state = fixture.path().join(name_suffix);
         let output = acyclic_native_runtime::process_output(
-            acyclic_native_runtime::command::Command::new(std::env::current_exe()?)
+            std::process::Command::new(std::env::current_exe()?)
                 .args(["--exact", &name, "--nocapture"])
                 .env(EXPECTED, &state)
                 .env(variable, &state)
@@ -115,7 +115,7 @@ fn empty_state_override_uses_the_fallback_in_a_fresh_process()
         module_path!().split_once("::").unwrap().1
     );
     let output = acyclic_native_runtime::process_output(
-        acyclic_native_runtime::command::Command::new(std::env::current_exe()?)
+        std::process::Command::new(std::env::current_exe()?)
             .args(["--exact", &name, "--nocapture"])
             .env(CHILD, "1")
             .env(variable, "")

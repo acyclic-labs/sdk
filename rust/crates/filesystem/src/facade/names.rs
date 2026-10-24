@@ -541,9 +541,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     > + ProviderTask
     + 'a {
         async move {
-            let (result, reservation) =
-                crate::heap_future::in_heap_metered(&mut *accounting, |accounting| async move {
-                    let this = self;
+            let mut frame_custody = None;
+            let (future, frame_bytes) = crate::heap_future::in_heap_admitted(
+                (
+                    &mut *self,
+                    parent_components,
+                    target,
+                    allowed_file_ids,
+                    &mut *accounting,
+                ),
+                |(_, _, _, _, context), bytes| {
+                    frame_custody = Some(context.claim_owned(bytes, u64::from(bytes != 0))?);
+                    Ok::<(), FsError>(())
+                },
+                |(this, parent_components, target, allowed_file_ids, accounting)| async move {
                     let allocation = accounting.claim_owned(0, 0)?;
                     let mut parent = (
                         NamespacePath::new(Vec::new(), this.volume.config.limits)
@@ -635,9 +646,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     let bytes = folded_target.0.capacity() as u64;
                     retire_name_owned(folded_target, bytes, accounting)?;
                     Ok(found)
-                })?
-                .await;
-            crate::heap_future::FrameLedger::release_frame(accounting, reservation)?;
+                },
+            )?;
+            let mut future = future;
+            let result = future.as_mut().await;
+            drop(future);
+            let mut frame_custody =
+                frame_custody.ok_or(FsError::PendingMutationAllocationFailed)?;
+            accounting.release_owned(&mut frame_custody, frame_bytes)?;
             result
         }
     }

@@ -10,10 +10,6 @@ struct DirectoryState {
     entries: HostStatReader,
     pending: Option<(HostListedEntry, u64)>,
     replay: Option<Arc<Owned<Vec<SourceDirectoryEntry>>>>,
-    #[cfg(target_os = "linux")]
-    positions: Option<Owned<Vec<u64>>>,
-    #[cfg(target_os = "linux")]
-    pending_position: u64,
     offset: usize,
     eof: bool,
     ownership: SourcePayloadOwnership,
@@ -33,13 +29,6 @@ impl DirectoryState {
                 source_entries_visited: 1,
                 ..WorkCounters::UNCHARGED
             })?;
-            // Preserve the same inode-generation identity as lookup. On Linux
-            // this adds name_to_handle_at to no-follow statx; it neither opens
-            // nor reads file content. Other hosts retain metadata-only queries.
-            #[cfg(target_os = "linux")]
-            {
-                self.pending_position = self.entries.position();
-            }
             match self.entries.next(work)? {
                 None => self.eof = true,
                 Some((entry, bytes)) => {
@@ -182,10 +171,6 @@ impl NativeDemandSource {
             entries,
             pending: None,
             replay: None,
-            #[cfg(target_os = "linux")]
-            positions: None,
-            #[cfg(target_os = "linux")]
-            pending_position: 0,
             offset: 0,
             eof: false,
             ownership,
@@ -256,12 +241,6 @@ impl NativeDemandSource {
             });
         }
         state.replay.take();
-        #[cfg(target_os = "linux")]
-        {
-            state.positions = Some(account_source(work, |ctx, _| {
-                Owned::allocate(maximum, ctx).map_err(DemandError::from)
-            })?);
-        }
         state.offset = 0;
         let mut page = account_source(work, |accounting, _| {
             let entries = Owned::allocate(maximum, accounting).map_err(DemandError::from)?;
@@ -286,13 +265,6 @@ impl NativeDemandSource {
                     && !self.excluded.excludes_child(&state.directory, &entry.name)
                 {
                     backing.value.push(entry);
-                    #[cfg(target_os = "linux")]
-                    state
-                        .positions
-                        .as_mut()
-                        .ok_or(DemandError::StaleCursor)?
-                        .value
-                        .push(state.entries.position());
                 }
             }
             state.read(work)
@@ -329,7 +301,8 @@ impl NativeDemandSource {
             return Err(DemandError::NotDirectory);
         }
         let observed = version(&stat);
-        let (token, state, restore) = if let Some(cursor) = cursor {
+        let restore = cursor.is_some();
+        let (token, state) = if let Some(cursor) = cursor {
             if cursor.source != source {
                 return Err(DemandError::StaleCursor);
             }
@@ -338,48 +311,24 @@ impl NativeDemandSource {
                 .cursors
                 .lock()
                 .map_err(|_| DemandError::StaleCursor)?;
-            let cached = active.get_mut(&cursor.token);
-            if cached.as_ref().is_some_and(|slot| slot.as_ref().is_none()) {
-                return Err(DemandError::CursorBusy);
+            let slot = active
+                .get_mut(&cursor.token)
+                .ok_or(DemandError::StaleCursor)?;
+            let state = slot.as_ref().ok_or(DemandError::CursorBusy)?;
+            if state.directory != *directory || state.version != observed {
+                return Err(DemandError::StaleCursor);
             }
-            if let Some(slot) = cached.filter(|slot| {
-                slot.as_ref()
-                    .is_some_and(|state| state.directory == *directory && state.version == observed)
-            }) {
-                (
-                    cursor.token,
-                    slot.take().ok_or(DemandError::CursorBusy)?,
-                    true,
-                )
-            } else {
-                drop(active);
-                #[cfg(target_os = "linux")]
-                {
-                    let resume = cursor.resume.ok_or(DemandError::StaleCursor)?;
-                    if resume.version != observed {
-                        return Err(DemandError::StaleCursor);
-                    }
-                    let mut state = self.open_directory_state(directory, observed, work)?;
-                    state.entries.seek_position(resume.position, work)?;
-                    state.pending_position = resume.position;
-                    self.inner
-                        .next_cursor
-                        .fetch_max(cursor.token, Ordering::AcqRel);
-                    let token = self.next_directory_token()?;
-                    (token, state, false)
-                }
-                #[cfg(not(target_os = "linux"))]
-                {
-                    return Err(DemandError::StaleCursor);
-                }
-            }
+            (cursor.token, slot.take().ok_or(DemandError::CursorBusy)?)
         } else {
-            let token = self.next_directory_token()?;
-            (
-                token,
-                self.open_directory_state(directory, observed, work)?,
-                false,
-            )
+            let token = self
+                .inner
+                .next_cursor
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                    current.checked_add(1)
+                })
+                .map_err(|_| DemandError::StaleCursor)?
+                + 1;
+            (token, self.open_directory_state(directory, observed, work)?)
         };
         let mut lease = SourceDirectoryPublication {
             source: self.clone(),
@@ -393,36 +342,9 @@ impl NativeDemandSource {
         };
         let state = lease.state.as_mut().ok_or(DemandError::StaleCursor)?;
         let entries = self.page_entries(state, maximum as usize, work)?;
-        #[cfg(target_os = "linux")]
-        let resume = Some(crate::demand::SourceDirectoryResume {
-            version: observed,
-            position: if state
-                .replay
-                .as_ref()
-                .is_some_and(|page| entries.range.end == page.value.len())
-            {
-                state.pending_position
-            } else {
-                *state
-                    .positions
-                    .as_ref()
-                    .and_then(|positions| {
-                        entries
-                            .range
-                            .end
-                            .checked_sub(1)
-                            .and_then(|end| positions.value.get(end))
-                    })
-                    .ok_or(DemandError::StaleCursor)?
-            },
-        });
-        #[cfg(not(target_os = "linux"))]
-        let resume = None;
-        let next = state.has_next(entries.range.end).then_some(SourceCursor {
-            source,
-            token,
-            resume,
-        });
+        let next = state
+            .has_next(entries.range.end)
+            .then_some(SourceCursor { source, token });
         self.check(source, work)?;
         if self.metadata(directory, work)?.as_ref().map(version) != Some(observed) {
             lease.state.take();
@@ -448,15 +370,5 @@ impl NativeDemandSource {
             version: observed,
             publication: Some(Box::new(lease)),
         })
-    }
-
-    fn next_directory_token(&self) -> Result<u64, DemandError> {
-        self.inner
-            .next_cursor
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                current.checked_add(1)
-            })
-            .map(|prior| prior + 1)
-            .map_err(|_| DemandError::StaleCursor)
     }
 }

@@ -11,7 +11,7 @@
     "test:pi-session": "bun test pi-session.test.ts",
     "test:pi-installation": "bun test pi-installation.test.ts",
     "test:pi-service": "bun test pi-service.test.ts",
-    "test:pi-native-recursive": "bun test --preload ./prepare-native.mjs pi-native-recursive.test.ts",
+    "test:pi-native-recursive": "bun test pi-native-recursive.test.ts",
     "test:pi-context-mail": "bun test pi-context-mail.test.ts",
     "test:pi-context-fresh": "bun test pi-context-fresh.test.ts",
     "test:pi-context-pages": "bun test pi-context-pages.test.ts",

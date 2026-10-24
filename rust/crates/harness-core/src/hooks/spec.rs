@@ -2,7 +2,7 @@ use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 
 /// Lifecycle points with command-hook support.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum HookEvent {
     /// A session was opened, resumed, forked, or compacted.
     SessionStart,
@@ -107,7 +107,7 @@ const _: () = {
 };
 
 /// An event selector and its commands, sharing one compiled matcher.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HookRule {
     /// Lifecycle point at which these commands run.
@@ -119,7 +119,7 @@ pub struct HookRule {
 }
 
 /// Normalized command data consumed by the single hook runner.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HookSpec {
     /// Native executable or script passed to the shared shell selector.
@@ -131,7 +131,7 @@ pub struct HookSpec {
 }
 
 /// Finite native command vocabulary, independent of imported settings formats.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HookRun {
     /// Executes an argv vector directly.
@@ -151,7 +151,7 @@ pub enum HookRun {
 }
 
 /// A command failure always records a diagnostic; blocking is explicit.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HookFailure {
     /// Report the failure and continue with the other hooks and caller.

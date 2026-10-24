@@ -3,7 +3,6 @@ use crate::mcp::sync::{
     atomic::{AtomicU32, Ordering},
 };
 use crate::{Error, OperationId, Result, mcp::McpToolTransport, runtime::ToolContext};
-use acyclic_native_runtime::command::{Command, Stdio};
 use acyclic_native_runtime::{ProcessTree, run_blocking_io};
 use acyclic_stream::BoxProviderFuture;
 use futures::StreamExt as _;
@@ -18,7 +17,10 @@ use rmcp::{
 use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
-use std::time::Duration;
+use std::{
+    process::{Command, Stdio},
+    time::Duration,
+};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::{FramedRead, FramedWrite};
 
@@ -314,10 +316,7 @@ impl Drop for ProcessOwner {
 }
 
 fn drop_on_worker<T: Send + 'static>(runtime: &tokio::runtime::Handle, value: T) {
-    drop(acyclic_grpc_observability::task::runtime_blocking(
-        runtime,
-        move || drop(value),
-    ));
+    drop(runtime.spawn_blocking(move || drop(value)));
 }
 
 mod requests;
@@ -339,8 +338,3 @@ fn validate_bounds(maximum_bytes: u32, timeout_ms: u32) -> Result<()> {
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(feature = "test-support")]
-mod fuzzing;
-#[cfg(feature = "test-support")]
-pub use fuzzing::check as fuzz_codec;

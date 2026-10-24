@@ -421,13 +421,13 @@ impl LocalMount {
         for (name, workspace, options) in routes {
             let path = destination.join(&name);
             fs::create_dir_all(&path).map_err(display)?;
-            match crate::control_plane::fs_call(workspace.mount(&path, options)).await {
+            match workspace.mount(&path, options).await {
                 Ok(mount) => {
                     mounted.insert(name, mount);
                 }
                 Err(error) => {
                     for mount in mounted.values() {
-                        let _ = crate::control_plane::fs_call(mount.unmount()).await;
+                        let _ = mount.unmount().await;
                     }
                     return Err(display(error));
                 }
@@ -458,7 +458,7 @@ impl LocalMount {
 
     pub(crate) async fn sync(&self) -> Result<(), String> {
         for mount in self.routes.values() {
-            if let Err(error) = crate::control_plane::fs_call(mount.sync()).await {
+            if let Err(error) = mount.sync().await {
                 return Err(mount
                     .take_callback_failure()
                     .map_or_else(|| display(error), |(cause, _work)| display(cause)));
@@ -469,7 +469,7 @@ impl LocalMount {
 
     pub(crate) async fn advance_to_head(&self) -> Result<(), String> {
         for mount in self.routes.values() {
-            if let Err(error) = crate::control_plane::fs_call(mount.advance_to_head()).await {
+            if let Err(error) = mount.advance_to_head().await {
                 return Err(mount
                     .take_callback_failure()
                     .map_or_else(|| display(error), |(cause, _work)| display(cause)));

@@ -266,11 +266,7 @@ pub struct Actors<R, V> {
 }
 impl<R: ActorRuntime, V: Volume> Substrate for Actors<R, V> {
     fn capabilities(&self) -> BTreeSet<String> {
-        BTreeSet::from([
-            "executor".into(),
-            "composer".into(),
-            "filesystem-policy".into(),
-        ])
+        BTreeSet::from(["executor".into(), "composer".into(), "filesystem-policy".into()])
     }
     fn execute(
         &self,
@@ -524,11 +520,7 @@ pub fn fixture_bindings() -> Bindings {
 pub struct InProcess;
 impl Substrate for InProcess {
     fn capabilities(&self) -> BTreeSet<String> {
-        BTreeSet::from([
-            "executor".into(),
-            "composer".into(),
-            "filesystem-policy".into(),
-        ])
+        BTreeSet::from(["executor".into(), "composer".into(), "filesystem-policy".into()])
     }
     fn execute(
         &self,
@@ -576,11 +568,7 @@ impl Substrate for InProcess {
 pub struct Local;
 impl Substrate for Local {
     fn capabilities(&self) -> BTreeSet<String> {
-        BTreeSet::from([
-            "executor".into(),
-            "composer".into(),
-            "filesystem-policy".into(),
-        ])
+        BTreeSet::from(["executor".into(), "composer".into(), "filesystem-policy".into()])
     }
     fn execute(
         &self,

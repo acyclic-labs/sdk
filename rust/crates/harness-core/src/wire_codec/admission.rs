@@ -221,13 +221,6 @@ impl<'a, 'b> Quota<'a, 'b> {
     pub(crate) fn retained(&self) -> u64 {
         self.bytes
     }
-    pub(crate) fn transfer_bytes(&mut self, bytes: u64) -> Result<()> {
-        self.bytes = self
-            .bytes
-            .checked_sub(bytes)
-            .ok_or_else(|| boundary(self.work, Storage, "transfer exceeds custody"))?;
-        Ok(())
-    }
     pub(crate) fn transfer(&mut self) {
         self.bytes = 0;
     }

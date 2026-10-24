@@ -328,7 +328,6 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     work.admit_allocation(box_bytes)?;
                 }
                 let event = SchedulerEvent::Declared {
-                    // Charged above: `admit_allocation` holds the box's bytes and attempt.
                     spec: Box::new(spec),
                 };
                 self.apply_internal(

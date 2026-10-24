@@ -64,7 +64,6 @@ hex.workspace = true
 notify = { workspace = true, optional = true }
 dirs = { workspace = true, optional = true }
 parking_lot.workspace = true
-pin-project-lite = "0.2.17"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -74,7 +73,6 @@ napi-derive = { workspace = true, optional = true }
 prost.workspace = true
 unicode-normalization.workspace = true
 icu_casemap.workspace = true
-imbl = { version = "=7.0.2", default-features = false }
 writeable.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
@@ -121,7 +119,6 @@ wasm-bindgen-futures = { workspace = true, optional = true }
 web-sys = { workspace = true, features = ["Blob", "BlobPropertyBag"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["task-context"] }
 loom = { version = "=0.7.2", optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 cap-primitives = "4.0.3"
@@ -159,7 +156,7 @@ windows = { version = "0.62.2", features = [
 [features]
 session = ["distributed", "acyclic-stream/grpc"]
 test-support = ["acyclic-native-runtime/test-support", "acyclic-stream/test-support", "acyclic-objects?/test-support"]
-fuzzing = ["dep:tempfile"]
+fuzzing = []
 model-checking = ["dep:loom"]
 default = ["local", "memory", "native-watch", "native-mount"]
 local = ["distributed", "acyclic-objects/local", "acyclic-stream/local", "dep:tempfile"]
@@ -173,10 +170,8 @@ typescript = ["dep:tsify", "dep:wasm-bindgen"]
 napi-types = ["dep:napi", "dep:napi-derive"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["local", "test-support"] }
-ctor = { version = "=1.0.13", default-features = false }
-acyclic-test-support = { path = "../test-support", features = ["capture"] }
+acyclic-test-support = { path = "../test-support" }
 acyclic-objects = { version = "=0.2.0", path = "../objects", features = ["local"] }
 loom = "0.7.2"
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }

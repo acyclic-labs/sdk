@@ -42,19 +42,9 @@ impl Drop for Dispatch {
                 let _ = self.provider.inner.publications.interests.notify(key);
             }
             for (path, (records, tail)) in &self.keys.records {
-                let index = self
-                    .provider
-                    .inner
-                    .publications
-                    .follows
-                    .borrow()
-                    .get(path)
-                    .cloned();
+                let index = self.provider.inner.publications.follows.borrow().get(path).cloned();
                 if let Some(index) = index {
-                    index
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .publish(records, *tail);
+                    index.lock().unwrap_or_else(std::sync::PoisonError::into_inner).publish(records, *tail);
                 }
             }
         }
@@ -114,25 +104,14 @@ impl Before {
                     records.1 = after;
                     let mut next = before.unwrap_or(0);
                     while next < after {
-                        let mut batch = provider
-                            .read(ReadRequest {
-                                path: path.clone(),
-                                from: next,
-                                limit: crate::wire::StreamLimit::MaxItems as u32,
-                            })
-                            .await?;
+                        let mut batch = provider.read(ReadRequest { path: path.clone(), from: next, limit: crate::wire::StreamLimit::MaxItems as u32 }).await?;
                         let initial = next;
                         while let Some(record) = batch.next().await {
                             let record = record?;
-                            next = record
-                                .sequence
-                                .checked_add(1)
-                                .ok_or(StreamError::OutOfRange)?;
+                            next = record.sequence.checked_add(1).ok_or(StreamError::OutOfRange)?;
                             records.0.push(record);
                         }
-                        if next <= initial {
-                            return Err(StreamError::Unavailable);
-                        }
+                        if next <= initial { return Err(StreamError::Unavailable); }
                     }
                 }
                 if before.is_none() && after.is_some() {

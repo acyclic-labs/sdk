@@ -281,8 +281,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         task_id: TaskId,
         fence: &crate::scheduler::LeaseFence,
     ) -> Result<(TaskJournalOwner<P>, RuntimeScope)> {
-        // Unbudgeted: the record is read with no `io`.
-        acyclic_fs::in_heap(|| self.journal_owner_record(task_id, fence, None, None)).await
+        self.journal_owner_record(task_id, fence, None, None).await
     }
 
     #[cfg(feature = "filesystem")]
@@ -301,11 +300,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         #[cfg(not(target_arch = "wasm32"))]
         let (admission, mut custody) = match io {
             Some(io) if io.original_native_work().is_some() => {
-                let admission =
-                    crate::conversation::BoundedOperationFuture::new(Some(io), || async {
-                        self.admission(operation, &mut Some(&mut io.history_io()))
-                            .await
-                    })?
+                let admission = self
+                    .admission(operation, &mut Some(&mut io.history_io()))
                     .await?;
                 let custody = io.take_native_custody(
                     std::mem::size_of::<TaskAdmissionRecord>() as u64
@@ -313,14 +309,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 )?;
                 (admission, Some(custody))
             }
-            // The frame is paid for on a standalone `io`, when one is live.
-            _ => (
-                crate::conversation::BoundedOperationFuture::new(io, || async {
-                    self.admission(operation, &mut None).await
-                })?
-                .await?,
-                None,
-            ),
+            _ => (self.admission(operation, &mut None).await?, None),
         };
         #[cfg(target_arch = "wasm32")]
         let admission = self.admission(operation, &mut None).await?;
@@ -430,13 +419,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 )?,
             )?;
         }
-        let admission = Arc::new(admission);
-        self.admissions.remember(&admission);
         let owner = TaskJournalOwner {
             host: self.clone(),
             fence,
             workflow,
-            admission,
+            admission: Arc::new(admission),
             input_agent: declared_agent,
             created,
             read_proof: original,
@@ -444,7 +431,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             invocation_cancellation: None,
             root_binding: std::sync::OnceLock::new(),
             root_choice: std::sync::OnceLock::new(),
-            admission_digest: std::sync::OnceLock::new(),
             root_gate: tokio::sync::Mutex::new(()),
             #[cfg(not(target_arch = "wasm32"))]
             native_custody: custody,

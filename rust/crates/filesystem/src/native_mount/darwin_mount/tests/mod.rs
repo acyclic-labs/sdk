@@ -15,9 +15,6 @@ use bytes::Bytes;
 use std::path::PathBuf;
 use std::process::Command;
 
-#[cfg(feature = "test-support")]
-mod deadline;
-
 unsafe extern "C" {
     fn nfs4_test_read_reply() -> c_int;
     fn nfs4_test_durable_writes() -> c_int;

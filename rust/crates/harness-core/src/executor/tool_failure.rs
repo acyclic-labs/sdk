@@ -5,7 +5,7 @@ use std::fmt::{self, Write as _};
 pub const TOOL_FAILURE_MESSAGE_BYTES: usize = 256;
 
 /// Stable, credential-free category of the error behind a settled tool failure.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ToolErrorClass {
@@ -58,7 +58,7 @@ impl ToolErrorClass {
 
 /// Bounded, sanitized cause of a settled tool failure: enough for the model to act on, while
 /// the raw error stays in the `warn` log.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ToolFailureCause {

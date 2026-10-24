@@ -275,7 +275,7 @@ fn independent_supervisors_concurrently_reclaim_one_crash_left_fence()
     for ordinal in 0..2 {
         let ready = temporary.path().join(format!("ready-{ordinal}"));
         let child = acyclic_native_runtime::ProcessTree::spawn(
-            acyclic_native_runtime::command::Command::new(&executable)
+            std::process::Command::new(&executable)
                 .args([
                     "--exact",
                     "native_mount::tests::destination_reclaim_child_waits_for_external_release",
@@ -522,11 +522,9 @@ fn a_dropped_lock_is_released_while_another_process_shares_its_description()
     let root = tempfile::tempdir()?;
     let path = root.path().join("shared.lock");
     let lock = super::fence::acquire_mount_lock(&path, false)?;
-    let mut child = acyclic_native_runtime::command::Command::new("sleep")
+    let mut child = std::process::Command::new("sleep")
         .arg("30")
-        .stdin(acyclic_native_runtime::command::Stdio::from(
-            lock.try_clone()?,
-        ))
+        .stdin(std::process::Stdio::from(lock.try_clone()?))
         .spawn()?;
     drop(lock);
     let reacquired = super::fence::acquire_existing_mount_lock(&path);

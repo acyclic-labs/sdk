@@ -442,7 +442,6 @@ impl<P: StreamProvider> WorkflowJournal for Journal<P> {
         &self,
         admission: WorkflowAdmission,
     ) -> BoxProviderFuture<'_, Result<WorkflowAdmission>> {
-        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move {
             let retained = self.load().await?.bootstrap.admission;
             if retained != admission {
@@ -462,7 +461,6 @@ impl<P: StreamProvider> WorkflowJournal for Journal<P> {
             ));
         }
         Ok(HistoryContentFuture::Ordinary {
-            // Unbudgeted: a live `io` is refused above.
             future: Box::pin(
                 async move { Ok((Some(self.load().await?.bootstrap.admission), None)) },
             ),
@@ -482,7 +480,6 @@ impl<P: StreamProvider> WorkflowJournal for Journal<P> {
             ));
         }
         Ok(HistoryContentFuture::Ordinary {
-            // Unbudgeted: a live `io` is refused above.
             future: Box::pin(async move {
                 let result = self.replay_records(after, maximum).await?;
                 Ok((result, None))
@@ -497,7 +494,6 @@ impl<P: StreamProvider> WorkflowJournal for Journal<P> {
         key: IdempotencyKey,
         record: WorkflowRecord,
     ) -> BoxProviderFuture<'_, Result<WorkflowRecord>> {
-        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move {
             record.validate(None)?;
             let current = self.load().await?;

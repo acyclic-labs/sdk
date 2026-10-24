@@ -39,7 +39,7 @@ impl PreparedFrame {
                 acyclic_native_runtime::NativeOperationReservation::new(
                     Arc::clone(&work.meter),
                     acyclic_native_runtime::NativeOperationKind::Write,
-                    2,
+                    1,
                 )
             })
             .transpose()?;
@@ -49,15 +49,15 @@ impl PreparedFrame {
                 acyclic_native_runtime::NativeByteReservation::new(
                     Arc::clone(&work.meter),
                     acyclic_native_runtime::NativeOperationKind::Write,
-                    capacity + GROUP_SEAL_BYTES,
+                    capacity,
                 )
             })
             .transpose()?;
         if let Some(work) = &work {
             work.meter.admit_codec(
-                (capacity + GROUP_SEAL_BYTES) as u64,
-                (capacity + GROUP_SEAL_BYTES) as u64,
-                (capacity + GROUP_SEAL_BYTES + 2 * b"acyclic-stream-local-frame-v1\0".len()) as u64,
+                capacity as u64,
+                capacity as u64,
+                (capacity + b"acyclic-stream-local-frame-v1\0".len()) as u64,
             )?;
         }
         Ok(Self {
@@ -137,7 +137,7 @@ impl PreparedFrame {
             let (result, observed) = operation.attempt(|| writer.write(bytes));
             let _ = work.record(observed);
             let actual = result.as_ref().copied().unwrap_or(0);
-            let _ = work.record(transfer.record_partial(actual));
+            let _ = work.record(transfer.record(actual));
             result
         });
         match result {

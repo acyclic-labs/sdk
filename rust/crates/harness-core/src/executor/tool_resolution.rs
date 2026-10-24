@@ -185,23 +185,19 @@ impl StockExecution<'_> {
         hook_context: &mut Vec<ModelMessage>,
     ) -> Result<ExecutionProgress<()>> {
         let span = obs_span!("acyclic.harness.executor.tool_call", step = step);
-        // Boxed: settlement is several KiB, and building it inline would
-        // reserve room for it (and its scoped copy) in this poll frame.
-        let call = crate::conversation::BoundedOperationFuture::new(self.io, || {
-            self.settle_tool_call(
-                journal,
-                operation_id,
-                step,
-                invocation,
-                invocation_index,
-                prior_messages,
-                hook_context,
-            )
-        })?;
+        let call = self.settle_tool_call(
+            journal,
+            operation_id,
+            step,
+            invocation,
+            invocation_index,
+            prior_messages,
+            hook_context,
+        );
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if self.native_work().is_some() {
             return span.scope(call).await;
         }
-        crate::obs::traced_on(self.io, span, || call).await
+        traced(span, call).await
     }
 }

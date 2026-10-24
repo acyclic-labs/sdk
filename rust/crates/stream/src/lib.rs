@@ -82,11 +82,6 @@ pub mod wire_codec;
 pub mod verification;
 #[cfg(all(acyclic_loom, feature = "local"))]
 #[doc(hidden)]
-pub use local::group_model::{
-    group_seals_follow_successful_predecessor_flushes, negative_control_group_seal_overtakes_flush,
-};
-#[cfg(all(acyclic_loom, feature = "local"))]
-#[doc(hidden)]
 pub use local::replay_model::{
     negative_control_acknowledges_an_unflushed_original, replay_and_flush_preserve_durability,
 };
@@ -210,19 +205,3 @@ mod test_trace;
 #[cfg(test)]
 #[path = "lib/path_text_tests.rs"]
 mod path_text_tests;
-
-/// Shared wire property exercises.
-#[cfg(any(test, feature = "test-support"))]
-pub mod test_support;
-
-#[cfg(test)]
-extern crate self as acyclic_stream;
-
-#[cfg(test)]
-mod owner_session_properties;
-
-#[cfg(test)]
-mod owner_checked_session_contract;
-
-#[cfg(test)]
-mod owner_follow_data_contract;

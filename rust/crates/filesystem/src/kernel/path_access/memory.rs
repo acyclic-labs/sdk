@@ -115,10 +115,19 @@ pub(super) fn admit_path_frame(
     accounting: &mut KernelAccounting<'_>,
     bytes: u64,
     observation: &mut FrameObservation<'_>,
-) -> Result<crate::heap_future::KernelFrameReservation, crate::FsError> {
-    let guard = crate::heap_future::FrameLedger::reserve_frame(accounting, bytes)?;
-    observation.admitted(bytes)?;
-    Ok(guard)
+) -> Result<KernelOwnedAllocation, crate::FsError> {
+    let admitted = {
+        let guard = accounting.claim_owned(bytes, u64::from(bytes != 0))?;
+        observation.admitted(bytes).map(|()| guard)
+    };
+    match admitted {
+        Ok(guard) => Ok(guard),
+        Err(error) => {
+            // No box was built: retire only the original admitted claim.
+            release_standalone(accounting, bytes)?;
+            Err(error)
+        }
+    }
 }
 
 pub(super) fn absorb_allocation(
@@ -250,7 +259,7 @@ pub(super) fn standalone_live(
 ) -> Result<Option<u64>, crate::FsError> {
     Ok(accounting
         .standalone_parts()
-        .map(|(allocations, ..)| allocations.live_bytes() - allocations.frame_control_bytes()))
+        .map(|(allocations, ..)| allocations.live_bytes()))
 }
 pub(super) fn cleanup_standalone(
     accounting: &mut KernelAccounting<'_>,
@@ -259,12 +268,8 @@ pub(super) fn cleanup_standalone(
 ) -> Result<(), crate::FsError> {
     if let Some(initial) = initial {
         let live = match accounting {
-            KernelAccounting::Standalone { allocations, .. } => {
-                allocations.live_bytes() - allocations.frame_control_bytes()
-            }
-            KernelAccounting::BorrowedStandalone { allocations, .. } => {
-                allocations.live_bytes() - allocations.frame_control_bytes()
-            }
+            KernelAccounting::Standalone { allocations, .. } => allocations.live_bytes(),
+            KernelAccounting::BorrowedStandalone { allocations, .. } => allocations.live_bytes(),
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { .. } => return Ok(()),
         };

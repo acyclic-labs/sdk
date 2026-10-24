@@ -1,5 +1,6 @@
 #![no_main]
-use acyclic_auth::fuzzing::trust;
+#[path = "../../tests/common/trust.rs"]
+mod trust;
 use acyclic_auth::verify::verify;
 use libfuzzer_sys::fuzz_target;
 

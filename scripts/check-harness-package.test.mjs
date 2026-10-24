@@ -131,7 +131,6 @@ test("packaged Harness tests retain their inventory, logs and failure status on 
   const end = source.indexOf('"$cargo_bin" run --manifest-path', start);
   assert.ok(start >= 0 && end > start);
   const command = source.slice(start, end);
-  assert.doesNotMatch(source, /export RUST_MIN_STACK/);
   assert.ok(command.includes('--all-features --offline'));
   assert.doesNotMatch(command, /--skip|--exclude|--ignored|--no-run|--lib|--tests/);
   mkdirSync(".tools", { recursive: true });
@@ -168,14 +167,4 @@ printf 'completed\\n'
     assert.ok(resolve(root).startsWith(resolve(".tools") + sep));
     rmSync(root, { recursive: true, force: true });
   }
-});
-
-test("SDK runtime and test stacks have no enlargement overrides", () => {
-  const result = spawnSync("git", ["grep", "-n", "-E", "\\.(thread_)?stack_size[[:space:]]*\\(", "--", "*.rs"], { encoding: "utf8" });
-  assert.equal(result.status, 0, result.stderr);
-  const overrides = result.stdout.trim().split("\n").map(line => line.replace(/:\d+:\s*/, ": ").trim()).sort();
-  assert.deepEqual(overrides, [
-    "rust/crates/filesystem/src/native_mount/provider_stack.rs: .stack_size(256 * 1024)",
-    "rust/crates/native-runtime/src/tests/admission.rs: .stack_size(64 * 1024)",
-  ]);
 });

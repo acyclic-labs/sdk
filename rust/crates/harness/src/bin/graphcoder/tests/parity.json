@@ -304,14 +304,14 @@
   {
     "row": "File mention completion preserves at sign and uses fuzzy matching",
     "text": "@sct",
-    "files": {"search/results.json":"{\"query\":\"sct\",\"paths\":[\"source_code_test.rs\"]}"},
+    "files": {"workspace/source_code_test.rs":""},
     "events": [{"key":"Tab"}], "completion": false,
     "expected": "@source_code_test.rs ", "visible": ["@source_code_test.rs"]
   },
   {
     "row": "File completion does not activate inside email addresses",
     "text": "person@example",
-    "files": {"search/results.json":"{\"query\":\"example\",\"paths\":[\"example.rs\"]}"},
+    "files": {"workspace/example.rs":""},
     "events": [], "completion": false,
     "expected": "person@example", "visible": ["person@example"]
   },

@@ -1,5 +1,6 @@
 #![no_main]
 
-use acyclic_harness::test_support::fuzz_cases::file_client as client;
+#[path = "../support/file_client.rs"]
+mod client;
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| client::exercise(bytes));

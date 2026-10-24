@@ -5,7 +5,7 @@ use crate::{Error, Result, model::ModelContentPart};
 use serde::{Deserialize, Serialize};
 
 /// Ordinary configurable threshold compaction; no model-family heuristic.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ThresholdCompaction {
@@ -108,7 +108,7 @@ impl ThresholdCompaction {
 }
 
 /// Selects automatic threshold compaction or the installed context pipeline.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(
     deny_unknown_fields,

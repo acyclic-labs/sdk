@@ -1,4 +1,3 @@
-#![cfg_attr(not(test), deny(clippy::disallowed_methods))]
 #![deny(unsafe_code)]
 #![cfg_attr(
     target_arch = "wasm32",
@@ -51,6 +50,3 @@ pub use wasm::BrowserContentReader;
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use local::{LocalHarness, LocalHarnessConfig};
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod test_capture;

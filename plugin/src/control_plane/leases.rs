@@ -2,8 +2,7 @@
 
 use super::*;
 
-#[derive(Clone, Debug, Serialize, Deserialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct LeaseRecord {
     pub(crate) agent_id: String,
     pub(crate) turn_id: String,
@@ -12,8 +11,7 @@ pub(crate) struct LeaseRecord {
     pub(crate) expires_at_millis: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct RootLeaseRecord {
     pub(crate) root_id: [u8; 16],
     pub(crate) workspace_id: [u8; 16],

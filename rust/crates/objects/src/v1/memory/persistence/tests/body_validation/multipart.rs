@@ -88,18 +88,12 @@ fn prefix_work(prefix: u32, native: bool, rewalk: bool) -> Vec<usize> {
     assert!(inline.unwrap().unwrap().is_empty());
     assert_eq!(reads, 0);
     assert_eq!(allocations, AllocationInfo::default());
-    let bytes = before.object_bytes + before.upload_bytes;
+    let bytes = before.body_bytes;
     drop(before);
     drop(next);
     drop(core);
     let reopened = core_reopen(root.path());
-    assert_eq!(
-        {
-            let state = reopened.lock_state().unwrap();
-            state.object_bytes + state.upload_bytes
-        },
-        bytes
-    );
+    assert_eq!(reopened.lock_state().unwrap().body_bytes, bytes);
     assert_eq!(
         futures::executor::block_on(reopened.list_parts(wire::ListPartsRequest {
             bucket: bucket(),
@@ -201,7 +195,7 @@ proptest! {
             if expected <= 24 {
                 state = next; parts = expected_parts; objects = expected_objects;
             }
-            prop_assert_eq!(state.object_bytes + state.upload_bytes, parts.values().chain(objects.values()).sum::<usize>());
+            prop_assert_eq!(state.body_bytes, parts.values().chain(objects.values()).sum::<usize>());
         }
     }
 }
@@ -209,8 +203,7 @@ proptest! {
 #[test]
 fn dropping_part_accounting_is_rejected_by_the_same_total_oracle() {
     let mut before = State::default();
-    before.upload_bytes = 7;
-    before.nested_entries = 1;
+    before.body_bytes = 7;
     before.uploads.insert(
         "upload".to_owned().into(),
         Upload {
@@ -235,8 +228,7 @@ fn dropping_part_accounting_is_rejected_by_the_same_total_oracle() {
     next.uploads.clear();
     assert_eq!(stored_bytes(&before, &mut next), Some(0));
     assert_ne!(
-        (before.object_bytes + before.upload_bytes),
-        (next.object_bytes + next.upload_bytes),
+        before.body_bytes, next.body_bytes,
         "omitting the removed upload delta preserves the wrong total"
     );
 }
@@ -277,13 +269,7 @@ async fn multipart_quota_is_atomic_across_overwrite_abort_completion_and_reopen(
             ),
             vec![Err(QuotaExceeded)]
         );
-        assert_eq!(
-            {
-                let state = core.lock_state()?;
-                state.object_bytes + state.upload_bytes
-            },
-            8
-        );
+        assert_eq!(core.lock_state()?.body_bytes, 8);
         assert_eq!(fs::read(root.path().join("mutations.log"))?, before);
         core.upload_part(query, OwnedBytes::from_static(b"part"))
             .await?;
@@ -295,13 +281,7 @@ async fn multipart_quota_is_atomic_across_overwrite_abort_completion_and_reopen(
             ),
             vec![Ok(8)]
         );
-        assert_eq!(
-            {
-                let state = core.lock_state()?;
-                state.object_bytes + state.upload_bytes
-            },
-            12
-        );
+        assert_eq!(core.lock_state()?.body_bytes, 12);
         core.abort_multipart(wire::AbortMultipartRequest {
             bucket: bucket(),
             object_key: "upload".into(),
@@ -309,13 +289,7 @@ async fn multipart_quota_is_atomic_across_overwrite_abort_completion_and_reopen(
             ..Default::default()
         })
         .await?;
-        assert_eq!(
-            {
-                let state = core.lock_state()?;
-                state.object_bytes + state.upload_bytes
-            },
-            8
-        );
+        assert_eq!(core.lock_state()?.body_bytes, 8);
         let upload = create_upload(&core);
         let receipt = part(&core, &upload.upload_id, 1);
         core.complete_multipart(wire::CompleteMultipartRequest {
@@ -326,22 +300,10 @@ async fn multipart_quota_is_atomic_across_overwrite_abort_completion_and_reopen(
             ..Default::default()
         })
         .await?;
-        assert_eq!(
-            {
-                let state = core.lock_state()?;
-                state.object_bytes + state.upload_bytes
-            },
-            12
-        );
+        assert_eq!(core.lock_state()?.body_bytes, 12);
         drop(core);
         let reopened = open(root.path().to_path_buf(), limits, None)?;
-        assert_eq!(
-            {
-                let state = reopened.lock_state()?;
-                state.object_bytes + state.upload_bytes
-            },
-            12
-        );
+        assert_eq!(reopened.lock_state()?.body_bytes, 12);
         assert_eq!(
             reopened
                 .get(get(bucket(), "object"), 8)

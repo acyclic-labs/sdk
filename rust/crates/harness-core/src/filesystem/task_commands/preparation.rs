@@ -80,13 +80,10 @@ where
             }
             break 'preparation Arc::new(preparation);
         };
-        // A host that attached its own preparer prepares through it, metered
-        // on the invocation's work like every other decode; only a host
-        // without one falls back to the configured recursive source.
-        let source = if let Some(preparer) = self.fork_preparer.as_ref() {
+        let source = if let Some(preparer) = self.fork_preparer.as_ref().filter(|_| io.is_none()) {
             super::super::RetainedSourceBinding {
                 preparer: Arc::clone(preparer),
-                request: mail::decode_command(preparation.request().payload.clone(), io)?,
+                request: mail::decode_command(preparation.request().payload.clone(), None)?,
             }
         } else {
             self.runtime
@@ -120,7 +117,7 @@ where
             };
         }
         let report = preparer.prepare_for_task(&fork, &preparation, io).await?;
-        ready(Outcome::Succeeded(report.into_inner()), io)
+        ready(Outcome::Succeeded(report), io)
     }
 
     pub(super) async fn admit(

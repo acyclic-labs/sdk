@@ -29,8 +29,7 @@ impl<'a> ScopedFilter<'a> {
     }
     /// Acting identity frozen at the declaring block, unaffected by later appends.
     pub fn subject_id(&self) -> &'a str {
-        self.visible_lineage
-            .checked_sub(1)
+        self.visible_lineage.checked_sub(1)
             .and_then(|index| self.principal.lineage.get(index))
             .map_or(self.principal.id.as_str(), String::as_str)
     }
@@ -132,8 +131,7 @@ impl<'a> Effective<'a> {
                 CaveatKind::Pin(pin) => Some(ScopedPin {
                     declaring_block: index,
                     pin,
-                    subject_id: visible_lineage
-                        .checked_sub(1)
+                    subject_id: visible_lineage.checked_sub(1)
                         .and_then(|index| self.capability.principal.lineage.get(index))
                         .map_or(self.capability.principal.id.as_str(), String::as_str),
                 }),

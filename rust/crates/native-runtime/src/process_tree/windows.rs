@@ -1,9 +1,10 @@
-#[cfg(test)]
-use crate::command::Child;
-use crate::command::Command;
 use std::io;
 use std::io::{Read, Write};
 use std::mem::{size_of, zeroed};
+use std::os::windows::process::CommandExt as _;
+#[cfg(test)]
+use std::process::Child;
+use std::process::Command;
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_BROKEN_PIPE, HANDLE, NTSTATUS, RtlNtStatusToDosError,
 };
@@ -231,10 +232,11 @@ fn spawn_in_job(
         .transpose()?;
     let started = start_in_job(command, meter, tree);
     if started.is_err()
-        && let Some(custodian) = custodian
+        && let Some(mut custodian) = custodian
     {
         // Never started, the tree has no member for the custodian to await.
-        custodian.stop();
+        let _ = custodian.kill();
+        let _ = custodian.wait();
     }
     started
 }
@@ -281,7 +283,7 @@ fn failed_admission(child: &mut Child, guard: &mut Guard, admission: io::Error) 
     let job = guard.terminate();
     let killed = child.kill();
     let cleanup = (|| {
-        let deadline = crate::deadline::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             if child.try_wait()?.is_some() {
                 return job;
@@ -289,13 +291,13 @@ fn failed_admission(child: &mut Child, guard: &mut Guard, admission: io::Error) 
             if let Err(error) = &killed {
                 return Err(io::Error::new(error.kind(), error.to_string()));
             }
-            if crate::deadline::now() >= deadline {
+            if std::time::Instant::now() >= deadline {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "unadmitted child termination is unresolved",
                 ));
             }
-            crate::deadline::sleep(std::time::Duration::from_millis(1));
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     })();
     match cleanup {
@@ -416,7 +418,7 @@ impl Guard {
                 Ok(())
             })?;
         }
-        let deadline = crate::deadline::now() + super::ProcessTree::TERMINATION_TIMEOUT;
+        let deadline = std::time::Instant::now() + super::ProcessTree::TERMINATION_TIMEOUT;
         loop {
             // SAFETY: this plain output structure accepts zero for every field.
             let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
@@ -443,11 +445,11 @@ impl Guard {
             if !self.active {
                 return Ok(());
             }
-            if crate::deadline::now() >= deadline {
+            if std::time::Instant::now() >= deadline {
                 return Err(io::ErrorKind::TimedOut.into());
             }
             super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-                crate::deadline::sleep(super::ProcessTree::TERMINATION_POLL_INTERVAL);
+                std::thread::sleep(super::ProcessTree::TERMINATION_POLL_INTERVAL);
                 Ok(())
             })?;
         }
@@ -497,7 +499,7 @@ fn denied_job_cleanup_retains_child_and_reports_failure() {
             ..Guard::empty(true)
         },
     );
-    let started = crate::deadline::now();
+    let started = std::time::Instant::now();
     let result = tree
         .wait_with_output(
             std::time::Duration::ZERO,

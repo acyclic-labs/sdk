@@ -69,8 +69,7 @@ mod native {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        use tracing::instrument::WithSubscriber as _;
-        TaskHandle(tokio::spawn(future.with_current_subscriber()))
+        TaskHandle(tokio::spawn(future))
     }
 
     /// Runs a blocking closure on Tokio's blocking pool, retaining ownership
@@ -80,9 +79,7 @@ mod native {
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
     {
-        let dispatch = tracing::dispatcher::get_default(Clone::clone);
-        let task =
-            tokio::task::spawn_blocking(move || tracing::dispatcher::with_default(&dispatch, work));
+        let task = tokio::task::spawn_blocking(work);
         async move { task.await.map_err(super::join_error) }
     }
 }

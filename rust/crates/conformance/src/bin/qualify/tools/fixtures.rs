@@ -48,7 +48,7 @@ pub(super) fn fixture(args: &[String]) -> Result<(), Failure> {
 
     if with_fifo {
         let status = acyclic_native_runtime::process_status(
-            acyclic_native_runtime::command::Command::new("mkfifo").arg(root.join("pipe.fifo")),
+            std::process::Command::new("mkfifo").arg(root.join("pipe.fifo")),
             std::time::Duration::from_secs(120),
         )?;
         if !status.success() {

@@ -339,7 +339,7 @@ pub(super) async fn host_child() -> std::result::Result<(), Box<dyn std::error::
 
 #[cfg(feature = "filesystem-local")]
 async fn host_death() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    use acyclic_native_runtime::command::{Command, Stdio};
+    use std::process::{Command, Stdio};
     use std::time::Duration;
     let storage = tempfile::tempdir()?;
     let mut command = Command::new(std::env::current_exe()?);

@@ -152,9 +152,6 @@ impl HistoryIo for HistoryWork {
     fn allocation_attempt(&mut self, bytes: u64) -> Result<()> {
         self.io.allocation_attempt(bytes)
     }
-    fn charge_box(&mut self, bytes: u64) -> Result<crate::charged_box::BoxCharge> {
-        self.io.charge_box(bytes)
-    }
     fn reserve_text(&mut self, values: &mut String, capacity: usize) -> Result<()> {
         let old = values.capacity();
         if capacity <= old {

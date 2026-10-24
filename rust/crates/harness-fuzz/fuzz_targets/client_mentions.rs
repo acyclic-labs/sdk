@@ -2,8 +2,10 @@
 use acyclic_harness::client::CommandResolution;
 use libfuzzer_sys::fuzz_target;
 
-use acyclic_harness::test_support::fuzz_cases::mentions as oracle;
-use acyclic_harness::test_support::fuzz_cases::workspace_media;
+#[path = "../support/mentions.rs"]
+mod oracle;
+#[path = "../support/workspace_media.rs"]
+mod workspace_media;
 
 fuzz_target!(|data: &[u8]| {
     if data.len() > 4096 {

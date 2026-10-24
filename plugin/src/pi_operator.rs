@@ -16,8 +16,7 @@ use acyclic_harness::{
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Copy, Serialize, Deserialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(
     deny_unknown_fields,
     bound(
@@ -47,16 +46,14 @@ pub(crate) struct PiPreparedApproval<
     pub(crate) source_path: S,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PiOperatorDecision {
     Approve,
     Decline,
 }
 
-#[derive(Clone, Serialize, Deserialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiOperatorFileCursor<S = String> {
     pub(crate) operation: S,
@@ -65,8 +62,7 @@ pub(crate) struct PiOperatorFileCursor<S = String> {
     pub(crate) path: S,
     pub(crate) offset: u64,
 }
-#[derive(Clone, Serialize, Deserialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiOperatorFileEvidence {
     pub(crate) path: String,
@@ -74,8 +70,7 @@ pub(crate) struct PiOperatorFileEvidence {
     pub(crate) maximum_bytes: u32,
 }
 
-#[derive(Serialize, Deserialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum PiOperatorBody {
     Inspect {
@@ -155,6 +150,7 @@ impl PiOperatorRequest {
         let decoded = json_from_value_bounded(
             std::borrow::Cow::Borrowed(body_value),
             bounds,
+            0,
             Some(acyclic_harness::wire::ErrorCode::Invalid),
             acyclic_harness::JsonValueSchema::None,
             &mut |charge| operator_decode_charge(charge, work, &mut custody),
@@ -169,6 +165,7 @@ impl PiOperatorRequest {
         let decoded = json_from_value_bounded(
             std::borrow::Cow::Borrowed(scope_value),
             bounds,
+            std::mem::size_of::<Scope>() as u64,
             Some(acyclic_harness::wire::ErrorCode::Invalid),
             acyclic_harness::JsonValueSchema::None,
             &mut |charge| operator_decode_charge(charge, work, &mut custody),
@@ -433,6 +430,42 @@ pub(crate) fn parse_digest(digest: &str) -> Result<[u8; 32]> {
 // Audited closed prepared-approval diagnostic allowance.
 pub(crate) const PREPARED_LABEL_BYTES: u64 = 2468;
 
+/// Audited closed operator DTO quota, including its internally tagged body and adjacent `VolumeOwner` content.
+fn operator_owned_quota(items: u64, input_bytes: u64, scratch: u64) -> Result<u64> {
+    let body_labels_bytes = 266;
+    let diagnostic_static_bytes =
+        4 * (PREPARED_LABEL_BYTES + body_labels_bytes + 2 * u64::from(usize::BITS));
+    let content_slot =
+        std::mem::size_of::<serde::__private229::de::Content<'static>>().max(std::mem::size_of::<(
+            serde::__private229::de::Content<'static>,
+            serde::__private229::de::Content<'static>,
+        )>()) as u64;
+    let maximum_slot = [
+        std::mem::size_of::<acyclic_fs::MaterializationEdit>(),
+        std::mem::size_of::<acyclic_fs::MaterializationPreparationSelection>(),
+        std::mem::size_of::<acyclic_fs::MaterializationPreimage>(),
+        std::mem::size_of::<String>(),
+        std::mem::size_of::<u8>(),
+        // These are the complete dynamic element types of the typed DTO.
+    ]
+    .into_iter()
+    .fold(0, usize::max) as u64;
+    items
+        .checked_mul(10)
+        .and_then(|slots| slots.checked_mul(maximum_slot + 2 * content_slot))
+        .and_then(|slots| {
+            input_bytes
+                .checked_mul(28)
+                .and_then(|strings| slots.checked_add(strings))
+        })
+        .and_then(|owned| owned.checked_add(diagnostic_static_bytes))
+        .and_then(|owned| owned.checked_add(scratch))
+        .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(
+            acyclic_fs::WorkError::Overflow,
+        ))
+        .map_err(acyclic_harness::Error::from)
+}
+
 fn decode_prepared_approval(
     bytes: &[u8],
     work: &NativeMaterializationWork,
@@ -450,6 +483,7 @@ fn decode_prepared_approval(
         std::marker::PhantomData::<PiPreparedApproval>,
         bytes,
         bounds,
+        0,
         Some(acyclic_harness::wire::ErrorCode::Invalid),
         Some(acyclic_harness::JsonValueSchema::None),
         &mut |charge| operator_decode_charge(charge, work, &mut custody),
@@ -489,24 +523,23 @@ fn operator_decode_charge(
 ) -> Result<()> {
     match charge {
         JsonCodecCharge::Admission {
-            maximum_owned_bytes,
+            maximum_owned_bytes: scratch,
             value_shape,
         } => {
-            // The body's internal tag and `VolumeOwner`'s adjacent content
-            // render their labels beside the prepared approval's.
-            const BODY_LABEL_BYTES: u64 = 266;
-            let owned = acyclic_harness::json_typed_diagnostic_owned_bytes(
-                value_shape,
-                PREPARED_LABEL_BYTES + BODY_LABEL_BYTES,
-                Some(acyclic_harness::wire::ErrorCode::Invalid),
-            )?
-            .checked_add(maximum_owned_bytes)
-            .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(
-                acyclic_fs::WorkError::Overflow,
-            ))
-            .map_err(acyclic_harness::Error::from)?;
+            let items = value_shape.lexical_items();
+            let input_bytes = items
+                .checked_mul(64)
+                .and_then(|scalars| scalars.checked_add(value_shape.input_bytes()))
+                .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(
+                    acyclic_fs::WorkError::Overflow,
+                ))
+                .map_err(acyclic_harness::Error::from)?;
             let mut quota = work
-                .claim(owned, 0, acyclic_fs::WorkCounters::UNCHARGED)
+                .claim(
+                    operator_owned_quota(items, input_bytes, scratch)?,
+                    0,
+                    acyclic_fs::WorkCounters::UNCHARGED,
+                )
                 .map_err(acyclic_harness::Error::from)?;
             custody
                 .absorb(&mut quota)

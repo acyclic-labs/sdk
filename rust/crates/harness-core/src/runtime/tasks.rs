@@ -51,7 +51,6 @@ impl<I, O> TaskDefinition<I, O> {
             output_schema: serde_json::json!({}),
             requirements: BTreeSet::new(),
             implementation: TaskImplementation::Live(Arc::new(move |context, input| {
-                // Unbudgeted: a live handler's future is made by the task host, which holds no budget.
                 Box::pin(handler(context, input))
             })),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -263,7 +262,6 @@ impl<I, O> TaskDefinition<I, O> {
         let future = async move { definition.open_session(context, fence, journal, io).await };
         Ok(crate::store::HistoryContentFuture::Ordinary {
             frame_bytes: std::mem::size_of_val(&future) as u64,
-            // Unbudgeted: `preparation_io` is live only with native work, which returned above.
             future: Box::pin(future),
         })
     }

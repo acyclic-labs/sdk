@@ -1,9 +1,10 @@
 use super::*;
-use crate::sync::Arc;
 use crate::sync::{
     Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicU64, Ordering},
 };
+#[cfg(any(test, feature = "native-watch"))]
+use std::sync::Arc;
 
 // Lock order: observer registry (35), source cursors (40), original leaf (50),
 // gate counters (60). Resource allowances follow the leaf, ancestors first.
@@ -46,6 +47,10 @@ impl NativeDemandReadMeter {
     pub(crate) fn with_original_leaf<T>(&self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
         operation(&mut self.lock())
     }
+    #[cfg(any(test, feature = "native-watch"))]
+    pub(crate) fn take_native_io_failure(&self) -> Option<DemandError> {
+        self.lock().take_native_io_failure()
+    }
 }
 
 #[cfg(test)]
@@ -56,66 +61,24 @@ mod lock_probe;
 #[cfg(acyclic_fs_loom)]
 mod model_checking;
 
-#[cfg(all(test, not(acyclic_fs_loom), feature = "native-watch"))]
-mod capture_tests;
-
-#[derive(Clone)]
-#[repr(transparent)]
-pub(crate) struct CaptureCustody(Arc<CaptureTransientCustody>);
-
-impl std::ops::Deref for CaptureCustody {
-    type Target = CaptureTransientCustody;
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl CaptureCustody {
-    #[inline]
-    pub(crate) fn as_ptr(&self) -> *const CaptureTransientCustody {
-        Arc::as_ptr(&self.0)
-    }
-    #[inline]
-    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
-}
-
 pub(crate) struct CaptureTransientCustody {
     retained: AtomicU64,
-    #[cfg(any(test, feature = "native-watch"))]
-    workers: AtomicU64,
-    closed: AtomicBool,
     #[cfg(any(test, feature = "native-watch"))]
     header: crate::NativeAllocation,
 }
 impl CaptureTransientCustody {
     #[cfg(any(test, feature = "native-watch"))]
-    pub(crate) const ALLOCATION_BYTES: u64 =
-        match crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<Self>()) {
-            Ok(bytes) => bytes as u64,
-            Err(_) => panic!("capture custody Arc layout overflow"),
-        };
-
-    pub(crate) fn is_open(&self) -> bool {
-        !self.closed.load(Ordering::Acquire)
-    }
-
-    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn new_native(
         work: &crate::NativeMaterializationWork,
-    ) -> Result<CaptureCustody, crate::NativeTreeMaterializationError> {
-        #[cfg(all(test, not(acyclic_fs_loom), feature = "native-watch"))]
-        let bytes = capture_tests::claimed_bytes();
-        #[cfg(not(all(test, not(acyclic_fs_loom), feature = "native-watch")))]
-        let bytes = Self::ALLOCATION_BYTES;
-        Ok(CaptureCustody(Arc::new(Self {
+    ) -> Result<Arc<Self>, crate::NativeTreeMaterializationError> {
+        Ok(Arc::new(Self {
             retained: AtomicU64::new(0),
-            workers: AtomicU64::new(0),
-            closed: AtomicBool::new(false),
-            header: work.claim(bytes, 1, WorkCounters::UNCHARGED)?,
-        })))
+            header: work.claim(
+                std::mem::size_of::<Self>() as u64,
+                1,
+                WorkCounters::UNCHARGED,
+            )?,
+        }))
     }
     #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn owns_native_work(&self, work: &crate::NativeMaterializationWork) -> bool {
@@ -152,10 +115,6 @@ impl CaptureTransientCustody {
             });
     }
 }
-
-#[cfg(any(test, feature = "native-watch"))]
-#[path = "context/capture_lifetime.rs"]
-mod capture_lifetime;
 
 pub(crate) fn native_demand_error(error: std::io::Error) -> DemandError {
     error

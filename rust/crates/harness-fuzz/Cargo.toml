@@ -15,13 +15,26 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "effect_certificate"
+path = "fuzz_targets/effect_certificate.rs"
+test = false
+doc = false
+bench = false
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_harness_loom)", "cfg(fuzzing)"] }
 
 [features]
 default = ["runtime"]
-runtime = [ "dep:acyclic-harness", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:tempfile", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
+runtime = ["filesystem-local", "native-execution", "dep:acyclic-harness", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:tempfile", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
+# Harness sources included by `#[path]` gate native helpers on these features;
+# the fuzz runtime compiles them as the native harness it depends on does.
+filesystem-access = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem"]
+filesystem-local = []
+native-execution = []
+
+notifications = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]
 
 [dependencies]
 harness-mock-model = { path = "../harness-mock-model" }
@@ -52,6 +65,21 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "search_http_codec"
+path = "fuzz_targets/search_http_codec.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "search_request"
+path = "fuzz_targets/search_request.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "command"
@@ -109,7 +137,21 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "notification_scenario"
+path = "fuzz_targets/notification_scenario.rs"
+required-features = ["notifications"]
+test = false
+doc = false
+bench = false
 
+[[bin]]
+name = "input_paths"
+path = "fuzz_targets/input_paths.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "client_mentions"
@@ -175,7 +217,21 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "e2e_expectations"
+path = "fuzz_targets/e2e_expectations.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
 
+[[bin]]
+name = "task_query_case"
+path = "fuzz_targets/task_query_case.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "client_queries"
@@ -218,17 +274,46 @@ proptest.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+[[bin]]
+name = "swarm_case"
+path = "fuzz_targets/swarm_case.rs"
+test = false
+doc = false
+bench = false
 
+[[bench]]
+name = "memory_directory_page"
+path = "benches/memory_directory_page.rs"
 
 [[bin]]
 name = "memory_directory"
 path = "fuzz_targets/memory_directory.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bounded_json"
+path = "fuzz_targets/bounded_json.rs"
 required-features = ["runtime"]
 test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "wire_frames"
+path = "fuzz_targets/wire_frames.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
 
+[[bin]]
+name = "provider_scenario"
+path = "fuzz_targets/provider_scenario.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "goal_scenario"

@@ -137,11 +137,3 @@ mod retention;
 use retention::native_cache_custody;
 #[cfg(test)]
 mod tests;
-
-#[cfg(all(feature = "test-support", feature = "filesystem"))]
-pub(crate) use directory::fuzz_memory_directory;
-
-#[cfg(all(feature = "test-support", feature = "filesystem"))]
-pub(crate) fn fuzz_path_conflicts(data: &[u8]) {
-    directory::fuzz_path_conflicts(data);
-}

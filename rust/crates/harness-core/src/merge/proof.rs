@@ -1,7 +1,7 @@
 use super::*;
 
 /// Provider-owned metadata proving an immutable merge publication.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderJoinProof {
     /// Provider that owns and verifies this statement.

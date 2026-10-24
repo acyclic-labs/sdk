@@ -11,7 +11,7 @@ cargo-fuzz = true
 syn = { version = "3", features = ["full"] }
 libfuzzer-sys = "0.4"
 prost = "0.14.4"
-acyclic-auth = { path = ".." , features = ["fuzzing"] }
+acyclic-auth = { path = ".." }
 acyclic-auth-wasm = { path = "../../auth-wasm" }
 ed25519-dalek = "=3.0.0"
 
@@ -22,6 +22,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "authorization"
+path = "fuzz_targets/authorization.rs"
+test = false
+doc = false
+bench = false
 
 [workspace]
 

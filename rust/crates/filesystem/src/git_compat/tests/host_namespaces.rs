@@ -7,31 +7,6 @@ fn host_policy() -> GitIgnorePolicy {
     GitIgnorePolicy::parse("!.system/\n").with_host_namespaces([".system"])
 }
 
-#[test]
-fn extending_policy_preserves_both_owners_and_later_rule_precedence() {
-    let first = GitIgnorePolicy::parse("*.tmp\n")
-        .reserving(["private/a"])
-        .with_host_namespaces([".first"]);
-    let later = GitIgnorePolicy::parse("!keep.tmp\n!private/\n!.second/\n")
-        .reserving(["private/b"])
-        .with_host_namespaces([".second"]);
-    let mut extended = first.clone();
-    extended.extend(later.clone());
-    let followed = first.followed_by(&later);
-    assert_eq!(extended, followed);
-    for policy in [extended, followed] {
-        for path in ["private/a", "private/b", ".first/a", ".second/a"] {
-            assert!(policy.reserves(path), "lost ownership of {path}");
-            assert!(!policy.eligible(path, false, false));
-            assert!(!policy.eligible(path, false, true));
-        }
-        assert!(policy.eligible("keep.tmp", false, false));
-        assert!(!policy.eligible("drop.tmp", false, false));
-        assert!(policy.eligible("docs/.second/a", false, false));
-        assert!(policy.eligible("private/c", false, false));
-    }
-}
-
 fn absent(path: &str) -> bool {
     !path.starts_with(".system")
 }

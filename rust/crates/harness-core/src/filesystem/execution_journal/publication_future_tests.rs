@@ -1076,36 +1076,34 @@ fn records_poll_parent(mode: u8, early: bool) -> Result<bool> {
         request_digest: [9; 32],
     };
     let file = runtime.block_on(prepare(&journal, operation, &event, b"payload"))?;
-    crate::obs::capture::sync(|seen| {
-        let construction = obs_span!(INFO, "acyclic.harness.test.construct");
-        let polling = obs_span!(INFO, "acyclic.harness.test.poll");
-        let future: Result<BoxFuture<'_, Result<Value>>> = construction.in_scope(|| {
-            let future = run(
-                &journal,
-                mode,
-                0,
-                (operation, "start", &event),
-                &file,
-                b"payload",
-            )?;
-            if early {
-                Ok(crate::obs::traced_future(
-                    || obs_span!(INFO, "acyclic.harness.test.early"),
-                    || future,
-                )
-                .boxed())
-            } else {
-                Ok(future)
-            }
-        });
-        polling.in_scope(|| runtime.block_on(future?))?;
-        let name = ["append", "append_if_tail", "replay", "load", "stage"][mode as usize];
-        let name = format!("acyclic.harness.journal.{name}");
-        Ok(
-            crate::obs::capture::has(&seen, &name, "parent", "acyclic.harness.test.poll")
-                && crate::obs::capture::has(&seen, &name, "outcome", "ok"),
-        )
-    })
+    let (seen, _capture) = crate::obs::capture::install();
+    let construction = obs_span!(INFO, "acyclic.harness.test.construct");
+    let polling = obs_span!(INFO, "acyclic.harness.test.poll");
+    let future: Result<BoxFuture<'_, Result<Value>>> = construction.in_scope(|| {
+        let future = run(
+            &journal,
+            mode,
+            0,
+            (operation, "start", &event),
+            &file,
+            b"payload",
+        )?;
+        if early {
+            Ok(
+                crate::obs::traced_future(obs_span!(INFO, "acyclic.harness.test.early"), future)
+                    .boxed(),
+            )
+        } else {
+            Ok(future)
+        }
+    });
+    polling.in_scope(|| runtime.block_on(future?))?;
+    let name = ["append", "append_if_tail", "replay", "load", "stage"][mode as usize];
+    let name = format!("acyclic.harness.journal.{name}");
+    Ok(
+        crate::obs::capture::has(&seen, &name, "parent", "acyclic.harness.test.poll")
+            && crate::obs::capture::has(&seen, &name, "outcome", "ok"),
+    )
 }
 
 #[test]

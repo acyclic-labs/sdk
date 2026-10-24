@@ -21,7 +21,7 @@ pub(crate) use native::response_bytes;
 pub(crate) const MAXIMUM_URL_BYTES: usize = 16_384;
 
 /// One absolute HTTP(S) URL. User information and fragments are not accepted.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FetchRequest {
     /// Absolute source URL, at most 16,384 UTF-8 bytes, without user information.
@@ -80,7 +80,7 @@ pub(crate) fn validate_url_text(url: &str, work: crate::NativeWork<'_>) -> Resul
 
 /// Exact UTF-8 response bytes, with original and final source provenance.
 /// Content is not a search excerpt, rendered page, or synthesized fallback.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FetchResponse {
     /// Original requested URL, preserved verbatim for source attribution.

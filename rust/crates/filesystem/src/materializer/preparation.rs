@@ -45,20 +45,6 @@ impl<E: std::error::Error + 'static> std::error::Error for NativeStageUncertaint
 impl<S: MaterializationJournalStore>
     JournaledMaterializer<S, Arc<NativeTreeMaterializationBackend>>
 {
-    /// A journal this store can stage: fenced on the backend's ledger, still
-    /// preparing, and with neither progress nor preimages recorded yet.
-    fn stageable(
-        &self,
-        journal: &MaterializationJournal,
-        work: &NativeMaterializationWork,
-    ) -> bool {
-        work.shares_ledger(self.backend.work())
-            && journal.is_valid_for(journal.plan.operation_id)
-            && journal.phase == MaterializationPhase::Preparing
-            && journal.preparation_progress.is_none()
-            && journal.preimages.is_empty()
-    }
-
     /// Stages through this store's fenced journal and the caller's existing work.
     pub async fn stage_generation<A, O, E, F, Fut>(
         &self,
@@ -85,29 +71,32 @@ impl<S: MaterializationJournalStore>
                 NativeTreeMaterializationError::InvalidLayout,
             ))
         };
-        if !self.stageable(&journal, work) {
+        if !work.shares_ledger(self.backend.work())
+            || !journal.is_valid_for(journal.plan.operation_id)
+            || journal.phase != MaterializationPhase::Preparing
+            || journal.preparation_progress.is_some()
+            || !journal.preimages.is_empty()
+        {
             return Err(invalid());
         }
         let failure = NativeStageUncertainty::new(work)
             .map_err(|error| E::from(MaterializationError::Backend(error)))?;
         let state = super::stage_state::StageState::<_, S::ActionCompletion<'_>>::new(journal);
-        let workspace = generation.workspace();
-        let reader = crate::heap_future::in_heap_claimed(work, || {
-            workspace.checkout(
+        let reader = generation
+            .workspace()
+            .checkout(
                 crate::model::GenerationSelector::Exact(generation.id()),
                 crate::model::CheckoutMode::read_only_pinned(),
                 work,
                 work.cancellation(),
             )
-        })
-        .map_err(|error| E::from(MaterializationError::Backend(error)))?
-        .await
-        .and_then(|checkout| {
-            checkout
-                .into_pinned_reader_with_native_work(work, work.cancellation())
-                .map_err(crate::WorkspaceError::from)
-        })
-        .map_err(E::from)?;
+            .await
+            .and_then(|checkout| {
+                checkout
+                    .into_pinned_reader_with_native_work(work, work.cancellation())
+                    .map_err(crate::WorkspaceError::from)
+            })
+            .map_err(E::from)?;
         let mut control = |phase| {
             use crate::native_mount::NativeMaterializationActionPhase::{Before, Completed};
             let authorized = if phase == Before {
@@ -128,18 +117,10 @@ impl<S: MaterializationJournalStore>
                                     self.check_custody(&journal).map_err(E::from)?;
                                     // Acceptance checks both live tails; the backend
                                     // separately checks the physical allocation.
-                                    crate::heap_future::in_heap_claimed(work, || {
-                                        self.verify_allocation(&journal)
+                                    self.verify_allocation(&journal).await.map_err(E::from)?;
+                                    self.store.prepare_action(journal).await.map_err(|error| {
+                                        E::from(MaterializationError::Store(error))
                                     })
-                                    .map_err(|error| E::from(MaterializationError::Backend(error)))?
-                                    .await
-                                    .map_err(E::from)?;
-                                    crate::heap_future::in_heap_claimed(work, || {
-                                        self.store.prepare_action(journal)
-                                    })
-                                    .map_err(|error| E::from(MaterializationError::Backend(error)))?
-                                    .await
-                                    .map_err(|error| E::from(MaterializationError::Store(error)))
                                 },
                                 invalid,
                             )
@@ -161,21 +142,16 @@ impl<S: MaterializationJournalStore>
                 Ok(())
             }
         };
-        // Erased: the staging's Send proof starts here, not in every caller's.
-        let staged = crate::heap_future::in_heap_claimed(work, || {
-            crate::native_mount::materialize_checkout_host_paths_with_work_guarded(
-                &reader,
-                selections,
-                options,
-                work,
-                &mut control,
-            )
-        })
-        .map_err(|error| E::from(MaterializationError::Backend(error)))?
-        .map_frame(|frame| -> acyclic_stream::BoxProviderFuture<'_, _> { frame });
-        let result = staged.await;
-        // The completion is dropped here, before the outcome is decided.
-        let (journal, _, last) = state.into_inner();
+        let result = crate::native_mount::materialize_checkout_host_paths_with_work_guarded(
+            &reader,
+            selections,
+            options,
+            work,
+            &mut control,
+        )
+        .await;
+        let (journal, completion, last) = state.into_inner();
+        drop(completion);
         match (result, journal, last) {
             (Ok(_), Some(journal), false) => Ok(journal),
             (Err(error), _, true) => Err(E::from(failure.fail(error))),

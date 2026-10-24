@@ -435,11 +435,9 @@ mod tests {
 
     fn run_child(path: &Path, name: &str) -> std::process::Output {
         acyclic_native_runtime::process_output(
-            acyclic_native_runtime::command::Command::new(
-                std::env::current_exe().expect("test binary"),
-            )
-            .args(["--exact", name, "--ignored"])
-            .env("ACYCLIC_TEST_LOG_PATH", path),
+            std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args(["--exact", name, "--ignored"])
+                .env("ACYCLIC_TEST_LOG_PATH", path),
             std::time::Duration::from_secs(10),
             4096,
         )
@@ -452,7 +450,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("directory");
         let path = directory.path().join("service.log");
         assert!(
-            acyclic_native_runtime::command::Command::new("mkfifo")
+            std::process::Command::new("mkfifo")
                 .arg(&path)
                 .status()
                 .expect("mkfifo")

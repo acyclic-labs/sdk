@@ -129,10 +129,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .source_admission(self.task_id(), &mut budget, quota.work())
             .await?;
         quota.adopt(caller_held)?;
-        // Both sides use the one canonical admission identity; a digest over another
-        // encoding of the same record can never match it.
-        if caller.canonical_digest_with_work(quota.work())?
-            != self.admission_digest(quota.work())?
+        if crate::executor::json::canonical_json_digest(
+            &caller,
+            acyclic_stream::MAX_RECORD_BYTES as u64,
+            quota.work(),
+        )? != self.admission.canonical_digest_with_work(quota.work())?
         {
             return Err(crate::store::guarded_boundary(
                 quota.work(),
@@ -220,7 +221,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let mut authorization = ProjectSourceAuthorization {
             owner,
             caller_task: self.task_id(),
-            caller_admission_digest: self.admission_digest(quota.work())?,
+            caller_admission_digest: self.admission.canonical_digest_with_work(quota.work())?,
             caller_fence,
             operation_id,
             source_task,
@@ -288,7 +289,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .map(|io| io as &mut dyn crate::store::HistoryIo);
         self.require_mail_scope(context.scope(), io)?;
         if !context.original_task_binding_matches(self.task_id(), &self.fence)
-            || authorization.caller_admission_digest != self.admission_digest(&mut work)?
+            || authorization.caller_admission_digest
+                != self.admission.canonical_digest_with_work(&mut work)?
         {
             return Err(Error::Unauthorized("project source caller differs".into()));
         }
@@ -365,7 +367,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             cancellation.check().map_err(Error::from)
         };
         check()?;
-        if handle.authorization().caller_admission_digest != self.admission_digest(&mut work)? {
+        if handle.authorization().caller_admission_digest
+            != self.admission.canonical_digest_with_work(&mut work)?
+        {
             return Err(crate::store::guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Unauthorized,

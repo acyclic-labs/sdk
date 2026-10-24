@@ -59,6 +59,3 @@ impl<T> FoldedDirectoryCache<T> {
         drop(previous);
     }
 }
-
-#[cfg(all(test, acyclic_fs_loom))]
-mod model;

@@ -33,10 +33,11 @@ pub use local_owner::{local_owner_mount_options, local_owner_workspace};
 mod allocation;
 mod completion;
 pub(super) mod journal;
+mod journal_allocation;
 mod journal_encoding;
 #[cfg(test)]
 mod journal_properties;
-#[cfg(any(test, fuzzing))]
+#[cfg(test)]
 mod journal_verification;
 mod mounted;
 mod preparation;
@@ -276,7 +277,6 @@ where
                                         cause,
                                         accounting_failure: None,
                                         source_acknowledged: true,
-                                        // Unbudgeted: an error source, boxed only as the work fails, to report it.
                                         publication: Some(Box::new(snapshot)),
                                     },
                                 )?;
@@ -334,7 +334,6 @@ where
         match result {
             Ok(()) => Ok((published, custody)),
             Err(cause) => Err(Error::NativePublication {
-                // Unbudgeted: an error source, boxed only as the work fails, to report it.
                 failure: Box::new(NativeViewPublicationError {
                     cause,
                     published,
@@ -344,10 +343,4 @@ where
             }),
         }
     }
-}
-
-/// Checks journal encoding against the independent verification oracle.
-#[cfg(fuzzing)]
-pub fn fuzz_verify_journal(input: &[u8], measure: impl FnOnce(&mut dyn FnMut()) -> u64) -> bool {
-    journal_verification::verify_decode_with(input, measure)
 }

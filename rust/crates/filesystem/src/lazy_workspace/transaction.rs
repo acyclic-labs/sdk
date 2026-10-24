@@ -39,12 +39,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             let removed = match &lookup.0 {
                 LazyLookup::Source { node, .. } => Some(node.version),
                 _ => {
-                    self.removed_source_version(
-                        &crate::heap_future::metered!(ctx, |ctx| self.state(ctx))?,
-                        path,
-                        ctx,
-                    )
-                    .await?
+                    self.removed_source_version(&self.state(ctx).await?, path, ctx)
+                        .await?
                 }
             };
             self.remove_resolved(path, expected, &lookup.0, removed, ctx)
@@ -86,7 +82,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         };
         let mut prepared = false;
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let state = crate::heap_future::metered!(ctx, |ctx| self.state(ctx))?;
+            let state = self.state(ctx).await?;
             let shadows = if let LazyLookup::Authored {
                 record, metadata, ..
             } = lookup

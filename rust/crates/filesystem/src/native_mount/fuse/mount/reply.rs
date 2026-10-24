@@ -5,7 +5,7 @@ use std::{
     os::{fd::OwnedFd, unix::net::UnixStream},
 };
 
-#[cfg(any(test, feature = "fuzzing"))]
+#[cfg(test)]
 #[path = "reply/check.rs"]
 pub(super) mod check;
 

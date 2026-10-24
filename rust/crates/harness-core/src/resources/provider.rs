@@ -74,17 +74,12 @@ impl ProviderRef {
     }
 }
 
-#[derive(Deserialize, crate::HeapLayout)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProviderRefWire {
     namespace: String,
     family: String,
     version: String,
-}
-
-impl crate::HeapLayout for ProviderRef {
-    const LAYOUT: &'static crate::heap_layout::JsonLayout =
-        <ProviderRefWire as crate::HeapLayout>::LAYOUT;
 }
 
 impl<'de> Deserialize<'de> for ProviderRef {

@@ -245,10 +245,9 @@ impl DarwinMountSession {
             WorkCounters::UNCHARGED,
         )?;
         original.charge(WRITE_WORK)?;
-        session.thread = Some(acyclic_grpc_observability::task::named_thread(
-            std::thread::Builder::new(),
-            move || run_loop((owned.0, owned.1, allocation)),
-        )?);
+        session.thread = Some(
+            std::thread::Builder::new().spawn(move || run_loop((owned.0, owned.1, allocation)))?,
+        );
         let mut packet = retirement.take();
         let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             packet.as_mut().map_or(Ok(()), prepare)

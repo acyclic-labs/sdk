@@ -1,6 +1,7 @@
 #![no_main]
 
-use acyclic_harness_tui::fuzzing::sequences;
+#[path = "../../tests/support/sequences.rs"]
+mod sequences;
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     sequences::exercise(data);

@@ -23,8 +23,7 @@ impl ControlPlane {
             }
             Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
         };
-        #[derive(Deserialize, acyclic_harness::HeapLayout)]
-        #[heap_layout(crate = acyclic_harness)]
+        #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct AuthorConfiguration {
             version: u32,
@@ -209,7 +208,7 @@ impl ControlPlane {
         self.authorize_inspection(caller, &agent)?;
         self.ensure_agent_idle(&agent)?;
         if let Some(mount) = self.mounts.get(&agent) {
-            fs_call(mount.sync()).await.map_err(display)?;
+            mount.sync().await.map_err(display)?;
         }
         let route = self
             .state

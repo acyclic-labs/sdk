@@ -75,23 +75,15 @@ impl PiRootProvider {
             work,
         )?;
         expected.validate(&request.binding)?;
-        let observed;
-        let allocation = if self.observed_allocation(expected, work)? {
-            let creation = expected.roots.get(key).ok_or_else(invalid)?;
-            self.verify_live_binding(key, creation, work).await?;
-            expected
-        } else {
-            let effect = self.effect_id_with_native_work(work)?;
-            observed = self
-                .observe_allocation_with_native_work(
-                    EffectAttemptId::from_bytes(effect.into_bytes()),
-                    work,
-                )
-                .await?
-                .ok_or_else(invalid)?;
-            &observed.0.1
-        };
-        if !same_allocation(expected, allocation) {
+        let effect = self.effect_id_with_native_work(work)?;
+        let allocation = self
+            .observe_allocation_with_native_work(
+                EffectAttemptId::from_bytes(effect.into_bytes()),
+                work,
+            )
+            .await?
+            .ok_or_else(invalid)?;
+        if !same_allocation(expected, &allocation.0.1) {
             return Err(invalid());
         }
         let PiRootIntent::Project { paths, .. } = &request.root else {
@@ -100,6 +92,8 @@ impl PiRootProvider {
         let identity = work.root_identity(Path::new(paths.get(key).ok_or_else(invalid)?))?;
         let expected = acyclic_fs::NativeRootIdentity::from_bytes(
             allocation
+                .0
+                .1
                 .roots
                 .get(key)
                 .ok_or_else(invalid)?

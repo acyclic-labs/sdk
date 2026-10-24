@@ -1,5 +1,4 @@
 use super::*;
-use crate::kernel::allocation::arc_control_bytes;
 
 pub(crate) async fn read_page_with_accounting<S: AsyncObjectStore, F: Format>(
     store: &S,
@@ -14,7 +13,7 @@ pub(crate) async fn read_page_with_accounting<S: AsyncObjectStore, F: Format>(
         return Err(FsError::Cancelled(crate::CancellationError));
     }
     accounting.charge(PAGE_READ)?;
-    let cache_key = DecodedCacheKey::new::<SharedPage<F>>(page, limits);
+    let cache_key = DecodedCacheKey::new::<Page<F>>(page, limits);
     #[cfg(not(target_arch = "wasm32"))]
     let original = accounting.native_work();
     #[cfg(not(target_arch = "wasm32"))]
@@ -28,16 +27,26 @@ pub(crate) async fn read_page_with_accounting<S: AsyncObjectStore, F: Format>(
     if let Some(work) = original {
         work.remaining()?;
     }
-    if let Some((page, allocation)) =
-        cached_page_with_accounting::<S, F>(store, page, limits, accounting)?
-    {
-        return Ok((
-            OwnedPage {
+    let cached = store
+        .decoded_cache_get(cache_key)
+        .map_err(read_store_error)?;
+    if let Some(cached) = cached {
+        let logical_bytes = cached.logical_bytes;
+        let page = cached
+            .value
+            .downcast::<Page<F>>()
+            .map_err(|_| read_store_error(ObjectStoreError::Corrupt))?;
+        let source = OwnedPage {
+            page: PageLease::Shared {
                 page,
-                logical_bytes: 0,
+                logical_bytes,
             },
-            allocation,
-        ));
+            logical_bytes: 0,
+            #[cfg(not(target_arch = "wasm32"))]
+            native_custody: cached.native_custody,
+        };
+        let allocation = accounting.claim_owned(0, 0)?;
+        return Ok((source, allocation));
     }
     let (read, retained) =
         read_cold_object(store, page, limits, accounting, cancellation, data_custody).await?;
@@ -48,33 +57,6 @@ pub(crate) async fn read_page_with_accounting<S: AsyncObjectStore, F: Format>(
         accounting.release_owned(&mut allocation, retained)?;
     }
     admit_decoded_with_accounting(store, cache_key, decoded?, accounting, data_custody)
-}
-
-pub(crate) fn cached_page_with_accounting<S: AsyncObjectStore, F: Format>(
-    store: &S,
-    page: ObjectId,
-    limits: DecodeLimits,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<Option<(PageLease<F>, KernelOwnedAllocation)>, FsError> {
-    accounting.check()?;
-    let cache_key = DecodedCacheKey::new::<SharedPage<F>>(page, limits);
-    let cached = store
-        .decoded_cache_get(cache_key)
-        .map_err(read_store_error)?;
-    if let Some(cached) = cached {
-        let page = cached
-            .value
-            .downcast::<SharedPage<F>>()
-            .map_err(|_| read_store_error(ObjectStoreError::Corrupt))?;
-        let page = PageLease::Shared {
-            page,
-            #[cfg(not(target_arch = "wasm32"))]
-            _native_custody: cached.native_custody,
-        };
-        let allocation = accounting.claim_owned(0, 0)?;
-        return Ok(Some((page, allocation)));
-    }
-    Ok(None)
 }
 
 async fn read_cold_object<S: AsyncObjectStore>(
@@ -88,11 +70,12 @@ async fn read_cold_object<S: AsyncObjectStore>(
     let maximum = limits.maximum_page_object_bytes();
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = accounting.native_work() {
-        let read = crate::heap_future::in_heap_claimed(original, || async {
+        let mut frame = super::batch::batch_in_heap(accounting, |_| async {
             let mut work = crate::AuthorityWork::native(original, cancellation);
             store.read(page, maximum, &mut work).await
-        })?
-        .await;
+        })?;
+        let read = frame.value.as_mut().await;
+        drop(frame);
         return read.map(|read| (read, 0)).map_err(read_store_error);
     }
     let (allocations, work, budget, _) = accounting
@@ -211,164 +194,198 @@ pub(crate) fn admit_decoded_with_accounting<S: AsyncObjectStore, F: Format>(
         }
         return Ok(decoded);
     }
-    let empty = match accounting.claim_owned(0, 0) {
-        Ok(empty) => empty,
-        Err(error) => {
-            let (page, mut allocation) = decoded;
-            let bytes = page.logical_bytes;
-            drop(page);
-            accounting.release_owned(&mut allocation, bytes)?;
-            return Err(error);
-        }
-    };
-    let before = accounting.spent();
-    let standalone = matches!(decoded.1, KernelOwnedAllocation::Standalone);
-    let prepared = prepare_shared_page(decoded, accounting);
-    let completed = (|| {
-        if standalone && let Some(owner) = data_custody {
-            let after = accounting.spent();
-            owner.record_completed_leaf_work(WorkCounters {
-                allocation_operations: after
-                    .allocation_operations
-                    .checked_sub(before.allocation_operations)
-                    .ok_or(WorkError::Overflow)?,
-                bytes_copied: after
-                    .bytes_copied
-                    .checked_sub(before.bytes_copied)
-                    .ok_or(WorkError::Overflow)?,
-                items_examined: after
-                    .items_examined
-                    .checked_sub(before.items_examined)
-                    .ok_or(WorkError::Overflow)?,
-                peak_allocation_bytes: after.peak_allocation_bytes,
-                ..WorkCounters::UNCHARGED
-            })?;
-        }
-        Ok::<_, FsError>(())
-    })();
-    let owned = match (prepared, completed) {
-        (Ok(owned), Ok(())) => owned,
-        (Ok(owned), Err(error)) => {
-            owned.retire(accounting)?;
-            return Err(error);
-        }
-        (Err(error), _) => return Err(error),
-    };
-    admit_shared_page(store, key, owned, empty, accounting)
-}
-
-pub(super) fn admit_shared_page<S: AsyncObjectStore, F: Format>(
-    store: &S,
-    key: DecodedCacheKey,
-    owned: crate::kernel::persistent_point::Owned<SharedPage<F>>,
-    empty: KernelOwnedAllocation,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<(OwnedPage<F>, KernelOwnedAllocation), FsError> {
-    let standalone = matches!(owned.allocation, KernelOwnedAllocation::Standalone);
-    let logical_bytes = owned.value.logical_bytes();
-    let local_bytes = owned.bytes;
     #[cfg(not(target_arch = "wasm32"))]
-    let native_custody = match owned.allocation {
-        KernelOwnedAllocation::NativeOriginal(custody) => Some(Arc::new(custody)),
-        KernelOwnedAllocation::Standalone => None,
-    };
-    let value = DecodedCacheValue {
-        value: Arc::new(owned.value),
-        logical_bytes,
-        #[cfg(not(target_arch = "wasm32"))]
-        native_custody,
-    };
-    let admitted = store.decoded_cache_admit(key, value);
-    let (value, uncached) = match admitted {
-        Ok(DecodedCacheAdmission::Shared(value)) => (value, false),
-        Ok(DecodedCacheAdmission::Uncached(value)) => (value, true),
-        Err(error) => {
-            if standalone {
-                accounting.release_owned(&mut KernelOwnedAllocation::Standalone, local_bytes)?;
-            }
-            return Err(read_store_error(error));
+    if accounting.native_work().is_some() {
+        let mut source = crate::kernel::file_read::ReadOwned {
+            value: decoded.0,
+            custody: decoded.1,
+        };
+        let empty = accounting.claim_owned(0, 0)?;
+        match (&source.custody, &empty) {
+            (
+                KernelOwnedAllocation::NativeOriginal(body),
+                KernelOwnedAllocation::NativeOriginal(current),
+            ) if body.shares_ledger(current) => {}
+            _ => return Err(crate::NativeTreeMaterializationError::InvalidLayout.into()),
         }
-    };
-    #[cfg(not(target_arch = "wasm32"))]
-    let native = value.native_custody.is_some();
-    #[cfg(target_arch = "wasm32")]
-    let native = false;
-    let retained = if standalone && uncached && !native {
-        local_bytes
-    } else {
-        0
-    };
-    if standalone && retained == 0 {
-        accounting.release_owned(&mut KernelOwnedAllocation::Standalone, local_bytes)?;
-    }
-    let page = match value.value.downcast::<SharedPage<F>>() {
-        Ok(page) => page,
-        Err(value) => {
-            drop(value);
-            if retained != 0 {
-                accounting.release_owned(&mut KernelOwnedAllocation::Standalone, retained)?;
-            }
-            return Err(read_store_error(ObjectStoreError::Corrupt));
-        }
-    };
-    Ok((
-        OwnedPage {
-            page: PageLease::Shared {
-                page,
-                #[cfg(not(target_arch = "wasm32"))]
-                _native_custody: value.native_custody,
+        let controls = usize_to_u64(size_of::<Page<F>>())
+            .checked_add(usize_to_u64(size_of::<crate::NativeAllocation>()))
+            .ok_or(WorkError::Overflow)?;
+        let mut control = accounting.claim_owned(controls, 2)?;
+        source.custody.absorb(&mut control)?;
+        let PageLease::Owned(page) = source.value.page else {
+            unreachable!("shared leases return before admission");
+        };
+        let KernelOwnedAllocation::NativeOriginal(custody) = source.custody else {
+            unreachable!("the original page custody was checked before construction");
+        };
+        let value = DecodedCacheValue {
+            value: Arc::new(page),
+            logical_bytes: source.value.logical_bytes,
+            native_custody: Some(Arc::new(custody)),
+        };
+        let original = accounting
+            .native_work()
+            .ok_or(crate::ObjectStoreError::Corrupt)?;
+        original
+            .remaining()
+            .map_err(crate::ObjectStoreError::from)
+            .map_err(read_store_error)?;
+        let value = match store
+            .decoded_cache_admit(key, value)
+            .map_err(read_store_error)?
+        {
+            DecodedCacheAdmission::Shared(value) | DecodedCacheAdmission::Uncached(value) => value,
+        };
+        let page = value
+            .value
+            .downcast::<Page<F>>()
+            .map_err(|_| read_store_error(ObjectStoreError::Corrupt))?;
+        return Ok((
+            OwnedPage {
+                page: PageLease::Shared {
+                    page,
+                    logical_bytes: value.logical_bytes,
+                },
+                logical_bytes: 0,
+                native_custody: value.native_custody,
             },
-            logical_bytes: retained,
-        },
-        empty,
-    ))
-}
-
-fn prepare_shared_page<F: Format>(
-    decoded: (OwnedPage<F>, KernelOwnedAllocation),
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<super::super::persistent_point::Owned<SharedPage<F>>, FsError> {
-    use super::super::persistent_point::Owned;
-    let PageLease::Owned(page) = decoded.0.page else {
-        unreachable!("shared leases return before admission");
+            empty,
+        ));
+    }
+    let (allocations, work, budget, _) = accounting
+        .standalone_parts()
+        .ok_or(crate::ObjectStoreError::Corrupt)?;
+    let decoded = decoded.0;
+    let PageLease::Owned(page) = decoded.page else {
+        return Err(read_store_error(ObjectStoreError::Corrupt));
     };
-    let shared = SharedPage::from_owned(
-        Owned::new(page, decoded.1, decoded.0.logical_bytes),
-        accounting,
-    )?;
-    reserve_shared_controls(shared, accounting)
-}
-
-pub(super) fn reserve_shared_controls<F: Format>(
-    mut shared: crate::kernel::persistent_point::Owned<SharedPage<F>>,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<crate::kernel::persistent_point::Owned<SharedPage<F>>, FsError> {
-    let (controls, operations) = match &shared.allocation {
-        #[cfg(not(target_arch = "wasm32"))]
-        KernelOwnedAllocation::NativeOriginal(_) => (
-            arc_control_bytes::<SharedPage<F>>()?
-                .checked_add(arc_control_bytes::<crate::NativeAllocation>()?)
-                .ok_or(WorkError::Overflow)?,
-            2,
-        ),
-        KernelOwnedAllocation::Standalone => (arc_control_bytes::<SharedPage<F>>()?, 1),
-    };
-    let Some(bytes) = shared.bytes.checked_add(controls) else {
-        shared.retire(accounting)?;
-        return Err(WorkError::Overflow.into());
-    };
-    let mut control = match accounting.claim_owned(controls, operations) {
-        Ok(control) => control,
-        Err(error) => {
-            shared.retire(accounting)?;
-            return Err(error);
-        }
-    };
-    if let Err(error) = shared.allocation.absorb(&mut control) {
-        accounting.release_owned(&mut control, controls)?;
-        shared.retire(accounting)?;
+    let logical_bytes = decoded.logical_bytes;
+    let control_bytes = usize_to_u64(size_of::<Page<F>>());
+    if let Err(error) =
+        claim_read_allocation(control_bytes, 1, allocations, work, budget, data_custody, 0)
+    {
+        drop(page);
+        allocations
+            .release(logical_bytes)
+            .map_err(allocation_error)?;
         return Err(error);
     }
-    shared.bytes = bytes;
-    Ok(shared)
+    if let Some(owner) = data_custody {
+        let local_peak = allocations.live_bytes();
+        if let Err(error) = owner.record_completed_leaf_work(WorkCounters {
+            allocation_operations: 1,
+            peak_allocation_bytes: local_peak,
+            ..WorkCounters::default()
+        }) {
+            drop(page);
+            allocations
+                .release(control_bytes)
+                .map_err(allocation_error)?;
+            allocations
+                .release(logical_bytes)
+                .map_err(allocation_error)?;
+            return Err(error.into());
+        }
+    }
+    let value = DecodedCacheValue {
+        value: Arc::new(page),
+        logical_bytes,
+        #[cfg(not(target_arch = "wasm32"))]
+        native_custody: decoded.native_custody,
+    };
+    match store.decoded_cache_admit(key, value) {
+        Ok(DecodedCacheAdmission::Shared(value)) => {
+            allocations
+                .release(control_bytes)
+                .map_err(allocation_error)?;
+            allocations
+                .release(logical_bytes)
+                .map_err(allocation_error)?;
+            Ok((
+                OwnedPage {
+                    page: PageLease::Shared {
+                        page: value
+                            .value
+                            .downcast::<Page<F>>()
+                            .map_err(|_| read_store_error(ObjectStoreError::Corrupt))?,
+                        logical_bytes: value.logical_bytes,
+                    },
+                    logical_bytes: 0,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    native_custody: value.native_custody,
+                },
+                KernelOwnedAllocation::Standalone,
+            ))
+        }
+        Ok(DecodedCacheAdmission::Uncached(value)) => {
+            let page = match value.value.downcast::<Page<F>>() {
+                Ok(page) => page,
+                Err(value) => {
+                    drop(value);
+                    allocations
+                        .release(control_bytes)
+                        .map_err(allocation_error)?;
+                    allocations
+                        .release(logical_bytes)
+                        .map_err(allocation_error)?;
+                    return Err(read_store_error(ObjectStoreError::Corrupt));
+                }
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            if value.native_custody.is_some() {
+                allocations
+                    .release(control_bytes)
+                    .map_err(allocation_error)?;
+                allocations
+                    .release(logical_bytes)
+                    .map_err(allocation_error)?;
+                return Ok((
+                    OwnedPage {
+                        page: PageLease::Shared {
+                            page,
+                            logical_bytes: value.logical_bytes,
+                        },
+                        logical_bytes: 0,
+                        native_custody: value.native_custody,
+                    },
+                    KernelOwnedAllocation::Standalone,
+                ));
+            }
+            let page = match Arc::try_unwrap(page) {
+                Ok(page) => page,
+                Err(page) => {
+                    drop(page);
+                    allocations
+                        .release(control_bytes)
+                        .map_err(allocation_error)?;
+                    allocations
+                        .release(logical_bytes)
+                        .map_err(allocation_error)?;
+                    return Err(read_store_error(ObjectStoreError::Corrupt));
+                }
+            };
+            allocations
+                .release(control_bytes)
+                .map_err(allocation_error)?;
+            Ok((
+                OwnedPage {
+                    page: PageLease::Owned(page),
+                    logical_bytes,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    native_custody: value.native_custody,
+                },
+                KernelOwnedAllocation::Standalone,
+            ))
+        }
+        Err(error) => {
+            allocations
+                .release(control_bytes)
+                .map_err(allocation_error)?;
+            allocations
+                .release(logical_bytes)
+                .map_err(allocation_error)?;
+            Err(read_store_error(error))
+        }
+    }
 }

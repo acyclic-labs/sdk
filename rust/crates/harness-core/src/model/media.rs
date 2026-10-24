@@ -1,7 +1,7 @@
 use super::*;
 
 /// File policy chosen before dispatch.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum FileProjectionPolicy {
@@ -46,7 +46,7 @@ impl FileProjectionPolicy {
 }
 
 /// Configuration claim bound to original task admission and code.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct NativeConfigurationBinding {
@@ -134,7 +134,7 @@ impl NativeConfigurationBinding {
 }
 
 /// Common image quality intent.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ImageDetail {
@@ -146,7 +146,7 @@ pub enum ImageDetail {
     High,
 }
 /// Requested modality, independent of the stored MIME type.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum NativeMediaIntent {
@@ -176,7 +176,7 @@ pub enum NativeMediaIntent {
     },
 }
 /// Bounded native input contract.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct NativeMediaPolicy {

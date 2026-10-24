@@ -1,6 +1,0 @@
-{
-  "seed":{"plans/a.md":"before\n"},
-  "turns":["done"],
-  "replay":true,
-  "expect":{"wire":[],"files":{"plans/a.md":"before\n"},"results":{}}
-}

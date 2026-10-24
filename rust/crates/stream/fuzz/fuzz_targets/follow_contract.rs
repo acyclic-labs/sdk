@@ -1,6 +1,11 @@
 #![no_main]
 
-use acyclic_stream::test_support::follow_contract as checks;
+mod checks {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../tests/support/follow_contract.rs"
+    ));
+}
 
 libfuzzer_sys::fuzz_target!(|input: &[u8]| {
     // A non-palindromic anchor detects symmetric encoder/decoder corruption.

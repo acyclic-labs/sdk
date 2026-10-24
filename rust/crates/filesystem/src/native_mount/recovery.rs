@@ -304,7 +304,7 @@ impl NativeMountRecoveryOwner {
                 ..Default::default()
             },
         )?;
-        drop(crate::sync::native::spawn(move || {
+        drop(crate::sync::native::thread::Builder::new().spawn(move || {
             retire_recovery(worker);
         })?);
         let mut owner = Self {

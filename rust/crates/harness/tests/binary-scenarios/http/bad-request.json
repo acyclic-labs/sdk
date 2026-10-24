@@ -1,4 +1,0 @@
-{
-  "faults":[{"type":"status","code":400}],
-  "expect":{"exit":1,"result":{"completion":"failed","error":{"$contains":"400"}}}
-}

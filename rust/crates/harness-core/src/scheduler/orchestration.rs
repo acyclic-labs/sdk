@@ -3,7 +3,7 @@ use crate::wire_codec::CodecQuota;
 use physical::{add, push, slots};
 
 /// Planned structured-concurrency result.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum OrchestrationDecision {
     /// Await more observations.
@@ -33,7 +33,7 @@ pub enum OrchestrationDecision {
     },
 }
 /// Encoding of a materialized aggregate.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AssemblyKind {
     /// Preserve named child slots.

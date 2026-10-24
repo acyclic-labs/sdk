@@ -11,7 +11,7 @@ pub(super) struct AuthenticatedAllocation {
     pub(super) reference_files: Vec<FileRef>,
 }
 
-async fn authenticate_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>,
     owner: &Authority,
     request: &ResourcePreparationRequest,
@@ -25,37 +25,106 @@ async fn authenticate_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         owned = PreparationIo::new(request, &CancellationToken::new())?;
         &owned
     };
-    let admitted = admitted_fork(host, request, proof, io)?;
-    let AdmittedFork {
-        fork,
-        maximum,
-        digest,
-        index,
-        journal,
-    } = admitted.into_inner();
-    if !crate::conversation::BoundedOperationFuture::new(Some(io), || {
-        read_claim(host, &journal, &fork, maximum, Some(io))
-    })?
-    .await?
+    request.validate(&mut Some(&mut io.history_io()))?;
+    proof.provider.validate(&mut None)?;
+    proof.resource.validate(&mut None)?;
+    proof.evidence.validate(&mut None)?;
+    if request.provider != host.provider
+        || proof.provider != host.provider
+        || request.creation_grant != capability::FORK_PUBLISH
+        || !request.child.resource_proofs.contains(proof)
     {
+        return Err(Error::Unauthorized(
+            "created access differs from its admitted provider boundary".into(),
+        ));
+    }
+    let maximum = request.maximum_bytes.min(MAX_REPORT_BYTES);
+    #[cfg(not(target_arch = "wasm32"))]
+    let fork = if io.original_native_work().is_some() {
+        bounded_io::retain_decoded(io.value_decode_preparation::<ForkRequest>(
+            &request.payload,
+            crate::wire::ErrorCode::Storage,
+        )?)?
+    } else {
+        decode_fork(&request.payload, maximum, io)?
+    };
+    #[cfg(target_arch = "wasm32")]
+    let fork = decode_fork(&request.payload, maximum, io)?;
+    fork.validate(&mut None)?;
+    let hold;
+    let encoded = io.encode(&fork, maximum, false)?;
+    hold = io.guard_bytes(&encoded)?;
+    let decoded = io.decode(
+        std::marker::PhantomData::<serde_json::Value>,
+        &encoded,
+        crate::wire::ErrorCode::Storage,
+    )?;
+    if decoded.0 != request.payload {
+        return Err(Error::Unauthorized(
+            "fork payload is not the exact admitted request".into(),
+        ));
+    }
+    drop(decoded);
+    let digest = crate::model::hash_bytes(&encoded, Some(io))?;
+    drop(encoded);
+    drop(hold);
+    if request.resources().count() != creation_volumes(&fork).count() {
+        return Err(Error::Unauthorized(
+            "created identities differ from the exact fork allocation".into(),
+        ));
+    }
+    for (volume, resource) in creation_volumes(&fork).zip(request.resources()) {
+        if volume.provider() != &host.provider {
+            return Err(Error::Unauthorized(
+                "created volume belongs to another provider".into(),
+            ));
+        }
+        let workspace = bounded_io::content_workspace(&host.provider, volume, Some(io))?;
+        let held = io.guard_owned(workspace.logical_owned_bytes()?)?;
+        if workspace.as_resource() != resource {
+            return Err(Error::Unauthorized(
+                "created identities differ from the exact fork allocation".into(),
+            ));
+        }
+        drop(workspace);
+        drop(held);
+    }
+    let index = request
+        .resources()
+        .position(|resource| resource == &proof.resource)
+        .ok_or_else(|| Error::Unauthorized("proof does not name a created fork volume".into()))?;
+    let volume = creation_volumes(&fork)
+        .nth(index)
+        .ok_or_else(|| Error::Unauthorized("created allocation index is absent".into()))?;
+    let evidence = allocation_ref(&host.provider, volume, Some(io))?;
+    if evidence.as_resource() != &proof.evidence {
+        return Err(Error::Unauthorized(
+            "proof does not name this protected allocation journal".into(),
+        ));
+    }
+    let journal = preparation_journal(&host.provider, fork.operation_id, Some(io))?;
+    if !read_claim(host, &journal, &fork, maximum, Some(io)).await? {
         return Err(Error::Unauthorized(
             "fork preparation request is not retained".into(),
         ));
     }
-    let report = crate::conversation::BoundedOperationFuture::new(Some(io), || {
-        read_report_boxed(host, &journal, &fork, maximum, Some(io))
-    })?
-    .await?
-    .ok_or_else(|| Error::Unauthorized("fork allocation has no completed report".into()))?;
-    let (seed, canonical_digest, binding) = report_binding(request, report, maximum, io)?;
-    let seed = seed.into_inner();
+    let report = read_report(host, &journal, &fork, maximum, Some(io))
+        .await?
+        .ok_or_else(|| Error::Unauthorized("fork allocation has no completed report".into()))?;
+    let seed = report.into_seed(&mut Some(&mut io.history_io()))?;
+    let hold;
+    let canonical = io.encode(request, request.maximum_bytes, true)?;
+    hold = io.guard_bytes(&canonical)?;
+    let canonical_digest = crate::model::hash_bytes(&canonical, Some(io))?;
+    drop(canonical);
+    drop(hold);
+    let binding = seed_digest(&seed, maximum, Some(io))?;
     let mut selected: Option<AuthenticatedAllocation> = None;
     let mut original_origin = None;
     for (number, volume) in creation_volumes(&fork).enumerate() {
-        let (mut claim, held) = crate::conversation::BoundedOperationFuture::new(Some(io), || {
-            host.read_fork_allocation(&seed, volume, binding, maximum, Some(io))
-        })?
-        .await?;
+        let (mut claim, held) = host
+            .read_fork_allocation(&seed, volume, binding, maximum, Some(io))
+            .await?;
         let origin = claim.task_origin.as_ref().ok_or_else(|| {
             Error::Unauthorized(
                 "raw trusted fork allocations cannot grant created-task access".into(),
@@ -98,14 +167,10 @@ async fn authenticate_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 })?
         };
         let reference = bounded_io::content_workspace(&host.provider, volume, Some(io))?;
-        let workspace = crate::conversation::BoundedOperationFuture::new(Some(io), || {
-            host.open(&reference, Some(io))
-        })?
-        .await?;
-        let prepared = crate::conversation::BoundedOperationFuture::new(Some(io), || {
-            host.generation(&workspace, prepared_generation, Some(io))
-        })?
-        .await?;
+        let workspace = (host).open(&reference, Some(io)).await?;
+        let prepared = (host)
+            .generation(&workspace, prepared_generation, Some(io))
+            .await?;
         let suffix = if volume == &fork.preparation.child_private_volume {
             "scratch"
         } else if Some(volume) == fork.preparation.child_result_volume.as_ref() {
@@ -127,10 +192,9 @@ async fn authenticate_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         io.remaining()?;
         let initial = io
             .sdk(
-                crate::conversation::BoundedOperationFuture::new(Some(io), || {
-                    workspace.operation_generation(key, io, io.cancellation())
-                })?
-                .await,
+                workspace
+                    .operation_generation(key, io, io.cancellation())
+                    .await,
             )?
             .ok_or_else(|| {
                 Error::Unauthorized("original fork allocation operation is missing".into())
@@ -232,138 +296,6 @@ async fn authenticate_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     Ok(selected)
 }
 
-/// The fork this created access names, decoded and checked against the
-/// admitted request. Kept out of the async body so its decode temporaries do
-/// not stay reserved in that poll frame across every later journal read.
-struct AdmittedFork {
-    fork: ForkRequest,
-    maximum: u64,
-    digest: [u8; 32],
-    index: usize,
-    journal: WorkspaceRef,
-}
-
-#[inline(never)]
-fn admitted_fork<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    host: &FilesystemHost<A, O>,
-    request: &ResourcePreparationRequest,
-    proof: &ResourceCreationProofRef,
-    io: &PreparationIo,
-) -> Result<crate::charged_box::ChargedBox<AdmittedFork>> {
-    request.validate(&mut Some(&mut io.history_io()))?;
-    proof.provider.validate(&mut None)?;
-    proof.resource.validate(&mut None)?;
-    proof.evidence.validate(&mut None)?;
-    if request.provider != host.provider
-        || proof.provider != host.provider
-        || request.creation_grant != capability::FORK_PUBLISH
-        || !request.child.resource_proofs.contains(proof)
-    {
-        return Err(Error::Unauthorized(
-            "created access differs from its admitted provider boundary".into(),
-        ));
-    }
-    let maximum = request.maximum_bytes.min(MAX_REPORT_BYTES);
-    #[cfg(not(target_arch = "wasm32"))]
-    let fork = if io.original_native_work().is_some() {
-        bounded_io::retain_decoded(io.value_decode_preparation::<ForkRequest>(
-            &request.payload,
-            crate::wire::ErrorCode::Storage,
-        )?)?
-    } else {
-        decode_fork(&request.payload, maximum, io)?
-    };
-    #[cfg(target_arch = "wasm32")]
-    let fork = decode_fork(&request.payload, maximum, io)?;
-    fork.validate(&mut None)?;
-    let hold;
-    let encoded = io.encode(&fork, maximum, false)?;
-    hold = io.guard_bytes(&encoded)?;
-    let decoded = io.decode(
-        std::marker::PhantomData::<serde_json::Value>,
-        &encoded,
-        crate::wire::ErrorCode::Storage,
-    )?;
-    if decoded.0 != request.payload {
-        return Err(Error::Unauthorized(
-            "fork payload is not the exact admitted request".into(),
-        ));
-    }
-    drop(decoded);
-    let digest = crate::model::hash_bytes(&encoded, Some(io))?;
-    drop(encoded);
-    drop(hold);
-    if request.resources().count() != creation_volumes(&fork).count() {
-        return Err(Error::Unauthorized(
-            "created identities differ from the exact fork allocation".into(),
-        ));
-    }
-    for (volume, resource) in creation_volumes(&fork).zip(request.resources()) {
-        if volume.provider() != &host.provider {
-            return Err(Error::Unauthorized(
-                "created volume belongs to another provider".into(),
-            ));
-        }
-        let workspace = bounded_io::content_workspace(&host.provider, volume, Some(io))?;
-        let held = io.guard_owned(workspace.logical_owned_bytes()?)?;
-        if workspace.as_resource() != resource {
-            return Err(Error::Unauthorized(
-                "created identities differ from the exact fork allocation".into(),
-            ));
-        }
-        drop(workspace);
-        drop(held);
-    }
-    let index = request
-        .resources()
-        .position(|resource| resource == &proof.resource)
-        .ok_or_else(|| Error::Unauthorized("proof does not name a created fork volume".into()))?;
-    let volume = creation_volumes(&fork)
-        .nth(index)
-        .ok_or_else(|| Error::Unauthorized("created allocation index is absent".into()))?;
-    let evidence = allocation_ref(&host.provider, volume, Some(io))?;
-    if evidence.as_resource() != &proof.evidence {
-        return Err(Error::Unauthorized(
-            "proof does not name this protected allocation journal".into(),
-        ));
-    }
-    let journal = preparation_journal(&host.provider, fork.operation_id, Some(io))?;
-    crate::charged_box::ChargedBox::new(
-        Some(io),
-        AdmittedFork {
-            fork,
-            maximum,
-            digest,
-            index,
-            journal,
-        },
-    )
-}
-
-#[inline(never)]
-fn report_binding(
-    request: &ResourcePreparationRequest,
-    report: crate::charged_box::ChargedBox<ForkReport>,
-    maximum: u64,
-    io: &PreparationIo,
-) -> Result<(crate::charged_box::ChargedBox<ForkSeed>, [u8; 32], [u8; 32])> {
-    let seed = report
-        .into_inner()
-        .into_seed(&mut Some(&mut io.history_io()))?;
-    let hold;
-    let canonical = io.encode(request, request.maximum_bytes, true)?;
-    hold = io.guard_bytes(&canonical)?;
-    let canonical_digest = crate::model::hash_bytes(&canonical, Some(io))?;
-    drop(canonical);
-    drop(hold);
-    let binding = seed_digest(&seed, maximum, Some(io))?;
-    Ok((
-        crate::charged_box::ChargedBox::new(Some(io), seed)?,
-        canonical_digest,
-        binding,
-    ))
-}
-
 fn decode_fork(
     payload: &serde_json::Value,
     maximum: u64,
@@ -380,17 +312,4 @@ fn decode_fork(
     drop(bytes);
     drop(hold);
     Ok(request)
-}
-
-#[inline(never)]
-pub(super) fn authenticate<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    host: &'a FilesystemHost<A, O>,
-    owner: &'a Authority,
-    request: &'a ResourcePreparationRequest,
-    proof: &'a ResourceCreationProofRef,
-    io: Option<&'a PreparationIo>,
-) -> Result<crate::conversation::BoundedContentFuture<'a, AuthenticatedAllocation>> {
-    crate::conversation::BoundedContentFuture::new(io, || {
-        authenticate_body(host, owner, request, proof, io)
-    })
 }

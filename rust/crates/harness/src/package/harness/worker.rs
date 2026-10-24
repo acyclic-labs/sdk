@@ -21,52 +21,42 @@ where
     F: Fn() -> Fut + Send + Sync,
     Fut: Future<Output = Result<bool>> + Send,
 {
-    // Every frame below is paid for on the commands' live budget, if any.
-    let io = commands.frame_io();
     let worker = crate::distributed::Worker {
         id: format!("local-{}", crate::identity::fresh_uuid()),
         available: Default::default(),
         labels: Default::default(),
     };
-    let mut attempt = match crate::conversation::BoundedOperationFuture::new(io, || async {
+    let mut attempt = match Box::pin(
         local
             .task_runtime()
             .task_host()
-            .recover_work(task, &mut None)
-            .await
-    })?
+            .recover_work(task, &mut None),
+    )
     .await?
     {
         crate::distributed::WorkPull::Claimed(lease) => Some(
-            crate::conversation::BoundedOperationFuture::new(io, || {
-                local
-                    .task_runtime()
-                    .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
-            })?
-            .await,
+            local
+                .task_runtime()
+                .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
+                .await,
         ),
         crate::distributed::WorkPull::Unresolved { error, .. } => {
-            if crate::conversation::BoundedOperationFuture::new(io, || {
-                local.task_runtime().task_host().outcome(task)
-            })?
-            .await?
-            .is_none()
+            if local
+                .task_runtime()
+                .task_host()
+                .outcome(task)
+                .await?
+                .is_none()
             {
                 return Err(error);
             }
             None
         }
         crate::distributed::WorkPull::Idle => {
-            crate::conversation::BoundedOperationFuture::new(io, || {
-                local.task_runtime().run_operation(
-                    &worker,
-                    task,
-                    commands,
-                    TRANSITIONS_PER_SLICE,
-                    None,
-                )
-            })?
-            .await?
+            local
+                .task_runtime()
+                .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
+                .await?
         }
     };
     loop {
@@ -78,40 +68,28 @@ where
                 crate::filesystem::TaskWorkerOutcome::Yielded { lease },
             )) => {
                 attempt = Some(
-                    crate::conversation::BoundedOperationFuture::new(io, || {
-                        local.task_runtime().resume_task(
-                            lease,
-                            commands,
-                            TRANSITIONS_PER_SLICE,
-                            None,
-                        )
-                    })?
-                    .await,
+                    local
+                        .task_runtime()
+                        .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
+                        .await,
                 );
             }
             Some(crate::filesystem::TaskWorkerAttempt::Progress(
                 crate::filesystem::TaskWorkerOutcome::Suspended { .. },
             )) => {
-                if !crate::conversation::BoundedOperationFuture::new(io, &continue_work)?.await? {
+                if !continue_work().await? {
                     break;
                 }
                 // Only an authenticated wake makes a passive command claimable.
                 // Without one, run_operation returns None and yields control.
-                attempt = crate::conversation::BoundedOperationFuture::new(io, || {
-                    local.task_runtime().run_operation(
-                        &worker,
-                        task,
-                        commands,
-                        TRANSITIONS_PER_SLICE,
-                        None,
-                    )
-                })?
-                .await?;
+                attempt = local
+                    .task_runtime()
+                    .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
+                    .await?;
             }
             _ => break,
         }
     }
-    crate::conversation::BoundedOperationFuture::new(io, || local.refresh_command_task(task))?
-        .await?;
+    local.refresh_command_task(task).await?;
     Ok(())
 }

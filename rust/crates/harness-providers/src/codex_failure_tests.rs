@@ -63,9 +63,7 @@ async fn native_refresh_failure_keeps_its_class_for_every_queued_caller() -> Res
                 assert_eq!(left.code(), right.code(), "{failure:?}");
                 assert_eq!(left.to_string(), right.to_string(), "{failure:?}");
                 // A transport failure is the provider's, so it settles the task instead of stranding it.
-                assert!(
-                    matches!(&right, Error::ModelUnavailable { excerpt, .. } if excerpt.is_empty())
-                );
+                assert!(matches!(&right, Error::ModelUnavailable { excerpt, .. } if excerpt.is_empty()));
                 assert_eq!(transport.1.load(Ordering::SeqCst), 1);
             }
             assert_eq!(

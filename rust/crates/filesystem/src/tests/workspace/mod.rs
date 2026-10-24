@@ -75,8 +75,6 @@ mod access_policy;
 mod change_sets;
 mod projection_policy;
 
-mod content_times;
-
 mod discovery;
 
 mod fork_selection;

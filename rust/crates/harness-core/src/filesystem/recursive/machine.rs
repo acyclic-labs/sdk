@@ -9,7 +9,7 @@ pub struct ForkPreparationMachine {
     schema: Value,
 }
 
-#[derive(Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
 enum State {
     Ready {
@@ -21,19 +21,28 @@ enum State {
         request_digest: [u8; 32],
     },
 }
-#[derive(Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CommandResults {
     commands: [CommandResult; 1],
 }
-#[derive(Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CommandResult {
     operation_id: OperationId,
     value: Outcome<ForkReport>,
 }
-impl PreparationRecord for State {}
+impl PreparationRecord for State {
+    fn maximum_slot_bytes() -> u64 {
+        crate::filesystem::default_tools::recursive_decode_slot_bytes::<Self>()
+            + std::mem::size_of::<CommandResult>() as u64
+    }
+}
 impl PreparationRecord for CommandResults {
+    fn maximum_slot_bytes() -> u64 {
+        crate::filesystem::default_tools::recursive_decode_slot_bytes::<Self>()
+            + std::mem::size_of::<CommandResult>() as u64
+    }
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
         crate::executor::json::JsonValueSchema::ForkPreparationCommandResults
     }

@@ -2,16 +2,14 @@
 
 use super::*;
 
-#[derive(Clone, Debug, Serialize, Deserialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct RouteRoot {
     pub(crate) root_id: [u8; 16],
     pub(crate) repository_workspace_id: [u8; 16],
     pub(crate) published_generation: [u8; 32],
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Route {
     pub(crate) task_binding: PluginTaskBinding,
     pub(crate) agent_id: String,
@@ -24,10 +22,7 @@ pub(crate) struct Route {
     pub(crate) lifecycle: RouteLifecycle,
 }
 
-#[derive(
-    Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout,
-)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum RouteLifecycle {
     #[default]
@@ -37,8 +32,7 @@ pub(crate) enum RouteLifecycle {
     Frozen,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct PendingSpawn {
     pub(crate) task_binding: PluginTaskBinding,
     /// Pi's original user alias is known before admission. Native Codex/Claude
@@ -60,10 +54,7 @@ pub(crate) struct PendingSpawn {
     pub(crate) lifecycle: PendingSpawnLifecycle,
 }
 
-#[derive(
-    Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout,
-)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PendingSpawnLifecycle {
     #[default]

@@ -90,43 +90,6 @@ impl HostRoot {
     ) -> Result<(HostStatReader, W::Allocation), W::Error> {
         read_dir_held(&self.open_dir_held(path, work)?, work)
     }
-    pub(crate) fn same_mount<W: NativeHostWork>(
-        &self,
-        path: &NativePath,
-        work: &mut W,
-    ) -> Result<bool, W::Error> {
-        let directory = match self.open_dir_held(path, work) {
-            Ok(directory) => directory,
-            Err(error) => return Err(error),
-        };
-        if directory_identity(&directory, work)?.device != self.identity.device {
-            return Ok(false);
-        }
-        #[cfg(target_os = "linux")]
-        {
-            // st_dev alone misses bind mounts within the same filesystem.
-            use rustix::fs::{AtFlags, StatxFlags};
-            let mut mount = |directory: &Dir| {
-                work.attempt_io(READ, || {
-                    rustix::fs::statx(
-                        directory,
-                        c"",
-                        AtFlags::EMPTY_PATH | AtFlags::SYMLINK_NOFOLLOW,
-                        StatxFlags::MNT_ID,
-                    )
-                    .map_err(io::Error::from)
-                })
-            };
-            let root = mount(&self.directory)?;
-            let child = mount(&directory)?;
-            if root.stx_mask & StatxFlags::MNT_ID.bits() != 0
-                && child.stx_mask & StatxFlags::MNT_ID.bits() != 0
-            {
-                return Ok(root.stx_mnt_id == child.stx_mnt_id);
-            }
-        }
-        Ok(true)
-    }
     pub(crate) fn stat<W: NativeHostWork>(
         &self,
         path: &NativePath,

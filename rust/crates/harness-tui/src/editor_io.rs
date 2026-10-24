@@ -94,7 +94,7 @@ pub fn edit_external(text: &str, path: &Path, command: Option<&str>) -> io::Resu
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
         drop(file);
-        let status = acyclic_native_runtime::command::Command::new(program)
+        let status = std::process::Command::new(program)
             .args(arguments)
             .arg(path)
             .status()?;

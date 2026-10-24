@@ -1,6 +1,5 @@
 use super::TestResult;
-use super::action_record::Action;
-use acyclic_harness::test_support::ScriptedTurn;
+use acyclic_harness::{task_volume::Control, test_support::ScriptedTurn};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -52,6 +51,16 @@ struct Expected {
     active: Option<Vec<String>>,
     #[serde(default)]
     toolsets: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Action {
+    model: String,
+    request: usize,
+    agent: String,
+    control: Option<Control>,
+    message: Option<String>,
 }
 
 impl Case {

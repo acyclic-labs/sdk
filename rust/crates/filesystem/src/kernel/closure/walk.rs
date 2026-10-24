@@ -1,37 +1,5 @@
 use super::*;
 type PendingPage<N> = (ObjectId, Option<(N, ProofGuard)>, Option<(N, ProofGuard)>);
-
-/// Awaits `$call` in a heap frame `$walker`'s meter paid for first.
-///
-/// The frame's bytes are claimed before its future is built and released
-/// after its box is destroyed, so a refused claim allocates nothing.
-macro_rules! paid {
-    ($walker:expr, |$name:ident| $call:expr) => {{
-        let mut claim = None;
-        let (frame, _) = crate::heap_future::in_heap_admitted(
-            &mut *$walker,
-            |walker, bytes| {
-                claim = Some(
-                    walker
-                        .meter
-                        .owned(|accounting| {
-                            Ok((
-                                (),
-                                accounting.claim_owned(bytes, u64::from(bytes != 0))?,
-                                bytes,
-                            ))
-                        })?
-                        .1,
-                );
-                Ok::<(), crate::FsError>(())
-            },
-            |$name| $call,
-        )?;
-        let output = crate::heap_future::erase(frame).await;
-        drop(claim);
-        output
-    }};
-}
 mod incremental;
 
 pub(crate) struct ProofContext<'a, S> {
@@ -131,7 +99,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                     && root.0.parents.as_slice() == [cached.generation_id]
             });
         if let Some(previous) = previous {
-            let increment = match paid!(self, |walker| walker.prove_increment(&root.0, &previous)) {
+            let increment = match self.prove_increment(&root.0, &previous).await {
                 Err(crate::FsError::Closure(
                     ClosureError::TooManyObjects { .. } | ClosureError::ClosureBytesExceeded { .. },
                 )) => None,
@@ -161,7 +129,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             self.proven_lengths = ProofVec::new(&self.meter);
             self.object_bytes = root_object_bytes;
         }
-        let records = paid!(self, |walker| walker.prove_file_table(root.0.file_table))?;
+        let records = self.prove_file_table(root.0.file_table).await?;
         let file_count = usize_to_u64(records.values.len());
         if file_count > self.limits.maximum_files {
             return Err(ClosureError::TooManyFiles {
@@ -182,8 +150,8 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 .checked_add(bytes)
                 .ok_or(ClosureError::LogicalBytesOverflow)?;
         }
-        paid!(self, |walker| walker
-            .prove_records_and_namespace(root.0.root_file_id, &records))?;
+        self.prove_records_and_namespace(root.0.root_file_id, &records)
+            .await?;
         drop(records);
         let objects = self.take_objects()?;
         let mut root = root;

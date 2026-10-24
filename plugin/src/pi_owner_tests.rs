@@ -416,22 +416,3 @@ fn unix_owner_rejects_public_permissions_links_and_nonregular_files() {
     fs::create_dir(&path).unwrap();
     assert!(PiOwnerConfig::load(directory.path(), Path::new(""), &work()).is_err());
 }
-
-/// A validation record names one publication, caller and owner: none of them
-/// may stand in for another, and the same three always name the same record.
-#[test]
-fn validated_plan_records_never_cross_publications_callers_or_owners() {
-    let owner = PiOwnerConfig::new(&policy(), None, &work()).unwrap();
-    let other_owner = PiOwnerConfig::new(&policy(), None, &work()).unwrap();
-    let plan = blake3::hash(b"published fork plan");
-    let changed = blake3::hash(b"published fork plan, changed");
-    let caller = TaskId::from_bytes([7; 16]);
-    let record = owner.validated_plan_key(&plan, caller);
-    assert_eq!(record, owner.validated_plan_key(&plan, caller));
-    assert_ne!(record, owner.validated_plan_key(&changed, caller));
-    assert_ne!(
-        record,
-        owner.validated_plan_key(&plan, TaskId::from_bytes([8; 16]))
-    );
-    assert_ne!(record, other_owner.validated_plan_key(&plan, caller));
-}

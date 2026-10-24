@@ -90,8 +90,6 @@ pub(crate) fn task_completion<T: Send + 'static>(
         .transpose()?;
     let state = Arc::new(CompletionMutex::new(CompletionState {
         task_pending: true,
-        #[cfg(feature = "test-support")]
-        actor: None,
         result: None,
         panic: None,
         waker: None,

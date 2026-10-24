@@ -14,17 +14,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, LazyLock, Mutex, Weak};
 use std::task::{Context, Poll, Waker};
-pub mod deadline;
 mod sync;
 use sync::Mutex as CompletionMutex;
 
 #[cfg(target_vendor = "apple")]
 mod apple;
-pub mod command;
-#[cfg(any(target_os = "linux", target_vendor = "apple"))]
-mod held_sync;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+mod held_sync;
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 pub use held_sync::sync_descriptor_once;
 pub mod obs;
@@ -121,9 +119,3 @@ use health::{FileHealth, HealthOwner};
 
 #[cfg(test)]
 mod tests;
-
-/// Exercise write-range admission without submitting native I/O.
-#[cfg(feature = "test-support")]
-pub fn check_write_batch(writes: &[OwnedWrite]) -> io::Result<()> {
-    file::validate_write_batch(writes)
-}

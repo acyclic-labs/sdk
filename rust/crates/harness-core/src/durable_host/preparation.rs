@@ -172,7 +172,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             parent_task,
             preparation_task: self.task_id(),
             intended_child: request.child.operation_id,
-            admission_digest: self.admission_digest(quota.work())?,
+            admission_digest: self.admission.canonical_digest_with_work(quota.work())?,
             request_digest,
             creation_fence,
             source_grants,

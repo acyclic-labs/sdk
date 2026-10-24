@@ -108,7 +108,7 @@ pub struct NativeProcessProvider<P, A, O> {
     observer: Option<Arc<NativeProcessObserver>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LaunchReceipt {
     dispatch: EffectDispatch,
@@ -121,14 +121,14 @@ struct LaunchReceipt {
     approval_digest: [u8; 32],
 }
 
-#[derive(Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Receipt {
     Launch(Box<LaunchReceipt>),
     Observed(Box<NativeObservation>),
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NativeObservation {
     effect: EffectObservation,

@@ -154,7 +154,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 return Err(LazyWorkspaceError::StaleIdentity);
             }
             let candidate = checkout.private_candidate(ctx, cancellation(ctx))?;
-            let mut transaction = accounted!(ctx, |work, cancel| async move {
+            let mut transaction = accounted!(ctx, |work, cancel| async {
                 crate::Transaction::for_checkout_candidate(
                     &self.workspace,
                     candidate,

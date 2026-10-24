@@ -150,7 +150,6 @@ impl TaskCommandHost for Commands<'_> {
         command: WorkflowCommand,
         payload: Value,
     ) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
-        // Unbudgeted: the child mailbox host holds no budget; each turn it runs makes its own.
         Box::pin(self.run(context, fence, command, payload, false))
     }
     fn reconcile<'a>(
@@ -160,7 +159,6 @@ impl TaskCommandHost for Commands<'_> {
         command: WorkflowCommand,
         payload: Value,
     ) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
-        // Unbudgeted: the child mailbox host holds no budget; each turn it runs makes its own.
         Box::pin(self.run(context, fence, command, payload, true))
     }
 }

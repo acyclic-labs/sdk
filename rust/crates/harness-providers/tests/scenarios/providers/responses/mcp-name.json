@@ -1,9 +1,5 @@
 {
   "tools":["mcp.docs.search"],
-  "settings":{
-    ".claude.json":"{\"mcpServers\":{\"docs\":{\"command\":\"{{python}}\",\"args\":[\"-u\",\"{{settings}}/docs.py\"],\"required\":true}}}",
-    "docs.py":"import json, sys\nfor line in sys.stdin:\n    request = json.loads(line)\n    if 'id' not in request:\n        continue\n    method = request['method']\n    if method == 'initialize':\n        result = {'protocolVersion': request['params']['protocolVersion'], 'capabilities': {'tools': {}}, 'serverInfo': {'name': 'docs', 'version': '1'}}\n    elif method == 'tools/list':\n        result = {'tools': [{'name': 'search', 'description': 'Search documents', 'inputSchema': {'type': 'object', 'properties': {'query': {'type': 'string'}}, 'required': ['query'], 'additionalProperties': False}}]}\n    elif method == 'tools/call':\n        assert request['params']['name'] == 'search'\n        result = {'content': [], 'structuredContent': request['params']['arguments'], 'isError': False}\n    else:\n        raise RuntimeError(method)\n    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)\n"
-  },
   "responses":[
     [
       "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"functio",
@@ -25,9 +21,9 @@
       {"/tools":[{"type":"function","name":"mcp__docs__search"}]},
       {
         "/tools":[{"type":"function","name":"mcp__docs__search"}],
-        "/input/4":{"type":"function_call","call_id":"call","name":"mcp__docs__search"},
-        "/input/4/arguments":{"$json":{"query":"wren"}},
-        "/input/5":{"type":"function_call_output","call_id":"call","output":{"$json":{"content":[],"structuredContent":{"query":"wren"},"isError":false}}}
+        "/input/2":{"type":"function_call","call_id":"call","name":"mcp__docs__search"},
+        "/input/2/arguments":{"$json":{"query":"wren"}},
+        "/input/3":{"type":"function_call_output","call_id":"call","output":{"$json":{"query":"wren"}}}
       }
     ],
     "events":[

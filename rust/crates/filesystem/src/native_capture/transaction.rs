@@ -92,9 +92,9 @@ pub(super) async fn apply_capture_transaction<A: AsyncAuthorityStore, O: AsyncOb
     let custody = meter
         .capture_origin
         .as_ref()
-        .filter(|custody| custody.is_open())
+        .and_then(std::sync::Weak::upgrade)
         .ok_or(crate::NativeTreeMaterializationError::OriginalWorkPoisoned)?;
-    let allocation = meter.transfer_capture_allocation(bytes, custody)?;
+    let allocation = meter.transfer_capture_allocation(bytes, &custody)?;
     // The existing owned input drops mutation buffers before their allocation guard.
     let input = crate::kernel::Owned::new(
         mutations,

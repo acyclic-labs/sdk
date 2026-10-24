@@ -10,7 +10,7 @@ use crate::{
 mod binding;
 
 /// Pinned instructions, available skills, selected invocations and exact tool schemas.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ContextManifest {
@@ -175,6 +175,7 @@ impl ContextManifest {
                 maximum_items: limits.render_bytes,
                 maximum_depth: 256,
             },
+            limits.render_bytes,
             None,
             None,
             &mut |_| Ok(()),

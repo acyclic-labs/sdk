@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-#[derive(Deserialize, crate::HeapLayout)]
+#[derive(Deserialize)]
 struct ModelSettings {
     model: Option<String>,
     model_provider: Option<String>,
@@ -50,13 +50,3 @@ pub(super) fn parse(bytes: &[u8]) -> Result<Option<String>, String> {
 
 #[cfg(test)]
 mod tests;
-
-/// Exercises the production model selection parser with synthetic input.
-#[cfg(feature = "test-support")]
-pub fn fuzz_check(input: &[u8]) {
-    if let Ok(Some(selection)) = parse(input) {
-        let document = std::collections::BTreeMap::from([("model", selection.as_str())]);
-        let encoded = toml::to_string(&document).unwrap();
-        assert_eq!(parse(encoded.as_bytes()), Ok(Some(selection)));
-    }
-}

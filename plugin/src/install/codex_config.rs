@@ -2,8 +2,7 @@
 
 use super::*;
 
-#[derive(Deserialize, Serialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Deserialize, Serialize)]
 pub(crate) struct CodexPluginOwnership {
     pub(crate) version: u32,
     pub(crate) marketplace_root: PathBuf,

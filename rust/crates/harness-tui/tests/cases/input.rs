@@ -14,7 +14,8 @@ mod native;
 mod properties;
 #[path = "../input/render.rs"]
 mod render;
-use acyclic_harness_tui::fuzzing::input_sequences as sequences;
+#[path = "../support/input_sequences.rs"]
+mod sequences;
 
 #[test]
 fn input_regression_corpus() {

@@ -210,24 +210,10 @@ where
         let checkout = self
             .checkout(options.data_selector()?, mode, &work, cancellation)
             .await?;
-        let source = crate::heap_future::in_heap_claimed(&work, || {
-            AdmittedRoot::admit(&options, self, checkout.generation_id(), &work)
-        })?
-        .await?
-        .checkout_source(checkout, &work)
-        .await?;
-        self.start_mount(source, (destination, destination_custody), &options, &work)
-    }
-
-    #[inline(never)]
-    fn start_mount(
-        &self,
-        source: Arc<CheckoutMountSource<A, O>>,
-        destination: (PathBuf, NativeAllocation),
-        options: &MountOptions,
-        work: &NativeMaterializationWork,
-    ) -> Result<Mount<A, O>, MountLifecycleError> {
-        let (destination, destination_custody) = destination;
+        let source = AdmittedRoot::admit(&options, self, checkout.generation_id(), &work)
+            .await?
+            .checkout_source(checkout, &work)
+            .await?;
         let session_destination = work.path(&destination, None)?;
         let prepared =
             super::super::prepare_native_mount_start(&work).map_err(NativeMountError::from)?;

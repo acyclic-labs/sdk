@@ -14,8 +14,7 @@ where
         responder: &Scope,
     ) -> Result<()> {
         let span = obs_span!(INFO, "acyclic.harness.journal.resolve_interaction");
-        // Unbudgeted: this method takes no budget, and none is live at its call.
-        traced(span, || async {
+        traced(span, async {
             let host = self.interactions()?;
             host.verify_responder_scope(id, responder, None)?;
             if let Some((owner, _)) = &self.owner {
@@ -106,7 +105,6 @@ where
                 } => (InteractionOutcome::Declined {}, Some(staged)),
                 _ => (
                     InteractionOutcome::Answered {
-                        // Unbudgeted: the answer is staged with no `io`.
                         answer: Box::new(staged),
                     },
                     None,

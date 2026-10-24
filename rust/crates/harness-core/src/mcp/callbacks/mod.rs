@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 /// Immutable opt-in policy; bind this with the server/catalog revision.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(deny_unknown_fields)]
 pub struct McpCallbackPolicy {
@@ -62,7 +62,7 @@ impl McpCallbackPolicy {
 }
 
 /// Exact callback request retained in the execution journal.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(deny_unknown_fields)]
 pub struct McpCallbackRequest {

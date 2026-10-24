@@ -3,7 +3,8 @@
 use acyclic_harness_tui::term::Multiplexer;
 use libfuzzer_sys::fuzz_target;
 
-use acyclic_harness_tui::fuzzing::negotiation;
+#[path = "../../tests/support/negotiation.rs"]
+mod negotiation;
 
 fuzz_target!(|data: &[u8]| {
     let mux = if data.first().copied().unwrap_or_default() & 1 == 0 {

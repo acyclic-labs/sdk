@@ -32,9 +32,7 @@ async fn overlapped_sparse_control_finishes_before_native_writes()
             Some(meter),
         )
         .map_err(|error| receipt.runtime_error(error))?;
-    control
-        .await
-        .map_err(|error| receipt.runtime_error(error))?;
+    control.await.map_err(|error| receipt.runtime_error(error))?;
     let meter = receipt.custody.work().runtime_meter();
     let resize = native
         .set_len_async(1024 * 1024, Some(meter))

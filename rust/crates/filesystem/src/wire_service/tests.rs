@@ -1,6 +1,6 @@
 use super::*;
-use acyclic_fs_wire::wire::filesystem::v2::filesystem_service_server::FilesystemService as _;
 use futures::StreamExt;
+use acyclic_fs_wire::wire::filesystem::v2::filesystem_service_server::FilesystemService as _;
 
 include!("access_tests.rs");
 #[path = "metadata_tests.rs"]

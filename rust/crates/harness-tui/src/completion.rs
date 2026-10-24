@@ -295,7 +295,6 @@ pub struct CompletionMenu {
     /// Selected row, wrapping during navigation.
     pub selected: usize,
     dismissed: Option<CompletionRequest>,
-    search_progress: Option<files::Progress>,
 }
 
 impl CompletionMenu {
@@ -390,11 +389,7 @@ impl CompletionMenu {
             .request
             .as_ref()
             .zip(request.as_ref())
-            .is_some_and(|(old, new)| {
-                old.kind != CompletionKind::Mention
-                    && old.kind == new.kind
-                    && new.query.starts_with(&old.query)
-            });
+            .is_some_and(|(old, new)| old.kind == new.kind && new.query.starts_with(&old.query));
         self.request = request;
         self.selected = 0;
         if narrower {
@@ -407,12 +402,6 @@ impl CompletionMenu {
             let entries: Vec<_> = self
                 .files
                 .iter()
-                .filter(|(path, _)| {
-                    self.request.as_ref().is_none_or(|request| {
-                        request.kind != CompletionKind::Mention
-                            || path.as_str() == "search/results.json"
-                    })
-                })
                 .flat_map(|(_, (order, entries))| {
                     entries
                         .iter()
@@ -427,13 +416,6 @@ impl CompletionMenu {
     }
 
     fn rank_entry(&mut self, order: u64, index: usize, entry: &Entry) {
-        if entry.query.as_ref().is_some_and(|query| {
-            self.request
-                .as_ref()
-                .is_none_or(|request| &request.query != query)
-        }) {
-            return;
-        }
         if self.request.as_ref().is_some_and(|r| r.kind == entry.kind) {
             self.rank(order, index, entry.item.clone());
         }
@@ -473,38 +455,12 @@ impl CompletionMenu {
 
     /// Whether results still belong to the current editor version.
     pub fn active(&self, editor: &Editor) -> bool {
-        (!self.items.is_empty() || self.indexing().is_some() || self.unavailable_entries() != 0)
+        !self.items.is_empty()
             && self.request.is_some()
             && self
                 .version
                 .as_ref()
                 .is_some_and(|old| same_version(old, &editor.completion_version()))
-    }
-
-    /// Remaining directory work from the followed index progress file. An
-    /// incomplete walk keeps an empty popup visible instead of claiming absence.
-    pub fn indexing(&self) -> Option<usize> {
-        self.request
-            .as_ref()
-            .zip(self.search_progress.as_ref())
-            .filter(|(request, progress)| {
-                request.kind == CompletionKind::Mention
-                    && request.query == progress.query
-                    && !progress.complete
-            })
-            .map(|(_, progress)| progress.pending_dirs)
-    }
-
-    /// Entries unavailable to the completed or ongoing pathname traversal.
-    /// A nonzero count keeps an empty partial-result popup visible.
-    pub fn unavailable_entries(&self) -> usize {
-        self.request
-            .as_ref()
-            .zip(self.search_progress.as_ref())
-            .filter(|(request, progress)| {
-                request.kind == CompletionKind::Mention && request.query == progress.query
-            })
-            .map_or(0, |(_, progress)| progress.unavailable_entries)
     }
 
     /// Cycle candidates in either direction.
@@ -618,5 +574,3 @@ fn scan_until(text: &str, mut stop: impl FnMut(char) -> bool, work: &mut usize) 
 
 #[cfg(test)]
 mod incremental_tests;
-mod streaming;
-pub use streaming::{PATH_RESULT_COUNT, PathMatches};

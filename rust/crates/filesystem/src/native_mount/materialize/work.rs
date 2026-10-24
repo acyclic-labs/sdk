@@ -8,21 +8,15 @@ pub(crate) enum NativeMaterializationActionPhase {
 }
 
 pub(super) async fn generation_action<E, F, Fut>(
-    work: &crate::NativeMaterializationWork,
     control: &mut Option<&mut F>,
     phase: NativeMaterializationActionPhase,
 ) -> Result<(), E>
 where
     F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
-    E: From<MaterializeError>,
 {
     if let Some(control) = control {
-        // Boxed and claimed on the operation's ledger: the callback's poll
-        // frame is not reserved in this one.
-        crate::heap_future::in_heap_claimed(work, || control(phase))
-            .map_err(MaterializeError::from)?
-            .await?;
+        control(phase).await?;
     }
     Ok(())
 }

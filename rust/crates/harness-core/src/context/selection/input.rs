@@ -1,7 +1,7 @@
 use super::*;
 
 /// A pinned input; a file reference conveys no read authority.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ContextSourceValue {
@@ -19,7 +19,7 @@ pub enum ContextSourceValue {
 }
 
 /// A declared representation; summary creation remains an admitted model operation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ContextRepresentation {
@@ -32,7 +32,7 @@ pub enum ContextRepresentation {
 }
 
 /// Explicit bounded selection from a pinned source.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ContextExtent {
@@ -48,7 +48,7 @@ pub enum ContextExtent {
 }
 
 /// Host-approved selection and representation. Model suggestions need host policy approval.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ContextSelection {

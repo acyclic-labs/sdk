@@ -8,7 +8,7 @@ pub(crate) fn copy_seed(source: &ForkSeed, quota: &mut CodecQuota<'_, '_>) -> Re
     })
 }
 /// Immutable, validated child environment published by the parent aggregate.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ForkSeed {
     /// Stable publication identity.

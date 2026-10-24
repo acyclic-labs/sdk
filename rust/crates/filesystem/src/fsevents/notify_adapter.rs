@@ -166,7 +166,7 @@ impl FsEventsWatcher {
 impl Watcher for FsEventsWatcher {
     fn new<F: EventHandler>(event_handler: F, _config: Config) -> notify::Result<Self> {
         // Resolved now, so a watcher that cannot run fails where it is made.
-        EventStream::initialize_services().map_err(notify_error)?;
+        EventStream::initialize_services()?;
         Ok(Self {
             handler: Arc::new(Mutex::new(event_handler)),
             paths: Vec::new(),

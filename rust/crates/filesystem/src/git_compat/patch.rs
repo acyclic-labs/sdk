@@ -40,13 +40,12 @@ pub async fn apply_git_patch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     idempotency_key: IdempotencyKey,
     permit: crate::PublicationPermit,
 ) -> Result<TransactionCommit<A, O>, GitPatchError> {
-    let cancellation = CancellationToken::new();
-    // Unmetered: a git patch runs on unbounded budgets and holds no work
-    // ledger. Each step runs in its own heap frame, so this frame holds none.
-    if let Some(generation) =
-        crate::heap_future::erase(crate::heap_future::in_heap_unmetered(|| {
-            workspace.operation_generation(idempotency_key, WorkBudget::UNBOUNDED, &cancellation)
-        }))
+    if let Some(generation) = workspace
+        .operation_generation(
+            idempotency_key,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?
@@ -54,105 +53,93 @@ pub async fn apply_git_patch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         return Ok(TransactionCommit::AlreadyCommitted(generation));
     }
     let patches = parse_unified_patch(patch)?;
-    // Unmetered: as above.
-    let head = crate::heap_future::erase(crate::heap_future::in_heap_unmetered(|| {
-        workspace.head(WorkBudget::UNBOUNDED, &cancellation)
-    }))
-    .await
-    .map(|receipt| receipt.value)
-    .map_err(|failure| failure.error)?;
-    // Unmetered: as above.
-    let mut transaction = crate::heap_future::erase(crate::heap_future::in_heap_unmetered(|| {
-        workspace.begin_transaction(idempotency_key, WorkBudget::UNBOUNDED, &cancellation)
-    }))
-    .await
-    .map(|receipt| receipt.value)
-    .map_err(|failure| failure.error)?;
+    let head = workspace
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)?;
+    let mut transaction = workspace
+        .begin_transaction(
+            idempotency_key,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)?;
     for patch in patches {
-        // Unmetered: as above.
-        crate::heap_future::erase(crate::heap_future::in_heap_unmetered(|| {
-            apply_file_patch(&head, &mut transaction, patch, &cancellation)
-        }))
-        .await?;
-    }
-    // Unmetered: as above.
-    crate::heap_future::erase(crate::heap_future::in_heap_unmetered(|| {
-        transaction.commit(None, permit, WorkBudget::UNBOUNDED, &cancellation, |_| {
-            std::future::ready(Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
-                crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                },
-            ))
-        })
-    }))
-    .await
-    .map(|receipt| receipt.value)
-    .map_err(|failure| failure.error)
-    .map_err(Into::into)
-}
-
-async fn apply_file_patch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    head: &crate::Generation<A, O>,
-    transaction: &mut crate::Transaction<A, O>,
-    patch: UnifiedPatch,
-    cancellation: &CancellationToken,
-) -> Result<(), GitPatchError> {
-    let path = patch
-        .new_path
-        .as_ref()
-        .or(patch.old_path.as_ref())
-        .ok_or_else(|| GitPatchError::Invalid("patch has no path".to_owned()))?;
-    let absolute = format!("/{path}");
-    let original = if patch.old_path.is_none() {
-        String::new()
-    } else {
-        // Unmetered: as in `apply_git_patch`.
-        let bytes = crate::heap_future::erase(crate::heap_future::in_heap_unmetered(|| {
-            head.read(
-                &absolute,
-                MAXIMUM_PATCH_FILE_BYTES,
-                WorkBudget::UNBOUNDED,
-                cancellation,
-            )
-        }))
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-        String::from_utf8(bytes.to_vec()).map_err(|_| GitPatchError::NonText)?
-    };
-    let replacement = apply_unified_hunks(path, &original, &patch.hunks)?;
-    if patch.new_path.is_none() {
-        if !replacement.is_empty() {
-            return Err(GitPatchError::Invalid(
-                "deleted-file patch leaves content".to_owned(),
-            ));
+        let path = patch
+            .new_path
+            .as_ref()
+            .or(patch.old_path.as_ref())
+            .ok_or_else(|| GitPatchError::Invalid("patch has no path".to_owned()))?;
+        let original = if patch.old_path.is_none() {
+            String::new()
+        } else {
+            let bytes = head
+                .read(
+                    &format!("/{path}"),
+                    MAXIMUM_PATCH_FILE_BYTES,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?;
+            String::from_utf8(bytes.to_vec()).map_err(|_| GitPatchError::NonText)?
+        };
+        let replacement = apply_unified_hunks(path, &original, &patch.hunks)?;
+        if patch.new_path.is_none() {
+            if !replacement.is_empty() {
+                return Err(GitPatchError::Invalid(
+                    "deleted-file patch leaves content".to_owned(),
+                ));
+            }
+            transaction
+                .remove(
+                    &format!("/{path}"),
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?;
+            continue;
         }
-        // Unmetered: as in `apply_git_patch`.
-        crate::heap_future::erase(crate::heap_future::in_heap_unmetered(|| {
-            transaction.remove(&absolute, WorkBudget::UNBOUNDED, cancellation)
-        }))
+        if let Some((parent, _)) = path.rsplit_once('/') {
+            transaction
+                .create_dir_all(
+                    &format!("/{parent}"),
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?;
+        }
+        transaction
+            .write_text(&format!("/{path}"), &replacement)
+            .await?;
+    }
+    transaction
+        .commit(
+            None,
+            permit,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+            |_| {
+                std::future::ready(Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                    crate::OperationReceipt {
+                        value: (),
+                        work: crate::WorkCounters::UNCHARGED,
+                    },
+                ))
+            },
+        )
         .await
         .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-        return Ok(());
-    }
-    if let Some((parent, _)) = path.rsplit_once('/') {
-        let parent = format!("/{parent}");
-        // Unmetered: as in `apply_git_patch`.
-        crate::heap_future::erase(crate::heap_future::in_heap_unmetered(|| {
-            transaction.create_dir_all(&parent, WorkBudget::UNBOUNDED, cancellation)
-        }))
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    }
-    // Unmetered: as in `apply_git_patch`.
-    crate::heap_future::erase(crate::heap_future::in_heap_unmetered(|| {
-        transaction.write_text(&absolute, &replacement)
-    }))
-    .await?;
-    Ok(())
+        .map_err(|failure| failure.error)
+        .map_err(Into::into)
 }
 
 #[allow(

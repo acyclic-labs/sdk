@@ -82,7 +82,7 @@ async fn history(runtime_owned: bool, only_session: bool, join_shutdown: bool) -
     let request = commands.next_request().await?;
     if join_shutdown {
         let (closing, closed) = futures::channel::oneshot::channel();
-        let presentation = || async move {
+        let presentation = async move {
             boundary.await.unwrap();
             closing.send(()).unwrap();
             Ok::<(), Error>(())

@@ -58,6 +58,18 @@ pub(in crate::fork) fn decode_fork_manifest(
             "attachment manifest exceeds finite codec allowance".into(),
         ));
     }
+    let schema_bytes = (bytes.len() as u64)
+        .max(8)
+        .checked_mul(2)
+        .and_then(|count| {
+            count.checked_mul(
+                (std::mem::size_of::<crate::conversation::Attachment>()
+                    + std::mem::size_of::<String>()
+                    + 1) as u64,
+            )
+        })
+        .ok_or_else(|| Error::Invalid("attachment manifest schema storage overflows".into()))?;
+    owned.retain(schema_bytes)?;
     let diagnostic_bytes = crate::executor::json::audited_serde_diagnostic_bytes(
         bytes.len() as u64,
         crate::executor::json::preparation_serde_diagnostic_label_bytes(),
@@ -72,15 +84,12 @@ pub(in crate::fork) fn decode_fork_manifest(
             std::marker::PhantomData,
             bytes,
             bounds,
+            schema_bytes,
             None,
             None,
             &mut |charge| match charge {
-                crate::executor::json::JsonCodecCharge::Admission {
-                    maximum_owned_bytes,
-                    ..
-                } => owned
-                    .retain(maximum_owned_bytes)
-                    .and_then(|()| owned.retain(diagnostic_bytes))
+                crate::executor::json::JsonCodecCharge::Admission { .. } => owned
+                    .retain(diagnostic_bytes)
                     .and_then(|()| owned.checkpoint()),
                 _ => owned.observer()?.codec_charge(charge),
             },

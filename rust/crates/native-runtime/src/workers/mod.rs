@@ -16,7 +16,7 @@ pub(crate) struct NativeWorkers {
     pub(crate) admission: Arc<QueueMutex<AdmissionState>>,
     /// Worker threads draining `sender`. Private: a test reads it only through
     /// [`NativeWorkers::exclusive_threads`], which proves the test owns the pool.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     threads: usize,
     #[cfg(feature = "test-support")]
     pub(crate) host_pool: Arc<crate::testing::HostPool>,
@@ -137,7 +137,7 @@ pub(crate) fn start_workers(
     Ok(NativeWorkers {
         sender,
         admission,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(test)]
         threads: worker_count,
         #[cfg(feature = "test-support")]
         host_pool,

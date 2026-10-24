@@ -17,7 +17,7 @@ const RESERVED_IGNORE_RULES: &str = ".acyclic-sdk/\n.git/\n";
 /// Root namespaces the harness owns. They hold harness state such as
 /// write-tool metadata and upload receipts, so they are outside every Git
 /// view of the workspace rather than ignored content.
-const HOST_NAMESPACES: [&str; 3] = crate::workspace::RESERVED_NAMES;
+const HOST_NAMESPACES: [&str; 3] = [".acyclic-sdk", ".git", ".system"];
 
 /// The Git view of a workspace whose root `.gitignore` holds `ignore_text`.
 pub(crate) fn git_view_policy(ignore_text: &str) -> GitIgnorePolicy {

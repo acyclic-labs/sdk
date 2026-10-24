@@ -1,9 +1,5 @@
 use super::*;
 
-#[cfg(all(test, feature = "test-support"))]
-#[path = "projector_deadline_tests.rs"]
-mod deadline_tests;
-
 impl Projector {
     pub(super) fn new() -> Self {
         Self {
@@ -11,9 +7,7 @@ impl Projector {
             state: Mutex::new(ProjectorState::default()),
             tree: Mutex::new(()),
             paths: KeyedLocks::default(),
-            changed: Arc::new(acyclic_native_runtime::deadline::Waiter::new()),
-            #[cfg(feature = "test-support")]
-            wait_clock: acyclic_native_runtime::deadline::simulation::Clock::capture(),
+            changed: Condvar::new(),
             worker: Mutex::new(None),
             lifecycle: Mutex::new(ProjectorLifecycle::default()),
             lifecycle_changed: Condvar::new(),
@@ -60,9 +54,7 @@ impl Projector {
         let queue = MaterializeQueue::new(directories);
         std::thread::scope(|scope| {
             for _ in 1..workers {
-                acyclic_grpc_observability::task::scoped_thread(scope, || {
-                    self.materialize_from(&projection, &queue)
-                });
+                scope.spawn(|| self.materialize_from(&projection, &queue));
             }
             self.materialize_from(&projection, &queue);
         });
@@ -404,24 +396,15 @@ impl Projector {
 
     pub(super) fn attach(self: &Arc<Self>, runtime: Arc<Runtime>) -> Result<(), NativeMountError> {
         let projector = Arc::clone(self);
-        let worker = acyclic_grpc_observability::task::named_thread(
-            std::thread::Builder::new().name("acyclic-projfs-projector".to_owned()),
-            move || projector.run_lifecycle(runtime),
-        )
-        .map_err(NativeMountError::Io)?;
+        let worker = std::thread::Builder::new()
+            .name("acyclic-projfs-projector".to_owned())
+            .spawn(move || projector.run_lifecycle(runtime))
+            .map_err(NativeMountError::Io)?;
         *lock_recover(&self.worker) = Some(worker);
         Ok(())
     }
 
     pub(super) fn run(&self, runtime: &Runtime, context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT) {
-        #[cfg(feature = "test-support")]
-        if let Some(clock) = &self.wait_clock {
-            return clock.enter(|| self.run_inner(runtime, context));
-        }
-        self.run_inner(runtime, context);
-    }
-
-    fn run_inner(&self, runtime: &Runtime, context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT) {
         let source = runtime.source.as_ref();
         let mut state = lock_recover(&self.state);
         loop {
@@ -433,11 +416,17 @@ impl Projector {
                     break;
                 }
                 if state.pending.is_empty() {
-                    state = self.park(state, None);
+                    state = self
+                        .changed
+                        .wait(state)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                 } else {
-                    let deadline = acyclic_native_runtime::deadline::Deadline::after(HELD_RETRY);
-                    state = self.park(state, Some(deadline));
-                    if deadline.expired() {
+                    let (next, waited) = self
+                        .changed
+                        .wait_timeout(state, HELD_RETRY)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    state = next;
+                    if waited.timed_out() {
                         break;
                     }
                 }
@@ -449,12 +438,11 @@ impl Projector {
                     state.processed = state.notified;
                     state.retry = false;
                     self.changed.notify_all();
-                    state = self.park(
-                        state,
-                        Some(acyclic_native_runtime::deadline::Deadline::after(
-                            HELD_RETRY,
-                        )),
-                    );
+                    state = self
+                        .changed
+                        .wait_timeout(state, HELD_RETRY)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .0;
                     continue;
                 }
             };
@@ -592,27 +580,6 @@ impl Projector {
     }
 
     pub(super) fn settle(&self) -> Result<(), NativeMountError> {
-        #[cfg(feature = "test-support")]
-        if let Some(clock) = &self.wait_clock {
-            return clock.enter(|| self.settle_inner());
-        }
-        self.settle_inner()
-    }
-
-    fn park<'a>(
-        &'a self,
-        state: MutexGuard<'a, ProjectorState>,
-        deadline: Option<acyclic_native_runtime::deadline::Deadline>,
-    ) -> MutexGuard<'a, ProjectorState> {
-        // Producers need state before changing the predicate. Capture the
-        // ticket while holding it, then release it before taking the park.
-        let generation = self.changed.listen();
-        drop(state);
-        self.changed.wait_after(generation, deadline);
-        lock_recover(&self.state)
-    }
-
-    fn settle_inner(&self) -> Result<(), NativeMountError> {
         let mut state = lock_recover(&self.state);
         let target = state.notified;
         let mut deadline = None;
@@ -624,19 +591,26 @@ impl Projector {
                 || !state.vacated.is_empty())
         {
             if state.processed < target || state.relisting || !state.stale.is_empty() {
-                state = self.park(state, None);
+                state = self
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 continue;
             }
-            let deadline = *deadline.get_or_insert_with(|| {
-                acyclic_native_runtime::deadline::Deadline::after(HELD_SETTLE_LIMIT)
-            });
-            if deadline.expired() {
+            let deadline =
+                *deadline.get_or_insert_with(|| self.clock.instant() + HELD_SETTLE_LIMIT);
+            let remaining = deadline.saturating_duration_since(self.clock.instant());
+            if remaining.is_zero() {
                 let held = state.pending.keys().next().cloned();
                 return Err(NativeMountError::Driver(format!(
                     "a superseded placeholder is held open and cannot be replaced: {held:?}"
                 )));
             }
-            state = self.park(state, Some(deadline));
+            state = self
+                .changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
         }
         state
             .failure

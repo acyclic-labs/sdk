@@ -3,12 +3,8 @@
 // the root workspace's locked dependencies (the contract generators use the
 // locked @napi-rs/cli dev dependency, never a global install), the generated
 // filesystem and actors contracts, the compiled actors package, and the native
-// filesystem adapter installed as its platform package. These outputs are
-// ignored by git, so the test that imports them preloads this script: every run
-// regenerates them from this checkout (incrementally) instead of relying on a
-// manual step.
+// filesystem adapter installed as its platform package.
 //
-//   bun run test:pi-native-recursive   (preloads this script)
 //   node plugin/tests/hosts/prepare-native.mjs
 import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";

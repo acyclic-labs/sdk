@@ -79,7 +79,7 @@ impl ContentResidencyVerifier for Reader {
         &'a self,
         _file: &'a FileRef,
         _maximum: u64,
-        _ceiling: Option<&'a acyclic_harness_core::Capabilities>,
+        _ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         BoundedContentFuture::new(io, || async move {
@@ -465,7 +465,7 @@ async fn resolved_instruction(body: &str, path: &str, broken: bool) -> Result<St
     let (provider, _) = provider(Adapter::Chat, 200);
     let file = file(body.as_bytes(), "text/plain")?;
     let policy = FileProjectionPolicy::ProjectInstructions(Box::new(
-        acyclic_harness_core::model::InstructionIdentity::new(file.volume().clone(), path.into())?,
+        acyclic_harness::model::InstructionIdentity::new(file.volume().clone(), path.into())?,
     ));
     let request = with_parts(
         &provider,

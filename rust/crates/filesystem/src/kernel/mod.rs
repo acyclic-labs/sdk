@@ -23,8 +23,6 @@ mod file_table;
 mod file_table_mutation;
 mod generation;
 mod generation_mutation;
-#[cfg(test)]
-pub(crate) use generation_mutation::content_times::STAMPS as CONTENT_STAMPS;
 mod historical_evidence;
 mod list;
 mod live;

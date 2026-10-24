@@ -4,8 +4,6 @@
 //! link, and a dependency would silently replace the allocator of every
 //! binary that links it. A test, bench or fuzz binary that measures declares
 //! [`counting_allocator!`] once at its crate root.
-#[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
-pub mod capture;
 pub mod differential;
 mod fixtures;
 pub use fixtures::source_path;
@@ -15,9 +13,6 @@ pub mod module_cases;
 pub const MODULE_COMPILER_REACHED: [bool; module_cases::CASES.len()] =
     include!(concat!(env!("OUT_DIR"), "/module-compiler.rs"));
 
-pub mod boxes;
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
-pub mod stack;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,

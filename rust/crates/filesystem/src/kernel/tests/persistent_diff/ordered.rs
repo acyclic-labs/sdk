@@ -75,7 +75,7 @@ async fn run<const PREFIX: bool, const RESET: bool>(
         },
         &cancellation,
     );
-    let result = diff_with_accounting::<_, FileTableFormat, PREFIX, RESET, false>(
+    let result = diff_with_accounting::<_, FileTableFormat, PREFIX, RESET>(
         store,
         Some(roots.0),
         Some(roots.1),
@@ -216,6 +216,8 @@ fn replay_pages<const PREFIX: bool, const RESET: bool>(
                 OwnedPage {
                     page: PageLease::Owned(Page::Leaf(records.value)),
                     logical_bytes: bytes,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    native_custody: None,
                 },
                 records.allocation,
                 bytes,

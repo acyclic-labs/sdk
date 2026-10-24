@@ -377,22 +377,6 @@ impl ToolContext {
         self.task().scope()
     }
 
-    /// Restricts an ordinary tool call while retaining its original task owner.
-    /// Native calls use `with_native_scope` on their original work ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn scoped(&self, grants: Capabilities, limits: Limits) -> Result<Self> {
-        if self.native_custody.is_some() {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "native tool restrictions require original work",
-            });
-        }
-        let scope = self.effective_scope().narrow(grants, limits)?;
-        let mut context = self.clone();
-        context.effective_scope = Some((scope, None));
-        Ok(context)
-    }
-
     /// Returns pending approval through this command's protected route.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) async fn authorize_tool(

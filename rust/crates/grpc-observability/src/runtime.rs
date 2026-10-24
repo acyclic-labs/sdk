@@ -3,8 +3,6 @@
 //! Explicit trailer status is wire evidence even when Tonic uses header OK;
 //! trailers without status preserve a prior header status.
 
-#![cfg_attr(not(test), deny(clippy::disallowed_methods))]
-
 use http_body::Body as _;
 use std::{
     pin::Pin,

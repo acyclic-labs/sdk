@@ -349,12 +349,9 @@ where
             })
             .map(HistoryContentFuture::Native);
         }
-        // Native work returned above, so `io` is live here only off native
-        // targets; its frame is charged on it there.
+        let _ = io;
         Ok(HistoryContentFuture::Ordinary {
-            future: crate::charged_box::charged_frame(io, || async move {
-                Ok((self.read_admission(None).await?, None))
-            })?,
+            future: Box::pin(async move { Ok((self.read_admission(None).await?, None)) }),
             frame_bytes: 0,
         })
     }
@@ -401,9 +398,10 @@ where
             })
             .map(HistoryContentFuture::Native);
         }
+        let _ = io;
         let span = obs_span!("acyclic.harness.workflow.replay", rev = after);
         Ok(HistoryContentFuture::Ordinary {
-            future: crate::obs::traced_on(io, span, || async move {
+            future: traced(span, async move {
                 Ok((
                     self.replay_records(after, maximum, true, true, None)
                         .await?,
@@ -440,8 +438,7 @@ where
         admission: WorkflowAdmission,
     ) -> BoxFuture<'a, Result<WorkflowAdmission>> {
         let span = obs_span!("acyclic.harness.workflow.admit");
-        // Unbudgeted: this method takes no budget, and none is live at its call.
-        traced(span, || self.admit_with_io(admission, None))
+        traced(span, self.admit_with_io(admission, None))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -467,9 +464,9 @@ where
         record: WorkflowRecord,
     ) -> BoxFuture<'a, Result<WorkflowRecord>> {
         let span = obs_span!("acyclic.harness.workflow.commit", rev = expected_revision);
-        // Unbudgeted: this method takes no budget, and none is live at its call.
-        traced(span, || {
-            self.commit_with_io(expected_revision, idempotency_key, record, None)
-        })
+        traced(
+            span,
+            self.commit_with_io(expected_revision, idempotency_key, record, None),
+        )
     }
 }

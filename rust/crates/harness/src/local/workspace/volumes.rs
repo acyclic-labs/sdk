@@ -2,7 +2,6 @@ use super::*;
 use acyclic_fs::{CancellationToken, MountPublication, WorkBudget, kernel::NamespacePath};
 use acyclic_native_runtime::spawn;
 
-#[cfg(any(target_os = "linux", all(test, unix)))]
 pub(super) const SCRATCH_PATH: &str = ".volumes/scratch";
 /// The directory in a checkout holding its incarnation token, outside every
 /// workspace view.
@@ -325,10 +324,7 @@ pub(in crate::local) async fn project_unscoped(mounts: &Mounts) -> Result<()> {
     for (relative, mount) in mounts.mounts() {
         if let Some(source) = &mount.view.source {
             let root = projection_root(&source.destination, relative)?;
-            drop(
-                acyclic_fs::in_heap(|| source.enter(root, relative, mount.mode.read_only()))
-                    .await?,
-            );
+            drop(source.enter(root, relative, mount.mode.read_only()).await?);
         }
     }
     Ok(())
@@ -593,6 +589,3 @@ mod tests {
         Ok(())
     }
 }
-
-#[cfg(all(feature = "test-support", unix))]
-pub(crate) use exclude::fuzz_mount_exclusion;

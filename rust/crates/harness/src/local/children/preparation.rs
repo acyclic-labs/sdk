@@ -30,35 +30,33 @@ impl Commands<'_> {
             .durable_task_id()
             .ok_or_else(|| Error::Unauthorized("child preparation has no task".into()))?;
         let host = self.harness.runtime.task_host();
-        let record = crate::conversation::BoundedOperationFuture::new(Some(self.io), || {
-            host.observe_admission(task)
-        })?
-        .await?;
-        let fork = self.admitted_fork(&record.input, &command, payload)?;
-        drop(record);
+        let record = host.observe_admission(task).await?;
+        if record.input != serde_json::to_value(self.request).map_err(storage)?
+            || self.request.command.as_ref() != Some(&command)
+            || payload != self.request.payload
+        {
+            return Err(Error::Unauthorized(
+                "child preparation differs from its admitted command".into(),
+            ));
+        }
         let owner = Arc::new(
-            crate::conversation::BoundedOperationFuture::new(Some(self.io), || {
-                host.journal_owner(task, &fence, None)
-            })?
-            .await?
-            .with_invocation_cancellation(self.io.cancellation()),
+            host.journal_owner(task, &fence, None)
+                .await?
+                .with_invocation_cancellation(self.io.cancellation()),
         );
         let preparation = Arc::new(
-            crate::conversation::BoundedOperationFuture::new(Some(self.io), || async {
-                owner
-                    .resource_preparation(self.request.clone(), &mut None)
-                    .await
-            })?
-            .await?,
+            owner
+                .resource_preparation(self.request.clone(), &mut None)
+                .await?,
         );
+        let fork = serde_json::from_value(payload).map_err(storage)?;
         if reconcile {
             return Ok(
-                if crate::conversation::BoundedOperationFuture::new(Some(self.io), || {
-                    self.preparer
-                        .reconcile_for_task(&fork, &preparation, Some(self.io))
-                })?
-                .await?
-                .is_some()
+                if self
+                    .preparer
+                    .reconcile_for_task(&fork, &preparation, Some(self.io))
+                    .await?
+                    .is_some()
                 {
                     TaskCommandProgress::Ready(Value::Null)
                 } else {
@@ -66,8 +64,9 @@ impl Commands<'_> {
                 },
             );
         }
-        let (report, _) = crate::conversation::BoundedOperationFuture::new(Some(self.io), || {
-            self.workspace.prepare_child(
+        let (report, _) = self
+            .workspace
+            .prepare_child(
                 self.source,
                 self.cut,
                 self.preparer,
@@ -75,48 +74,14 @@ impl Commands<'_> {
                 &preparation,
                 self.io,
             )
-        })?
-        .await?;
-        ready(report)
+            .await?;
+        Ok(TaskCommandProgress::Ready(
+            serde_json::to_value(crate::Outcome::Succeeded(report)).map_err(storage)?,
+        ))
     }
-
-    // The admitted command's checks and decode run in a frame of their own,
-    // not in the poll frame live under the child's preparation.
-    #[inline(never)]
-    fn admitted_fork(
-        &self,
-        input: &Value,
-        command: &WorkflowCommand,
-        payload: Value,
-    ) -> Result<crate::charged_box::ChargedBox<crate::fork::ForkRequest>> {
-        if *input != serde_json::to_value(self.request).map_err(storage)?
-            || self.request.command.as_ref() != Some(command)
-            || payload != self.request.payload
-        {
-            return Err(Error::Unauthorized(
-                "child preparation differs from its admitted command".into(),
-            ));
-        }
-        // The request lives through preparation and its retries, so its box
-        // is paid for on the preparation's budget.
-        let fork = serde_json::from_value(payload).map_err(storage)?;
-        crate::charged_box::ChargedBox::new(Some(self.io), fork)
-    }
-}
-
-#[inline(never)]
-fn ready(
-    report: crate::charged_box::ChargedBox<crate::fork::ForkReport>,
-) -> Result<TaskCommandProgress> {
-    Ok(TaskCommandProgress::Ready(
-        serde_json::to_value(crate::Outcome::Succeeded(report.into_inner())).map_err(storage)?,
-    ))
 }
 
 impl TaskCommandHost for Commands<'_> {
-    fn frame_io(&self) -> Option<&PreparationIo> {
-        Some(self.io)
-    }
     fn execute<'a>(
         &'a self,
         context: TaskContext,
@@ -124,14 +89,7 @@ impl TaskCommandHost for Commands<'_> {
         command: WorkflowCommand,
         payload: Value,
     ) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
-        // The frame is paid for on the preparation's budget, which `run` spends.
-        match crate::charged_box::charged_frame(Some(self.io), || {
-            self.run(context, fence, command, payload, false)
-        }) {
-            Ok(frame) => frame,
-            // Unbudgeted: a refused frame holds only its error.
-            Err(error) => Box::pin(std::future::ready(Err(error))),
-        }
+        Box::pin(self.run(context, fence, command, payload, false))
     }
     fn reconcile<'a>(
         &'a self,
@@ -140,14 +98,7 @@ impl TaskCommandHost for Commands<'_> {
         command: WorkflowCommand,
         payload: Value,
     ) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
-        // The frame is paid for on the preparation's budget, which `run` spends.
-        match crate::charged_box::charged_frame(Some(self.io), || {
-            self.run(context, fence, command, payload, true)
-        }) {
-            Ok(frame) => frame,
-            // Unbudgeted: a refused frame holds only its error.
-            Err(error) => Box::pin(std::future::ready(Err(error))),
-        }
+        Box::pin(self.run(context, fence, command, payload, true))
     }
 }
 

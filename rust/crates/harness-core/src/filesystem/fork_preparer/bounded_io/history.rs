@@ -102,9 +102,6 @@ impl HistoryIo for &PreparationIo {
     fn allocation_attempt(&mut self, bytes: u64) -> Result<()> {
         PreparationIo::allocation_attempt(self, bytes)
     }
-    fn charge_box(&mut self, bytes: u64) -> Result<crate::charged_box::BoxCharge> {
-        PreparationIo::charge_box(self, bytes)
-    }
     fn allocation_failure(&self, cause: std::collections::TryReserveError) -> Error {
         Error::Allocation(cause)
     }
@@ -156,8 +153,10 @@ impl HistoryIo for &PreparationIo {
         match charge {
             crate::executor::json::JsonCodecCharge::Admission {
                 maximum_owned_bytes,
-                ..
-            } => self.retain_owned(maximum_owned_bytes),
+                value_shape,
+            } => self.retain_owned(maximum_owned_bytes.max(
+                crate::executor::json::json_value_decode_owned_bytes(value_shape)?,
+            )),
             charge => PreparationIo::codec_charge(self, charge, true),
         }
     }

@@ -101,17 +101,14 @@ proptest! {
                     let mut request = request.clone();
                     request.model.options = options;
                     let body = projection::body(&provider, &request).unwrap();
-                    let (declarations, controls) = match adapter {
-                        Adapter::Anthropic => (&body["tools"], vec![&body["tool_choice"]["name"]]),
-                        Adapter::Responses => (&body["tools"], vec![if body["tool_choice"]["type"] == "allowed_tools" {
+                    let (declaration, controls) = match adapter {
+                        Adapter::Anthropic => (&body["tools"][0]["name"], vec![&body["tool_choice"]["name"]]),
+                        Adapter::Responses => (&body["tools"][0]["name"], vec![if body["tool_choice"]["type"] == "allowed_tools" {
                             &body["tool_choice"]["tools"][0]["name"] } else { &body["tool_choice"]["name"] }]),
-                        Adapter::Chat => (&body["tools"], vec![if body["tool_choice"]["type"] == "allowed_tools" {
+                        Adapter::Chat => (&body["tools"][0]["function"]["name"], vec![if body["tool_choice"]["type"] == "allowed_tools" {
                             &body["tool_choice"]["tools"][0]["function"]["name"] } else { &body["tool_choice"]["function"]["name"] }]),
-                        Adapter::Gemini => (&body["tools"][0]["functionDeclarations"], vec![&body["toolConfig"]["functionCallingConfig"]["allowedFunctionNames"][0]]),
+                        Adapter::Gemini => (&body["tools"][0]["functionDeclarations"][0]["name"], vec![&body["toolConfig"]["functionCallingConfig"]["allowedFunctionNames"][0]]),
                     };
-                    let declaration = declarations.as_array().unwrap().iter().map(|tool| {
-                        if adapter == Adapter::Chat { &tool["function"]["name"] } else { &tool["name"] }
-                    }).find(|name| **name == expected).expect("selected name is declared");
                     prop_assert_eq!(declaration, &expected);
                     for selected in controls { prop_assert_eq!(selected, declaration); }
                 }
@@ -493,35 +490,28 @@ fn aliases_are_exactly_sized_and_the_build_matches_its_claim() {
     let request = request_with(&[&long]);
     let (names, built) = Names::built(&request);
     let aliases: Vec<_> = names.aliases().collect();
-    assert_eq!(
-        aliases,
-        [(64, 64), (64, 64)],
-        "digest alias capacities are exact"
-    );
-    // Two bindings and indices, one exact canonical pin, one digest buffer,
-    // and two exact aliases: logical and pinned forms own every byte once.
+    assert_eq!(aliases, [(64, 64)], "digest alias capacity is exact");
+    // One 40-byte binding, the 64-byte digest buffer, the 64-byte alias,
+    // and one wire index entry: no growth and no uncounted temporary.
     #[cfg(target_pointer_width = "64")]
     assert_eq!(
         built,
         crate::tool_names::Built {
-            allocations: 6,
-            bytes: 2 * 56 + 93 + 64 + 2 * 64 + 2 * 8,
+            allocations: 4,
+            bytes: 40 + 64 + 64 + 8,
             probes: 0,
-            hashed: 234,
+            hashed: 116,
             wire_sorts: 1,
-            wire_comparisons: 1,
+            wire_comparisons: 0,
         }
     );
-    assert!(built.within(&Names::claim(&request).unwrap()));
+    assert!(built.within(&Names::claim(1).unwrap()));
     // A readable alias needs neither the digest buffer nor any slack.
     let request = request_with(&["mcp.docs.search", "read"]);
     let (names, built) = Names::built(&request);
-    assert_eq!(
-        names.aliases().collect::<Vec<_>>(),
-        [(17, 17), (19, 19), (6, 6)]
-    );
-    assert_eq!(built.allocations, 7);
-    assert!(built.within(&Names::claim(&request).unwrap()));
+    assert_eq!(names.aliases().collect::<Vec<_>>(), [(17, 17)]);
+    assert_eq!(built.allocations, 3);
+    assert!(built.within(&Names::claim(2).unwrap()));
     for size in 0..64 {
         let names: Vec<String> = (0..size)
             .map(|index| format!("mcp.s{index}.{}", "x".repeat(index * 3)))
@@ -529,7 +519,7 @@ fn aliases_are_exactly_sized_and_the_build_matches_its_claim() {
         let request = request_with(&names.iter().map(String::as_str).collect::<Vec<_>>());
         let (table, built) = Names::built(&request);
         assert!(table.aliases().all(|(length, capacity)| length == capacity));
-        assert!(built.within(&Names::claim(&request).unwrap()));
+        assert!(built.within(&Names::claim(size as u64).unwrap()));
     }
 }
 
@@ -560,10 +550,10 @@ fn occupied_candidates_cost_one_probe_each() {
     let request = request_with(&tools.iter().map(String::as_str).collect::<Vec<_>>());
     let (names, built) = Names::built(&request);
     assert_eq!(
-        built.probes, 1026,
-        "occupied candidates, one free candidate, and one pinned-name collision"
+        built.probes, 1025,
+        "one probe per occupied candidate plus the free one"
     );
-    assert!(built.within(&Names::claim(&request).unwrap()));
+    assert!(built.within(&Names::claim(tools.len() as u64).unwrap()));
     assert_eq!(
         names.wire("mcp.a.b").unwrap(),
         Names::candidate("mcp.a.b", 1025)

@@ -19,8 +19,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     {
         let mut accounting = work.accounting(cancellation);
         let result = async {
-            let (result, reservation) =
-                crate::heap_future::in_heap_metered(&mut accounting, |accounting| async move {
+            let mut frame = None;
+            let (mut future, bytes) = crate::heap_future::in_heap_admitted(
+                (&mut accounting, &mut frame),
+                |(accounting, frame), bytes| {
+                    **frame = Some(accounting.claim_owned(bytes, u64::from(bytes != 0))?);
+                    Ok::<_, E>(())
+                },
+                |(accounting, _)| async move {
                     let bytes = options
                         .paths
                         .as_ref()
@@ -36,8 +42,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                     accounting.release_owned(&mut allocation, bytes)?;
                     #[cfg(not(target_arch = "wasm32"))]
                     if let Some(original) = accounting.native_work() {
-                        return crate::heap_future::in_heap_claimed(original, || {
-                            self.volume.fs.fork_workspace(
+                        return self
+                            .volume
+                            .fs
+                            .fork_workspace(
                                 name,
                                 &options.generation,
                                 options.idempotency_key,
@@ -47,61 +55,57 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                                 cancellation,
                                 Some(&mut guard),
                             )
-                        })
-                        .map_err(|error| E::from(WorkspaceError::from(error)))?
-                        .await;
+                            .await;
                     }
                     // The facade takes over the name's payload; this operation retains its Arc control.
                     accounting.release_owned(
                         &mut KernelOwnedAllocation::Standalone,
                         name.retained_bytes(),
                     )?;
-                    // The frame stays reserved while its receipt joins the ledger.
-                    let (forked, reservation) =
-                        crate::heap_future::in_heap_budgeted(&mut *accounting, |remaining| {
-                            self.volume.fs.fork_workspace(
-                                name,
-                                &options.generation,
-                                options.idempotency_key,
-                                options.paths,
-                                permit,
-                                remaining,
-                                cancellation,
-                                Some(&mut guard),
-                            )
-                        })?
+                    let forked = self
+                        .volume
+                        .fs
+                        .fork_workspace(
+                            name,
+                            &options.generation,
+                            options.idempotency_key,
+                            options.paths,
+                            permit,
+                            accounting.remaining()?,
+                            cancellation,
+                            Some(&mut guard),
+                        )
                         .await;
-                    let merged = (|| {
-                        let backend = match &forked {
-                            Ok(receipt) => receipt.work,
-                            Err(failure) => *failure.work,
-                        };
-                        let (allocations, spent, budget, _) =
-                            accounting.standalone_parts().ok_or_else(|| {
-                                E::from(WorkspaceError::from(crate::WorkError::Overflow))
-                            })?;
-                        let prior = *spent;
-                        *spent = prior
-                            .with_backend(backend, allocations.live_bytes())
-                            .map_err(|error| {
-                                E::from(WorkspaceError::WorkMerge {
-                                    prior: Box::new(prior),
-                                    backend: Box::new(backend),
-                                    error,
-                                })
-                            })?;
-                        spent
-                            .verify(budget)
-                            .map_err(|error| E::from(WorkspaceError::from(error)))
-                    })();
-                    crate::heap_future::FrameLedger::release_frame(&mut *accounting, reservation)?;
-                    merged?;
+                    let backend = match &forked {
+                        Ok(receipt) => receipt.work,
+                        Err(failure) => *failure.work,
+                    };
+                    let (allocations, spent, budget, _) = accounting
+                        .standalone_parts()
+                        .ok_or_else(|| E::from(WorkspaceError::from(crate::WorkError::Overflow)))?;
+                    let prior = *spent;
+                    *spent = prior
+                        .with_backend(backend, allocations.live_bytes())
+                        .map_err(|error| {
+                            E::from(WorkspaceError::WorkMerge {
+                                prior: Box::new(prior),
+                                backend: Box::new(backend),
+                                error,
+                            })
+                        })?;
+                    spent
+                        .verify(budget)
+                        .map_err(|error| E::from(WorkspaceError::from(error)))?;
                     forked
                         .map(|receipt| receipt.value)
                         .map_err(|failure| failure.error)
-                })?
-                .await;
-            crate::heap_future::FrameLedger::release_frame(&mut accounting, reservation)?;
+                },
+            )?;
+            let result = future.as_mut().await;
+            drop(future);
+            if let Some(mut frame) = frame {
+                accounting.release_owned(&mut frame, bytes)?;
+            }
             result
         }
         .await;

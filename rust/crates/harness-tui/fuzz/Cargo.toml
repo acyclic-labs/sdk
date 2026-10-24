@@ -10,7 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 serde_json = "1"
-acyclic-harness-tui = { path = "..", features = ["fuzzing", "tui"] }
+acyclic-harness-tui = { path = "..", features = ["tui"] }
 unicode-segmentation = "1.12"
 
 [[bin]]

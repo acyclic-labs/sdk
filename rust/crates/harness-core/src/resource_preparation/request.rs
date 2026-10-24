@@ -5,7 +5,7 @@ use crate::{
 };
 
 /// Immutable creation input retained by an ordinary preparation task.
-#[derive(Clone, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourcePreparationRequest {
     /// Pinned creation provider.

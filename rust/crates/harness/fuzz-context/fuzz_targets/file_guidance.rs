@@ -1,2 +1,3 @@
 #![no_main]
-libfuzzer_sys::fuzz_target!(|input: &[u8]| acyclic_harness::local::fuzz_file_guidance(input));
+mod file_guidance_input;
+libfuzzer_sys::fuzz_target!(|input: &[u8]| file_guidance_input::check(input));

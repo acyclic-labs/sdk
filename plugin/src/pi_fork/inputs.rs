@@ -6,14 +6,14 @@ use acyclic_harness::{JsonValueSchema, filesystem::PreparationIo, runtime::TaskC
 use serde::de::DeserializeOwned;
 
 impl PiForkCoordinator<'_> {
-    /// Reads the protected original plan's published bytes.
-    pub(super) async fn read_original_plan(
+    /// Reads and validates the protected original plan.
+    pub(crate) async fn load_original_plan(
         &self,
         original: OperationId,
-    ) -> Result<Option<(acyclic_stream::OwnedBytes, NativeAllocation)>> {
+    ) -> Result<Option<PiForkPlan>> {
         self.runtime
             .verify_owner_with_native_work(&self.owner, &self.work)?;
-        let Some(reference) = crate::pi_root_provider::observe_pi_input(
+        let Some(mut reference) = crate::pi_root_provider::observe_pi_input(
             &self.owner,
             &self.filesystem,
             original,
@@ -25,25 +25,11 @@ impl PiForkCoordinator<'_> {
             return Ok(None);
         };
         let bytes = self.read_original_input(&reference.0).await?;
-        Ok(Some((bytes, reference.1)))
-    }
-
-    /// Reads and validates the protected original plan. Its validation is
-    /// recorded by the digest of the publication, so reading the same plan
-    /// again only decodes it.
-    pub(crate) async fn load_original_plan(
-        &self,
-        original: OperationId,
-    ) -> Result<Option<PiForkPlan>> {
-        let Some((bytes, mut custody)) = self.read_original_plan(original).await? else {
-            return Ok(None);
-        };
         let mut plan: (PiForkPlan, NativeAllocation) = self.decode_original_input(
             &bytes,
             JsonValueSchema::RecursiveForkToolPlan,
             FORK_PLAN_DIAGNOSTIC_LABEL_BYTES,
         )?;
-        plan.0.published = Some(blake3::hash(&bytes));
         self.validate_plan(&plan.0, plan.0.commit.caller)?;
         if plan.0.original != original {
             return Err(Error::NativeBoundary {
@@ -51,7 +37,8 @@ impl PiForkCoordinator<'_> {
                 reason: "Pi original plan locator changed",
             });
         }
-        plan.1.absorb(&mut custody)?;
+        drop(reference.0);
+        plan.1.absorb(&mut reference.1)?;
         plan.0._input_allocations = Some(plan.1);
         Ok(Some(plan.0))
     }
@@ -94,7 +81,7 @@ impl PiForkCoordinator<'_> {
         Ok(())
     }
 
-    pub(super) fn decode_original_input<T: DeserializeOwned + acyclic_harness::HeapLayout>(
+    pub(super) fn decode_original_input<T: DeserializeOwned>(
         &self,
         bytes: &[u8],
         schema: &'static JsonValueSchema,
@@ -104,6 +91,7 @@ impl PiForkCoordinator<'_> {
         crate::pi_root_provider::guarded_pi_decode(
             bytes,
             maximum,
+            maximum,
             acyclic_harness::wire::ErrorCode::Invalid,
             schema,
             labels,
@@ -111,7 +99,7 @@ impl PiForkCoordinator<'_> {
         )
     }
 
-    pub(super) fn decode_input_value<T: DeserializeOwned + acyclic_harness::HeapLayout>(
+    pub(super) fn decode_input_value<T: DeserializeOwned>(
         &self,
         value: &impl Serialize,
         schema: &'static JsonValueSchema,

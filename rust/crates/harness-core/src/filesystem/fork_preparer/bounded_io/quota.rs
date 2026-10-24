@@ -106,7 +106,20 @@ impl Drop for DecodeReservation<'_> {
                 budget,
                 work,
                 cancellation,
-            } => super::release_standalone(work, *budget, cancellation, self.bytes),
+            } => {
+                let mut state = work
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let (spent, allocations) = &mut *state;
+                if let Ok(ledger) = allocations
+                    && KernelAccounting::borrowed_standalone(ledger, spent, *budget, cancellation)
+                        .release_owned(&mut KernelOwnedAllocation::Standalone, self.bytes)
+                        .is_err()
+                {
+                    // A poisoned ledger cannot admit further work; the next call returns the fault.
+                    *allocations = Err(acyclic_fs::WorkError::Overflow);
+                }
+            }
             #[cfg(not(target_arch = "wasm32"))]
             PreparationIo::Native { .. } => {}
         }

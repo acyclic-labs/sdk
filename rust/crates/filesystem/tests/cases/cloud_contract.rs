@@ -4,10 +4,10 @@
 mod contract;
 
 use acyclic_fs::model::FilesystemProfile;
-use acyclic_fs::{HostedFs, HostedFsOptions, IdempotencyKey};
 use acyclic_fs_wire::wire::filesystem::v2::{
     self as wire, filesystem_service_client::FilesystemServiceClient,
 };
+use acyclic_fs::{HostedFs, HostedFsOptions, IdempotencyKey};
 use futures::future::{Ready, ready};
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};

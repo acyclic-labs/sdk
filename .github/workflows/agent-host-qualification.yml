@@ -141,6 +141,10 @@ jobs:
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/agent-host-target" >> "$GITHUB_ENV"
           echo "ACYCLIC_E2E_RECEIPT_DIR=$RUNNER_TEMP/agent-host-receipts" >> "$GITHUB_ENV"
 
+      - name: Prepare native SDK adapter for Pi controls
+        shell: bash
+        run: node plugin/tests/hosts/prepare-native.mjs
+
       - name: Build host scenario
         shell: bash
         run: |

@@ -2738,7 +2738,6 @@ async fn original_generation_denies_identity_scratch_before_provider_calls()
         &fixture.generation,
         operations,
         config(),
-        None,
         &mut accounting,
         &cancellation,
     ))

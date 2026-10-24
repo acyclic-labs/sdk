@@ -14,6 +14,7 @@ impl Journal {
         bytes: &mut Vec<u8>,
         publication: &mut Publication,
     ) -> Result<StoredBody, NativeObjectsError> {
+        self.validate_body(body)?;
         if !unpersisted(body) {
             return Ok(body.clone());
         }
@@ -321,9 +322,10 @@ pub(super) fn place(
             object.body = body;
         }
     }
+    // Only parts carried by this delta can contain placeholder offsets.
     #[cfg(test)]
     work::restore_relocation(state, &moves, publication)?;
-    for change in delta.parts.iter().filter(|change| change.receipt.is_some()) {
+    for change in &delta.parts {
         let (_, body) = state
             .uploads
             .get_mut(change.upload.as_str())

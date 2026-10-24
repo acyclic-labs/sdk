@@ -83,16 +83,13 @@ impl Opening {
             .await?;
         #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
         let tools = installation.tools;
-        let compaction_config = config.compaction.take();
-        let compaction = acyclic_fs::in_heap(|| {
-            compaction::select(
-                compaction_config,
-                &config.model.0,
-                config.model.1.as_ref(),
-                &tools,
-                config.limits,
-            )
-        })
+        let compaction = compaction::select(
+            config.compaction.take(),
+            &config.model.0,
+            config.model.1.as_ref(),
+            &tools,
+            config.limits,
+        )
         .await?;
         #[cfg(any(test, feature = "native-execution"))]
         let native_mounts = tools
@@ -153,16 +150,6 @@ impl Opening {
         acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
         #[cfg(any(test, feature = "native-execution"))]
         acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
-        if matches!(self.config.project, LocalProject::Workspace(_)) {
-            #[cfg(all(test, target_os = "macos"))]
-            let initialize = !tests::cold_source::skip_initialization();
-            #[cfg(not(all(test, target_os = "macos")))]
-            let initialize = true;
-            if initialize {
-                acyclic_fs::demand::native::NativeDemandSource::initialize_services()
-                    .map_err(storage)?;
-            }
-        }
         #[cfg(any(test, feature = "native-execution"))]
         if self.native_mounts {
             workspace::volumes::require_available(acyclic_fs::probe_native_mount())?;
@@ -224,11 +211,15 @@ impl Opening {
             None => files,
         };
         // A configured project is opened, never silently replaced by an empty volume.
-        let project_ref = crate::filesystem::workspace_ref(
-            provider_ref.clone(),
-            &owner.project.storage_name(&mut None)?,
-        )?;
-        acyclic_fs::in_heap(|| files.resolve(&project_ref, None)).await?;
+        files
+            .resolve(
+                &crate::filesystem::workspace_ref(
+                    provider_ref.clone(),
+                    &owner.project.storage_name(&mut None)?,
+                )?,
+                None,
+            )
+            .await?;
         #[cfg(any(test, feature = "native-execution"))]
         let files = retain_skills(
             files,
@@ -286,16 +277,11 @@ impl Opening {
                 let root = checkout
                     .ok_or_else(|| Error::Invalid("checkout capture is absent".into()))?
                     .root;
-                Some(
-                    acyclic_fs::in_heap(|| {
-                        workspace::open(filesystem, &attach, root, false, state)
-                    })
-                    .await?,
-                )
+                Some(workspace::open(filesystem, &attach, root, false, state).await?)
             }
-            LocalProject::Volume { .. } => Some(
-                acyclic_fs::in_heap(|| workspace::open_volume(filesystem, &attach, state)).await?,
-            ),
+            LocalProject::Volume { .. } => {
+                Some(workspace::open_volume(filesystem, &attach, state).await?)
+            }
         };
         Ok(workspace.map(Arc::new))
     }
@@ -335,32 +321,30 @@ impl Opening {
             .map_err(storage)?,
         );
         let verifier = issuer.verifier(&mut None)?;
-        let (runtime, signed, task_files) = acyclic_fs::in_heap(|| {
-            runtime::open(
-                &self.code,
-                runtime::Configuration {
-                    files: files.clone(),
-                    #[cfg(any(test, feature = "native-execution"))]
-                    workspace: workspace.as_ref().map(Arc::clone),
-                    stream,
-                    task_volume: &task_volume,
-                    issuer: &issuer,
-                    verifier: &verifier,
-                    agent: owner.agent,
-                    project: &owner.project,
-                    scratch: &scratch,
-                    journal: &journal,
-                    tools: &self.tools,
-                    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-                    capabilities: &self.capabilities,
-                    limits: self.config.limits,
-                    run_limits: self.config.run_limits,
-                    session_limits: self.config.session_limits,
-                    concurrency: self.config.concurrency,
-                    clock: Arc::clone(&self.config.clock),
-                },
-            )
-        })
+        let (runtime, signed, task_files) = runtime::open(
+            &self.code,
+            runtime::Configuration {
+                files: files.clone(),
+                #[cfg(any(test, feature = "native-execution"))]
+                workspace: workspace.as_ref().map(Arc::clone),
+                stream,
+                task_volume: &task_volume,
+                issuer: &issuer,
+                verifier: &verifier,
+                agent: owner.agent,
+                project: &owner.project,
+                scratch: &scratch,
+                journal: &journal,
+                tools: &self.tools,
+                #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+                capabilities: &self.capabilities,
+                limits: self.config.limits,
+                run_limits: self.config.run_limits,
+                session_limits: self.config.session_limits,
+                concurrency: self.config.concurrency,
+                clock: Arc::clone(&self.config.clock),
+            },
+        )
         .await?;
         let local = LocalHarness {
             files,
@@ -452,9 +436,9 @@ impl PrivateVolumes {
             VolumeOwner::Agent(owner.agent),
             &mut None,
         )?;
-        acyclic_fs::in_heap(|| files.create_volume(&task_volume)).await?;
-        acyclic_fs::in_heap(|| files.create_volume(&scratch)).await?;
-        acyclic_fs::in_heap(|| files.create_volume(&journal)).await?;
+        files.create_volume(&task_volume).await?;
+        files.create_volume(&scratch).await?;
+        files.create_volume(&journal).await?;
         Ok(Self {
             scratch,
             journal,

@@ -57,14 +57,17 @@ where
                 custody: KernelOwnedAllocation::Standalone,
             });
         }
-        crate::heap_future::metered!(accounting, |accounting| {
+        let mut frame = batch_in_heap(accounting, |accounting| {
             crate::kernel::file_read::read_objects_with_accounting(
                 store,
                 &plan.requests,
                 accounting,
                 cancellation,
             )
-        })
+        })?;
+        let result = frame.value.as_mut().await;
+        drop(frame);
+        result
     }
     .await;
     let cold = match cold {
@@ -165,7 +168,7 @@ where
             ..WorkCounters::UNCHARGED
         })?;
         for object_id in pages {
-            let key = DecodedCacheKey::new::<SharedPage<F>>(object_id, limits);
+            let key = DecodedCacheKey::new::<Page<F>>(object_id, limits);
             accounting.check()?;
             if let Some(value) = store.decoded_cache_get(key).map_err(read_store_error)? {
                 plan.sources.push(BatchSource::Cached(value));
@@ -231,6 +234,25 @@ fn batch_container<T>(
     Ok((values, bytes, allocation))
 }
 
+pub(super) fn batch_in_heap<'a, 'accounting, F: Future>(
+    accounting: &'a mut KernelAccounting<'accounting>,
+    create: impl FnOnce(&'a mut KernelAccounting<'accounting>) -> F,
+) -> Result<ReadOwned<std::pin::Pin<Box<F>>>, FsError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let custody = if accounting.native_work().is_some() {
+        let bytes = usize_to_u64(size_of::<F>());
+        accounting.claim_owned(bytes, u64::from(bytes != 0))?
+    } else {
+        KernelOwnedAllocation::Standalone
+    };
+    #[cfg(target_arch = "wasm32")]
+    let custody = KernelOwnedAllocation::Standalone;
+    Ok(ReadOwned {
+        value: in_heap(|| create(accounting)),
+        custody,
+    })
+}
+
 impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
     pub(crate) fn next_with_accounting(
         &mut self,
@@ -248,12 +270,13 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
                         page: PageLease::Shared {
                             page: value
                                 .value
-                                .downcast::<SharedPage<F>>()
+                                .downcast::<Page<F>>()
                                 .map_err(|_| read_store_error(ObjectStoreError::Corrupt))?,
-                            #[cfg(not(target_arch = "wasm32"))]
-                            _native_custody: value.native_custody,
+                            logical_bytes: value.logical_bytes,
                         },
                         logical_bytes: 0,
+                        #[cfg(not(target_arch = "wasm32"))]
+                        native_custody: value.native_custody,
                     };
                     let allocation = accounting.claim_owned(0, 0)?;
                     return Ok((page, allocation));
@@ -277,7 +300,7 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
             }
             admit_decoded_with_accounting(
                 self.store,
-                DecodedCacheKey::new::<SharedPage<F>>(object_id, limits),
+                DecodedCacheKey::new::<Page<F>>(object_id, limits),
                 decoded?,
                 accounting,
                 self.data_custody,

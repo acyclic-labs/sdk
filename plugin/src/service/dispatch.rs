@@ -2,22 +2,7 @@
 use super::*;
 
 impl ConcurrentControlRequestDispatcher for ConcurrentServiceControl {
-    fn dispatch_request<'a>(
-        &'a self,
-        request: ControlRequest,
-        original_native_work: &'a mut Option<acyclic_fs::NativeMaterializationWork>,
-    ) -> acyclic_harness::Result<ControlDispatch<'a>> {
-        // Paid for on the request's native ledger, when one is live, before
-        // the dispatch frame is made.
-        acyclic_harness::conversation::BoundedOperationFuture::on_native_work(
-            original_native_work,
-            |work| self.serve_request(request, work),
-        )
-    }
-}
-
-impl ConcurrentServiceControl {
-    async fn serve_request(
+    async fn dispatch_request(
         &self,
         request: ControlRequest,
         original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>,

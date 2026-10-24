@@ -53,16 +53,14 @@ fn read(core: &MemoryObjects) -> u64 {
     };
     let info = value.header.object.unwrap();
     let receipt = state.receipts.get("write-once");
-    assert_eq!(state.nested_entries, 1);
-    assert_eq!(state.upload_bytes, 0);
     let all_old = state.sequence == 1
         && body.as_slice() == b"old"
-        && (state.object_bytes + state.upload_bytes) == 3
+        && state.body_bytes == 3
         && receipt.is_none()
         && state.receipts.is_empty();
     let all_new = state.sequence == 2
         && body.as_slice() == b"new-value"
-        && (state.object_bytes + state.upload_bytes) == 9
+        && state.body_bytes == 9
         && state.receipts.len() == 1
         && receipt.is_some_and(|receipt| {
             wire::ObjectInfo::decode(receipt.response.as_slice()).unwrap() == info

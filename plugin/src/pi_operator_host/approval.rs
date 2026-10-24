@@ -202,6 +202,7 @@ pub(crate) async fn read_prepared_approval(
         filesystem,
         operation,
         "operator-approval",
+        crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8,
         pi_operator::PREPARED_LABEL_BYTES,
         &context,
         work,

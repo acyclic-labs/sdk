@@ -54,7 +54,6 @@ impl ForkCaptureProvider for MachinesHost {
         _request: &'a ForkRequest,
         selection: &'a ForkSelection,
     ) -> BoxFuture<'a, Result<Capture>> {
-        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move {
             let ResourceRevision::Process(checkpoint) = &selection.revision else {
                 return Ok(Capture::Unsupported(
@@ -83,7 +82,6 @@ impl ForkCaptureProvider for MachinesHost {
         selection: &'a ForkSelection,
     ) -> BoxFuture<'a, Result<Option<Capture>>> {
         // Inspection alone cannot have created a provider effect.
-        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move { self.capture(request, selection).await.map(Some) })
     }
 }

@@ -11,32 +11,6 @@ impl CheckoutTools {
         if scope.grants().contains(&self.read_grant) && scope.grants().contains(&self.write_grant) {
             return Ok(None);
         }
-        let access = Self::child_access(context)?;
-        let mut selected = None;
-        for binding in &access.content {
-            if binding.volume.class() == VolumeClass::Project
-                && [VolumeOperation::Read, VolumeOperation::Write]
-                    .into_iter()
-                    .map(|operation| binding.volume.capability(operation, &mut None))
-                    .collect::<Result<Vec<_>>>()?
-                    .iter()
-                    .all(|grant| scope.grants().contains(grant))
-            {
-                if selected.replace(&binding.volume).is_some() {
-                    return Err(Error::Unauthorized(
-                        "child project binding is ambiguous".into(),
-                    ));
-                }
-            }
-        }
-        selected.map(Some).ok_or_else(|| {
-            Error::Unauthorized("child project lacks required content grants".into())
-        })
-    }
-
-    pub(super) fn child_access(
-        context: &ToolContext,
-    ) -> Result<&crate::resource_preparation::CreatedResourceAccess> {
         let task = context.task();
         let owner = task
             .owned_mailbox
@@ -59,7 +33,26 @@ impl CheckoutTools {
                 "child workspace seal belongs to another task".into(),
             ));
         }
-        Ok(access)
+        let mut selected = None;
+        for binding in &access.content {
+            if binding.volume.class() == VolumeClass::Project
+                && [VolumeOperation::Read, VolumeOperation::Write]
+                    .into_iter()
+                    .map(|operation| binding.volume.capability(operation, &mut None))
+                    .collect::<Result<Vec<_>>>()?
+                    .iter()
+                    .all(|grant| scope.grants().contains(grant))
+            {
+                if selected.replace(&binding.volume).is_some() {
+                    return Err(Error::Unauthorized(
+                        "child project binding is ambiguous".into(),
+                    ));
+                }
+            }
+        }
+        selected
+            .map(Some)
+            .ok_or_else(|| Error::Unauthorized("child project is not writable".into()))
     }
 
     pub(super) async fn child_checkout(

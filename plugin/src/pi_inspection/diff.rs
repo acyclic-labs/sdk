@@ -1,7 +1,6 @@
 use super::*;
 
-#[derive(Serialize, Deserialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiNativeDiffCursor {
     before: LazySnapshotRef,

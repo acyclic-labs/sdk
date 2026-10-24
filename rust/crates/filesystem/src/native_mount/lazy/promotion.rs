@@ -18,54 +18,48 @@ where
     let operation = crate::OperationId::new();
     for _ in 0..MAXIMUM_PROMOTION_RETRIES {
         carrier.with_work(|work| mount_items(work, 1))?;
-        let shared = authored.shared_checkout();
-        let mut candidate = crate::heap_future::in_heap_claimed(work, || {
-            shared.candidate(None, carrier, cancellation, Some(authored.cancellation()))
-        })?
-        .await?;
+        let mut candidate = authored
+            .shared_checkout()
+            .candidate(None, carrier, cancellation, Some(authored.cancellation()))
+            .await?;
         candidate.deadline = authored.mutation_deadline()?;
         if candidate.checkout.bound_authored_operation_id().is_none() {
             candidate.checkout.bind_authored_operation(operation);
         }
         let mut accounting = crate::kernel::KernelAccounting::native(work, cancellation);
-        let source = crate::heap_future::in_heap_claimed(work, || {
-            lazy.source_lookup(lazy.source_reference(), path, &mut accounting)
-        })?
-        .await
-        .map_err(lazy_error)?;
-        let changed = crate::heap_future::in_heap_claimed(work, || {
-            lazy.stage_into_checkout(
+        let source = lazy
+            .source_lookup(lazy.source_reference(), path, &mut accounting)
+            .await
+            .map_err(lazy_error)?;
+        let changed = lazy
+            .stage_into_checkout(
                 &mut candidate.checkout,
                 path,
                 expected_source,
                 u64::MAX,
                 &mut accounting,
             )
-        })?
-        .await
-        .map_err(lazy_error)?;
+            .await
+            .map_err(lazy_error)?;
         if !changed {
             return Ok(());
         }
         let (root, _allocation) = authored.namespace_path(&MountPath::root(), carrier)?;
-        let (installed, _allocation) = crate::heap_future::in_heap_claimed(work, || {
-            adapter::installed_changes(
-                &candidate.base,
-                &candidate.checkout,
-                InstallScope::Subtree(&root),
-                carrier,
-                cancellation,
-            )
-        })?
+        let (installed, _allocation) = adapter::installed_changes(
+            &candidate.base,
+            &candidate.checkout,
+            InstallScope::Subtree(&root),
+            carrier,
+            cancellation,
+        )
         .await?;
         let stamp = authored.shared_checkout().ledger.stamp();
         if stamp != candidate.stamp {
             // Accept a hint only after revalidating the exact imported source version.
-            let current = crate::heap_future::in_heap_claimed(work, || {
-                lazy.source_lookup(lazy.source_reference(), path, &mut accounting)
-            })?
-            .await
-            .map_err(lazy_error)?;
+            let current = lazy
+                .source_lookup(lazy.source_reference(), path, &mut accounting)
+                .await
+                .map_err(lazy_error)?;
             if source
                 .as_ref()
                 .zip(current.as_ref())
@@ -76,8 +70,9 @@ where
                 candidate.stamp = stamp;
             }
         }
-        let installed = crate::heap_future::in_heap_claimed(work, || {
-            shared.install_candidate(
+        let installed = authored
+            .shared_checkout()
+            .install_candidate(
                 (candidate, None),
                 carrier,
                 cancellation,
@@ -103,26 +98,23 @@ where
                         .map_err(|_| MountSourceError::Cancelled)
                 },
             )
-        })?
-        .await?;
+            .await?;
         if installed == Some(super::super::MountPublication::PerMutation) {
-            return crate::heap_future::in_heap_claimed(work, || async {
-                shared
-                    .publish(
-                        crate::PublicationPermit::Unrestricted,
-                        crate::kernel::KernelAccounting::native(work, cancellation),
-                        Some(authored.cancellation()),
-                        &mut adapter::source_publication_guard(
-                            authored.callback_guard().cloned(),
-                            Some(authored.cancellation().clone()),
-                        ),
-                        None,
-                        &mut None,
-                    )
-                    .await
-            })?
-            .await
-            .map_err(|(error, _)| error);
+            return authored
+                .shared_checkout()
+                .publish(
+                    crate::PublicationPermit::Unrestricted,
+                    crate::kernel::KernelAccounting::native(work, cancellation),
+                    Some(authored.cancellation()),
+                    &mut adapter::source_publication_guard(
+                        authored.callback_guard().cloned(),
+                        Some(authored.cancellation().clone()),
+                    ),
+                    None,
+                    &mut None,
+                )
+                .await
+                .map_err(|(error, _)| error);
         }
         if installed.is_some() {
             return Ok(());
@@ -144,25 +136,16 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         let (path, _allocation) = self.path(mounted, work)?;
-        let gate = ViewGate::callback_owner()?;
-        let resolution =
-            crate::heap_future::in_heap_claimed(work, || self.resolve(mounted, &path, gate, work))?
-                .await?;
+        let resolution = self
+            .resolve(mounted, &path, ViewGate::callback_owner()?, work)
+            .await?;
         let (lookup, _allocation) = match resolution {
             Resolution::Authored(_) => return Ok(()),
             Resolution::Absent => return Err(MountSourceError::NotFound),
             Resolution::Unauthored(lookup, allocation) => (lookup, allocation),
         };
-        let expected_source = crate::heap_future::in_heap_claimed(work, || {
-            file_id(&self.lazy, &path, &lookup, work)
-        })?
-        .await?;
-        // Boxed: neither the promotion's poll frame nor its layout nests in
-        // the callback future that waits for it.
-        crate::heap_future::in_heap_claimed(work, || {
-            stage_mount_promotion(&self.lazy, &self.authored, &path, expected_source, work)
-        })?
-        .await
+        let expected_source = file_id(&self.lazy, &path, &lookup, work).await?;
+        stage_mount_promotion(&self.lazy, &self.authored, &path, expected_source, work).await
     }
 
     pub(super) fn promote_parents_locked(

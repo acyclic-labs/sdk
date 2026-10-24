@@ -44,15 +44,13 @@ impl Cursor {
         self.watcher.watch_tree(EXCLUDED).map_err(storage)?;
         #[cfg(all(test, not(acyclic_harness_loom)))]
         self.inject("watch-tree")?;
-        acyclic_fs::in_heap(|| {
-            capture_baseline(
-                checkout,
-                options,
-                policy,
-                WorkBudget::UNBOUNDED,
-                cancellation,
-            )
-        })
+        capture_baseline(
+            checkout,
+            options,
+            policy,
+            WorkBudget::UNBOUNDED,
+            cancellation,
+        )
         .await
         .map_err(storage)?;
         #[cfg(all(test, not(acyclic_harness_loom)))]
@@ -95,7 +93,8 @@ pub(super) async fn capture(
             // Discard private mutations while retaining the ORIGINAL expected
             // publication head. Reopening Exact would silently refresh that
             // fence and could overwrite a concurrent writer's generation.
-            acyclic_fs::in_heap(|| checkout.discard(WorkBudget::UNBOUNDED, cancellation))
+            checkout
+                .discard(WorkBudget::UNBOUNDED, cancellation)
                 .await
                 .map_err(storage)?;
             initial = None;
@@ -200,16 +199,14 @@ pub(super) async fn replay(
     arrivals::register(&mut cursor.watcher, &batch, physical, policy)?;
     #[cfg(all(test, not(acyclic_harness_loom)))]
     cursor.inject("register")?;
-    let result = acyclic_fs::in_heap(|| {
-        capture_watch_batch(
-            checkout,
-            batch,
-            options,
-            policy,
-            WorkBudget::UNBOUNDED,
-            cancellation,
-        )
-    })
+    let result = capture_watch_batch(
+        checkout,
+        batch,
+        options,
+        policy,
+        WorkBudget::UNBOUNDED,
+        cancellation,
+    )
     .await;
     #[cfg(all(test, not(acyclic_harness_loom)))]
     cursor.inject("replay")?;

@@ -20,7 +20,7 @@ mod sse;
 pub use native::NativeMcpHttpProvider;
 
 /// One portable HTTP request with finite I/O bounds.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(deny_unknown_fields)]
 pub struct McpHttpRequest {

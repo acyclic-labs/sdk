@@ -17,7 +17,7 @@ const HEADS: &str = "harness/v3/effect-heads/";
 const MAX_NODE_BYTES: u64 = 1_024;
 const PUBLICATION_READ_BYTES: u64 = 4 * acyclic_stream::MAX_COMMAND_BYTES as u64;
 
-#[derive(Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum Node {
     Leaf(EffectId, (u64, u64)),
@@ -127,6 +127,7 @@ impl<P: StreamProvider> Tree<'_, P> {
             &record.value,
             MAX_NODE_BYTES,
             "Node Leaf Branch leaf branch array tuple u8 u64 EffectId",
+            |_, _| Ok(0),
             |_| (0, 0),
             quota.work(),
         )?;

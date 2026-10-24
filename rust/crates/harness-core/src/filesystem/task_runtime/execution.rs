@@ -63,21 +63,17 @@ where
         output: Option<&VolumeRef>,
     ) -> Result<FilesystemTaskExecution<P, A, O>> {
         let task_context = Arc::new(self.task_context(task, fence.clone()).await?);
-        // Unbudgeted: assembly holds no allocation budget.
-        acyclic_fs::in_heap(|| {
-            self.stock_execution_with_context(
-                task_context,
-                fence,
-                turn,
-                model,
-                provider,
-                context,
-                tools,
-                output,
-            )
-        })
+        self.stock_execution_with_context(
+            task_context,
+            fence,
+            turn,
+            model,
+            provider,
+            context,
+            tools,
+            output,
+        )
         .await
-        .map(|execution| *execution)
     }
 
     pub(in crate::filesystem) async fn stock_execution_with_context(
@@ -90,7 +86,7 @@ where
         context: ContextPipeline,
         tools: ToolRegistry,
         output: Option<&VolumeRef>,
-    ) -> Result<Box<FilesystemTaskExecution<P, A, O>>> {
+    ) -> Result<FilesystemTaskExecution<P, A, O>> {
         let task = task_context.durable_task_id().ok_or_else(|| {
             Error::Unauthorized("stock model has no admitted task context".into())
         })?;
@@ -100,8 +96,7 @@ where
             ));
         }
         task_context.owned_task_binding(None)?;
-        // Unbudgeted: assembly holds no allocation budget.
-        let admission = acyclic_fs::in_heap(|| self.host.observe_admission(task)).await?;
+        let admission = self.host.observe_admission(task).await?;
         if !admission.grants.contains("model:generate") {
             return Err(Error::Unauthorized(
                 "task scope lacks model:generate".into(),
@@ -113,38 +108,39 @@ where
             ));
         }
         let task_context = match output {
-            // Unbudgeted: assembly holds no allocation budget.
-            Some(volume) => acyclic_fs::in_heap(|| task_context.with_output_volume(volume)).await?,
+            Some(volume) => task_context.with_output_volume(volume).await?,
             None => task_context,
         };
         let scope = task_context.scope().clone();
+        let limits = scope.limits();
         let run_limits = scope.run_limits();
         let operation_id = execution_operation(task, turn, None)?;
         let task_files = match &self.task_files {
-            Some(files) => {
-                // Unbudgeted: assembly holds no allocation budget.
-                match acyclic_fs::in_heap(|| files.for_created_task(&task_context, &scope)).await? {
-                    Some(created) => Some(Arc::new(created)),
-                    None => Some(files.clone()),
-                }
-            }
+            Some(files) => match files.for_created_task(&task_context, &scope).await? {
+                Some(created) => Some(Arc::new(created)),
+                None => Some(files.clone()),
+            },
             None => None,
         };
-        // Unbudgeted: assembly holds no allocation budget.
-        let journal = acyclic_fs::in_heap(|| {
-            self.open_execution_journal(task, fence.clone(), turn, &admission)
-        })
-        .await?;
-        FilesystemTaskExecution::assemble(
+        let journal = self
+            .open_execution_journal(task, fence.clone(), turn, &admission)
+            .await?
+            .with_task_files(task_files)
+            .with_input_verifier(task_context.clone());
+        let executor = StockExecutor::new(model, provider, context, tools)
+            .with_limits(limits)
+            .with_tool_authority(scope, self.policy.clone())?
+            .with_durable_task(self.host.clone(), task, fence.clone())
+            .with_shared_task_context(task_context, operation_id)?;
+        Ok(FilesystemTaskExecution {
             operation_id,
-            boxed_executor(model, provider, context, tools),
+            executor,
             journal,
             run_limits,
-            self.host.clone(),
+            host: self.host.clone(),
             task,
             fence,
-        )
-        .bind_task(task_context, scope, self.policy.clone(), task_files)
+        })
     }
 }
 
@@ -171,67 +167,6 @@ where
         self.operation_id
     }
 
-    // Built in this frame, not in the async frame that opened the journal.
-    #[inline(never)]
-    fn assemble(
-        operation_id: OperationId,
-        executor: Box<StockExecutor>,
-        journal: Box<FilesystemExecutionJournal<P, A, O>>,
-        run_limits: TaskRunLimits,
-        host: Arc<CoordinatorTaskHost<P>>,
-        task: TaskId,
-        fence: LeaseFence,
-    ) -> Box<Self> {
-        // Unbudgeted: opening a task execution holds no allocation budget.
-        Box::new(Self {
-            operation_id,
-            executor: *executor,
-            journal: *journal,
-            run_limits,
-            host,
-            task,
-            fence,
-        })
-    }
-
-    #[inline(never)]
-    fn bind_task(
-        mut self: Box<Self>,
-        context: Arc<TaskContext>,
-        scope: RuntimeScope,
-        policy: Option<Arc<dyn ToolPolicy>>,
-        files: Option<Arc<crate::task_volume::TaskFiles<P>>>,
-    ) -> Result<Box<Self>> {
-        self.journal = self
-            .journal
-            .with_task_files(files)
-            .with_input_verifier(context.clone());
-        self.executor = self
-            .executor
-            .with_limits(scope.limits())
-            .with_tool_authority(scope, policy)?
-            .with_durable_task(self.host.clone(), self.task, self.fence.clone())
-            .with_shared_task_context(context, self.operation_id)?;
-        Ok(self)
-    }
-
-    #[inline(never)]
-    pub(in crate::filesystem) fn configure(
-        mut self: Box<Self>,
-        compaction: crate::context::CompactionPolicy,
-        summary: Option<Box<FileRef>>,
-        maximum: Option<u32>,
-    ) -> Result<Box<Self>> {
-        self.executor = self
-            .executor
-            .with_compaction_policy(compaction)
-            .with_summary_source(summary);
-        if let Some(maximum) = maximum {
-            self.executor = self.executor.with_max_output_tokens(maximum)?;
-        }
-        Ok(self)
-    }
-
     /// Replaces or disables compaction while retaining task accounting and fencing.
     #[must_use]
     pub fn with_compaction_policy(mut self, policy: crate::context::CompactionPolicy) -> Self {
@@ -245,12 +180,13 @@ where
         Ok(self)
     }
 
+    pub(crate) fn with_summary_source(mut self, source: Option<Box<FileRef>>) -> Self {
+        self.executor = self.executor.with_summary_source(source);
+        self
+    }
+
     #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-    #[inline(never)]
-    pub(crate) fn with_hooks(
-        mut self: Box<Self>,
-        hooks: Option<Arc<crate::hooks::BoundHooks>>,
-    ) -> Box<Self> {
+    pub(crate) fn with_hooks(mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) -> Self {
         self.executor = self.executor.with_hooks(hooks);
         self
     }
@@ -345,15 +281,4 @@ where
         }
         Ok(())
     }
-}
-
-#[inline(never)]
-fn boxed_executor(
-    model: Model,
-    provider: Arc<dyn ModelProvider>,
-    context: ContextPipeline,
-    tools: ToolRegistry,
-) -> Box<StockExecutor> {
-    // Unbudgeted: opening a task execution holds no allocation budget.
-    Box::new(StockExecutor::new(model, provider, context, tools))
 }

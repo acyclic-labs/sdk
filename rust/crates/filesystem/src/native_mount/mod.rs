@@ -277,8 +277,6 @@ pub use source::*;
 mod path;
 pub use path::MountPath;
 mod callbacks;
-#[cfg(any(windows, test))]
-mod creating_name;
 pub use callbacks::*;
 mod filesystem;
 pub use filesystem::*;
@@ -304,13 +302,3 @@ mod fence;
 use fence::*;
 #[cfg(test)]
 mod tests;
-
-#[cfg(all(feature = "fuzzing", target_os = "linux"))]
-pub(crate) use fuse::fuzz_reply;
-
-#[cfg(any(windows, feature = "fuzzing"))]
-pub(crate) mod callback_path;
-
-/// Exercises the production callback path codec without native FFI.
-#[cfg(feature = "fuzzing")]
-pub use callback_path::fuzz_check as fuzz_callback_path;

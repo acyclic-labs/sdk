@@ -271,11 +271,7 @@ pub(super) fn publish_pi_input_with_native_coordinates<'a, T: Serialize + Sync>(
                 &coordinates.display_name.0,
                 maximum(owner),
                 &coordinates.key.0,
-                None,
-                acyclic_harness::conversation::ContentAccess {
-                    ceiling: None,
-                    io: Some(&io),
-                },
+                None, acyclic_harness::conversation::ContentAccess { ceiling: None, io: Some(&io) },
             )
             .await;
         drop(encoded);
@@ -294,9 +290,7 @@ pub(super) fn publish_pi_input_with_native_coordinates<'a, T: Serialize + Sync>(
     }
 }
 
-pub(super) async fn read_root_artifact_with_native_work<
-    T: DeserializeOwned + Serialize + acyclic_harness::HeapLayout,
->(
+pub(super) async fn read_root_artifact_with_native_work<T: DeserializeOwned + Serialize>(
     owner: &PiOwnerConfig,
     context: &TaskContext,
     reference: &FileRef,
@@ -328,9 +322,7 @@ pub(super) async fn read_root_artifact_with_native_work<
 ///
 /// Any other spelling of the same value, including the unreleased declared-field-order
 /// encoding, is a typed `Invalid` boundary error: there is no second accepted form.
-pub(super) fn decode_root_artifact<
-    T: DeserializeOwned + Serialize + acyclic_harness::HeapLayout,
->(
+pub(super) fn decode_root_artifact<T: DeserializeOwned + Serialize>(
     owner: &PiOwnerConfig,
     bytes: &[u8],
     schema: &'static JsonValueSchema,
@@ -339,6 +331,7 @@ pub(super) fn decode_root_artifact<
     let decoded = guarded_pi_decode(
         bytes,
         maximum(owner),
+        std::mem::size_of::<T>() as u64,
         ErrorCode::Invalid,
         schema,
         ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES,

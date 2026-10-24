@@ -1,7 +1,7 @@
 use super::*;
 
 /// Addressable, ref-only request admitted before presentation to a responder.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InteractionTicket {
     /// Stable address used by responders and retries.
@@ -57,6 +57,7 @@ impl InteractionTicket {
         let mut decoded = decode_interaction_json::<Interaction>(
             bytes,
             crate::executor::json::JsonValueSchema::Interaction,
+            std::mem::size_of::<ChoiceOption>() as u64,
             work,
         )?;
         let mut retained = 0;
@@ -149,6 +150,7 @@ impl InteractionTicket {
         let mut response = decode_interaction_json::<InteractionResponse>(
             bytes,
             crate::executor::json::JsonValueSchema::InteractionResponse,
+            std::mem::size_of::<String>() as u64,
             work,
         )?;
         request.validate_response(&response.0, response.1.work())
@@ -176,6 +178,7 @@ impl InteractionTicket {
         let mut response = decode_interaction_json::<InteractionResponse>(
             bytes,
             crate::executor::json::JsonValueSchema::InteractionResponse,
+            std::mem::size_of::<String>() as u64,
             work,
         )?;
         request.validate_response(&response.0, response.1.work())?;

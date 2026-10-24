@@ -260,8 +260,9 @@ where
             .await;
         }
         BoundedContentFuture::new(io, || async {
-            let execution = crate::conversation::BoundedOperationFuture::new(io, || {
-                self.runtime.stock_execution_with_context(
+            let execution = self
+                .runtime
+                .stock_execution_with_context(
                     Arc::clone(&context),
                     fence.clone(),
                     turn,
@@ -271,30 +272,21 @@ where
                     tools,
                     command.selected_output_volume.as_ref(),
                 )
-            })?
-            .await?;
-            let execution = execution.configure(
-                compaction.clone(),
-                command.summary_source,
-                command.max_output_tokens,
-            )?;
+                .await?
+                .with_compaction_policy(compaction.clone())
+                .with_summary_source(command.summary_source);
             #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
             let execution = execution.with_hooks(hooks);
+            let execution = match command.max_output_tokens {
+                Some(maximum) => execution.with_max_output_tokens(maximum)?,
+                None => execution,
+            };
             if reconciliation_only {
-                let result = crate::conversation::BoundedOperationFuture::new(io, || {
-                    execution.reconcile_progress(input)
-                })?
-                .await;
+                let result = execution.reconcile_progress(input).await;
                 return Self::reconcile_model(result.map(drop), require_journal()?, operation, io)
                     .await;
             }
-            Self::model_progress(
-                crate::conversation::BoundedOperationFuture::new(io, || {
-                    execution.execute_progress(input)
-                })?
-                .await?,
-                io,
-            )
+            Self::model_progress(execution.execute_progress(input).await?, io)
         })?
         .await
     }

@@ -8,12 +8,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let token = CancellationToken::new();
         let cancellation = &token;
         let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation);
-        // Boxed on this join's own ledger: the join's poll frame is not
-        // reserved in any caller's.
-        let output = crate::heap_future::metered!((&mut accounting), |accounting| {
-            self.apply_workspace_join_with_accounting(
+        let output = self
+            .apply_workspace_join_with_accounting(
                 request,
-                accounting,
+                &mut accounting,
                 cancellation,
                 |request, intent, limits, budget| async move {
                     publish_generation(
@@ -35,7 +33,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     })
                 },
             )
-        })?;
+            .await?;
         Ok(output.value)
     }
 
@@ -145,9 +143,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         {
             return Err(WorkspaceError::IncompatibleWorkspace.into());
         }
-        let current_target = crate::heap_future::metered!(accounting, |accounting| self
-            .workspace_head_state(target, accounting, cancellation))?
-        .0;
+        let current_target = self
+            .workspace_head_state(target, accounting, cancellation)
+            .await?
+            .0;
         let target_object = ObjectId {
             kind: ObjectKind::GenerationRoot,
             digest: expected_target.digest(),
@@ -160,30 +159,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             kind: ObjectKind::GenerationRoot,
             digest: source.id.digest(),
         };
-        let mut base_root = crate::heap_future::metered!(accounting, |accounting| {
-            self.read_join_root_with_accounting(
-                base_object,
-                target.config,
-                accounting,
-                cancellation,
-            )
-        })?;
-        let mut source_root = crate::heap_future::metered!(accounting, |accounting| {
-            self.read_join_root_with_accounting(
-                source_object,
-                target.config,
-                accounting,
-                cancellation,
-            )
-        })?;
-        let target_root = crate::heap_future::metered!(accounting, |accounting| {
-            self.read_join_root_with_accounting(
-                target_object,
-                target.config,
-                accounting,
-                cancellation,
-            )
-        })?;
+        let mut base_root = self
+            .read_join_root_with_accounting(base_object, target.config, accounting, cancellation)
+            .await?;
+        let mut source_root = self
+            .read_join_root_with_accounting(source_object, target.config, accounting, cancellation)
+            .await?;
+        let target_root = self
+            .read_join_root_with_accounting(target_object, target.config, accounting, cancellation)
+            .await?;
         let result = async {
             if source_root.value.volume_id != source.workspace.volume.id
                 || target_root.value.volume_id != target.id
@@ -205,14 +189,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         allocation_error,
                     )
                 })?;
-            let normalized_base_object = crate::heap_future::metered!(accounting, |accounting| {
-                self.put_encoded_with_accounting(
+            let normalized_base_object = self
+                .put_encoded_with_accounting(
                     ObjectKind::GenerationRoot,
                     encoded,
                     accounting,
                     cancellation,
                 )
-            })?;
+                .await?;
             let encoded =
                 crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
                     crate::kernel::encode_generation_root(
@@ -221,15 +205,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         allocation_error,
                     )
                 })?;
-            let normalized_source_object =
-                crate::heap_future::metered!(accounting, |accounting| {
-                    self.put_encoded_with_accounting(
-                        ObjectKind::GenerationRoot,
-                        encoded,
-                        accounting,
-                        cancellation,
-                    )
-                })?;
+            let normalized_source_object = self
+                .put_encoded_with_accounting(
+                    ObjectKind::GenerationRoot,
+                    encoded,
+                    accounting,
+                    cancellation,
+                )
+                .await?;
             if normalized_source_object == target_object && current_target == expected_target {
                 return workspace_join_scalar(
                     WorkspaceJoinOutcome::NoChanges(current_target),
@@ -251,29 +234,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             };
             let (merged, allocation) = match &resolutions {
                 WorkspaceJoinResolutions::Map(map) => {
-                    crate::heap_future::metered!(accounting, |accounting| {
-                        merge_generation_with_borrowed_map_resolutions_with_accounting(
-                            &self.inner.objects,
-                            &merge_request,
-                            map,
-                            DecodeLimits::for_volume(target.config),
-                            accounting,
-                            cancellation,
-                        )
-                    })?
+                    merge_generation_with_borrowed_map_resolutions_with_accounting(
+                        &self.inner.objects,
+                        &merge_request,
+                        map,
+                        DecodeLimits::for_volume(target.config),
+                        accounting,
+                        cancellation,
+                    )
+                    .await?
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 WorkspaceJoinResolutions::Slice(slice) => {
-                    crate::heap_future::metered!(accounting, |accounting| {
-                        merge_generation_with_borrowed_resolutions_with_accounting(
-                            &self.inner.objects,
-                            merge_request,
-                            slice,
-                            DecodeLimits::for_volume(target.config),
-                            accounting,
-                            cancellation,
-                        )
-                    })?
+                    merge_generation_with_borrowed_resolutions_with_accounting(
+                        &self.inner.objects,
+                        merge_request,
+                        slice,
+                        DecodeLimits::for_volume(target.config),
+                        accounting,
+                        cancellation,
+                    )
+                    .await?
                 }
             };
             let (candidate, root) = match merged {
@@ -312,45 +293,38 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             }
             // This immutable normalized history parent is outside the candidate's
             let _source_hold = if history == crate::workspace::JoinHistory::Merge {
-                Some(crate::heap_future::metered!(accounting, |accounting| {
+                Some(
                     self.flush_join_parent_with_accounting(
                         normalized_source_object,
                         accounting,
                         cancellation,
                     )
-                })?)
+                    .await?,
+                )
             } else {
                 None
             };
-            // The frame stays reserved while its receipt joins the ledger.
-            let (published, reservation) =
-                crate::heap_future::in_heap_budgeted(&mut *accounting, |remaining| {
-                    publication(
-                        PublishGenerationRequest {
-                            authority_id: volume_authority_id(target.id),
-                            volume_id: target.id,
-                            epoch: expected_head.epoch,
-                            expected: expected_head,
-                            operation_id,
-                            generation_root: candidate,
-                        },
-                        PublicationIntent::guarded(Some(operation_context), permit),
-                        closure_limits(target.config),
-                        remaining,
-                    )
-                })?
-                .await;
-            let merged = if accounting.standalone_parts().is_some() {
+            let published = publication(
+                PublishGenerationRequest {
+                    authority_id: volume_authority_id(target.id),
+                    volume_id: target.id,
+                    epoch: expected_head.epoch,
+                    expected: expected_head,
+                    operation_id,
+                    generation_root: candidate,
+                },
+                PublicationIntent::guarded(Some(operation_context), permit),
+                closure_limits(target.config),
+                accounting.remaining()?,
+            )
+            .await;
+            if accounting.standalone_parts().is_some() {
                 let spent = match &published {
                     Ok(receipt) => receipt.work,
                     Err(failure) => *failure.work,
                 };
-                merge_creation_backend_work(accounting, spent)
-            } else {
-                Ok(())
-            };
-            crate::heap_future::FrameLedger::release_frame(&mut *accounting, reservation)?;
-            merged?;
+                merge_creation_backend_work(accounting, spent)?;
+            }
             let outcome = match published.map_err(|failure| failure.error)?.value {
                 LivePublicationObservation::Committed {
                     generation_id: id, ..

@@ -36,13 +36,13 @@ proptest::proptest! {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             let volume = TaskVolume::open(Arc::new(MemoryStream::default()), StreamPath::new("completion-batch").unwrap()).await.unwrap();
-            let old = FileKey::parse("commands/catalog.json").unwrap();
+            let old = FileKey::parse("commands/old.json").unwrap();
             let current = FileKey::parse("commands/current.json").unwrap();
             let extra = FileKey::parse("commands/extra.json").unwrap();
             let cut = volume.snapshot(&Query::Inputs, 8).await.unwrap().generation;
             let mut generation = volume.append(cut, &Write::new(old.clone(), command("before"))).await.unwrap();
             let mut input = PromptInput::new(Editor::new("/"));
-            let mut files = CompletionFiles::observe(&volume, &mut input, None).await.unwrap();
+            let mut files = CompletionFiles::observe(&volume, &mut input, None, 8).await.unwrap();
             let mut old_present = true;
             // Replay every generated write immediately: an identical append is
             // not a publication and must neither wait nor mutate the projection.
@@ -52,7 +52,7 @@ proptest::proptest! {
                 let before = painted(&input);
                 let cursor = files.cursor.clone();
                 let previous = generation.clone();
-                generation = volume.append(generation, &Write::new(old.clone(), command(&name))).await.unwrap();
+                generation = volume.append(generation, &Write::new(current.clone(), command(&name))).await.unwrap();
                 // Poll the accepted in-memory cut once, independently of the
                 // enclosing task's cooperative budget; never wait for absent data.
                 let ready = tokio::task::unconstrained(files.read_change()).now_or_never();
@@ -63,7 +63,6 @@ proptest::proptest! {
                     continue;
                 }
                 let mut change = ready.expect("an accepted in-memory publication must be immediately observable").unwrap();
-                change.file = Some(Write::new(current.clone(), command(&name)));
                 if !primary {
                     change.files.push(change.file.take().unwrap());
                 }

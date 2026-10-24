@@ -52,15 +52,13 @@ where
                         .await?
                     }
                     Some(io) => {
-                        crate::conversation::BoundedOperationFuture::new(Some(io), || {
-                            self.replay_page(
-                                operation,
-                                summary.tail,
-                                EXECUTION_REPLAY_PAGE_RECORDS,
-                                true,
-                                Some(io),
-                            )
-                        })?
+                        Box::pin(self.replay_page(
+                            operation,
+                            summary.tail,
+                            EXECUTION_REPLAY_PAGE_RECORDS,
+                            true,
+                            Some(io),
+                        ))
                         .await?
                     }
                     None => {
@@ -184,7 +182,7 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         let span = obs_span!("acyclic.harness.journal.suspend", rev = revision);
-        crate::obs::traced_on(io, span, || async {
+        traced(span, async {
             let mut shared = if io.is_none() {
                 Some(self.verified.lock().await)
             } else {

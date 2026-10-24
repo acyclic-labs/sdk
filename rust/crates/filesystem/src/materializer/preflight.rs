@@ -1,9 +1,6 @@
 use super::*;
 use crate::native_host::HostRoot;
 
-#[cfg(test)]
-mod tests;
-
 // Main's promotion checks: preserve identical files and directories with unknown children.
 pub(super) async fn host_holds_generation_file<
     A: crate::AsyncAuthorityStore,
@@ -73,10 +70,12 @@ pub(super) async fn host_holds_generation_file<
     if crate::native_host::stat_file(&file, &mut &*work)?.identity() != observed.identity() {
         return Ok(false);
     }
+    let mut buffer = [0; 64 * 1024];
     let mut offset = 0;
+    use std::io::Read as _;
     while offset < observed.len() {
         let length = (observed.len() - offset)
-            .min(HOST_COMPARE_BYTES as u64)
+            .min(buffer.len() as u64)
             .min(work.remaining()?.source_bytes_read / 2);
         if length == 0 {
             work.charge(NativeResourceCredit::ReadBytes.delta(2))?;
@@ -84,8 +83,24 @@ pub(super) async fn host_holds_generation_file<
         let expected = generation
             .read_range(&absolute, offset, length, work, work.cancellation())
             .await?;
-        if expected.bytes.len() as u64 != length
-            || !host_range_equals(&mut file, &expected.bytes, work)?
+        if expected.bytes.len() as u64 != length {
+            return Ok(false);
+        }
+        let mut count = 0;
+        while count < length as usize {
+            work.charge(NativeResourceCredit::ReadOperations.delta(1))?;
+            let read = file.read(&mut buffer[count..length as usize])?;
+            work.spent(NativeResourceCredit::ReadBytes.delta(read as u64))?;
+            if read == 0 {
+                return Ok(false);
+            }
+            count += read;
+        }
+        if native_compare(
+            expected.bytes.iter().copied(),
+            buffer[..count].iter().copied(),
+            work,
+        )? != std::cmp::Ordering::Equal
         {
             return Ok(false);
         }
@@ -96,38 +111,6 @@ pub(super) async fn host_holds_generation_file<
         && same_file_version(&observed, &finished)?
         && host_stat(root, relative, work)?
             .is_some_and(|selected| selected.identity() == observed.identity()))
-}
-
-/// The largest host range compared against one generation read.
-const HOST_COMPARE_BYTES: usize = 64 * 1024;
-
-/// Reads and compares one host range in a synchronous frame of its own.
-///
-/// The read buffer lives only in this frame, never in the publication future:
-/// a buffer held across an await is carried by every future that awaits it,
-/// and each of their poll frames, all the way up to the caller's thread stack.
-#[inline(never)]
-fn host_range_equals<F: std::io::Read>(
-    file: &mut F,
-    expected: &[u8],
-    work: &NativeMaterializationWork,
-) -> Result<bool, NativeWorkspacePublicationError> {
-    let mut buffer = [0; HOST_COMPARE_BYTES];
-    let mut count = 0;
-    while count < expected.len() {
-        work.charge(NativeResourceCredit::ReadOperations.delta(1))?;
-        let read = file.read(&mut buffer[count..expected.len()])?;
-        work.spent(NativeResourceCredit::ReadBytes.delta(read as u64))?;
-        if read == 0 {
-            return Ok(false);
-        }
-        count += read;
-    }
-    Ok(native_compare(
-        expected.iter().copied(),
-        buffer[..count].iter().copied(),
-        work,
-    )? == std::cmp::Ordering::Equal)
 }
 
 pub(super) async fn host_directory_holds_unknown_entries<

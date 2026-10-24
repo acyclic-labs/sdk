@@ -180,6 +180,7 @@ pub(super) fn native_positional_file(
         drop(file);
         capture_demand_error(
             original
+                .state
                 .take_native_io_failure()
                 .unwrap_or_else(|| native_demand_error(error)),
         )
@@ -321,6 +322,7 @@ fn native_source_read_error(
     original: &NativeMaterializationWork,
 ) -> crate::FsError {
     original
+        .state
         .take_native_io_failure()
         .map(crate::materializer::native_materialization_work_error)
         .map_or_else(

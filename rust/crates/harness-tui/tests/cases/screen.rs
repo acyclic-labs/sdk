@@ -71,10 +71,9 @@ fn completion_overlays_above_prompt_and_resize_preserves_input()
 -> Result<(), Box<dyn std::error::Error>> {
     let screen = Screen::default();
     let mut input = PromptInput::new(Editor::new("界\n@sec"));
-    input.completion.set_file(
-        "search/results.json",
-        Some(br#"{"query":"sec","paths":["second"]}"#),
-    )?;
+    input
+        .completion
+        .set_file("workspace/second", Some(b"source"))?;
     input.refresh_completions();
     let mut viewport = Viewport::default();
     let mut terminal = Terminal::new(TestBackend::new(100, 20))?;
@@ -104,7 +103,7 @@ proptest! {
         let tools = vec![Line::from("tool"); tools];
         let screen = Screen { transcript: &rows, tools: &tools, terminal: &rows, diff: &rows, goal: &rows, plans: &rows, notifications: &rows, ..Screen::default() };
         let mut input = PromptInput::new(Editor::new(&format!("{}@row", "line\n".repeat(count))));
-        input.completion.set_file("search/results.json", Some(br#"{"query":"row","paths":["row"]}"#)).unwrap();
+        input.completion.set_file("workspace/row", Some(b"source")).unwrap();
         input.refresh_completions();
         let outer = Rect::new(x, y, width, height);
         let areas = screen.areas(outer, &input);

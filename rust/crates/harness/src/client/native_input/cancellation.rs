@@ -178,9 +178,10 @@ fn model<const RETAIN: bool>(return_to_initial: bool) {
                     .unwrap();
                 client.follow_commands(&commands).await.unwrap();
                 let mut prompt = PromptInput::default();
-                let mut completions = CompletionFiles::observe(volume.as_ref(), &mut prompt, None)
-                    .await
-                    .unwrap();
+                let mut completions =
+                    CompletionFiles::observe(volume.as_ref(), &mut prompt, None, 128)
+                        .await
+                        .unwrap();
                 let mut observed = volume.observe(Query::Inputs, None, 128).await.unwrap();
                 client
                     .views_mut()

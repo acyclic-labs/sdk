@@ -241,9 +241,7 @@ impl BrowserStream {
             };
             replay(&cache.provider, command).await?;
             if let Some(before) = before {
-                before
-                    .collect(&cache.provider, changed, &self.inner.publications)
-                    .await?;
+                before.collect(&cache.provider, changed, &self.inner.publications).await?;
                 cache.announced = cache.cursor + 1;
             }
             cache.cursor += 1;
@@ -367,13 +365,7 @@ impl BrowserStream {
         // or abort, and same-handle readers also share the cache lock.
         self.inner.publications.publish()?;
         transaction.commit().await.map_err(backend)?;
-        before
-            .collect(
-                &cache.provider,
-                &mut dispatch.keys,
-                &self.inner.publications,
-            )
-            .await?;
+        before.collect(&cache.provider, &mut dispatch.keys, &self.inner.publications).await?;
         cache.cursor = count + 1;
         cache.announced = cache.cursor;
         cache.valid = true;

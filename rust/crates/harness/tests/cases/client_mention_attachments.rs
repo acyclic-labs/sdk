@@ -5,7 +5,8 @@ use acyclic_harness::{
     model::{FileProjectionPolicy, ModelContent, ModelContentPart},
 };
 
-use acyclic_harness::test_support::fuzz_cases::mentions as oracle;
+#[path = "../../../harness-fuzz/support/mentions.rs"]
+mod oracle;
 
 fn checked_input() -> CommandResolution {
     let mentions = [file(1, 1, 1, b"one"), file(2, 1, 1, b"two")]
@@ -243,7 +244,8 @@ proptest::proptest! {
     }
 }
 
-use acyclic_harness::test_support::fuzz_cases::workspace_media;
+#[path = "../../../harness-fuzz/support/workspace_media.rs"]
+mod workspace_media;
 
 proptest::proptest! {
     // Classification preserves the full UTF-8 body, and codec round-trips preserve

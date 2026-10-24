@@ -3,7 +3,8 @@
 use acyclic_actors::guest::{AdmittedCaller, Checkpoint, GuestEvent, GuestEventResult};
 use libfuzzer_sys::fuzz_target;
 
-use acyclic_actors::fuzzing::metadata;
+#[path = "../../rust/crates/actors/tests/support/metadata.rs"]
+mod metadata;
 
 fuzz_target!(|input: &[u8]| {
     metadata::check(input);

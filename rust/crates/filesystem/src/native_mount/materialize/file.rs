@@ -13,12 +13,7 @@ where
     F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
-    generation_action(
-        receipt.custody.work(),
-        before_effect,
-        NativeMaterializationActionPhase::Before,
-    )
-    .await?;
+    generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
     let length = bytes.len() as u64;
     let custody = receipt
         .custody
@@ -29,12 +24,7 @@ where
         .write_async(offset, bytes, meter, custody)
         .map_err(|error| receipt.runtime_error(error))?;
     write.await.map_err(|error| receipt.runtime_error(error))?;
-    generation_action(
-        receipt.custody.work(),
-        before_effect,
-        NativeMaterializationActionPhase::Completed,
-    )
-    .await?;
+    generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
     Ok(length)
 }
 
@@ -48,23 +38,13 @@ where
     F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
-    generation_action(
-        receipt.custody.work(),
-        before_effect,
-        NativeMaterializationActionPhase::Before,
-    )
-    .await?;
+    generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
     let meter = receipt.custody.work().runtime_meter();
     let sync = file
         .sync_async(acyclic_native_runtime::Durability::Full, Some(meter))
         .map_err(|error| receipt.runtime_error(error))?;
     sync.await.map_err(|error| receipt.runtime_error(error))?;
-    generation_action(
-        receipt.custody.work(),
-        before_effect,
-        NativeMaterializationActionPhase::Completed,
-    )
-    .await
+    generation_action(before_effect, NativeMaterializationActionPhase::Completed).await
 }
 
 #[cfg(windows)]
@@ -152,12 +132,8 @@ where
                 ExtentKind::Hole => {
                     #[cfg(target_os = "macos")]
                     {
-                        generation_action(
-                            receipt.custody.work(),
-                            before_effect,
-                            NativeMaterializationActionPhase::Before,
-                        )
-                        .await?;
+                        generation_action(before_effect, NativeMaterializationActionPhase::Before)
+                            .await?;
                         let meter = receipt.custody.work().runtime_meter();
                         let control = file
                             .control_async(
@@ -175,9 +151,7 @@ where
                                 Some(meter),
                             )
                             .map_err(|error| receipt.runtime_error(error))?;
-                        control
-                            .await
-                            .map_err(|error| receipt.runtime_error(error))?;
+                        control.await.map_err(|error| receipt.runtime_error(error))?;
                         generation_action(
                             before_effect,
                             NativeMaterializationActionPhase::Completed,

@@ -1,7 +1,7 @@
 use super::*;
 
 /// A host-declared directory boundary. A declaration conveys no authority.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ContextRoot {
@@ -35,7 +35,7 @@ impl ContextRoot {
 }
 
 /// Repository instruction scope, evaluated from the declared root to the active directory.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct InstructionScope {
@@ -46,7 +46,7 @@ pub struct InstructionScope {
 }
 
 /// Replaceable discovery policy. Empty lists disable either discovery independently.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ContextDiscoveryPolicy {
@@ -57,7 +57,7 @@ pub struct ContextDiscoveryPolicy {
 }
 
 /// Refresh timing selected by the embedding admitted workflow.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ContextReloadPolicy {
@@ -69,7 +69,7 @@ pub enum ContextReloadPolicy {
 }
 
 /// Ordinary declaration values used by both explicit reload and live bindings.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ContextDiscovery {
@@ -193,7 +193,7 @@ impl Default for ContextDiscoveryPolicy {
 }
 
 /// Explicit finite discovery bounds, independent of the retained workspace count.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ContextDiscoveryLimits {
@@ -249,7 +249,7 @@ impl ContextDiscoveryLimits {
 }
 
 /// Immutable path selected by discovery; resolving it never follows a newer head.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct PinnedContextPath {

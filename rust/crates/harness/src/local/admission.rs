@@ -57,8 +57,7 @@ pub(super) async fn serialized<T>(
     action: impl AsyncFnOnce() -> T,
 ) -> T {
     let _guard = lock_owned(StateArc::clone(gate)).await;
-    // Boxed, as every serialized action: its frame is not reserved in the caller's.
-    acyclic_fs::in_heap(|| action()).await
+    action().await
 }
 
 // Readers hold admission or consume the host during teardown. The detached

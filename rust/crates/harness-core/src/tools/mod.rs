@@ -42,9 +42,3 @@ pub fn rejected_input(error: crate::Error) -> crate::tool::ToolResult {
 #[cfg(acyclic_harness_loom)]
 #[doc(hidden)]
 pub use children::cancellable as cancellable_child_wait;
-
-#[cfg(feature = "test-support")]
-mod fuzzing;
-/// Exercises the production command parsers and selection against round-trip oracles.
-#[cfg(feature = "test-support")]
-pub use fuzzing::check as fuzz_command;

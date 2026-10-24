@@ -98,31 +98,3 @@ fn components(path: &str, windows: bool, unc: bool) -> impl Iterator<Item = &str
 
 #[cfg(test)]
 mod tests;
-
-/// Exercises the production workspace key parser with synthetic input.
-#[cfg(feature = "test-support")]
-pub fn fuzz_check(input: &str) {
-    if input.len() > 4096 {
-        return;
-    }
-    let mut paths = input.trim_end_matches('\n').splitn(3, '\n');
-    let left = paths.next().unwrap();
-    let right = paths.next().unwrap_or(left);
-    let third = paths.next().unwrap_or(right);
-    // Call the production matcher as well as both platform-specific pure paths.
-    assert!(matches(
-        left,
-        std::path::Path::new(left),
-        std::path::Path::new(left)
-    ));
-    for windows in [false, true] {
-        assert!(equivalent(left, left, windows));
-        assert_eq!(
-            equivalent(left, right, windows),
-            equivalent(right, left, windows)
-        );
-        if equivalent(left, right, windows) && equivalent(right, third, windows) {
-            assert!(equivalent(left, third, windows));
-        }
-    }
-}

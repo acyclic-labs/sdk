@@ -13,7 +13,6 @@ use serde_json::Value;
 use std::{collections::BTreeSet, sync::Arc};
 
 mod fixtures;
-pub(super) mod intent_index;
 use fixtures::{
     LostSessionAck, TestContentVerifier, declaration_scope, declare, grant, open, owner_issuer,
     publish, spec, start, state_ref, worker,
@@ -23,13 +22,6 @@ mod cancellation;
 mod fencing;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod frame_cancellation;
-#[cfg(all(
-    acyclic_harness_loom,
-    acyclic_loom,
-    feature = "filesystem",
-    not(target_arch = "wasm32")
-))]
-mod intent_models;
 #[cfg(feature = "filesystem")]
 mod limits;
 #[cfg(all(

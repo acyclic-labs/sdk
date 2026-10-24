@@ -3,7 +3,7 @@ use super::*;
 use crate::{executor::stock_boundary, wire::ErrorCode};
 
 /// Durable output of an ordinary admitted summary model operation.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContextSummary {
     /// Caller-owned operation identity; retries use the same admitted request.
@@ -19,7 +19,7 @@ pub struct ContextSummary {
 }
 
 /// Consumer-declared content that compaction must preserve verbatim.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct CompactionRetention {
@@ -60,7 +60,7 @@ impl CompactionRetention {
 }
 
 /// Immutable reference proving which pre-compaction context was summarized.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CompactionReference {
     /// BLAKE3 digest of the exact serialized source context.
     pub source_digest: [u8; 32],
@@ -73,7 +73,7 @@ pub struct CompactionReference {
 }
 
 /// Ref-only canonical checkpoint envelope pinned by a committed history selection.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CanonicalContextCheckpoint {
     /// Existing execution which admitted the summary and its source.

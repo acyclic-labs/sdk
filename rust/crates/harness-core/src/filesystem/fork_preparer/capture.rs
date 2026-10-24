@@ -105,14 +105,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 )
             })?;
         validate_capture(selection, &committed)?;
-        if *committed != captured {
+        if committed != captured {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Conflict,
                 "fork capture has another committed result",
             ));
         }
-        Ok(committed.into_inner())
+        Ok(committed)
     }
 }
 

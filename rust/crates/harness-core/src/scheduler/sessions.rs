@@ -6,7 +6,6 @@ impl Scheduler {
     pub fn declare(&self, spec: OperationSpec) -> Result<SchedulerEvent> {
         self.validate_declaration(&spec, &mut None)?;
         Ok(SchedulerEvent::Declared {
-            // Unbudgeted: declaration planning holds no budget.
             spec: Box::new(spec),
         })
     }

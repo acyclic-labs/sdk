@@ -9,7 +9,8 @@ use acyclic_harness::{
 #[path = "../goal_files/parsing.rs"]
 mod parsing;
 
-use acyclic_harness::test_support::fuzz_cases::goal_parser_input;
+#[path = "../../../harness-fuzz/fuzz_targets/goal_parser_input.rs"]
+mod goal_parser_input;
 
 #[test]
 fn checked_in_fuzz_corpus() -> Result<()> {

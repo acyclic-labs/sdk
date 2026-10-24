@@ -53,7 +53,7 @@ pub enum MergePreparation {
     },
 }
 
-pub(crate) async fn diff_generation_file_tables<O: AsyncObjectStore, const EARLY_EQUAL: bool>(
+pub(crate) async fn diff_generation_file_tables<O: AsyncObjectStore>(
     objects: &O,
     before: ObjectId,
     after: ObjectId,
@@ -68,7 +68,7 @@ pub(crate) async fn diff_generation_file_tables<O: AsyncObjectStore, const EARLY
     ),
     FsError,
 > {
-    let (records, allocation) = crate::kernel::diff_file_records_with_accounting::<_, EARLY_EQUAL>(
+    let (records, allocation) = crate::kernel::diff_file_records_with_accounting(
         objects,
         Some(before),
         Some(after),
@@ -118,17 +118,16 @@ pub(crate) async fn diff_generation_file_tables<O: AsyncObjectStore, const EARLY
             truncated = true;
             continue;
         }
-        let (entries, allocation) =
-            crate::kernel::diff_tree_entries_with_accounting::<_, EARLY_EQUAL>(
-                objects,
-                before_entries,
-                after_entries,
-                u32::try_from(remaining_changes).unwrap_or(u32::MAX),
-                limits,
-                accounting,
-                cancellation,
-            )
-            .await?;
+        let (entries, allocation) = crate::kernel::diff_tree_entries_with_accounting(
+            objects,
+            before_entries,
+            after_entries,
+            u32::try_from(remaining_changes).unwrap_or(u32::MAX),
+            limits,
+            accounting,
+            cancellation,
+        )
+        .await?;
         let bytes = entries.retained_allocation_bytes;
         let mut entries = crate::kernel::Owned::new(entries, allocation, bytes);
         truncated |= entries.value.truncated;
@@ -252,7 +251,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             {
                 return Err(WorkspaceError::IncompatibleWorkspace);
             }
-            let output = diff_generation_file_tables::<_, false>(
+            let output = diff_generation_file_tables(
                 &self.inner.objects,
                 base_root.value.file_table,
                 source_root.value.file_table,
@@ -331,7 +330,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             if before_root.value.volume_id != self.id || after_root.value.volume_id != self.id {
                 return Err(FsError::VolumeMismatch);
             }
-            let (diff, _allocation) = diff_generation_file_tables::<_, false>(
+            let (diff, _allocation) = diff_generation_file_tables(
                 &self.fs.inner.objects,
                 before_root.value.file_table,
                 after_root.value.file_table,
@@ -363,7 +362,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             if candidate.volume.id != self.volume.id {
                 return Err(FsError::VolumeMismatch);
             }
-            diff_generation_file_tables::<_, false>(
+            diff_generation_file_tables(
                 &self.volume.fs.inner.objects,
                 self.root.file_table,
                 candidate.root.file_table,

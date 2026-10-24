@@ -41,6 +41,3 @@ pub fn fields(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<String> {
         .collect::<Vec<_>>()
         .join(" "))
 }
-
-#[cfg(test)]
-mod tests;

@@ -3,7 +3,7 @@ use super::*;
 use crate::executor::PreparationIo;
 
 /// Facts about the task's workspace and selected model, pinned at admission.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct EnvironmentFacts {

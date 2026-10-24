@@ -50,10 +50,8 @@ impl Service<http::Request<Body>> for Transport {
 async fn typed_result_matches_decoder_while_transport_reports_wire_status() {
     for case in 0..5 {
         let log = Capture::default();
-        let dispatch = acyclic_test_support::capture::dispatch(
-            tracing_subscriber::registry().with(log.clone()),
-        );
-        let _guard = tracing::dispatcher::set_default(&dispatch);
+        let _guard =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(log.clone()));
         let body = if case == 0 {
             Body::empty()
         } else {
@@ -214,10 +212,8 @@ async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Err
             .err()
             .ok_or("unrelated supplied CA unexpectedly trusted")?;
         assert!(std::error::Error::source(&error).is_some());
-        let dispatch = acyclic_test_support::capture::dispatch(
-            tracing_subscriber::registry().with(log.clone()),
-        );
-        let _guard = tracing::dispatcher::set_default(&dispatch);
+        let _guard =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(log.clone()));
         let mut client = connect(&endpoint, "private-token", Some(pem.as_bytes())).await?;
         client
             .inspect_actor(wire::InspectActorRequest::default())

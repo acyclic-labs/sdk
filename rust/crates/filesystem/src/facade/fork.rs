@@ -25,16 +25,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             kind: ObjectKind::GenerationRoot,
             digest: source.id.digest(),
         };
-        // Each kernel step runs in a paid heap frame; this frame holds none.
-        let (source_root, allocation) = crate::heap_future::metered!(erased accounting, |accounting| {
-            read_generation_root_with_accounting(
-                &self.inner.objects,
-                source_object,
-                config,
-                accounting,
-                cancellation,
-            )
-        })?;
+        let (source_root, allocation) = read_generation_root_with_accounting(
+            &self.inner.objects,
+            source_object,
+            config,
+            accounting,
+            cancellation,
+        )
+        .await?;
         let source_parent_bytes = root_parent_bytes(&source_root)?;
         let source_root = Owned::new(source_root, allocation, source_parent_bytes);
         if source_root.value.volume_id != source.workspace.volume.id {
@@ -42,13 +40,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }
         let file_table = if let Some(selected) = paths.value.take() {
             let selected = Owned::new(selected, paths.allocation, paths.bytes);
-            crate::heap_future::metered!(erased accounting, |accounting| self.select_fork_paths(
+            self.select_fork_paths(
                 source,
                 &source_root.value,
                 selected,
                 accounting,
                 cancellation,
-            ))?
+            )
+            .await?
         } else {
             paths.retire(accounting)?;
             source_root.value.file_table
@@ -74,23 +73,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
                 crate::kernel::encode_generation_root(&fork_root.value, observe, allocation_error)
             })?;
-        let generation_root = crate::heap_future::metered!(erased accounting, |accounting| self
-        .put_encoded_with_accounting(
-            ObjectKind::GenerationRoot,
-            encoded,
-            accounting,
-            cancellation,
-        ))?;
+        let generation_root = self
+            .put_encoded_with_accounting(
+                ObjectKind::GenerationRoot,
+                encoded,
+                accounting,
+                cancellation,
+            )
+            .await?;
         fork_root.retire(accounting)?;
-        let proof = crate::heap_future::metered!(erased accounting, |accounting| self
-        .publication_proof(
-            generation_root,
-            proven_at,
-            destination_id.volume_id(),
-            config,
-            accounting,
-            cancellation,
-        ))?;
+        let proof = self
+            .publication_proof(
+                generation_root,
+                proven_at,
+                destination_id.volume_id(),
+                config,
+                accounting,
+                cancellation,
+            )
+            .await?;
         Ok((proof, source_object))
     }
     pub(super) async fn publication_proof(
@@ -106,45 +107,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let (proof, allocation) = match accounting {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { work: original, .. } => {
-                let (proof, mut allocation) =
-                    crate::heap_future::in_heap_claimed(original, || async {
-                        crate::kernel::closure::ProofContext::new(
-                            &self.inner.objects,
-                            limits,
-                            crate::kernel::closure::ProofMeter::Native {
-                                original,
-                                cancellation,
-                            },
-                        )
-                        .prove(generation_root)
-                        .await
-                    })?
-                    .await?;
+                let (proof, mut allocation) = crate::kernel::closure::ProofContext::new(
+                    &self.inner.objects,
+                    limits,
+                    crate::kernel::closure::ProofMeter::Native {
+                        original,
+                        cancellation,
+                    },
+                )
+                .prove(generation_root)
+                .await?;
                 (
                     proof,
                     KernelOwnedAllocation::NativeOriginal(allocation.take_native()?),
                 )
             }
             _ => {
-                // The frame stays reserved while its receipt joins the ledger.
-                let (result, reservation) =
-                    crate::heap_future::in_heap_budgeted(&mut *accounting, |remaining| {
-                        prove_generation_closure(
-                            &self.inner.objects,
-                            generation_root,
-                            limits,
-                            remaining,
-                            cancellation,
-                        )
-                    })?
-                    .await;
+                let result = prove_generation_closure(
+                    &self.inner.objects,
+                    generation_root,
+                    limits,
+                    accounting.remaining()?,
+                    cancellation,
+                )
+                .await;
                 let work = match &result {
                     Ok(proof) => proof.work,
                     Err(failure) => *failure.work,
                 };
-                let merged = merge_creation_backend_work(accounting, work);
-                crate::heap_future::FrameLedger::release_frame(&mut *accounting, reservation)?;
-                merged?;
+                merge_creation_backend_work(accounting, work)?;
                 let proof = result.map_err(|failure| FsError::from(failure.error))?;
                 let bytes = usize_to_u64(proof.objects.capacity() * size_of::<ObjectId>());
                 let allocation = accounting.claim_owned(bytes, 0)?;
@@ -316,19 +307,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             idempotency_key.operation_id(),
             accounting,
         )?;
-        creation.publication = Some(
-            crate::PublicationChanges::initial(
-                &self.inner.objects,
-                VolumeCreated {
-                    volume_id,
-                    config: source_volume.config,
-                    initial_generation_root: fork_root.generation_root,
-                },
-                accounting,
-                cancellation,
-            )
-            .await?,
-        );
+        creation.publication = Some(crate::PublicationChanges::initial(
+            &self.inner.objects,
+            VolumeCreated {
+                volume_id,
+                config: source_volume.config,
+                initial_generation_root: fork_root.generation_root,
+            },
+            accounting,
+            cancellation,
+        ).await?);
         let changes = creation.publication.clone();
         let fork = crate::WorkspaceForkCommit {
             lineage,

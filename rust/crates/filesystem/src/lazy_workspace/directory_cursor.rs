@@ -1,52 +1,10 @@
 use super::*;
-use crate::facade::FsWork as _;
 use crate::kernel::{
     CanonicalDecodeError, CanonicalInvariant, Decoder, EncodeAllocationStep, EncodeWorkStep,
     Encoder, ReadAllocationStep,
 };
-const DOMAIN: &[u8] = b"acyclic-fs-lazy-directory-cursor-v2\0";
+const DOMAIN: &[u8] = b"acyclic-fs-lazy-directory-cursor-v1\0";
 impl LazyDirectoryCursor {
-    /// Freezes a continuation for a durable metadata-index checkpoint.
-    pub(crate) fn checkpoint(&self) -> Result<Vec<u8>, LazyWorkspaceError> {
-        let stop = CancellationToken::new();
-        let mut ctx = WorkBudget::UNBOUNDED.accounting(&stop);
-        let directory = self
-            .directory
-            .unicode_text_with_accounting(&mut ctx, &stop)?;
-        let encoded = encode_fields(self, &directory.0, &mut ctx)?;
-        let length = directory.0.capacity() as u64;
-        drop(directory.0);
-        crate::kernel::retire_allocation(directory.1, length, &mut ctx)?;
-        Ok(encoded.0)
-    }
-
-    pub(crate) fn restore_checkpoint(
-        bytes: &[u8],
-        profile: crate::FilesystemProfile,
-        limits: crate::VolumeLimits,
-    ) -> Result<Self, LazyWorkspaceError> {
-        let stop = CancellationToken::new();
-        let mut ctx = WorkBudget::UNBOUNDED.accounting(&stop);
-        let input = crate::kernel::decode_owned(&mut ctx, |mut observe| {
-            decode_fields(bytes, profile, limits, &mut observe)
-        })?;
-        let directory =
-            NamespacePath::parse_in_profile(&input.0.1, profile, limits, &mut ctx, &stop)?;
-        let length = input.0.1.capacity() as u64;
-        let mut allocation = input.1;
-        let temporary = crate::kernel::split_allocation(&mut allocation, length)?;
-        drop(input.0.1);
-        crate::kernel::retire_allocation(temporary, length, &mut ctx)?;
-        let mut directory_allocation = directory.1;
-        allocation.absorb(&mut directory_allocation)?;
-        Ok(Self {
-            cut: input.0.0,
-            directory: directory.0,
-            phase: input.0.2,
-            allocation,
-        })
-    }
-
     /// Encodes a frozen continuation on its original native ledger.
     pub fn encode(
         &self,
@@ -115,9 +73,7 @@ fn encode_fields(
         + 141
         + directory.len()
         + match &cursor.phase {
-            LazyDirectoryPhase::Source(Some(cursor)) => {
-                33 + usize::from(cursor.resume.is_some()) * 40
-            }
+            LazyDirectoryPhase::Source(Some(_)) => 32,
             LazyDirectoryPhase::Authored(Some(name)) => 5 + name.as_bytes().len(),
             _ => 0,
         };
@@ -167,11 +123,6 @@ fn encode_fields(
                 encoder.fixed(&cursor.source.identity);
                 encoder.u64(cursor.source.epoch);
                 encoder.u64(cursor.token);
-                encoder.u8(u8::from(cursor.resume.is_some()));
-                if let Some(resume) = &cursor.resume {
-                    encoder.fixed(&resume.version.0);
-                    encoder.u64(resume.position);
-                }
             }
             LazyDirectoryPhase::Authored(None) => encoder.u8(2),
             LazyDirectoryPhase::Authored(Some(name)) => {
@@ -192,7 +143,7 @@ fn decode_fields(
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), crate::FsError>,
 ) -> Result<(LazySnapshotRef, String, LazyDirectoryPhase), crate::FsError> {
     let maximum = DOMAIN.len() as u64
-        + 216
+        + 175
         + u64::from(limits.maximum_path_bytes)
         + u64::from(limits.maximum_component_bytes);
     let mut decoder = Decoder::new(bytes, DOMAIN, 1, maximum, observe)?;
@@ -225,21 +176,6 @@ fn decode_fields(
                 epoch: decoder.u64(observe)?,
             },
             token: decoder.u64(observe)?,
-            resume: match decoder.u8(observe)? {
-                0 => None,
-                1 => Some(crate::demand::SourceDirectoryResume {
-                    version: crate::demand::SourceVersion(
-                        decoder.fixed::<32, crate::FsError>(observe)?,
-                    ),
-                    position: decoder.u64(observe)?,
-                }),
-                _ => {
-                    return Err(CanonicalDecodeError::Invariant(CanonicalInvariant::Static(
-                        "invalid source resume tag",
-                    ))
-                    .into());
-                }
-            },
         })),
         2 => LazyDirectoryPhase::Authored(None),
         3 => {

@@ -1,7 +1,7 @@
 use super::*;
 
 /// Immutable result of one admitted interaction resolution.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResolutionReceipt {
     /// Resolved request identity.

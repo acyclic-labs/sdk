@@ -150,11 +150,12 @@ pub(crate) fn native_buffer_codec_charge(
     clippy::too_many_arguments,
     reason = "original immutable operation plus actual scoped content reader"
 )]
-pub(crate) async fn read_pi_input<T: DeserializeOwned + acyclic_harness::HeapLayout>(
+pub(crate) async fn read_pi_input<T: DeserializeOwned>(
     owner: &PiOwnerConfig,
     filesystem: &Host,
     operation: OperationId,
     label: &str,
+    maximum_owned_bytes: u64,
     schema_label_bytes: u64,
     context: &TaskContext,
     work: &NativeMaterializationWork,
@@ -178,6 +179,7 @@ pub(crate) async fn read_pi_input<T: DeserializeOwned + acyclic_harness::HeapLay
     let decoded = guarded_pi_decode(
         bytes.as_ref(),
         maximum,
+        maximum_owned_bytes,
         ErrorCode::Storage,
         JsonValueSchema::None,
         schema_label_bytes,
@@ -215,14 +217,10 @@ pub(crate) fn digest_pi_value<T: Serialize + ?Sized>(
     Ok(blake3::hash(&bytes.0))
 }
 
-/// Decodes `T`, retaining its root plus the heap its layout admitted for
-/// this input.
-///
-/// The retained charge is derived from the actual input, never from a configured payload
-/// cap, so a small value never holds a cap-sized allocation for its lifetime.
-pub(crate) fn guarded_pi_decode<T: DeserializeOwned + acyclic_harness::HeapLayout>(
+pub(crate) fn guarded_pi_decode<T: DeserializeOwned>(
     bytes: &[u8],
     maximum_bytes: u64,
+    maximum_owned_bytes: u64,
     code: ErrorCode,
     value_schema: &'static JsonValueSchema,
     schema_label_bytes: u64,
@@ -230,7 +228,7 @@ pub(crate) fn guarded_pi_decode<T: DeserializeOwned + acyclic_harness::HeapLayou
 ) -> Result<(T, NativeAllocation)> {
     let remaining = work.remaining()?;
     let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
-    let mut retained_owned = 0;
+    let mut retained_owned = maximum_owned_bytes;
     let bounds = JsonBounds {
         maximum_bytes,
         maximum_items: remaining.items_examined,
@@ -240,6 +238,7 @@ pub(crate) fn guarded_pi_decode<T: DeserializeOwned + acyclic_harness::HeapLayou
         std::marker::PhantomData::<T>,
         bytes,
         bounds,
+        maximum_owned_bytes,
         Some(code),
         Some(value_schema),
         &mut |charge| {
@@ -248,7 +247,7 @@ pub(crate) fn guarded_pi_decode<T: DeserializeOwned + acyclic_harness::HeapLayou
             }
             match charge {
                 JsonCodecCharge::Admission {
-                    maximum_owned_bytes,
+                    maximum_owned_bytes: admission_bytes,
                     value_shape,
                 } => {
                     work.cancellation()
@@ -259,11 +258,13 @@ pub(crate) fn guarded_pi_decode<T: DeserializeOwned + acyclic_harness::HeapLayou
                         schema_label_bytes,
                         Some(code),
                     )?;
-                    retained_owned = (std::mem::size_of::<T>() as u64)
-                        .checked_add(maximum_owned_bytes)
+                    let owned = json_value_decode_owned_bytes(value_shape)?;
+                    retained_owned = maximum_owned_bytes
+                        .checked_add(owned)
                         .ok_or(NativeTreeMaterializationError::Work(WorkError::Overflow))?;
-                    let admitted = retained_owned
-                        .checked_add(diagnostic)
+                    let admitted = admission_bytes
+                        .checked_add(owned)
+                        .and_then(|bytes| bytes.checked_add(diagnostic))
                         .ok_or(NativeTreeMaterializationError::Work(WorkError::Overflow))?;
                     custody
                         .resize(admitted)

@@ -24,7 +24,6 @@ pub struct TaskSourceInspection<P, A, O> {
         acyclic_fs::NativeAllocation,
         acyclic_fs::NativeAllocation,
         acyclic_fs::NativeAllocation,
-        acyclic_fs::NativeAllocation,
     )>,
 }
 
@@ -321,7 +320,6 @@ where
             handle,
             context.scope().limits(),
             io,
-            Default::default(),
         )
         .await?;
         Ok(TaskSourceInspection {
@@ -343,7 +341,7 @@ where
         &self,
         context: &TaskContext,
         owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
-        handle: (
+        mut handle: (
             crate::source_authorization::ProjectSourceReadHandle,
             acyclic_fs::NativeAllocation,
         ),
@@ -359,6 +357,7 @@ where
                 reason: "selected source handle custody belongs to another original work",
             });
         }
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         handle.0.require_selection(
             operation,
             source,
@@ -367,6 +366,15 @@ where
             snapshot.native_snapshot.as_ref(),
             Some(work),
         )?;
+        io.remaining()?
+            .verify(acyclic_fs::performance::work_budget(
+                handle.0.authorization().maximum_work,
+                handle.0.authorization().maximum_bytes,
+            ))
+            .map_err(|_| Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "selected native inspection exceeds its original source allowances",
+            })?;
         owner
             .verify_project_source_handle(context, &handle.0, Some(work))
             .await?;
@@ -400,33 +408,29 @@ where
                 ),
             )
             .await?;
-        // The selected reader does at most the work its authorization allows, exactly
-        // as the budgeted reader does: a resource ceiling on the original ledger. The
-        // invocation's own remaining work may be larger; it is never refused for that.
-        let allowance = acyclic_fs::performance::work_budget(
-            handle.0.authorization().maximum_work,
-            handle.0.authorization().maximum_bytes,
-        );
-        let io = crate::filesystem::PreparationIo::from_native_work(
-            &work.native_volume_work(allowance)?,
-        )?;
         let reader = ProjectSourceReader::open(
             self.filesystem.clone(),
             owner,
             handle.0,
             context.scope().limits(),
             io,
-            Some(work.clone()),
         )
         .await?;
-        let reader_custody = reader
+        let mut boxed_custody = reader
             .io
             .take_native_custody(std::mem::size_of_val(reader.as_ref()) as u64)?;
+        handle
+            .1
+            .absorb(&mut boxed_custody)
+            .map_err(|cause| Error::NativeWork {
+                cause,
+                custody: Some(boxed_custody),
+            })?;
         Ok(TaskSourceInspection {
             source: admission.0,
             volumes: volumes.0,
             reader: SourceReader::Project(reader),
-            _native_metadata_custody: Some((admission.1, volumes.1, handle.1, reader_custody)),
+            _native_metadata_custody: Some((admission.1, volumes.1, handle.1)),
         })
     }
 }

@@ -2,8 +2,6 @@ use crate::*;
 
 pub(crate) struct CompletionState<T> {
     pub(crate) task_pending: bool,
-    #[cfg(feature = "test-support")]
-    pub(crate) actor: Option<Arc<crate::deadline::simulation::Actor>>,
     pub(crate) result: Option<io::Result<T>>,
     pub(crate) panic: Option<Box<dyn std::any::Any + Send>>,
     pub(crate) waker: Option<Waker>,
@@ -20,8 +18,6 @@ impl<T> Default for CompletionState<T> {
     fn default() -> Self {
         Self {
             task_pending: false,
-            #[cfg(feature = "test-support")]
-            actor: None,
             result: None,
             panic: None,
             waker: None,
@@ -66,8 +62,6 @@ impl<T> CompletionState<T> {
 
 pub(crate) trait TaskTerminal: Send + Sync {
     #[cfg(feature = "test-support")]
-    fn test_actor(&self) -> Option<Arc<crate::deadline::simulation::Actor>>;
-    #[cfg(feature = "test-support")]
     fn test_poll_completion(&self, waker: &Waker) -> Poll<()>;
     fn stage_panic(&self, payload: Box<dyn std::any::Any + Send>);
     fn publish(&self) -> Option<Waker>;
@@ -75,13 +69,6 @@ pub(crate) trait TaskTerminal: Send + Sync {
 
 // Sole completion lock; no queue lock, callback, or wake is held under it.
 impl<T: Send> TaskTerminal for CompletionMutex<CompletionState<T>> {
-    #[cfg(feature = "test-support")]
-    fn test_actor(&self) -> Option<Arc<crate::deadline::simulation::Actor>> {
-        self.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .actor
-            .clone()
-    }
     #[cfg(feature = "test-support")]
     fn test_poll_completion(&self, waker: &Waker) -> Poll<()> {
         let mut state = self
@@ -113,12 +100,6 @@ impl<T: Send> TaskTerminal for CompletionMutex<CompletionState<T>> {
         if state.broken_wake {
             state.waker = None;
         }
-        let waker = state.waker.take();
-        #[cfg(feature = "test-support")]
-        let actor = state.actor.take();
-        drop(state);
-        #[cfg(feature = "test-support")]
-        let waker = crate::deadline::simulation::completed(actor, waker);
-        waker
+        state.waker.take()
     }
 }

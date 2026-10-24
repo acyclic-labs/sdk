@@ -249,9 +249,7 @@ impl ControlPlane {
                 published_heads.insert(*root_id, generation.id());
             }
             if let Some(child_mount) = self.mounts.get(&child_agent) {
-                fs_call(child_mount.advance_to_head())
-                    .await
-                    .map_err(display)?;
+                child_mount.advance_to_head().await.map_err(display)?;
             }
             let route = self
                 .state
@@ -303,7 +301,7 @@ impl ControlPlane {
             Some(publication)
         };
         if let Some(mount) = self.mounts.get(caller) {
-            fs_call(mount.advance_to_head()).await.map_err(display)?;
+            mount.advance_to_head().await.map_err(display)?;
         }
         if let Some(publication) = &applied {
             let child_agent = self
@@ -355,7 +353,7 @@ impl ControlPlane {
         let agents = self.mounts.keys().cloned().collect::<Vec<_>>();
         for agent in agents {
             if let Some(mount) = self.mounts.get(&agent) {
-                fs_call(mount.advance_to_head()).await.map_err(display)?;
+                mount.advance_to_head().await.map_err(display)?;
             }
         }
         Ok(())

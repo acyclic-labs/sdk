@@ -1,7 +1,7 @@
 use super::*;
 
 /// One selectable choice presented to a participant.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ChoiceOption {
     /// Stable option identity returned in the response.
     pub id: String,
@@ -12,7 +12,7 @@ pub struct ChoiceOption {
 }
 
 /// Typed interaction request. Executors decide how and where it is presented.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Interaction {
     /// Free-form value constrained by JSON Schema.

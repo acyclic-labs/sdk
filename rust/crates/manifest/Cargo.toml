@@ -1,5 +1,4 @@
 [package]
-autotests = false
 name = "acyclic-manifest"
 version.workspace = true
 edition.workspace = true
@@ -35,5 +34,3 @@ tokio.workspace = true
 
 [lints]
 workspace = true
-[features]
-fuzzing = []

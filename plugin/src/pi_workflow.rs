@@ -12,28 +12,7 @@ use acyclic_harness::{
 use pi_host::PiControlHost;
 
 impl PiControlHost<'_> {
-    /// Drives the root task once. An unresolved attempt is the root's own typed failure,
-    /// returned here so no caller can mistake it for progress and later report the
-    /// operation as indeterminate or absent.
     pub(crate) async fn drive_root(
-        &self,
-    ) -> acyclic_harness::Result<(
-        Option<acyclic_harness::filesystem::TaskWorkerOutcome>,
-        acyclic_fs::NativeAllocation,
-    )> {
-        let (attempt, custody) = self.drive_root_attempt().await?;
-        match attempt {
-            Some(TaskWorkerAttempt::Unresolved { lease, error }) => {
-                drop(lease);
-                drop(custody);
-                Err(error)
-            }
-            Some(TaskWorkerAttempt::Progress(outcome)) => Ok((Some(outcome), custody)),
-            None => Ok((None, custody)),
-        }
-    }
-
-    async fn drive_root_attempt(
         &self,
     ) -> acyclic_harness::Result<(Option<TaskWorkerAttempt>, acyclic_fs::NativeAllocation)> {
         let PluginTaskBinding::Pi(binding) = &self.retained.task_binding else {

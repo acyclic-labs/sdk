@@ -9,11 +9,8 @@ impl LocalHarness {
         files: Arc<Files>,
         control: Option<(Arc<Files>, Component)>,
     ) -> BoxProviderFuture<'a, Result<()>> {
-        // Unbudgeted: the child controller runs on the parent runtime, which holds no budget.
         Box::pin(async move {
-            let snapshot = acyclic_fs::in_heap(|| files.inner.child_lifecycle(None))
-                .await
-                .map_err(storage)?;
+            let snapshot = files.inner.child_lifecycle(None).await.map_err(storage)?;
             let mut cursor = follow::Follow::new(snapshot.cursor);
             let mut generation = snapshot.generation;
             let mut values: BTreeMap<_, _> = snapshot
@@ -26,23 +23,21 @@ impl LocalHarness {
             let mut jobs = FuturesUnordered::new();
             let inherited = commands.invocation_cancellation().cloned();
             let mut inherited_stopped = false;
-            // Unbudgeted: the child controller runs on the parent runtime, which holds no budget.
-            for reference in acyclic_fs::in_heap(|| files.inner.child_references())
-                .await
-                .map_err(storage)?
-            {
+            for reference in files.inner.child_references().await.map_err(storage)? {
                 if needs_work_count(
                     &reference,
                     &values,
                     false,
-                    // Unbudgeted: the child controller runs on the parent runtime, which holds no budget.
-                    acyclic_fs::in_heap(|| files.inner.child_input_count(&reference))
+                    files
+                        .inner
+                        .child_input_count(&reference)
                         .await
                         .map_err(storage)?,
                 )? {
                     active.insert(reference.clone());
-                    // Unbudgeted: the child controller runs on the parent runtime, which holds no budget.
-                    let request = acyclic_fs::in_heap(|| files.inner.child_request(&reference))
+                    let request = files
+                        .inner
+                        .child_request(&reference)
                         .await
                         .map_err(storage)?;
                     jobs.push(self.service_child(
@@ -62,27 +57,24 @@ impl LocalHarness {
                 drained: drained.clone(),
             };
             let parent = async {
-                // Unbudgeted: the child controller runs on the parent runtime, which holds no budget.
-                acyclic_fs::in_heap(|| {
-                    crate::package::harness::worker::advance_while(self, task, &scoped, || async {
-                        if cancellation.is_cancelled()
-                            || commands
-                                .invocation_cancellation()
-                                .is_some_and(|token| token.is_cancelled())
-                        {
-                            return Ok(false);
-                        }
-                        match &control {
-                            None => Ok(true),
-                            Some((files, reference)) => Ok(super::super::commands::state(
-                                files,
-                                reference,
-                                usize::try_from(self.limits.render_bytes).map_err(storage)?,
-                            )
-                            .await?
-                                == ChildState::Running),
-                        }
-                    })
+                crate::package::harness::worker::advance_while(self, task, &scoped, || async {
+                    if cancellation.is_cancelled()
+                        || commands
+                            .invocation_cancellation()
+                            .is_some_and(|token| token.is_cancelled())
+                    {
+                        return Ok(false);
+                    }
+                    match &control {
+                        None => Ok(true),
+                        Some((files, reference)) => Ok(super::super::commands::state(
+                            files,
+                            reference,
+                            usize::try_from(self.limits.render_bytes).map_err(storage)?,
+                        )
+                        .await?
+                            == ChildState::Running),
+                    }
                 })
                 .await?;
                 if let Some(crate::Outcome::Indeterminate {
@@ -98,18 +90,16 @@ impl LocalHarness {
             let mut parent_done = false;
             let mut pending = std::collections::VecDeque::new();
             macro_rules! observed {
-                ($work:expr) => {{
-                    // Unbudgeted: the child controller runs on the parent runtime, which holds no budget.
-                    let work = acyclic_fs::in_heap(|| $work);
+                ($work:expr) => {
                     during(
-                        work,
+                        $work,
                         parent.as_mut(),
                         &mut parent_done,
                         &mut jobs,
                         &mut pending,
                     )
                     .await
-                }};
+                };
             }
             let result = async {
                 loop {
@@ -132,8 +122,7 @@ impl LocalHarness {
                         Some(event) => event,
                         None => tokio::select! {
                             biased;
-                            // Unbudgeted: the child controller runs on the parent runtime, which holds no budget.
-                            change = acyclic_fs::in_heap(|| follow::next(files.as_ref(), Query::Children, &mut cursor)) => Wake::File(change),
+                            change = follow::next(files.as_ref(), Query::Children, &mut cursor) => Wake::File(change),
                             result = jobs.next(), if !jobs.is_empty() => Wake::child(result),
                             _ = async { inherited.as_ref().unwrap().cancelled().await },
                                 if inherited.is_some() && !inherited_stopped => Wake::Inherited,

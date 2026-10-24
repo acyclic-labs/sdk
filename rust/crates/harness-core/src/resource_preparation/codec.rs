@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     executor::json::{
         JsonBounds, JsonCodecCharge, JsonValueSchema, canonical_json_digest as digest,
-        json_from_value_bounded as from_value,
+        json_from_value_bounded as from_value, json_typed_value_decode_owned_bytes as allowance,
     },
     wire_codec::CodecQuota,
 };
@@ -73,17 +73,14 @@ impl ResourcePreparationRequest {
         let request = from_value(
             std::borrow::Cow::Borrowed(value),
             bounds,
+            0,
             None,
             JsonValueSchema::ResourcePreparationRequest,
             &mut |next| {
-                if let JsonCodecCharge::Admission {
-                    maximum_owned_bytes,
-                    ..
-                } = next
-                {
+                if let JsonCodecCharge::Admission { value_shape, .. } = next {
                     quota.replace(add(
                         std::mem::size_of::<Self>() as u64,
-                        maximum_owned_bytes,
+                        allowance(value_shape, std::mem::size_of::<Self>() as u64)?,
                     )?)
                 } else if let Some(io) = quota.work().as_deref_mut() {
                     io.codec_charge(next)
@@ -99,6 +96,26 @@ impl ResourcePreparationRequest {
 }
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ResourcePreparationRequest {
+    fn maximum_slot_bytes() -> u64 {
+        use std::mem::size_of;
+        // The request and child are inline; only their collection elements repeat.
+        [
+            size_of::<super::ResourceCreationProofRef>(),
+            size_of::<crate::conversation::FileRef>(),
+            size_of::<crate::core::ExtensionDependency>(),
+            size_of::<crate::core::ExtensionConfiguration>(),
+            size_of::<String>(),
+            size_of::<(String, Value)>(),
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(0) as u64
+            + 2 * 5
+                * size_of::<(
+                    serde::__private229::de::Content<'static>,
+                    serde::__private229::de::Content<'static>,
+                )>() as u64
+    }
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
         add(
             std::mem::size_of::<Self>() as u64,

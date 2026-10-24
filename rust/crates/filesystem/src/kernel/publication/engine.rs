@@ -1,26 +1,5 @@
 use super::*;
 
-/// Refuses a request that must stay inert, before any frame or work is spent.
-pub(super) fn refuse_inert(
-    request: &PublishGenerationRequest,
-    cancellation: &CancellationToken,
-    accounting: &KernelAccounting<'_>,
-) -> Result<(), crate::FsError> {
-    let expected_authority = volume_authority_id(request.volume_id);
-    if request.authority_id != expected_authority {
-        return Err(crate::FsError::Publication(
-            PublicationError::AuthorityMismatch {
-                volume_id: request.volume_id,
-                expected: expected_authority,
-                actual: request.authority_id,
-            },
-        ));
-    }
-    cancellation.check()?;
-    accounting.check()?;
-    Ok(())
-}
-
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -55,7 +34,21 @@ where
         &mut KernelAccounting<'_>,
     ) -> Result<(), E>,
 {
-    refuse_inert(&request, cancellation, accounting).map_err(E::from)?;
+    let expected_authority = volume_authority_id(request.volume_id);
+    if request.authority_id != expected_authority {
+        return Err(E::from(crate::FsError::Publication(
+            PublicationError::AuthorityMismatch {
+                volume_id: request.volume_id,
+                expected: expected_authority,
+                actual: request.authority_id,
+            },
+        )));
+    }
+    cancellation
+        .check()
+        .map_err(crate::FsError::from)
+        .map_err(E::from)?;
+    accounting.check().map_err(E::from)?;
     let proven_at = objects.collection_sweeps();
     let (proof, guard, pending) = match accounting {
         #[cfg(not(target_arch = "wasm32"))]

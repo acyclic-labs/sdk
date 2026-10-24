@@ -10,7 +10,7 @@ fn projected_mount_writer_child() {
 
 #[test]
 fn pending_discard_recovery_respects_the_durable_mount_cursor() {
-    run_async_test("discard-mount-cursor", || async {
+    run_large_stack("discard-mount-cursor", || async {
         for cut in ["context", "unmount", "workspace"] {
             if crash_case().is_some_and(|requested| requested != cut) {
                 continue;
@@ -76,7 +76,7 @@ fn pending_discard_recovery_respects_the_durable_mount_cursor() {
 
 #[test]
 fn recursive_publication_is_direct_parent_only() {
-    run_async_test("recursive-publication", || async {
+    run_large_stack("recursive-publication", || async {
         let fixture = crash_test_process(
             "tests::recursive::recursive_publication_is_direct_parent_only",
             "recursive",
@@ -126,7 +126,7 @@ fn recursive_publication_is_direct_parent_only() {
                     .await
                     .unwrap();
                 let writer = acyclic_native_runtime::process_output(
-                    acyclic_native_runtime::command::Command::new(std::env::current_exe().unwrap())
+                    std::process::Command::new(std::env::current_exe().unwrap())
                         .args([
                             "--exact",
                             "tests::recursive::projected_mount_writer_child",
@@ -253,7 +253,7 @@ fn recursive_publication_is_direct_parent_only() {
 
 #[test]
 fn multi_root_publication_reopens_the_same_routes() {
-    run_async_test("multi-root", || async {
+    run_large_stack("multi-root", || async {
         let fixture = Fixture::new();
         let second = fixture.directory("second");
         for (root, contents) in [
@@ -383,7 +383,7 @@ fn multi_root_publication_reopens_the_same_routes() {
 
 #[test]
 fn root_registration_recovers_intent_and_fences_identity_changes() {
-    run_async_test("root-recovery", || async {
+    run_large_stack("root-recovery", || async {
         let fixture = Fixture::new();
         let mut control = ControlPlane::open(fixture.data.clone()).await.unwrap();
         control.fail_after_root_intent = true;

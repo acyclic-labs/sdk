@@ -88,11 +88,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(LazyLookup, KernelOwnedAllocation), LazyWorkspaceError> {
-        let lookup = crate::heap_future::metered!(ctx, |ctx| self.inspect(path, ctx))?;
+        let lookup = self.inspect(path, ctx).await?;
         if let LazyLookup::Source { source, node } = lookup.0 {
             let change = LazyOverlayChange::Observe { source, node };
             let recorded = async {
-                let state = crate::heap_future::metered!(ctx, |ctx| self.state(ctx))?;
+                let state = self.state(ctx).await?;
                 if self.overlay_fact(state.overlay, path, ctx).await? != Some(change.clone()) {
                     self.append_overlay(path, change, ctx).await?;
                 }
@@ -113,21 +113,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(LazyLookup, KernelOwnedAllocation), LazyWorkspaceError> {
-        let mut checkout = crate::heap_future::metered!(ctx, |ctx| self
-            .checkout(crate::model::GenerationSelector::Head, ctx))?;
-        // A refused frame still retires the checkout below.
-        let result = async {
-            crate::heap_future::metered!(ctx, |ctx| {
-                self.inspect_unauthored(
-                    &mut checkout.value,
-                    path,
-                    None,
-                    InspectBasis::default(),
-                    ctx,
-                )
-            })
-        }
-        .await;
+        let mut checkout = self
+            .checkout(crate::model::GenerationSelector::Head, ctx)
+            .await?;
+        let result = self
+            .inspect_unauthored(
+                &mut checkout.value,
+                path,
+                None,
+                InspectBasis::default(),
+                ctx,
+            )
+            .await;
         checkout.retire(ctx)?;
         let (lookup, _, guard) = result?;
         Ok((lookup.ok_or(LazyWorkspaceError::NotFound)?, guard))
@@ -171,7 +168,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazyStat, LazyWorkspaceError> {
-        let lookup = crate::heap_future::metered!(ctx, |ctx| self.lookup(path, ctx))?;
+        let lookup = self.lookup(path, ctx).await?;
         let stat = lookup.0.stat();
         self.retire_lookup(lookup, ctx)?;
         Ok(stat)
@@ -189,18 +186,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             .map_err(crate::kernel::NamespacePathError::Path)?;
         if !basis.authored_absent {
             let namespace = self.namespace_path(path, ctx)?;
-            // Boxed: the authored lookup frame stays out of this one.
-            let result: Result<_, crate::FsError> = async {
-                crate::heap_future::metered!(erased ctx, |ctx| {
-                    let cancellation = cancellation(ctx);
-                    checkout.lookup_no_follow_with_metadata_with_accounting(
-                        &namespace.value,
-                        ctx,
-                        cancellation,
-                    )
-                })
-            }
-            .await;
+            let result = checkout
+                .lookup_no_follow_with_metadata_with_accounting(
+                    &namespace.value,
+                    ctx,
+                    cancellation(ctx),
+                )
+                .await;
             namespace.retire(ctx)?;
             if let Some(authored) = result? {
                 let path = self.canonical_path(path, ctx)?;
@@ -219,16 +211,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         let state = if let Some(state) = basis.state {
             state
         } else {
-            loaded = crate::heap_future::metered!(ctx, |ctx| self.state(ctx))?;
+            loaded = self.state(ctx).await?;
             &loaded
         };
-        if crate::heap_future::metered!(ctx, |ctx| self.tombstoned(state.overlay, path, ctx))? {
+        if self.tombstoned(state.overlay, path, ctx).await? {
             return Ok((None, false, ctx.claim_owned(0, 0)?));
         }
         let fact = if basis.unobserved {
             None
         } else {
-            crate::heap_future::metered!(ctx, |ctx| self.overlay_fact(state.overlay, path, ctx))?
+            self.overlay_fact(state.overlay, path, ctx).await?
         };
         let (source, node, used) = match fact {
             Some(LazyOverlayChange::Observe { source, node })
@@ -245,11 +237,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                     }
                     (
                         state.source,
-                        crate::heap_future::metered!(ctx, |ctx| self.source_lookup(
-                            state.source,
-                            path,
-                            ctx
-                        ))?,
+                        self.source_lookup(state.source, path, ctx).await?,
                         true,
                     )
                 }
@@ -331,7 +319,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             LazyLookup::Shadow { record, .. } => Ok(record.file_id),
             LazyLookup::Authored { record, .. } => {
                 if record.kind == FileKind::Directory {
-                    let state = crate::heap_future::metered!(ctx, |ctx| self.state(ctx))?;
+                    let state = self.state(ctx).await?;
                     if let Some(LazyOverlayChange::Observe { node, .. }) =
                         self.overlay_fact(state.overlay, path, ctx).await?
                         && node.kind == SourceNodeKind::Directory

@@ -395,8 +395,10 @@ fn manifest_check_owns_exactly_its_schema(labels: &[String]) -> bool {
         &bytes,
         "application/vnd.acyclic.harness.attachments+json",
     );
-    // The layout reservation `decode_fork_manifest` retains for the decoded items.
-    let schema = crate::executor::json::layout_reservation::<Vec<Attachment>>(&bytes).unwrap();
+    // The schema reservation `decode_fork_manifest` retains for the decoded items.
+    let schema = (bytes.len() as u64).max(8)
+        * 2
+        * (std::mem::size_of::<Attachment>() + std::mem::size_of::<String>() + 1) as u64;
     let io = crate::filesystem::PreparationIo::from_budget(
         acyclic_fs::performance::BOUNDARY_BUDGET,
         &acyclic_fs::CancellationToken::new(),

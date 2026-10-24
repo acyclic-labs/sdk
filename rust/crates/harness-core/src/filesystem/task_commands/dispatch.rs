@@ -34,10 +34,7 @@ where
         let admission = if let Some(original) = original {
             original
         } else {
-            observed = crate::conversation::BoundedOperationFuture::new(io, || {
-                self.runtime.admission_observed(task, io)
-            })?
-            .await?;
+            observed = self.runtime.admission_observed(task, io).await?;
             &observed
         };
         if context.as_ref().scope().grants() != &admission.grants
@@ -80,20 +77,16 @@ where
             reconciliation_only,
             io,
         };
-        crate::conversation::BoundedOperationFuture::new(io, || {
-            self.verify_command_owner(owner.as_deref(), invocation)
-        })?
-        .await?;
+        self.verify_command_owner(owner.as_deref(), invocation)
+            .await?;
         let progress = self.dispatch_command(invocation, payload)?.await;
         #[cfg(not(target_arch = "wasm32"))]
         let progress = match progress {
             Err(error) if error.is_native_failure() => return Err(error),
             progress => progress,
         };
-        crate::conversation::BoundedOperationFuture::new(io, || {
-            self.verify_command_owner(owner.as_deref(), invocation)
-        })?
-        .await?;
+        self.verify_command_owner(owner.as_deref(), invocation)
+            .await?;
         progress
     }
     async fn verify_command_owner(

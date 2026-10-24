@@ -1,9 +1,6 @@
 use super::*;
-use crate::sync::{Mutex, MutexGuard};
 
 pub(super) struct DependencyLedger {
-    // Lock order: proof -> allocation ledger / data custody / original work.
-    // Original-work callbacks must never acquire this proof lock.
     pub(super) proof: Arc<Mutex<Proof>>,
     pub(super) observing: bool,
     pub(super) data_custody: Arc<ProofDataCustody>,
@@ -132,9 +129,7 @@ impl DependencyLedger {
                         .release(live - retained)
                         .map_err(|error| error.into_work_or(FsError::HandleAllocationFailed))?;
                 }
-                let mut next_ledger = ledger
-                    .preview()
-                    .map_err(|error| error.into_work_or(FsError::HandleAllocationFailed))?;
+                let mut next_ledger = *ledger;
                 let mut next_work = *work;
                 next_work.charge_items(items, &budget)?;
                 next_work.charge(
@@ -179,16 +174,10 @@ impl DependencyLedger {
                     peak_allocation_bytes: peak,
                     ..WorkCounters::default()
                 })?;
-                next_ledger
-                    .commit()
-                    .map_err(|error| error.into_work_or(FsError::HandleAllocationFailed))?;
+                *ledger = next_ledger;
                 *work = next_work;
                 Ok(())
             },
         )
     }
 }
-
-#[cfg(all(test, acyclic_fs_loom))]
-#[path = "proof_model.rs"]
-mod model_checking;

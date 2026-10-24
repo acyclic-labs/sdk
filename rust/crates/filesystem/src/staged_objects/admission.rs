@@ -7,7 +7,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
     ) -> Result<Option<DecodedCacheValue>, ObjectStoreError> {
         match self.index().objects.get(&key.object_id) {
             Some(Staged::Resident { decoded, .. }) => Ok(decoded
-                .as_ref()
+                .get()
                 .filter(|(cached, _)| *cached == key)
                 .map(|(_, value)| value.clone())),
             Some(Staged::Spilled { .. }) => Ok(None),
@@ -19,9 +19,9 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         key: DecodedCacheKey,
         value: DecodedCacheValue,
     ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
-        match self.index_mut().objects.get_mut(&key.object_id) {
+        match self.index().objects.get(&key.object_id) {
             Some(Staged::Resident { decoded, .. }) => {
-                let (cached, shared) = decoded.get_or_insert_with(|| (key, value.clone()));
+                let (cached, shared) = decoded.get_or_init(|| (key, value.clone()));
                 Ok(if *cached == key {
                     DecodedCacheAdmission::Shared(shared.clone())
                 } else {

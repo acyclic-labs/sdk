@@ -14,7 +14,6 @@ default = ["test-support"]
 test-support = []
 
 [dependencies]
-sdk-docs = { path = "..", features = ["test-support"] }
 cargo_metadata = "=0.23.1"
 libfuzzer-sys = "0.4"
 rustdoc-types = "=0.60.0"

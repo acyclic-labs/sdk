@@ -19,15 +19,12 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 mod cleanup;
-mod descriptors;
 mod events;
 mod hub;
 mod lifecycle;
 mod registration;
-mod registry;
 use cleanup::{clear_records, close, close_component, stop_custody};
 use registration::{owned, proc_fd_path, watch_ancestors};
-use registry::Registrations;
 
 const READ: WorkCounters = WorkCounters {
     backend_read_operations: 1,
@@ -93,7 +90,7 @@ struct Shared {
     retained_variable_bytes: AtomicU64,
     reading: Reading,
     reading_changed: Condvar,
-    watches: Mutex<Registrations>,
+    watches: Mutex<Vec<(PathBuf, i32)>>,
     stopping: AtomicBool,
     completed: AtomicBool,
     controller_alive: AtomicBool,
@@ -120,7 +117,6 @@ struct RawReads {
     filled: usize,
     cursor: usize,
     alias_cursor: usize,
-    alias_revision: u64,
     blocked: bool,
     cleanup: Vec<PathBuf>,
 }
@@ -182,11 +178,7 @@ impl Shared {
     /// Locks the read cursor, waiting for its holder.
     fn reading(&self) -> ReadingGuard<'_> {
         ReadingGuard {
-            raw: self
-                .reading
-                .raw
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
+            raw: self.reading.raw.lock().unwrap_or_else(PoisonError::into_inner),
             _served: OwedService(self),
         }
     }

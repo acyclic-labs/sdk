@@ -3,9 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// Markdown filename stem, with the same path rules as ordinary file tools.
-#[derive(
-    Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
-)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct PlanName(#[cfg_attr(feature = "wasm", tsify(type = "string"))] pub(super) Arc<str>);

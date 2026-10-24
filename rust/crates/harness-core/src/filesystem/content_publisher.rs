@@ -133,8 +133,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 (retry_hold, retry)
             };
             let retry = IdempotencyKey::new(retry)?;
-            let result = BoundedContentFuture::new(io, || {
-                self.host.put_content(
+            let result = self
+                .host
+                .put_content(
                     &self.volume,
                     &self.grant,
                     &path,
@@ -146,8 +147,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     None,
                     crate::conversation::ContentAccess { ceiling: None, io },
                 )
-            })?
-            .await;
+                .await;
             drop(retry);
             drop(retry_hold);
             drop(path);
@@ -268,8 +268,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
             let retry_hold = io
                 .map(|io| io.guard_owned(retry.as_str().len() as u64))
                 .transpose()?;
-            let file = BoundedContentFuture::new(io, || {
-                self.host.put_content(
+            let file = self
+                .host
+                .put_content(
                     &self.volume,
                     &self.grant,
                     path,
@@ -281,8 +282,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
                     None,
                     crate::conversation::ContentAccess { ceiling, io },
                 )
-            })?
-            .await?;
+                .await?;
             drop(retry);
             drop(retry_hold);
             let hold = io
@@ -399,8 +399,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let retry_hold = io
             .map(|io| io.guard_owned(retry.as_str().len() as u64))
             .transpose()?;
-        let file = BoundedContentFuture::new(io, || {
-            self.host.put_content_impl(
+        let file = self
+            .host
+            .put_content_impl(
                 &self.volume,
                 &self.grant,
                 path,
@@ -414,8 +415,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 ceiling,
                 io,
             )
-        })?
-        .await?;
+            .await?;
         drop(retry);
         drop(retry_hold);
         drop(owned_generation);

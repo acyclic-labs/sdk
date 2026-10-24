@@ -4,9 +4,7 @@ use crate::{Error, Result};
 use serde_json::Value;
 
 /// Applied hook decisions and context for the harness loop.
-#[derive(
-    Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize, crate::HeapLayout,
-)]
+#[derive(Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HookOutput {
     /// Reason the guarded action was blocked.
@@ -22,7 +20,7 @@ pub struct HookOutput {
 }
 
 /// A retained process cause and the event's failure policy.
-#[derive(Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, crate::HeapLayout)]
+#[derive(Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HookDiagnostic {
     /// The original cause; propagation moves it without conversion.

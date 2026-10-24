@@ -5,10 +5,7 @@ pub(crate) fn uncorrelated_control_response(
     error: &str,
 ) -> acyclic_harness::Result<ControlEncodedResponse> {
     Ok((
-        ControlFrame::encoded(encode_control_response(
-            &json!({"version":2,"ok":false,"error":error}),
-            None,
-        )),
+        encode_control_response(&json!({"version":2,"ok":false,"error":error}), None),
         None,
         None,
     ))
@@ -52,8 +49,6 @@ pub(crate) fn control_response_for(
         #[serde(skip_serializing_if = "Option::is_none")]
         result: Option<&'a Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        code: Option<&'static str>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<ErrorMessage<'a>>,
     }
     struct ErrorMessage<'a>(&'a Error);
@@ -68,28 +63,43 @@ pub(crate) fn control_response_for(
         Ok((payload, allocation)) => (None, allocation, Some(payload)),
         Err(error) => (Some(error), None, None),
     };
+    let failure = match failure {
+        Some(error)
+            if original_native_work.is_none()
+                && !matches!(
+                    error,
+                    Error::NotFound(_)
+                        | Error::Conflict(_)
+                        | Error::Unsupported(_)
+                        | Error::Invalid(_)
+                        | Error::Unauthorized(_)
+                        | Error::Storage(_)
+                        | Error::InteractionRejected(_)
+                        | Error::Indeterminate(_)
+                ) =>
+        {
+            return Err(error);
+        }
+        failure => failure,
+    };
     let response = Response {
         version: 2,
         request_id: request_id.as_str(),
         ok: failure.is_none(),
         result: payload.as_ref(),
-        code: failure.as_ref().map(Error::kind),
         error: failure.as_ref().map(ErrorMessage),
     };
     let encoded = if let Some(work) = original_native_work {
         // This is the original query span, not an execution-payload guard's
         // possibly different ledger. Failed admission sends no new frame.
         match service_process::encode_native_control_value(&response, work) {
-            Ok((bytes, allocation)) => (ControlFrame::encoded(bytes), Some(allocation)),
+            Ok((bytes, allocation)) => (bytes, Some(allocation)),
             Err(encoding_error) => {
-                // The ledger cannot fund this frame, so answer with the
-                // refusal held in its reserved inline frame. An execution
-                // failure is never replaced by the later reporting failure.
+                // Close without an unfunded frame, but never replace an
+                // execution failure with a later reporting failure.
                 drop(payload);
                 drop(source_allocation);
-                let failure = failure.unwrap_or(encoding_error);
-                let refusal = RefusalFrame::new(Some(request_id), &failure);
-                return Ok((ControlFrame::refusal(refusal), None, Some(failure)));
+                return Err(failure.unwrap_or(encoding_error));
             }
         }
     } else {
@@ -99,10 +109,7 @@ pub(crate) fn control_response_for(
                 reason: "native response has no original control-query work",
             });
         }
-        (
-            ControlFrame::encoded(encode_control_response(&response, Some(request_id))),
-            None,
-        )
+        (encode_control_response(&response, Some(request_id)), None)
     };
     drop(payload);
     drop(source_allocation);

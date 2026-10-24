@@ -95,7 +95,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             session_limits: None,
             #[cfg(feature = "filesystem")]
             resource_creation: Vec::new(),
-            admissions: admission_read::AdmissionMemo::default(),
         })
     }
 
@@ -324,23 +323,21 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             crate::executor::preparation_format(format_args!("task-admission:{operation}"), work)?;
         let mut quota = crate::wire_codec::CodecQuota::from_retained(work, text.capacity() as u64);
         let key = IdempotencyKey::new(text)?;
-        // Lock order: coordinator before stream/filesystem; no other host gate
-        // is held across this admission lookup.
-        let mut coordinator = self.coordinator.lock().await;
-        let indexed = coordinator
-            .observe_declaration(
-                &self.owner,
-                &self.owner_scope,
-                &self.verifier,
-                operation,
-                &key,
-                quota.work(),
-            )
-            .await?;
+        let indexed = crate::distributed::observe_declaration(
+            &self.stream,
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            operation,
+            &key,
+            quota.work(),
+        )
+        .await?;
         drop(key);
         if indexed.is_some() {
             return Ok(indexed);
         }
+        let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(quota.work()).await?;
         match coordinator.observe_operation(
             &self.owner,

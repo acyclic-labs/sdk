@@ -31,6 +31,7 @@ impl PiTaskMachine {
         let mut schema = crate::pi_root_provider::guarded_pi_decode(
             STATE_SCHEMA.as_bytes(),
             NATIVE_METADATA_MAXIMUM,
+            std::mem::size_of::<Value>() as u64,
             acyclic_harness::wire::ErrorCode::Invalid,
             acyclic_harness::JsonValueSchema::Root,
             0,
@@ -120,6 +121,7 @@ impl PiTaskMachine {
         let mut input = crate::pi_root_provider::guarded_pi_decode(
             input_json.0.as_bytes(),
             NATIVE_METADATA_MAXIMUM,
+            std::mem::size_of::<Value>() as u64,
             acyclic_harness::wire::ErrorCode::Invalid,
             acyclic_harness::JsonValueSchema::Root,
             0,
@@ -130,6 +132,7 @@ impl PiTaskMachine {
         let mut output = crate::pi_root_provider::guarded_pi_decode(
             br#"{"type":"object"}"#,
             NATIVE_METADATA_MAXIMUM,
+            std::mem::size_of::<Value>() as u64,
             acyclic_harness::wire::ErrorCode::Invalid,
             acyclic_harness::JsonValueSchema::Root,
             0,

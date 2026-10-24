@@ -3,7 +3,7 @@ use super::*;
 use crate::{executor::stock_boundary, wire::ErrorCode};
 
 /// Resolved view of one durable context revision. Stream retains only `content`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ContextRevision {
     /// Stable record format version.
     pub format_version: u32,
@@ -21,7 +21,7 @@ pub struct ContextRevision {
     pub compaction: Option<CompactionReference>,
 }
 
-#[derive(Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredContextRevision {
     format_version: u32,
@@ -45,7 +45,12 @@ pub struct DurableContextProvider {
 }
 
 #[cfg(feature = "filesystem")]
-impl crate::filesystem::PreparationRecord for StoredContextRevision {}
+impl crate::filesystem::PreparationRecord for StoredContextRevision {
+    fn maximum_slot_bytes() -> u64 {
+        (<Context as crate::filesystem::PreparationRecord>::maximum_slot_bytes())
+            .max(std::mem::size_of::<Self>() as u64)
+    }
+}
 
 impl DurableContextProvider {
     /// Creates a durable provider with a positive per-page work bound over one Stream path.

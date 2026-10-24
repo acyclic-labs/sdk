@@ -3,18 +3,7 @@ use super::*;
 use acyclic_harness::filesystem::PreparationIo;
 
 impl<'a> PiForkCoordinator<'a> {
-    /// Validates a plan once per publication, caller and owner: a plan read
-    /// back from its publication is checked the first time and looked up after.
     pub(super) fn validate_plan(&self, plan: &PiForkPlan, caller: TaskId) -> Result<()> {
-        let key = plan
-            .published
-            .map(|published| self.owner.validated_plan_key(&published, caller));
-        self.resources
-            .validated_fork_plans
-            .validate_once(key, || self.validate_plan_contents(plan, caller))
-    }
-
-    fn validate_plan_contents(&self, plan: &PiForkPlan, caller: TaskId) -> Result<()> {
         let original = original_operation(
             self.owner.policy().root_task,
             caller,
@@ -106,7 +95,7 @@ impl<'a> PiForkCoordinator<'a> {
             || !self.same_payload(&plan.preparation.input, &plan.request)?
             || plan.request.child.operation_id != operations.child
             || plan.request.child.parent != Some(caller)
-            || !creation_proofs_bind(plan, request, operations.preparation)
+            || !plan.request.child.resource_proofs.is_empty()
             || plan.request.source_checkpoint.is_none()
             || !task_id_text_matches(caller, &request.parent.id)
             || plan
@@ -151,27 +140,4 @@ impl<'a> PiForkCoordinator<'a> {
         }
         Ok(())
     }
-}
-
-/// The child's creation proofs are exactly one per volume this fork creates, each
-/// retained by this fork's own preparation task under the request's provider.
-fn creation_proofs_bind(
-    plan: &PiForkPlan,
-    request: &ForkRequest,
-    preparation: OperationId,
-) -> bool {
-    let created = [
-        Some(&request.preparation.child_private_volume),
-        Some(&request.preparation.child_project_volume),
-        request.preparation.child_result_volume.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
-    .count();
-    let proofs = &plan.request.child.resource_proofs;
-    proofs.len() == created
-        && proofs.iter().all(|proof| {
-            proof.preparation == task_id_for_admission(preparation)
-                && proof.provider == plan.request.provider
-        })
 }

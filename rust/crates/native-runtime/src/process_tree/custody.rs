@@ -150,11 +150,11 @@ impl Record {
 #[cfg(unix)]
 mod unix {
     use super::{File, Path, ProcessCustody, Record, fs, io};
-    use crate::command::Command;
     use std::io::Read as _;
     use std::os::fd::AsRawFd as _;
     use std::os::unix::fs::MetadataExt as _;
     use std::os::unix::process::CommandExt as _;
+    use std::process::Command;
 
     impl ProcessCustody {
         /// Makes `command`'s direct child the warden of its tree.

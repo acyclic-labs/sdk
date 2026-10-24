@@ -1,7 +1,7 @@
 use super::*;
 
 /// One gapless committed task-inbox item.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct InboxItem {
@@ -17,7 +17,7 @@ pub struct InboxItem {
     pub payload: FileRef,
 }
 /// Local projection of an inbox whose items are durable in Stream.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TaskInbox {
     task_id: TaskId,
     items: Vec<InboxItem>,

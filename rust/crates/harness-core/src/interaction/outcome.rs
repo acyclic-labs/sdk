@@ -1,7 +1,7 @@
 use super::*;
 
 /// Closed interaction outcome. Unknown provider outcomes remain explicitly unresolved.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InteractionOutcome {
     /// Schema-valid response content, retained only as a ref.

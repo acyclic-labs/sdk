@@ -208,7 +208,7 @@ async fn dispatch_and_input_follow_the_same_catalog_and_theme_files() -> Result<
     let volume = volume().await?;
     let mut client = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;
     let mut input = PromptInput::new(Editor::new("/SH"));
-    let mut completions = CompletionFiles::observe(&volume, &mut input, None)
+    let mut completions = CompletionFiles::observe(&volume, &mut input, None, 128)
         .await
         .map_err(|e| Error::Storage(e.to_string()))?;
     let candidate = input.completion.items().next().unwrap();

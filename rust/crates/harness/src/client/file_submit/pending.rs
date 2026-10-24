@@ -20,6 +20,12 @@ pub(super) struct PendingRequests {
     limit: u64,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Fault switch: retire an entry without returning its bytes.
+    static LEAK_RETIRED_BYTES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 impl PendingRequests {
     pub(super) fn new(limits: FileClientLimits) -> Self {
         Self {
@@ -42,10 +48,7 @@ impl PendingRequests {
     /// Check-only admission used before a caller copies a payload. Command
     /// capacity precedes byte capacity.
     pub(super) fn check(&self, bytes: u64) -> Result<()> {
-        let result = self.fits(bytes).map(drop);
-        #[cfg(test)]
-        let result = tests::checked(result);
-        result
+        self.fits(bytes).map(drop)
     }
 
     fn fits(&self, bytes: u64) -> Result<u64> {
@@ -62,28 +65,27 @@ impl PendingRequests {
 
     /// Identity conflicts precede capacity; nothing changes on rejection.
     pub(super) fn admit(&mut self, cursor: Cursor, write: Write) -> Result<()> {
-        let result = (|| {
-            if self.keys.contains(&write.key) {
-                return Err(Error::Conflict("outbox request identity conflict".into()).into());
-            }
-            let bytes = self.fits(write.bytes.len() as u64)?;
-            self.keys.insert(write.key.clone());
-            self.bytes = bytes;
-            self.entries.push_back(Pending { cursor, write });
-            Ok(())
-        })();
-        #[cfg(test)]
-        let result = tests::admitted(self, result);
-        result
+        if self.keys.contains(&write.key) {
+            return Err(Error::Conflict("outbox request identity conflict".into()).into());
+        }
+        let bytes = self.fits(write.bytes.len() as u64)?;
+        self.keys.insert(write.key.clone());
+        self.bytes = bytes;
+        self.entries.push_back(Pending { cursor, write });
+        Ok(())
     }
 
     /// Hands the oldest entry to the caller after releasing its quota.
     pub(super) fn retire_front(&mut self) -> Option<Pending> {
         let done = self.entries.pop_front()?;
-        self.bytes -= done.write.bytes.len() as u64;
-        self.keys.remove(&done.write.key);
         #[cfg(test)]
-        let done = tests::retired(self, done);
+        let leak = LEAK_RETIRED_BYTES.with(std::cell::Cell::get);
+        #[cfg(not(test))]
+        let leak = false;
+        if !leak {
+            self.bytes -= done.write.bytes.len() as u64;
+        }
+        self.keys.remove(&done.write.key);
         Some(done)
     }
 }

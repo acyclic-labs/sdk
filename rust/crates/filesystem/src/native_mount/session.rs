@@ -3,9 +3,7 @@ use super::*;
 /// Process-owned mounted namespace.
 pub struct NativeMountSession {
     // Native producers retire before source data and the destination fence.
-    // Boxed: the platform session is several KiB, and every owner of this
-    // session (results, mounts, slots) moves it through async poll frames.
-    pub(super) driver: Option<OwnedDriver>,
+    pub(super) driver: Option<DriverSession>,
     pub(super) startup_source_watch: Option<lazy::NativeMountSourceWatchOwner>,
     pub(super) retained_source: Option<Arc<dyn MountFilesystem>>,
     pub(super) request: NativeMountRequest,
@@ -28,35 +26,6 @@ pub struct NativeMountSession {
 pub(in crate::native_mount) enum NativeSessionControl {
     FlushCallbacks,
     Revalidate,
-}
-
-/// The boxed platform session with the claim that paid for its box. The
-/// claim is declared after the box, so it retires only once the box is freed.
-pub(super) struct OwnedDriver {
-    session: Box<DriverSession>,
-    _custody: crate::NativeAllocation,
-}
-
-impl OwnedDriver {
-    pub(super) fn new(session: DriverSession, custody: crate::NativeAllocation) -> Self {
-        Self {
-            session: Box::new(session),
-            _custody: custody,
-        }
-    }
-}
-
-impl std::ops::Deref for OwnedDriver {
-    type Target = DriverSession;
-    fn deref(&self) -> &DriverSession {
-        &self.session
-    }
-}
-
-impl std::ops::DerefMut for OwnedDriver {
-    fn deref_mut(&mut self) -> &mut DriverSession {
-        &mut self.session
-    }
 }
 
 impl NativeMountSession {

@@ -123,7 +123,7 @@ async fn tui(
         4096,
     )
     .await?;
-    client::with_local_commands(harness.clone(), session, || async {
+    client::with_local_commands(harness.clone(), session, async {
         loop {
             if owner.output_page(0)?.is_some() {
                 return Ok::<(), Box<dyn std::error::Error + Send + Sync>>(());

@@ -14,8 +14,7 @@ use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
 mod child;
-/// Shared cache of observed concrete executable versions.
-pub mod concrete_versions;
+mod concrete_versions;
 /// Native projections and immutable identities for historical releases.
 pub mod historical;
 mod path_identity;
@@ -325,19 +324,3 @@ pub use versions::*;
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(feature = "test-support")]
-mod fuzzing;
-/// Exercises the production rustdoc adapter with arbitrary JSON.
-#[cfg(feature = "test-support")]
-pub use fuzzing::check as fuzz_rustdoc_adapter;
-
-/// Shared path normalization for relocation property tests.
-#[cfg(feature = "test-support")]
-pub mod test_paths {
-    pub use crate::path_identity::{components, rebase, stable_filename};
-}
-
-/// Shared immutable initialization slots for fixture tests.
-#[cfg(feature = "test-support")]
-pub mod sync;

@@ -18,10 +18,6 @@ async fn indeterminate_command_negative_control_detects_erased_production_cause(
 }
 
 async fn command_cause_path() -> Result<()> {
-    crate::obs::capture::run(command_cause_capture).await
-}
-
-async fn command_cause_capture(seen: crate::obs::capture::Seen) -> Result<()> {
     struct UncertainCommand {
         mode: u8,
         kind: std::sync::Mutex<Option<String>>,
@@ -46,7 +42,7 @@ async fn command_cause_capture(seen: crate::obs::capture::Seen) -> Result<()> {
     }
     for mode in 0..3 {
         let fail = mode == 0;
-        seen.lock().unwrap().clear();
+        let (seen, _capture) = crate::obs::capture::install();
         let mut fixture = Fixture::new().await?;
         fixture.scope = RuntimeScope::new(
             fixture.scope.grants().clone(),
@@ -136,102 +132,99 @@ async fn command_cause_capture(seen: crate::obs::capture::Seen) -> Result<()> {
 #[tokio::test]
 async fn failed_command_settles_with_its_cause_and_only_uncertain_effects_are_indeterminate()
 -> Result<()> {
-    crate::obs::capture::run(|seen| async move {
-        struct FailedCommand(fn() -> Error);
-        impl TaskCommandHost for FailedCommand {
-            fn execute<'a>(
-                &'a self,
-                _: TaskContext,
-                _: LeaseFence,
-                _: WorkflowCommand,
-                _: Value,
-            ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
-                let error = (self.0)();
-                Box::pin(async { Err(error) })
-            }
+    struct FailedCommand(fn() -> Error);
+    impl TaskCommandHost for FailedCommand {
+        fn execute<'a>(
+            &'a self,
+            _: TaskContext,
+            _: LeaseFence,
+            _: WorkflowCommand,
+            _: Value,
+        ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
+            let error = (self.0)();
+            Box::pin(async { Err(error) })
         }
-
+    }
+    let (seen, _capture) = crate::obs::capture::install();
+    let fixture = Fixture::new().await?;
+    let runtime = fixture.runtime(None).await?;
+    let lease = fixture.admit(&runtime).await?;
+    let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+    runtime
+        .run_task(
+            lease,
+            &FailedCommand(|| Error::Unsupported("original command cause".into())),
+            2,
+        )
+        .await?;
+    assert!(matches!(
+        runtime.task_host().outcome(task).await?,
+        Some(Outcome::Failed { message }) if message.contains("original command cause")
+    ));
+    assert!(seen.lock().unwrap().iter().any(|(_, field, value)| {
+        *field == "cause" && value.contains("original command cause")
+    }));
+    // A wrapped cause keeps its class: a task-file read that lost its acknowledgement is as
+    // uncertain as the bare failure, and a wrapped definitive failure still settles Failed.
+    fn wrapped(error: Error) -> Error {
+        Error::from(crate::task_volume::Error::FileRead(error))
+    }
+    for (command, uncertain) in [
+        (
+            FailedCommand(|| Error::Storage("response lost after effect".into())),
+            true,
+        ),
+        (
+            FailedCommand(|| {
+                wrapped(Error::Indeterminate(crate::OperationId::from_bytes(
+                    [7; 16],
+                )))
+            }),
+            true,
+        ),
+        (
+            FailedCommand(|| wrapped(Error::Unsupported("wrapped definitive cause".into()))),
+            false,
+        ),
+        // Failures that carry their class only as a code: a task-volume storage failure and a
+        // deferred search publication may both have taken effect.
+        (
+            FailedCommand(|| {
+                Error::from(crate::task_volume::Error::Storage(
+                    acyclic_stream::StreamError::DeadlineElapsed,
+                ))
+            }),
+            true,
+        ),
+        (FailedCommand(|| Error::SearchPublicationDeferred), true),
+        // A failed child task is settled even though its wire class is storage.
+        (
+            FailedCommand(|| Error::TaskFailed {
+                task: TaskId::from_bytes([9; 16]),
+                message: "child failed".into(),
+            }),
+            false,
+        ),
+    ] {
         let fixture = Fixture::new().await?;
         let runtime = fixture.runtime(None).await?;
         let lease = fixture.admit(&runtime).await?;
         let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
-        runtime
-            .run_task(
-                lease,
-                &FailedCommand(|| Error::Unsupported("original command cause".into())),
-                2,
-            )
-            .await?;
-        assert!(matches!(
-            runtime.task_host().outcome(task).await?,
-            Some(Outcome::Failed { message }) if message.contains("original command cause")
-        ));
-        assert!(seen.lock().unwrap().iter().any(|(_, field, value)| {
-            *field == "cause" && value.contains("original command cause")
-        }));
-        // A wrapped cause keeps its class: a task-file read that lost its acknowledgement is as
-        // uncertain as the bare failure, and a wrapped definitive failure still settles Failed.
-        fn wrapped(error: Error) -> Error {
-            Error::from(crate::task_volume::Error::FileRead(error))
-        }
-        for (command, uncertain) in [
-            (
-                FailedCommand(|| Error::Storage("response lost after effect".into())),
-                true,
-            ),
-            (
-                FailedCommand(|| {
-                    wrapped(Error::Indeterminate(crate::OperationId::from_bytes(
-                        [7; 16],
-                    )))
-                }),
-                true,
-            ),
-            (
-                FailedCommand(|| wrapped(Error::Unsupported("wrapped definitive cause".into()))),
-                false,
-            ),
-            // Failures that carry their class only as a code: a task-volume storage failure and a
-            // deferred search publication may both have taken effect.
-            (
-                FailedCommand(|| {
-                    Error::from(crate::task_volume::Error::Storage(
-                        acyclic_stream::StreamError::DeadlineElapsed,
-                    ))
-                }),
-                true,
-            ),
-            (FailedCommand(|| Error::SearchPublicationDeferred), true),
-            // A failed child task is settled even though its wire class is storage.
-            (
-                FailedCommand(|| Error::TaskFailed {
-                    task: TaskId::from_bytes([9; 16]),
-                    message: "child failed".into(),
-                }),
-                false,
-            ),
-        ] {
-            let fixture = Fixture::new().await?;
-            let runtime = fixture.runtime(None).await?;
-            let lease = fixture.admit(&runtime).await?;
-            let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
-            let code = (command.0)().code();
-            runtime.run_task(lease, &command, 2).await?;
-            let outcome = runtime.task_host().outcome(task).await?;
-            assert_eq!(
-                matches!(outcome, Some(Outcome::Indeterminate { .. })),
-                uncertain,
-                "{code:?}: {outcome:?}"
-            );
-            assert_eq!(
-                matches!(outcome, Some(Outcome::Failed { .. })),
-                !uncertain,
-                "{code:?}: {outcome:?}"
-            );
-        }
-        Ok(())
-    })
-    .await
+        let code = (command.0)().code();
+        runtime.run_task(lease, &command, 2).await?;
+        let outcome = runtime.task_host().outcome(task).await?;
+        assert_eq!(
+            matches!(outcome, Some(Outcome::Indeterminate { .. })),
+            uncertain,
+            "{code:?}: {outcome:?}"
+        );
+        assert_eq!(
+            matches!(outcome, Some(Outcome::Failed { .. })),
+            !uncertain,
+            "{code:?}: {outcome:?}"
+        );
+    }
+    Ok(())
 }
 
 #[tokio::test]

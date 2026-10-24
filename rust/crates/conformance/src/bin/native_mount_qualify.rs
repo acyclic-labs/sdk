@@ -1,11 +1,11 @@
 //! Real-kernel native-mount qualification with a machine-readable receipt.
 
-use acyclic_native_runtime::command::{Command, Stdio};
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -195,6 +195,7 @@ fn run_on_qualification_thread(
     std::thread::scope(|scope| {
         std::thread::Builder::new()
             .name("native-mount-qualify".into())
+            .stack_size(32 * 1024 * 1024)
             .spawn_scoped(scope, action)
             .map_err(Failure::from)?
             .join()

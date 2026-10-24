@@ -11,13 +11,12 @@ use std::time::Duration;
 
 mod arrivals;
 mod converge;
-mod mounted;
 #[cfg(test)]
 #[cfg(not(acyclic_harness_loom))]
 mod tests;
 
 // Exclude owned projections individually below, never their authored siblings.
-const EXCLUDED: &[&str] = &crate::workspace::RESERVED_NAMES;
+const EXCLUDED: &[&str] = &[".git", ".acyclic-sdk", ".system"];
 const MAXIMUM_PATHS: u32 = 262_144;
 const WATCH_FENCE_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -96,7 +95,19 @@ impl CheckoutTools {
     ) -> Result<()> {
         let (physical, _) = selected;
         if let Some(mount) = &physical.mounted {
-            return mounted::sync(mount, permit, owner).await;
+            mount
+                .sync_with_permit(permit, &mount.native_work()?, move |_| {
+                    let owner = owner.clone();
+                    async move {
+                        if let Some((owner, settlement)) = owner {
+                            owner.verify(settlement, &mut None).await?;
+                        }
+                        Ok::<(), Error>(())
+                    }
+                })
+                .await
+                .map_err(|failure| failure.cause)?;
+            return Ok(());
         }
         // A file publication's physical write is owed a capture of its own.
         // Finish it first, so this capture never records that write.
@@ -182,32 +193,29 @@ impl CheckoutTools {
         if cursor.watcher.root_identity() != physical.identity {
             return Err(Error::Unauthorized("checkout root was replaced".into()));
         }
-        let mut checkout = acyclic_fs::in_heap(|| {
-            workspace.checkout(
+        let mut checkout = workspace
+            .checkout(
                 GenerationSelector::Head,
                 CheckoutMode::tracking_transaction(),
                 WorkBudget::UNBOUNDED,
                 &cancellation,
             )
-        })
-        .await
-        .map_err(storage)?
-        .value;
-        acyclic_fs::in_heap(|| {
-            converge::capture(
-                &mut cursor,
-                &mut checkout,
-                physical,
-                (options, policy),
-                baseline,
-                &cancellation,
-            )
-        })
+            .await
+            .map_err(storage)?
+            .value;
+        converge::capture(
+            &mut cursor,
+            &mut checkout,
+            physical,
+            (options, policy),
+            baseline,
+            &cancellation,
+        )
         .await?;
         if checkout.has_pending_mutations() {
             let operation = capture_operation(operation, phase);
-            let committed = acyclic_fs::in_heap(|| {
-                checkout.commit(
+            let committed = checkout
+                .commit(
                     operation,
                     None,
                     None,
@@ -226,10 +234,9 @@ impl CheckoutTools {
                         )
                     },
                 )
-            })
-            .await
-            .map_err(storage)?
-            .value;
+                .await
+                .map_err(storage)?
+                .value;
             if !matches!(
                 committed,
                 LivePublicationObservation::Committed { .. }

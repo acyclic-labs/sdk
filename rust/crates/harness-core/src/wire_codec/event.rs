@@ -187,7 +187,7 @@ pub fn decode_event_payload(
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(EventPayload, u64)> {
     use crate::executor::json::{
-        JsonCodecCharge, JsonValueSchema, history_diagnostic_bytes, json_from_slice_bounded,
+        JsonCodecCharge, JsonValueSchema, json_decode_owned_bytes, json_from_slice_bounded,
     };
     let code = work
         .as_deref()
@@ -198,17 +198,12 @@ pub fn decode_event_payload(
         std::marker::PhantomData::<EventPayload>,
         bytes,
         PAYLOAD_BOUNDS,
+        0,
         code,
         Some(JsonValueSchema::EventPayload),
         &mut |charge| match charge {
-            JsonCodecCharge::Admission {
-                maximum_owned_bytes,
-                value_shape,
-            } => {
-                let reserved = maximum_owned_bytes
-                    .checked_add(history_diagnostic_bytes(value_shape, code)?)
-                    .ok_or_else(|| boundary(quota.work(), Storage, "event custody overflow"))?;
-                quota.replace(reserved)
+            JsonCodecCharge::Admission { value_shape, .. } => {
+                quota.replace(json_decode_owned_bytes(value_shape, false, code)?.0)
             }
             charge => match quota.work().as_deref_mut() {
                 Some(io) => io.codec_charge(charge),

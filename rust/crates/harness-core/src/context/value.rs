@@ -21,7 +21,7 @@ impl ContextSource for Context {
     }
 }
 /// Mutable context assembled for one model step.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Context {
@@ -126,7 +126,7 @@ impl BorrowedContext<'_> {
     }
 }
 /// Inputs visible to every context stage.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ContextInput {
     /// Current durable turn input.
     pub input: ModelContent,

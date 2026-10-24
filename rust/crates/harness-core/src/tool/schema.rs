@@ -43,9 +43,7 @@ pub(crate) fn project_json<T: Serialize>(
 
 /// Explicit model representation, independent of the retained canonical result.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[derive(
-    Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema, crate::HeapLayout,
-)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectionMode {
     /// Complete typed value in the existing JSON envelope.

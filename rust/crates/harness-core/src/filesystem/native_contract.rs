@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
 
 /// Explicit finite bounds for a dynamically sized native volume view.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeViewOptions {
     /// Absolute owner namespace root, preallocated and witnessed by the host.
@@ -18,7 +18,7 @@ pub struct NativeViewOptions {
 }
 
 /// One exact volume exposed to the approved native command.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeVolumeMapping {
     /// Exact owner/provider volume reference.
@@ -36,7 +36,7 @@ pub struct NativeVolumeMapping {
 }
 
 /// Exact native namespace; destination publications remain independent.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeViewManifest {
     /// Exact root and finite view bounds.
@@ -46,7 +46,7 @@ pub struct NativeViewManifest {
 }
 
 /// Namespace semantics for one independently owned volume.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeVolumeNamespace {
     /// Ordinary host directory with its existing SDK publication owner.
@@ -228,7 +228,7 @@ pub(super) fn validation_error(
 pub const NATIVE_PROCESS_EFFECT_KIND: &str = "harness/native-process/v1";
 
 /// Exact approved executable invocation. Host credentials are not request fields.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeProcessRequest {
     /// Absolute executable path; ambient PATH lookup is never used.
@@ -261,6 +261,27 @@ pub struct NativeProcessRequest {
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl super::PreparationRecord for NativeProcessRequest {
+    fn maximum_slot_bytes() -> u64 {
+        let typed = [
+            std::mem::size_of::<Self>() as u64,
+            std::mem::size_of::<NativeVolumeMapping>() as u64,
+            std::mem::size_of::<(String, String)>() as u64,
+            std::mem::size_of::<serde_json::Value>() as u64,
+            std::mem::size_of::<(String, serde_json::Value)>() as u64,
+            std::mem::size_of::<crate::mcp::stdio::McpStdioRequest>() as u64,
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(0);
+        let content = std::mem::size_of::<serde::__private229::de::Content<'static>>().max(
+            std::mem::size_of::<(
+                serde::__private229::de::Content<'static>,
+                serde::__private229::de::Content<'static>,
+            )>(),
+        ) as u64;
+        typed + 2 * content
+    }
+
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
         crate::executor::json::JsonValueSchema::NativeProcessRequest
     }
@@ -339,7 +360,7 @@ impl NativeProcessRequest {
 }
 
 /// Bounded bytes from a completed process. Bytes preserve non-UTF-8 output.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeProcessResult {
     /// Whether the OS exit status indicates success; nonzero exits still return their captured output as a known invocation result.
@@ -355,7 +376,20 @@ pub struct NativeProcessResult {
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-impl super::PreparationRecord for NativeProcessResult {}
+impl super::PreparationRecord for NativeProcessResult {
+    fn maximum_slot_bytes() -> u64 {
+        [
+            std::mem::size_of::<Self>(),
+            std::mem::size_of::<NativeProcessStop>(),
+            std::mem::size_of::<Vec<u8>>(),
+            std::mem::size_of::<String>(),
+            std::mem::size_of::<(String, u8)>(),
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(0) as u64
+    }
+}
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl NativeProcessResult {
@@ -392,7 +426,7 @@ impl NativeProcessResult {
 }
 
 /// Why capture stopped, including whether cleanup was confirmed.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeProcessStop {
     /// Typed capture condition, independent of diagnostic wording.
@@ -404,7 +438,7 @@ pub struct NativeProcessStop {
 }
 
 /// Conditions that stop bounded native output collection.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NativeProcessStopKind {
     /// Capture allowance expired.

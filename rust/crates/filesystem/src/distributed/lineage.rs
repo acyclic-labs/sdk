@@ -69,10 +69,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         });
         let mut records = work.vec(usize::from(generation.is_some()))?;
         if let Some(generation) = generation {
-            records.push(
-                work.stream_bytes(LINEAGE_DOMAIN, &[generation.digest().as_bytes()])?
-                    .into(),
-            );
+            records.push(work.stream_bytes(LINEAGE_DOMAIN, &[generation.digest().as_bytes()])?.into());
         }
         let inherited = source
             .as_ref()
@@ -114,29 +111,13 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         Ok(())
     }
 
-    fn creation_changes(
-        &self,
-        request: &mut CommitRequest,
-        authority: AuthorityId,
-        proposed: Option<&ProposedCommit>,
-        generation: Option<GenerationId>,
-        work: &mut AuthorityWork<'_>,
-    ) -> Result<(), AuthorityStoreError> {
+    fn creation_changes(&self, request: &mut CommitRequest, authority: AuthorityId, proposed: Option<&ProposedCommit>, generation: Option<GenerationId>, work: &mut AuthorityWork<'_>) -> Result<(), AuthorityStoreError> {
         if let (Some(proposed), Some(generation)) = (proposed, generation) {
             let (path, records) = self.publication_changes(
-                authority,
-                proposed,
-                generation,
-                None,
-                Sequence::new(1),
-                work,
+                authority, proposed, generation, None, Sequence::new(1), work,
             )?;
-            request
-                .conditions
-                .push(CommitCondition::Absent { path: path.clone() });
-            request
-                .mutations
-                .push(CommitMutation::Append { path, records });
+            request.conditions.push(CommitCondition::Absent { path: path.clone() });
+            request.mutations.push(CommitMutation::Append { path, records });
         }
         Ok(())
     }

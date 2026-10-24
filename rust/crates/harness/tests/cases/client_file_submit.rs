@@ -17,7 +17,8 @@ use std::{
 
 #[path = "../client_file_admission.rs"]
 mod admission;
-use acyclic_harness::test_support::fuzz_cases::file_client as parser;
+#[path = "../../../harness-fuzz/support/file_client.rs"]
+mod parser;
 
 struct Provider {
     inner: MemoryStream,

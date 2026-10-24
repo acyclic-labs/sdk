@@ -276,7 +276,7 @@ impl NativeSourceWatch {
                 .deliver_wide(&[HostChangeWide::Everything], work)?;
             return Ok(false);
         }
-        let started = acyclic_native_runtime::deadline::now();
+        let started = Instant::now();
         let mut reads = self.shared.lock_reads();
         let result = (|| {
             if reads.pending {
@@ -314,9 +314,7 @@ impl NativeSourceWatch {
     }
 }
 fn expired(deadline: Option<(Instant, Duration)>) -> bool {
-    deadline.is_some_and(|(started, timeout)| {
-        acyclic_native_runtime::deadline::elapsed(started) >= timeout
-    })
+    deadline.is_some_and(|(started, timeout)| started.elapsed() >= timeout)
 }
 pub(super) fn notification(
     record: &[u8],

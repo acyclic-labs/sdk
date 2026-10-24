@@ -1,5 +1,4 @@
 [package]
-autotests = false
 include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "examples/**", "tests/**", "benches/**", "fuzz/corpus/**"]
 name = "acyclic-auth"
 version.workspace = true
@@ -12,8 +11,6 @@ description = "Shared capability chain contract and verification"
 
 [features]
 test-support = []
-
-fuzzing = []
 
 [dependencies]
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
@@ -46,16 +43,3 @@ harness = false
 
 [build-dependencies]
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
-
-
-[[test]]
-name = "contract"
-path = "tests/contract.rs"
-
-[[test]]
-name = "credentials"
-path = "tests/credentials.rs"
-
-[[test]]
-name = "operations"
-path = "tests/operations.rs"

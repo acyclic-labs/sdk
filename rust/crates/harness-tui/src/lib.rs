@@ -65,7 +65,7 @@ pub use transcript_rows::TranscriptRows;
 #[cfg(feature = "tui")]
 pub use completion::{
     Completion, CompletionKind, CompletionMenu, CompletionRequest, CompletionWork,
-    PATH_RESULT_COUNT, PathMatches, completion_request, fuzzy_score,
+    completion_request, fuzzy_score,
 };
 #[cfg(feature = "tui")]
 pub use completion_popup::CompletionPopup;
@@ -102,16 +102,3 @@ pub use wrapped_lines::WrappedLines;
 pub use screen::{Screen, ScreenAreas};
 #[cfg(feature = "tui")]
 pub mod term;
-
-/// Shared property and mutation-fuzz exercises.
-#[cfg(all(feature = "tui", any(test, feature = "fuzzing")))]
-pub mod fuzzing;
-
-#[cfg(test)]
-extern crate self as acyclic_harness_tui;
-
-#[cfg(all(test, feature = "tui"))]
-mod owner_main;
-
-#[cfg(all(test, feature = "tui"))]
-mod owner_terminal_negotiation;

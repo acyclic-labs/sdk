@@ -70,18 +70,6 @@ fn coordinator_future_sizes() {
         )
         .unwrap();
         let verifier = issuer.verifier(&mut None).unwrap();
-        let declaration_key = IdempotencyKey::new("task").unwrap();
-        report(
-            "observe_declaration",
-            coordinator.observe_declaration(
-                &owner,
-                &scope,
-                &verifier,
-                task,
-                &declaration_key,
-                &mut None,
-            ),
-        );
         report(
             "declare_operation",
             coordinator.declare_operation(

@@ -6,7 +6,7 @@ use acyclic_stream::{ProviderPlatform, ProviderTask, StreamProvider};
 use std::future::Future;
 
 /// Original provenance retained by the allocation provider.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceCreationOrigin {
     /// Actual coordinator owner.

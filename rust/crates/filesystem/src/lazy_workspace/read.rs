@@ -152,7 +152,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         if record.kind != FileKind::Regular {
             return Err(LazyWorkspaceError::NotRegularFile);
         }
-        let detached = accounted!(ctx, |work, cancel| async move {
+        let detached = accounted!(ctx, |work, cancel| async {
             crate::facade::DetachedFile::from_record(
                 self.workspace.volume.clone(),
                 record,
@@ -199,7 +199,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         };
         let bytes = match lookup {
             LazyLookup::Authored { record, .. } | LazyLookup::Shadow { record, .. } => {
-                let detached = accounted!(ctx, |work, cancel| async move {
+                let detached = accounted!(ctx, |work, cancel| async {
                     crate::facade::DetachedFile::from_record(
                         self.workspace.volume.clone(),
                         *record,
@@ -218,13 +218,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             }
             LazyLookup::Source { source, node } => {
                 let namespace = self.namespace_path(path, ctx)?;
-                let namespace_path = &namespace.value;
-                let result = accounted!(ctx, |work, cancel| async move {
+                let result = accounted!(ctx, |work, cancel| async {
                     if let Some(range) = range {
                         self.source
                             .read_range(
                                 *source,
-                                namespace_path,
+                                &namespace.value,
                                 node.version,
                                 range.offset,
                                 range.length,
@@ -234,7 +233,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                             .await
                     } else {
                         self.source
-                            .read_link(*source, namespace_path, node.version, maximum, work, cancel)
+                            .read_link(
+                                *source,
+                                &namespace.value,
+                                node.version,
+                                maximum,
+                                work,
+                                cancel,
+                            )
                             .await
                     }
                 });

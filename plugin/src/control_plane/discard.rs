@@ -193,13 +193,13 @@ impl ControlPlane {
             .cloned()
             .ok_or_else(|| "pending discard is missing".to_owned())?;
         if !pending.context_discarded {
-            let registry = WorkspaceContextRegistry::new(self.store.clone());
-            match fs_call(registry.discard_subtree(
-                WorkspaceContextId::from_bytes(pending.parent_context_id),
-                WorkspaceContextId::from_bytes(pending.child_context_id),
-                10_000,
-            ))
-            .await
+            match WorkspaceContextRegistry::new(self.store.clone())
+                .discard_subtree(
+                    WorkspaceContextId::from_bytes(pending.parent_context_id),
+                    WorkspaceContextId::from_bytes(pending.child_context_id),
+                    10_000,
+                )
+                .await
             {
                 Ok(_) | Err(acyclic_fs::WorkspaceContextError::Discarded) => {}
                 Err(error) => return Err(display(error)),
@@ -267,12 +267,14 @@ impl ControlPlane {
                 .and_then(|agent| agent.workspaces.front())
                 .cloned()
             {
-                match fs_call(self.fs.delete_workspace(
-                    &workspace.name,
-                    IdempotencyKey::from_bytes(workspace.delete_key),
-                ))
-                .await
-                .map_err(|error| format!("cannot delete discarded workspace: {error}"))?
+                match self
+                    .fs
+                    .delete_workspace(
+                        &workspace.name,
+                        IdempotencyKey::from_bytes(workspace.delete_key),
+                    )
+                    .await
+                    .map_err(|error| format!("cannot delete discarded workspace: {error}"))?
                 {
                     WorkspaceDelete::Deleted => self.shared_roots.collection.deleted(),
                     WorkspaceDelete::AlreadyDeleted => {}
@@ -321,7 +323,7 @@ impl ControlPlane {
             return Err("injected mount teardown failure".to_owned());
         }
         if let Some(mount) = self.mounts.get(agent_id) {
-            fs_call(mount.unmount()).await?;
+            mount.unmount().await?;
             if let Some(mount) = self.mounts.remove(agent_id) {
                 self.retire(mount);
             }

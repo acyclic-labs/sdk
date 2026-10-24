@@ -10,9 +10,6 @@
     reason = "explicit Send future bounds avoid higher-ranked lifetime errors in native commands"
 )]
 
-#[cfg(test)]
-acyclic_test_support::counting_allocator!();
-
 mod adapter_state;
 mod cli_output;
 mod codex_hook_mcp;
@@ -211,16 +208,18 @@ fn main_result() -> Result<(), CliFailure> {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
-            .block_on(acyclic_fs::in_heap(run))?;
+            .block_on(run())?;
         return Ok(());
     }
     let result = std::thread::Builder::new()
         .name("acyclic".to_owned())
+        .stack_size(32 * 1024 * 1024)
         .spawn(|| -> Result<(), CliFailure> {
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
+                .thread_stack_size(32 * 1024 * 1024)
                 .build()?
-                .block_on(acyclic_fs::in_heap(run))
+                .block_on(run())
         })?
         .join()
         .map_err(|_| io::Error::other("control-plane thread panicked"))?;

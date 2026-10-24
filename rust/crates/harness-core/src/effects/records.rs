@@ -1,7 +1,7 @@
 use super::*;
 
 /// Immutable dispatch request reconstructed from durable effect state.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EffectDispatch {
     /// Provider selected by durable state.
     pub provider: String,
@@ -43,7 +43,7 @@ impl EffectDispatch {
 }
 
 /// Observation returned by dispatch or later reconciliation.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EffectObservation {
     /// Provider that produced the observation.
     pub provider: String,

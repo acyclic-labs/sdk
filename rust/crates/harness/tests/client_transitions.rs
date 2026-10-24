@@ -5,8 +5,9 @@
     clippy::panic,
     reason = "test assertions stop on a violated contract"
 )]
+#[path = "support/client/mod.rs"]
+mod support;
 use acyclic_harness::client::*;
-use acyclic_harness::test_support::fuzz_cases::client_numbers as support;
 use std::sync::Arc;
 use support::*;
 #[cfg(target_arch = "wasm32")]

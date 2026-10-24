@@ -1,10 +1,9 @@
 use super::*;
 mod selection;
 use selection::selection;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
+#[path = "../../../fuzz-context/fuzz_targets/file_guidance_input.rs"]
 mod fuzz_input;
-#[cfg(feature = "test-support")]
-pub(crate) use fuzz_input::check as fuzz_file_guidance;
 
 impl LocalHarness {
     pub(super) async fn file_guidance(&self, prompt: &str) -> Result<(bool, bool)> {

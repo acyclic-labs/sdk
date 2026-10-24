@@ -56,9 +56,6 @@ async fn next_event<
     let animation = animation_frame::<true>(animation);
     tokio::pin!(animation);
     loop {
-        completions
-            .refresh_query(prompt, commands.selected_task()?.or(commands.active_task()))
-            .await?;
         let revision = client.presentation_revision();
         tokio::select! {
             biased;
@@ -116,7 +113,7 @@ pub fn terminal_events(
 ) -> acyclic_stream::BoxProviderStream<'static, Result<InputBatch>> {
     Box::pin(futures::stream::try_unfold(tty, |mut tty| async move {
         loop {
-            let completion = acyclic_grpc_observability::task::spawn_blocking(move || {
+            let completion = tokio::task::spawn_blocking(move || {
                 let events = tty.read_events(
                     std::time::Instant::now() + std::time::Duration::from_secs(86_400),
                 );

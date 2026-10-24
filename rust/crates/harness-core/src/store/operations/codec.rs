@@ -1,5 +1,5 @@
 use super::*;
-use crate::executor::json::{JsonBounds, JsonCodecCharge, JsonValueSchema};
+use crate::executor::json::{JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape};
 
 pub(crate) fn original_native_decode_mode(_observer: &dyn HistoryIo) -> bool {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -11,13 +11,14 @@ pub(crate) fn original_native_decode_mode(_observer: &dyn HistoryIo) -> bool {
 pub(crate) fn decode_preclaimed_json_with_mode<T, F>(
     bytes: &[u8],
     bounds: JsonBounds,
+    maximum_owned_bytes: u64,
     code: crate::wire::ErrorCode,
     native: bool,
     value_schema: &'static JsonValueSchema,
     charge: &mut F,
 ) -> Result<T>
 where
-    T: serde::de::DeserializeOwned + crate::HeapLayout,
+    T: serde::de::DeserializeOwned,
     F: FnMut(JsonCodecCharge) -> Result<()>,
 {
     let native = native && cfg!(all(feature = "filesystem", not(target_arch = "wasm32")));
@@ -25,6 +26,7 @@ where
         std::marker::PhantomData,
         bytes,
         bounds,
+        maximum_owned_bytes,
         native.then_some(code),
         native.then_some(value_schema),
         charge,
@@ -48,7 +50,7 @@ pub(crate) fn retain_original_decode_error<T>(
     result
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(in crate::store) struct OperationLocation<A = Authority> {
     pub(in crate::store) authority: A,
@@ -59,10 +61,11 @@ pub(in crate::store) struct OperationLocation<A = Authority> {
     pub(in crate::store) effect_position: Option<u64>,
 }
 
-pub(in crate::store) fn decode_index<T: serde::de::DeserializeOwned + crate::HeapLayout>(
+pub(in crate::store) fn decode_index<T: serde::de::DeserializeOwned>(
     bytes: &[u8],
     maximum_bytes: u64,
     labels: &str,
+    admission: fn(JsonValueShape, &mut dyn HistoryIo) -> Result<u64>,
     retained: fn(&T) -> (u64, u64),
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<T> {
@@ -73,10 +76,13 @@ pub(in crate::store) fn decode_index<T: serde::de::DeserializeOwned + crate::Hea
         return crate::contract::json_from_slice(bytes)
             .map_err(|error| Error::Storage(error.to_string()));
     };
-    let labels = labels
-        .split_ascii_whitespace()
-        .map(|label| label.len() as u64 + 4)
-        .sum();
+    let diagnostic = crate::executor::json::audited_serde_diagnostic_bytes(
+        bytes.len() as u64,
+        labels
+            .split_ascii_whitespace()
+            .map(|label| label.len() as u64 + 4)
+            .sum(),
+    )?;
     let mut reservation = 0;
     let mut observed_failure = false;
     let native = original_native_decode_mode(observer);
@@ -87,6 +93,7 @@ pub(in crate::store) fn decode_index<T: serde::de::DeserializeOwned + crate::Hea
             maximum_items: maximum_bytes,
             maximum_depth: 256,
         },
+        bytes.len() as u64,
         Storage,
         native,
         JsonValueSchema::None,
@@ -96,12 +103,10 @@ pub(in crate::store) fn decode_index<T: serde::de::DeserializeOwned + crate::Hea
                 value_shape,
             } = charge
             {
-                let diagnostic = crate::executor::json::audited_serde_diagnostic_bytes(
-                    value_shape.diagnostic_source_bytes(),
-                    labels,
-                )?;
+                let extra = admission(value_shape, observer)?;
                 let planned = maximum_owned_bytes
-                    .checked_add(diagnostic)
+                    .checked_add(extra)
+                    .and_then(|bytes| bytes.checked_add(diagnostic))
                     .ok_or_else(|| Error::Invalid("index reservation overflows".into()))?;
                 observer.retain_owned(planned)?;
                 reservation = planned;
@@ -143,6 +148,7 @@ pub(in crate::store) fn decode_location_with_work(
         bytes,
         acyclic_stream::MAX_RECORD_BYTES as u64,
         "OperationLocation Authority AggregateKind authority operation_id revision intent_digest effect_position kind id agent conversation session turn task",
+        |_, _| Ok(0),
         |location: &OperationLocation| {
             (
                 location.authority.id.capacity() as u64,
@@ -153,7 +159,7 @@ pub(in crate::store) fn decode_location_with_work(
     )
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(in crate::store) struct MessageLocation<A = Authority> {
     pub(in crate::store) location: OperationLocation<A>,
@@ -169,6 +175,7 @@ pub(in crate::store) fn decode_message_location_with_work(
         bytes,
         acyclic_stream::MAX_RECORD_BYTES as u64,
         "MessageLocation OperationLocation Authority AggregateKind location message_id sequence authority operation_id revision intent_digest effect_position kind id agent conversation session turn task",
+        |_, _| Ok(0),
         |message: &MessageLocation| {
             (
                 message.location.authority.id.capacity() as u64,

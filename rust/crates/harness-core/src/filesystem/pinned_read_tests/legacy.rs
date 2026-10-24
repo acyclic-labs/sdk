@@ -10,13 +10,13 @@ pub(super) async fn read_pinned(
     maximum_bytes: u64,
     io: Option<&PreparationIo>,
 ) -> Result<acyclic_stream::OwnedBytes> {
-    crate::executor::with_history_io(io, |work| reference.validate(work))?;
     crate::conversation::BoundedContentFuture::new(io, || {
         let future = async move {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = io.and_then(PreparationIo::original_native_work) {
                 let scratch = PreparationIo::from_native_work(original)?;
                 let io = &scratch;
+                reference.validate(&mut Some(&mut io.history_io()))?;
                 if reference.volume().provider() != &host.provider
                     || reference.descriptor().byte_length() > maximum_bytes
                 {
@@ -41,7 +41,7 @@ pub(super) async fn read_pinned(
                 let path = rendered.0;
                 let opened = (host).open(&workspace, Some(io)).await?;
                 let pinned = (host).generation(&opened, &generation, Some(io)).await?;
-                acyclic_differential::record(("read", maximum_bytes));
+                acyclic_test_support::differential::record(("read", maximum_bytes));
                 let bytes = pinned
                     .read(&path, maximum_bytes, original, io.cancellation())
                     .await
@@ -49,6 +49,7 @@ pub(super) async fn read_pinned(
                         source: Box::new(source),
                         custody: None,
                     })?;
+                fork_preparer_io::retain(&pinned, Some(io)).await?;
                 crate::executor::with_history_io(Some(io), |work| {
                     reference.descriptor().verify(&bytes, work)
                 })?;
@@ -83,7 +84,7 @@ pub(super) async fn read_pinned(
                 Some(io) => {
                     let opened = (host).open(&workspace, Some(io)).await?;
                     let pinned = (host).generation(&opened, &generation, Some(io)).await?;
-                    acyclic_differential::record(("read", maximum_bytes));
+                    acyclic_test_support::differential::record(("read", maximum_bytes));
                     let bytes = io.receive(
                         pinned
                             .read(&path, maximum_bytes, io.remaining()?, io.cancellation())
@@ -97,18 +98,12 @@ pub(super) async fn read_pinned(
                         )
                     })?;
                     io.retain_owned(capacity as u64)?;
+                    fork_preparer_io::retain(&pinned, Some(io)).await?;
                     bytes
                 }
                 None => {
-                    original_host_read(
-                        host,
-                        &workspace,
-                        Some(&generation),
-                        &path,
-                        maximum_bytes,
-                        None,
-                    )
-                    .await?
+                    host.read(&workspace, Some(&generation), &path, maximum_bytes, None)
+                        .await?
                 }
             };
             crate::executor::with_history_io(io, |work| {
@@ -134,42 +129,4 @@ pub(super) fn saved_frame_bytes(host: &Host, reference: &FileRef, maximum_bytes:
     original
         .checked_sub(std::mem::size_of_val(&candidate))
         .expect("the byte-only factory is smaller than the original shared factory") as u64
-}
-
-// The original unboxed `FilesystemHost::read`, verbatim: the shared method now
-// runs in a bounded heap frame, which this reference predates.
-async fn original_host_read(
-    host: &Host,
-    reference: &WorkspaceRef,
-    generation: Option<&GenerationRef>,
-    path: &str,
-    maximum_bytes: u64,
-    io: Option<&PreparationIo>,
-) -> Result<acyclic_stream::OwnedBytes> {
-    acyclic_test_support::differential::record(("read", maximum_bytes));
-    let owned;
-    let io = if let Some(io) = io {
-        io
-    } else {
-        owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-        &owned
-    };
-    let workspace = host.open(reference, Some(io)).await?;
-    let bytes = match generation {
-        Some(reference) => io.sdk(
-            host.generation(&workspace, reference, Some(io))
-                .await?
-                .read(path, maximum_bytes, io, io.cancellation())
-                .await,
-        )?,
-        None => io.sdk(
-            workspace
-                .read(path, maximum_bytes, io, io.cancellation())
-                .await,
-        )?,
-    };
-    if io.original_native_work().is_none() {
-        io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
-    }
-    Ok(bytes)
 }

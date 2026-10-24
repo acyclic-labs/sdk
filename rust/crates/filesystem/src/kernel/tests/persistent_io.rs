@@ -48,7 +48,11 @@ async fn put_tree_page(
 }
 
 fn only_page_name(page: &OwnedPage<TreeFormat>) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let PageRef::Leaf(entries) = page.page.view() else {
+    let page = match &page.page {
+        PageLease::Owned(page) => page,
+        PageLease::Shared { page, .. } => page,
+    };
+    let Page::Leaf(entries) = page else {
         return Err("expected a leaf page".into());
     };
     let entry = entries.first().ok_or("expected one leaf entry")?;
@@ -103,10 +107,7 @@ async fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write(
     .map(|(page, _)| page)?;
     assert!(matches!(first.page, PageLease::Shared { .. }));
     assert_eq!(first.logical_bytes, 0);
-    assert_eq!(
-        first_allocations.live_bytes(),
-        first_allocations.frame_control_bytes()
-    );
+    assert_eq!(first_allocations.live_bytes(), 0);
     assert_eq!(first_work.backend_read_operations, 1);
 
     let mut warm_allocations = AllocationLedger::default();
@@ -130,10 +131,7 @@ async fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write(
     assert_eq!(warm_work.page_reads, 1);
     assert_eq!(warm_work.backend_read_operations, 0);
     assert_eq!(warm_work.object_bytes_read, 0);
-    assert_eq!(
-        warm_allocations.live_bytes(),
-        warm_allocations.frame_control_bytes()
-    );
+    assert_eq!(warm_allocations.live_bytes(), 0);
     let warm_stats = store.stats()?;
     assert_eq!(warm_stats.decoded_hits, 1);
     assert_eq!(warm_stats.resident_decoded_pages, 1);
@@ -167,10 +165,7 @@ async fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write(
     accounting.release_owned(&mut allocation, bytes)?;
     assert_eq!(mutation_work.backend_read_operations, 0);
     assert!(mutation_work.bytes_copied >= bytes);
-    assert_eq!(
-        mutation_allocations.live_bytes(),
-        mutation_allocations.frame_control_bytes()
-    );
+    assert_eq!(mutation_allocations.live_bytes(), 0);
 
     let mut denied_allocations = AllocationLedger::default();
     let mut denied_work = WorkCounters::default();
@@ -197,10 +192,7 @@ async fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write(
         .err()
         .ok_or("cached mutable page bypassed its allocation budget")?;
     assert!(matches!(denied, crate::FsError::Work(_)));
-    assert_eq!(
-        denied_allocations.live_bytes(),
-        denied_allocations.frame_control_bytes()
-    );
+    assert_eq!(denied_allocations.live_bytes(), 0);
     Ok(())
 }
 
@@ -235,7 +227,7 @@ async fn decoded_cache_rejection_releases_owned_page_allocation()
         failure,
         crate::FsError::Object(ObjectStoreError::Corrupt)
     ));
-    assert_eq!(allocations.live_bytes(), allocations.frame_control_bytes());
+    assert_eq!(allocations.live_bytes(), 0);
     assert_eq!(work.backend_read_operations, 1);
     Ok(())
 }
@@ -276,10 +268,7 @@ async fn mixed_page_batches_read_only_cold_identities_and_preserve_order()
     .await
     .map(|(page, _)| page)?;
     assert!(matches!(seed.page, PageLease::Shared { .. }));
-    assert_eq!(
-        seed_allocations.live_bytes(),
-        seed_allocations.frame_control_bytes()
-    );
+    assert_eq!(seed_allocations.live_bytes(), 0);
 
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
@@ -329,7 +318,7 @@ async fn mixed_page_batches_read_only_cold_identities_and_preserve_order()
         names,
         [b"first".to_vec(), b"second".to_vec(), b"first".to_vec()]
     );
-    assert_eq!(allocations.live_bytes(), allocations.frame_control_bytes());
+    assert_eq!(allocations.live_bytes(), 0);
 
     assert_resident_cache_shape(store.stats()?, 2);
 
@@ -377,10 +366,7 @@ async fn mixed_page_batches_read_only_cold_identities_and_preserve_order()
         ),
         &cancellation,
     )?;
-    assert_eq!(
-        warm_allocations.live_bytes(),
-        warm_allocations.frame_control_bytes()
-    );
+    assert_eq!(warm_allocations.live_bytes(), 0);
     assert_eq!(store.stats()?.decoded_hits, 5);
     Ok(())
 }
@@ -440,7 +426,7 @@ async fn post_read_budget_failure_releases_every_decoded_allocation()
             ..
         }))
     ));
-    assert_eq!(allocations.live_bytes(), allocations.frame_control_bytes());
+    assert_eq!(allocations.live_bytes(), 0);
     Ok(())
 }
 
@@ -473,7 +459,7 @@ async fn single_page_read_authenticates_decode_and_releases_backend_ownership()
     assert_eq!(work.page_reads, 1);
     assert_eq!(work.backend_read_operations, 1);
     allocations.release(owned.logical_bytes)?;
-    assert_eq!(allocations.live_bytes(), allocations.frame_control_bytes());
+    assert_eq!(allocations.live_bytes(), 0);
 
     let malformed = OwnedBytes::from_static(b"not a canonical tree page");
     let malformed_id = ObjectId {
@@ -513,7 +499,7 @@ async fn single_page_read_authenticates_decode_and_releases_backend_ownership()
     .err()
     .ok_or("malformed page decoded")?;
     assert!(matches!(failure, crate::FsError::Decode(_)));
-    assert_eq!(allocations.live_bytes(), allocations.frame_control_bytes());
+    assert_eq!(allocations.live_bytes(), 0);
     assert_eq!(malformed_work.page_reads, 1);
     assert_eq!(malformed_work.backend_read_operations, 1);
     Ok(())
@@ -572,7 +558,7 @@ async fn shape_valid_malformed_tree_page_releases_decoded_allocation()
     .err()
     .ok_or("shape-valid malformed tree page unexpectedly decoded")?;
     assert!(matches!(failure, crate::FsError::Decode(_)));
-    assert_eq!(allocations.live_bytes(), allocations.frame_control_bytes());
+    assert_eq!(allocations.live_bytes(), 0);
     assert_eq!(work.backend_read_operations, 1);
     Ok(())
 }
@@ -634,7 +620,7 @@ async fn page_batches_release_all_ownership_on_cancel_discard_and_early_finish()
         .err()
         .ok_or("cancelled batch continued")?;
     assert!(matches!(failure, crate::FsError::Cancelled(_)));
-    assert_eq!(allocations.live_bytes(), allocations.frame_control_bytes());
+    assert_eq!(allocations.live_bytes(), 0);
 
     let cancellation = CancellationToken::new();
     let mut allocations = AllocationLedger::default();
@@ -669,7 +655,7 @@ async fn page_batches_release_all_ownership_on_cancel_discard_and_early_finish()
         failure,
         crate::FsError::Object(ObjectStoreError::Rejected(_))
     ));
-    assert_eq!(allocations.live_bytes(), allocations.frame_control_bytes());
+    assert_eq!(allocations.live_bytes(), 0);
 
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
@@ -696,7 +682,7 @@ async fn page_batches_release_all_ownership_on_cancel_discard_and_early_finish()
         ),
         &cancellation,
     )?;
-    assert_eq!(allocations.live_bytes(), allocations.frame_control_bytes());
+    assert_eq!(allocations.live_bytes(), 0);
     Ok(())
 }
 
@@ -729,7 +715,7 @@ async fn invalid_and_precancelled_batches_do_no_backend_work()
         crate::FsError::Object(ObjectStoreError::Rejected(_))
     ));
     assert_eq!(work, WorkCounters::default());
-    assert_eq!(allocations.live_bytes(), allocations.frame_control_bytes());
+    assert_eq!(allocations.live_bytes(), 0);
 
     let cancellation = CancellationToken::new();
     cancellation.cancel();
@@ -751,7 +737,7 @@ async fn invalid_and_precancelled_batches_do_no_backend_work()
     .ok_or("cancelled batch succeeded")?;
     assert!(matches!(cancelled, crate::FsError::Cancelled(_)));
     assert_eq!(work, WorkCounters::default());
-    assert_eq!(allocations.live_bytes(), allocations.frame_control_bytes());
+    assert_eq!(allocations.live_bytes(), 0);
     Ok(())
 }
 
@@ -804,7 +790,7 @@ async fn fully_consumed_batches_finish_and_reject_reads_past_the_exact_result()
         ),
         &cancellation,
     )?;
-    assert_eq!(allocations.live_bytes(), allocations.frame_control_bytes());
+    assert_eq!(allocations.live_bytes(), 0);
 
     let mut batch = (read_pages_with_accounting::<_, TreeFormat, _>(
         &store,
@@ -848,7 +834,7 @@ async fn fully_consumed_batches_finish_and_reject_reads_past_the_exact_result()
             .map(|(page, _)| page),
         Err(crate::FsError::Object(ObjectStoreError::Rejected(_)))
     ));
-    assert_eq!(allocations.live_bytes(), allocations.frame_control_bytes());
+    assert_eq!(allocations.live_bytes(), 0);
     Ok(())
 }
 
@@ -921,6 +907,6 @@ async fn late_batch_decode_failure_releases_every_pending_allocation()
             .map(|(page, _)| page),
         Err(crate::FsError::Decode(_))
     ));
-    assert_eq!(allocations.live_bytes(), allocations.frame_control_bytes());
+    assert_eq!(allocations.live_bytes(), 0);
     Ok(())
 }

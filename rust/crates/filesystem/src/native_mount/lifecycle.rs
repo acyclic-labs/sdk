@@ -85,21 +85,6 @@ pub(super) fn start_native_mount_prepared_with_meter(
     storage: PreparedNativeMountStart,
     destination_custody: Option<crate::NativeAllocation>,
 ) -> Result<NativeMountSession, NativeMountError> {
-    // Pays for the driver's box before the driver starts; the session keeps
-    // this claim beside the box until the box is freed.
-    let driver_custody = match work.claim(
-        std::mem::size_of::<DriverSession>() as u64,
-        1,
-        crate::WorkCounters::UNCHARGED,
-    ) {
-        Ok(custody) => custody,
-        Err(cause) => {
-            return Err(NativeMountError::StartupAdmissionFailed {
-                cause: cause.into(),
-                source,
-            });
-        }
-    };
     // The existing driver loop accepts its lifetime before this stack factory
     // acquires a physical fence. The factory never escapes or allocates a frame.
     let mut retirement = Some(NativeMountRetirement {
@@ -147,7 +132,7 @@ pub(super) fn start_native_mount_prepared_with_meter(
         None => (None, None, None),
     };
     let mut owner = NativeMountSession::new(request, retained_source, destination_custody);
-    owner.driver = driver.map(|session| session::OwnedDriver::new(session, driver_custody));
+    owner.driver = driver;
     owner.destination_guard = destination_guard;
     owner.startup_source_watch = startup_source_watch;
     match result {
@@ -161,7 +146,7 @@ pub(super) fn start_native_mount_prepared_with_meter(
     }
 }
 
-/// Starts a native projection mounted directly over an existing, non-empty directory — its contents are shadowed for the mount's duration and reappear once the returned session stops.
+/// Starts a native projection mounted directly over an existing, non-empty directory â€” its contents are shadowed for the mount's duration and reappear once the returned session stops.
 pub fn mount_native_over_existing(
     request: NativeMountRequest,
     source: Arc<dyn MountFilesystem>,

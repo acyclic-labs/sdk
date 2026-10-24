@@ -87,8 +87,8 @@ fn helper_command(name: &str) -> io::Result<Command> {
         ])
         .env_clear()
         .env(EVENT, name)
-        .stdin(crate::command::Stdio::null())
-        .stdout(crate::command::Stdio::piped());
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped());
     Ok(command)
 }
 

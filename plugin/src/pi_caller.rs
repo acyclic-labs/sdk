@@ -22,8 +22,7 @@ pub(crate) fn is_environment_key(key: &str) -> bool {
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case("ACYCLIC_PI_CALLER_"))
 }
 
-#[derive(Clone, Serialize, Deserialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiCallerClaims<S = String> {
     version: u32,

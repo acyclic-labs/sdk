@@ -3,7 +3,7 @@ use crate::wire_codec::CodecQuota;
 use physical::{closed_clone, copy_checkpoint, copy_text};
 
 /// Durable operation lifecycle.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationPhase {
     /// Dependencies are unresolved.
@@ -25,7 +25,7 @@ pub enum OperationPhase {
 }
 
 /// Current projection of one operation.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OperationState {
     /// Immutable declaration.
     pub spec: OperationSpec,
@@ -47,7 +47,7 @@ pub struct OperationState {
 }
 
 /// One durable workflow suspension/resume slot.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowSuspension {
     /// Committed workflow revision.

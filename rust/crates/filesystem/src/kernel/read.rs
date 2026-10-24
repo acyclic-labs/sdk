@@ -6,6 +6,7 @@ use super::tree_mutation::TreeFormat;
 use super::{CanonicalDecodeError, DecodeLimits, LogicalName, TreeEntry};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
+use crate::heap_future::in_heap;
 use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkError};
 use crate::storage::{ObjectId, ObjectStoreError};
 use thiserror::Error;
@@ -20,33 +21,19 @@ pub async fn lookup_tree_entries<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<Vec<Option<TreeEntry>>>, TreeReadFailure> {
-    cancellation.check().map_err(|_| {
-        OperationFailure::new(TreeReadError::Cancelled, crate::WorkCounters::UNCHARGED)
-    })?;
-    persistent_batch::validate_request::<TreeFormat>(root, names, maximum_queries, limits)
-        .map_err(|error| {
-            OperationFailure::new(map_batch_error(error), crate::WorkCounters::UNCHARGED)
-        })?;
-    // The lookup's frame is admitted on its own receipt before it is boxed.
-    crate::heap_future::in_heap_measured(
-        move |budget| async move {
-            persistent_batch::lookup_async::<S, TreeFormat>(
-                store,
-                root,
-                names,
-                maximum_queries,
-                limits,
-                budget,
-                cancellation,
-            )
-            .await
-            .map_err(map_batch_failure)
-        },
-        budget,
-        cancellation,
-        TreeReadError::Cancelled,
-        None,
-    )
+    in_heap(move || async move {
+        persistent_batch::lookup_async::<S, TreeFormat>(
+            store,
+            root,
+            names,
+            maximum_queries,
+            limits,
+            budget,
+            cancellation,
+        )
+        .await
+        .map_err(map_batch_failure)
+    })
     .await
 }
 

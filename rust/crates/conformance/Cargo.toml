@@ -59,6 +59,16 @@ path = "src/bin/bench_objects.rs"
 required-features = ["local-runner"]
 
 [[bench]]
+name = "filesystem"
+harness = false
+required-features = ["local-runner"]
+
+[[bench]]
+name = "filesystem_alloc"
+harness = false
+required-features = ["local-runner"]
+
+[[bench]]
 name = "objects"
 harness = false
 required-features = ["local-runner"]
@@ -113,8 +123,6 @@ test = false
 workspace = true
 
 [dev-dependencies]
-acyclic-harness = { path = "../harness", features = ["test-support"] }
-acyclic-native-runtime = { path = "../native-runtime", features = ["test-support"] }
 divan.workspace = true
 tempfile = "3.27.0"
 tracing.workspace = true

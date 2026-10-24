@@ -108,7 +108,7 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
             return Err(Error::Invalid("outbox and target are the same volume".into()).into());
         }
         let cursor = if let Some(file) = state.files.first() {
-            confirm(&outbox, file, limits.durability, Barrier::Restoration).await?;
+            confirm(&outbox, file, limits.durability, Barrier::Checkpoint).await?;
             let state: Checkpoint =
                 serde_json::from_slice(&file.bytes).map_err(|e| Error::Storage(e.to_string()))?;
             if state.target != target_id

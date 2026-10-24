@@ -1,4 +1,4 @@
-use crate::command::Command;
+use std::process::Command;
 
 /// Selects the native command shell shared by hooks and workspace process tools.
 /// The caller supplies the workspace, environment, streams and process owner.
@@ -11,7 +11,10 @@ pub fn shell_command(command: &str, selected: Option<&str>) -> Command {
     } else if selected == "cmd" {
         shell.args(["/d", "/s", "/c"]);
         #[cfg(windows)]
-        shell.raw_arg(format!("\"{command}\""));
+        {
+            use std::os::windows::process::CommandExt as _;
+            shell.raw_arg(format!("\"{command}\""));
+        }
         #[cfg(not(windows))]
         shell.arg(command);
     } else {

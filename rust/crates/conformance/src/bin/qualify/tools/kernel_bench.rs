@@ -190,14 +190,14 @@ pub(super) fn par_bench(args: &[String]) -> Result<(), Failure> {
                 let directory = root.join("par").join(format!("w{writer:03}"));
                 fs::create_dir_all(&directory)?;
                 Ok(acyclic_native_runtime::ProcessTree::spawn(
-                    acyclic_native_runtime::command::Command::new(std::env::current_exe()?)
+                    std::process::Command::new(std::env::current_exe()?)
                         .arg("mount-bench-writer")
                         .arg(&directory)
                         .arg(each.to_string())
                         .arg("4096")
                         .arg("1")
-                        .stdout(acyclic_native_runtime::command::Stdio::null())
-                        .stderr(acyclic_native_runtime::command::Stdio::piped()),
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::piped()),
                 )?)
             })
             .collect::<Result<Vec<_>, Failure>>()?;

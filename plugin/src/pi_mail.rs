@@ -28,8 +28,7 @@ use serde_json::Value;
 
 pub(crate) const MAXIMUM_PI_MAIL_BYTES: u64 = 65_536;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PiMailKind {
     Message,
@@ -37,23 +36,20 @@ pub(crate) enum PiMailKind {
 }
 
 /// First-party immutable payload.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiMailEnvelope {
     pub(crate) kind: PiMailKind,
     pub(crate) message: String,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PiMailPayload {
     sender: TaskId,
     envelope: PiMailEnvelope,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiMailboxReceive {
     pub(crate) item: InboxItem,
@@ -248,13 +244,14 @@ where
 const MAIL_DIAGNOSTIC_LABEL_BYTES: u64 =
     super::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES + 146;
 
-fn decode<T: serde::de::DeserializeOwned + acyclic_harness::HeapLayout>(
+fn decode<T: serde::de::DeserializeOwned>(
     bytes: &[u8],
     work: &NativeMaterializationWork,
 ) -> Result<(T, NativeAllocation)> {
     guarded_pi_decode(
         bytes,
         MAXIMUM_PI_MAIL_BYTES,
+        std::mem::size_of::<T>() as u64,
         acyclic_harness::wire::ErrorCode::Invalid,
         acyclic_harness::JsonValueSchema::None,
         MAIL_DIAGNOSTIC_LABEL_BYTES,

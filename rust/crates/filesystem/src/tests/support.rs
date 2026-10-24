@@ -5,7 +5,7 @@ use crate::memory::MemoryObjectStore;
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
     ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectResult,
-    ObjectStoreError, ObjectWrite,
+    ObjectStoreError,
 };
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -78,15 +78,6 @@ impl AsyncObjectStore for OwnedReadObjectStore {
     ) -> Result<(), ObjectStoreError> {
         ordinary(context)?;
         self.inner.put(object_id, bytes, context).await
-    }
-
-    async fn put_many(
-        &self,
-        writes: &[ObjectWrite],
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(), ObjectStoreError> {
-        ordinary(context)?;
-        self.inner.put_many(writes, context).await
     }
 
     async fn read(

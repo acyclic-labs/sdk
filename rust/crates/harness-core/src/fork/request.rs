@@ -3,7 +3,7 @@ use super::*;
 #[cfg(feature = "filesystem")]
 use crate::core::OwnedBytes;
 /// Idempotent request to capture selected resources for a new child.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ForkRequest {

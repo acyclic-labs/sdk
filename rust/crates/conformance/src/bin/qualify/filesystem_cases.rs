@@ -269,9 +269,8 @@ pub(super) fn sqlite_verify_child(path: &Path) -> Result<(), String> {
 }
 
 pub(super) async fn run_sqlite_child(mode: &str, path: &Path) -> Result<(), String> {
-    let mut command = acyclic_native_runtime::command::Command::new(
-        std::env::current_exe().map_err(|error| error.to_string())?,
-    );
+    let mut command =
+        std::process::Command::new(std::env::current_exe().map_err(|error| error.to_string())?);
     command.arg(mode).arg(path);
     let output = acyclic_native_runtime::run_blocking_io(
         move || {

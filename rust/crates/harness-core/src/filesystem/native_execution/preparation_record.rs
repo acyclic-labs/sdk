@@ -2,7 +2,7 @@ use super::super::PreparationRecord;
 use super::*;
 use acyclic_fs::MaterializationJournal;
 
-#[derive(serde::Serialize, serde::Deserialize, crate::HeapLayout)]
+#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Intent {
     pub(super) task: crate::TaskId,
@@ -113,11 +113,73 @@ impl PreparationRecord for Intent {
         }
         Ok(Some(bytes))
     }
+
+    fn decode_owned_allowance(
+        shape: crate::executor::json::JsonValueShape,
+        scratch: u64,
+        input: u64,
+        code: Option<crate::wire::ErrorCode>,
+    ) -> Result<u64> {
+        intent_decode_owned_bytes(shape.lexical_items(), input, scratch, shape.is_slice()).ok_or(
+            Error::NativeBoundary {
+                code: code.unwrap_or(crate::wire::ErrorCode::Invalid),
+                reason: "native intent ownership bound overflows",
+            },
+        )
+    }
 }
 
+fn intent_decode_owned_bytes(items: u64, input: u64, scratch: u64, slice: bool) -> Option<u64> {
+    use std::mem::size_of;
+    // A complete mapping contains a [u8; 32] authority revision: at least
+    // 33 lexical items. Slice decoding has no sequence size hint, so its
+    // mapping Vec grows only after a complete element. Four slots per element
+    // cover initial capacity and simultaneous old/new growth. Value decoding
+    // can preallocate from an untrusted size hint before validating elements.
+    let mappings = if slice {
+        (items / 33).checked_mul(4)?
+    } else {
+        items.checked_mul(3)?
+    }
+    .checked_mul(size_of::<NativeVolumeMapping>() as u64)?;
+    // VolumeOwner's adjacent tag can buffer arbitrary Content before its tag;
+    // include map pairs, initial capacities and simultaneous growth there too.
+    let slot = 8 * size_of::<(
+        serde::__private229::de::Content<'static>,
+        serde::__private229::de::Content<'static>,
+    )>();
+    items
+        .checked_mul(slot as u64)?
+        .checked_add(mappings)?
+        .checked_add(input.checked_mul(4)?)?
+        .checked_add(scratch)?
+        .checked_add(crate::executor::json::sdk_json_diagnostic_bytes())?
+        .checked_add(size_of::<Intent>() as u64)
+}
 impl PreparationRecord for MaterializationJournal {
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
         Ok(Some(acyclic_fs::materializer::journal_owned_bytes(self)?))
+    }
+    fn decode_owned_allowance(
+        shape: crate::executor::json::JsonValueShape,
+        scratch: u64,
+        input: u64,
+        code: Option<crate::wire::ErrorCode>,
+    ) -> Result<u64> {
+        let scratch = scratch
+            .checked_add(crate::executor::json::sdk_json_diagnostic_bytes())
+            .ok_or_else(invalid)?;
+        let slots = shape
+            .lexical_containers()
+            .map_or(shape.lexical_items(), |containers| {
+                shape.lexical_items().min(containers.saturating_mul(4))
+            });
+        super::journal_allocation::decode_owned_bytes(slots, input, scratch).ok_or(
+            Error::NativeBoundary {
+                code: code.unwrap_or(crate::wire::ErrorCode::Invalid),
+                reason: "native journal ownership bound overflows",
+            },
+        )
     }
 }
 

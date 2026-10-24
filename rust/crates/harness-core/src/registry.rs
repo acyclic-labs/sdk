@@ -4,9 +4,7 @@ pub(crate) use crate::contract::validate_component_label;
 use serde::{Deserialize, Serialize};
 
 /// Immutable component implementation identity.
-#[derive(
-    Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
-)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ComponentIdentity {
     /// Stable local or namespaced logical name.

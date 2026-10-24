@@ -14,5 +14,3 @@ mod dispatch;
 pub(crate) use dispatch::*;
 mod responses;
 pub(crate) use responses::*;
-mod refusal;
-pub(crate) use refusal::*;

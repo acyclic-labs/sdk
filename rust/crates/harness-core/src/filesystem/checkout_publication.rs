@@ -69,7 +69,7 @@ impl CheckoutPublication {
             operation_id: self.operation,
             from: from.id(),
             to: to.id(),
-            excluded_names: &crate::workspace::RESERVED_NAMES,
+            excluded_names: &[".git"],
             options,
             budget: work.budget(),
             cancellation: work.cancellation(),

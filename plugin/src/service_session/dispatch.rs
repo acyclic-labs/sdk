@@ -74,12 +74,6 @@ impl PiSession {
                         binding.task_id
                     };
                     caller_task = Some(task);
-                    // A caller proof exists only after the Root was prepared. A service
-                    // that restarted since then serves every authenticated control from
-                    // the same restored Root sources, never from an empty producer map.
-                    if event != "SessionStart" && self.roots.is_empty() {
-                        self.restore_root_sources(&work).await?;
-                    }
                     match event {
                         "SessionStart" => {
                             if session == self.state.root_session_id {

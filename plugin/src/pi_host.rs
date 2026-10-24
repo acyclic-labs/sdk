@@ -233,6 +233,9 @@ impl<'a> PiControlHost<'a> {
         let result = crate::pi_root_provider::guarded_pi_decode(
             &encoded.0,
             maximum,
+            maximum
+                .checked_mul(8)
+                .ok_or_else(|| invalid("admission ownership bound overflow"))?,
             acyclic_harness::wire::ErrorCode::Invalid,
             acyclic_harness::JsonValueSchema::None,
             SELECTED_DIAGNOSTIC_LABEL_BYTES,

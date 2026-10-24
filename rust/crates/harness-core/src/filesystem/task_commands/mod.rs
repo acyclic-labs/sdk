@@ -64,7 +64,7 @@ command_record!(
     ToolTaskCommand => ToolTaskCommand,
 );
 
-#[derive(Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CommittedMailResult {
     operation_id: OperationId,
@@ -81,7 +81,7 @@ pub const EFFECT_TASK_COMMAND_KIND: &str = "acyclic.effect.v1";
 pub const TIMER_TASK_COMMAND_KIND: &str = "acyclic.timer.v1";
 
 /// A retained timer deadline; scheduling its authenticated wake is caller-owned.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TimerTaskCommand {
     /// Absolute deadline under the composed host's trusted clock.
@@ -94,7 +94,7 @@ pub const MAIL_SEND_TASK_COMMAND_KIND: &str = "acyclic.mail.send.v1";
 pub const MAIL_RECEIVE_TASK_COMMAND_KIND: &str = "acyclic.mail.receive.v1";
 
 /// Sends a pinned readable file to an admitted recipient. Identity is derived.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MailSendTaskCommand {
     /// Recipient's retained task identity.
@@ -104,7 +104,7 @@ pub struct MailSendTaskCommand {
 }
 
 /// Selects the first immutable inbox item after an acknowledged sequence.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MailReceiveTaskCommand {
     /// Exclusive one-based cursor; zero selects the first message.
@@ -117,7 +117,7 @@ pub const TASK_ADMIT_COMMAND_KIND: &str = "acyclic.task.admit.v1";
 pub const TASK_OBSERVE_COMMAND_KIND: &str = "acyclic.task.observe.v1";
 
 /// Exact registered resumable child with inherited task authority and limits.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskAdmitCommand {
     /// Exact logical task name.
@@ -129,7 +129,7 @@ pub struct TaskAdmitCommand {
 }
 
 /// Selects a child derived from a prior admission command in this workflow.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskObserveCommand {
     /// Logical operation ID of the admitting workflow command.
@@ -137,7 +137,7 @@ pub struct TaskObserveCommand {
 }
 
 /// Ref-resolved model input. The worker supplies the stable execution identity.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelTaskCommand {
     /// Provider-neutral user input, subject to retained task file grants.
@@ -164,7 +164,7 @@ pub struct ModelTaskCommand {
 }
 
 /// A pinned revision in the existing tool registry, with schema-defined arguments.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolTaskCommand {
     /// Exact logical tool name.
@@ -179,7 +179,7 @@ pub struct ToolTaskCommand {
 pub const TASK_CANCEL_COMMAND_KIND: &str = "acyclic.task.cancel.v1";
 
 /// Cancels one retained direct child.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskCancelCommand {
     /// Child task identity.
@@ -192,7 +192,7 @@ pub const FORK_PREPARE_TASK_COMMAND_KIND: &str = "acyclic.fork.prepare.v1";
 pub const TASK_ADMIT_PREPARED_COMMAND_KIND: &str = "acyclic.task.admit_prepared.v1";
 
 /// Complete requested child, distinct from its dispatch operation.
-#[derive(Clone, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PreparedTaskAdmitCommand {
     /// Exact child identity, definitions, input, requested grants and proofs.
@@ -340,7 +340,6 @@ where
         command: WorkflowCommand,
         payload: Value,
     ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
-        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(self.execute_observed(Arc::new(context), fence, command, payload, false, None))
     }
 
@@ -351,7 +350,6 @@ where
         command: WorkflowCommand,
         payload: Value,
     ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
-        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(self.execute_observed(Arc::new(context), fence, command, payload, true, None))
     }
 

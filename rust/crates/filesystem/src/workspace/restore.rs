@@ -63,16 +63,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                     if !self.volume.fs.same_deployment(&source.workspace.volume.fs) {
                         return Err(WorkspaceError::ForeignGeneration);
                     }
-                    // Boxed: each step's frame stays out of this one.
-                    let id = crate::heap_future::metered!(erased &mut accounting, |accounting| {
-                        self.checkout_accounted(
+                    let id = self
+                        .checkout_accounted(
                             GenerationSelector::Head,
                             CheckoutMode::read_only_pinned(),
-                            accounting,
+                            &mut accounting,
                             cancellation,
                         )
-                    })?
-                    .generation_id();
+                        .await?
+                        .generation_id();
                     if id != if_current {
                         return Ok(TransactionCommit::Conflict {
                             actual: Generation {
@@ -82,33 +81,33 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                             },
                         });
                     }
-                    let source_root =
-                        crate::heap_future::metered!(erased &mut accounting, |accounting| {
-                            source.workspace.open_checkout(
-                                GenerationSelector::Exact(source.id),
-                                CheckoutMode::read_only_pinned(),
-                                accounting,
-                                cancellation,
-                            )
-                        })?;
-                    let opened = crate::heap_future::metered!(erased &mut accounting, |accounting| {
-                        self.open_checkout(
+                    let source_root = source
+                        .workspace
+                        .open_checkout(
+                            GenerationSelector::Exact(source.id),
+                            CheckoutMode::read_only_pinned(),
+                            &mut accounting,
+                            cancellation,
+                        )
+                        .await?;
+                    let opened = self
+                        .open_checkout(
                             GenerationSelector::Exact(id),
                             CheckoutMode::tracking_transaction(),
-                            accounting,
+                            &mut accounting,
                             cancellation,
                         )
-                    })?;
+                        .await?;
                     let mut transaction =
                         Transaction::from_checkout(self, opened.value, idempotency_key, false);
-                    crate::heap_future::metered!(erased &mut accounting, |accounting| {
-                        transaction.restore_paths_from_root_with_accounting(
+                    transaction
+                        .restore_paths_from_root_with_accounting(
                             paths,
                             source_root,
-                            accounting,
+                            &mut accounting,
                             cancellation,
                         )
-                    })?;
+                        .await?;
                     let committed = transaction
                         .commit(
                             None,

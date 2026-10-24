@@ -178,10 +178,7 @@ impl FuseSession {
         let job = (Arc::clone(&core), Arc::clone(&state));
         let mut started = state.lock().unwrap_or_else(PoisonError::into_inner);
         work.charge(WriteOperations.delta(1))?;
-        let invalidator = acyclic_grpc_observability::task::named_thread(
-            std::thread::Builder::new(),
-            move || run_fuse_session(job),
-        )?;
+        let invalidator = std::thread::Builder::new().spawn(move || run_fuse_session(job))?;
         *out = Some(Self {
             core: Arc::clone(&core),
             state: Arc::clone(&state),
@@ -228,10 +225,7 @@ impl FuseSession {
             started.notifier = Some(session.notifier());
             let _ = core.notifier.set(session.notifier());
             // Session::spawn consumes its join handle on unmount refusal; retain it ourselves.
-            started.worker = Some(acyclic_grpc_observability::task::named_thread(
-                std::thread::Builder::new(),
-                move || session.run(),
-            )?);
+            started.worker = Some(std::thread::Builder::new().spawn(move || session.run())?);
             let (directory, identity) =
                 crate::native_host::open_root_directory(&request.destination, &mut &*work)?;
             started.identity = Some(identity);

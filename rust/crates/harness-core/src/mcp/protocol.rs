@@ -7,7 +7,7 @@ use serde_json::Value;
 pub const PROTOCOL_VERSION: &str = "2025-11-25";
 
 /// Remote tool contract.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(rename_all = "camelCase")]
 pub struct McpToolDefinition {

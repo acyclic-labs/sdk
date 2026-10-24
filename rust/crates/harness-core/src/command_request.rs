@@ -9,7 +9,7 @@ use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Exact composer range and immutable file selected by an `@` mention.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileMention {
     /// Inclusive UTF-8 byte offset of `@`.
@@ -21,7 +21,7 @@ pub struct FileMention {
 }
 
 /// Typed client requests emitted by built-in commands.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CommandRequest {
     /// Cancel the captured admitted task. Published as an immutable request file.
@@ -78,7 +78,7 @@ pub enum CommandRequest {
 }
 
 /// Task control commands distinguish the current subtree from every tree.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandTaskScope {
     /// The selected task and its descendants.
@@ -88,7 +88,7 @@ pub enum CommandTaskScope {
 }
 
 /// Direct tools receive structured arguments without a model turn.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandTool {
     /// Execute a shell command through the platform shell tool owner.
@@ -115,7 +115,7 @@ impl CommandTool {
 }
 
 /// View selected without submitting model text.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandQuery {
     /// Catalog-generated shortcuts/help overlay.
@@ -149,7 +149,7 @@ pub enum CommandQuery {
 }
 
 /// Complete composer classification; renderers do not parse slash syntax.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CommandResolution {
     /// An installed SDK operation, consumed from an ordinary request file.
@@ -204,9 +204,7 @@ impl CommandResolution {
 }
 
 /// Explicit bindings to the caller's authorized file-query roots.
-#[derive(
-    Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
-)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandFileRoot {
     /// User config volume for shared presentation preferences.
@@ -222,7 +220,7 @@ pub type CommandFileSnapshot = BTreeMap<CommandFileRoot, BTreeMap<String, Value>
 
 /// Ordinary file publication data. The FS client applies its existing generation
 /// precondition and authority checks; this is not a separate submit protocol.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CommandFileChange {
     /// Stable publication identity reused by the filesystem client's retries.
     pub operation: OperationId,

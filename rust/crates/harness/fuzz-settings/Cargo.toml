@@ -10,7 +10,6 @@ cargo-fuzz = true
 [workspace]
 
 [dependencies]
-acyclic-harness = { path = "..", features = ["filesystem-local", "native-execution", "test-support"] }
 libfuzzer-sys = "0.4"
 serde = { version = "=1.0.229", features = ["derive"] }
 toml = "=1.1.6"

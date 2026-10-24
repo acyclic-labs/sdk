@@ -463,7 +463,7 @@ impl PiSession {
         }
     }
 
-    fn spawn_input<'a, T: DeserializeOwned + acyclic_harness::HeapLayout + Send>(
+    fn spawn_input<'a, T: DeserializeOwned + Send>(
         &self,
         owner: &'a pi_owner::PiOwnerConfig,
         operation: OperationId,
@@ -504,6 +504,7 @@ impl PiSession {
             Ok(Some(pi_root_provider::guarded_pi_decode(
                 bytes.as_ref(),
                 maximum,
+                std::mem::size_of::<T>() as u64,
                 acyclic_harness::wire::ErrorCode::Invalid,
                 acyclic_harness::JsonValueSchema::None,
                 schema_bytes,

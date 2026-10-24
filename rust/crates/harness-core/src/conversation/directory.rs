@@ -1,7 +1,7 @@
 use super::*;
 
 /// Admission barrier for every version-pinned file in a conversation message.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum PrivateDirectoryEntryKind {
@@ -12,7 +12,7 @@ pub enum PrivateDirectoryEntryKind {
 }
 
 /// One lazily discovered name, without eager byte or ref transfer.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct PrivateDirectoryEntry {
@@ -23,7 +23,7 @@ pub struct PrivateDirectoryEntry {
 }
 
 /// A bounded page from one exact owner-private generation.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct PrivateDirectoryPage {

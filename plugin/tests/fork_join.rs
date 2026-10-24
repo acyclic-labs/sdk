@@ -66,7 +66,7 @@ impl Session {
         fs::write(repo.join("README.md"), "base\n").expect("readme");
         fs::write(repo.join("pkg/shared.rs"), "VALUE = 1\n").expect("shared");
         let initialized = acyclic_native_runtime::process_status(
-            acyclic_native_runtime::command::Command::new("git")
+            std::process::Command::new("git")
                 .args(["init", "-q"])
                 .current_dir(&repo),
             std::time::Duration::from_secs(120),
@@ -615,7 +615,7 @@ fn extended_attributes_set_in_a_fork_reach_the_parent() {
     let tagged = fork.path.join("tagged.rs");
     fs::write(&tagged, "x\n").expect("write");
     let set = acyclic_native_runtime::process_status(
-        acyclic_native_runtime::command::Command::new("setfattr")
+        std::process::Command::new("setfattr")
             .args(["-n", "user.acyclic.test", "-v", "1"])
             .arg(&tagged),
         std::time::Duration::from_secs(120),
@@ -628,7 +628,7 @@ fn extended_attributes_set_in_a_fork_reach_the_parent() {
     assert!(read_only(&session.repo.join("tagged.rs")));
     if attribute_set {
         let read = acyclic_native_runtime::process_output(
-            acyclic_native_runtime::command::Command::new("getfattr")
+            std::process::Command::new("getfattr")
                 .args(["--only-values", "-n", "user.acyclic.test"])
                 .arg(session.repo.join("tagged.rs")),
             std::time::Duration::from_secs(120),
@@ -660,7 +660,7 @@ fn no_host_metadata_files_are_merged() {
     let tagged = fork.path.join("tagged.rs");
     fs::write(&tagged, "x\n").expect("write");
     let attribute_set = acyclic_native_runtime::process_status(
-        acyclic_native_runtime::command::Command::new("xattr")
+        std::process::Command::new("xattr")
             .args(["-w", "com.acyclic.test", "1"])
             .arg(&tagged),
         std::time::Duration::from_secs(120),
@@ -678,7 +678,7 @@ fn no_host_metadata_files_are_merged() {
     assert!(read_only(&session.repo.join("tagged.rs")));
     if attribute_set {
         let read = acyclic_native_runtime::process_output(
-            acyclic_native_runtime::command::Command::new("xattr")
+            std::process::Command::new("xattr")
                 .args(["-p", "com.acyclic.test"])
                 .arg(session.repo.join("tagged.rs")),
             std::time::Duration::from_secs(120),

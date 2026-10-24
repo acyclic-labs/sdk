@@ -357,6 +357,3 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&exclude).unwrap(), "user-pattern\n");
     }
 }
-
-#[cfg(all(feature = "test-support", unix))]
-pub(crate) use pattern::fuzz_check as fuzz_mount_exclusion;

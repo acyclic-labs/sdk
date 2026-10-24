@@ -23,7 +23,7 @@ pub use preparation::fork_preparation_request;
 pub(in crate::filesystem) use source::fork_request;
 pub use source::{recursive_fork_source, restore_recursive_fork_source};
 /// Portable fork arguments.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ForkToolArguments {
@@ -73,7 +73,7 @@ impl ForkToolArguments {
 }
 
 /// Pinned caller-owned workspace selection. References alone confer no rights.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecursiveSourceSnapshot {
     /// Actual current caller, independent of its agent and effect identities.
@@ -120,7 +120,7 @@ pub struct RetainedSourceBinding<A, O> {
 }
 
 /// Explicit finite preparation allowances, charged by the existing provider.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ForkPreparationLimits {
     /// Maximum created resource identities.

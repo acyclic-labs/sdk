@@ -48,56 +48,53 @@ impl Snapshot {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Self> {
         let mut quota = CodecQuota::new(work, 0)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let native = quota.work().as_deref().is_some_and(copying::is_native);
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let native = false;
         let mut admitted = 0;
-        let decoded = crate::executor::json::json_from_slice_bounded(
-            std::marker::PhantomData::<Snapshot<crate::conversation::ConversationStateWire>>,
+        let admission = crate::executor::json::snapshot_json_admission(
             bytes,
             crate::executor::json::JsonBounds {
                 maximum_bytes,
                 maximum_items: maximum_bytes,
                 maximum_depth: 256,
             },
-            native.then_some(crate::wire::ErrorCode::Storage),
-            Some(crate::executor::json::JsonValueSchema::Snapshot),
             &mut |charge| {
-                use crate::executor::json::JsonCodecCharge::Admission;
-                let (charge, reserved) = match charge {
-                    Admission {
-                        maximum_owned_bytes,
-                        value_shape,
-                    } => {
-                        let diagnostics =
-                            crate::executor::json::history_diagnostic_bytes(value_shape, None)?;
-                        let bytes =
-                            maximum_owned_bytes
-                                .checked_add(diagnostics)
-                                .ok_or_else(|| {
-                                    Error::Storage("checkpoint admission overflows".into())
-                                })?;
-                        let charge = Admission {
-                            maximum_owned_bytes: bytes,
-                            value_shape,
-                        };
-                        (charge, bytes)
-                    }
-                    charge => (charge, 0),
-                };
-                if let Some(io) = quota.work().as_deref_mut() {
-                    io.codec_charge(charge)?;
+                if let crate::executor::json::JsonCodecCharge::Admission {
+                    maximum_owned_bytes,
+                    ..
+                } = charge
+                {
+                    admitted = maximum_owned_bytes;
                 }
-                admitted += reserved;
-                Ok(())
+                match quota.work().as_deref_mut() {
+                    Some(io) => io.codec_charge(charge),
+                    None => Ok(()),
+                }
             },
         );
         quota.adopt(admitted)?;
-        let wire = decoded.map_err(|error| match quota.json_error(error) {
-            Error::Invalid(reason) => Error::Storage(reason),
-            error => error,
-        })?;
+        let (_, conversation_allowance) = admission?;
+        let mut decoder = serde_json::Deserializer::from_slice(bytes);
+        decoder.disable_recursion_limit();
+        let decoded =
+            Snapshot::<crate::conversation::ConversationStateWire>::deserialize(&mut decoder)
+                .and_then(|value| decoder.end().map(|()| value));
+        let wire = match decoded {
+            Ok(snapshot) => snapshot,
+            Err(source) => {
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                if quota.work().as_deref().is_some_and(copying::is_native) {
+                    let bytes = quota.retained();
+                    let custody = quota.observer()?.take_native_custody(bytes)?;
+                    quota.transfer();
+                    return Err(Error::NativeJson {
+                        code: crate::wire::ErrorCode::Storage,
+                        source,
+                        custody: Some(custody),
+                    });
+                }
+                return Err(Error::Storage(source.to_string()));
+            }
+        };
+        quota.relinquish(conversation_allowance)?;
         let Snapshot {
             format_version,
             authority,

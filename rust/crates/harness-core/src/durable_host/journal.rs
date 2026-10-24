@@ -23,19 +23,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self.admission
     }
 
-    /// The canonical digest of this owner's immutable admission. The first caller pays
-    /// for the encoding on its own work; every later check reuses the digest.
-    pub(crate) fn admission_digest(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<[u8; 32]> {
-        if let Some(digest) = self.admission_digest.get() {
-            return Ok(*digest);
-        }
-        let digest = self.admission.canonical_digest_with_work(work)?;
-        Ok(*self.admission_digest.get_or_init(|| digest))
-    }
-
     #[cfg(all(
         feature = "filesystem-local",
         feature = "native-execution",

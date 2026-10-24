@@ -28,16 +28,14 @@ use std::{collections::BTreeMap, sync::Arc};
 pub(crate) const PI_FORK_COMMAND_KIND: &str = "acyclic.pi.fork";
 pub(crate) const PI_OBSERVE_SOURCE_COMMAND_KIND: &str = "acyclic.pi.observe-source";
 
-#[derive(Clone, Serialize, Deserialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiForkCommand {
     pub(crate) commit: RetainedSpawnCommit,
     pub(crate) root_source: Option<LazySnapshotRef>,
 }
 
-#[derive(Clone, Serialize, Deserialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiObserveSourceCommand {
     pub(crate) caller: TaskId,
@@ -45,8 +43,7 @@ pub(crate) struct PiObserveSourceCommand {
     pub(crate) root_key: String,
 }
 
-#[derive(Serialize, Deserialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ObservedSource {
     pub(crate) caller: TaskId,
@@ -65,8 +62,7 @@ struct PiPreparedReply<'a> {
     state: &'static str,
 }
 
-#[derive(Serialize, Deserialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiRootSource<S = String> {
     pub(crate) snapshot: LazySnapshotRef,
@@ -105,9 +101,7 @@ impl crate::pi_host::PiControlHost<'_> {
         )
     }
 
-    /// The caller's task context bound to its own output: the root's provider-prepared
-    /// root output, or a child's created private scratch.
-    pub(crate) async fn context(
+    pub(super) async fn context(
         &self,
         shared: Arc<TaskContext>,
         fence: &LeaseFence,
@@ -152,10 +146,7 @@ impl crate::pi_host::PiControlHost<'_> {
         Ok((shared, caller.0, caller.1, caller.2))
     }
 
-    pub(super) fn decode<
-        T: serde::de::DeserializeOwned + acyclic_harness::HeapLayout,
-        S: Serialize,
-    >(
+    pub(super) fn decode<T: serde::de::DeserializeOwned, S: Serialize>(
         &self,
         value: &S,
         label_bytes: u64,
@@ -165,6 +156,7 @@ impl crate::pi_host::PiControlHost<'_> {
         let bytes = crate::pi_root_provider::canonical_pi_value(value, maximum, work)?;
         let (value, custody) = crate::pi_root_provider::guarded_pi_decode(
             &bytes.0,
+            maximum,
             maximum,
             acyclic_harness::wire::ErrorCode::Invalid,
             acyclic_harness::JsonValueSchema::None,

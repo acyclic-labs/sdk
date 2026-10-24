@@ -4,6 +4,9 @@ use acyclic_native_runtime::OwnedWrite;
 use bytes::Bytes;
 use divan::{AllocProfiler, Bencher, black_box};
 
+#[path = "../../native-runtime/src/file/write_validation.rs"]
+mod write_validation;
+
 #[global_allocator]
 static ALLOC: AllocProfiler = AllocProfiler::system();
 
@@ -28,7 +31,7 @@ fn ordered(bencher: Bencher, count: usize) {
             bytes: Bytes::from_static(b"abcd"),
         })
         .collect();
-    bencher.bench_local(|| acyclic_native_runtime::check_write_batch(black_box(&writes)));
+    bencher.bench_local(|| write_validation::validate_write_batch(black_box(&writes)));
 }
 
 #[divan::bench(args = [1, 16, 256, 4096])]
@@ -40,5 +43,5 @@ fn reversed(bencher: Bencher, count: usize) {
             bytes: Bytes::from_static(b"abcd"),
         })
         .collect();
-    bencher.bench_local(|| acyclic_native_runtime::check_write_batch(black_box(&writes)));
+    bencher.bench_local(|| write_validation::validate_write_batch(black_box(&writes)));
 }

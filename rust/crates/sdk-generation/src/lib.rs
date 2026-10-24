@@ -30,7 +30,8 @@ mod toolchains;
 use toolchains::*;
 mod artifacts;
 mod cache_record;
-use sdk_docs::concrete_versions;
+#[path = "../../sdk-docs/src/concrete_versions.rs"]
+mod concrete_versions;
 mod file_cache;
 mod shared_cache;
 mod source_selection;
@@ -320,7 +321,3 @@ fn parse_flags(
 
 #[cfg(test)]
 mod tests;
-
-/// Exercises cache-record integrity with synthetic bytes.
-#[cfg(feature = "test-support")]
-pub use cache_record::fuzz_check as fuzz_identity_record;

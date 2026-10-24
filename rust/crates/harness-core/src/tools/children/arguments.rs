@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Create a child in a lazy fork of the calling task's workspace.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SpawnInput {
     /// Task instructions for the child.
@@ -15,7 +15,7 @@ pub struct SpawnInput {
 }
 
 /// Queue one immutable child message.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SendInput {
     /// Child reference returned by spawn.
@@ -25,9 +25,7 @@ pub struct SendInput {
 }
 
 /// Which requested children must settle before wait returns.
-#[derive(
-    Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema, crate::HeapLayout,
-)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum WaitMode {
     /// Return when any requested child settles.
@@ -37,7 +35,7 @@ pub enum WaitMode {
 }
 
 /// Wait for child answers or failures, with bounded immutable result references.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WaitInput {
     /// Child references returned by spawn.
@@ -47,7 +45,7 @@ pub struct WaitInput {
 }
 
 /// Stop and drain a child and its descendants, then freeze its retained history.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ArchiveInput {
     /// Child reference returned by spawn.

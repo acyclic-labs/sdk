@@ -20,7 +20,6 @@ impl TaskCommandHost for Commands<'_> {
         command: WorkflowCommand,
         payload: Value,
     ) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
-        // Unbudgeted: the child controller runs on the parent runtime, which holds no budget.
         Box::pin(async move {
             let context = if matches!(
                 command.kind.as_str(),

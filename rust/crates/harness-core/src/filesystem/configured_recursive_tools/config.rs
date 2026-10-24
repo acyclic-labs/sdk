@@ -43,21 +43,18 @@ impl ConfiguredRecursiveAuthorityBinding {
         Ok(())
     }
 }
-#[derive(Deserialize, crate::HeapLayout)]
-#[serde(deny_unknown_fields)]
-struct Binding {
-    authority: Authority,
-    issuer: String,
-    key: [u8; 32],
-    scope: Scope,
-}
-impl crate::HeapLayout for ConfiguredRecursiveAuthorityBinding {
-    const LAYOUT: &'static crate::heap_layout::JsonLayout = <Binding as crate::HeapLayout>::LAYOUT;
-}
 impl<'de> Deserialize<'de> for ConfiguredRecursiveAuthorityBinding {
     fn deserialize<D: serde::Deserializer<'de>>(
         deserializer: D,
     ) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Binding {
+            authority: Authority,
+            issuer: String,
+            key: [u8; 32],
+            scope: Scope,
+        }
         let binding = Binding::deserialize(deserializer)?;
         Ok(Self {
             issuer: AuthorityIssuer::new(binding.issuer, binding.key, binding.authority),
@@ -67,7 +64,7 @@ impl<'de> Deserialize<'de> for ConfiguredRecursiveAuthorityBinding {
 }
 
 /// A configured caller checked against its retained admission.
-#[derive(Clone, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfiguredRecursiveCaller {
     /// Admitted caller task.
@@ -87,7 +84,7 @@ pub struct ConfiguredRecursiveCaller {
 }
 
 /// One independently allocated child and its finite preparation bounds.
-#[derive(Clone, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfiguredRecursiveFork {
     /// Admitted parent task.
@@ -103,7 +100,6 @@ pub struct ConfiguredRecursiveFork {
     pub result_volume: Option<VolumeRef>,
     /// Canonical child admission.
     #[serde(deserialize_with = "canonical_admission")]
-    #[heap_layout(as = crate::heap_layout::markers::Canonical<TaskAdmissionRecord>)]
     pub admission: TaskAdmissionRecord,
     /// JSON pointer for the child message.
     pub child_message_pointer: String,
@@ -125,7 +121,7 @@ fn canonical_admission<'de, D: serde::Deserializer<'de>>(
 }
 
 /// An explicit read-only Project import and its canonical notice.
-#[derive(Clone, serde::Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfiguredRecursiveMerge {
     /// Task receiving the import.
@@ -137,7 +133,7 @@ pub struct ConfiguredRecursiveMerge {
 }
 
 /// Finite provider configuration for the portable recursive tools.
-#[derive(Deserialize, crate::HeapLayout)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfiguredRecursiveToolsConfig {
     /// Authorized callers.

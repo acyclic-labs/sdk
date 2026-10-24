@@ -234,12 +234,12 @@ fn transport_error(work: crate::NativeWork<'_>, reason: &'static str) -> Error {
     Error::Storage(reason.into())
 }
 
-#[derive(Deserialize, crate::HeapLayout)]
+#[derive(Deserialize)]
 struct ExaResponse {
     results: Vec<ExaResult>,
 }
 
-#[derive(Deserialize, crate::HeapLayout)]
+#[derive(Deserialize)]
 struct ExaResult {
     url: String,
     title: Option<String>,
@@ -278,12 +278,12 @@ impl SearchProvider for Exa {
     }
 }
 
-#[derive(Deserialize, crate::HeapLayout)]
+#[derive(Deserialize)]
 struct TinyFishResponse {
     results: Vec<TinyFishResult>,
 }
 
-#[derive(Deserialize, crate::HeapLayout)]
+#[derive(Deserialize)]
 struct TinyFishResult {
     url: String,
     title: String,
