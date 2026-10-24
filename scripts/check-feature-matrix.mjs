@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Type-checks every published crate's library in each feature set a consumer
+// Checks isolated libraries, then all targets, in each feature set a consumer
 // can select on its own: no default features, the defaults and every feature,
 // and with --each-feature each feature alone as well. Every set is checked in its own Cargo invocation
 // for one package, selected by its manifest, so no other workspace member's
@@ -69,8 +69,13 @@ export function featureWorker(name, args, workers) {
   return createHash("sha256").update(key).digest().readUInt32LE(0) % workers;
 }
 
-// Check the consumer library before test dependencies can unify features into
-// it. Both invocations retain exactly the Linux matrix's feature selection.
+// Keep the consumer library isolated from test dependencies, then compile
+// cfg(test) and other targets with the same feature selection. An all-features
+// test run cannot detect a feature-only field used by a test-visible caller.
+export function linuxCommands(args) {
+  return [args, [...args.slice(0, 4), "--all-targets", ...args.slice(5)]];
+}
+
 export function windowsCommands(args) {
   const base = ["xwin", ...args.slice(0, 4), "--target", "x86_64-pc-windows-msvc"];
   return ["--lib", "--all-targets"].map(target => [...base, target, ...args.slice(5)]);
@@ -90,7 +95,7 @@ async function main() {
   const sets = items.filter(item => !selected.length || selected.includes(item.name)).flatMap(item => featureSets(item, eachFeature)
     .map(args => ({ name: item.name, args })));
   if (list) {
-    for (const { args } of sets) for (const command of windows ? windowsCommands(args) : [args]) console.log(`cargo ${command.join(" ")}`);
+    for (const { args } of sets) for (const command of windows ? windowsCommands(args) : linuxCommands(args)) console.log(`cargo ${command.join(" ")}`);
     return;
   }
   const failures = [];
@@ -108,7 +113,7 @@ async function main() {
       const checkStarted = Date.now();
       let succeeded = true;
       let rebuilt = 0;
-      for (const command of windows ? windowsCommands(set) : [set]) {
+      for (const command of windows ? windowsCommands(set) : linuxCommands(set)) {
         const child = spawn("cargo", command, { cwd: root, env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
         let output = "";
         child.stdout.on("data", chunk => (output += chunk));

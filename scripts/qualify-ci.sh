@@ -372,6 +372,7 @@ case "$lane" in
       --target "$target" --lib native_capture::
     ;;
   policy)
+    node --test scripts/check-feature-matrix.test.mjs scripts/gate-windows-features.test.mjs
     node --test scripts/check-test-support.test.mjs
     node scripts/check-test-support.mjs
     node scripts/static-ci.mjs

@@ -1,9 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { featureSets, featureWorker, windowsCommands } from "./check-feature-matrix.mjs";
+import { featureSets, featureWorker, linuxCommands, windowsCommands } from "./check-feature-matrix.mjs";
 
 const sets = features => featureSets({ manifest_path: "c/Cargo.toml", features })
   .map(args => args.slice(5).join(" ") || "(defaults)");
+
+test("Linux checks test cfgs without losing consumer library isolation", () => {
+  const item = { manifest_path: "c/Cargo.toml", features: { default: ["distributed"], distributed: [], browser: [] } };
+  const requireTestCfg = commands => {
+    assert.ok(commands.some(args => args.includes("--all-targets") && args.includes("--no-default-features") && !args.includes("--features")),
+      "no-default test cfg must compile before a feature matrix can pass");
+  };
+  for (const args of featureSets(item)) {
+    const commands = linuxCommands(args);
+    assert.deepEqual(commands.map(command => command.slice(0, 4)), [args.slice(0, 4), args.slice(0, 4)]);
+    assert.deepEqual(commands.map(command => command[4]), ["--lib", "--all-targets"]);
+    for (const command of commands) assert.deepEqual(command.slice(5), args.slice(5));
+  }
+  const args = featureSets(item, false)[0];
+  requireTestCfg(linuxCommands(args));
+  // Actual previous command selection: isolated --lib alone misses cfg(test).
+  assert.throws(() => requireTestCfg([args]), /no-default test cfg must compile/);
+});
 
 test("MSVC checks isolated libraries and all targets for the identical feature matrix", () => {
   for (const args of featureSets({manifest_path: "c/Cargo.toml", features: {default: ["a"], a: [], b: [], c: ["dep:d"]}})) {
