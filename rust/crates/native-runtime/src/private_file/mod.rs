@@ -185,10 +185,12 @@ pub fn publish_new(
 }
 
 /// A staging pathname and its exclusive descriptor have one cleanup owner.
-/// Only this object can publish its held file; dropping it removes the staging entry.
+/// Only this object can publish its held file. Cleanup ends when the rename
+/// commits, so dropping the old owner can never remove a reused staging name.
 pub struct StagedFile {
     file: File,
     path: std::path::PathBuf,
+    cleanup: bool,
 }
 
 impl StagedFile {
@@ -196,6 +198,7 @@ impl StagedFile {
         Ok(Self {
             file: create(path)?,
             path: path.to_path_buf(),
+            cleanup: true,
         })
     }
 
@@ -223,7 +226,7 @@ impl StagedFile {
     }
 
     fn publish_observed(
-        self,
+        mut self,
         path: &Path,
         mode: crate::RenameMode,
         observe: &mut impl FnMut(PublicationStage) -> io::Result<()>,
@@ -233,14 +236,18 @@ impl StagedFile {
         }
         crate::flush_file_all(&self.file)?;
         observe(PublicationStage::Synced)?;
-        crate::durable_rename(&self.path, path, mode, None)?;
+        crate::namespace::durable_rename_observed(&self.path, path, mode, None, || {
+            self.cleanup = false;
+        })?;
         observe(PublicationStage::Published)
     }
 }
 
 impl Drop for StagedFile {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        if self.cleanup {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 

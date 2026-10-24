@@ -159,15 +159,27 @@ pub fn publish_new(
 }
 
 /// Renames an entry and durably publishes the affected namespace.
-#[allow(
-    unsafe_code,
-    reason = "passes held NUL-terminated paths to the native rename API"
-)]
 pub fn durable_rename(
     from: &Path,
     to: &Path,
     mode: RenameMode,
     meter: Option<&Arc<dyn NativeReadMeter>>,
+) -> io::Result<()> {
+    durable_rename_observed(from, to, mode, meter, || {})
+}
+
+/// Transfer source-name custody at the successful rename, before either a
+/// durability failure or an injected lost acknowledgement can be returned.
+#[allow(
+    unsafe_code,
+    reason = "passes held NUL-terminated paths to the native rename API"
+)]
+pub(crate) fn durable_rename_observed(
+    from: &Path,
+    to: &Path,
+    mode: RenameMode,
+    meter: Option<&Arc<dyn NativeReadMeter>>,
+    mut renamed: impl FnMut(),
 ) -> io::Result<()> {
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     {
@@ -230,13 +242,17 @@ pub fn durable_rename(
                 if failed {
                     Err(io::Error::last_os_error())
                 } else {
+                    renamed();
                     Ok(())
                 }
             };
             #[cfg(feature = "test-support")]
             let result = testing::durable_operation("namespace:rename", rename);
             #[cfg(not(feature = "test-support"))]
-            let result = rename();
+            let result = {
+                let mut rename = rename;
+                rename()
+            };
             match result {
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 result => {
@@ -251,7 +267,7 @@ pub fn durable_rename(
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
-        let _ = (from, to, mode, meter);
+        let _ = (from, to, mode, meter, renamed);
         Err(io::ErrorKind::Unsupported.into())
     }
 }

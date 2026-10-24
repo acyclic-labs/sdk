@@ -18,7 +18,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acyclic_fs::access::Action;
+    use acyclic_fs::access::{Action, ActionSet};
 
     #[tokio::test]
     async fn benchmark_mounts_bind_real_volume_policy() -> Result<(), Failure> {
@@ -44,7 +44,13 @@ mod tests {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
-        assert!(view.allows_every_path(&Action::ALL, now));
+        assert!(view.allows_every_path(ActionSet::MountWrite.actions(), now));
+        for action in [Action::Fork, Action::MergeInto, Action::Admin] {
+            assert!(
+                !view.allows_every_path(&[action], now),
+                "benchmark mount grants {action:?} outside native file operations"
+            );
+        }
         assert_eq!(
             view.volume(),
             uuid::Uuid::from_bytes(workspace.id().volume_id().into_bytes()).to_string()

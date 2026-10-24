@@ -533,6 +533,12 @@ impl Error {
                 ErrorCode::NotFound
             }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeFilesystem { source, .. }
+                if matches!(source.as_ref(), acyclic_fs::FsError::InvalidAccessPolicy) =>
+            {
+                ErrorCode::Unauthorized
+            }
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeConstruction { .. }
             | Self::NativeSupervisor { .. }
             | Self::NativeSource { .. }
@@ -755,6 +761,9 @@ impl From<acyclic_fs::NativeWorkspacePublicationError> for Error {
 #[cfg(feature = "filesystem")]
 impl From<acyclic_fs::FsError> for Error {
     fn from(source: acyclic_fs::FsError) -> Self {
+        if matches!(source, acyclic_fs::FsError::UnauthenticatedAccessFacts) {
+            return Self::FilesystemAccessConfiguration("unauthenticated principal facts");
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             Self::NativeFilesystem {

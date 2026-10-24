@@ -127,8 +127,13 @@ async fn check_owners<const EXPLICIT_STATE: bool>(
         let root = std::fs::canonicalize(directory.path().parent().unwrap()).unwrap();
         assert!(state.starts_with(root));
         assert!(!state.starts_with(std::fs::canonicalize(directory.path()).unwrap()));
+        let retained =
+            acyclic_native_runtime::private_file::read(&state.join("owner.json"), 65_536).unwrap();
         let owner: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(state.join("owner.json")).unwrap()).unwrap();
+            acyclic_native_runtime::owner_record::decode_with(&retained.0, 65_536, None, |plain| {
+                serde_json::from_slice(plain).map_err(std::io::Error::other)
+            })
+            .unwrap();
         assert_eq!(
             owner["project"],
             serde_json::to_value(harness.project()).unwrap()

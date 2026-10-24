@@ -40,7 +40,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             AuthenticatedFacts::Coarse => policy.permits_coarse_binding(),
         };
         if !facts_supported {
-            return Err(FsError::InvalidAccessPolicy);
+            return Err(FsError::UnauthenticatedAccessFacts);
         }
         let (generation, head) = self
             .access_generation_facts(&binding, &policy, accounting, cancellation)

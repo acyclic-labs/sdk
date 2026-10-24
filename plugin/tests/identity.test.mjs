@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { link, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { link, mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { once } from 'node:events';
 import { promisify } from 'node:util';
+import { identityCredentials } from './support/identity-fixture.mjs';
 
 const binary = process.env.ACYCLIC_TEST_BINARY;
 assert.ok(binary, 'set ACYCLIC_TEST_BINARY to the built native acyclic binary');
@@ -42,7 +43,7 @@ test('bearer write failure removes its new output and permits retry', { skip: pr
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const endpoint = `http://127.0.0.1:${server.address().port}`;
   const saved = JSON.stringify({ endpoint, session: { access_token: 'access', refresh_token: 'refresh', expires_at: Math.floor(Date.now() / 1000) + 900 } });
-  await writeFile(credentials, saved, { mode: 0o600 });
+  await identityCredentials(binary, credentials, saved);
   const args = ['bearer', '--json', '--endpoint', endpoint, '--credentials', credentials, '--org', 'org-1', '--output', output];
   try {
     const failed = await run(['-c', 'trap "" XFSZ; ulimit -f 0; exec "$@"', 'identity-bearer-failure', binary, ...args], directory, 'sh');
@@ -154,11 +155,13 @@ test('killing refresh after server rotation cannot replay the spent token', { ti
   const endpoint = `http://127.0.0.1:${server.address().port}`;
   const args = ['--json', '--endpoint', endpoint, '--credentials', credentials];
   try {
-    await writeFile(credentials, JSON.stringify({ endpoint, session: {
+    await identityCredentials(binary, credentials, JSON.stringify({ endpoint, session: {
       access_token: 'access', refresh_token: 'spent-refresh', expires_at: 0 } }));
     child = spawn(binary, ['refresh', ...args], { stdio: 'ignore', timeout: 15_000 });
     const closed = once(child, 'close');
-    await rotated;
+    await Promise.race([rotated, closed.then(([code]) => {
+      assert.fail(`refresh exited before HTTP admission: ${code}`);
+    })]);
     child.kill('SIGKILL');
     await closed;
     const restarted = await run(['refresh', ...args]);
@@ -184,7 +187,7 @@ test('credential symlinks cannot send a refresh while leaving the original token
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const endpoint = `http://127.0.0.1:${server.address().port}`;
   try {
-    await writeFile(credentials, JSON.stringify({ endpoint, session: {
+    await identityCredentials(binary, credentials, JSON.stringify({ endpoint, session: {
       access_token: 'access', refresh_token: 'unused-refresh', expires_at: 0 } }));
     await symlink(credentials, alias);
     const refused = await run(['refresh', '--json', '--endpoint', endpoint, '--credentials', alias]);
@@ -212,7 +215,7 @@ test('credential hard links reject both Windows and Unix paths before refreshing
   try {
     const saved = JSON.stringify({ endpoint, session: {
       access_token: 'access', refresh_token: 'unused-refresh', expires_at: 0 } });
-    await writeFile(credentials, saved);
+    await identityCredentials(binary, credentials, saved);
     await link(credentials, alias);
     const results = await Promise.all([credentials, alias].map(path =>
       run(['refresh', '--json', '--endpoint', endpoint, '--credentials', path])));
@@ -251,10 +254,10 @@ test('credential sidecar names cannot replace another store or its held lock', a
   try {
     const saved = JSON.stringify({ endpoint, session: {
       access_token: 'access', refresh_token: 'refresh', expires_at: 0 } });
-    await writeFile(credentials, saved);
+    await identityCredentials(binary, credentials, saved);
     // A rejected sidecar store must leave even pre-existing contents untouched.
     const other = join(directory, 'other.next');
-    await writeFile(other, saved);
+    await identityCredentials(binary, other, saved);
     const refused = await run(['login', ...args, '--credentials', other]);
     assert.equal(refused.code, 1);
     assert.equal(JSON.parse(refused.stdout).error, 'configuration_error');
@@ -262,7 +265,9 @@ test('credential sidecar names cannot replace another store or its held lock', a
     child = spawn(binary, ['refresh', ...args, '--credentials', credentials],
       { stdio: 'ignore', timeout: 15_000 });
     const closed = once(child, 'close');
-    await consumed;
+    await Promise.race([consumed, closed.then(([code]) => {
+      assert.fail(`refresh exited before HTTP admission: ${code}`);
+    })]);
     for (const suffix of ['.lock', '.next', '.LOCK', '.NeXt']) {
       const result = await run(['login', ...args, '--credentials', credentials + suffix]);
       assert.equal(result.code, 1);
@@ -302,7 +307,7 @@ test('Windows short-name credentials share the long-name refresh lock',
     const endpoint = `http://127.0.0.1:${server.address().port}`;
     const args = ['--json', '--endpoint', endpoint];
     try {
-      await writeFile(credentials, JSON.stringify({ endpoint, session: {
+      await identityCredentials(binary, credentials, JSON.stringify({ endpoint, session: {
         access_token: 'access', refresh_token: 'refresh', expires_at: 0 } }));
       const { stdout } = await promisify(execFile)('cmd.exe', ['/d', '/c',
         'for %I in ("%ACYCLIC_TEST_CREDENTIALS%") do @echo %~sI'],
@@ -316,7 +321,9 @@ test('Windows short-name credentials share the long-name refresh lock',
       child = spawn(binary, ['refresh', ...args, '--credentials', alias],
         { stdio: 'ignore', timeout: 15_000 });
       const closed = once(child, 'close');
-      await consumed;
+      await Promise.race([consumed, closed.then(([code]) => {
+        assert.fail(`refresh exited before HTTP admission: ${code}`);
+      })]);
       const busy = await run(['refresh', ...args, '--credentials', credentials]);
       assert.equal(JSON.parse(busy.stdout).error, 'credentials_busy');
       assert.equal(requests, 1, 'long and short names must never dispatch the same refresh twice');

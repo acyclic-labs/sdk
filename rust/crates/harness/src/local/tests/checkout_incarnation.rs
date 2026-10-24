@@ -497,18 +497,35 @@ async fn incarnation_controls_never_enter_initial_or_watched_capture() -> Result
 /// incarnations: the witness is the root's device and object id, and no
 /// incarnation is named.
 fn write_legacy_owner(state: &std::path::Path, identity: [u8; 16]) -> Result<Vec<u8>> {
+    use acyclic_native_runtime::{owner_record, private_file};
     let path = state.join("owner.json");
+    let retained = private_file::read(&path, 65_536).map_err(super::super::storage)?;
     let mut record: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&path).map_err(super::super::storage)?)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+        owner_record::decode_with(&retained.0, 65_536, None, |plain| {
+            serde_json::from_slice(plain).map_err(std::io::Error::other)
+        })
+        .map_err(super::super::storage)?;
     let fields = record
         .as_object_mut()
         .ok_or_else(|| Error::Invalid("owner record is not an object".into()))?;
     fields.remove("workspace_incarnation");
     fields.insert("workspace_identity".into(), serde_json::json!(identity));
-    let bytes = serde_json::to_vec(&record).map_err(|error| Error::Invalid(error.to_string()))?;
-    std::fs::write(&path, &bytes).map_err(super::super::storage)?;
-    Ok(bytes)
+    let plain = owner_record::SecretBytes(
+        serde_json::to_vec(&record).map_err(|error| Error::Invalid(error.to_string()))?,
+    );
+    let bytes = owner_record::encode_with(&plain.0, 65_536, None, |parts| {
+        Ok::<_, std::io::Error>(owner_record::SecretBytes(parts.concat()))
+    })
+    .map_err(super::super::storage)?;
+    private_file::publish(
+        &path,
+        &state.join(".pre-incarnation-owner.next"),
+        acyclic_native_runtime::RenameMode::Replace,
+        |file| acyclic_native_runtime::write_file_all(file, &bytes.0),
+        |_| Ok(()),
+    )
+    .map_err(super::super::storage)?;
+    Ok(bytes.0.clone())
 }
 
 /// A record written before checkout incarnations names no incarnation, so

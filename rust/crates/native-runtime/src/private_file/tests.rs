@@ -80,6 +80,88 @@ fn no_replace_and_staging_collision_preserve_the_original_publisher() -> io::Res
 }
 
 #[test]
+fn published_staging_name_reuse_survives_return_error_and_unwind() -> io::Result<()> {
+    for outcome in 0..3 {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("owner");
+        let temporary = root.path().join("staging");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            publish(
+                &path,
+                &temporary,
+                crate::RenameMode::NoReplace,
+                |file| file.write_all(b"original publisher"),
+                |stage| {
+                    if stage == PublicationStage::Published {
+                        create(&temporary)?.write_all(b"next publisher")?;
+                        match outcome {
+                            1 => return Err(io::Error::other("lost publication acknowledgement")),
+                            2 => panic!("unwind after staging name reuse"),
+                            _ => {}
+                        }
+                    }
+                    Ok(())
+                },
+            )
+        }));
+        match outcome {
+            0 => assert!(matches!(result, Ok(Ok(())))),
+            1 => assert!(matches!(result, Ok(Err(_)))),
+            _ => assert!(result.is_err()),
+        }
+        assert!(
+            temporary.is_file(),
+            "published owner removed a reused staging name"
+        );
+        assert_eq!(fs::read(&temporary)?, b"next publisher");
+        assert_eq!(fs::read(&path)?, b"original publisher");
+        assert!(is_private(&open(&temporary, false)?)?);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn rename_custody_transfer_precedes_a_lost_acknowledgement() -> io::Result<()> {
+    use crate::testing::{DurableFault, Schedule};
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    for fault in [DurableFault::Before, DurableFault::After] {
+        let root = tempfile::tempdir()?;
+        let from = root.path().join("staging");
+        let to = root.path().join("owner");
+        create(&from)?.write_all(b"original publisher")?;
+        let (schedule, _) = Schedule::seeded(71);
+        schedule.cut_at(0, fault);
+        let mut committed = false;
+        let mut recreated = Ok(());
+        let result = runtime.block_on(schedule.scope(async {
+            crate::namespace::durable_rename_observed(
+                &from,
+                &to,
+                crate::RenameMode::NoReplace,
+                None,
+                || {
+                    committed = true;
+                    recreated =
+                        create(&from).and_then(|mut file| file.write_all(b"next publisher"));
+                },
+            )
+        }));
+        assert!(result.is_err());
+        recreated?;
+        assert_eq!(committed, fault == DurableFault::After);
+        if committed {
+            assert_eq!(fs::read(&from)?, b"next publisher");
+            assert_eq!(fs::read(&to)?, b"original publisher");
+        } else {
+            assert_eq!(fs::read(&from)?, b"original publisher");
+            assert!(!to.exists());
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn bounded_reader_rejects_growth_and_admits_before_allocation() -> io::Result<()> {
     let root = tempfile::tempdir()?;
     let path = root.path().join("owner");
