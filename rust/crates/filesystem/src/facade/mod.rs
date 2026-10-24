@@ -147,6 +147,7 @@ mod content;
 mod content_model;
 mod detached;
 mod diff;
+pub(crate) mod policy_cache;
 pub(crate) use diff::diff_generation_file_tables;
 mod directory;
 mod error;

@@ -79,6 +79,22 @@ fn check_decisions<const CORRUPT_DECISION: bool>(
     ) else {
         return Ok(()); // Invalid input and policies exceeding compilation budgets fail closed.
     };
+    let mut work = usize::MAX;
+    let shared =
+        CompiledPolicy::compile_with_work(input.policy.clone(), config, &mut work, |_| Ok(()));
+    let shared = shared.and_then(|policy| {
+        std::sync::Arc::new(policy).bind_with_work(
+            &input.principal,
+            resource,
+            context,
+            &input.capability,
+            &mut work,
+            |_| Ok(()),
+        )
+    });
+    // The same bounded construction may refuse a larger principal-independent
+    // automaton. Successful constructions must match every decision and name.
+    let shared = shared.ok().map(std::sync::Arc::new);
     let trie = std::sync::Arc::new(trie);
     let prepared = trie.prepare(&input.path);
     for action in Action::ALL {
@@ -100,11 +116,17 @@ fn check_decisions<const CORRUPT_DECISION: bool>(
             expected
         };
         assert_eq!(trie.decide(action, &input.path, input.now), expected);
+        if let Some(shared) = &shared {
+            assert_eq!(shared.decide(action, &input.path, input.now), expected);
+        }
         if let Ok(path) = prepared {
             assert_eq!(path.decide(action, input.now), expected);
         }
     }
     check_native_name(&input, &trie, resource, context)?;
+    if let Some(shared) = &shared {
+        check_native_name(&input, shared, resource, context)?;
+    }
     Ok(())
 }
 

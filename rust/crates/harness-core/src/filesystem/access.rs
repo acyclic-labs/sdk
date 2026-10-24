@@ -1,6 +1,6 @@
 use super::*;
 use acyclic_fs::access::{
-    Action, Capability, Context, InvalidPolicy, PathTrie, Policy, Principal, PrincipalKind,
+    Action, Capability, CompiledPolicy, Context, InvalidPolicy, PathTrie, Principal, PrincipalKind,
     Resource,
 };
 use acyclic_fs::model::{CheckoutMode, GenerationSelector};
@@ -16,7 +16,7 @@ mod read_commit;
 pub(in crate::filesystem) use read_commit::ReadObservation;
 pub(in crate::filesystem) use read_commit::require_current;
 pub(in crate::filesystem) type CompiledAccess<'a> =
-    (PathTrie, [Option<DecodeReservation<'a>>; 2], GenerationId);
+    (PathTrie, [Option<DecodeReservation<'a>>; 4], GenerationId);
 
 pub(crate) fn capability_payload<'a>(
     label: Option<&'a str>,
@@ -51,23 +51,15 @@ pub(crate) fn require_unrestricted(
     }
 }
 
-fn require_authenticated_facts(policy: &Policy, io: &PreparationIo) -> Result<()> {
-    for rule in policy.layers.iter().flatten() {
-        io.charge(WorkCounters {
-            items_examined: 1,
-            ..Default::default()
-        })?;
-        if rule.principal.group.is_some()
-            || !rule.principal.attributes.is_empty()
-            || rule.conditions.role.is_some()
-            || rule.conditions.tag.is_some()
-            || rule.conditions.relation.is_some()
-            || rule.resource.lineage_root.is_some()
-        {
-            return Err(Error::FilesystemAccessConfiguration(
-                "unauthenticated principal facts",
-            ));
-        }
+fn require_authenticated_facts(policy: &CompiledPolicy, io: &PreparationIo) -> Result<()> {
+    io.charge(WorkCounters {
+        items_examined: 1,
+        ..Default::default()
+    })?;
+    if !policy.uses_only_authenticated_identity() {
+        return Err(Error::FilesystemAccessConfiguration(
+            "unauthenticated principal facts",
+        ));
     }
     Ok(())
 }
@@ -250,25 +242,18 @@ pub(crate) async fn access_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>
             None
         };
         let mut head = (head, head_hold);
-        let (bytes, policy_revision) =
-            io.sdk(head.0.read_access_policy(io, io.cancellation()).await)?;
-        let bytes = bytes.ok_or_else(|| {
-            stock_boundary(
-                Some(io),
-                crate::wire::ErrorCode::Unauthorized,
-                "volume has no access policy",
-            )
-        })?;
-        if io.original_native_work().is_none() {
-            io.retain_owned(bytes.logical_owned_bytes)?;
-        }
-        let bytes_hold = io.guard_bytes(&bytes.bytes)?;
-        let bytes = (bytes, bytes_hold);
-        let policy = record::<Policy>(io, &bytes.0.bytes, crate::wire::ErrorCode::Storage)?;
-        require_authenticated_facts(&policy.0, io)?;
+        let policy_revision = io.sdk(head.0.access_policy_revision(io, io.cancellation()).await)?;
+        let policy = io.sdk(head.0.compiled_access_policy(io, io.cancellation()).await)?;
+        require_authenticated_facts(&policy, io)?;
         let policy_generation = head.0.generation_id();
-        let (selected, latest) =
-            generation_context(&mut head.0, &policy.0, &capability.0, generation, io).await?;
+        let (selected, latest) = generation_context(
+            &mut head.0,
+            policy.needs_ordinal(),
+            &capability.0,
+            generation,
+            io,
+        )
+        .await?;
         let principal = authenticated_principal(scope, io)?;
         let volume = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(
@@ -293,19 +278,11 @@ pub(crate) async fn access_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>
             head: latest,
             path: "",
         };
-        let compiled = compile_view(
-            &policy.0,
-            &principal.0,
-            resource,
-            context,
-            &capability.0,
-            io,
-        )?;
+        let compiled = compile_view(&policy, &principal.0, resource, context, &capability.0, io)?;
         drop(volume);
         drop(principal);
         drop(policy);
         drop(capability);
-        drop(bytes);
         drop(head);
         let view = compiled
             .0
@@ -321,7 +298,7 @@ pub(crate) async fn access_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>
 
 async fn generation_context<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     head: &mut acyclic_fs::Checkout<A, O>,
-    policy: &Policy,
+    policy_needs_ordinal: bool,
     capability: &Capability,
     generation: Option<GenerationId>,
     io: &PreparationIo,
@@ -331,21 +308,16 @@ async fn generation_context<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     // Identity suffices for Head/All selectors; only explicit intervals
     // require the authenticated publication sequence.
     io.charge(WorkCounters {
-        items_examined: policy.layers.iter().map(Vec::len).sum::<usize>() as u64
-            + capability.layers.iter().map(Vec::len).sum::<usize>() as u64,
+        items_examined: 1 + capability.layers.iter().map(Vec::len).sum::<usize>() as u64,
         ..Default::default()
     })?;
-    let needs_ordinal = policy.layers.iter().flatten().any(|rule| {
-        matches!(
-            rule.resource.generations,
-            acyclic_fs::access::Generations::Range(_)
-        ) || rule.conditions.generations.is_some()
-    }) || capability.layers.iter().flatten().any(|grant| {
-        matches!(
-            grant.resource.generations,
-            acyclic_fs::access::Generations::Range(_)
-        )
-    });
+    let needs_ordinal = policy_needs_ordinal
+        || capability.layers.iter().flatten().any(|grant| {
+            matches!(
+                grant.resource.generations,
+                acyclic_fs::access::Generations::Range(_)
+            )
+        });
     let positions = if needs_ordinal {
         let (selected, latest) = io.sdk(
             head.generation_position(
@@ -416,20 +388,19 @@ fn intersect_capabilities<'a>(
 }
 
 fn compile_view<'a>(
-    policy: &Policy,
+    policy: &std::sync::Arc<CompiledPolicy>,
     principal: &Principal,
     resource: Resource<'_>,
     context: Context,
     capability: &Capability,
     io: &'a PreparationIo,
-) -> Result<(PathTrie, [Option<DecodeReservation<'a>>; 2])> {
+) -> Result<(PathTrie, [Option<DecodeReservation<'a>>; 4])> {
     let mut remaining = usize::try_from(io.remaining()?.items_examined).unwrap_or(usize::MAX);
     let before = remaining;
-    let mut holds = [None, None];
+    let mut holds = [None, None, None, None];
     let mut stage = 0;
     let mut admission_error = None;
-    let compiled = PathTrie::compile_with_work(
-        policy,
+    let compiled = policy.bind_with_work(
         principal,
         resource,
         context,

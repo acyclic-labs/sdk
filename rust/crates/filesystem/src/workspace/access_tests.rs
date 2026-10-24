@@ -2,6 +2,7 @@ use super::*;
 use crate::Fs;
 use crate::access::{Action, INITIAL_POLICY, fixtures};
 use proptest::prelude::*;
+mod policy_cache;
 
 async fn workspace() -> Result<
     Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,

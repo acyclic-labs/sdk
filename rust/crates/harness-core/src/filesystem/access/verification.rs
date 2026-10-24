@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_fs::access::Policy;
 
 fn roundtrip<T: PreparationRecord + serde::Serialize + std::fmt::Debug + PartialEq>(
     io: &PreparationIo,
@@ -125,7 +126,10 @@ mod facts {
         fn unknown_facts_are_rejected_regardless_of_value(value in "[a-z]{1,16}", selector in 0u8..6) {
             let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new()).unwrap();
             let mut policy: Policy = serde_json::from_slice(INITIAL_POLICY).unwrap();
-            prop_assert!(require_authenticated_facts(&policy, &io).is_ok());
+            let config = acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral);
+            let mut remaining = usize::MAX;
+            let compiled = CompiledPolicy::compile_with_work(policy.clone(), config, &mut remaining, |_| Ok(())).unwrap();
+            prop_assert!(require_authenticated_facts(&compiled, &io).is_ok());
             let rule = &mut policy.layers[0][0];
             rule.effect = acyclic_fs::access::Effect::Deny;
             match selector {
@@ -136,7 +140,8 @@ mod facts {
                 4 => rule.conditions.relation = Some(acyclic_fs::access::Relation::SelfTask),
                 _ => rule.resource.lineage_root = Some(value),
             }
-            let error = require_authenticated_facts(&policy, &io).unwrap_err();
+            let compiled = CompiledPolicy::compile_with_work(policy, config, &mut remaining, |_| Ok(())).unwrap();
+            let error = require_authenticated_facts(&compiled, &io).unwrap_err();
             prop_assert!(matches!(error, Error::FilesystemAccessConfiguration(_)));
             prop_assert_eq!(error.code(), crate::wire::ErrorCode::Unsupported);
             prop_assert!(!error.is_native_failure());

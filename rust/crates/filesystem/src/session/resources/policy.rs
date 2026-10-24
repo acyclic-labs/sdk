@@ -1,8 +1,7 @@
 use super::*;
 use crate::Volume;
 use crate::access::{
-    Capability, Context, Generations, Grant, Policy, Principal, PrincipalKind, Resource,
-    ResourcePattern,
+    Capability, Context, Generations, Grant, Principal, PrincipalKind, Resource, ResourcePattern,
 };
 use crate::model::{CheckoutMode, GenerationSelector};
 use std::collections::{BTreeMap, BTreeSet};
@@ -22,25 +21,20 @@ pub(super) async fn compile<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .await
         .map_err(|_| StreamError::AccessDenied)?
         .value;
-    let (bytes, revision) = checkout
-        .read_access_policy(WorkBudget::UNBOUNDED, cancellation)
+    let revision = checkout
+        .access_policy_revision(WorkBudget::UNBOUNDED, cancellation)
         .await
         .map_err(|_| StreamError::AccessDenied)?
         .value;
-    let bytes = bytes.ok_or(StreamError::AccessDenied)?;
-    let policy: Policy =
-        serde_json::from_slice(&bytes.bytes).map_err(|_| StreamError::AccessDenied)?;
+    let policy = checkout
+        .compiled_access_policy(WorkBudget::UNBOUNDED, cancellation)
+        .await
+        .map_err(|_| StreamError::AccessDenied)?
+        .value;
     // This stream has no authenticated resource-task ancestry or approvals.
     // Generation-sensitive views need a provider-owned moving head fence;
     // refuse those policies instead of ignoring conditional denials.
-    if policy.layers.iter().flatten().any(|rule| {
-        rule.resource.lineage_root.is_some()
-            || rule.resource.generations != Generations::All
-            || rule.conditions.generations.is_some()
-            || rule.conditions.relation.is_some()
-            || rule.conditions.tag.is_some()
-            || rule.conditions.approvals.is_some()
-    }) {
+    if !policy.permits_metadata_stream() {
         return Err(StreamError::AccessDenied);
     }
     let subject = authorization.principal()?;
@@ -93,23 +87,26 @@ pub(super) async fn compile<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .await
         .map_err(|_| StreamError::AccessDenied)?
         .value;
-    PathTrie::compile(
-        &policy,
-        &principal,
-        Resource {
-            config: volume.config,
-            lineage: &[],
-            volume: &volume_name,
-            generation: position.get(),
-            head: head.get(),
-            path: "",
-        },
-        Context {
-            now: authorization.now_unix_seconds()?,
-            approvals: 0,
-        },
-        &ceiling,
-    )
-    .map(|trie| trie.with_policy_revision(generation, revision))
-    .map_err(|_| StreamError::AccessDenied)
+    let mut remaining = usize::MAX;
+    policy
+        .bind_with_work(
+            &principal,
+            Resource {
+                config: volume.config,
+                lineage: &[],
+                volume: &volume_name,
+                generation: position.get(),
+                head: head.get(),
+                path: "",
+            },
+            Context {
+                now: authorization.now_unix_seconds()?,
+                approvals: 0,
+            },
+            &ceiling,
+            &mut remaining,
+            |_| Ok(()),
+        )
+        .map(|trie| trie.with_policy_revision(generation, revision))
+        .map_err(|_| StreamError::AccessDenied)
 }

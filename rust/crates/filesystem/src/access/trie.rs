@@ -9,6 +9,8 @@ use super::{
 use std::collections::{BTreeMap, BTreeSet};
 
 mod reachability;
+mod shared;
+pub use shared::CompiledPolicy;
 
 #[derive(Clone, Copy)]
 struct Outcome {
@@ -24,8 +26,10 @@ struct State {
 
 /// Determinized glob trie for one principal, volume, generation, and context.
 /// Prepare paths once during namespace lookup, then check the resulting handle
-/// without scanning names, allocating, or depending on policy size.
+/// without scanning names or allocating. Shared programs evaluate pinned caller
+/// predicates against the matching rules.
 pub struct PathTrie {
+    shared: Option<Box<shared::Binding>>,
     alphabet: Alphabet,
     states: Vec<State>,
     rules: Vec<String>,
@@ -80,9 +84,7 @@ impl PinnedPath {
     }
 
     pub(super) fn action_mask(&self, now: u64) -> u16 {
-        self.view
-            .state_at(self.state, now)
-            .map_or(0, |state| state.actions)
+        self.view.action_mask(self.state, now)
     }
 }
 
@@ -164,16 +166,14 @@ impl<'a> PreparedPath<'a> {
         }
     }
 
-    /// Constant-time, allocation-free decision, including the pinned deadline.
+    /// Allocation-free decision, including the pinned deadline and caller facts.
     #[must_use]
     pub fn decide(self, action: Action, now: u64) -> Decision<'a> {
         self.trie.decision(self.state, action, now)
     }
 
     pub(super) fn action_mask(self, now: u64) -> u16 {
-        self.trie
-            .state_at(self.state, now)
-            .map_or(0, |state| state.actions)
+        self.trie.action_mask(self.state, now)
     }
 }
 
@@ -198,7 +198,8 @@ impl std::fmt::Write for PathWriter<'_> {
 // The scalar space and the NFA literal limit bound its storage.
 struct Alphabet {
     pages: Vec<[u16; 256]>,
-    page_ids: Box<[u16; 4352]>,
+    page_ids: Option<Box<[u16; 4352]>>,
+    symbols: Vec<char>,
 }
 
 impl Alphabet {
@@ -207,11 +208,16 @@ impl Alphabet {
             u16::try_from(symbols.len()).map_err(|_| InvalidPolicy("alphabet exceeds limit"))?;
         let mut result = Self {
             pages: vec![[other; 256]],
-            page_ids: Box::new([0; 4352]),
+            page_ids: Some(Box::new([0; 4352])),
+            symbols: symbols.to_vec(),
         };
         for (symbol, ch) in symbols.iter().enumerate() {
             let code = *ch as usize;
-            if let Some(page) = result.page_ids.get_mut(code >> 8) {
+            if let Some(page) = result
+                .page_ids
+                .as_mut()
+                .and_then(|pages| pages.get_mut(code >> 8))
+            {
                 if *page == 0 {
                     *page = u16::try_from(result.pages.len())
                         .map_err(|_| InvalidPolicy("alphabet pages exceed limit"))?;
@@ -233,7 +239,7 @@ impl Alphabet {
     fn symbol(&self, ch: char) -> Option<usize> {
         let code = ch as usize;
         self.pages
-            .get(usize::from(*self.page_ids.get(code >> 8)?))?
+            .get(usize::from(*self.page_ids.as_ref()?.get(code >> 8)?))?
             .get(code & 255)
             .copied()
             .map(usize::from)
@@ -295,7 +301,12 @@ impl PathTrie {
     #[must_use]
     pub fn logical_owned_bytes(&self) -> u64 {
         (self.alphabet.pages.capacity() * size_of::<[u16; 256]>()
-            + size_of::<[u16; 4352]>()
+            + self
+                .alphabet
+                .page_ids
+                .as_ref()
+                .map_or(0, |_| size_of::<[u16; 4352]>())
+            + self.alphabet.symbols.capacity() * size_of::<char>()
             + self.states.capacity() * size_of::<State>()
             + self
                 .states
@@ -306,6 +317,10 @@ impl PathTrie {
             + self.rules.iter().map(String::capacity).sum::<usize>()
             + self.volume.capacity()
             + self.subject.1.capacity()) as u64
+            + self
+                .shared
+                .as_ref()
+                .map_or(0, |binding| binding.logical_owned_bytes())
     }
 
     /// Authoritative name semantics pinned by this view.
@@ -409,8 +424,35 @@ impl PathTrie {
         context: Context,
         capability: &Capability,
         remaining_work: &mut usize,
+        reserve: impl FnMut(usize) -> Result<(), InvalidPolicy>,
+    ) -> Result<Self, InvalidPolicy> {
+        Self::compile_context(
+            Compilation {
+                policy,
+                principal,
+                resource,
+                context,
+                capability,
+                historical: resource.generation != resource.head,
+            },
+            remaining_work,
+            reserve,
+        )
+    }
+
+    fn compile_context(
+        input: Compilation<'_>,
+        remaining_work: &mut usize,
         mut reserve: impl FnMut(usize) -> Result<(), InvalidPolicy>,
     ) -> Result<Self, InvalidPolicy> {
+        let Compilation {
+            policy,
+            principal,
+            resource,
+            context,
+            capability,
+            historical,
+        } = input;
         let mut available = (*remaining_work).min(MAXIMUM_WORK);
         let before = available;
         let result = (|| {
@@ -441,7 +483,7 @@ impl PathTrie {
                 valid_until,
             } = patterns.determinize(
                 policy,
-                resource,
+                historical,
                 context,
                 capability,
                 &mut available,
@@ -454,6 +496,7 @@ impl PathTrie {
                     && state.actions & (1 << Action::ReadHistory as u16) == 0
             });
             Ok(Self {
+                shared: None,
                 alphabet,
                 states,
                 rules: rule_ids,
@@ -503,7 +546,7 @@ impl PathTrie {
     /// This uses the compiled decisions, including capability intersections.
     #[must_use]
     pub fn allows_every_path(&self, actions: &[Action], now: u64) -> bool {
-        self.states.iter().enumerate().all(|(state, _)| {
+        (0..self.state_count()).all(|state| {
             actions
                 .iter()
                 .all(|action| self.decision(state, *action, now).allowed)
@@ -542,10 +585,8 @@ impl PathTrie {
         };
         match (suffix(source), suffix(destination)) {
             (Ok(from), Ok(to)) if from == to => true,
-            _ => self
-                .states
-                .iter()
-                .all(|state| state.actions == source.action_mask(now)),
+            _ => (0..self.state_count())
+                .all(|state| self.action_mask(state, now) == source.action_mask(now)),
         }
     }
 
@@ -574,7 +615,8 @@ impl PathTrie {
     }
 
     /// Convenience decision for an unprepared UTF-8 path. Preparation is linear
-    /// in path bytes; the bound handle's decision itself is constant time.
+    /// in path bytes; shared policies evaluate their matching caller predicates
+    /// through the bound handle without allocating or recompiling paths.
     #[must_use]
     pub fn decide(&self, action: Action, path: &str, now: u64) -> Decision<'_> {
         self.prepare(path).map_or_else(
@@ -584,6 +626,19 @@ impl PathTrie {
     }
 
     fn step(&self, state: usize, ch: char) -> Result<usize, InvalidPolicy> {
+        if let Some(binding) = &self.shared {
+            let policy = state / self.states.len();
+            let ceiling = state % self.states.len();
+            return Ok(binding.policy.step(policy, ch)? * self.states.len()
+                + self.ceiling_step(ceiling, ch)?);
+        }
+        self.ceiling_step(state, ch)
+    }
+
+    fn ceiling_step(&self, state: usize, ch: char) -> Result<usize, InvalidPolicy> {
+        if self.alphabet.page_ids.is_none() {
+            return Ok(0);
+        }
         let symbol = self
             .alphabet
             .symbol(ch)
@@ -596,6 +651,16 @@ impl PathTrie {
     }
 
     fn decision(&self, state: usize, action: Action, now: u64) -> Decision<'_> {
+        if let Some(binding) = &self.shared {
+            if !self.valid_at(now) {
+                return Decision::denied(self.version, Denial::Invalid);
+            }
+            return binding.decision(self, state, action, now);
+        }
+        self.ceiling_decision(state, action, now)
+    }
+
+    fn ceiling_decision(&self, state: usize, action: Action, now: u64) -> Decision<'_> {
         match self
             .state_at(state, now)
             .and_then(|node| node.decisions.get(action as usize))
@@ -622,6 +687,27 @@ impl PathTrie {
         } else {
             None
         }
+    }
+
+    fn state_count(&self) -> usize {
+        self.states.len()
+            * self
+                .shared
+                .as_ref()
+                .map_or(1, |binding| binding.policy.states.len())
+    }
+
+    fn action_mask(&self, state: usize, now: u64) -> u16 {
+        if self.shared.is_none() {
+            return self.state_at(state, now).map_or(0, |node| node.actions);
+        }
+        Action::ALL.into_iter().fold(0, |mask, action| {
+            mask | if self.decision(state, action, now).allowed {
+                1 << action as u16
+            } else {
+                0
+            }
+        })
     }
 }
 
@@ -833,7 +919,7 @@ impl<'a> CompiledPatterns<'a> {
     fn determinize(
         self,
         policy: &Policy,
-        resource: Resource<'_>,
+        historical: bool,
         context: Context,
         capability: &Capability,
         available: &mut usize,
@@ -874,7 +960,7 @@ impl<'a> CompiledPatterns<'a> {
                     policy,
                     capability,
                     context,
-                    resource.generation != resource.head,
+                    historical,
                     &self.rules,
                     &self.grants,
                     &subset,
@@ -891,7 +977,7 @@ impl<'a> CompiledPatterns<'a> {
                         policy,
                         capability,
                         context,
-                        resource.generation != resource.head,
+                        historical,
                         &self.rules,
                         &self.grants,
                         subset,
@@ -918,4 +1004,13 @@ struct CompiledStates {
     states: Vec<State>,
     rule_ids: Vec<String>,
     valid_until: Option<u64>,
+}
+
+struct Compilation<'a> {
+    policy: &'a Policy,
+    principal: &'a Principal,
+    resource: Resource<'a>,
+    context: Context,
+    capability: &'a Capability,
+    historical: bool,
 }

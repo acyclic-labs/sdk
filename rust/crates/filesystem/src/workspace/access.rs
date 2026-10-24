@@ -1,5 +1,5 @@
 use super::*;
-use crate::access::{Action, Capability, Context, PathTrie, Policy, Principal, Resource};
+use crate::access::{Action, Capability, Context, PathTrie, Principal, Resource};
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     /// Authorize and publish under one backend-owned policy cut. The operation
@@ -114,48 +114,42 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             .await
             .map_err(|failure| WorkspaceError::from(failure.error))?
             .value;
-        let (bytes, revision) = checkout
-            .read_access_policy(WorkBudget::UNBOUNDED, cancellation)
+        let revision = checkout
+            .access_policy_revision(WorkBudget::UNBOUNDED, cancellation)
             .await
             .map_err(|failure| WorkspaceError::from(failure.error))?
             .value;
-        let bytes = bytes.ok_or(WorkspaceError::AccessDenied)?;
-        let policy: Policy =
-            serde_json::from_slice(&bytes.bytes).map_err(|_| WorkspaceError::AccessDenied)?;
-        // These coarse adapters have no ordinal or authenticated task ancestry.
-        // Never filter a conditional deny using invented facts.
-        if policy.layers.iter().flatten().any(|rule| {
-            rule.principal != crate::access::PrincipalPattern::default()
-                || rule.resource.lineage_root.is_some()
-                || rule.resource.generations != crate::access::Generations::All
-                || rule.conditions.generations.is_some()
-                || rule.conditions.relation.is_some()
-                || rule.conditions.role.is_some()
-                || rule.conditions.tag.is_some()
-                || rule.conditions.approvals.is_some()
-        }) {
+        let policy = checkout
+            .compiled_access_policy(WorkBudget::UNBOUNDED, cancellation)
+            .await
+            .map_err(|failure| WorkspaceError::from(failure.error))?
+            .value;
+        if !policy.permits_coarse_binding() {
             return Err(WorkspaceError::AccessDenied);
         }
         let volume = uuid::Uuid::from_bytes(self.id.volume_id().into_bytes()).to_string();
-        PathTrie::compile(
-            &policy,
-            principal,
-            Resource {
-                config: self.volume.config,
-                lineage: &[],
-                volume: &volume,
-                generation: 0,
-                head: 0,
-                path: "",
-            },
-            Context {
-                now: access_time()?,
-                approvals: 0,
-            },
-            capability,
-        )
-        .map(|view| view.with_policy_revision(checkout.generation_id(), revision))
-        .map_err(|_| WorkspaceError::AccessDenied)
+        let mut remaining = usize::MAX;
+        policy
+            .bind_with_work(
+                principal,
+                Resource {
+                    config: self.volume.config,
+                    lineage: &[],
+                    volume: &volume,
+                    generation: 0,
+                    head: 0,
+                    path: "",
+                },
+                Context {
+                    now: access_time()?,
+                    approvals: 0,
+                },
+                capability,
+                &mut remaining,
+                |_| Ok(()),
+            )
+            .map(|view| view.with_policy_revision(checkout.generation_id(), revision))
+            .map_err(|_| WorkspaceError::AccessDenied)
     }
 
     /// Bind a coarse adapter only when its entire exposed operation set is
