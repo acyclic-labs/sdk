@@ -462,31 +462,54 @@ impl StockExecution<'_> {
                 started,
             )
             .await?;
-        let execution = if claimed {
-            stock_tool_call(
-                context,
-                self.io,
-                |context| tool.executor.execute(invocation.clone(), context),
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                |context, work| {
-                    tool.executor
-                        .execute_with_native_context(context, invocation, work)
-                },
-            )
-            .await
-            .map(Some)
+        let execution = async {
+            if claimed {
+                stock_tool_call(
+                    context,
+                    self.io,
+                    |context| tool.executor.execute(invocation.clone(), context),
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    |context, work| {
+                        tool.executor
+                            .execute_with_native_context(context, invocation, work)
+                    },
+                )
+                .await
+                .map(Some)
+            } else {
+                stock_tool_call(
+                    context,
+                    self.io,
+                    |context| tool.executor.reconcile(invocation.clone(), context),
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    |context, work| {
+                        tool.executor
+                            .reconcile_with_native_context(context, invocation, work)
+                    },
+                )
+                .await
+            }
+        };
+        let execution = if tool.executor.cancellable_on_drop() {
+            match cancel_safe_call(execution, journal.model_cancellation()).await? {
+                Some(result) => result,
+                None => {
+                    self.reject_tool_call(
+                        journal,
+                        operation_id,
+                        step,
+                        &invocation.call_id,
+                        ToolFailureKind::Interrupted,
+                        Error::InteractionRejected(crate::InteractionRejection::Cancelled),
+                    )
+                    .await?;
+                    return Err(Error::InteractionRejected(
+                        crate::InteractionRejection::Cancelled,
+                    ));
+                }
+            }
         } else {
-            stock_tool_call(
-                context,
-                self.io,
-                |context| tool.executor.reconcile(invocation.clone(), context),
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                |context, work| {
-                    tool.executor
-                        .reconcile_with_native_context(context, invocation, work)
-                },
-            )
-            .await
+            execution.await
         };
         let result = match execution {
             Ok(Some(result)) => result,
@@ -895,6 +918,22 @@ pub(super) fn metadata_for_call<'a>(
     Ok(&call.metadata)
 }
 
+// This scope retires the invocation future before the caller publishes either
+// interruption or a terminal turn. It covers ordinary and native dispatch.
+async fn cancel_safe_call<T>(
+    execution: impl std::future::Future<Output = T>,
+    cancellation: impl std::future::Future<Output = Result<()>>,
+) -> Result<Option<T>> {
+    futures::pin_mut!(execution, cancellation);
+    match futures::future::select(cancellation, execution).await {
+        futures::future::Either::Left((cancelled, _)) => {
+            cancelled?;
+            Ok(None)
+        }
+        futures::future::Either::Right((result, _)) => Ok(Some(result)),
+    }
+}
+
 #[cfg(test)]
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod refusal_admission_tests {
@@ -925,5 +964,57 @@ mod refusal_admission_tests {
         assert!(portable.count_total > 0);
         assert_eq!(work.live_allocation_bytes(), before);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    struct Held(Arc<AtomicBool>);
+    impl std::future::Future for Held {
+        type Output = u8;
+        fn poll(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<u8> {
+            std::task::Poll::Pending
+        }
+    }
+    impl Drop for Held {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    #[test]
+    fn cancellation_retires_owned_io_before_the_caller_can_settle() {
+        for failed_follow in [false, true] {
+            let retired = Arc::new(AtomicBool::new(false));
+            let cancellation = if failed_follow {
+                Err(Error::Storage("follow ended".into()))
+            } else {
+                Ok(())
+            };
+            let result = futures::executor::block_on(cancel_safe_call(
+                Held(retired.clone()),
+                futures::future::ready(cancellation),
+            ));
+            assert!(retired.load(Ordering::SeqCst));
+            if failed_follow {
+                assert!(matches!(result, Err(Error::Storage(_))));
+            } else {
+                assert!(matches!(result, Ok(None)));
+            }
+        }
+        assert!(matches!(
+            futures::executor::block_on(cancel_safe_call(
+                futures::future::ready(7),
+                futures::future::pending()
+            )),
+            Ok(Some(7))
+        ));
     }
 }

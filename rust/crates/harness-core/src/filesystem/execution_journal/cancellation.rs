@@ -1,4 +1,4 @@
-//! Cancellation is an ordinary request followed while awaiting a model or approval.
+//! Cancellation is an ordinary request followed during cancellable execution waits.
 use super::*;
 use crate::task_volume::{Query, cancellation_key, is_cancellation};
 use futures::StreamExt as _;

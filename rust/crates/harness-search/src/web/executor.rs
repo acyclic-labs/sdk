@@ -190,6 +190,12 @@ fn rejection(
 }
 
 impl ToolExecutor for WebExecutor {
+    // Search and fetch futures own their HTTP exchanges; neither spawns work.
+    // Dropping the future closes the exchange before journal settlement.
+    fn cancellable_on_drop(&self) -> bool {
+        true
+    }
+
     fn authorize(
         &self,
         _: Option<&RuntimeScope>,

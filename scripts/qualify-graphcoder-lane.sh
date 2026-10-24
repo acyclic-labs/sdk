@@ -22,6 +22,7 @@ cargo build --locked -p graphcoder -p harness-mock-model --features "$binary_fea
 python3 scripts/graphcoder-binaries.py .bb-sessions-shipping.jsonl > .bb-sessions-binaries.env
 source .bb-sessions-binaries.env
 node scripts/qualify-web-lifecycle.mjs "$SESSIONS_GRAPHCODER_BINARY"
+node scripts/qualify-fetch-cancellation.mjs "$SESSIONS_GRAPHCODER_BINARY"
 python3 scripts/qualify-graphcoder-run.test.py
 E2E_OUTPUT=e2e-consolidated-results python3 scripts/qualify-graphcoder-run.py .bb-sessions-shipping.jsonl
 cargo check --locked -p graphcoder --target x86_64-pc-windows-gnu --features "$binary_features"

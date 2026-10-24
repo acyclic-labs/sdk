@@ -7,4 +7,5 @@ if [ "$#" -ne 2 ]; then
 fi
 node --test scripts/graphcoder-e2e/*.test.mjs
 node scripts/qualify-web-lifecycle.mjs "$1"
+node scripts/qualify-fetch-cancellation.mjs "$1"
 node scripts/graphcoder-e2e/run.mjs "$1" "$2"

@@ -1,7 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { generateTypeDef } from "@napi-rs/cli";
 
 // Every binding family shares the enclosing job's target custody and device.
 // A sibling of a private bind mount is outside that ownership boundary.
@@ -40,6 +39,7 @@ export async function renderTypes(root, family, crates) {
   for (const name of crates) {
     if (!hasDeclarations(name)) throw new Error(`${family} Rust macros emitted no N-API declarations for ${name}`);
   }
+  const { generateTypeDef } = await import("@napi-rs/cli");
   const { dts, exports } = await generateTypeDef({ typeDefDir, cwd: root });
   if (exports.length === 0 || dts.length === 0) {
     throw new Error(`${family} Rust macros emitted no N-API declarations`);

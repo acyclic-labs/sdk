@@ -4,6 +4,8 @@ Search seeds `.codex/search.json` under the selected settings root (`CODEX_HOME/
 
 `pty-search-cancel-resume` waits for the acknowledged configured search HTTP request, cancels its held body with Escape and reopens the retained cancellation without redispatch. `node scripts/qualify-web-lifecycle.mjs /absolute/graphcoder` separately follows an actual search result into `url_fetch`, checks exact UTF-8 bytes and source URLs, completes with a citation and replays with provider/search/fetch dispatch disabled.
 
+`node scripts/qualify-fetch-cancellation.mjs /absolute/graphcoder` holds a real GET response body, cancels it through Escape, observes the HTTP exchange retire and explicitly resumes the stopped task with its prompt and cancellation notice retained. Search and fetch cancellation both require the idle STOPPED view and exit 2, with no additional provider or tool request. `scripts/qualify-web-cancellation-negative.sh` disables the production executor's cancellation contract; both shipping cancellation tests must fail, then pass after restoration.
+
 `scripts/qualify-graphcoder-lane.sh` runs focused proofs and the full parallel suite. `E2E_WALL` includes seeding, assertions and cleanup, excluding builds and dependency installation. A red matrix remains a failure even below ten seconds. Cargo's target directory defaults to `target` when `CARGO_TARGET_DIR` is unset.
 
 `pty-diff-folder-move` and `pty-diff-folder-replace` keep the live diff open during native shell changes, then explicitly resume and verify the same descendant removals and additions without redispatch.

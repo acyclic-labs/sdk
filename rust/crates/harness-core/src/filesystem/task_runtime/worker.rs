@@ -249,8 +249,8 @@ where
             Ok(future) => future.await,
             Err(error) => Err(error),
         };
-        // This rejection is returned only after a model stream has been dropped
-        // or before a tool dispatch. Indeterminate native work retains its lease.
+        // This rejection is returned only after owned cancellable I/O has been
+        // dropped or before tool dispatch. Indeterminate work retains its lease.
         if matches!(
             &result,
             Err(Error::InteractionRejected(
