@@ -431,7 +431,12 @@ impl ComposerInput {
         // Share the model context's retained catalog. Rediscovering host
         // paths here would lose selected-child and authored skill sources.
         if let Some(sources) = self.files.skill_sources(&self.journal)? {
-            catalog.add_skills(sources.catalog(&workspace.path, view).await?)?;
+            let mut discovery = context::DiscoveryWork {
+                directories,
+                entries,
+                limits,
+            };
+            catalog.add_skills(sources.catalog(&workspace.path, view, &mut discovery).await?)?;
         }
         Ok(catalog)
     }

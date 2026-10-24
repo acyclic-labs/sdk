@@ -24,6 +24,7 @@
     "rust-toolchain.toml",
     "rust/crates/auth",
     "rust/crates/contract-derive",
+    "rust/crates/differential",
     "rust/crates/native-runtime",
     "rust/crates/proto-codegen",
     "rust/crates/stream",
