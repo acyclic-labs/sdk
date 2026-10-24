@@ -438,7 +438,7 @@ impl ComposerInput {
             };
             catalog.add_skills(
                 sources
-                    .catalog(&workspace.path, view, &mut discovery)
+                    .catalog(&workspace.path, view, &mut discovery)?
                     .await?,
             )?;
         }
