@@ -14,7 +14,9 @@ fn check<const OMIT_TOOLS: bool>(
     let mut right = WrappedLines::default();
     let lines = |values: &[String]| values.iter().cloned().map(Line::raw).collect::<Vec<_>>();
     left.update(&lines(answer), 0, width);
+    left.wrap_all();
     right.update(&lines(tools), 0, width);
+    right.wrap_all();
     let expected_text = answer
         .iter()
         .chain(tools)
@@ -44,35 +46,22 @@ fn check<const OMIT_TOOLS: bool>(
     } else {
         answer.join("\n").len() + usize::from(!tools.is_empty())
     };
-    let origins: Vec<_> = left
-        .ranges()
-        .iter()
-        .cloned()
-        .chain(
-            right
-                .ranges()
-                .iter()
-                .map(|range| offset + range.start..offset + range.end),
-        )
-        .collect();
     for (index, matched) in expected.iter().enumerate() {
-        search.update(
-            rows,
-            query,
-            i64::try_from(index).expect("bounded match count"),
-            Style::default(),
-        );
-        let expected_row = origins
-            .partition_point(|range| range.start <= matched.start)
-            .saturating_sub(1);
-        assert_eq!(
-            search.selected_row(rows, i64::try_from(index).expect("bounded match count")),
-            expected_row
-        );
-        assert_eq!(
-            search.position(i64::try_from(index).expect("bounded match count")),
-            index + 1
-        );
+        let selected_index = i64::try_from(index).unwrap();
+        search.update(rows, query, selected_index, Style::default());
+        let expected = if !answer.is_empty() && matched.start <= left.text().len() {
+            TranscriptAnchor {
+                part: TranscriptPart::Answer,
+                position: left.position_of(matched.start),
+            }
+        } else {
+            TranscriptAnchor {
+                part: TranscriptPart::Tools,
+                position: right.position_of(matched.start - offset),
+            }
+        };
+        assert_eq!(search.selected_anchor(rows, selected_index), Some(expected));
+        assert_eq!(search.position(selected_index), index + 1);
     }
     search.prepare(rows, 0, rows.len());
     let area = Rect::new(
@@ -131,7 +120,9 @@ fn allocation_check<const COPY: bool>() {
     let mut answer = WrappedLines::default();
     let mut tools = WrappedLines::default();
     answer.update(&[Line::raw("answer")], 0, 80);
+    answer.wrap_all();
     tools.update(&[Line::raw("output".repeat(10000))], 0, 80);
+    tools.wrap_all();
     let measured = acyclic_test_support::measure(|| {
         let rows = TranscriptRows::new(&answer, &tools);
         if COPY {
@@ -161,7 +152,9 @@ fn tool_replacement_and_reflow_invalidate_only_the_matching_cut() {
     let mut answer = WrappedLines::default();
     let mut tools = WrappedLines::default();
     answer.update(&[Line::raw("answer")], 0, 8);
+    answer.wrap_all();
     tools.update(&[Line::raw("old")], 0, 8);
+    tools.wrap_all();
     let mut search = TranscriptSearch::default();
     for (output, width, expected) in [
         ("old", 8, 0),
@@ -170,6 +163,7 @@ fn tool_replacement_and_reflow_invalidate_only_the_matching_cut() {
         ("removed", 4, 0),
     ] {
         tools.update(&[Line::raw(output)], 0, width);
+        tools.wrap_all();
         let rows = TranscriptRows::new(&answer, &tools);
         search.update(rows, "needle", 0, Style::default());
         search.prepare(rows, 0, rows.len());

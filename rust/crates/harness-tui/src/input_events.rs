@@ -38,7 +38,7 @@ impl PromptInput {
             InputEvent::Focus(false) => {
                 let effects = self.flush_chord();
                 self.editor.break_group();
-                self.dragging = false;
+                self.drag = None;
                 effects
             }
             InputEvent::Resize(_, _) | InputEvent::Focus(true) => self.flush_chord(),

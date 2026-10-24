@@ -11,7 +11,6 @@ use crate::{
     },
     wire,
 };
-use futures::StreamExt as _;
 
 fn picture(session: &ClientViews, owner: &wire::Authority) -> String {
     let mut renderer = ClientRenderer::default();
@@ -38,14 +37,13 @@ fn picture(session: &ClientViews, owner: &wire::Authority) -> String {
 }
 
 async fn apply_next(
-    source: &mut crate::task_volume::ChangeStream,
+    source: &mut crate::client::DocumentFiles,
     session: &mut ClientViews,
 ) -> Result<()> {
-    let update = tokio::time::timeout(std::time::Duration::from_secs(2), source.next())
+    let update = tokio::time::timeout(std::time::Duration::from_secs(2), source.read_change())
         .await
-        .map_err(super::super::storage)?
-        .ok_or_else(|| Error::NotFound("document update".into()))??;
-    session.query_change(update).map(|_| ())
+        .map_err(super::super::storage)??;
+    source.apply_change(update, session).map(|_| ())
 }
 
 proptest::proptest! {

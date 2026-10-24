@@ -3,7 +3,7 @@ use crate::{
     client::TaskQueryView,
     task_volume::{Channel, Component, FileKey, HeadFile, Query, TaskFile},
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, ops::Range, sync::Arc};
 
 #[derive(Default)]
 struct ToolRows {
@@ -32,6 +32,7 @@ pub(super) enum AnswerOwner {
 #[derive(Default)]
 pub(super) struct TaskRows {
     identity: Option<(Arc<Query>, Component)>,
+    pub(super) cut: u64,
     stream: StreamText,
     reasoning: StreamText,
     text: Vec<Line<'static>>,
@@ -39,11 +40,15 @@ pub(super) struct TaskRows {
     reasoning_changed: usize,
     tools: BTreeMap<(u64, Component), ToolRows>,
     fallback: Archive,
-    rows: Vec<Line<'static>>,
+    streamed: bool,
     tool_rows: Vec<Line<'static>>,
-    tools_changed: bool,
+    tool_ranges: BTreeMap<(u64, Component), Range<usize>>,
+    tool_edits: Vec<(Range<usize>, Range<usize>)>,
+    tools_full: bool,
     #[cfg(test)]
     tool_copies: usize,
+    #[cfg(test)]
+    pub(super) tool_visits: usize,
     status: Option<HeadFile>,
     state: serde_json::Value,
     completions: Vec<HeadFile>,
@@ -59,13 +64,47 @@ fn metadata(file: &HeadFile) -> Option<serde_json::Value> {
 }
 impl TaskRows {
     pub(super) fn rows(&self) -> &[Line<'static>] {
-        &self.rows
+        if self.owner == AnswerOwner::Archived {
+            &[]
+        } else if self.streamed || self.owner == AnswerOwner::Session {
+            &self.text
+        } else {
+            self.fallback.rows()
+        }
+    }
+    pub(super) fn answer_dropped(&self) -> usize {
+        if self.owner == AnswerOwner::Archived
+            || self.owner == AnswerOwner::Session && !self.streamed
+        {
+            0
+        } else if self.streamed {
+            self.stream.dropped()
+        } else {
+            self.fallback.dropped()
+        }
+    }
+    pub(super) fn reasoning_dropped(&self) -> usize {
+        self.reasoning.dropped()
+    }
+    pub(super) fn answer_append(&self) -> Option<(std::borrow::Cow<'_, str>, super::Style)> {
+        if self.owner == AnswerOwner::Archived || !self.streamed {
+            return None;
+        }
+        let (row, _, text, style) = self.stream.append_delta()?;
+        (row + 1 == self.rows().len()).then_some((text, style))
+    }
+    pub(super) fn reasoning_append(&self) -> Option<(std::borrow::Cow<'_, str>, super::Style)> {
+        let (row, _, text, style) = self.reasoning.append_delta()?;
+        (row + 1 == self.reasoning_rows.len()).then_some((text, style))
     }
     pub(super) fn tools(&self) -> &[Line<'static>] {
         &self.tool_rows
     }
-    pub(super) fn tools_changed(&self) -> bool {
-        self.tools_changed
+    pub(super) fn tools_full(&self) -> bool {
+        self.tools_full
+    }
+    pub(super) fn tool_edits(&self) -> &[(Range<usize>, Range<usize>)] {
+        &self.tool_edits
     }
     #[cfg(test)]
     pub(super) fn tool_copies(&self) -> usize {
@@ -110,12 +149,13 @@ impl TaskRows {
             let changed = if self.identity.is_some() {
                 0
             } else {
-                self.rows.len()
+                self.rows().len()
             };
             *self = Self::default();
+            self.tools_full = true;
             return changed;
         };
-        let mut changed = self.rows.len();
+        let mut changed = self.rows().len();
         if !self
             .identity
             .as_ref()
@@ -134,27 +174,59 @@ impl TaskRows {
         let details_changed = self.details != details;
         self.details = details;
         let text_changed = self.stream.update(&task, Channel::Text);
-        self.text.truncate(text_changed);
-        self.text.extend(self.stream.rows(text_changed));
+        self.stream.apply_rows(&mut self.text, text_changed);
         changed = changed.min(text_changed);
         let reasoning_changed = self.reasoning.update(&task, Channel::Reasoning);
         self.reasoning_changed = reasoning_changed;
-        self.reasoning_rows.truncate(reasoning_changed);
-        self.reasoning_rows
-            .extend(self.reasoning.rows(reasoning_changed));
-        let status = task.files().find(|file| {
-            matches!(
-                file.key,
-                FileKey::Task {
-                    file: TaskFile::Status,
-                    ..
-                }
-            )
+        self.reasoning
+            .apply_rows(&mut self.reasoning_rows, reasoning_changed);
+        let status = task.file(&FileKey::Task {
+            task: task.task.clone(),
+            file: TaskFile::Status,
         });
         if self.status.as_ref() != status {
             self.state = status.and_then(metadata).unwrap_or_default();
             self.status = status.cloned();
         }
+        if task.changes_since(self.cut).is_none_or(|mut changes| {
+            changes.any(|key| {
+                matches!(
+                    key,
+                    FileKey::Task {
+                        file: TaskFile::Completion(_),
+                        ..
+                    }
+                )
+            })
+        }) {
+            self.update_usage(&task);
+        }
+        self.update_tools(&task, details_changed);
+        self.cut = task.cursor.position;
+        let streamed = self.stream.has_text();
+        // Command text is a fallback only when the canonical task has no chunks
+        // and no followed session transcript already projects those outputs.
+        let fallback = if !streamed && owner == AnswerOwner::Task {
+            // This view is backed by the same selected file index, never a second transcript.
+            self.fallback.update(Some((
+                task.selection(),
+                crate::client::OutputOwner::Task(task.task.clone()),
+            )))
+        } else {
+            self.fallback.update(None)
+        };
+        if !streamed {
+            changed = changed.min(fallback);
+        }
+        self.streamed = streamed;
+        if owner == AnswerOwner::Archived {
+            return 0;
+        }
+        // Answer changes never touch the independently cached tool tail.
+        changed = changed.min(self.rows().len());
+        changed
+    }
+    fn update_usage(&mut self, task: &TaskQueryView<'_>) {
         let completions: Vec<_> = task.completions().map(|(_, file)| file).collect();
         if !self.completions.iter().eq(completions.iter().copied()) {
             self.usage = serde_json::Value::Null;
@@ -166,12 +238,48 @@ impl TaskRows {
             }
             self.completions = completions.into_iter().cloned().collect();
         }
-        let mut retained = std::collections::BTreeSet::new();
-        let mut tool_changed = false;
-        for tool in task.tools() {
-            let key = (tool.turn, tool.call.clone());
-            retained.insert(key.clone());
-            let cached = self.tools.entry(key).or_default();
+    }
+
+    fn update_tools(&mut self, task: &TaskQueryView<'_>, details_changed: bool) {
+        let changes = task.changes_since(self.cut);
+        let full = self.cut == 0 || changes.is_none() || details_changed;
+        self.tools_full = full;
+        self.tool_edits.clear();
+        let keys: std::collections::BTreeSet<_> = if full {
+            task.tools()
+                .map(|tool| (tool.turn, tool.call.clone()))
+                .collect()
+        } else {
+            changes
+                .into_iter()
+                .flatten()
+                .filter_map(|key| match key {
+                    FileKey::Task {
+                        file: TaskFile::Tool { turn, call, .. },
+                        ..
+                    } => Some((*turn, call.clone())),
+                    _ => None,
+                })
+                .collect()
+        };
+        if full {
+            self.tools.retain(|key, _| keys.contains(key));
+        }
+        let mut changed = Vec::new();
+        for (turn, call) in &keys {
+            #[cfg(test)]
+            {
+                self.tool_visits += 1;
+            }
+            let tool = task.tool(*turn, call);
+            let key = (*turn, call.clone());
+            if !tool.exists() {
+                if self.tools.remove(&key).is_some() {
+                    changed.push(key);
+                }
+                continue;
+            }
+            let cached = self.tools.entry(key.clone()).or_default();
             let stdout = cached.stdout.update_tool(&tool, false, 20);
             let stderr = cached
                 .stderr
@@ -200,7 +308,7 @@ impl TaskRows {
                 } else {
                     cached.rows.truncate(1);
                 }
-                if details {
+                if self.details {
                     if streamed {
                         cached
                             .rows
@@ -212,51 +320,74 @@ impl TaskRows {
                 cached.request = request.cloned();
                 cached.result = result.cloned();
                 cached.streamed = streamed;
-                tool_changed = true;
+                changed.push(key);
             }
         }
-        let previous = self.tools.len();
-        self.tools.retain(|key, _| retained.contains(key));
-        tool_changed |= previous != self.tools.len();
-        let streamed = task.text().any(|text| text.channel == Channel::Text);
-        // Command text is a fallback only when the canonical task has no chunks
-        // and no followed session transcript already projects those outputs.
-        let fallback = if !streamed && owner == AnswerOwner::Task {
-            // This view is backed by the same selected file index, never a second transcript.
-            self.fallback.update(Some((
-                task.selection(),
-                crate::client::OutputOwner::Task(task.task.clone()),
-            )))
-        } else {
-            self.fallback.update(None)
-        };
-        if !streamed {
-            changed = changed.min(fallback);
+        self.splice_tools(&changed, full);
+    }
+
+    fn splice_tools(&mut self, changed: &[(u64, Component)], full: bool) {
+        if !full && changed.is_empty() {
+            return;
         }
-        let text = if streamed || owner != AnswerOwner::Task {
-            &self.text
-        } else {
-            self.fallback.rows()
-        };
-        self.tools_changed = tool_changed;
-        if tool_changed {
+        if full {
             self.tool_rows.clear();
             for tool in self.tools.values() {
+                self.tool_rows.extend_from_slice(&tool.rows);
                 #[cfg(test)]
                 {
                     self.tool_copies += tool.rows.len();
                 }
-                self.tool_rows.extend_from_slice(&tool.rows);
+            }
+        } else {
+            // Descending edits keep every old range valid until it is applied.
+            for key in changed.iter().rev() {
+                let old = self.tool_ranges.get(key).cloned().unwrap_or_else(|| {
+                    let at = self
+                        .tool_ranges
+                        .range(..key.clone())
+                        .next_back()
+                        .map_or(0, |(_, range)| range.end);
+                    at..at
+                });
+                let rows = self
+                    .tools
+                    .get(key)
+                    .map_or(&[][..], |tool| tool.rows.as_slice());
+                #[cfg(test)]
+                {
+                    self.tool_copies += rows.len();
+                }
+                self.tool_rows.splice(old.clone(), rows.iter().cloned());
+                let shift = isize::try_from(rows.len()).unwrap_or(isize::MAX)
+                    - isize::try_from(old.len()).unwrap_or(isize::MAX);
+                self.tool_ranges.remove(key);
+                for (_, range) in self
+                    .tool_ranges
+                    .range_mut((std::ops::Bound::Excluded(key), std::ops::Bound::Unbounded))
+                {
+                    *range = range.start.saturating_add_signed(shift)
+                        ..range.end.saturating_add_signed(shift);
+                }
+                if !rows.is_empty() {
+                    self.tool_ranges
+                        .insert(key.clone(), old.start..old.start + rows.len());
+                }
+                self.tool_edits.push((old, 0..0));
             }
         }
-        if owner == AnswerOwner::Archived {
-            self.rows.clear();
-            return 0;
+        // Only offsets are rebased; unchanged styled rows and layouts survive.
+        if full {
+            self.tool_ranges.clear();
+            let mut at = 0;
+            for (key, tool) in &self.tools {
+                self.tool_ranges
+                    .insert(key.clone(), at..at + tool.rows.len());
+                at += tool.rows.len();
+            }
         }
-        // Answer changes never touch the independently cached tool tail.
-        changed = changed.min(text.len());
-        self.rows.truncate(changed);
-        self.rows.extend_from_slice(&text[changed..]);
-        changed
+        for (key, (_, new)) in changed.iter().rev().zip(&mut self.tool_edits) {
+            *new = self.tool_ranges.get(key).cloned().unwrap_or(0..0);
+        }
     }
 }

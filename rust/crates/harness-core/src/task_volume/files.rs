@@ -135,6 +135,14 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
 }
 
 impl<P: StreamProvider + ?Sized> super::FileQuerySource for TaskFiles<P> {
+    fn retain(&self) -> Arc<dyn super::FileQuerySource> {
+        Arc::new(Self {
+            inner: self.inner.clone(),
+            volume: self.volume.clone(),
+            maximum_bytes: self.maximum_bytes,
+        })
+    }
+
     fn observe_files(
         &self,
         query: Query,

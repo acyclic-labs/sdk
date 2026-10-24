@@ -3,7 +3,7 @@ use crate::{
     client::{FileQueryView, OutputOwner},
     task_volume::{FileKey, HeadFile, Query},
 };
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
 
 #[derive(Default)]
 pub(super) struct Archive {
@@ -14,6 +14,8 @@ pub(super) struct Archive {
     stream: StreamText,
     rows: Vec<Line<'static>>,
     settled: usize,
+    blocks: VecDeque<(FileKey, usize)>,
+    dropped: usize,
     pending: Vec<(HeadFile, Vec<Line<'static>>)>,
 }
 
@@ -50,6 +52,9 @@ impl Archive {
     pub(super) fn after(&self) -> u64 {
         self.after
     }
+    pub(super) fn dropped(&self) -> usize {
+        self.dropped
+    }
     pub(super) fn rows(&self) -> &[Line<'static>] {
         &self.rows
     }
@@ -57,7 +62,35 @@ impl Archive {
     pub(super) fn work(&self) -> usize {
         self.stream.work
     }
+    fn discard_prefix(&mut self, files: &FileQueryView) -> bool {
+        if self
+            .first
+            .as_ref()
+            .is_some_and(|key| !files.files().contains_key(key))
+        {
+            let mut through = 0;
+            while self
+                .blocks
+                .front()
+                .is_some_and(|(key, _)| !files.files().contains_key(key))
+            {
+                if let Some((_, end)) = self.blocks.pop_front() {
+                    through = end;
+                }
+            }
+            self.dropped = self.stream.discard_rows(through);
+            self.rows.drain(..self.dropped.min(self.rows.len()));
+            self.settled = self.settled.saturating_sub(self.dropped);
+            for (_, end) in &mut self.blocks {
+                *end = end.saturating_sub(self.dropped);
+            }
+            self.first = self.blocks.front().map(|(key, _)| key.clone());
+            return true;
+        }
+        false
+    }
     pub(super) fn update(&mut self, source: Option<(&FileQueryView, OutputOwner)>) -> usize {
+        self.dropped = 0;
         let Some((files, owner)) = source else {
             if self.source.is_some() {
                 *self = Self::new(self.after);
@@ -72,10 +105,6 @@ impl Archive {
             .source
             .as_ref()
             .is_some_and(|source| Arc::ptr_eq(source, files.source()))
-            || self
-                .first
-                .as_ref()
-                .is_some_and(|key| !files.files().contains_key(key))
         {
             *self = Self {
                 source: Some(files.source().clone()),
@@ -83,6 +112,10 @@ impl Archive {
                 ..Self::default()
             };
             changed = 0;
+            dirty = true;
+        }
+        if self.discard_prefix(files) {
+            changed = self.settled;
             dirty = true;
         }
         let last = self.last.clone();
@@ -106,11 +139,14 @@ impl Archive {
             if let Some(text) = files.command_prompt(key) {
                 changed = changed.min(self.stream.literal(prompt_rows(&text)));
             }
-            let Some(text) = &row.text else {
-                continue;
-            };
+            if let Some(text) = &row.text {
+                changed = changed.min(self.stream.boundary());
+                changed = changed.min(self.stream.push(text.as_bytes()));
+            }
+            // Each outcome is an independent Markdown entry. Sealing it here
+            // makes its rendered prefix disposable without replaying successors.
             changed = changed.min(self.stream.boundary());
-            changed = changed.min(self.stream.push(text.as_bytes()));
+            self.blocks.push_back((key.clone(), self.stream.len()));
         }
         let same_pending =
             self.pending.len() == files.pending_prompts(&owner).count()

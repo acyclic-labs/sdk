@@ -48,12 +48,10 @@ impl DriverSessionResources {
         owned: bool,
     ) -> Result<Arc<Self>, NativeMountError> {
         let probe = MountProbe::new(destination, work)?;
-        const PROBES: u64 = control_visits(DISKUTIL_VISIBILITY_TIMEOUT, STOP_POLL_INTERVAL) + 3;
-        const READS: u64 = PROBES
-            + 2
-            + control_visits(DIRECT_UNMOUNT_TIMEOUT, STOP_POLL_INTERVAL)
-            + control_visits(DISKUTIL_UNMOUNT_TIMEOUT, STOP_POLL_INTERVAL)
-            + control_visits(DISKUTIL_VISIBILITY_TIMEOUT, STOP_POLL_INTERVAL)
+        // Both the stopping caller and the provider's retirement owner can
+        // observe the same accepted detach before its completion wakes them.
+        const READS: u64 = 5
+            + 2 * control_visits(DIRECT_UNMOUNT_TIMEOUT, STOP_POLL_INTERVAL)
             + control_visits(MOUNT_LOOP_EXIT_TIMEOUT, STOP_POLL_INTERVAL);
         let credit = work.reserve_work(WorkCounters {
             backend_read_operations: READS,
@@ -76,7 +74,6 @@ impl DriverSessionResources {
         }
         let control = DarwinRecoveryControl {
             direct: Some(DirectDetach::new(Arc::clone(&destination), work)?),
-            diskutil: Some(Diskutil::prepare(work)?),
             ..DarwinRecoveryControl::default()
         };
         let cleanup = work.reserve_work(WorkCounters {
@@ -89,7 +86,7 @@ impl DriverSessionResources {
             1,
             WorkCounters::UNCHARGED,
         )?;
-        Ok(Arc::new(Self {
+        let owner = Arc::new(Self {
             state: Mutex::new(LoopState {
                 resources: Some((context, destination, pointers)),
                 mounted: false,
@@ -105,7 +102,11 @@ impl DriverSessionResources {
             native: Mutex::new(DarwinOwned::empty(0)),
             sdk_credit: cleanup,
             _allocation: allocation,
-        }))
+        });
+        if let Some(task) = &mut owner.state().control.direct {
+            task.wake = Arc::downgrade(&owner);
+        }
+        Ok(owner)
     }
 
     pub(super) fn context(&self) -> Result<Arc<DarwinMountContext>, NativeMountError> {

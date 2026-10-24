@@ -62,10 +62,10 @@ async fn exercise() -> Result<()> {
             .await
             .unwrap(),
     );
-    super::status::status(&streams, "swarm/a", false).await;
     super::status::member(&parent, "a").await;
-    super::status::status(&streams, "swarm/b", false).await;
+    super::status::status(&streams, "swarm/a", false).await;
     super::status::member(&parent, "b").await;
+    super::status::status(&streams, "swarm/b", false).await;
     let config = TaskVolume::open(Arc::new(MemoryStream::default()), path("client/config"))
         .await
         .unwrap();
@@ -119,7 +119,7 @@ async fn exercise() -> Result<()> {
                     }
                     "status"
                 }
-                SwarmChange::Watermark { .. } => "watermark",
+                SwarmChange::Watermark { .. } | SwarmChange::StatusWatermark(_) => "watermark",
             };
             notices.unbounded_send(kind).unwrap();
             Ok(())
@@ -235,10 +235,10 @@ fn pending_snapshot_cannot_stall_unfollow_status_or_cancellation() {
                 .await
                 .unwrap(),
         );
-        super::status::status(&streams, "swarm/a", false).await;
         super::status::member(&parent, "a").await;
-        super::status::status(&streams, "swarm/b", false).await;
+        super::status::status(&streams, "swarm/a", false).await;
         super::status::member(&parent, "b").await;
+        super::status::status(&streams, "swarm/b", false).await;
         let config = TaskVolume::open(Arc::new(MemoryStream::default()), path("client/config"))
             .await
             .unwrap();

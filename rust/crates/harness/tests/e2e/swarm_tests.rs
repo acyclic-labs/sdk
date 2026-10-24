@@ -27,7 +27,7 @@ fn small(agents: usize, before: String, gap: String, live: String, promote: bool
         expect: Expectations {
             text: format!("{before}{gap}{live}{gap}{live}"),
             wire: serde_json::json!({
-            "sessions":1,"children":1,"actor_channels":0,"status_follows":agents,"content_follows":snapshots,
+            "sessions":1,"children":1,"actor_channels":0,"status_follows":1,"content_follows":snapshots,
             "removed":usize::from(!promote),"peak_full":2,"snapshots":snapshots,"peak_heads":2,
             "retained_full":2,"visible_updates":6,"fold_items":24,"full_records":8,"statuses":agents,"attention":agents.div_ceil(2)*2}),
         },

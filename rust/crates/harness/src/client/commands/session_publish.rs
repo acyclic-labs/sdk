@@ -101,7 +101,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 "command publication exceeds byte bound".into(),
             ));
         }
-        let before = self.files.get(&file.key).cloned();
+        let before = self.files.get(&file.key).map(|cached| cached.value.clone());
         if create_only && before.is_some() {
             if RETRY && before.as_ref() == Some(&file) {
                 return Ok(());
@@ -129,12 +129,17 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                     while self.generation.position < generation.position {
                         self.advance().await?;
                     }
-                    if RETRY && create_only && self.files.get(&file.key) == Some(&file) {
+                    if RETRY
+                        && create_only
+                        && self.files.get(&file.key).map(|cached| &cached.value) == Some(&file)
+                    {
                         return Ok(());
                     }
                     if !RETRY
                         || self.generation == expected
-                        || (MATCH_KEY && self.files.get(&file.key) != before.as_ref())
+                        || (MATCH_KEY
+                            && self.files.get(&file.key).map(|cached| &cached.value)
+                                != before.as_ref())
                     {
                         return Err(Error::Conflict(
                             "command query advanced; retry from the new cut".into(),

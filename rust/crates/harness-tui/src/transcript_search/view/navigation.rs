@@ -43,10 +43,7 @@ impl TranscriptSearch {
         }
         let backwards = self.steps < 0;
         let len = projection.folded_len();
-        let Some(folded) = projection
-            .source_row(anchor.start)
-            .and_then(|row| projection.folded_row(row))
-        else {
+        let Some(folded) = projection.folded_at_source(anchor.start) else {
             return;
         };
         let probe = self.navigation.get_or_insert(Probe {

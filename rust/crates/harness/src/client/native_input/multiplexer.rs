@@ -52,12 +52,15 @@ async fn model<const BROKEN: bool>(motions: usize) {
     let mut completions = CompletionFiles::observe(volume.as_ref(), &mut prompt, None, 128)
         .await
         .unwrap();
-    let mut observed = volume.observe(Query::Inputs, None, 128).await.unwrap();
-    client
-        .views_mut()
-        .query_snapshot(Query::Inputs, observed.snapshot.take().unwrap(), 128, 65536)
-        .unwrap();
-    let mut documents = observed.changes;
+    let documents = crate::client::DocumentFiles::observe(
+        volume.as_ref(),
+        client.views_mut(),
+        &[(Query::Inputs, 128)],
+        65536,
+    )
+    .await
+    .unwrap();
+    let mut documents = documents;
     let mut renderer = ClientRenderer::default();
     let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
     let mut draws = 0;
@@ -97,9 +100,26 @@ async fn model<const BROKEN: bool>(motions: usize) {
     input_burst(&mut batch, 8, &mut effects, |event| {
         prompt.event(event, Rect::new(0, 19, 80, 1), &mut Viewport::default(), 0)
     });
-    file_tui_inputs(&mut commands, &NoFiles, effects.drain(..), 8, 10000)
-        .await
-        .unwrap();
+    file_tui_inputs(
+        &mut commands,
+        &NoFiles,
+        effects.iter().cloned(),
+        8,
+        10000,
+        |from, rows| {
+            Some(crate::tui::TranscriptAnchor {
+                position: crate::tui::RowPosition {
+                    line: from
+                        .map_or(10000, |from| from.position.line)
+                        .saturating_add_signed(rows),
+                    row: 0,
+                },
+                ..Default::default()
+            })
+        },
+    )
+    .await
+    .unwrap();
     render(&prompt);
     loop {
         let ready = tokio::task::unconstrained(next_event::<_, BROKEN, true>(
@@ -124,7 +144,12 @@ async fn model<const BROKEN: bool>(motions: usize) {
     // Command display selects outcomes, so layout updates are checkpoints in
     // every external follow. The input publication has already drawn once.
     assert_eq!(draws, 1, "checkpoint-only wakes must not draw");
-    assert_eq!(crate::client::tui_scroll(&commands).unwrap(), motions * 3);
+    assert_eq!(
+        crate::client::tui_anchor(&commands)
+            .unwrap()
+            .map(|anchor| anchor.position.line),
+        Some(10000 - motions * 3)
+    );
     // Matching the broad command query is insufficient: another task's UI
     // file is rejected by its fold and must not request a frame either.
     let cut = volume.snapshot(&Query::Root, 128).await.unwrap().generation;

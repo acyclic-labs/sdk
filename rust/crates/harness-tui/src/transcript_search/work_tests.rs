@@ -10,6 +10,7 @@ fn projection(text: &str) -> WrappedLines {
         0,
         80,
     );
+    projection.wrap_all();
     projection
 }
 fn finish(search: &mut TranscriptSearch, projection: &WrappedLines) {
@@ -83,7 +84,7 @@ proptest! {
         search.prepare(&projection,0,1);
         WORK.with(|work|work.set((0,0)));
         while search.pending() {search.advance(&projection,budget);}
-        prop_assert!(WORK.with(|work|work.get().1)<=10*(projection.index.text.len()+search.needle.len()));
+        prop_assert!(WORK.with(|work|work.get().1)<=10*(projection.search_index().text.len()+search.needle.len()));
         prop_assert_eq!(&search.matches,&crate::transcript_matches(&text,&query));
         let refined=format!("{query}s");
         search.update(&projection,&refined,0,Style::default());
@@ -105,6 +106,7 @@ fn next_key_cancels_partial_count_and_transcript_changes_refresh_the_index() {
         std::slice::from_ref(&(20000..20001))
     );
     projection.update(&[Line::raw("Straße STRASSE")], 0, 80);
+    projection.wrap_all();
     search.update(&projection, "strasse", 0, Style::default());
     finish(&mut search, &projection);
     assert_eq!(search.matches, [0..7, 8..15]);
@@ -156,12 +158,16 @@ fn indexed_navigation_covers_line_terminators_and_changed_suffixes() {
     let mut search = TranscriptSearch::default();
     search.update(&projection, "\n", 0, Style::default());
     finish(&mut search, &projection);
-    assert_eq!(search.selected_row(&projection, 1), 1);
+    assert_eq!(
+        crate::transcript_search::tests::selected_row(&search, &projection, 1),
+        1
+    );
     projection.update(
         &[Line::raw("first"), Line::raw("second"), Line::raw("third")],
         0,
         80,
     );
+    projection.wrap_all();
     projection.update(
         &[
             Line::raw("first"),
@@ -171,9 +177,13 @@ fn indexed_navigation_covers_line_terminators_and_changed_suffixes() {
         2,
         80,
     );
+    projection.wrap_all();
     search.update(&projection, "\n", 0, Style::default());
     finish(&mut search, &projection);
-    assert_eq!(search.selected_row(&projection, 2), 2);
+    assert_eq!(
+        crate::transcript_search::tests::selected_row(&search, &projection, 2),
+        2
+    );
 }
 
 #[test]
@@ -185,7 +195,7 @@ fn background_prefix_rescan_negative_control() {
         scan((&projection).into(), "b", &[0], 0..end, true, |_| {});
     }
     assert!(
-        WORK.with(|work| work.get().1) <= 10 * projection.index.text.len(),
+        WORK.with(|work| work.get().1) <= 10 * projection.search_index().text.len(),
         "background must not rescan prefixes"
     );
 }
@@ -195,12 +205,14 @@ fn resize_keeps_completed_matches_but_repaints_the_new_viewport() {
     let source = [Line::raw("one one".repeat(1000))];
     let mut projection = WrappedLines::default();
     projection.update(&source, 0, 80);
+    projection.wrap_all();
     let mut search = TranscriptSearch::default();
     search.update(&projection, "one", 0, Style::default());
     finish(&mut search, &projection);
     let count = search.count();
     let generation = search.generation;
     projection.update(&source, source.len(), 40);
+    projection.wrap_all();
     search.update(&projection, "one", 0, Style::default());
     search.prepare(&projection, 1, 10);
     assert!(!search.pending());
@@ -213,7 +225,8 @@ fn resize_keeps_completed_matches_but_repaints_the_new_viewport() {
 fn appended_sources_index_the_preceding_separator() {
     let mut projection = projection("first");
     projection.update(&[Line::raw("first"), Line::raw("second")], 1, 80);
-    assert_eq!(projection.index.text, "first\nsecond");
+    projection.wrap_all();
+    assert_eq!(projection.search_index().text, "first\nsecond");
     let mut search = TranscriptSearch::default();
     search.update(&projection, "first\nsecond", 0, Style::default());
     finish(&mut search, &projection);
@@ -283,7 +296,7 @@ fn stable_selection_model<const IDENTITY: bool>(size: usize, initial: usize, del
     search.update(&projection, "a", delta, Style::default());
     let selected = search.selected.clone().expect("viewport match");
     for _ in 0..12 {
-        let first = search.selected_row(&projection, delta);
+        let first = crate::transcript_search::tests::selected_row(&search, &projection, delta);
         search.prepare(&projection, first, 10);
         if !IDENTITY {
             // The old implementation reapplied the index to the rebuilt local list.
@@ -388,11 +401,12 @@ fn resize_navigation_model<const LOCAL_WRAP: bool, const REPLAY_INITIAL: bool>(
         if let Some((width, rows)) = resize {
             height = usize::from(rows);
             projection.update(&source, source.len(), width);
+            projection.wrap_all();
             search.update(&projection, "needle", index, Style::default());
         }
         for _ in 0..=frames {
             let first = if expected.is_some() {
-                search.selected_row(&projection, index)
+                crate::transcript_search::tests::selected_row(&search, &projection, index)
             } else {
                 0
             };
@@ -564,7 +578,12 @@ fn visible_reference(
         .iter()
         .enumerate()
         .filter(|(_, range)| {
-            (first..first + height).contains(projection.source_rows.get(range.start).unwrap())
+            (first..first + height).contains(
+                &projection
+                    .ranges()
+                    .partition_point(|row| row.start <= range.start)
+                    .saturating_sub(1),
+            )
         })
         .map(|(rank, _)| rank)
         .collect();

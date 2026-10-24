@@ -278,7 +278,17 @@ pub struct TaskVolume<P: ?Sized> {
     provider: Arc<P>,
     path: StreamPath,
     // Lock order: index only; no provider I/O or stream poll holds this lock.
-    index: Mutex<Index>,
+    index: Arc<Mutex<Index>>,
+}
+
+impl<P: ?Sized> Clone for TaskVolume<P> {
+    fn clone(&self) -> Self {
+        Self {
+            provider: self.provider.clone(),
+            path: self.path.clone(),
+            index: self.index.clone(),
+        }
+    }
 }
 
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
@@ -379,13 +389,13 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         let volume = Self {
             provider,
             path,
-            index: Mutex::new(Index {
+            index: Arc::new(Mutex::new(Index {
                 volume: scope,
                 epoch: header.epoch,
                 next: 1,
                 commit: record.commit_id,
                 ..Index::default()
-            }),
+            })),
         };
         volume.refresh().await?;
         Ok(volume)

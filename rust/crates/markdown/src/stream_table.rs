@@ -1,6 +1,7 @@
 use super::*;
 use table::{Table, border};
 
+#[cfg_attr(test, derive(Clone))]
 pub(super) struct Stream {
     parsed: usize,
     header: String,

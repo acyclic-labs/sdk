@@ -12,7 +12,6 @@ use acyclic_stream::{
 };
 use futures::{FutureExt as _, channel::oneshot};
 use js_sys::{Array, Uint8Array};
-use prost::Message as _;
 use serde::Serialize as _;
 use std::sync::Arc;
 use wasm_bindgen_test::wasm_bindgen_test;
@@ -320,20 +319,18 @@ async fn exercise(
     )
     .await;
     provider
-        .append(acyclic_stream::AppendRequest {
-            path: path("swarm/a/status"),
-            records: vec![
+        .append(
+            acyclic_harness::client::status_publication(
+                &path("swarm"),
+                &path("swarm/a"),
                 wire::SessionLatestValue {
                     key: b"status".to_vec().into(),
                     value: b"blocked".to_vec().into(),
                     attention: true,
-                }
-                .encode_to_vec()
-                .into(),
-            ],
-            if_tail: None,
-            idempotency_key: None,
-        })
+                },
+            )
+            .unwrap(),
+        )
         .await
         .unwrap();
     let config = TaskVolume::open(Arc::new(MemoryStream::default()), path("config"))

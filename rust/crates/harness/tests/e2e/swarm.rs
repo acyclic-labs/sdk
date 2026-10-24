@@ -51,7 +51,6 @@ async fn run_raw(case: SwarmCase, fault: Fault, paced: bool) -> TestResult<serde
             .await?,
         );
         publish::chunk(&volume, 1, &case.turns[0][0]).await?;
-        publish::publish_status(&provider, id, publish::status(0, "idle", 1), false).await?;
         let status = acyclic_harness::task_volume::ChildStatus {
             task: acyclic_harness::TaskId::from_bytes([1; 16]),
             state: acyclic_harness::task_volume::ChildState::Running,
@@ -69,6 +68,7 @@ async fn run_raw(case: SwarmCase, fault: Fault, paced: bool) -> TestResult<serde
                 ),
             )
             .await?;
+        publish::publish_status(&provider, id, publish::status(0, "idle", 1), false).await?;
         volumes.push(volume);
     }
     let seeded = started.elapsed();

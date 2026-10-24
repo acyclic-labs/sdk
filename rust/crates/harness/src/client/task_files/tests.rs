@@ -6,6 +6,7 @@ use crate::{
 use acyclic_stream::{MemoryStream, StreamPath};
 use proptest::prelude::*;
 use std::sync::Arc;
+mod resume;
 fn selection(client: &TaskFileClient) -> &super::super::FileQueryView {
     client.views().selection(&client.task_selection).unwrap()
 }

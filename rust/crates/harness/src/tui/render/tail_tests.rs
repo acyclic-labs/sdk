@@ -4,17 +4,17 @@ use crate::task_volume::{
 };
 use proptest::prelude::*;
 
-const TASK: &str = "00000000-0000-0000-0000-000000000001";
+pub(super) const TASK: &str = "00000000-0000-0000-0000-000000000001";
 const SESSION: &str = "00000000-0000-0000-0000-000000000002";
 
-fn owner() -> wire::Authority {
+pub(super) fn owner() -> wire::Authority {
     wire::Authority {
         kind: wire::AggregateKind::Task as i32,
         id: TASK.into(),
     }
 }
 
-fn put(views: &mut ClientViews, path: &str, bytes: Vec<u8>, channel: Option<Channel>) {
+pub(super) fn put(views: &mut ClientViews, path: &str, bytes: Vec<u8>, channel: Option<Channel>) {
     let mut cursor = views
         .selections()
         .find(|(_, view)| *view.query() == Query::Root)
@@ -41,7 +41,7 @@ fn put(views: &mut ClientViews, path: &str, bytes: Vec<u8>, channel: Option<Chan
         .unwrap();
 }
 
-fn fixture(tools: usize) -> ClientViews {
+pub(super) fn fixture(tools: usize) -> ClientViews {
     let mut views = crate::test_support::empty_client_views();
     for index in 0..tools {
         let base = format!(".tasks/{TASK}/turns/0/tools/call{index:03}");
@@ -64,7 +64,7 @@ fn fixture(tools: usize) -> ClientViews {
     views
 }
 
-fn answer(views: &mut ClientViews, sequence: usize) {
+pub(super) fn answer(views: &mut ClientViews, sequence: usize) {
     put(
         views,
         &format!(".tasks/{TASK}/turns/0/chunks/{sequence}"),
@@ -191,7 +191,7 @@ fn streaming(tools: usize, updates: usize, broken: bool) {
                 ..Default::default()
             };
             renderer.update(&views, &owner());
-            renderer.wrap_tools(80);
+            renderer.wrapped_tools.reflow(80);
             let tail = renderer.screen().tools.as_ptr().addr();
             let wrapped_tail = renderer.wrapped_tools.rows().as_ptr().addr();
             let copies = renderer.task.tool_copies();
@@ -201,7 +201,7 @@ fn streaming(tools: usize, updates: usize, broken: bool) {
                 renderer.update(&views, &owner());
                 let mut extra = 0;
                 let allocation = acyclic_test_support::measure(|| {
-                    renderer.wrap_tools(80);
+                    renderer.wrapped_tools.reflow(80);
                     if broken {
                         // Former TaskRows flatten followed by the outer copy.
                         let task = renderer.task.tools().to_vec();
@@ -261,4 +261,83 @@ fn hide_whole_task_negative_control() {
 fn recopied_tool_tail_negative_control() {
     streaming(32, 4, false);
     assert!(std::panic::catch_unwind(|| streaming(32, 4, true)).is_err());
+}
+#[cfg(feature = "test-support")]
+fn open_line_cost<const REPLACE: bool>(bytes: usize, tools: usize) -> (u64, u64, u128) {
+    let mut views = fixture(tools);
+    put(
+        &mut views,
+        &format!(".tasks/{TASK}/turns/0/chunks/0"),
+        "x".repeat(bytes).into_bytes(),
+        Some(Channel::Text),
+    );
+    let mut renderer = ClientRenderer::default();
+    renderer.update(&views, &owner());
+    renderer.wrapped_transcript.reflow(80);
+    renderer
+        .wrapped_transcript
+        .view(super::super::Top::Tail, 10);
+    answer(&mut views, 1);
+    super::super::WrappedLines::take_work();
+    let start = std::time::Instant::now();
+    let allocated = acyclic_test_support::measure(|| {
+        renderer.update(&views, &owner());
+        if REPLACE {
+            renderer
+                .wrapped_transcript
+                .replace_parts(&[renderer.archive.rows(), renderer.task.rows()], 0);
+        }
+        renderer
+            .wrapped_transcript
+            .view(super::super::Top::Tail, 10);
+    });
+    let elapsed = start.elapsed().as_micros();
+    let work = super::super::WrappedLines::take_work();
+    assert!(
+        work.1 <= 160,
+        "renderer append must lay out only the tail: {work:?}"
+    );
+    let mut markdown = Markdown::default();
+    markdown.push(&"x".repeat(bytes + 1));
+    let source: Vec<_> = markdown.lines().iter().map(line).collect();
+    let mut eager = super::super::WrappedLines::default();
+    eager.update(&source, 0, 80);
+    eager.wrap_all();
+    eager.view(super::super::Top::Tail, 10);
+    assert_eq!(renderer.wrapped_transcript.shown(), eager.shown());
+    (allocated.count_total, allocated.bytes_total, elapsed)
+}
+
+#[test]
+#[cfg(feature = "test-support")]
+fn renderer_open_line_append_has_bounded_layout_work() {
+    for bytes in [1000, 10000, 100000] {
+        open_line_cost::<false>(bytes, 0);
+    }
+}
+
+#[test]
+#[cfg(feature = "test-support")]
+#[should_panic(expected = "renderer append must lay out only the tail")]
+fn negative_control_renderer_replacing_a_line_rebuilds_its_prefix() {
+    open_line_cost::<true>(10000, 0);
+}
+
+#[test]
+#[cfg(feature = "test-support")]
+#[ignore = "manual renderer incremental append measurement"]
+fn renderer_append_measurement() {
+    for (bytes, tools) in [
+        (1000, 0),
+        (10000, 0),
+        (100000, 0),
+        (1000, 8),
+        (1000, 64),
+        (1000, 128),
+    ] {
+        let (allocations, allocated_bytes, elapsed_us) = open_line_cost::<false>(bytes, tools);
+        eprintln!(
+            "CLIENT_RENDERER_AFTER source_bytes={bytes} tools={tools} elapsed_us={elapsed_us} allocations={allocations} allocated_bytes={allocated_bytes}"
+        );
+    }
 }

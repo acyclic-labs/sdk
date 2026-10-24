@@ -62,7 +62,7 @@ proptest::proptest! {
                     proptest::prop_assert_eq!(painted(&input), before);
                     continue;
                 }
-                let mut change = ready.expect("an accepted in-memory publication must be immediately observable").unwrap();
+                let acyclic_harness::client::FileUpdate::Change(mut change) = ready.expect("an accepted in-memory publication must be immediately observable").unwrap() else { panic!("unexpected reset") };
                 if !primary {
                     change.files.push(change.file.take().unwrap());
                 }
@@ -71,7 +71,7 @@ proptest::proptest! {
                 change.files.push(if malformed { Write::new(extra.clone(), b"[".to_vec()) } else { valid.clone() });
                 let accepted = change.cursor.clone();
                 if malformed {
-                    proptest::prop_assert!(files.apply_change(change, &mut input).is_err());
+                    proptest::prop_assert!(files.apply_change(acyclic_harness::client::FileUpdate::Change(change), &mut input).is_err());
                     proptest::prop_assert_eq!(painted(&input), before);
                     proptest::prop_assert_eq!(&files.cursor, &cursor);
                     change = acyclic_harness::task_volume::Change {
@@ -81,7 +81,7 @@ proptest::proptest! {
                         cursor: accepted.clone(),
                     };
                 }
-                files.apply_change(change, &mut input).unwrap();
+                files.apply_change(acyclic_harness::client::FileUpdate::Change(change), &mut input).unwrap();
                 proptest::prop_assert_eq!(&files.cursor, &accepted);
                 proptest::prop_assert_ne!(&files.cursor, &cursor);
                 old_present &= !remove;

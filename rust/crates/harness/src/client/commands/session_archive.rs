@@ -1,26 +1,23 @@
 use super::*;
 
 impl<P: StreamProvider + ?Sized> CommandSession<P> {
-    pub(in crate::client) async fn observe_view(
+    pub(in crate::client) fn view_source(
         &self,
-        total: crate::client::command_output::follow::DisplayWindowBudget,
-    ) -> Result<(files::Query, files::Observation)> {
+    ) -> Result<(files::Query, Arc<dyn files::FileQuerySource>)> {
         let query = files::Query::CommandSession {
             session: component(self.session.to_string())?,
             recent: u32::try_from((self.maximum_files / 4).max(1))
                 .map_err(|error| Error::Invalid(error.to_string()))?,
         };
-        let observed = self
-            .volume
-            .observe(query.clone(), None, self.maximum_files)
-            .await?;
-        let observed = crate::client::command_output::follow::observe(
-            observed,
-            (self.maximum_files / 4).max(1),
-            crate::client::command_output::follow::PerFileByteLimit(self.maximum_bytes),
-            total,
-        )?;
-        Ok((query, observed))
+        Ok((
+            query.clone(),
+            Arc::new(ViewSource {
+                volume: self.volume.clone(),
+                query,
+                maximum_files: self.maximum_files,
+                maximum_bytes: self.maximum_bytes,
+            }),
+        ))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -238,6 +235,49 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             }
         }
         Ok(())
+    }
+}
+
+struct ViewSource<P: ?Sized> {
+    volume: Arc<files::TaskVolume<P>>,
+    query: files::Query,
+    maximum_files: usize,
+    maximum_bytes: u64,
+}
+impl<P: StreamProvider + ?Sized> files::FileQuerySource for ViewSource<P> {
+    fn retain(&self) -> Arc<dyn files::FileQuerySource> {
+        Arc::new(Self {
+            volume: self.volume.clone(),
+            query: self.query.clone(),
+            maximum_files: self.maximum_files,
+            maximum_bytes: self.maximum_bytes,
+        })
+    }
+    fn observe_files(
+        &self,
+        query: files::Query,
+        cursor: Option<files::Cursor>,
+        maximum_files: usize,
+        maximum_bytes: usize,
+    ) -> acyclic_stream::BoxProviderFuture<'_, files::Result<files::Observation>> {
+        Box::pin(async move {
+            if query != self.query {
+                return Err(files::Error::Unauthorized);
+            }
+            // The bounded command window needs a fresh atomic cut to reconstruct
+            // its eviction order. It never replays commands or external effects.
+            let mut observed = self.volume.observe(query, None, self.maximum_files).await?;
+            observed.reset = cursor.is_some();
+            crate::client::command_output::follow::observe(
+                observed,
+                (self.maximum_files / 4).max(1),
+                crate::client::command_output::follow::PerFileByteLimit(self.maximum_bytes),
+                crate::client::command_output::follow::DisplayWindowBudget {
+                    files: maximum_files,
+                    bytes: maximum_bytes,
+                },
+            )
+        })
     }
 }
 

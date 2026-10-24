@@ -5,9 +5,8 @@ use acyclic_harness::{
     client::{SwarmChange, SwarmClientLimits},
     task_volume::{Channel, FileKey, Query, TaskVolume, Write},
 };
-use acyclic_stream::{AppendRequest, MemoryStream, StreamProvider as _, wire};
+use acyclic_stream::{MemoryStream, wire};
 use futures::StreamExt as _;
-use prost::Message as _;
 use std::{cell::RefCell, sync::Arc};
 use wire::{session_frame::Body, session_subscription::Kind};
 
@@ -33,7 +32,13 @@ async fn chunk(volume: &TaskVolume<MemoryStream>, sequence: u64, bytes: &[u8]) {
         .unwrap();
 }
 
-async fn exercise(before: &[u8], after: &[u8], fault: Fault) {
+struct Volumes {
+    provider: Arc<MemoryStream>,
+    parent: TaskVolume<MemoryStream>,
+    config: TaskVolume<MemoryStream>,
+    files: TaskVolume<MemoryStream>,
+}
+async fn seed(before: &[u8]) -> Volumes {
     let provider = Arc::new(MemoryStream::default());
     let parent = TaskVolume::open(provider.clone(), path("swarm/files"))
         .await
@@ -56,24 +61,16 @@ async fn exercise(before: &[u8], after: &[u8], fault: Fault) {
         .unwrap();
     chunk(&files, 1, before).await;
     status::member(&parent, "a").await;
-    provider
-        .append(AppendRequest {
-            path: path("swarm/a/status"),
-            records: vec![
-                wire::SessionLatestValue {
-                    key: b"status".to_vec().into(),
-                    value: b"running".to_vec().into(),
-                    attention: false,
-                }
-                .encode_to_vec()
-                .into(),
-            ],
-            if_tail: Some(0),
-            idempotency_key: None,
-        })
-        .await
-        .unwrap();
-    let requests: runtime::RequestMap = Arc::new(move |source| {
+    status::status(&provider, "swarm/a", false).await;
+    Volumes {
+        provider,
+        parent,
+        config,
+        files,
+    }
+}
+fn requests(fault: Fault) -> runtime::RequestMap {
+    Arc::new(move |source| {
         Box::pin(source.map(move |mut frame| {
             if let Some(Body::Interest(update)) = &mut frame.body {
                 for sub in &mut update.upsert {
@@ -97,8 +94,10 @@ async fn exercise(before: &[u8], after: &[u8], fault: Fault) {
             }
             frame
         }))
-    });
-    let responses: runtime::ResponseMap = Arc::new(move |source| {
+    })
+}
+fn responses(fault: Fault) -> runtime::ResponseMap {
+    Arc::new(move |source| {
         Box::pin(source.flat_map(move |item| {
             let duplicate = matches!(fault, Fault::DuplicateContent)
                 && matches!(
@@ -118,8 +117,40 @@ async fn exercise(before: &[u8], after: &[u8], fault: Fault) {
             frames.push(item);
             futures::stream::iter(frames)
         }))
-    });
-    let (session, mut runner, mut observed) = runtime::open(provider, requests, responses);
+    })
+}
+fn content_follow(
+    frames: impl Iterator<Item = wire::SessionFrame>,
+    cursor: &acyclic_harness::task_volume::Cursor,
+) {
+    let subscriptions: Vec<_> = frames
+        .filter_map(|frame| {
+            if let Some(Body::Interest(update)) = frame.body {
+                Some(update.upsert)
+            } else {
+                None
+            }
+        })
+        .flatten()
+        .collect();
+    let content: Vec<_> = subscriptions.iter().filter(|sub| matches!(&sub.kind, Some(Kind::Follow(follow)) if follow.resource == "streams:/swarm/a/files" && follow.delivery == wire::SessionDelivery::All as i32)).collect();
+    assert_eq!(content.len(), 1);
+    let Some(Kind::Follow(follow)) = &content[0].kind else {
+        unreachable!()
+    };
+    assert_eq!(content[0].resume.as_ref().unwrap().next, cursor.position);
+    assert_eq!(follow.preceding_commit_id.as_ref(), cursor.commit);
+}
+
+async fn exercise(before: &[u8], after: &[u8], fault: Fault) {
+    let Volumes {
+        provider,
+        parent,
+        config,
+        files,
+    } = seed(before).await;
+    let (session, mut runner, mut observed) =
+        runtime::open(provider, requests(fault), responses(fault));
     let client = super::client(SwarmClientLimits {
         agents: 1,
         selected: 1,
@@ -181,17 +212,36 @@ async fn exercise(before: &[u8], after: &[u8], fault: Fault) {
     let mut consume = Box::pin(consume);
     let outcome = runner.until_idle(consume.as_mut()).await;
     drop(consume);
+    verify(
+        fault,
+        (before, after),
+        &views,
+        &snapshots.borrow(),
+        &delivered.borrow(),
+        &outcome,
+        std::iter::from_fn(|| observed.try_recv().ok()),
+    );
+}
+
+fn verify(
+    fault: Fault,
+    (before, after): (&[u8], &[u8]),
+    views: &acyclic_harness::client::ClientViewHandle,
+    snapshots: &[(acyclic_harness::task_volume::Cursor, Vec<u8>)],
+    delivered: &[acyclic_stream::OwnedBytes],
+    outcome: &Option<acyclic_harness::Result<()>>,
+    frames: impl Iterator<Item = wire::SessionFrame>,
+) {
     match fault {
         Fault::None | Fault::RequireOpaqueDataAnchor => {
             assert!(
                 outcome.is_none(),
                 "accepted platform delivery was rejected: {outcome:?}"
             );
-            let snapshots = snapshots.borrow();
             assert_eq!(snapshots.len(), 1);
             assert_eq!(snapshots[0].1, before);
-            assert_eq!(delivered.borrow().len(), 1);
-            assert_eq!(delivered.borrow()[0].as_ref(), after);
+            assert_eq!(delivered.len(), 1);
+            assert_eq!(delivered[0].as_ref(), after);
             assert_eq!(
                 views
                     .read(|v| v
@@ -201,26 +251,7 @@ async fn exercise(before: &[u8], after: &[u8], fault: Fault) {
                     .unwrap(),
                 [before, after].concat()
             );
-            let subscriptions: Vec<_> = std::iter::from_fn(|| observed.try_recv().ok())
-                .filter_map(|frame| {
-                    if let Some(Body::Interest(update)) = frame.body {
-                        Some(update.upsert)
-                    } else {
-                        None
-                    }
-                })
-                .flatten()
-                .collect();
-            let content: Vec<_> = subscriptions.iter().filter(|sub| matches!(&sub.kind, Some(Kind::Follow(follow)) if follow.resource == "streams:/swarm/a/files" && follow.delivery == wire::SessionDelivery::All as i32)).collect();
-            assert_eq!(content.len(), 1);
-            let Some(Kind::Follow(follow)) = &content[0].kind else {
-                unreachable!()
-            };
-            assert_eq!(
-                content[0].resume.as_ref().unwrap().next,
-                snapshots[0].0.position
-            );
-            assert_eq!(follow.preceding_commit_id.as_ref(), snapshots[0].0.commit);
+            content_follow(frames, &snapshots[0].0);
         }
         Fault::DuplicateContent => {
             // A duplicate in the same connection violates ALL ordering. The pool
@@ -229,7 +260,7 @@ async fn exercise(before: &[u8], after: &[u8], fault: Fault) {
                 matches!(outcome, Some(Err(Error::Storage(_)))),
                 "{outcome:?}"
             );
-            assert!(delivered.borrow().len() <= 1);
+            assert!(delivered.len() <= 1);
             let text = views
                 .read(|v| {
                     v.files(&path("swarm/a"))
@@ -240,10 +271,7 @@ async fn exercise(before: &[u8], after: &[u8], fault: Fault) {
             assert!(text == before || text == [before, after].concat());
         }
         _ => {
-            assert!(
-                delivered.borrow().is_empty(),
-                "malformed subscription admitted"
-            );
+            assert!(delivered.is_empty(), "malformed subscription admitted");
             assert!(
                 outcome.is_none() || matches!(outcome, Some(Err(Error::Storage(_)))),
                 "{outcome:?}"

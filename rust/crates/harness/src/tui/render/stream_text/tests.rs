@@ -146,3 +146,80 @@ fn open_fence_cannot_capture_the_next_turn_negative_control() {
     separate_entries(&entries, false);
     assert!(std::panic::catch_unwind(|| separate_entries(&entries, true)).is_err());
 }
+
+fn turn_evictions(bodies: &[String], reset: bool) -> usize {
+    let mut views = crate::test_support::empty_client_views();
+    let task = Component::new("task").unwrap();
+    let mut decoder = StreamText::default();
+    let mut rows = Vec::new();
+    let mut keys: Vec<FileKey> = Vec::new();
+    let mut last_work = 0;
+    for (turn, body) in bodies.iter().enumerate() {
+        let key = FileKey::Task {
+            task: task.clone(),
+            file: TaskFile::TextHead {
+                turn: turn as u64,
+                channel: Channel::Text,
+            },
+        };
+        let mut cursor = views.selections().next().unwrap().1.cursor().clone();
+        cursor.position += 1;
+        cursor.accepted = cursor.position;
+        cursor.durable = cursor.position;
+        let removed = if turn >= 2 {
+            vec![keys[turn - 2].clone()]
+        } else {
+            Vec::new()
+        };
+        views
+            .query_change(Change {
+                cursor,
+                file: Some(FileValue {
+                    requester: None,
+                    key: key.clone(),
+                    bytes: body.as_bytes().to_vec().into(),
+                    channel: Some(Channel::Text),
+                    publication: None,
+                }),
+                files: Vec::new(),
+                removed,
+            })
+            .unwrap();
+        keys.push(key);
+        if reset {
+            decoder = StreamText::default();
+        }
+        decoder.work = 0;
+        let selected = views.selections().next().unwrap().1.task(&task);
+        let changed = decoder.update(&selected, Channel::Text);
+        last_work = decoder.work;
+        decoder.apply_rows(&mut rows, changed);
+        let mut fresh = StreamText::default();
+        fresh.update(&selected, Channel::Text);
+        assert_eq!(
+            rows,
+            fresh.rows(0),
+            "retained Markdown differs after turn {turn}"
+        );
+    }
+    last_work
+}
+
+#[test]
+fn whole_turn_eviction_retains_parser_state_and_only_parses_new_bytes() {
+    for retained in [
+        "retained ".repeat(1_000),
+        "```rust\nlet x = 1;".into(),
+        "[ref]: /a\n\n[ref]".into(),
+        "日€🙂\n\n# Heading".into(),
+    ] {
+        let bodies = vec!["old answer".into(), retained, "new".into(), "next".into()];
+        assert_eq!(turn_evictions(&bodies, false), 4);
+    }
+    let bodies = vec!["old".into(), "retained ".repeat(1_000), "new".into()];
+    assert_eq!(turn_evictions(&bodies, false), 3);
+    assert!(
+        turn_evictions(&bodies, true) > 3,
+        "resetting must fail the identical new-byte bound"
+    );
+}

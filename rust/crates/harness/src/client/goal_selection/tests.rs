@@ -7,6 +7,7 @@ use acyclic_stream::BoxProviderFuture;
 use futures::FutureExt as _;
 use proptest::prelude::*;
 
+#[derive(Clone)]
 struct Source {
     goal: Option<String>,
     count: u32,
@@ -98,6 +99,10 @@ impl Source {
 }
 
 impl FileQuerySource for Source {
+    fn retain(&self) -> std::sync::Arc<dyn FileQuerySource> {
+        std::sync::Arc::new(self.clone())
+    }
+
     fn observe_files(
         &self,
         query: Query,

@@ -2,7 +2,7 @@ use acyclic_harness::{
     OperationId, client,
     local::LocalHarness,
     tui::{
-        self, PromptBox, PromptInput, Viewport, crossterm,
+        self, PromptInput, Viewport, crossterm,
         ratatui::layout::{Position, Rect, Size},
         term::{Environment, FrameTerminal, RegionScroll, ScreenMode, Tty},
     },
@@ -24,8 +24,6 @@ pub async fn run(
     let mut commands = client::local_ui(&local, &operation.to_string(), &authority).await?;
     let tty = open_tty(inline)?;
     let (tty, output) = tty.split();
-    let terminal_size =
-        || crossterm::terminal::size().map(|(width, height)| Size::new(width, height));
     let mut terminal = FrameTerminal::new(output, terminal_size()?)?;
     let mut events = client::terminal_events(tty);
     // Events of the current read not yet handled; the read presents one frame.
@@ -44,6 +42,9 @@ pub async fn run(
     let mut documents = client::local_documents(&local, client.views_mut()).await?;
     let mut diff = DiffState::new();
     loop {
+        if client::frame_due(&batch) {
+            renderer.wait_frame().await;
+        }
         follow_selected_task(local.as_ref(), &mut client, &commands, &authority).await?;
         renderer.update_files(&client, &authority);
         let diff_open = diff_is_open(&commands)?;
@@ -99,18 +100,20 @@ pub async fn run(
             batch = read;
         }
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let area = PromptBox::input_area(areas.prompt);
         let page_rows = usize::from(areas.transcript.height);
         // A flick or held PageUp is one input batch: one scroll, one frame.
         client::input_burst(&mut batch, page_rows, &mut effects, |event| {
-            input.event(event, area, &mut viewport, now)
+            areas.event(&mut input, event, &mut viewport, now, &mut |byte| {
+                renderer.anchor_at(byte)
+            })
         });
         client::file_tui_inputs(
             &mut commands,
             reader.as_ref(),
-            effects.drain(..),
+            effects.iter().cloned(),
             page_rows,
             maximum_scroll,
+            |from, rows| renderer.move_view(from, rows),
         )
         .await?;
         prompt_files.save(&mut commands, &mut input).await?;
@@ -188,19 +191,25 @@ fn follow_diff(
     )
 }
 
+fn terminal_size() -> std::io::Result<Size> {
+    crossterm::terminal::size().map(|(width, height)| Size::new(width, height))
+}
+
 /// The presentation boundary shared by the executable and its file-backed Rig.
 /// Only successful device output advances the remembered transcript position.
 pub(super) fn present<P: tui::term::Present>(
     terminal: &mut FrameTerminal<P>,
     size: Size,
-    shown: &mut Option<(Rect, usize)>,
+    shown: &mut Option<(Rect, tui::TranscriptAnchor)>,
     regions: bool,
-    (band, top): (Rect, usize),
+    (band, top, moved): (Rect, Option<tui::TranscriptAnchor>, Option<isize>),
     render: impl FnOnce(&mut tui::ratatui::Frame<'_>),
 ) -> std::io::Result<()> {
-    let moved = RegionScroll::between(shown.filter(|_| regions), band, top);
+    let moved = moved
+        .filter(|rows| *rows != 0 && regions && shown.is_some_and(|(before, _)| before == band))
+        .map(|rows| RegionScroll { region: band, rows });
     terminal.draw_scrolled(size, moved, render)?;
-    *shown = Some((band, top));
+    *shown = top.map(|top| (band, top));
     Ok(())
 }
 
@@ -212,7 +221,11 @@ fn render_view<P: tui::term::Present, S: acyclic_stream::StreamProvider + ?Sized
         &acyclic_harness::wire::Authority,
     ),
     prompt: (&mut PromptInput, &mut Viewport),
-    device: (&mut FrameTerminal<P>, Size, &mut Option<(Rect, usize)>),
+    device: (
+        &mut FrameTerminal<P>,
+        Size,
+        &mut Option<(Rect, tui::TranscriptAnchor)>,
+    ),
     frame: (&client::InputBatch, bool, &Instant),
 ) -> Result<(tui::ScreenAreas, usize), Box<dyn std::error::Error>> {
     let (commands, client, authority) = files;
@@ -221,26 +234,30 @@ fn render_view<P: tui::term::Present, S: acyclic_stream::StreamProvider + ?Sized
     let (batch, inline, start) = frame;
     let mut areas = tui::ScreenAreas::default();
     let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let back = client::tui_scroll(commands)?;
+    let back = client::tui_modal_scroll(commands)?;
     renderer.configure(client.views(), authority, commands)?;
     input.busy = renderer.is_busy();
     renderer.layout(commands, input, size.width, size.height)?;
+    let (source_top, moved) = renderer.presented_position(shown.map(|(_, top)| top));
     let screen = renderer.screen_for(commands)?;
     let area = Rect::from((Position::ORIGIN, size));
     let maximum_scroll = screen.tail_scroll(area, input);
     if client::frame_due(batch) {
         let scroll = maximum_scroll.saturating_sub(back);
-        let transcript = screen.areas(area, input).transcript;
+        let layout = screen.areas(area, input);
+        let mut transcript = layout.transcript;
+        transcript.width += layout.scrollbar.width;
         present(
             terminal,
             size,
             shown,
             !inline,
-            (transcript, scroll),
+            (transcript, source_top, moved),
             |frame| {
                 areas = screen.render(frame, input, viewport, scroll, now);
             },
         )?;
+        renderer.frame_presented();
     } else {
         // More of this read is queued: route it against the same layout
         // and present once, after the read.
@@ -269,7 +286,7 @@ fn diff_is_open<S: acyclic_stream::StreamProvider + ?Sized>(
     commands: &client::CommandSession<S>,
 ) -> acyclic_harness::Result<bool> {
     Ok(commands
-        .state(client::CommandFileRoot::Session, "layout.json")?
+        .state_ref(client::CommandFileRoot::Session, "layout.json")?
         .is_some_and(|layout| {
             layout.get("open_view").and_then(|value| value.as_str()) == Some("diff")
         }))

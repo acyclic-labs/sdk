@@ -3,12 +3,11 @@ use acyclic_harness::{
     Error,
     task_volume::{Channel, FileKey, TaskVolume, Write},
 };
-use acyclic_stream::{AppendRequest, MemoryStream, StreamPath, StreamProvider as _, wire};
+use acyclic_stream::{MemoryStream, StreamPath, StreamProvider as _, wire};
 use futures::{
     StreamExt as _,
     channel::{mpsc, oneshot},
 };
-use prost::Message as _;
 use std::{sync::Arc, time::Instant};
 
 pub(super) type Volume = Arc<TaskVolume<MemoryStream>>;
@@ -103,12 +102,11 @@ pub(super) async fn publish_status(
         attention,
     };
     let outcome = provider
-        .append(AppendRequest {
-            path: path(&format!("{}/status", agent(id).as_str())),
-            records: vec![value.encode_to_vec().into()],
-            if_tail: None,
-            idempotency_key: None,
-        })
+        .append(acyclic_harness::client::status_publication(
+            &path("swarm"),
+            &agent(id),
+            value,
+        )?)
         .await
         .map_err(storage)?;
     match outcome {
@@ -155,7 +153,11 @@ impl Producer<'_> {
                 // Consume every initial idle value before publishing new statuses.
                 // State::status already rejects duplicates, reversals and bad IDs.
                 for _ in 0..self.case.agents {
-                    if !receipts.next().await.is_some_and(|(_, next)| next == 1) {
+                    if !receipts
+                        .next()
+                        .await
+                        .is_some_and(|(id, next)| next == id as u64 + 1)
+                    {
                         return Err(Error::Invalid("initial status receipt differs".into()));
                     }
                 }

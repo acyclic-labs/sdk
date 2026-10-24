@@ -1,6 +1,65 @@
 use super::*;
 use std::io::Read;
 use std::path::Path;
+
+#[cfg(target_os = "linux")]
+struct DirectoryModeRestore {
+    directory: std::fs::File,
+    permissions: std::fs::Permissions,
+}
+
+#[cfg(target_os = "linux")]
+impl DirectoryModeRestore {
+    fn new(path: &Path) -> std::io::Result<Self> {
+        let directory = std::fs::File::open(path)?;
+        let permissions = directory.metadata()?.permissions();
+        Ok(Self {
+            directory,
+            permissions,
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for DirectoryModeRestore {
+    fn drop(&mut self) {
+        let restored = self.directory.set_permissions(self.permissions.clone());
+        assert!(
+            restored.is_ok(),
+            "owned directory mode restoration failed: {restored:?}"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn fixture_retirement_mode<const RESTORE: bool>() -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let temporary = tempfile::tempdir()?;
+    let path = temporary.path().join("directory");
+    std::fs::create_dir(&path)?;
+    let guard = DirectoryModeRestore::new(&path)?;
+    let original = guard.permissions.mode();
+    guard
+        .directory
+        .set_permissions(std::fs::Permissions::from_mode(0o0))?;
+    if RESTORE {
+        drop(guard);
+    }
+    assert_eq!(std::fs::metadata(path)?.permissions().mode(), original);
+    temporary.close()
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn directory_mode_is_restored_before_fixture_retirement() -> std::io::Result<()> {
+    fixture_retirement_mode::<true>()
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn negative_control_unrestored_directory_cannot_retire_with_its_original_mode() {
+    assert!(std::panic::catch_unwind(fixture_retirement_mode::<false>).is_err());
+}
 #[test]
 fn a_local_root_is_classified_local() -> std::io::Result<()> {
     let temporary = tempfile::tempdir()?;
@@ -312,6 +371,8 @@ proptest::proptest! {
         let original = temporary.path().join("root");
         let moved = temporary.path().join("moved");
         std::fs::create_dir(&original).unwrap();
+        let restore = DirectoryModeRestore::new(&original)
+            .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
         let root = test_root(&original).unwrap();
         std::fs::rename(&original, &moved).unwrap();
         std::fs::create_dir(&original).unwrap();
@@ -325,5 +386,7 @@ proptest::proptest! {
         }, &mut work).unwrap();
         proptest::prop_assert_eq!(std::fs::metadata(&moved).unwrap().permissions().mode() & 0o777, mode);
         proptest::prop_assert_eq!(std::fs::metadata(&original).unwrap().permissions().mode() & 0o777, 0o700);
+        drop(restore);
+        temporary.close().map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
     }
 }

@@ -39,6 +39,7 @@ fn destination(url: &str, id: &str, references: Option<&crate::References>) -> A
 }
 
 #[derive(Default)]
+#[cfg_attr(test, derive(Clone))]
 pub(crate) struct Renderer {
     pub(crate) lines: Vec<Line>,
     line: Line,

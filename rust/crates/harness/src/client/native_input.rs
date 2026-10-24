@@ -23,7 +23,7 @@ pub async fn next_file_tui_event<P: acyclic_stream::StreamProvider + ?Sized>(
     commands: &mut super::CommandSession<P>,
     animation: bool,
     renderer: &mut crate::tui::ClientRenderer,
-    documents: &mut crate::task_volume::ChangeStream,
+    documents: &mut super::DocumentFiles,
 ) -> Result<Option<InputBatch>> {
     next_event::<P, false, true>(
         client,
@@ -51,37 +51,66 @@ async fn next_event<
     commands: &mut super::CommandSession<P>,
     animation: bool,
     renderer: &mut crate::tui::ClientRenderer,
-    documents: &mut crate::task_volume::ChangeStream,
+    documents: &mut super::DocumentFiles,
 ) -> Result<Option<InputBatch>> {
     let animation = animation_frame::<true>(animation);
     tokio::pin!(animation);
+    let mut animated = false;
     loop {
         let revision = client.presentation_revision();
+        let deadline = renderer.frame_deadline();
         tokio::select! {
             biased;
             event = input.next() => return event.transpose()?.map(Some).ok_or_else(|| Error::Storage("terminal input closed".into())),
-            _ = &mut animation => return Ok(None),
-            _ = renderer.search_progress() => return Ok(None),
+            _ = redraw(deadline) => {
+                renderer.frame_ready();
+                return Ok(None);
+            },
+            _ = &mut animation, if !animated => {
+                animated = true;
+                renderer.request_frame();
+            },
+            _ = renderer.search_progress() => renderer.request_frame(),
             change = client.next_change() => {
                 change?;
-                if REDRAW_CHECKPOINTS || client.presentation_revision() != revision { return Ok(None); }
+                if REDRAW_CHECKPOINTS || client.presentation_revision() != revision { renderer.request_frame(); }
             },
-            update = documents.next() => {
-                client.apply_change(update.ok_or_else(|| Error::Conflict("document follow ended; reopen snapshots".into()))??)?;
-                if REDRAW_CHECKPOINTS || client.presentation_revision() != revision { return Ok(None); }
+            update = documents.read_change() => {
+                client.apply_document_change(documents, update?)?;
+                if REDRAW_CHECKPOINTS || client.presentation_revision() != revision { renderer.request_frame(); }
             },
             change = commands.observe_change_visible::<RETAIN>() => {
-                if change? || REDRAW_CHECKPOINTS { return Ok(None); }
+                if change? || REDRAW_CHECKPOINTS { renderer.request_frame(); }
             },
             change = completions.read_change() => {
                 let change = change?;
                 let visible = !change.is_checkpoint();
                 completions.apply_change(change, prompt)?;
-                if REDRAW_CHECKPOINTS || visible { return Ok(None); }
+                if REDRAW_CHECKPOINTS || visible { renderer.request_frame(); }
             },
         }
     }
 }
+
+#[cfg(all(feature = "tui", feature = "filesystem-local"))]
+async fn redraw(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) if deadline > tokio::time::Instant::now() => {
+            tokio::time::sleep_until(deadline).await;
+        }
+        Some(_) => (),
+        None => std::future::pending().await,
+    }
+}
+
+#[cfg(test)]
+#[cfg(all(
+    feature = "tui",
+    feature = "filesystem-local",
+    not(acyclic_harness_loom)
+))]
+#[path = "native_input/pacing.rs"]
+mod pacing;
 
 #[cfg(feature = "tui")]
 async fn animation_frame<const ENABLED: bool>(busy: bool) {

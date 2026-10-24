@@ -30,6 +30,9 @@ pub struct FileViews {
     pub(super) files: Files,
     limits: QueryViewLimits,
     segments: usize,
+    disposable: std::collections::BTreeSet<FileKey>,
+    task_segments: usize,
+    task_bytes: u64,
     pub(super) bytes: u64,
     pub(super) window: bool,
 }
@@ -71,6 +74,9 @@ impl FileViews {
             files: Files::default(),
             limits,
             segments: 0,
+            disposable: std::collections::BTreeSet::new(),
+            task_segments: 0,
+            task_bytes: 0,
             bytes: 0,
             window: false,
         };
@@ -116,6 +122,11 @@ impl FileViews {
                 segments,
                 bytes,
             )?;
+            if disposable(&file.key) {
+                view.disposable.insert(file.key.clone());
+                view.task_segments += file.segments.len();
+                view.task_bytes += file.length;
+            }
             if view.files.insert(file.key.clone(), file).is_some() {
                 return Err(Error::InvalidSegment);
             }
@@ -158,6 +169,10 @@ impl FileViews {
             if let Some(old) = self.files.remove(key) {
                 self.bytes -= old.length;
                 self.segments -= old.segments.len();
+                if self.disposable.remove(key) {
+                    self.task_bytes -= old.length;
+                    self.task_segments -= old.segments.len();
+                }
             }
         }
         for file in change.file.iter().chain(&change.files) {
@@ -166,6 +181,11 @@ impl FileViews {
             }
             self.bytes += file.bytes.len() as u64;
             self.segments += 1;
+            if disposable(&file.key) {
+                self.disposable.insert(file.key.clone());
+                self.task_segments += 1;
+                self.task_bytes += file.bytes.len() as u64;
+            }
             self.files.insert(
                 file.key.clone(),
                 HeadFile {
@@ -188,6 +208,24 @@ impl FileViews {
         &self,
         change: &'a Change,
     ) -> Result<impl FnOnce(&mut Self) -> Result<()> + use<'a>> {
+        self.validate_change(change)?;
+        let logical = change
+            .file
+            .as_ref()
+            .map(|file| file.head_key())
+            .transpose()?;
+        let mut prepared = Prepared::new(self, change, logical)?;
+        prepared.trim(self)?;
+        admit(
+            self.limits,
+            prepared.next_count,
+            prepared.segments,
+            prepared.bytes,
+        )?;
+        Ok(move |view: &mut Self| prepared.apply(view, change))
+    }
+
+    fn validate_change(&self, change: &Change) -> Result<()> {
         // TaskVolume appends one immutable event. A different source's atomic
         // file replacements/removals must not be silently reduced as that event.
         if !change.files.is_empty() || !change.removed.is_empty() {
@@ -205,12 +243,28 @@ impl FileViews {
         {
             return Err(Error::ResetRequired);
         }
-        let logical = change
-            .file
-            .as_ref()
-            .map(|file| file.head_key())
-            .transpose()?;
-        let files = &self.files;
+        Ok(())
+    }
+}
+
+struct Prepared {
+    expected: Cursor,
+    logical: Option<(FileKey, Option<u64>)>,
+    bytes: u64,
+    segments: usize,
+    next_count: usize,
+    length: u64,
+    task_segments: usize,
+    task_bytes: u64,
+    evictions: Vec<(FileKey, usize)>,
+}
+impl Prepared {
+    fn new(
+        view: &FileViews,
+        change: &Change,
+        logical: Option<(FileKey, Option<u64>)>,
+    ) -> Result<Self> {
+        let files = &view.files;
         let other_sequence = match logical.as_ref() {
             Some((
                 FileKey::Task {
@@ -237,8 +291,8 @@ impl FileViews {
         };
         let count = files.len();
         let before = logical.as_ref().and_then(|(key, _)| files.get(key));
-        let mut bytes = self.bytes;
-        let mut segments = self.segments;
+        let mut bytes = view.bytes;
+        let mut segments = view.segments;
         let mut next_count = count;
         let mut length = 0;
         if let Some(file) = change.file.as_ref() {
@@ -279,37 +333,58 @@ impl FileViews {
                 .checked_add(usize::from(before.is_none()))
                 .ok_or(Error::LimitExceeded)?;
         }
+        // Reuse the changed file lookup from admission. Fetching it again in
+        // trim adds work even for selections that never evict a display tail.
+        let mut task_segments = view.task_segments;
+        let mut task_bytes = view.task_bytes;
+        if let Some(file) = change.file.as_ref().filter(|file| disposable(&file.key)) {
+            let replaced = before.filter(|_| {
+                logical
+                    .as_ref()
+                    .is_some_and(|(_, sequence)| sequence.is_none())
+            });
+            task_segments = task_segments - replaced.map_or(0, |head| head.segments.len()) + 1;
+            task_bytes =
+                task_bytes - replaced.map_or(0, |head| head.length) + file.bytes.len() as u64;
+        }
+        Ok(Self {
+            expected: view.cursor.clone(),
+            logical,
+            bytes,
+            segments,
+            next_count,
+            length,
+            task_segments,
+            task_bytes,
+            evictions: Vec::new(),
+        })
+    }
+    fn trim(&mut self, view: &FileViews) -> Result<()> {
+        let logical = &self.logical;
+        let mut bytes = self.bytes;
+        let mut segments = self.segments;
+        let mut next_count = self.next_count;
         // Session observations publish each raw segment once, then retain only
         // a bounded display tail. Session request/claim/result files are never
         // candidates for eviction. Validate sequence ownership before trimming.
         let mut evictions = Vec::new();
-        if self.window {
+        let mut task_segments = self.task_segments;
+        let mut task_bytes = self.task_bytes;
+        let replaces = logical
+            .as_ref()
+            .is_some_and(|(_, sequence)| sequence.is_none());
+        if view.window {
             let incoming = logical.as_ref().map(|(key, _)| key);
-            let mut task_segments = self
-                .files
-                .values()
-                .filter(|head| disposable(&head.key))
-                .map(|head| head.segments.len())
-                .sum::<usize>();
-            let mut task_bytes = self
-                .files
-                .values()
-                .filter(|head| disposable(&head.key))
-                .map(|head| head.length)
-                .sum::<u64>();
-            if let Some(file) = change.file.as_ref().filter(|file| disposable(&file.key)) {
-                let replaced = before.filter(|_| logical.as_ref().unwrap().1.is_none());
-                task_segments = task_segments - replaced.map_or(0, |head| head.segments.len()) + 1;
-                task_bytes =
-                    task_bytes - replaced.map_or(0, |head| head.length) + file.bytes.len() as u64;
-            }
-            for head in self.files.values().filter(|head| disposable(&head.key)) {
-                if Some(&head.key) == incoming && logical.as_ref().unwrap().1.is_none() {
+            for head in view.disposable.iter().filter_map(|key| view.files.get(key)) {
+                if task_segments <= 128 && task_bytes <= view.limits.bytes / 2 {
+                    break;
+                }
+                if Some(&head.key) == incoming && replaces {
                     continue;
                 }
                 let mut removed = 0;
                 for segment in &head.segments {
-                    if task_segments <= 128 && task_bytes <= self.limits.bytes / 2 {
+                    if task_segments <= 128 && task_bytes <= view.limits.bytes / 2 {
                         break;
                     }
                     task_segments -= 1;
@@ -325,65 +400,90 @@ impl FileViews {
                     evictions.push((head.key.clone(), removed));
                 }
             }
-            if task_segments > 128 || task_bytes > self.limits.bytes / 2 {
+            if task_segments > 128 || task_bytes > view.limits.bytes / 2 {
                 return Err(Error::LimitExceeded);
             }
         }
-        admit(self.limits, next_count, segments, bytes)?;
-        let expected = self.cursor.clone();
-        Ok(move |view: &mut Self| {
-            if view.cursor != expected {
-                return Err(Error::ResetRequired);
+        self.bytes = bytes;
+        self.segments = segments;
+        self.next_count = next_count;
+        self.task_segments = task_segments;
+        self.task_bytes = task_bytes;
+        self.evictions = evictions;
+        Ok(())
+    }
+    fn apply(self, view: &mut FileViews, change: &Change) -> Result<()> {
+        let Self {
+            expected,
+            logical,
+            bytes,
+            segments,
+            next_count,
+            length,
+            task_segments,
+            task_bytes,
+            evictions,
+        } = self;
+        if view.cursor != expected {
+            return Err(Error::ResetRequired);
+        }
+        admit(view.limits, next_count, segments, bytes)?;
+        if let (Some(file), Some((key, sequence))) = (&change.file, logical) {
+            if disposable(&key) {
+                view.disposable.insert(key.clone());
             }
-            admit(view.limits, next_count, segments, bytes)?;
-            if let (Some(file), Some((key, sequence))) = (&change.file, logical) {
-                match view.files.entry(key.clone()) {
-                    Entry::Occupied(mut entry) if sequence.is_some() => {
-                        let head = entry.get_mut();
-                        head.segments.push(file.bytes.clone());
-                        head.length = length;
-                        head.through_sequence = sequence;
+            match view.files.entry(key.clone()) {
+                Entry::Occupied(mut entry) if sequence.is_some() => {
+                    let head = entry.get_mut();
+                    head.segments.push(file.bytes.clone());
+                    head.length = length;
+                    head.through_sequence = sequence;
+                }
+                Entry::Occupied(mut entry) => {
+                    let head = entry.get_mut();
+                    if head.segments.len() != 1 || head.segments[0] != file.bytes {
+                        head.segments = vec![file.bytes.clone()];
                     }
-                    Entry::Occupied(mut entry) => {
-                        let head = entry.get_mut();
-                        if head.segments.len() != 1 || head.segments[0] != file.bytes {
-                            head.segments = vec![file.bytes.clone()];
-                        }
-                        head.length = length;
-                        head.publication = file.publication;
-                        head.channel = file.channel;
-                    }
-                    Entry::Vacant(entry) => {
-                        entry.insert(HeadFile {
-                            key,
-                            publication: file.publication,
-                            channel: file.channel,
-                            segments: vec![file.bytes.clone()],
-                            length,
-                            through_sequence: sequence,
-                        });
-                    }
+                    head.length = length;
+                    head.publication = file.publication;
+                    head.channel = file.channel;
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(HeadFile {
+                        key,
+                        publication: file.publication,
+                        channel: file.channel,
+                        segments: vec![file.bytes.clone()],
+                        length,
+                        through_sequence: sequence,
+                    });
                 }
             }
-            for (key, count) in evictions {
-                let Entry::Occupied(mut entry) = view.files.entry(key) else {
-                    unreachable!("prepared retained head")
-                };
-                let head = entry.get_mut();
-                let removed = head
-                    .segments
-                    .drain(..count)
-                    .map(|bytes| bytes.len() as u64)
-                    .sum::<u64>();
-                head.length -= removed;
-                if head.segments.is_empty() {
-                    entry.remove();
-                }
+        }
+        for (key, count) in evictions {
+            let Entry::Occupied(mut entry) = view.files.entry(key.clone()) else {
+                unreachable!("prepared retained head")
+            };
+            let head = entry.get_mut();
+            let removed = head
+                .segments
+                .drain(..count)
+                .map(|bytes| bytes.len() as u64)
+                .sum::<u64>();
+            head.length -= removed;
+            if head.segments.is_empty() {
+                entry.remove();
+                view.disposable.remove(&key);
             }
-            view.bytes = bytes;
-            view.segments = segments;
-            view.cursor = next.clone();
-            Ok(())
-        })
+        }
+        view.task_bytes = task_bytes;
+        view.task_segments = task_segments;
+        view.bytes = bytes;
+        view.segments = segments;
+        view.cursor = change.cursor.clone();
+        Ok(())
     }
 }
+
+#[cfg(all(test, feature = "test-support"))]
+mod tests;

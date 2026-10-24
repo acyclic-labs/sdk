@@ -37,8 +37,8 @@ fn settled_archive_reclaims_capacity_and_keeps_history_readable() {
             .await
             .unwrap();
         for reference in ["a", "b"] {
-            status::status(&provider, &format!("swarm/{reference}"), false).await;
             status::member(&parent, reference).await;
+            status::status(&provider, &format!("swarm/{reference}"), false).await;
         }
         let client = SwarmClient::new(
             path("swarm"),
@@ -88,14 +88,14 @@ fn settled_archive_reclaims_capacity_and_keeps_history_readable() {
         while let Ok(frame) = observed.try_recv() {
             if let Some(wire::session_frame::Body::Interest(change)) = frame.body {
                 for sub in change.upsert {
-                    if matches!(&sub.kind, Some(wire::session_subscription::Kind::Follow(f)) if f.resource == "streams:/swarm/a/status" || f.resource == "streams:/swarm/a/files")
+                    if matches!(&sub.kind, Some(wire::session_subscription::Kind::Follow(f)) if f.resource == "streams:/swarm/a/files")
                     {
                         owned.push(sub.channel.unwrap().channel_id);
                     }
                 }
             }
         }
-        assert_eq!(owned.len(), 2);
+        assert_eq!(owned.len(), 1);
         // A requested archive is not evidence that all child effects have stopped.
         parent
             .append(
@@ -144,8 +144,8 @@ fn settled_archive_reclaims_capacity_and_keeps_history_readable() {
             owned.iter().all(|id| removed.contains(id)),
             "retired pool cursors remained subscribed"
         );
-        status::status(&provider, "swarm/c", false).await;
         status::member(&parent, "c").await;
+        status::status(&provider, "swarm/c", false).await;
         // Old immutable history and its latest status cannot reactivate the archived row.
         status::status(&provider, "swarm/a", true).await;
         assert!(runner.until_idle(consumer.as_mut()).await.is_none());

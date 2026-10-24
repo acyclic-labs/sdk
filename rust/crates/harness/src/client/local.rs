@@ -95,7 +95,7 @@ pub async fn local_ui(
 pub async fn local_documents(
     local: &LocalHarness,
     views: &mut super::ClientViews,
-) -> Result<crate::task_volume::ChangeStream> {
+) -> Result<super::DocumentFiles> {
     // TODO(#495): obtain document count/content/work bounds from followed settings.
     let files = local
         .scratch_files(acyclic_fs::performance::BOUNDARY_BUDGET)

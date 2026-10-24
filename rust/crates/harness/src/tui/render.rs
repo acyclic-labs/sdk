@@ -7,19 +7,25 @@ use super::{
 };
 use crate::{client::ClientViews, wire};
 use acyclic_markdown::Markdown;
+use std::sync::OnceLock;
 
 mod approvals;
 mod archive;
+#[cfg(not(target_arch = "wasm32"))]
+mod pacing;
 mod selection;
 mod stream_text;
 mod task;
 mod tool;
+mod viewport;
 use stream_text::StreamText;
 
 /// Disposable incremental render cache. Authoritative state is always ClientViews
 /// and the followed files; this cache is never serialized or written back.
 #[derive(Default)]
 pub struct ClientRenderer {
+    #[cfg(not(target_arch = "wasm32"))]
+    pacing: pacing::Pacer,
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     file_cut: Option<(u64, wire::Authority)>,
     #[cfg(test)]
@@ -32,14 +38,13 @@ pub struct ClientRenderer {
     tool_details: bool,
     task: task::TaskRows,
     archive: archive::Archive,
-    reasoning_rows: Vec<Line<'static>>,
-    transcript: Vec<Line<'static>>,
+    transcript: OnceLock<Vec<Line<'static>>>,
     wrapped: bool,
-    transcript_changed: usize,
-    reasoning_changed: usize,
+    top: Option<super::TranscriptAnchor>,
+    view_height: usize,
+    reasoning_visible: bool,
     wrapped_transcript: super::WrappedLines,
     wrapped_tools: super::WrappedLines,
-    tools_changed: usize,
     wrapped_reasoning: super::WrappedLines,
     wrapped_goal: super::WrappedLines,
     wrapped_plans: super::WrappedLines,
@@ -138,28 +143,7 @@ impl ClientRenderer {
             self.tool_details,
             owner,
         );
-        if self.task.tools_changed() {
-            self.tools_changed = 0;
-        }
-        let prefix = self.archive.rows().len();
-        let changed = if archive_changed < old_prefix || prefix != old_prefix {
-            self.transcript.truncate(archive_changed);
-            self.transcript
-                .extend_from_slice(&self.archive.rows()[archive_changed..]);
-            self.transcript.extend_from_slice(self.task.rows());
-            archive_changed
-        } else {
-            let changed = prefix + task_changed;
-            self.transcript.truncate(changed);
-            self.transcript
-                .extend_from_slice(&self.task.rows()[task_changed..]);
-            changed
-        };
-        self.transcript_changed = self.transcript_changed.min(changed);
-        let (changed, rows) = self.task.reasoning();
-        self.reasoning_rows.truncate(changed);
-        self.reasoning_rows.extend_from_slice(&rows[changed..]);
-        self.reasoning_changed = self.reasoning_changed.min(changed);
+        self.project_rows(old_prefix, archive_changed, task_changed);
         self.documents(views);
         self.busy = self.task.busy();
         self.header = Line::from(vec![
@@ -186,6 +170,8 @@ impl ClientRenderer {
             *self = Self {
                 key,
                 tool_details: self.tool_details,
+                #[cfg(not(target_arch = "wasm32"))]
+                pacing: std::mem::take(&mut self.pacing),
                 ..Self::default()
             };
         }
@@ -195,6 +181,74 @@ impl ClientRenderer {
         }
         self.wrapped = false;
         self.side_wrapped = false;
+    }
+
+    fn project_rows(&mut self, old_prefix: usize, archive_changed: usize, task_changed: usize) {
+        let prefix = self.archive.rows().len();
+        let archive_dropped = self.archive.dropped();
+        if archive_changed > 0 && archive_dropped > 0 && archive_dropped <= old_prefix {
+            self.wrapped_transcript
+                .replace_range(0..archive_dropped, &[]);
+        }
+        let old_prefix = old_prefix.saturating_sub(if archive_changed > 0 {
+            archive_dropped
+        } else {
+            0
+        });
+        if archive_changed >= old_prefix && prefix == old_prefix && task_changed > 0 {
+            let dropped = self.task.answer_dropped();
+            if dropped > 0 && prefix + dropped <= self.wrapped_transcript.source_len() {
+                self.wrapped_transcript
+                    .replace_range(prefix..prefix + dropped, &[]);
+            }
+        }
+        let changed = if archive_changed < old_prefix || prefix != old_prefix {
+            archive_changed
+        } else {
+            prefix + task_changed
+        };
+        let total = prefix + self.task.rows().len();
+        if archive_dropped > 0
+            || self.task.answer_dropped() > 0
+            || changed < total
+            || self.wrapped_transcript.source_len() != total
+        {
+            self.transcript.take();
+        }
+        if archive_changed >= old_prefix
+            && prefix == old_prefix
+            && self.wrapped_transcript.source_len() == total
+            && changed + 1 == total
+            && let Some((text, style)) = self.task.answer_append()
+        {
+            self.wrapped_transcript.append_line(&text, style);
+        } else {
+            self.wrapped_transcript
+                .replace_parts(&[self.archive.rows(), self.task.rows()], changed);
+        }
+        if self.task.tools_full() {
+            self.wrapped_tools.replace(self.task.tools(), 0);
+        } else {
+            for (old, new) in self.task.tool_edits() {
+                self.wrapped_tools.replace_range(
+                    old.clone(),
+                    self.task.tools().get(new.clone()).unwrap_or_default(),
+                );
+            }
+        }
+        let (changed, rows) = self.task.reasoning();
+        let dropped = self.task.reasoning_dropped();
+        if changed > 0 && dropped > 0 && dropped <= self.wrapped_reasoning.source_len() {
+            self.wrapped_reasoning.replace_range(0..dropped, &[]);
+        }
+        if changed + 1 == rows.len()
+            && self.wrapped_reasoning.source_len() == rows.len()
+            && let Some((text, style)) = self.task.reasoning_append()
+        {
+            self.wrapped_reasoning.append_line(&text, style);
+        } else {
+            self.wrapped_reasoning.replace(rows, changed);
+        }
     }
 
     fn documents(&mut self, views: &ClientViews) {
@@ -245,7 +299,7 @@ impl ClientRenderer {
         authority: &wire::Authority,
         files: &crate::client::CommandSession<P>,
     ) -> crate::Result<()> {
-        let settings = files.state(crate::client::CommandFileRoot::Config, "settings.json")?;
+        let settings = files.state_ref(crate::client::CommandFileRoot::Config, "settings.json")?;
         let details = settings
             .as_ref()
             .and_then(|value| value.get("tool_details"))
@@ -261,8 +315,8 @@ impl ClientRenderer {
         if self.tool_details != details || self.archive.after() != after {
             self.tool_details = details;
             self.task = task::TaskRows::default();
-            self.transcript.clear();
-            self.transcript_changed = 0;
+            self.transcript.take();
+            self.wrapped_transcript.replace(&[], 0);
             self.archive = archive::Archive::new(after);
             self.update(views, authority);
         }
@@ -284,16 +338,16 @@ impl ClientRenderer {
         height: u16,
     ) -> crate::Result<()> {
         let area = super::ratatui::layout::Rect::new(0, 0, width, height);
-        self.wrapped = false;
+        self.wrapped = true;
         let areas = self.screen_for(files)?.areas(area, input);
         let width = areas.transcript.width;
-        self.wrapped_transcript
-            .update(&self.transcript, self.transcript_changed, width);
-        self.wrap_tools(width);
-        self.wrapped_reasoning
-            .update(&self.reasoning_rows, self.reasoning_changed, width);
-        self.transcript_changed = self.transcript.len();
-        self.reasoning_changed = self.reasoning_rows.len();
+        self.wrapped_transcript.reflow(width);
+        self.wrapped_tools.reflow(width);
+        self.reasoning_visible = viewport::reasoning(files)?;
+        self.wrapped_reasoning.reflow(width);
+        if !self.reasoning_visible {
+            self.wrapped_reasoning.hide();
+        }
         let side_width = areas.side.width.saturating_sub(2);
         self.side_wrapped = side_width > 0;
         if self.side_wrapped {
@@ -303,40 +357,23 @@ impl ClientRenderer {
                 .update(&self.plans, self.plans_changed, side_width);
             self.goal_changed = self.goal.len();
             self.plans_changed = self.plans.len();
+            self.wrapped_goal.view_from(
+                super::RowPosition::default(),
+                usize::from(areas.side.height),
+            );
+            self.wrapped_plans.view_from(
+                super::RowPosition::default(),
+                usize::from(areas.side.height),
+            );
         }
         self.wrapped = true;
-        let layout = files
-            .state(crate::client::CommandFileRoot::Session, "layout.json")?
-            .unwrap_or_default();
-        self.search_open = layout["open_view"] == "find" && layout["view_input"] == "find";
-        let rows = super::TranscriptRows::new(&self.wrapped_transcript, &self.wrapped_tools);
-        self.search.project(rows, self.search_open);
-        if self.search_open {
-            self.search.update(
-                rows,
-                layout["search_query"].as_str().unwrap_or(""),
-                layout["search_index"].as_i64().unwrap_or(0),
-                input.theme.style(super::config::ThemeRole::Selection),
-            );
-            let height = usize::from(areas.transcript.height);
-            let first = if self.search.count() != 0 {
-                self.search
-                    .selected_row(rows, layout["search_index"].as_i64().unwrap_or(0))
-            } else {
-                rows.len()
-                    .saturating_sub(height)
-                    .saturating_sub(layout["history_after"].as_u64().unwrap_or(0) as usize)
-            }
-            .min(rows.len().saturating_sub(height));
-            self.search.prepare(rows, first, height);
-        }
+        let height = if width == 0 {
+            0
+        } else {
+            usize::from(areas.transcript.height)
+        };
+        self.select_view(files, input, height)?;
         Ok(())
-    }
-
-    fn wrap_tools(&mut self, width: u16) {
-        self.wrapped_tools
-            .update(self.task.tools(), self.tools_changed, width);
-        self.tools_changed = self.task.tools().len();
     }
 
     /// Yield before a bounded, cancellable full-search-count slice.
@@ -414,7 +451,7 @@ impl ClientRenderer {
         files: &crate::client::CommandSession<P>,
     ) -> crate::Result<Screen<'_>> {
         use crate::client::CommandFileRoot;
-        let layout = files.state(CommandFileRoot::Session, "layout.json")?;
+        let layout = files.state_ref(CommandFileRoot::Session, "layout.json")?;
         let confirmation = layout
             .as_ref()
             .and_then(|layout| layout.get("confirmation"))
@@ -436,7 +473,7 @@ impl ClientRenderer {
         if view == Some("shortcuts") {
             self.help.refresh(files)?;
         }
-        let settings = files.state(CommandFileRoot::Config, "settings.json")?;
+        let settings = files.state_ref(CommandFileRoot::Config, "settings.json")?;
         let reasoning = settings
             .as_ref()
             .and_then(|value| value.get("reasoning"))
@@ -453,9 +490,9 @@ impl ClientRenderer {
         }
         if reasoning {
             screen.reasoning = if self.wrapped {
-                self.wrapped_reasoning.rows()
+                self.wrapped_reasoning.shown()
             } else {
-                &self.reasoning_rows
+                self.task.reasoning().1
             };
         }
         match view {
@@ -472,8 +509,6 @@ impl ClientRenderer {
                     super::TranscriptRows::new(&self.wrapped_transcript, &self.wrapped_tools);
                 screen.transcript_search = Some((rows, &self.search));
                 screen.reasoning = &[];
-                screen.search_row =
-                    (self.search.count() != 0).then(|| self.search.selected_row(rows, index));
                 screen.status = Line::raw(format!(
                     "Find: {}/{}{} matches · Enter next · Shift+Enter previous · Escape closes",
                     self.search.position(index),
@@ -503,32 +538,49 @@ impl ClientRenderer {
         Ok(screen)
     }
 
+    fn source_rows(&self) -> &[Line<'static>] {
+        self.transcript.get_or_init(|| {
+            self.archive
+                .rows()
+                .iter()
+                .chain(self.task.rows())
+                .cloned()
+                .collect()
+        })
+    }
+
     /// Borrow cached rows for layout; no ClientViews or transcript clone per frame.
     pub fn screen(&self) -> Screen<'_> {
         // TODO(#548): compose split/auto diffs when that renderer is exposed.
         Screen {
             header: self.header.clone(),
             transcript: if self.wrapped {
-                self.wrapped_transcript.rows()
+                self.wrapped_transcript.shown()
             } else {
-                &self.transcript
+                self.source_rows()
             },
             tools: if self.wrapped {
-                self.wrapped_tools.rows()
+                self.wrapped_tools.shown()
             } else {
                 self.task.tools()
             },
             diff: &self.diff,
             goal: if self.wrapped && self.side_wrapped {
-                self.wrapped_goal.rows()
+                self.wrapped_goal.shown()
             } else {
                 &self.goal
             },
             plans: if self.wrapped && self.side_wrapped {
-                self.wrapped_plans.rows()
+                self.wrapped_plans.shown()
             } else {
                 &self.plans
             },
+            hidden_tail: self.wrapped && self.top.is_some(),
+            scrollbar: Some(if self.wrapped {
+                self.source_window()
+            } else {
+                (0..0, 0)
+            }),
             notifications: &self.composed_notices,
             status: self.status.clone(),
             ..Screen::default()
@@ -541,26 +593,31 @@ fn line(line: &acyclic_markdown::Line) -> Line<'static> {
         line.spans
             .iter()
             .map(|span| {
-                let mut style = Style::default();
-                if let Some(acyclic_markdown::Color(r, g, b)) = span.style.foreground {
-                    style = style.fg(Color::Rgb(r, g, b));
-                }
-                for (set, modifier) in [
-                    (span.style.bold, Modifier::BOLD),
-                    (span.style.italic, Modifier::ITALIC),
-                    (span.style.dim, Modifier::DIM),
-                    (span.style.underline, Modifier::UNDERLINED),
-                    (span.style.strikethrough, Modifier::CROSSED_OUT),
-                ] {
-                    if set {
-                        style = style.add_modifier(modifier);
-                    }
-                }
+                let style = style(span.style);
                 // TODO(#604): emit queried OSC 8 link metadata through the terminal backend.
                 Span::styled(super::display_text(&span.text).into_owned(), style)
             })
             .collect::<Vec<_>>(),
     )
+}
+
+fn style(source: acyclic_markdown::Style) -> Style {
+    let mut style = Style::default();
+    if let Some(acyclic_markdown::Color(r, g, b)) = source.foreground {
+        style = style.fg(Color::Rgb(r, g, b));
+    }
+    for (set, modifier) in [
+        (source.bold, Modifier::BOLD),
+        (source.italic, Modifier::ITALIC),
+        (source.dim, Modifier::DIM),
+        (source.underline, Modifier::UNDERLINED),
+        (source.strikethrough, Modifier::CROSSED_OUT),
+    ] {
+        if set {
+            style = style.add_modifier(modifier);
+        }
+    }
+    style
 }
 
 #[cfg(test)]
@@ -585,3 +642,18 @@ mod frame_tests;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 #[path = "thinking_frame_tests.rs"]
 mod thinking_frame_tests;
+
+#[cfg(test)]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
+mod viewport_cost;
+
+#[cfg(test)]
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod scrollbar_tests;
+
+#[cfg(test)]
+mod revision_tests;

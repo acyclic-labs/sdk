@@ -10,6 +10,9 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(feature = "tui")]
+mod revisions;
+
 fn goal_revision(file: Option<&FileValue>) -> Option<crate::OperationId> {
     file.and_then(|file| file.publication)
 }
@@ -58,9 +61,11 @@ type ViewIndex<V> = crate::test_support::TaskVolumeFiles<V>;
 type ViewIndex<V> = BTreeMap<FileKey, V>;
 
 /// Bounded, shared file slices from one accepted volume query.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct FileQueryView {
     query: Arc<Query>,
+    #[cfg(feature = "tui")]
+    revisions: revisions::Revisions,
     pub(super) outputs: super::command_output::Outputs,
     storage: super::FileViews,
     rows: BTreeMap<FileKey, Arc<[String]>>,
@@ -75,6 +80,29 @@ pub struct FileQueryView {
     materialized: bool,
     maximum_files: usize,
     maximum_bytes: usize,
+}
+
+// Accepted files define equality; the disposable change journal only selects
+// incremental work or a full refresh and does not change the projection.
+impl PartialEq for FileQueryView {
+    fn eq(&self, other: &Self) -> bool {
+        let equal = self.query == other.query
+            && self.outputs == other.outputs
+            && self.storage == other.storage
+            && self.rows == other.rows
+            && self.models == other.models
+            && self.notifications == other.notifications
+            && self.rejected_models == other.rejected_models
+            && self.goal == other.goal
+            && self.goal_revision == other.goal_revision
+            && self.progress == other.progress
+            && self.materialized == other.materialized
+            && self.maximum_files == other.maximum_files
+            && self.maximum_bytes == other.maximum_bytes;
+        #[cfg(any(feature = "tui", all(test, not(target_arch = "wasm32"))))]
+        let equal = equal && self.goal_line_starts == other.goal_line_starts;
+        equal
+    }
 }
 
 impl FileQueryView {
@@ -174,6 +202,8 @@ impl FileQueryView {
             .collect();
         let mut view = Self {
             query: Arc::new(query),
+            #[cfg(feature = "tui")]
+            revisions: revisions::Revisions::new(storage.cursor().position),
             outputs: super::command_output::Outputs::default(),
             storage,
             rows: BTreeMap::new(),
@@ -242,6 +272,11 @@ impl FileQueryView {
     #[cfg(feature = "tui")]
     pub(crate) fn source(&self) -> &Arc<Query> {
         &self.query
+    }
+
+    #[cfg(feature = "tui")]
+    pub(crate) fn changes_since(&self, after: u64) -> Option<impl Iterator<Item = &FileKey>> {
+        self.revisions.since(after)
     }
 
     /// Exact resume cut; it advances even for nonmatching publications.
@@ -408,7 +443,10 @@ impl FileQueryView {
     fn apply_materialized(&mut self, change: &Change) -> Result<()> {
         let apply = self.storage.prepare(change).map_err(super::query_error)?;
         self.project(change);
-        apply(&mut self.storage).map_err(super::query_error)
+        apply(&mut self.storage).map_err(super::query_error)?;
+        #[cfg(feature = "tui")]
+        self.revisions.record(change, self.maximum_files);
+        Ok(())
     }
 
     pub(super) fn session_change(
@@ -524,6 +562,8 @@ impl FileQueryView {
         }
         self.project(&change);
         self.storage.replace(&change, &self.rejected_models);
+        #[cfg(feature = "tui")]
+        self.revisions.record(&change, self.maximum_files);
         Ok(changed)
     }
 }

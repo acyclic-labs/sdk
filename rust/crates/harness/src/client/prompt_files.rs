@@ -68,8 +68,8 @@ impl PromptFiles {
         let layout_file = files.state_file(CommandFileRoot::Session, "layout.json")?;
         let layout_changed = self.layout.as_ref() != layout_file;
         let layout = files
-            .state(CommandFileRoot::Session, "layout.json")?
-            .unwrap_or_default();
+            .state_ref(CommandFileRoot::Session, "layout.json")?
+            .unwrap_or(&serde_json::Value::Null);
         let search = layout["open_view"] == "find" && layout["view_input"] == "find";
         let mode_changed = input.transcript_search() != search;
         let query = if search {

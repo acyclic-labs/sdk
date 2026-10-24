@@ -869,3 +869,46 @@ fn inline_checkpoints_never_split_an_escape() {
 // The plain-paragraph fast path must not commit that line while the title is
 // pending.
 const QUOTED_LIST_TITLE: &str = "paragraph &copy[r]: /url\n[r]: /url\n* [r]: /url\n'word' : ";
+
+#[test]
+fn consuming_visible_lines_moves_the_existing_text_allocations() {
+    for body in [
+        "plain text",
+        "# Heading\n\n**bold** and 日🙂",
+        "```rust\nlet x = 1;",
+        "| a | b |\n|---|---|\n| x | y |",
+        "[ref]: /x\n\n[ref]",
+    ] {
+        let mut markdown = Markdown::default();
+        markdown.push(body);
+        let expected = markdown.lines().to_vec();
+        let addresses: Vec<_> = markdown
+            .lines()
+            .iter()
+            .flat_map(|row| &row.spans)
+            .filter(|span| !span.text.is_empty())
+            .map(|span| span.text.as_ptr())
+            .collect();
+        let cloned_addresses: Vec<_> = expected
+            .iter()
+            .flat_map(|row| &row.spans)
+            .filter(|span| !span.text.is_empty())
+            .map(|span| span.text.as_ptr())
+            .collect();
+        let moved = markdown.into_lines();
+        assert_eq!(moved, expected);
+        let moved_addresses: Vec<_> = moved
+            .iter()
+            .flat_map(|row| &row.spans)
+            .filter(|span| !span.text.is_empty())
+            .map(|span| span.text.as_ptr())
+            .collect();
+        assert_eq!(moved_addresses, addresses);
+        if !addresses.is_empty() {
+            assert_ne!(
+                cloned_addresses, addresses,
+                "cloning the sealed text fails the same ownership check"
+            );
+        }
+    }
+}

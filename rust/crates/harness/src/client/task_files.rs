@@ -13,8 +13,10 @@ use futures::{FutureExt as _, StreamExt as _};
 /// Authorized snapshot/follow inputs feeding the single renderer-neutral fold.
 pub struct TaskFileClient {
     views: ClientViews,
+    source: std::sync::Arc<dyn FileQuerySource>,
     changes: ChangeStream,
     commands: Option<ChangeStream>,
+    command_source: Option<std::sync::Arc<dyn FileQuerySource>>,
     command_selection: Option<([u8; 32], [u8; 32])>,
     task_selection: ([u8; 32], [u8; 32]),
     selected: Option<crate::TaskId>,
@@ -64,8 +66,10 @@ impl TaskFileClient {
         views.query_snapshot(query, snapshot, maximum_files, maximum_bytes)?;
         Ok(Self {
             views,
+            source: files.retain(),
             changes: observed.changes,
             commands: None,
+            command_source: None,
             command_selection: None,
             task_selection,
             selected: None,
@@ -127,6 +131,7 @@ impl TaskFileClient {
             self.views.remove_selection(&self.task_selection);
         }
         self.task_selection = identity;
+        self.source = files.retain();
         self.changes = observed.changes;
         self.selected = Some(task);
         self.advance_presentation();
@@ -137,7 +142,10 @@ impl TaskFileClient {
         &mut self,
         files: &super::CommandSession<P>,
     ) -> Result<()> {
-        let (query, observed) = files.observe_view(self.bounds).await?;
+        let (query, source) = files.view_source()?;
+        let observed = source
+            .observe_files(query.clone(), None, self.bounds.files, self.bounds.bytes)
+            .await?;
         let snapshot = observed
             .snapshot
             .ok_or_else(|| Error::Conflict("command snapshot missing".into()))?;
@@ -150,6 +158,7 @@ impl TaskFileClient {
             }
         }
         self.command_selection = Some(identity);
+        self.command_source = Some(source);
         self.commands = Some(observed.changes);
         self.advance_presentation();
         Ok(())
@@ -181,6 +190,17 @@ impl TaskFileClient {
         }
         Ok(())
     }
+    /// Apply one selected document delivery before committing its resume cut.
+    pub fn apply_document_change(
+        &mut self,
+        documents: &mut super::DocumentFiles,
+        update: super::DocumentUpdate,
+    ) -> Result<()> {
+        if documents.apply_change(update, &mut self.views)? {
+            self.advance_presentation();
+        }
+        Ok(())
+    }
     /// Select only push sources; consuming a source and folding it cannot be cancelled apart.
     pub async fn next_change(&mut self) -> Result<()> {
         let commands = &mut self.commands;
@@ -193,10 +213,80 @@ impl TaskFileClient {
         .fuse();
         let task = self.changes.next().fuse();
         futures::pin_mut!(command, task);
-        let change = futures::select! { change = task => change, change = command => change };
-        let change = change
-            .ok_or_else(|| Error::Conflict("file follow ended; reopen snapshot".into()))??;
-        self.apply_change(change)
+        let (command, change) = futures::select! { change = task => (false, change), change = command => (true, change) };
+        match change {
+            Some(change) => self.apply_change(change?),
+            None => self.resume(command).await,
+        }
+    }
+
+    async fn resume(&mut self, command: bool) -> Result<()> {
+        let identity = if command {
+            self.command_selection
+                .ok_or_else(|| Error::Conflict("command selection missing".into()))?
+        } else {
+            self.task_selection
+        };
+        let selection = self
+            .views
+            .selection(&identity)
+            .ok_or_else(|| Error::Conflict("follow selection missing".into()))?;
+        let source = if command {
+            self.command_source
+                .as_ref()
+                .ok_or_else(|| Error::Conflict("command source missing".into()))?
+        } else {
+            &self.source
+        };
+        let query = selection.query().clone();
+        let cursor = selection.cursor().clone();
+        let observed = source
+            .observe_files(
+                query.clone(),
+                Some(cursor.clone()),
+                self.bounds.files,
+                self.bounds.bytes,
+            )
+            .await?;
+        if observed.reset && observed.snapshot.is_none() {
+            return Err(Error::Conflict("follow reset snapshot missing".into()));
+        }
+        // Install only a fully validated replacement. Cancellation before this
+        // point leaves the old cut and reader intact for the next attempt.
+        let mut changes = observed.changes;
+        if let Some(snapshot) = observed.snapshot {
+            let progress = snapshot.cursor != cursor;
+            let next = (snapshot.cursor.volume, snapshot.cursor.query);
+            self.views
+                .query_snapshot(query, snapshot, self.bounds.files, self.bounds.bytes)?;
+            if next != identity {
+                self.views.remove_selection(&identity);
+            }
+            if command {
+                self.command_selection = Some(next);
+            } else {
+                self.task_selection = next;
+            }
+            if progress {
+                self.advance_presentation();
+            } else {
+                let change = changes.next().await.ok_or_else(|| {
+                    Error::Conflict("resumed file follow ended without progress".into())
+                })??;
+                self.apply_change(change)?;
+            }
+        } else {
+            let change = changes.next().await.ok_or_else(|| {
+                Error::Conflict("resumed file follow ended without progress".into())
+            })??;
+            self.apply_change(change)?;
+        }
+        if command {
+            self.commands = Some(changes);
+        } else {
+            self.changes = changes;
+        }
+        Ok(())
     }
 }
 #[cfg(test)]

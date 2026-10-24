@@ -2,6 +2,7 @@ use super::{Error, FileValue, Generation, Query, Result, SCHEMA, TaskVolume, seg
 use acyclic_stream::{ReadRequest, StreamProvider};
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Serializable next-record cursor. Never infer continuity from a native watch.
@@ -48,7 +49,7 @@ impl Cursor {
 }
 
 /// One atomic-cut snapshot; file payloads remain shared segment slices.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     /// Current matching files in typed identity order (chunk sequences are numeric).
     pub files: Vec<FileValue>,
@@ -59,7 +60,7 @@ pub struct Snapshot {
 }
 
 /// One matching change, or a checkpoint after a nonmatching publication.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Change {
     /// Logical file value; `None` advances a filtered query past unrelated records.
     pub file: Option<FileValue>,
@@ -268,7 +269,10 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         #[cfg(not(acyclic_harness_loom))]
         let replace = true;
         if replace {
-            *self.index.lock().await = fresh.index.into_inner();
+            let index = Arc::try_unwrap(fresh.index)
+                .map_err(|_| Error::ResetRequired)?
+                .into_inner();
+            *self.index.lock().await = index;
         }
         self.snapshot_follow(query, maximum_files, true).await
     }

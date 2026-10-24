@@ -39,8 +39,11 @@ pub struct Screen<'a> {
     pub overlay_title: &'a str,
     /// The followed layout selects the local feedback input form.
     pub feedback: bool,
-    /// Search selection overrides follow-tail while its file-backed form is open.
-    pub search_row: Option<usize>,
+    /// The borrowed rows are an anchored window with further source below it.
+    pub hidden_tail: bool,
+    /// Source-byte extent of the selected window and full source length. Some
+    /// reserves the track column even while the short document fits the view.
+    pub scrollbar: Option<(std::ops::Range<usize>, usize)>,
     /// Status hints and model/usage summary.
     pub status: Line<'a>,
 }
@@ -54,6 +57,8 @@ pub struct ScreenAreas {
     pub header: Rect,
     /// Transcript viewport.
     pub transcript: Rect,
+    /// Track hit area, separate from transcript and prompt hit testing.
+    pub scrollbar: Rect,
     /// Optional terminal panel.
     pub terminal: Rect,
     /// Optional right-hand file/diff views.
@@ -66,6 +71,62 @@ pub struct ScreenAreas {
     pub completions: Rect,
     /// Status hints.
     pub status: Rect,
+    scrollbar_total: usize,
+}
+
+impl ScreenAreas {
+    /// Capture drag only for the painted track. A click resolves through the
+    /// renderer's source index, then publishes an ordinary typed file intent.
+    pub fn event(
+        &self,
+        input: &mut PromptInput,
+        event: crate::key_event::InputEvent,
+        viewport: &mut Viewport,
+        now_ms: u64,
+        anchor_at: &mut dyn FnMut(usize) -> Option<crate::TranscriptAnchor>,
+    ) -> impl Iterator<Item = crate::InputEffect> + use<> {
+        use crate::key_event::{InputEvent, MouseButton, MouseEventKind};
+        use crate::prompt_input::Drag;
+        if self.scrollbar_total == 0 && input.drag == Some(Drag::Scrollbar) {
+            input.drag = None;
+        }
+        let mut seek = None;
+        let mut forward = true;
+        if let InputEvent::Mouse(mouse) = &event {
+            let popup = self.completions.contains((mouse.column, mouse.row).into());
+            if popup {
+                input.drag = None;
+            }
+            let down = mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                && self.scrollbar.contains((mouse.column, mouse.row).into())
+                && self.scrollbar_total != 0
+                && !popup;
+            let drag = mouse.kind == MouseEventKind::Drag(MouseButton::Left)
+                && input.drag == Some(Drag::Scrollbar);
+            if down || drag {
+                input.drag = Some(Drag::Scrollbar);
+                let at = crate::TranscriptScrollbar::source_at(
+                    self.scrollbar,
+                    mouse.row,
+                    self.scrollbar_total,
+                );
+                seek = Some(crate::InputEffect::ScrollTo {
+                    anchor: anchor_at(at),
+                });
+                forward = false;
+            } else if mouse.kind == MouseEventKind::Up(MouseButton::Left)
+                && input.drag == Some(Drag::Scrollbar)
+            {
+                input.drag = None;
+                forward = false;
+            }
+        }
+        // Route eagerly: returned effects own their data and retain no editor
+        // or resolver borrow. Pointer capture is ephemeral; position is a file.
+        let effects = forward
+            .then(|| input.event(event, PromptBox::input_area(self.prompt), viewport, now_ms));
+        seek.into_iter().chain(effects.into_iter().flatten())
+    }
 }
 
 fn take_top(area: &mut Rect, height: u16) -> Rect {
@@ -90,8 +151,10 @@ impl Screen<'_> {
         if self.feedback {
             0
         } else if self.overlay.is_empty() {
-            (self.reasoning.len() + self.transcript_len() + usize::from(input.busy))
-                .saturating_sub(usize::from(height))
+            (self.reasoning.len()
+                + self.transcript_len()
+                + usize::from(input.busy && !self.hidden_tail))
+            .saturating_sub(usize::from(height))
         } else {
             self.overlay
                 .len()
@@ -161,6 +224,13 @@ impl Screen<'_> {
             remaining.height,
         );
         remaining.width -= side_width;
+        let scrollbar = Rect::new(
+            remaining.right().saturating_sub(1),
+            remaining.y,
+            u16::from(self.scrollbar.is_some() && remaining.width > 1),
+            remaining.height,
+        );
+        remaining.width -= scrollbar.width;
         let completions = if input.completion.active(&input.editor) {
             CompletionPopup::new(&input.completion, &input.editor).area(prompt, area)
         } else {
@@ -170,6 +240,8 @@ impl Screen<'_> {
             animation: false,
             header,
             transcript: remaining,
+            scrollbar,
+            scrollbar_total: 0,
             terminal,
             side,
             notifications,
@@ -190,6 +262,7 @@ impl Screen<'_> {
         let area = areas.transcript;
         let row = self.reasoning.len() + self.transcript_len();
         if !input.busy
+            || self.hidden_tail
             || self.feedback
             || !self.overlay.is_empty()
             || area.width == 0
@@ -225,19 +298,34 @@ impl Screen<'_> {
         now_ms: u64,
     ) -> ScreenAreas {
         let mut areas = self.areas(frame.area(), input);
-        let transcript_scroll = self.search_row.map_or(transcript_scroll, |row| {
-            row.min(
-                self.transcript_len()
-                    .saturating_sub(usize::from(areas.transcript.height)),
-            )
-        });
+        if self.overlay.is_empty()
+            && !self.feedback
+            && let Some((visible, total)) = &self.scrollbar
+        {
+            if visible.end.saturating_sub(visible.start) < *total
+                && areas.scrollbar.width != 0
+                && areas.scrollbar.height != 0
+            {
+                areas.scrollbar_total = *total;
+            }
+            frame.render_widget(
+                crate::TranscriptScrollbar {
+                    visible: visible.clone(),
+                    total: *total,
+                    theme: &input.theme,
+                },
+                areas.scrollbar,
+            );
+        }
         frame.render_widget(Paragraph::new(self.header.clone()), areas.header);
         let thinking = self.thinking_line(input, &areas, transcript_scroll, now_ms);
         areas.animation = thinking.is_some() && !input.editor.settings().reduced_motion;
         if self.feedback {
             frame.render_widget(crate::Feedback(&input.theme), areas.transcript);
         } else if self.overlay.is_empty() {
-            let count = self.reasoning.len() + self.transcript_len() + usize::from(input.busy);
+            let count = self.reasoning.len()
+                + self.transcript_len()
+                + usize::from(input.busy && !self.hidden_tail);
             let end =
                 count.min(transcript_scroll.saturating_add(usize::from(areas.transcript.height)));
             for (row, index) in (transcript_scroll..end).enumerate() {

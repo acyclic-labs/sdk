@@ -24,20 +24,20 @@ impl Observed {
         records: futures::stream::BoxStream<'static, Result<T, StreamError>>,
         is_record: fn(&T) -> bool,
     ) -> futures::stream::BoxStream<'static, Result<T, StreamError>> {
-        if path.as_str().ends_with("/status") {
-            // Fault the actual provider open invoked by session::serve, before
-            // any SwarmClient delivery or fixture callback can run.
-            let copies = match self.fault {
+        // Inject work for each delivered status, independent of how many
+        // channels carry it. This catches n*log(n) and n² implementations even
+        // when the production transport multiplexes all agents on one follow.
+        let copies = if path.as_str() == "swarm/status" {
+            match self.fault {
                 Fault::LogarithmicProviderWork => {
                     64 * self.agents.next_power_of_two().ilog2() as usize
                 }
                 Fault::QuadraticProviderWork => self.agents,
                 _ => 0,
-            };
-            for _ in 0..copies {
-                std::hint::black_box(vec![0u8; 64]);
             }
-        }
+        } else {
+            0
+        };
         // Instrumentation has one lock; it is never nested or held over a poll.
         let mut counts = self.counts.lock().unwrap_or_else(|p| p.into_inner());
         counts.server_follows += 1;
@@ -51,9 +51,12 @@ impl Observed {
         let counts = self.counts.clone();
         futures::stream::unfold(
             (records, lease, counts, is_record),
-            |(mut records, lease, counts, is_record)| async move {
+            move |(mut records, lease, counts, is_record)| async move {
                 let record = records.next().await?;
                 if record.as_ref().is_ok_and(is_record) {
+                    for _ in 0..copies {
+                        std::hint::black_box(vec![0u8; 64]);
+                    }
                     counts
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())

@@ -169,7 +169,7 @@ impl<'a> State<'a> {
                 }
                 Action::None
             }
-            SwarmChange::Watermark { .. } => Action::None,
+            SwarmChange::Watermark { .. } | SwarmChange::StatusWatermark(_) => Action::None,
         };
         if matches!(action, Action::None) && !self.waiting_layout && !self.complete {
             let needed = (self.phase + 1) * self.case.agents.div_ceil(self.case.attention_every);
@@ -398,9 +398,12 @@ impl<'a> State<'a> {
             )));
         }
         self.verify_prefix()?;
+        // All agents share one status cursor. Each phase publishes three
+        // statuses per agent plus attention, then settles agents in ID order.
+        let attention = self.case.agents.div_ceil(self.case.attention_every);
+        let phase_records = 3 * self.case.agents + attention;
         for id in 0..self.case.agents {
-            let expected = 1 + self.case.layouts.len() as u64
-                * (3 + u64::from(id % self.case.attention_every == 0));
+            let expected = (self.case.layouts.len() * phase_records + id + 1) as u64;
             if self.status_cursors[id] != expected {
                 return Err(Error::Invalid(
                     "overview omitted its final accepted cut".into(),

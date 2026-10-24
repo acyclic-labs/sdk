@@ -1,6 +1,7 @@
 //! Derived visibility bits. Each level summarizes groups of 64 child words.
 
 #[derive(Default)]
+#[cfg_attr(test, derive(Clone))]
 pub(super) struct Visibility {
     levels: Vec<Vec<u64>>,
     pub(super) end: usize,

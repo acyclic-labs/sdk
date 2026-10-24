@@ -9,8 +9,9 @@ fn publish_peer(mut owner: CommandSession<MemoryStream>) {
         loom::future::block_on(Box::pin(async move {
             owner
                 .update_state(CommandFileRoot::Session, "layout.json", |layout| {
-                    layout["transcript_back"] =
-                        json!(layout["transcript_back"].as_u64().unwrap() + 4);
+                    let from: crate::tui::TranscriptAnchor =
+                        serde_json::from_value(layout["transcript_top"].clone()).unwrap();
+                    layout["transcript_top"] = json!(scroll_anchor(from.position.line + 4));
                     layout["peer"] = json!(true);
                     Ok(true)
                 })
@@ -40,7 +41,7 @@ fn scroll_race<const CACHED: bool>(cut: usize) {
             seed.write_state(
                 CommandFileRoot::Session,
                 "layout.json",
-                &json!({"transcript_back":2}),
+                &json!({"transcript_top":scroll_anchor(2)}),
             )
             .await
             .unwrap();
@@ -68,29 +69,33 @@ fn scroll_race<const CACHED: bool>(cut: usize) {
                     .write_state(
                         CommandFileRoot::Session,
                         "layout.json",
-                        &json!({"transcript_back":5}),
+                        &json!({"transcript_top":scroll_anchor(5)}),
                     )
                     .await
                     .expect("scroll must re-resolve the new cut");
-            } else if cut == 2 {
+            } else {
                 let mut edits = 0;
-                input
-                    .update_state(CommandFileRoot::Session, "layout.json", |layout| {
+                crate::client::scroll_tui(&mut input, [3], 100, |from, rows| {
+                    if cut == 2 {
                         if let Some(owner) = owner.take() {
                             publish_peer(owner);
                         }
-                        layout["transcript_back"] =
-                            json!(layout["transcript_back"].as_u64().unwrap() + 3);
-                        edits += 1;
-                        Ok(true)
-                    })
-                    .await
-                    .unwrap();
-                assert_eq!(edits, 2, "stale edit must be recomputed exactly once");
-            } else {
-                crate::client::scroll_tui(&mut input, [3], 100)
-                    .await
-                    .unwrap();
+                    }
+                    edits += 1;
+                    Some(scroll_anchor(
+                        from.unwrap()
+                            .position
+                            .line
+                            .saturating_add_signed(rows.saturating_neg()),
+                    ))
+                })
+                .await
+                .unwrap();
+                assert_eq!(
+                    edits,
+                    if cut == 2 { 2 } else { 1 },
+                    "stale edit must be recomputed exactly once"
+                );
             }
             if cut == 3 {
                 publish_peer(owner.take().unwrap());
@@ -100,7 +105,7 @@ fn scroll_race<const CACHED: bool>(cut: usize) {
                 .state(CommandFileRoot::Session, "layout.json")
                 .unwrap()
                 .unwrap();
-            assert_eq!(layout["transcript_back"], 9);
+            assert_eq!(layout["transcript_top"], json!(scroll_anchor(9)));
             assert_eq!(layout["peer"], true);
         }));
     });
@@ -117,4 +122,11 @@ fn scrolling_and_owner_layout_edits_preserve_both_changes() {
 #[should_panic(expected = "scroll must re-resolve the new cut")]
 fn negative_control_cached_layout_fails_after_owner_publication() {
     scroll_race::<true>(1);
+}
+
+fn scroll_anchor(line: usize) -> crate::tui::TranscriptAnchor {
+    crate::tui::TranscriptAnchor {
+        position: crate::tui::RowPosition { line, row: 0 },
+        ..Default::default()
+    }
 }

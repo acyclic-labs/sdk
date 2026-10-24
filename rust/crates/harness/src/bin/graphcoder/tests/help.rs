@@ -78,7 +78,7 @@ proptest::proptest! {
 
 #[tokio::test]
 async fn help_pages_have_a_separate_followed_offset_from_the_transcript() {
-    use acyclic_harness::client::{scroll_tui, tui_scroll};
+    use acyclic_harness::client::{scroll_tui, tui_anchor, tui_modal_scroll};
     let volume = Arc::new(
         TaskVolume::open(
             Arc::new(MemoryStream::default()),
@@ -102,7 +102,7 @@ async fn help_pages_have_a_separate_followed_offset_from_the_transcript() {
         .write_state(
             CommandFileRoot::Session,
             "layout.json",
-            &serde_json::json!({"transcript_back":12}),
+            &serde_json::json!({"transcript_top":{"part":"answer","position":{"line":12,"row":0}}}),
         )
         .await
         .unwrap();
@@ -117,7 +117,7 @@ async fn help_pages_have_a_separate_followed_offset_from_the_transcript() {
     )
     .await
     .unwrap();
-    assert_eq!(tui_scroll(&files).unwrap(), usize::MAX);
+    assert_eq!(tui_modal_scroll(&files).unwrap(), usize::MAX);
     let mut renderer = ClientRenderer::default();
     let screen = renderer.screen_for(&files).unwrap();
     let input = PromptInput::default();
@@ -128,8 +128,12 @@ async fn help_pages_have_a_separate_followed_offset_from_the_transcript() {
         .iter()
         .map(|span| span.content.as_ref())
         .collect();
-    scroll_tui(&mut files, [-5], maximum).await.unwrap();
-    assert_eq!(maximum - tui_scroll(&files).unwrap(), 5);
+    scroll_tui(&mut files, [-5], maximum, |_, _| {
+        unreachable!("modal scroll")
+    })
+    .await
+    .unwrap();
+    assert_eq!(maximum - tui_modal_scroll(&files).unwrap(), 5);
     let screen = renderer.screen_for(&files).unwrap();
     let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
     terminal
@@ -144,7 +148,8 @@ async fn help_pages_have_a_separate_followed_offset_from_the_transcript() {
     handle_tui_input(&mut files, &NoFiles, InputEffect::Host(Action::Escape))
         .await
         .unwrap();
-    assert_eq!(tui_scroll(&files).unwrap(), 12);
+    assert_eq!(tui_anchor(&files).unwrap().unwrap().position.line, 12);
+    assert_eq!(tui_modal_scroll(&files).unwrap(), 0);
     assert!(
         files
             .state(CommandFileRoot::Session, "layout.json")

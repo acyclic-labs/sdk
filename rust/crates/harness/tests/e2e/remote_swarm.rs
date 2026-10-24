@@ -10,9 +10,8 @@ use acyclic_harness::{
     client::{ClientViewLimits, QueryViewLimits, SwarmClient, SwarmClientLimits},
     task_volume::{Channel, ChildState, ChildStatus, FileKey, Query, TaskFile, TaskVolume, Write},
 };
-use acyclic_stream::{AppendRequest, StreamPath, StreamProvider, session, wire};
+use acyclic_stream::{StreamPath, StreamProvider, session, wire};
 use futures::{FutureExt as _, channel::oneshot};
-use prost::Message as _;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -163,12 +162,11 @@ async fn seed<P: StreamProvider + 'static>(
             attention: author(id) == 1,
         };
         stream
-            .append(AppendRequest {
-                path: path(&format!("{}/status", agent(root, id)?.as_str()))?,
-                records: vec![status.encode_to_vec().into()],
-                if_tail: None,
-                idempotency_key: None,
-            })
+            .append(acyclic_harness::client::status_publication(
+                &path(root)?,
+                &agent(root, id)?,
+                status,
+            )?)
             .await?;
         let member = ChildStatus {
             task: TaskId::from_bytes([1; 16]),

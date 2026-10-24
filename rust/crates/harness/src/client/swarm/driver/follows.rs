@@ -6,9 +6,14 @@ use futures::{
     StreamExt as _, TryStreamExt as _,
     stream::{self, AbortHandle, Abortable, SelectAll},
 };
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
+    rc::Rc,
+};
 
-type Frames = BoxProviderStream<'static, std::result::Result<wire::SessionFrame, StreamError>>;
+pub(super) type Frames =
+    BoxProviderStream<'static, std::result::Result<wire::SessionFrame, StreamError>>;
 struct Content {
     frames: Rc<RefCell<Option<Frames>>>,
     abort: AbortHandle,
@@ -21,21 +26,32 @@ pub(super) struct Routed {
 
 pub(super) struct Follows {
     session: Client,
-    agents: BTreeMap<StreamPath, Content>,
+    agents: BTreeSet<StreamPath>,
     content: BTreeMap<StreamPath, Content>,
     sources: SelectAll<futures::stream::LocalBoxStream<'static, Routed>>,
+    status: Option<wire::SessionSubscription>,
 }
 
 impl Follows {
-    pub fn new(session: Client, discovery: Frames) -> Self {
+    pub fn new(session: Client, root: &StreamPath, discovery: Frames) -> Result<Self> {
         let mut follows = Self {
             session,
-            agents: BTreeMap::new(),
+            agents: BTreeSet::new(),
             content: BTreeMap::new(),
             sources: SelectAll::new(),
+            status: Some(follow(root, "status", wire::SessionDelivery::Latest, None)?),
         };
         follows.source(None, false, discovery);
-        follows
+        Ok(follows)
+    }
+
+    pub fn status(&mut self) {
+        if let Some(subscription) = self.status.take() {
+            let session = self.session.clone();
+            let frames =
+                stream::once(async move { session.subscribe(subscription).await }).try_flatten();
+            self.source(None, true, Box::pin(frames));
+        }
     }
 
     fn source(
@@ -60,20 +76,6 @@ impl Follows {
         abort
     }
 
-    fn subscribe(
-        &mut self,
-        agent: StreamPath,
-        overview: bool,
-        subscription: wire::SessionSubscription,
-    ) -> Content {
-        let session = self.session.clone();
-        // All newly discovered agents register concurrently as the follow is
-        // driven, without serial network round trips or another queue/pool.
-        let frames =
-            stream::once(async move { session.subscribe(subscription).await }).try_flatten();
-        self.owned(agent, overview, Box::pin(frames))
-    }
-
     pub fn discover(
         &mut self,
         demand: &ClientInterests,
@@ -83,15 +85,13 @@ impl Follows {
         if demand.tier(&agent).is_none() || &agent == demand.root() {
             return Err(Error::Invalid("discovered agent lies outside swarm".into()));
         }
-        if self.agents.contains_key(&agent) {
+        if self.agents.contains(&agent) {
             return Ok(false);
         }
         if self.agents.len() >= maximum {
             return Err(Error::Invalid("swarm agent bound reached".into()));
         }
-        let subscription = follow(&agent, "status", wire::SessionDelivery::Latest, None)?;
-        let status = self.subscribe(agent.clone(), true, subscription);
-        self.agents.insert(agent, status);
+        self.agents.insert(agent);
         Ok(true)
     }
 
@@ -130,7 +130,7 @@ impl Follows {
         self.agents.remove(agent);
     }
     pub fn contains(&self, agent: &StreamPath) -> bool {
-        self.agents.contains_key(agent)
+        self.agents.contains(agent)
     }
 
     pub async fn next(&mut self) -> Option<Routed> {

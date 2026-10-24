@@ -27,6 +27,10 @@ fn error(value: impl std::fmt::Display) -> JsValue {
 #[serde(tag = "kind", rename_all = "camelCase")]
 #[tsify(large_number_types_as_bigints)]
 enum SwarmDelivery<'a> {
+    StatusWatermark {
+        accepted: u64,
+        durable: u64,
+    },
     Retired {
         agent: &'a str,
     },
@@ -53,6 +57,10 @@ enum SwarmDelivery<'a> {
 }
 fn delivery(change: &SwarmChange) -> Result<JsValue, JsValue> {
     to_js(&match change {
+        SwarmChange::StatusWatermark(mark) => SwarmDelivery::StatusWatermark {
+            accepted: mark.accepted,
+            durable: mark.durable,
+        },
         SwarmChange::Retired { agent } => SwarmDelivery::Retired {
             agent: agent.as_str(),
         },

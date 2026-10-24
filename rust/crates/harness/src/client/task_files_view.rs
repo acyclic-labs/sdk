@@ -84,19 +84,24 @@ impl<'a> TaskQueryView<'a> {
             _ => None,
         }
     }
-    #[cfg(feature = "tui")]
     pub(crate) fn text_from(
         &self,
         from: Option<&FileKey>,
     ) -> impl Iterator<Item = TaskTextView<'a>> + use<'a> {
-        let (mut lower, upper) = Query::Task(self.task.clone())
-            .ranges()
-            .pop()
-            .expect("task range");
-        if let Some(from) = from {
-            lower = std::ops::Bound::Included(from.clone());
-        }
-        self.files.range((lower, upper)).filter_map(|(_, file)| {
+        let key = |file| FileKey::Task {
+            task: self.task.clone(),
+            file,
+        };
+        let lower = key(TaskFile::Chunk {
+            turn: 0,
+            sequence: 0,
+        });
+        let upper = key(TaskFile::TextHead {
+            turn: u64::MAX,
+            channel: Channel::Reasoning,
+        });
+        let lower = from.map_or(lower.clone(), |from| lower.max(from.clone()));
+        self.files.range(lower..=upper).filter_map(|(_, file)| {
             let FileKey::Task { file: kind, .. } = &file.key else {
                 return None;
             };
@@ -112,6 +117,26 @@ impl<'a> TaskQueryView<'a> {
             })
         })
     }
+    #[cfg(feature = "tui")]
+    pub(crate) fn changes_since(
+        &self,
+        after: u64,
+    ) -> Option<impl Iterator<Item = &'a FileKey> + use<'a>> {
+        let task = self.task;
+        self.selection.changes_since(after).map(move |changes| {
+            changes.filter(
+                move |key| matches!(key, FileKey::Task { task: owner, .. } if owner == task),
+            )
+        })
+    }
+    #[cfg(feature = "tui")]
+    pub(crate) fn tool<'b>(&'b self, turn: u64, call: &'b Component) -> ToolQueryView<'b> {
+        ToolQueryView {
+            turn,
+            call,
+            task: self.clone(),
+        }
+    }
     /// Exact task files in numeric identity order, retaining canonical metadata.
     pub fn files(&self) -> impl Iterator<Item = &'a HeadFile> + use<'a> {
         self.selected.clone().map(|(_, file)| file)
@@ -119,22 +144,9 @@ impl<'a> TaskQueryView<'a> {
     /// Selected text/reasoning heads, or raw chunks from an ordinary query.
     /// A raw chunk's identity remains in `file.key`; heads include through_sequence.
     pub fn text(&self) -> impl Iterator<Item = TaskTextView<'a>> + use<'a> {
-        self.files().filter_map(|file| {
-            let FileKey::Task { file: kind, .. } = &file.key else {
-                unreachable!()
-            };
-            let (turn, channel) = match kind {
-                TaskFile::TextHead { turn, channel } => (*turn, *channel),
-                TaskFile::Chunk { turn, .. } => (*turn, file.channel?),
-                _ => return None,
-            };
-            Some(TaskTextView {
-                turn,
-                channel,
-                file,
-            })
-        })
+        self.text_from(None)
     }
+
     /// Unique tool folders, including a retained output tail without its request.
     pub fn tools(&self) -> impl Iterator<Item = ToolQueryView<'a>> + use<'a> {
         let task = self.clone();
@@ -162,16 +174,28 @@ impl<'a> TaskQueryView<'a> {
     /// Per-turn completion files retain the producer's canonical metadata schema.
     /// No last-step replacement or renderer-specific usage schema is introduced.
     pub fn completions(&self) -> impl Iterator<Item = (u64, &'a HeadFile)> + use<'a> {
-        self.files().filter_map(|file| match &file.key {
-            FileKey::Task {
-                file: TaskFile::Completion(turn),
-                ..
-            } => Some((*turn, file)),
-            _ => None,
-        })
+        let key = |turn| FileKey::Task {
+            task: self.task.clone(),
+            file: TaskFile::Completion(turn),
+        };
+        self.files
+            .range(key(0)..=key(u64::MAX))
+            .filter_map(|(_, file)| match &file.key {
+                FileKey::Task {
+                    file: TaskFile::Completion(turn),
+                    ..
+                } => Some((*turn, file)),
+                _ => None,
+            })
     }
 }
 impl<'a> ToolQueryView<'a> {
+    #[cfg(feature = "tui")]
+    pub(crate) fn exists(&self) -> bool {
+        self.range(ToolFile::Request, ToolFile::Result)
+            .next()
+            .is_some()
+    }
     #[cfg(feature = "tui")]
     pub(crate) fn source(&self) -> &'a Arc<Query> {
         self.task.source

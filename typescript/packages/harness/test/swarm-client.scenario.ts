@@ -1,7 +1,7 @@
 import { create, toBinary } from "@bufbuild/protobuf";
 import { AppendRequestSchema } from "../../stream/generated/proto/stream/v1/stream_pb.js";
 import { SessionLatestValueSchema } from "../../stream/generated/proto/stream/v1/session_pb.js";
-import { SwarmClient, TaskVolume, WasmStream, initializeClientQueries } from "../src/client-query.js";
+import { SwarmClient, TaskVolume, WasmStream, initializeClientQueries, swarmStatusKey } from "../src/client-query.js";
 import { bindLocalSession } from "./session-authority.js";
 
 const encode = new TextEncoder(), decode = new TextDecoder();
@@ -22,8 +22,8 @@ export async function exerciseSwarm(stream: WasmStream, recover?: () => Promise<
   const put = async (volume: TaskVolume, sequence: bigint, value: string) => volume.write(await volume.head(), chunk(sequence), encode.encode(value), "Text");
   const layout = async (file: string, value: unknown) => config.write(await config.head(), { Input: `workspace/${file}.json` }, encode.encode(JSON.stringify(value)), null);
   const status = async (agent: string, attention: boolean) => {
-    const value = toBinary(SessionLatestValueSchema, create(SessionLatestValueSchema, { key: encode.encode("status"), value: encode.encode("running"), attention }));
-    await stream.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: `${agent}/status`, records: [{ value }] })));
+    const value = toBinary(SessionLatestValueSchema, create(SessionLatestValueSchema, { key: swarmStatusKey(agent, encode.encode("status")), value: encode.encode("running"), attention }));
+    await stream.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: "swarm/status", records: [{ value }] })));
   };
   for (const reference of ["a", "b"]) {
     await parent.write(await parent.head(), { Child: { reference, file: "Status" } }, encode.encode(JSON.stringify({

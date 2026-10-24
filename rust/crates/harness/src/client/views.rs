@@ -33,6 +33,8 @@ pub struct ClientViewLimits {
 
 /// Renderer hints contain the actual file delta, never another event schema.
 pub enum SwarmChange {
+    /// Durability of the shared status stream advanced for every agent.
+    StatusWatermark(wire::SessionWatermark),
     /// Membership, overview, selected content and accounting were retired together.
     Retired {
         /// Former member, whose history remains in the volume.
@@ -247,10 +249,45 @@ impl ClientViews {
         Ok(())
     }
 
+    fn apply_data(
+        &mut self,
+        agent: StreamPath,
+        overview: bool,
+        data: wire::SessionData,
+    ) -> Result<SwarmChange> {
+        let file = if overview {
+            self.admit_agent(&agent)?;
+            self.agents.data(&agent, &data, self.limits)?;
+            None
+        } else {
+            let files = self
+                .agents
+                .files_mut(&agent)
+                .and_then(|files| {
+                    files
+                        .values_mut()
+                        .find(|files| files.cursor().query == self.query)
+                })
+                .ok_or_else(|| Error::Conflict("content arrived before its snapshot".into()))?;
+            let change = files.session_change(&data)?;
+            change.file
+        };
+        Ok(SwarmChange::Data {
+            agent,
+            overview,
+            file,
+            data: Box::new(data),
+        })
+    }
+
     /// Validation precedes mutation. Prefetch promotion preserves every segment
     /// and cursor; demotion releases only content while retaining overview status.
     pub fn apply(&mut self, update: SwarmUpdate) -> Result<SwarmChange> {
         match update {
+            SwarmUpdate::StatusWatermark(watermark) => {
+                self.agents.shared_watermark(&watermark)?;
+                Ok(SwarmChange::StatusWatermark(watermark))
+            }
             SwarmUpdate::Retired { agent } => {
                 if &agent == self.layout.root() || self.layout.tier(&agent).is_none() {
                     return Err(Error::Invalid("retirement outside swarm".into()));
@@ -305,40 +342,9 @@ impl ClientViews {
             }
             SwarmUpdate::Data {
                 agent,
-                overview: false,
+                overview,
                 data,
-            } => {
-                let files = self
-                    .agents
-                    .files_mut(&agent)
-                    .and_then(|files| {
-                        files
-                            .values_mut()
-                            .find(|files| files.cursor().query == self.query)
-                    })
-                    .ok_or_else(|| Error::Conflict("content arrived before its snapshot".into()))?;
-                let change = files.session_change(&data)?;
-                Ok(SwarmChange::Data {
-                    agent,
-                    overview: false,
-                    file: change.file,
-                    data: Box::new(data),
-                })
-            }
-            SwarmUpdate::Data {
-                agent,
-                overview: true,
-                data,
-            } => {
-                self.admit_agent(&agent)?;
-                self.agents.data(&agent, &data, self.limits)?;
-                Ok(SwarmChange::Data {
-                    agent,
-                    overview: true,
-                    file: None,
-                    data: Box::new(data),
-                })
-            }
+            } => self.apply_data(agent, overview, data),
             SwarmUpdate::Watermark {
                 agent,
                 overview: false,
