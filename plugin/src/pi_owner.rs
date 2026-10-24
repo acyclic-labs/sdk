@@ -437,7 +437,8 @@ impl PiOwnerConfig {
                         ..acyclic_fs::WorkCounters::UNCHARGED
                     },
                 )?;
-                let mut bytes = Vec::with_capacity(length as usize);
+                let mut bytes =
+                    Vec::with_capacity(usize::try_from(length).map_err(io::Error::other)?);
                 for part in parts {
                     bytes.extend_from_slice(part);
                 }
