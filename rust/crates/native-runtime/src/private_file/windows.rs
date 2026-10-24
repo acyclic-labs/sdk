@@ -150,10 +150,38 @@ pub(super) fn open_for_upgrade(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+fn tighten(file: &File) -> io::Result<()> {
+    use windows::Win32::Security::Authorization::{SE_FILE_OBJECT, SetSecurityInfo};
+    with_security(|attributes| {
+        let mut present = BOOL::default();
+        let mut defaulted = BOOL::default();
+        let mut acl = std::ptr::null_mut();
+        // SAFETY: with_security retains the descriptor and ACL for this closure;
+        // the caller retains a valid handle opened with WRITE_DAC.
+        unsafe {
+            GetSecurityDescriptorDacl(
+                PSECURITY_DESCRIPTOR(attributes.lpSecurityDescriptor),
+                &mut present,
+                &mut acl,
+                &mut defaulted,
+            )?;
+            SetSecurityInfo(
+                HANDLE(file.as_raw_handle()),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                Some(acl),
+                None,
+            )
+            .ok()?;
+        }
+        Ok(())
+    })
+}
+
 fn check_security(file: &File, upgrade_legacy: bool) -> io::Result<bool> {
-    use windows::Win32::Security::Authorization::{
-        GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo,
-    };
+    use windows::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
     let mut information = BY_HANDLE_FILE_INFORMATION::default();
     // SAFETY: the held file handle and initialized output are live for this call.
     unsafe {
@@ -214,30 +242,7 @@ fn check_security(file: &File, upgrade_legacy: bool) -> io::Result<bool> {
                 }
                 // The existing owner is authenticated before permissions change.
                 // No publicly readable legacy bytes are silently adopted.
-                with_security(|attributes| {
-                    let mut present = BOOL::default();
-                    let mut defaulted = BOOL::default();
-                    let mut private_acl = std::ptr::null_mut();
-                    // SAFETY: with_security retains the descriptor and ACL for
-                    // this closure; file exclusively owns a valid held handle.
-                    GetSecurityDescriptorDacl(
-                        PSECURITY_DESCRIPTOR(attributes.lpSecurityDescriptor),
-                        &mut present,
-                        &mut private_acl,
-                        &mut defaulted,
-                    )?;
-                    SetSecurityInfo(
-                        HANDLE(file.as_raw_handle()),
-                        SE_FILE_OBJECT,
-                        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                        None,
-                        None,
-                        Some(private_acl),
-                        None,
-                    )
-                    .ok()?;
-                    Ok(())
-                })?;
+                tighten(file)?;
                 return Ok(true);
             }
             if control & SE_DACL_PROTECTED.0 == 0 || acl.is_null() || (*acl).AceCount != 1 {
@@ -264,6 +269,7 @@ fn check_security(file: &File, upgrade_legacy: bool) -> io::Result<bool> {
 mod tests {
     use super::*;
     use std::io::Write as _;
+    use std::os::windows::fs::OpenOptionsExt as _;
     use windows::Win32::Security::Authorization::{
         GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo,
     };
@@ -274,7 +280,11 @@ mod tests {
         for kind in ["explicit-public", "inherited-public", "empty", "missing"] {
             let root = tempfile::tempdir()?;
             let path = root.path().join("owner");
-            let mut file = File::create(&path)?;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .access_mode(GENERIC_READ.0 | GENERIC_WRITE.0 | READ_CONTROL.0 | WRITE_DAC.0)
+                .open(&path)?;
             file.write_all(b"untrusted owner")?;
             let mut acl = [0usize; 32];
             let acl_pointer = acl.as_mut_ptr().cast::<ACL>();
@@ -359,6 +369,13 @@ mod tests {
                 .is_err(),
                 "{kind}"
             );
+            // An empty ACL also denies ordinary deletion. Restore this owned
+            // fixture through the same ACL setter before temporary cleanup.
+            let restore = std::fs::OpenOptions::new()
+                .read(true)
+                .access_mode(WRITE_DAC.0)
+                .open(&path)?;
+            tighten(&restore)?;
         }
         Ok(())
     }
