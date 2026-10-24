@@ -58,11 +58,12 @@ impl DiscoverySource for LazyDiscovery<'_> {
                     error => error.into(),
                 })?;
             let mut entries = Vec::with_capacity(page.entries.len());
+            let scanned = u32::try_from(page.entries.len())
+                .map_err(|_| crate::Error::Invalid("entry count overflow".into()))?;
             for entry in page.entries {
-                let (name, _allocation) = entry
-                    .name
-                    .unicode_text(self.work, self.work.cancellation())
-                    .map_err(|e| crate::Error::Storage(e.to_string()))?;
+                let Some(name) = portable_name(&entry.name, self.work)? else {
+                    continue;
+                };
                 entries.push(DiscoveryEntry {
                     name,
                     kind: entry.kind.into(),
@@ -70,11 +71,33 @@ impl DiscoverySource for LazyDiscovery<'_> {
             }
             Ok(DiscoveryPage {
                 revision: cut,
+                scanned,
                 entries,
                 next: page.next,
             })
         })
     }
+}
+
+/// Native names outside the content namespace cannot name instructions or skills.
+/// Only representation failures are excluded; cancellation and work failures propagate.
+pub(crate) fn portable_name(
+    name: &acyclic_fs::kernel::LogicalName,
+    work: &NativeMaterializationWork,
+) -> Result<Option<String>> {
+    let (text, _allocation) = match name.unicode_text(work, work.cancellation()) {
+        Ok(projected) => projected,
+        Err(acyclic_fs::FsError::Path(acyclic_fs::kernel::PathLookupError::NamespacePath(
+            acyclic_fs::kernel::NamespacePathError::NonUnicodeProjection,
+        ))) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if crate::conversation::validate_content_path(&text, &mut None).is_err()
+        || text.contains('/')
+    {
+        return Ok(None);
+    }
+    Ok(Some(text))
 }
 
 impl From<acyclic_fs::demand::SourceNodeKind> for DiscoveryKind {

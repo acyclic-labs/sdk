@@ -34,6 +34,8 @@ impl From<PrivateDirectoryEntry> for DiscoveryEntry {
 #[doc(hidden)]
 pub struct DiscoveryPage<R, C> {
     pub revision: R,
+    /// All source entries visited, including names outside the portable namespace.
+    pub scanned: u32,
     pub entries: Vec<DiscoveryEntry>,
     pub next: Option<C>,
 }
@@ -137,7 +139,8 @@ impl DiscoveryWork {
                 .page(directory, pinned.as_ref(), cursor, remaining.min(128))
                 .await?;
             if pinned.as_ref().is_some_and(|r| r != &page.revision)
-                || page.entries.len() > remaining.min(128) as usize
+                || page.scanned > remaining.min(128)
+                || page.entries.len() > page.scanned as usize
             {
                 return Err(Error::Storage(
                     "discovery page violated pinned range".into(),
@@ -152,8 +155,7 @@ impl DiscoveryWork {
                 }
             }
             pinned = Some(page.revision);
-            self.entries += u32::try_from(page.entries.len())
-                .map_err(|_| Error::Invalid("entry count overflow".into()))?;
+            self.entries += page.scanned;
             entries.extend(page.entries);
             cursor = page.next;
             if cursor.is_none() {
@@ -372,6 +374,8 @@ impl DiscoverySource for VolumeDiscovery<'_> {
             }
             Ok(DiscoveryPage {
                 revision: page.generation,
+                scanned: u32::try_from(page.entries.len())
+                    .map_err(|_| Error::Invalid("entry count overflow".into()))?,
                 entries: page.entries.into_iter().map(Into::into).collect(),
                 next,
             })

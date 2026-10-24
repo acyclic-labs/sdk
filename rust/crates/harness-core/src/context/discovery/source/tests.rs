@@ -23,6 +23,7 @@ impl DiscoverySource for Pages {
 fn page(revision: u8, names: &[&str], next: Option<u8>) -> DiscoveryPage<u8, u8> {
     DiscoveryPage {
         revision,
+        scanned: u32::try_from(names.len()).unwrap(),
         entries: names
             .iter()
             .map(|name| DiscoveryEntry {
@@ -82,6 +83,15 @@ async fn directory_adapters_share_order_revision_duplicate_and_progress_fences()
     );
     assert!(work.list_source(&mut no_progress, "", None).await.is_err());
     assert_eq!(no_progress.0.len(), 1, "the third page must not be read");
+    let mut omitted = page(1, &[], None);
+    omitted.scanned = 2;
+    let mut work = DiscoveryWork::default();
+    work.list_source(&mut Pages([omitted].into()), "", None).await?;
+    assert_eq!(work.entries, 2, "opaque native names still consume the shared quota");
+    let mut understated = page(1, &["AGENTS.md"], None);
+    understated.scanned = 0;
+    assert!(DiscoveryWork::default()
+        .list_source(&mut Pages([understated].into()), "", None).await.is_err());
     Ok(())
 }
 
@@ -158,6 +168,7 @@ impl SkillReader for Pages {
 async fn unsupported_source_kinds_cannot_become_instructions_or_skills() {
     let entry = |name: &str, kind| DiscoveryPage {
         revision: 1,
+        scanned: 1,
         entries: vec![DiscoveryEntry {
             name: name.into(),
             kind,

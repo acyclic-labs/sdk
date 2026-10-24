@@ -158,33 +158,56 @@ fn directory_trait_adapter_verifies_creation_exactly_once() -> Result<()> {
     let pair = differential::pair_of(
         &["content creation verify"],
         || (),
-        |(), direct| runtime.block_on(async {
-            measured(&mut fixture, async {
-                let root = ".agents/skills";
-                let result = if direct {
-                    reader.list_private_directory(
-                        &harness.project, root, root,
-                        crate::filesystem::DirectoryOptions {
-                            generation: Some(&generation), after: None,
-                            maximum_entries: 128, ceiling: None,
-                        },
-                    ).await.map(|_| ())
-                } else {
-                    ContentResidencyVerifier::list_private_directory(
-                        reader.as_ref(), &harness.project, root, root,
-                        Some(&generation), None, 128, None, None,
-                    )?.await.map(|_| ())
-                };
-                match result {
-                    Err(Error::NotFound(_)) => Ok(()),
-                    result => result,
-                }
-            }).await
-        }),
+        |(), direct| {
+            runtime.block_on(async {
+                measured(&mut fixture, async {
+                    let root = ".agents/skills";
+                    let result = if direct {
+                        reader
+                            .list_private_directory(
+                                &harness.project,
+                                root,
+                                root,
+                                crate::filesystem::DirectoryOptions {
+                                    generation: Some(&generation),
+                                    after: None,
+                                    maximum_entries: 128,
+                                    ceiling: None,
+                                },
+                            )
+                            .await
+                            .map(|_| ())
+                    } else {
+                        ContentResidencyVerifier::list_private_directory(
+                            reader.as_ref(),
+                            &harness.project,
+                            root,
+                            root,
+                            Some(&generation),
+                            None,
+                            128,
+                            None,
+                            None,
+                        )?
+                        .await
+                        .map(|_| ())
+                    };
+                    match result {
+                        Err(Error::NotFound(_)) => Ok(()),
+                        result => result,
+                    }
+                })
+                .await
+            })
+        },
     );
     for (result, trace) in pair {
         result?;
-        assert_eq!(trace, [("content creation verify", 0)], "directory adapter repeated creation verification");
+        assert_eq!(
+            trace,
+            [("content creation verify", 0)],
+            "directory adapter repeated creation verification"
+        );
     }
     Ok(())
 }

@@ -590,11 +590,12 @@ impl DiscoverySource for UserCatalogSource<'_> {
                 .await
                 .map_err(storage)?;
             let mut entries = Vec::with_capacity(page.entries.len());
+            let scanned = u32::try_from(page.entries.len())
+                .map_err(|_| Error::Invalid("entry count overflow".into()))?;
             for entry in &page.entries {
-                let (name, _allocation) = entry
-                    .name
-                    .unicode_text(self.work, cancellation)
-                    .map_err(storage)?;
+                let Some(name) = super::native_discovery::portable_name(&entry.name, self.work)? else {
+                    continue;
+                };
                 entries.push(crate::context::DiscoveryEntry {
                     name,
                     kind: entry.node.kind.into(),
@@ -605,6 +606,7 @@ impl DiscoverySource for UserCatalogSource<'_> {
             }
             Ok(DiscoveryPage {
                 revision: reference,
+                scanned,
                 entries,
                 next: page.next,
             })

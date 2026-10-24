@@ -50,7 +50,7 @@
   ],
   "assert": {
     "requests": 2,
-    "model_contains": [
+    "each_model_contains": [
       "AGENTS_E2E_INSTRUCTION",
       "CLAUDE_E2E_INSTRUCTION",
       "SKILL_E2E_DISCOVERY",
@@ -59,21 +59,7 @@
       "NESTED_AGENTS_E2E",
       "NESTED_CLAUDE_E2E"
     ],
-    "model_absent": [
-      "EXCLUDED_SIBLING_E2E",
-      "EXCLUDED_CHILD_E2E",
-      "SKILL_E2E_BODY"
-    ],
-    "last_model_contains": [
-      "AGENTS_E2E_INSTRUCTION",
-      "CLAUDE_E2E_INSTRUCTION",
-      "SKILL_E2E_DISCOVERY",
-      "ANCESTOR_AGENTS_E2E",
-      "ANCESTOR_CLAUDE_E2E",
-      "NESTED_AGENTS_E2E",
-      "NESTED_CLAUDE_E2E"
-    ],
-    "last_model_absent": [
+    "each_model_absent": [
       "EXCLUDED_SIBLING_E2E",
       "EXCLUDED_CHILD_E2E",
       "SKILL_E2E_BODY"
