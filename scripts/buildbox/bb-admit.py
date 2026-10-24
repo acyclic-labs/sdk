@@ -266,7 +266,9 @@ def serve():
 def client(args):
     # A daemon may have been started by a caller with different limits. The
     # ticket carries this caller's environment through that process boundary.
-    os.environ[LIMIT_ENV] = json.dumps(capture_limits())
+    if os.environ.get('BB_CALLER_RLIMITS_READY') != '1':
+        os.environ[LIMIT_ENV] = json.dumps(capture_limits())
+        os.environ['BB_CALLER_RLIMITS_READY'] = '1'
     tier,tenant,sep,*argv=args
     if sep!='--' or not argv: raise ValueError('bb-admit <tier> <tenant> -- command ...')
     tier={'crit':0,'prio':0,'merge':1,'qual':1,'lane':2,'proof':3}.get(tier,int(tier) if tier.isdigit() else 2)

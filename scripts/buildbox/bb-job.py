@@ -278,8 +278,9 @@ def run(argv,namespace_ready=False):
     # kernel namespace constructor. No environment marker can bypass it.
     # No no_new_privs: fusermount3 must retain setuid.
     if not namespace_ready:
-        if LIMIT_ENV not in os.environ or os.environ.get('BB_JOB_ACTIVE')=='1':
+        if LIMIT_ENV not in os.environ or (os.environ.get('BB_JOB_ACTIVE')=='1' and os.environ.get('BB_CALLER_RLIMITS_READY')!='1'):
             os.environ[LIMIT_ENV]=json.dumps(capture_limits())
+        os.environ.pop('BB_CALLER_RLIMITS_READY',None)
         os.environ['BB_JOB_NAMESPACE_PATH']=os.environ.get('PATH','/usr/bin:/bin')
         os.execvp('sudo',['sudo','-n','--preserve-env','unshare','--mount','--propagation','private','--pid','--fork','--kill-child','--mount-proc',sys.executable,str(Path(__file__).resolve()),'home-namespace',*argv])
     compiler_job=Path(argv[0]).name=='cargo' or bool(json.loads(Path(meta).read_text()).get('gate_log'))

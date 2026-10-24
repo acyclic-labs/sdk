@@ -91,6 +91,7 @@ if(inner.includes('unset RUSTC RUSTC_WRAPPER')===(gate||input[0]==='cargo'))thro
 if(inner.includes('ulimit -n'))throw Error('job overrides caller nofile limit');
 if(!bodies[2].includes('admission_policy.py exec-user var --'))throw Error('scope loses caller limits');
 if(!bodies[2].includes('--preserve-env=BB_CALLER_RLIMITS_JSON'))throw Error('sudo drops caller limits');
+if(bodies[3].indexOf('capture-limits')>bodies[3].indexOf('node $J.receipt-tool.mjs'))throw Error('Node raises nofile before caller capture');
 if(!inner.includes('CARGO_TARGET_DIR="$BB_JOB_TARGET"'))throw Error('target escaped job lifetime');
 if(!inner.includes('BB_JOB_EXPORT_SPEC='))throw Error('outputs not archived');
 if(input[1]==='build' && !inner.includes('"targetMapping":{"triple":"x86_64-unknown-linux-gnu","profiles":["debug","release"]}'))throw Error('glibc-pinned output mapping lost');

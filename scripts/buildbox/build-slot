@@ -4,6 +4,10 @@
 set -u
 export PATH=/home/var/tools/node24/node-v24.3.0-linux-x64/bin:/home/var/.cargo/bin:/home/var/bin:/usr/local/bin:/usr/bin:/bin
 if [ "${BUILD_SLOT_RECEIPT_WRAPPED:-}" != 1 ]; then
+  # libuv raises the soft nofile limit to the hard limit on Node startup.
+  # Snapshot before the receipt process, including for nested invocations.
+  BB_CALLER_RLIMITS_JSON=$(python3 /home/var/bin/admission_policy.py capture-limits) || exit 224
+  export BB_CALLER_RLIMITS_JSON BB_CALLER_RLIMITS_READY=1
   export BUILD_SLOT_DEFER_EXEC=1
   exec node /home/var/bin/buildbox-receipt.mjs run-bb "$0" "$@"
 fi

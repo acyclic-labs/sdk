@@ -43,5 +43,8 @@ Admission records every caller resource limit (both soft and hard) before
 crossing the daemon boundary. The scope launcher restores that exact set as
 root before dropping to `var`, without a PAM session resetting it again. The
 HOME namespace repeats the restoration before its final privilege drop.
+Public shell entries capture before starting the Node receipt wrapper: libuv
+otherwise raises soft nofile to hard nofile before admission observes it. A
+nested entry captures its own current limits, preserving deliberate changes.
 There is no fixed nofile limit. Terminal runtime receipts record both the
 requested and execution limits; mismatches or malformed limits fail as INFRA.

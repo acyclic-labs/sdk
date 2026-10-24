@@ -16,6 +16,47 @@ PROBE = 'import json,resource;print(json.dumps({k:list(resource.getrlimit(v)) fo
 
 
 class LimitTests(unittest.TestCase):
+    def test_public_entries_capture_before_nodes_libuv_and_nested_entry_recaptures(self):
+        with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+            root=Path(temporary);(root/'jobs').mkdir()
+            names=['build-slot','bb-admit','bb-admit.py','bb-job.py','admission_policy.py',
+                   'bb_target_store.py','job_exports.py','buildbox-receipt.mjs']
+            for name in names:
+                data=(HERE/name).read_text().replace('/home/var/bin/',str(root)+'/')
+                if name=='bb-job.py':data=data.replace("JOBS=Path('/mnt/bb/jobs')",f"JOBS=Path({str(root/'jobs')!r})")
+                if name=='buildbox-receipt.mjs':data=data.replace('/mnt/bb/jobs',str(root/'jobs'))
+                (root/name).write_text(data);(root/name).chmod(0o755)
+            env={**os.environ,'BB_ADMIT_ROOT':str(root/'queue'),'BB_CACHE_DISABLED':'1','BUILD_SLOT_EXEC_IN_PAYLOAD':'1'}
+            for key in [LIMIT_ENV,'BB_CALLER_RLIMITS_READY','BB_ADMITTED','BB_JOB_ACTIVE',
+                        'BB_ADMIT_WRAPPED_COMMAND','BUILD_SLOT_RECEIPT_META','BUILD_SLOT_RECEIPT_WRAPPED']:
+                env.pop(key,None)
+            limits=capture_limits();limits['RLIMIT_NOFILE']=[1536,8192]
+            nested=('import resource,subprocess,json;resource.setrlimit(resource.RLIMIT_NOFILE,(2048,8192));'
+                    f'r=subprocess.run([{str(root/"build-slot")!r},"python3","-c",{PROBE!r}],capture_output=True);'
+                    'assert r.returncode==0,r.stderr;assert json.loads(r.stdout)["RLIMIT_NOFILE"]==[2048,8192],r.stdout;')
+            code=PROBE+';'+nested
+            def invoke(entry):
+                argv=[str(root/entry)]+(['lane','cloud','--'] if entry=='bb-admit' else [])
+                return subprocess.run([*argv,'python3','-c',code],cwd=root,env=env,capture_output=True,
+                                      preexec_fn=lambda:resource.setrlimit(resource.RLIMIT_NOFILE,(1536,8192)))
+            try:
+                for entry in ['build-slot','bb-admit']:
+                    good=invoke(entry)
+                    self.assertEqual(good.returncode,0,good.stderr.decode())
+                    self.assertEqual(json.loads(good.stdout),limits)
+                    file=root/entry;original=file.read_text()
+                    file.write_text(original.replace('export BB_CALLER_RLIMITS_JSON BB_CALLER_RLIMITS_READY=1',
+                                                     ': # negative control: Node starts before captured limits are exported'))
+                    bad=invoke(entry)
+                    # libuv changes the soft limit even when no systemd scope
+                    # is involved. Without the public-entry capture, parity
+                    # must fail (or nested parity must reject the command).
+                    self.assertTrue(bad.returncode!=0 or json.loads(bad.stdout)!=limits)
+                    file.write_text(original)
+            finally:
+                state=root/'queue/daemon.json'
+                if state.exists():os.kill(json.loads(state.read_text())['pid'],signal.SIGTERM)
+
     def scoped(self, limits, restore=True):
         child = [sys.executable, str(HERE/'admission_policy.py'), 'exec-user', 'var', '--'] if restore else ['runuser', '-u', 'var', '--']
         # Print the exact requested shell control too, rather than comparing

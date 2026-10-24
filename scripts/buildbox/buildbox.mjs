@@ -679,6 +679,8 @@ cd /work/src/${q(rel)} && node ${J}.receipt-tool.mjs exec ${J}.receipt-meta.v2.j
   inner = `export BB_TARGET_REQUEST_SHA256=${targetRequestHash}\n` + inner;
   let wrapper = `J=${J}
 export PATH=/home/var/tools/node24/node-v24.3.0-linux-x64/bin:/home/var/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+BB_CALLER_RLIMITS_JSON=$(python3 /home/var/bin/admission_policy.py capture-limits) || exit 224
+export BB_CALLER_RLIMITS_JSON BB_CALLER_RLIMITS_READY=1
 node $J.receipt-tool.mjs recover /mnt/bb/jobs
 node $J.receipt-tool.mjs arm $J.receipt-meta.v2.json $$
 receipt_done() {
