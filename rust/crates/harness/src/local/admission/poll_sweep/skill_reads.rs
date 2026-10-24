@@ -153,6 +153,9 @@ fn directory_trait_adapter_verifies_creation_exactly_once() -> Result<()> {
         let harness = fixture.open().await?;
         Ok::<_, Error>((fixture, harness))
     })?;
+    // Prime instruction and authority metadata before observing directory calls,
+    // as the admission path does before it asks for the skill catalog.
+    runtime.block_on(root_reads(&mut fixture, &harness))?;
     let (_, generation) = runtime.block_on(selected(&harness))?;
     let reader = harness.context_reader()?;
     let pair = differential::pair_of(
