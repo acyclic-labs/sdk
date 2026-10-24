@@ -91,10 +91,15 @@ before running cases:
 node scripts/graphcoder-e2e/artifacts.mjs specification.json /absolute/fresh-job-bundle
 ```
 
-The specification is a JSON array of `{name, target, test, cargo_json}` entries.
+The specification is a JSON array of `{name, target, test, cargo_json, kind?}` entries.
 `target` is the exact Cargo target name, `test` is its `profile.test` boolean,
 and `cargo_json` names the producer's `--message-format=json` output. The tool
-requires exactly one executable for every entry and a new destination directory.
+requires exactly one artifact for every entry and a new destination directory.
+`kind` defaults to `executable`; `cdylib` selects one Cargo `cdylib` record and its
+single `.so`, `.dylib` or `.dll` filename. Import libraries, debug symbols and
+Rust libraries cannot satisfy that selection. Executables and native libraries
+share the same copy, hash and manifest admission; callers choose the destination
+name (for example, `binding.node`) rather than guessing a target-cache path.
 It opens each source once, streams it into the owned bundle and publishes a
 manifest with paths and SHA-256 only after all copies complete. Execute those
 bundle paths in the same job. A previous job's Cargo path is not an artifact

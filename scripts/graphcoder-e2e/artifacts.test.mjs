@@ -34,3 +34,34 @@ test("Cargo-selected artifacts retain custody after target-cache eviction", asyn
     }
   } finally { await processes.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+test("one Cargo admission stages native libraries on every OS without guessing target paths", async () => {
+  const root = await mkdtemp(join(tmpdir(), "e2e-library-custody-"));
+  try {
+    for (const extension of [".so", ".dylib", ".dll"]) {
+      const source = join(root, `actual-library${extension}`), bytes = `library bytes ${extension}`;
+      await writeFile(source, bytes);
+      const record = { reason: "compiler-artifact", target: { name: "native_library", crate_types: ["cdylib"] },
+        profile: { test: false }, executable: null,
+        filenames: [source, `${source}.pdb`, `${source}.lib`, `${source}.a`] };
+      const spec = { name: "binding.node", target: "native_library", test: false,
+        kind: "cdylib", records: JSON.stringify(record) };
+      const manifest = await stageArtifacts([spec], join(root, `bundle${extension}`));
+      await rm(source);
+      const artifact = manifest.artifacts["binding.node"];
+      assert.equal(await readFile(artifact.path, "utf8"), bytes);
+      assert.equal(artifact.sha256, createHash("sha256").update(bytes).digest("hex"));
+      assert.equal(artifact.kind, "cdylib");
+      assert.deepEqual(JSON.parse(await readFile(join(root, `bundle${extension}`, "artifacts.json"), "utf8")), manifest);
+      for (const records of ["", spec.records + "\n" + spec.records,
+        JSON.stringify({ ...record, target: { ...record.target, crate_types: ["rlib"] } }),
+        JSON.stringify({ ...record, filenames: ["relative-library" + extension] }),
+        JSON.stringify({ ...record, filenames: [source + ".lib"] }),
+        JSON.stringify({ ...record, filenames: [source, source + extension] }),
+        JSON.stringify({ ...record, profile: { test: true } })]) {
+        await assert.rejects(stageArtifacts([{ ...spec, records }], join(root, "invalid")));
+      }
+      await assert.rejects(stageArtifacts([{ ...spec, kind: "guessed-library" }], join(root, "invalid")), /unknown Cargo artifact kind/);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
