@@ -197,9 +197,6 @@ async fn native_component_model_transition_work_grows_linearly_with_bounded_resi
     const WARMUP: u64 = 16;
     const TRANSITIONS: u64 = WARMUP + 10 * N;
     let mut recent = VecDeque::new();
-    let mut total = acyclic_fs::WorkCounters::default();
-    let mut independent_total = acyclic_fs::WorkCounters::default();
-    let mut small = None;
     for index in 0_u64..TRANSITIONS {
         let mut id = [0_u8; 16];
         id[..8].copy_from_slice(&(index / 4 + 1).to_le_bytes());
@@ -291,18 +288,6 @@ async fn native_component_model_transition_work_grows_linearly_with_bounded_resi
         drop(io);
         let receipt = query.receipt();
         assert_eq!(receipt, independent, "continuing transition {index}");
-        if index >= WARMUP {
-            total = total.checked_add(receipt).expect("work counters fit");
-            independent_total = independent_total
-                .checked_add(independent)
-                .expect("work counters fit");
-        }
-        if index + 1 == WARMUP + N {
-            small = Some((
-                serde_json::to_value(total).expect("work counters"),
-                serde_json::to_value(independent_total).expect("independent work counters"),
-            ));
-        }
         assert_eq!(&state, reference.reducer(), "transition {index}");
         assert!(state.events.len() <= 4);
         assert!(
@@ -318,25 +303,10 @@ async fn native_component_model_transition_work_grows_linearly_with_bounded_resi
             }
         }
     }
-    // The independent applications are an additive cost witness for these
-    // exact records, rather than an average over different signed inputs.
-    let (small, independent_small) = small.expect("small workload");
-    let independent_large =
-        serde_json::to_value(independent_total).expect("independent work counters");
-    let large = serde_json::to_value(total).expect("work counters");
-    for (counter, value) in small.as_object().expect("work counters") {
-        assert!(
-            u128::from(
-                large
-                    .get(counter)
-                    .and_then(serde_json::Value::as_u64)
-                    .expect("counter")
-            ) * u128::from(independent_small[counter].as_u64().expect("counter"))
-                <= u128::from(value.as_u64().expect("counter"))
-                    * u128::from(independent_large[counter].as_u64().expect("counter")),
-            "{counter} grows faster than independent applications of the identical signed inputs: {small:?} -> {large:?}"
-        );
-    }
+    // This model proves that prior history cannot increase transition work.
+    // Input-size growth is bounded separately by the production-buffer property
+    // `relocation_is_linear_for_every_fragmentation`: copies <= 2 * emitted bytes.
+    // Comparing work densities of different authenticated inputs proves neither.
     assert_eq!(state.revision(), TRANSITIONS + 1);
     let mut oldest = [0_u8; 16];
     oldest[..8].copy_from_slice(&1_u64.to_le_bytes());
