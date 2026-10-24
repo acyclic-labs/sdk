@@ -647,20 +647,49 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
         # The same numeric PID and birth identity would otherwise signal us.
         self.assertEqual(item['identity'],job.identity(item['pid']))
 
+    def test_admission_lease_proves_pid_coordinates_without_guessing_hidden_owners(self):
+        root=self.d/'admit-proof';root.mkdir()
+        owner={'pid':os.getpid(),'identity':job.identity(os.getpid())}
+        (root/'daemon.json').write_text(json.dumps(owner))
+        lease=root/'lease-fixture.json';lease.write_text(json.dumps(owner))
+        self.assertTrue(job.admitted_owner(owner,root))
+        lease.write_text(json.dumps({**owner,'identity':'different-birth'}))
+        self.assertFalse(job.admitted_owner(owner,root),'numeric PID alone is not admission custody')
+        lease.write_text(json.dumps(owner))
+        (root/'daemon.json').write_text(json.dumps({**owner,'identity':'different-daemon'}))
+        self.assertFalse(job.admitted_owner(owner,root),'an unobservable or replaced daemon cannot certify an owner')
+
     def test_storage_device_rejects_root_and_live_cleanup_requires_custody(self):
         self.assertEqual(job.require_data_path(self.d/'not-created/target')['device'],Path('/mnt/bb').stat().st_dev)
         with self.assertRaisesRegex(RuntimeError,'/mnt/bb filesystem'):job.require_data_path('/work/root-target-negative-control')
+        alias=self.d/'root-alias';alias.symlink_to('/work',target_is_directory=True)
+        with self.assertRaisesRegex(RuntimeError,'/mnt/bb filesystem'):job.require_data_path(alias/'target')
         directory=Path(tempfile.mkdtemp(prefix='job-custody-control-',dir=job.JOBS))
         file=self.d/'runtime.json';file.write_text(json.dumps({'hermetic_home':str(directory)}))
         try:
             (directory/'keep').write_text('live')
-            with job.home_lease(directory):
+            with job.home_lease(directory),patch.object(job,'stop_server') as stopped:
                 with self.assertRaisesRegex(RuntimeError,'leased live job'):job.cleanup_runtime(file)
+                stopped.assert_not_called()
                 self.assertEqual((directory/'keep').read_text(),'live')
             # Without the lease, cleanup can and must remove this same tree.
             job.cleanup_runtime(file);self.assertFalse(directory.exists())
         finally:
             if directory.exists():job.remove_home(directory)
+
+    def test_outer_reaper_respects_live_job_lease_and_old_reaper_negative(self):
+        directory=Path(tempfile.mkdtemp(prefix='job-outer-control-',dir=job.JOBS))
+        prefix=job.JOBS/('outer-custody-'+directory.name)
+        runtime=Path(str(prefix)+'.receipt-meta.v2.json.runtime');runtime.write_text(json.dumps({'hermetic_home':str(directory)}))
+        for suffix in ['.targets','.tmp']:Path(str(prefix)+suffix).mkdir()
+        try:
+            with job.home_lease(directory):
+                with self.assertRaisesRegex(RuntimeError,'leased live job'):job.cleanup_outer(prefix)
+                for suffix in ['.targets','.tmp']:self.assertTrue(Path(str(prefix)+suffix).exists())
+                with patch.object(job,'home_lease',return_value=contextlib.nullcontext()):job.cleanup_outer(prefix)
+                for suffix in ['.targets','.tmp']:self.assertFalse(Path(str(prefix)+suffix).exists(),'negative control: old reaper deletes live scratch')
+        finally:
+            runtime.unlink();job.remove_home(directory);job.cleanup_outer(prefix)
 
     def test_fixed_shared_port_negative_control(self):
         c=socket.socket();c.bind(('127.0.0.1',0));port=c.getsockname()[1];c.close()

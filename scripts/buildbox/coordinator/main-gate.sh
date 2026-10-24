@@ -4,24 +4,42 @@
 # promoted to MAIN_GATE; until then PRs retain the last qualified narrow log.
 W=Q:/wt/main-gate; L=Q:/lanes/main-gate; mkdir -p "$L/wide" "$L/infra"
 last=$(ls -t "$L"/wide/[0-9a-f]*.log "$L"/[0-9a-f]*.log 2>/dev/null | head -1 | xargs -r basename | sed 's/.log$//')
+if [ -s "$L/.last-input" ]; then last=$(cat "$L/.last-input");
+elif [ -n "$last" ]; then last=$(git -C Q:/sdk rev-parse --verify "$last^{commit}" 2>/dev/null || printf '%s' "$last"); fi
+remember_input(){ printf '%s\n' "$tip" > "$L/.last-input.$$" && mv -f "$L/.last-input.$$" "$L/.last-input"; }
 # Single runner: a second copy (e.g. a restart whose old shell survived) would run the same tip twice and post two results.
 mkdir $L/.runner 2>/dev/null || { echo "main-gate already running (remove $L/.runner if not)"; exit 0; }; trap "rmdir $L/.runner" EXIT
 while :; do
-  git -C Q:/sdk fetch -q origin main; tip=$(git -C Q:/sdk rev-parse --short origin/main)
+  if ! git -C Q:/sdk fetch -q origin main > "$L/.fetch.log" 2>&1; then
+    tip=$(git -C Q:/sdk rev-parse --verify 'origin/main^{commit}' 2>/dev/null || echo unavailable)
+    remember_input || exit 6; last=$tip
+    if ! cmp -s "$L/.fetch.log" "$L/.fetch-held.log"; then
+      cp "$L/.fetch.log" "$L/.fetch-held.log"
+      echo "$(date -u +%FT%T.000Z) main-gate MAIN_WIDE preparation-INFRA $tip: fetch failed; held until changed input or .rerun; diagnostics=$L/.fetch-held.log" >> ~/.codex-fleet/alerts.log
+    fi
+    sleep 300; continue
+  fi
+  tip=$(git -C Q:/sdk rev-parse --verify 'origin/main^{commit}') || { sleep 300; continue; }
   # .rerun: gate the current tip again (e.g. after gate-checks.sh changed); the old log stays the PR baseline until replaced.
   if [ "$tip" != "$last" ] || [ -e $L/.rerun ]; then rm -f $L/.rerun
-    git -C $W checkout -q --detach -f $tip; git -C $W clean -qfdx -e target
+    remember_input || { echo 'main input hold could not be persisted'; exit 6; }; last=$tip
     log=$L/.running.log  # renamed to <sha>.log only when complete, so the PR gate never baselines on a partial run
     # Tests, plus workspace clippy and every published crate's feature sets (each feature alone too): the PR gate's baseline.
-    cp Q:/lanes/gate-checks.sh $W/.gate-checks.sh
+    if ! python Q:/lanes/main-prepare.py Q:/sdk "$W" "$L" "$tip" Q:/lanes/gate-checks.sh > "$log" 2>&1; then
+      infra_log="$L/infra/$tip-preparation-$(date -u +%Y%m%dT%H%M%SZ)-$$.log"
+      mv -f "$log" "$infra_log"
+      echo "$(date -u +%FT%T.000Z) main-gate MAIN_WIDE preparation-INFRA $tip: local preparation failed; input held; baseline retained log=$infra_log" >> ~/.codex-fleet/alerts.log
+      sleep 300; continue
+    fi
     # Keep Windows native streams on a pipe; one writer owns the log file.
-    (cd $W && BUILD_SLOT_TIER=merge WSLENV=BUILD_SLOT_TIER pwsh -NoProfile -File Q:/lanes/bs.ps1 --env BUILD_SLOT_TIER=merge --env BUILD_SLOT_LABEL=main-gate --env BUILD_SLOT_PHASE=main-wide --env BUILD_SLOT_GATE_LOG="$log" bash .gate-checks.sh --each-feature --locked $(bash Q:/lanes/gate-pkgs.sh .)                                                      --all-features --no-fail-fast -- $(grep -v '^#' Q:/lanes/hangs.txt | sed 's/^/--skip /' | paste -sd' ')) 2>&1 | tee "$log" >/dev/null
+    (cd $W && BUILD_SLOT_TIER=merge WSLENV=BUILD_SLOT_TIER pwsh -NoProfile -File Q:/lanes/bs.ps1 --env BUILD_SLOT_TIER=merge --env BUILD_SLOT_LABEL=main-gate --env BUILD_SLOT_PHASE=main-wide --env BUILD_SLOT_GATE_LOG="$log" bash .gate-checks.sh --each-feature --locked $(bash Q:/lanes/gate-pkgs.sh .)                                                      --all-features --no-fail-fast -- $(grep -v '^#' Q:/lanes/hangs.txt | sed 's/^/--skip /' | paste -sd' ')) 2>&1 | tee -a "$log" >/dev/null
     capture_status=("${PIPESTATUS[@]}"); rc=${capture_status[0]}
     if [ "${capture_status[1]}" != 0 ]; then
       echo 'error: GATE_RUNNER_INFRA coordinator log writer failed' >> "$log"
       rc=224
     fi
     echo "GATE_EXECUTOR rc=$rc" >> "$log"
+    if ! python Q:/lanes/main-prepare.py Q:/sdk "$W" "$L" "$tip" Q:/lanes/gate-checks.sh --verify >> "$log" 2>&1; then rc=224; fi
     # A client cut-off or executor/payload disagreement never qualifies main,
     # even if a partial stream contains successful tests or a payload footer.
     completed=$(grep -acE '^GATE_DONE rc=(0|1|101)$' "$log")

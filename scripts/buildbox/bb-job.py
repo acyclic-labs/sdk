@@ -443,9 +443,26 @@ def cleanup_outer(prefix):
             elif path.exists():remove_home(path)
     return {'outer_targets_removed':True,'outer_tmp_removed':True}
 
+def admitted_owner(item,root=Path('/mnt/bb/admit')):
+    """The host daemon's lease also proves which PID coordinates it recorded.
+
+    This is useful when independent producers write .job records: an absent
+    namespace field alone is never authority to signal a numeric PID.
+    """
+    try:
+        daemon=json.loads((root/'daemon.json').read_text())
+        if identity(daemon['pid'])!=daemon['identity'] or os.readlink(f'/proc/{daemon["pid"]}/ns/pid')!=pid_namespace():return False
+        for file in root.glob('lease-*.json'):
+            try:lease=json.loads(file.read_text())
+            except (OSError,ValueError):continue
+            if (lease.get('pid'),lease.get('identity'))==(item['pid'],item['identity']):return True
+    except (OSError,ValueError,KeyError):pass
+    return False
+
 def stop_job(file):
     item=json.loads(Path(file).read_text()); pid=item['pid']
-    if item.get('pid_namespace')!=pid_namespace():raise RuntimeError('cannot stop a job recorded in another or unknown PID namespace')
+    if item.get('pid_namespace')!=pid_namespace() and not (item.get('pid_namespace') is None and admitted_owner(item)):
+        raise RuntimeError('cannot stop a job recorded in another or unknown PID namespace')
     if identity(pid)!=item['identity']: return
     try: fd=os.pidfd_open(pid)
     except ProcessLookupError: return

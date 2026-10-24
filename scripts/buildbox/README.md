@@ -70,6 +70,12 @@ identity. An invisible foreign PID is held, never presumed dead. The constructor
 registers each namespace with its outer receipt; after that owner has terminated
 the namespace, its terminal callback finalizes interrupted descendant receipts.
 Unproven termination defers cleanup instead of deleting another live job's files.
+Admission's live PID-birth lease can also certify an independently written job
+record; a foreign namespace or an unobservable daemon never grants that authority.
+Cleanup takes an exclusive kernel lease; the running job holds the shared lease
+through its lifetime. The same lease protects its outer target and temporary
+directories. Target and TMP admission checks filesystem device identity, including
+bind mounts and symlinks, and refuses the root filesystem.
 
 The remote wrapper archives declared `BUILD_SLOT_REMOTE_FETCH` outputs before
 target cleanup. The client extracts those archives and removes them after
@@ -87,6 +93,7 @@ Run tooling tests **on bb2**; their Rust fixtures compile there too:
 ```sh
 python3 scripts/buildbox/runtime.test.py
 python3 scripts/buildbox/baseline.test.py
+python3 scripts/buildbox/coordinator/main-prepare.test.py
 node --test scripts/buildbox/generated.test.mjs scripts/pr-gate-checks.test.mjs scripts/gate-test-runner.test.mjs
 node --test scripts/buildbox/receipt-namespace.test.mjs
 ```
@@ -110,3 +117,9 @@ all inputs are rehashed before restore and publication. Changed files, including
 changes that restore the old mtime, prevent publication under the original key.
 External source symlinks bypass snapshots. This policy never applies to mutable
 targets shared across source trees, and it does not cache gate verdicts.
+
+Main preparation validates the designated Git/common directories and checks every
+checkout, clean and runner copy. HEAD and the copied runner are verified again
+before publishing results. The attempted commit is persisted before preparation
+or dispatch, so a coordinator restart cannot forget an infrastructure hold.
+Only a changed commit or explicit `.rerun` authorizes that held input again.
