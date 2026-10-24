@@ -34,6 +34,7 @@ pub(super) enum LocalProject {
 
 /// Durable local composition with a required model binding.
 pub struct LocalHarnessConfig {
+    pub(super) active_directory: String,
     pub(super) goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
     pub(super) project: LocalProject,
     pub(super) state_directory: Option<PathBuf>,
@@ -63,7 +64,13 @@ pub struct LocalHarnessConfig {
     pub(crate) environment_platform: crate::native_environment::PlatformPolicy,
 }
 
-#[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+#[cfg(any(
+    test,
+    feature = "native-execution",
+    feature = "hooks",
+    feature = "mcp-stdio",
+    feature = "mcp-http"
+))]
 impl LocalProject {
     pub(super) fn root(&self) -> &Path {
         match self {
@@ -78,6 +85,7 @@ impl LocalHarnessConfig {
     #[must_use]
     pub fn new(workspace: impl Into<PathBuf>, model: (Model, Arc<dyn ModelProvider>)) -> Self {
         Self {
+            active_directory: String::new(),
             goal_continuations: Some(Default::default()),
             project: LocalProject::Workspace(workspace.into()),
             state_directory: None,
@@ -109,6 +117,37 @@ impl LocalHarnessConfig {
             #[cfg(any(test, feature = "native-execution"))]
             environment_platform: crate::native_environment::PlatformPolicy::Native,
         }
+    }
+    /// Selects instruction scope relative to the workspace boundary.
+    /// Empty selects root instructions; traversal outside the workspace is rejected.
+    #[must_use]
+    pub fn active_directory(mut self, directory: impl Into<String>) -> Self {
+        self.active_directory = directory.into();
+        self
+    }
+    /// Selects the instruction scope containing an explicitly supplied host working directory.
+    /// A working directory outside the bound project selects root instructions only.
+    #[cfg(any(test, feature = "native-execution"))]
+    pub fn working_directory(self, directory: &Path) -> Result<Self> {
+        let root = std::fs::canonicalize(self.project.root()).map_err(storage)?;
+        let directory = std::fs::canonicalize(directory).map_err(storage)?;
+        let relative = directory.strip_prefix(root).ok();
+        let active = relative
+            .map(|path| {
+                path.components()
+                    .map(|component| {
+                        component
+                            .as_os_str()
+                            .to_str()
+                            .map(str::to_owned)
+                            .ok_or_else(|| Error::Invalid("instruction scope is not UTF-8".into()))
+                    })
+                    .collect::<Result<Vec<_>>>()
+                    .map(|parts| parts.join("/"))
+            })
+            .transpose()?
+            .unwrap_or_default();
+        Ok(self.active_directory(active))
     }
     /// Opens an existing volume in the local filesystem directory passed to `new`.
     #[must_use]

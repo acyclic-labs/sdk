@@ -1,7 +1,10 @@
 //! Host-owned lazy skill sources. Manifests carry opaque retained identities,
 //! never authority to open a host path supplied by a task.
-use crate::context::ContextDiscoveryLimits;
-use crate::context::{ContextRoot, PinnedContextPath, SkillMetadata, parse_skill_metadata};
+use crate::context::native_discovery::LazyDiscovery;
+use crate::context::{
+    ContextRoot, DiscoveryPage, DiscoverySource, DiscoveryWork, PROJECT_SKILL_ROOTS,
+    PinnedContextPath, SkillCatalog, SkillMetadata, SkillReader, discover_skills_from,
+};
 use crate::conversation::VolumeRef;
 use crate::{Error, Result};
 use acyclic_fs::{
@@ -11,6 +14,7 @@ use acyclic_fs::{
     },
     kernel::NamespacePath,
 };
+use acyclic_stream::BoxProviderFuture;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -50,9 +54,9 @@ struct ShadowSource {
 mod retained;
 use retained::RetainedBatch;
 
-type UserCatalog = Option<(Vec<SkillMetadata>, Bounds)>;
+type UserCatalog = Option<SkillCatalog>;
 
-type Catalog = Option<(acyclic_fs::LazySnapshotId, Vec<SkillMetadata>)>;
+type Catalog = Option<(acyclic_fs::LazySnapshotId, SkillCatalog)>;
 
 struct SkillWorkspace {
     filesystem: acyclic_fs::LocalFs,
@@ -345,7 +349,14 @@ impl NativeSkills {
         Ok(Some(chunk.bytes))
     }
 
-    pub async fn catalog(&self, root: &Path, view: &View) -> Result<Vec<SkillMetadata>> {
+    pub async fn catalog(
+        &self,
+        root: &Path,
+        view: &View,
+        bounds: &mut DiscoveryWork,
+    ) -> Result<Vec<SkillMetadata>> {
+        bounds.limits.validate()?;
+        let before = *bounds;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = native_work(&cancellation)?;
         let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
@@ -354,12 +365,13 @@ impl NativeSkills {
         };
         let cut = view.snapshot(&mut accounting).await?;
         let mut cached = crate::sync::owned::lock_owned(self.cache.clone()).await;
-        if let Some((id, skills)) = &*cached
+        if let Some((id, catalog)) = &*cached
             && id == &cut.id
+            && let Some(skills) = catalog.reuse(bounds)?
         {
-            return Ok(skills.clone());
+            return Ok(skills);
         }
-        let mut skills = self.user_catalog().await?;
+        let mut skills = self.user_catalog(bounds).await?;
         let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
         let native = NativeDemandSource::open(
             std::borrow::Cow::Borrowed(root),
@@ -372,82 +384,43 @@ impl NativeSkills {
         )
         .await
         .map_err(storage)?;
-        let scan = ProjectCatalog {
+        let mut records = RetainedBatch::default();
+        let mut scan = ProjectCatalog {
             sources: self,
             root,
-            view,
-            cut,
+            directory: LazyDiscovery {
+                view,
+                cut,
+                work: &work,
+            },
             native,
+            records: &mut records,
         };
-        let mut bounds = crate::sync::owned::lock_owned(self.users.clone())
-            .await
-            .as_ref()
-            .map(|(_, bounds)| *bounds)
-            .unwrap_or_default();
-        let mut records = RetainedBatch::default();
-        for directory in [".agents/skills", ".claude/skills"] {
-            bounds.directory()?;
-            let mut cursor = None;
-            loop {
-                let listed = view
-                    .list_directory_at_snapshot(
-                        cut,
-                        &format!("/{directory}"),
-                        cursor,
-                        bounds.page()?,
-                        &mut accounting,
-                    )
-                    .await;
-                let (page, _, _allocation) = match listed {
-                    Ok(page) => page,
-                    Err(
-                        acyclic_fs::LazyWorkspaceError::NotFound
-                        | acyclic_fs::LazyWorkspaceError::Filesystem(acyclic_fs::FsError::NotFound),
-                    ) => break,
-                    Err(error) => return Err(error.into()),
-                };
-                bounds.entries(page.entries.len())?;
-                for entry in &page.entries {
-                    if entry.kind != SourceNodeKind::Directory {
-                        continue;
-                    }
-                    bounds.directory()?;
-                    let (name, _allocation) = entry
-                        .name
-                        .unicode_text(&work, &cancellation)
-                        .map_err(storage)?;
-                    if let Some(skill) = scan
-                        .skill(directory, &name, &bounds, &mut records, &mut accounting)
-                        .await?
-                    {
-                        skills.push(skill);
-                    }
-                }
-                cursor = page.next;
-                if cursor.is_none() {
-                    break;
-                }
-            }
+        for directory in PROJECT_SKILL_ROOTS {
+            skills.extend(
+                discover_skills_from(&mut scan, directory, "SKILL.md", bounds, Some(&cut), true)
+                    .await?,
+            );
         }
-        validate(&skills)?;
+        let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;
+        drop(scan);
         records.publish(self.directory.clone()).await?;
-        *cached = Some((cut.id, skills.clone()));
+        *cached = Some((cut.id, catalog));
         Ok(skills)
     }
 
-    pub async fn user_catalog(&self) -> Result<Vec<SkillMetadata>> {
+    pub async fn user_catalog(&self, bounds: &mut DiscoveryWork) -> Result<Vec<SkillMetadata>> {
+        bounds.limits.validate()?;
+        let before = *bounds;
         let mut cached = crate::sync::owned::lock_owned(self.users.clone()).await;
-        if let Some((skills, _)) = &*cached {
-            return Ok(skills.clone());
+        if let Some(catalog) = &*cached
+            && let Some(skills) = catalog.reuse(bounds)?
+        {
+            return Ok(skills);
         }
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = native_work(&cancellation)?;
         let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
-        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-            work: &work,
-            cancellation: &cancellation,
-        };
-        let mut bounds = Bounds::default();
         let mut skills = Vec::new();
         let mut roots = std::collections::HashSet::new();
         let mut records = RetainedBatch::default();
@@ -474,211 +447,223 @@ impl NativeSkills {
             if !roots.insert(source.root_identity()) {
                 continue;
             }
-            bounds.directory()?;
-            let reference = source.reference();
-            let (path, _allocation) = NamespacePath::parse_in_profile(
-                "/",
-                config.profile,
-                config.limits,
-                &mut accounting,
-                &cancellation,
-            )?;
-            let mut cursor = None;
-            loop {
-                let mut page = source
-                    .list_page(
-                        reference,
-                        &path,
-                        cursor,
-                        bounds.page()?,
-                        &work,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(storage)?;
-                bounds.entries(page.entries.len())?;
-                for entry in &page.entries {
-                    if entry.node.kind != SourceNodeKind::Directory {
-                        continue;
-                    }
-                    bounds.directory()?;
-                    let (name, _allocation) = entry
-                        .name
-                        .unicode_text(&work, &cancellation)
-                        .map_err(storage)?;
-                    if let Some(skill) = self
-                        .user_skill(&source, root, &name, &work, &bounds, &mut records)
-                        .await?
-                    {
-                        skills.push(skill);
-                    }
-                }
-                if let Some(publication) = page.publication.as_mut() {
-                    publication.accept(&mut accounting).map_err(storage)?;
-                }
-                cursor = page.next;
-                if cursor.is_none() {
-                    break;
-                }
-            }
+            let mut scan = UserCatalogSource {
+                sources: self,
+                source: &source,
+                root,
+                work: &work,
+                records: &mut records,
+            };
+            skills.extend(
+                discover_skills_from(&mut scan, "", "SKILL.md", bounds, None, false).await?,
+            );
         }
-        validate(&skills)?;
+        let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;
         records.publish(self.directory.clone()).await?;
-        *cached = Some((skills.clone(), bounds));
+        *cached = Some(catalog);
         Ok(skills)
-    }
-
-    async fn user_skill(
-        &self,
-        source: &NativeDemandSource,
-        root: &Path,
-        name: &str,
-        work: &acyclic_fs::NativeMaterializationWork,
-        bounds: &Bounds,
-        records: &mut RetainedBatch,
-    ) -> Result<Option<SkillMetadata>> {
-        let reference = source.reference();
-        let cancellation = work.cancellation();
-        let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
-        let mut accounting =
-            acyclic_fs::kernel::KernelAccounting::NativeOriginal { work, cancellation };
-        let path = format!("/{name}/SKILL.md");
-        let (parsed, _allocation) = NamespacePath::parse_in_profile(
-            &path,
-            config.profile,
-            config.limits,
-            &mut accounting,
-            cancellation,
-        )?;
-        let Some(node) = source
-            .lookup(reference, &parsed, work, cancellation)
-            .await
-            .map_err(storage)?
-        else {
-            return Ok(None);
-        };
-        if node.kind != SourceNodeKind::RegularFile {
-            return Err(Error::Invalid("skill entry is not a file".into()));
-        }
-        let length = node
-            .logical_bytes
-            .ok_or_else(|| Error::Invalid("skill length is absent".into()))?;
-        let prefix = source
-            .read_range(
-                reference,
-                &parsed,
-                node.version,
-                0,
-                length.min(u64::from(bounds.limits.header_bytes)),
-                work,
-                cancellation,
-            )
-            .await
-            .map_err(storage)?;
-        Ok(Some(parse_skill_metadata(
-            prefix.bytes.as_ref(),
-            self.retain(records, source, root, &path, node)?,
-        )?))
-    }
-
-    pub async fn user_discovery(
-        &self,
-    ) -> Result<(Vec<SkillMetadata>, crate::context::DiscoveryWork)> {
-        let skills = self.user_catalog().await?;
-        let cached = crate::sync::owned::lock_owned(self.users.clone()).await;
-        let bounds = cached
-            .as_ref()
-            .map(|(_, bounds)| *bounds)
-            .unwrap_or_default();
-        Ok((
-            skills,
-            crate::context::DiscoveryWork {
-                entries: bounds.entries,
-                directories: bounds.directories,
-                limits: bounds.limits,
-            },
-        ))
     }
 }
 
 struct ProjectCatalog<'a> {
     sources: &'a NativeSkills,
     root: &'a Path,
-    view: &'a View,
-    cut: acyclic_fs::LazySnapshotRef,
+    directory: LazyDiscovery<'a>,
     native: NativeDemandSource,
+    records: &'a mut RetainedBatch,
 }
-impl ProjectCatalog<'_> {
-    async fn skill(
-        &self,
-        directory: &str,
-        name: &str,
-        bounds: &Bounds,
-        records: &mut RetainedBatch,
-        accounting: &mut acyclic_fs::kernel::KernelAccounting<'_>,
-    ) -> Result<Option<SkillMetadata>> {
-        let relative = format!("{directory}/{name}/SKILL.md");
-        let path = format!("/{relative}");
-        let (lookup, _, allocation) = self
-            .view
-            .lookup_at_snapshot(self.cut, &path, accounting)
-            .await?;
-        let Some(lookup) = lookup else {
-            drop(allocation);
-            return Ok(None);
-        };
-        let stat = lookup.stat();
-        if stat.kind != SourceNodeKind::RegularFile {
-            return Err(Error::Invalid("skill entry is not a file".into()));
-        }
-        let length = stat
-            .logical_bytes
-            .ok_or_else(|| Error::Invalid("skill length is absent".into()))?;
-        let pinned = match &lookup {
-            acyclic_fs::LazyLookup::Source { node, .. } => {
-                self.sources
-                    .retain(records, &self.native, self.root, &path, *node)?
+impl DiscoverySource for ProjectCatalog<'_> {
+    type Revision = acyclic_fs::LazySnapshotRef;
+    type Cursor = acyclic_fs::LazyDirectoryCursor;
+    fn page<'a>(
+        &'a mut self,
+        directory: &'a str,
+        revision: Option<&'a Self::Revision>,
+        cursor: Option<Self::Cursor>,
+        maximum: u32,
+    ) -> BoxProviderFuture<'a, Result<DiscoveryPage<Self::Revision, Self::Cursor>>> {
+        self.directory.page(directory, revision, cursor, maximum)
+    }
+}
+impl SkillReader for ProjectCatalog<'_> {
+    fn skill_prefix<'a>(
+        &'a mut self,
+        relative: &'a str,
+        cut: &'a Self::Revision,
+        maximum: u32,
+    ) -> BoxProviderFuture<'a, Result<(Vec<u8>, PinnedContextPath)>> {
+        Box::pin(async move {
+            let path = format!("/{relative}");
+            let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work: self.directory.work,
+                cancellation: self.directory.work.cancellation(),
+            };
+            let (lookup, _, allocation) = self
+                .directory
+                .view
+                .lookup_at_snapshot(*cut, &path, &mut accounting)
+                .await?;
+            let lookup =
+                lookup.ok_or_else(|| Error::NotFound("discovered skill disappeared".into()))?;
+            let stat = lookup.stat();
+            if stat.kind != SourceNodeKind::RegularFile {
+                self.directory
+                    .view
+                    .retire_lookup((lookup, allocation), &mut accounting)?;
+                return Err(Error::Invalid("skill entry is not a file".into()));
             }
-            acyclic_fs::LazyLookup::Authored { record, .. }
-            | acyclic_fs::LazyLookup::Shadow { record, .. } => {
-                // Both records belong to this immutable cut, including a
-                // selected child. Load through the journal with native work.
-                records.retain(
+            let length = stat
+                .logical_bytes
+                .ok_or_else(|| Error::Invalid("skill length is absent".into()))?;
+            let pinned = match &lookup {
+                acyclic_fs::LazyLookup::Source { node, .. } => {
+                    self.sources
+                        .retain(self.records, &self.native, self.root, &path, *node)?
+                }
+                acyclic_fs::LazyLookup::Authored { record, .. }
+                | acyclic_fs::LazyLookup::Shadow { record, .. } => self.records.retain(
                     &self.sources.journal,
                     RetainedSource::Shadow(Box::new(ShadowSource {
                         volume: self.sources.journal.clone(),
-                        cut: self.cut,
+                        cut: *cut,
                         file_id: record.file_id,
                     })),
-                )?
-            }
-        };
-        self.view.retire_lookup((lookup, allocation), accounting)?;
-        let (prefix, _) = self
-            .view
-            .read_at_snapshot(
-                self.cut,
-                &path,
-                Some(acyclic_fs::ByteRange {
-                    offset: 0,
-                    length: length.min(u64::from(bounds.limits.header_bytes)),
-                }),
-                u64::from(bounds.limits.header_bytes),
-                accounting,
-            )
-            .await?;
-        Ok(Some(parse_skill_metadata(prefix.bytes.as_ref(), pinned)?))
+                )?,
+            };
+            self.directory
+                .view
+                .retire_lookup((lookup, allocation), &mut accounting)?;
+            let (prefix, _) = self
+                .directory
+                .view
+                .read_at_snapshot(
+                    *cut,
+                    &path,
+                    Some(acyclic_fs::ByteRange {
+                        offset: 0,
+                        length: length.min(u64::from(maximum)),
+                    }),
+                    u64::from(maximum),
+                    &mut accounting,
+                )
+                .await?;
+            Ok((prefix.bytes.to_vec(), pinned))
+        })
     }
 }
 
-fn validate(skills: &[SkillMetadata]) -> Result<()> {
-    let mut names = std::collections::HashSet::new();
-    for skill in skills {
-        if !names.insert(&skill.name) {
-            return Err(Error::Conflict("skill name is declared twice".into()));
-        }
+struct UserCatalogSource<'a> {
+    sources: &'a NativeSkills,
+    source: &'a NativeDemandSource,
+    root: &'a Path,
+    work: &'a acyclic_fs::NativeMaterializationWork,
+    records: &'a mut RetainedBatch,
+}
+impl DiscoverySource for UserCatalogSource<'_> {
+    type Revision = SourceReference;
+    type Cursor = acyclic_fs::demand::SourceCursor;
+    fn page<'a>(
+        &'a mut self,
+        directory: &'a str,
+        revision: Option<&'a SourceReference>,
+        cursor: Option<Self::Cursor>,
+        maximum: u32,
+    ) -> BoxProviderFuture<'a, Result<DiscoveryPage<SourceReference, Self::Cursor>>> {
+        Box::pin(async move {
+            let reference = revision.copied().unwrap_or_else(|| self.source.reference());
+            let cancellation = self.work.cancellation();
+            let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
+            let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work: self.work,
+                cancellation,
+            };
+            let (path, _allocation) = NamespacePath::parse_in_profile(
+                &format!("/{directory}"),
+                config.profile,
+                config.limits,
+                &mut accounting,
+                cancellation,
+            )?;
+            let mut page = self
+                .source
+                .list_page(reference, &path, cursor, maximum, self.work, cancellation)
+                .await
+                .map_err(storage)?;
+            let mut entries = Vec::with_capacity(page.entries.len());
+            for entry in &page.entries {
+                let (name, _allocation) = entry
+                    .name
+                    .unicode_text(self.work, cancellation)
+                    .map_err(storage)?;
+                entries.push(crate::context::DiscoveryEntry {
+                    name,
+                    kind: entry.node.kind.into(),
+                });
+            }
+            if let Some(publication) = page.publication.as_mut() {
+                publication.accept(&mut accounting).map_err(storage)?;
+            }
+            Ok(DiscoveryPage {
+                revision: reference,
+                entries,
+                next: page.next,
+            })
+        })
     }
-    Ok(())
+}
+impl SkillReader for UserCatalogSource<'_> {
+    fn skill_prefix<'a>(
+        &'a mut self,
+        path: &'a str,
+        reference: &'a SourceReference,
+        maximum: u32,
+    ) -> BoxProviderFuture<'a, Result<(Vec<u8>, PinnedContextPath)>> {
+        Box::pin(async move {
+            let cancellation = self.work.cancellation();
+            let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
+            let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work: self.work,
+                cancellation,
+            };
+            let path = format!("/{path}");
+            let (parsed, _allocation) = NamespacePath::parse_in_profile(
+                &path,
+                config.profile,
+                config.limits,
+                &mut accounting,
+                cancellation,
+            )?;
+            let node = self
+                .source
+                .lookup(*reference, &parsed, self.work, cancellation)
+                .await
+                .map_err(storage)?
+                .ok_or_else(|| Error::NotFound("discovered skill disappeared".into()))?;
+            if node.kind != SourceNodeKind::RegularFile {
+                return Err(Error::Invalid("skill entry is not a file".into()));
+            }
+            let length = node
+                .logical_bytes
+                .ok_or_else(|| Error::Invalid("skill length is absent".into()))?;
+            let prefix = self
+                .source
+                .read_range(
+                    *reference,
+                    &parsed,
+                    node.version,
+                    0,
+                    length.min(u64::from(maximum)),
+                    self.work,
+                    cancellation,
+                )
+                .await
+                .map_err(storage)?;
+            let pinned = self
+                .sources
+                .retain(self.records, self.source, self.root, &path, node)?;
+            Ok((prefix.bytes.to_vec(), pinned))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -696,32 +681,4 @@ fn native_work(
         cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
-}
-
-#[derive(Clone, Copy, Default)]
-struct Bounds {
-    entries: u32,
-    directories: u32,
-    limits: ContextDiscoveryLimits,
-}
-impl Bounds {
-    fn directory(&mut self) -> Result<()> {
-        self.directories += 1;
-        if self.directories > self.limits.directories {
-            return Err(Error::Invalid("skill directory bound exceeded".into()));
-        }
-        Ok(())
-    }
-    fn entries(&mut self, count: usize) -> Result<()> {
-        self.entries += u32::try_from(count).map_err(storage)?;
-        Ok(())
-    }
-    fn page(&self) -> Result<u32> {
-        self.limits
-            .entries
-            .checked_sub(self.entries)
-            .filter(|n| *n > 0)
-            .map(|n| n.min(128))
-            .ok_or_else(|| Error::Invalid("skill entry bound exceeded".into()))
-    }
 }

@@ -249,3 +249,65 @@ async fn selected_child_authored_skill_loads_with_native_work_from_its_retained_
     assert_eq!(skill.source.root.volume, harness.journal);
     Ok(())
 }
+
+async fn cached_catalog_preserves_the_shared_discovery_budget(native: bool) -> Result<()> {
+    let root = tempfile::tempdir().map_err(super::super::super::storage)?;
+    let config = if native {
+        let skill = root.path().join(".agents/skills/bounded/SKILL.md");
+        std::fs::create_dir_all(skill.parent().unwrap()).map_err(super::super::super::storage)?;
+        std::fs::write(
+            skill,
+            "---\nname: bounded\ndescription: bounded skill\n---\nbody",
+        )
+        .map_err(super::super::super::storage)?;
+        checkout_config(root.path(), (model()?, text()))?
+    } else {
+        let project = volume(root.path()).await?;
+        volume_config(root.path(), project, text())?
+    }
+    .without_default_tools();
+    let harness = LocalHarness::open(config).await?;
+    if !native {
+        instruction(
+            &harness,
+            ".agents/skills/bounded/SKILL.md",
+            "---\nname: bounded\ndescription: bounded skill\n---\nbody",
+        )
+        .await?;
+    }
+    let skills = harness.skills(None).await?;
+    assert_eq!(skills.len(), 1);
+    let mut work = crate::context::DiscoveryWork::default();
+    work.entries = work.limits.entries;
+    assert!(matches!(
+        harness.skills_with_work(None, &mut work).await,
+        Err(Error::Invalid(_))
+    ));
+    let mut narrow = crate::context::DiscoveryWork {
+        limits: crate::context::ContextDiscoveryLimits {
+            header_bytes: 1,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    assert!(
+        matches!(
+            harness.skills_with_work(None, &mut narrow).await,
+            Err(Error::Invalid(_))
+        ),
+        "cached metadata must not bypass a narrower prefix bound"
+    );
+    // A fresh budget still selects exactly the same pinned identities.
+    assert_eq!(harness.skills(None).await?, skills);
+    Ok(())
+}
+
+#[tokio::test]
+async fn cached_native_catalog_preserves_the_shared_discovery_budget() -> Result<()> {
+    cached_catalog_preserves_the_shared_discovery_budget(true).await
+}
+
+#[tokio::test]
+async fn cached_volume_catalog_preserves_the_shared_discovery_budget() -> Result<()> {
+    cached_catalog_preserves_the_shared_discovery_budget(false).await
+}

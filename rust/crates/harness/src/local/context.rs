@@ -116,8 +116,15 @@ impl LocalHarness {
         let policy = ContextDiscoveryPolicy::default();
         let limits = ContextDiscoveryLimits::default();
         let maximum = limits.instruction_bytes.min(self.limits.file_bytes);
+        let mut work = crate::context::DiscoveryWork {
+            limits: ContextDiscoveryLimits {
+                instruction_bytes: maximum,
+                ..limits
+            },
+            ..Default::default()
+        };
         let discovery = self
-            .instructions(&policy.instruction_names, maximum, publisher)
+            .instructions(&policy.instruction_names, publisher, &mut work)
             .await?;
         let (goal, plans) = self.file_guidance(prompt.unwrap_or_default()).await?;
         let manifest =
@@ -186,70 +193,103 @@ impl LocalHarness {
     async fn instructions(
         &self,
         names: &[String],
-        maximum: u64,
         publisher: &dyn ContentPublisher,
+        work: &mut crate::context::DiscoveryWork,
     ) -> Result<DiscoveredContext> {
         #[cfg(any(test, feature = "native-execution"))]
         if self.checkout_context
             && let Some(workspace) = &self.workspace
         {
             let mut discovery = self
-                .checkout_instructions(workspace, names, maximum, publisher)
+                .checkout_instructions_with_work(workspace, names, publisher, work)
                 .await?;
-            discovery.skills = self.skills(None).await?;
+            discovery.skills = self.skills_with_work(None, work).await?;
             return Ok(discovery);
         }
         let _ = publisher;
-        self.volume_instructions(names, maximum, self.context_reader()?.as_ref())
+        self.volume_instructions_with_work(names, self.context_reader()?.as_ref(), work)
             .await
     }
 
-    pub(super) async fn volume_instructions(
+    async fn volume_instructions_with_work(
         &self,
         names: &[String],
-        maximum: u64,
         reader: &dyn ContentResidencyVerifier,
+        work: &mut crate::context::DiscoveryWork,
     ) -> Result<DiscoveredContext> {
         let workspace = crate::filesystem::workspace_ref(
             self.project.provider().clone(),
             &self.project.storage_name(&mut None)?,
         )?;
         let generation = self.files.resolve(&workspace, None).await?.generation;
-        let mut discovery = DiscoveredContext::default();
-        for name in names {
-            if name.len() > self.limits.path_bytes {
+        let root = crate::context::ContextRoot {
+            volume: self.project.clone(),
+            directory: String::new(),
+        };
+        let mut source = VolumeInstructions {
+            harness: self,
+            source: crate::context::VolumeDiscovery {
+                reader,
+                root: &root,
+            },
+        };
+        let instructions = crate::context::capture_instructions(
+            &mut source,
+            "",
+            &self.active_directory,
+            names,
+            work,
+            Some(&generation),
+        )
+        .await?;
+        let mut discovery = DiscoveredContext {
+            instructions,
+            skills: Vec::new(),
+        };
+        discovery.skills = self.skills_with_work(Some(&generation), work).await?;
+        Ok(discovery)
+    }
+}
+
+struct VolumeInstructions<'a> {
+    harness: &'a LocalHarness,
+    source: crate::context::VolumeDiscovery<'a>,
+}
+impl crate::context::DiscoverySource for VolumeInstructions<'_> {
+    type Revision = crate::resources::GenerationRef;
+    type Cursor = String;
+    fn page<'a>(
+        &'a mut self,
+        directory: &'a str,
+        revision: Option<&'a Self::Revision>,
+        cursor: Option<String>,
+        maximum: u32,
+    ) -> acyclic_stream::BoxProviderFuture<
+        'a,
+        Result<crate::context::DiscoveryPage<Self::Revision, String>>,
+    > {
+        self.source.page(directory, revision, cursor, maximum)
+    }
+}
+impl crate::context::InstructionReader for VolumeInstructions<'_> {
+    fn instruction<'a>(
+        &'a mut self,
+        path: &'a str,
+        revision: &'a Self::Revision,
+        maximum: u64,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<crate::model::ProjectInstruction>> {
+        Box::pin(async move {
+            if path.len() > self.harness.limits.path_bytes {
                 return Err(Error::Invalid("instruction path exceeds path bound".into()));
             }
-            match reader
-                .read_private_path(
-                    &self.project,
-                    "",
-                    name,
-                    Some(&generation),
-                    maximum,
-                    crate::conversation::ContentAccess::default(),
-                )?
-                .await
-            {
-                Ok((file, bytes, _)) => {
-                    #[cfg(test)]
-                    if let Some(observer) = self.context_read_observer {
-                        observer(self, name).await?;
-                    }
-                    ContextDiscoveryLimits {
-                        instruction_bytes: maximum,
-                        ..Default::default()
-                    }
-                    .validate_instruction(&bytes)?;
-                    self.limits.validate_file(&file, &mut None)?;
-                    discovery.instructions.push(file.into());
-                }
-                Err(Error::NotFound(_)) => {}
-                Err(error) => return Err(error),
+            let instruction = self.source.instruction(path, revision, maximum).await?;
+            self.harness.limits.validate_file(&instruction, &mut None)?;
+            #[cfg(test)]
+            if let Some(observer) = self.harness.context_read_observer {
+                observer(self.harness, path).await?;
             }
-        }
-        discovery.skills = self.skills(Some(&generation)).await?;
-        Ok(discovery)
+            Ok(instruction)
+        })
     }
 }
 

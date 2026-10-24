@@ -217,6 +217,7 @@ impl BoundComposition {
             model,
             provider,
             context_manifest: config.context_manifest,
+            active_directory: config.active_directory,
             skill_cache: context::skills::cache(),
             #[cfg(any(test, feature = "hooks"))]
             settings,

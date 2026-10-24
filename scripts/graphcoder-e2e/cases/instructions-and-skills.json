@@ -5,11 +5,23 @@
     "files": {
       "AGENTS.md": "AGENTS_E2E_INSTRUCTION\n",
       "CLAUDE.md": "CLAUDE_E2E_INSTRUCTION\n",
-      ".claude/skills/local-skill/SKILL.md": "---\nname: local-skill\ndescription: SKILL_E2E_DISCOVERY\n---\nSKILL_E2E_BODY\n"
+      ".claude/skills/local-skill/SKILL.md": "---\nname: local-skill\ndescription: SKILL_E2E_DISCOVERY\n---\nSKILL_E2E_BODY\n",
+      "src/AGENTS.md": "ANCESTOR_AGENTS_E2E\n",
+      "src/CLAUDE.md": "ANCESTOR_CLAUDE_E2E\n",
+      "src/deep/AGENTS.md": "NESTED_AGENTS_E2E\n",
+      "src/deep/CLAUDE.md": "NESTED_CLAUDE_E2E\n",
+      "sibling/AGENTS.md": "EXCLUDED_SIBLING_E2E\n",
+      "src/deep/child/CLAUDE.md": "EXCLUDED_CHILD_E2E\n"
     }
   },
   "model": {
     "steps": [
+      {
+        "when": {},
+        "text": [
+          "done"
+        ]
+      },
       {
         "when": {},
         "text": [
@@ -22,16 +34,49 @@
     {
       "mode": "headless",
       "text": "hello",
+      "answer": "done",
+      "extra_args": [
+        "--directory",
+        "src/deep"
+      ]
+    },
+    {
+      "mode": "jsonl",
+      "operation": "00000000-0000-0000-0000-000000000002",
+      "cwd": "{{workspace}}/src/deep",
+      "text": "hello from nested working directory",
       "answer": "done"
     }
   ],
   "assert": {
-    "requests": 1,
-    "model_absent": ["SKILL_E2E_BODY"],
+    "requests": 2,
     "model_contains": [
       "AGENTS_E2E_INSTRUCTION",
       "CLAUDE_E2E_INSTRUCTION",
-      "SKILL_E2E_DISCOVERY"
+      "SKILL_E2E_DISCOVERY",
+      "ANCESTOR_AGENTS_E2E",
+      "ANCESTOR_CLAUDE_E2E",
+      "NESTED_AGENTS_E2E",
+      "NESTED_CLAUDE_E2E"
+    ],
+    "model_absent": [
+      "EXCLUDED_SIBLING_E2E",
+      "EXCLUDED_CHILD_E2E",
+      "SKILL_E2E_BODY"
+    ],
+    "last_model_contains": [
+      "AGENTS_E2E_INSTRUCTION",
+      "CLAUDE_E2E_INSTRUCTION",
+      "SKILL_E2E_DISCOVERY",
+      "ANCESTOR_AGENTS_E2E",
+      "ANCESTOR_CLAUDE_E2E",
+      "NESTED_AGENTS_E2E",
+      "NESTED_CLAUDE_E2E"
+    ],
+    "last_model_absent": [
+      "EXCLUDED_SIBLING_E2E",
+      "EXCLUDED_CHILD_E2E",
+      "SKILL_E2E_BODY"
     ]
   }
 }

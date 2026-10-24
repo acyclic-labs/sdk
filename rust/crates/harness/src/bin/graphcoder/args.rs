@@ -13,6 +13,9 @@ pub enum InputFormat {
 pub struct Args {
     #[arg(long, default_value = ".")]
     pub workspace: PathBuf,
+    /// Instruction scope relative to the workspace root.
+    #[arg(long)]
+    pub directory: Option<String>,
     #[arg(long, env = "GRAPHCODER_MODEL")]
     pub model: Option<String>,
     #[arg(long)]

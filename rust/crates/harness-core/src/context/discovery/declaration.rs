@@ -125,39 +125,20 @@ impl ContextDiscovery {
             if policy.instruction_names.is_empty() {
                 continue;
             }
-            let mut directories = vec![scope.root.directory.clone()];
-            for segment in scope
-                .active_directory
-                .split('/')
-                .filter(|segment| !segment.is_empty())
-            {
-                let previous = directories
-                    .last()
-                    .ok_or_else(|| Error::Invalid("missing scope".into()))?;
-                directories.push(child(previous, segment));
-            }
-            let mut generation = None;
-            for directory in directories {
-                let (pinned, entries) = work
-                    .list(reader, &scope.root, &directory, generation.as_ref())
-                    .await?;
-                generation = Some(pinned.clone());
-                for name in &policy.instruction_names {
-                    if let Some(entry) = entries.iter().find(|entry| &entry.name == name) {
-                        if entry.kind != PrivateDirectoryEntryKind::File {
-                            return Err(Error::Invalid("instruction entry is not a file".into()));
-                        }
-                        let source = PinnedContextPath {
-                            root: scope.root.clone(),
-                            generation: pinned.clone(),
-                            path: child(&directory, name),
-                        };
-                        let (file, bytes) = source.read(reader, limits.instruction_bytes).await?;
-                        limits.validate_instruction(&bytes)?;
-                        result.instructions.push(file.into());
-                    }
-                }
-            }
+            result.instructions.extend(
+                capture_instructions(
+                    &mut VolumeDiscovery {
+                        reader,
+                        root: &scope.root,
+                    },
+                    &scope.root.directory,
+                    &scope.active_directory,
+                    &policy.instruction_names,
+                    &mut work,
+                    None,
+                )
+                .await?,
+            );
         }
         if let Some(name) = &policy.skill_name {
             result.skills = discover_skills(reader, &self.skills, name, &mut work).await?;

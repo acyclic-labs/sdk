@@ -43,6 +43,9 @@ impl Opening {
         config: LocalHarnessConfig,
     ) -> Result<Self> {
         config.limits.validate(&mut None)?;
+        if !config.active_directory.is_empty() {
+            crate::conversation::validate_content_path(&config.active_directory, &mut None)?;
+        }
         config.session_limits.validate(&mut None)?;
         if config.concurrency == 0 {
             return Err(Error::Invalid("local concurrency is zero".into()));
@@ -358,6 +361,7 @@ impl Opening {
             model: self.config.model.0,
             provider: self.config.model.1,
             context_manifest: self.config.context_manifest,
+            active_directory: self.config.active_directory,
             skill_cache: context::skills::cache(),
             #[cfg(test)]
             context_read_observer: None,

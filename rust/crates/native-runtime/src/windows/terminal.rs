@@ -56,6 +56,24 @@ pub fn console_state(input: usize, output: usize) -> io::Result<ConsoleState> {
     Ok(state)
 }
 
+/// Read the visible window of the caller-owned output handle.
+pub fn console_size(output: usize) -> io::Result<(u16, u16)> {
+    use windows_sys::Win32::System::Console::{
+        CONSOLE_SCREEN_BUFFER_INFO, GetConsoleScreenBufferInfo,
+    };
+    // SAFETY: the OS validates the caller-owned handle; info is a writable ABI structure.
+    let mut info: CONSOLE_SCREEN_BUFFER_INFO = unsafe { zeroed() };
+    if unsafe { GetConsoleScreenBufferInfo(output as HANDLE, &mut info) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let width = i32::from(info.srWindow.Right) - i32::from(info.srWindow.Left) + 1;
+    let height = i32::from(info.srWindow.Bottom) - i32::from(info.srWindow.Top) + 1;
+    Ok((
+        u16::try_from(width).map_err(|_| io::ErrorKind::InvalidData)?,
+        u16::try_from(height).map_err(|_| io::ErrorKind::InvalidData)?,
+    ))
+}
+
 /// Apply every field even if an earlier restoration fails.
 pub fn console_apply(input: usize, output: usize, state: ConsoleState) -> io::Result<()> {
     fn checked(result: i32) -> io::Result<()> {

@@ -34,7 +34,15 @@ use super::reserve_context_vec_native;
 use super::validate_source_messages;
 pub use capture::DiscoveredContext;
 #[doc(hidden)]
-pub use capture::{DiscoveryWork, child};
+pub use capture::{DiscoveryWork, child, validate_skill_catalog};
 use skills::discovery_error;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use skills::skill_text_native;
+
+mod source;
+#[doc(hidden)]
+pub use source::{
+    DiscoveryEntry, DiscoveryKind, DiscoveryPage, DiscoverySource, InstructionReader,
+    PROJECT_SKILL_ROOTS, SkillCatalog, SkillReader, VolumeDiscovery, capture_instructions,
+    discover_skills_from,
+};

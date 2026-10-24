@@ -20,12 +20,31 @@ impl LocalHarness {
         .await
     }
 
+    #[cfg(test)]
     pub(super) async fn checkout_instructions(
         &self,
         workspace: &LocalWorkspace,
         names: &[String],
         maximum: u64,
         publisher: &dyn ContentPublisher,
+    ) -> Result<DiscoveredContext> {
+        let mut bounds = crate::context::DiscoveryWork {
+            limits: ContextDiscoveryLimits {
+                instruction_bytes: maximum,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        self.checkout_instructions_with_work(workspace, names, publisher, &mut bounds)
+            .await
+    }
+
+    pub(super) async fn checkout_instructions_with_work(
+        &self,
+        workspace: &LocalWorkspace,
+        names: &[String],
+        publisher: &dyn ContentPublisher,
+        bounds: &mut crate::context::DiscoveryWork,
     ) -> Result<DiscoveredContext> {
         // Bound archive paths before asking the source for instruction bodies.
         if names
@@ -54,56 +73,113 @@ impl LocalHarness {
             cancellation: &cancellation,
         };
         let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-        let mut discovery = DiscoveredContext::default();
-        for name in names {
-            self.authorize_checkout_context(view.workspace(), &io)
-                .await?;
-            let bytes = match view
-                .read_latest(&format!("/{name}"), maximum, &mut accounting)
-                .await
-            {
-                Ok(bytes) => bytes,
-                Err(acyclic_fs::LazyWorkspaceError::NotFound) => continue,
-                Err(error) => return Err(error.into()),
-            };
-            #[cfg(test)]
-            if let Some(observer) = self.context_read_observer {
-                observer(self, name).await?;
+        self.authorize_checkout_context(view.workspace(), &io)
+            .await?;
+        let cut = view.snapshot(&mut accounting).await?;
+        let mut source = CheckoutInstructions {
+            harness: self,
+            publisher,
+            directory: crate::context::native_discovery::LazyDiscovery {
+                view,
+                cut,
+                work: &work,
+            },
+        };
+        let instructions = crate::context::capture_instructions(
+            &mut source,
+            "",
+            &self.active_directory,
+            names,
+            bounds,
+            Some(&cut),
+        )
+        .await?;
+        self.authorize_checkout_context(view.workspace(), &io)
+            .await?;
+        let discovery = DiscoveredContext {
+            instructions,
+            skills: Vec::new(),
+        };
+        Ok(discovery)
+    }
+}
+
+struct CheckoutInstructions<'a> {
+    harness: &'a LocalHarness,
+    publisher: &'a dyn ContentPublisher,
+    directory: crate::context::native_discovery::LazyDiscovery<'a>,
+}
+impl crate::context::DiscoverySource for CheckoutInstructions<'_> {
+    type Revision = acyclic_fs::LazySnapshotRef;
+    type Cursor = acyclic_fs::LazyDirectoryCursor;
+    fn page<'a>(
+        &'a mut self,
+        path: &'a str,
+        revision: Option<&'a Self::Revision>,
+        cursor: Option<Self::Cursor>,
+        maximum: u32,
+    ) -> acyclic_stream::BoxProviderFuture<
+        'a,
+        Result<crate::context::DiscoveryPage<Self::Revision, Self::Cursor>>,
+    > {
+        self.directory.page(path, revision, cursor, maximum)
+    }
+}
+impl crate::context::InstructionReader for CheckoutInstructions<'_> {
+    fn instruction<'a>(
+        &'a mut self,
+        path: &'a str,
+        cut: &'a Self::Revision,
+        maximum: u64,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<crate::model::ProjectInstruction>> {
+        Box::pin(async move {
+            let archive_length = "inputs/context/".len() + 64 + 1 + path.len();
+            if archive_length > self.harness.limits.path_bytes {
+                return Err(Error::Invalid(
+                    "instruction archive exceeds path bound".into(),
+                ));
             }
-            self.authorize_checkout_context(view.workspace(), &io)
+            let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work: self.directory.work,
+                cancellation: self.directory.work.cancellation(),
+            };
+            let (bytes, _allocation) = self
+                .directory
+                .view
+                .read_at_snapshot(*cut, &format!("/{path}"), None, maximum, &mut accounting)
                 .await?;
             ContextDiscoveryLimits {
                 instruction_bytes: maximum,
                 ..Default::default()
             }
             .validate_instruction(bytes.bytes.as_ref())?;
-            // Content-addressed private copies retain exact input bytes without
-            // authoring over the checkout or duplicating unchanged bodies.
-            let path = archive_path(name, bytes.bytes.as_ref());
+            #[cfg(test)]
+            if let Some(observer) = self.harness.context_read_observer {
+                observer(self.harness, path).await?;
+            }
+            let archived = archive_path(path, bytes.bytes.as_ref());
             let operation =
-                publication_operation(b"acyclic.local.context-source/v1\0", path.as_bytes());
-            let file = publisher
+                publication_operation(b"acyclic.local.context-source/v1\0", archived.as_bytes());
+            let file = self
+                .publisher
                 .stage_once(
                     operation,
-                    &path,
+                    &archived,
                     bytes.bytes.as_ref(),
                     "text/markdown",
-                    name,
+                    path.rsplit('/').next().unwrap_or(path),
                     crate::conversation::ContentAccess::default(),
                 )?
                 .await?
                 .0;
-            discovery
-                .instructions
-                .push(crate::model::ProjectInstruction::Captured {
-                    file,
-                    source: crate::model::InstructionIdentity::new(
-                        self.project.clone(),
-                        name.clone(),
-                    )?,
-                });
-        }
-        Ok(discovery)
+            Ok(crate::model::ProjectInstruction::Captured {
+                file,
+                source: crate::model::InstructionIdentity::new(
+                    self.harness.project.clone(),
+                    path.into(),
+                )?,
+            })
+        })
     }
 }
 

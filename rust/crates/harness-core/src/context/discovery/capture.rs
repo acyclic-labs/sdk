@@ -14,6 +14,7 @@ pub struct DiscoveredContext {
 }
 
 #[doc(hidden)]
+#[derive(Clone, Copy, Default)]
 pub struct DiscoveryWork {
     #[doc(hidden)]
     pub entries: u32,
@@ -21,80 +22,6 @@ pub struct DiscoveryWork {
     pub directories: u32,
     #[doc(hidden)]
     pub limits: ContextDiscoveryLimits,
-}
-
-impl DiscoveryWork {
-    #[doc(hidden)]
-    pub async fn list(
-        &mut self,
-        reader: &dyn ContentResidencyVerifier,
-        root: &ContextRoot,
-        path: &str,
-        generation: Option<&GenerationRef>,
-    ) -> Result<(
-        GenerationRef,
-        Vec<crate::conversation::PrivateDirectoryEntry>,
-    )> {
-        self.directories = self
-            .directories
-            .checked_add(1)
-            .ok_or_else(|| Error::Invalid("discovery work overflow".into()))?;
-        if self.directories > self.limits.directories {
-            return Err(Error::Invalid("discovery directory bound exceeded".into()));
-        }
-        let mut pinned = generation.cloned();
-        let mut entries = Vec::new();
-        let mut cursor = None;
-        loop {
-            let remaining = self
-                .limits
-                .entries
-                .checked_sub(self.entries)
-                .filter(|remaining| *remaining > 0)
-                .ok_or_else(|| Error::Invalid("discovery entry bound exceeded".into()))?;
-            let page = reader
-                .list_private_directory(
-                    &root.volume,
-                    &root.directory,
-                    path,
-                    pinned.as_ref(),
-                    cursor.as_deref(),
-                    remaining.min(128),
-                    None,
-                    None,
-                )?
-                .await?;
-            page.validate()?;
-            if page.generation.as_resource().provider() != root.volume.provider()
-                || pinned
-                    .as_ref()
-                    .is_some_and(|generation| generation != &page.generation)
-                || page.entries.len() > remaining.min(128) as usize
-                || page.entries.first().is_some_and(|entry| {
-                    cursor
-                        .as_ref()
-                        .is_some_and(|cursor: &String| entry.name.as_bytes() <= cursor.as_bytes())
-                })
-                || page.has_more && page.entries.is_empty()
-            {
-                return Err(Error::Storage(
-                    "discovery page violated pinned range".into(),
-                ));
-            }
-            pinned = Some(page.generation);
-            self.entries += u32::try_from(page.entries.len())
-                .map_err(|_| Error::Invalid("entry count overflow".into()))?;
-            cursor = page.entries.last().map(|entry| entry.name.clone());
-            entries.extend(page.entries);
-            if !page.has_more {
-                break;
-            }
-        }
-        Ok((
-            pinned.ok_or_else(|| Error::Storage("missing discovery generation".into()))?,
-            entries,
-        ))
-    }
 }
 
 #[doc(hidden)]
@@ -121,36 +48,7 @@ impl DiscoveredContext {
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        for skill in &self.skills {
-            skill.validate(work)?;
-        }
-        if work.is_none() {
-            let mut names = std::collections::HashSet::with_capacity(self.skills.len());
-            if self
-                .skills
-                .iter()
-                .any(|skill| !names.insert(skill.name.as_str()))
-            {
-                return Err(discovery_error(
-                    work,
-                    ErrorCode::Conflict,
-                    "discovered skill names are repeated",
-                ));
-            }
-            return Ok(());
-        }
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let mut names = crate::core::reserve_copy_vector::<&str>(self.skills.len(), &mut quota)?;
-        names.extend(self.skills.iter().map(|skill| skill.name.as_str()));
-        names.sort_unstable();
-        if names.windows(2).any(|pair| pair[0] == pair[1]) {
-            return Err(discovery_error(
-                quota.work(),
-                ErrorCode::Conflict,
-                "discovered skill names are repeated",
-            ));
-        }
-        Ok(())
+        validate_skill_catalog(&self.skills, work)
     }
 
     /// Projects this immutable snapshot into bounded model messages.
@@ -291,4 +189,41 @@ impl ContextSource for DiscoveredContext {
     fn supports_native(&self) -> bool {
         true
     }
+}
+
+/// The single duplicate-name and metadata validator, for capture and restored catalogs.
+#[doc(hidden)]
+pub fn validate_skill_catalog(
+    skills: &[SkillMetadata],
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<()> {
+    for skill in skills {
+        skill.validate(work)?;
+    }
+    if work.is_none() {
+        let mut names = std::collections::HashSet::with_capacity(skills.len());
+        if skills
+            .iter()
+            .any(|skill| !names.insert(skill.name.as_str()))
+        {
+            return Err(discovery_error(
+                work,
+                ErrorCode::Conflict,
+                "discovered skill names are repeated",
+            ));
+        }
+        return Ok(());
+    }
+    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let mut names = crate::core::reserve_copy_vector::<&str>(skills.len(), &mut quota)?;
+    names.extend(skills.iter().map(|skill| skill.name.as_str()));
+    names.sort_unstable();
+    if names.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(discovery_error(
+            quota.work(),
+            ErrorCode::Conflict,
+            "discovered skill names are repeated",
+        ));
+    }
+    Ok(())
 }

@@ -2,7 +2,7 @@ use acyclic_harness::{
     OperationId, client,
     local::LocalHarness,
     tui::{
-        self, PromptBox, PromptInput, Viewport, crossterm,
+        self, PromptBox, PromptInput, Viewport,
         ratatui::layout::{Position, Rect, Size},
         term::{Environment, FrameTerminal, RegionScroll, ScreenMode, Tty},
     },
@@ -23,9 +23,8 @@ pub async fn run(
     let reader = local.client_reader()?;
     let mut commands = client::local_ui(&local, &operation.to_string(), &authority).await?;
     let tty = open_tty(inline)?;
+    let terminal_size = tty.size_reader();
     let (tty, output) = tty.split();
-    let terminal_size =
-        || crossterm::terminal::size().map(|(width, height)| Size::new(width, height));
     let mut terminal = FrameTerminal::new(output, terminal_size()?)?;
     let mut events = client::terminal_events(tty);
     // Events of the current read not yet handled; the read presents one frame.
