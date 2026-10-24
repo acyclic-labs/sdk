@@ -13,6 +13,14 @@ async fn retained_records_share_one_sync_on_the_native_io_service() -> Result<()
     )
     .map_err(storage)?;
     std::fs::create_dir_all(root.path().join("skills/other")).map_err(storage)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        for name in [b"unrelated-\xff".as_slice(), b"unrelated\\name"] {
+            std::fs::create_dir(root.path().join("skills").join(std::ffi::OsStr::from_bytes(name)))
+                .map_err(storage)?;
+        }
+    }
     std::fs::write(
         root.path().join("skills/other/SKILL.md"),
         "---\nname: other\ndescription: Another skill\n---\nbody",
