@@ -59,8 +59,8 @@ fi
 # Validate dispatch before any background compiler can outlive an early exit.
 # Match main's target coverage, including test=false libFuzzer binaries.
 cargo metadata --locked --offline --no-deps --format-version 1 > .gate-pr-metadata.json || exit 2
-node -e 'const m=JSON.parse(require("fs").readFileSync(".gate-pr-metadata.json","utf8"));for(const p of m.packages) if(p.metadata?.["cargo-fuzz"]) for(const t of p.targets) if(t.kind.includes("bin"))console.log(t.name)' > .gate-fuzz-bins || exit 2
-export GATE_FUZZ_TEST_BIN_FILE="$PWD/.gate-fuzz-bins"
+export GATE_FUZZ_EXECUTABLES="$PWD/.gate-fuzz-executables"
+: > "$GATE_FUZZ_EXECUTABLES" || exit 2
 export GATE_BASE_TEST_RUNNER=${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:-}
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$PWD/${GATE_TEST_RUNNER_SCRIPT:-scripts/gate-test-runner.sh}"
 chmod +x "$CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER" || exit 2
@@ -97,8 +97,12 @@ gate_cache_finish(){
   fi
 }
 gate_boot=$(cat /proc/sys/kernel/random/boot_id) || exit 2
-test_target=${CARGO_TARGET_DIR:-target}
-clippy_target="$test_target/gate-clippy"
+target_root=${CARGO_TARGET_DIR:-target}
+# Parent snapshots exclude descendant writers. Keep independent gate phases
+# as siblings so the hierarchy leases permit their intended parallel work.
+test_target="$target_root/.gate-pr-tests"
+clippy_target="$target_root/.gate-pr-clippy"
+export CARGO_TARGET_DIR="$test_target"
 gate_cache_prepare "$test_target" "$gate_boot" || exit 2
 gate_cache_prepare "$clippy_target" "$gate_boot" || exit 2
 ( CARGO_TARGET_DIR="$clippy_target" cargo clippy --locked --keep-going "${clippy_pkgs[@]}" --all-targets --all-features --message-format=short \
@@ -128,11 +132,18 @@ if [ -f scripts/check-feature-matrix.mjs ]; then
   features=$!
 fi
 run_tests(){
-  local phase=$1; shift
-  cargo test --locked "${test_pkgs[@]}" --all-features --no-fail-fast "$@" -- "${harness[@]}" 2>&1 | tee -a .gate-tests.out
-  local status=("${PIPESTATUS[@]}")
-  if [ "${status[1]}" != 0 ]; then echo 'error: gate could not retain Cargo test output'; return 2; fi
-  echo "GATE_TEST_PHASE phase=$phase rc=${status[0]}"
+  local phase=$1 phase_started=$SECONDS status=(0 0); shift
+  if [ "$phase" = targets ]; then
+    bash "$CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER" --build .gate-pr-metadata.json "$GATE_FUZZ_EXECUTABLES" -- \
+      cargo test --locked "${test_pkgs[@]}" --all-features --no-fail-fast "$@" 2>&1 | tee -a .gate-tests.out
+    status=("${PIPESTATUS[@]}")
+  fi
+  if [ "${status[0]}" = 0 ] && [ "${status[1]}" = 0 ]; then
+    cargo test --locked "${test_pkgs[@]}" --all-features --no-fail-fast "$@" -- "${harness[@]}" 2>&1 | tee -a .gate-tests.out
+    status=("${PIPESTATUS[@]}")
+  fi
+  if [ "${status[1]}" != 0 ]; then echo 'error: gate could not retain Cargo test output'; status[0]=2; fi
+  echo "GATE_TEST_PHASE phase=$phase rc=${status[0]} seconds=$((SECONDS-phase_started))"
   return "${status[0]}"
 }
 harness=("$@")

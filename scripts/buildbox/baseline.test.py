@@ -17,6 +17,7 @@ case "$1" in
 metadata) printf '%s\n' 'METADATA';;
 test)
  echo "$*" >> calls
+ if [[ " $* " == *" --no-run "* ]]; then exit 0; fi
  if [[ " $* " == *" --all-targets "* ]]; then
   echo 'thread main panicked: Unauthorized("runtime signing custody is closed")'
   echo 'error: test failed, to rerun pass `-p acyclic-conformance --bench harness`'
@@ -33,7 +34,7 @@ esac
   # A historical default-target result must not satisfy wider qualification.
   (results/'old.json').write_text(json.dumps({'base':'a'*40,'roots':['acyclic-conformance'],'docs':False,'skips':[]}))
   (results/'old.log').write_text('test result: ok. 1 passed\nGATE_TEST_BASELINE_COMPLETE rc=0\n')
-  (results/'interrupted.json').write_text(json.dumps({'base':'a'*40,'roots':['acyclic-conformance'],'docs':False,'skips':[],'target_coverage':'all-targets+doc-executor-v2','runner_sha256':hashlib.sha256((root/'gate-test-runner.sh').read_bytes()).hexdigest()}))
+  (results/'interrupted.json').write_text(json.dumps({'base':'a'*40,'roots':['acyclic-conformance'],'docs':False,'skips':[],'target_coverage':'all-targets+doc-artifacts-v3','runner_sha256':hashlib.sha256((root/'gate-test-runner.sh').read_bytes()).hexdigest()}))
   (results/'interrupted.log').write_text('test result: ok. 1 passed\nGATE_TEST_BASELINE_COMPLETE rc=0\n')
   source=(HERE/'coordinator/gate-test-baseline.py').read_text().replace("Path('Q:/lanes/hangs.txt')",f'Path({str(root/"hangs")!r})')
   if negative:source=source.replace("else 'run_tests --all-targets; rc=$?'", "else 'run_tests; rc=$?'")
@@ -76,6 +77,10 @@ esac
    for executor in [-9,224,1 if payload==101 else 101]:
     self.assertFalse(module.baseline_complete(footer+f'GATE_TEST_BASELINE_EXECUTOR rc={executor}\n'))
    self.assertTrue(module.baseline_complete(footer+f'GATE_TEST_BASELINE_EXECUTOR rc={payload}\n'))
+  for status in [1,2,224,-9]:
+   self.assertFalse(module.baseline_complete(f'test result: ok. 1 passed\nGATE_TEST_BASELINE_COMPLETE rc={status}\nGATE_TEST_BASELINE_EXECUTOR rc={status}\n'))
+  for error in ['[buildbox] HOME guard INFRA: unavailable','error: GATE_RUNNER_INFRA missing manifest']:
+   self.assertFalse(module.baseline_complete(error+'\ntest result: ok. 1 passed\nGATE_TEST_BASELINE_COMPLETE rc=101\nGATE_TEST_BASELINE_EXECUTOR rc=101\n'))
  def test_actual_verdict_qualifies_non_libtest_targets_without_hiding_new_failures(self):
   root=self.d;(root/'.codex-fleet').mkdir();(root/'flakes').write_text('')
   helper=root/'failed-tests.sh';source=(HERE/'coordinator/failed-tests.sh').read_text()

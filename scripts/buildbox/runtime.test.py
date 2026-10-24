@@ -27,22 +27,24 @@ class RuntimeTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='r19-runtime-',dir='/mnt/bb/tmp')
         self.d=Path(self.temp.name)
-    def tearDown(self):self.temp.cleanup()
+        self.real_home=Path(tempfile.mkdtemp(prefix="gate-home-fixture-",dir="/home/var"))
+    def tearDown(self):
+        self.temp.cleanup();job.remove_home(self.real_home)
     def worker(self,negative=False,cleanup_failure=False):
         shutil.copyfile(HERE/'job_exports.py',self.d/'job_exports.py')
+        shutil.copyfile(HERE/'bb_target_store.py',self.d/'bb_target_store.py')
         source=(HERE/'bb-job.py').read_text()
-        source=source.replace("real_home=Path('/home/var')",f'real_home=Path({str(self.d/"real-home")!r})')
         source=source.replace("'disk_free':disk()", "'disk_free':[{'path':'fixture','free_percent':50}]")
         if negative:source=source.replace("file=sys.stderr,flush=True", "flush=True")
         if cleanup_failure:source=source.replace('try:remove_home(job)','try:raise OSError("cleanup control")')
         p=self.d/('negative.py' if negative else 'worker.py');p.write_text(source);return p
-    def run_job(self,argv,negative=False,extra=None,cleanup_failure=False):
-        meta=self.d/'fixture.receipt-meta.v2.json';meta.write_text('{}')
-        env={**os.environ,'PATH':'/home/var/.cargo/bin:'+os.environ['PATH'], 'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1'}
+    def run_job(self,argv,negative=False,extra=None,cleanup_failure=False,gate=False):
+        meta=self.d/'fixture.receipt-meta.v2.json';meta.write_text(json.dumps({'gate_log':'fixture.log'} if gate else {}))
+        env={**os.environ,'PATH':'/home/var/.cargo/bin:'+os.environ['PATH'], 'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
         env.pop('BB_JOB_ACTIVE',None);env.pop('BB_ADMITTED',None)
         env.update(extra or {})
         result=subprocess.run([sys.executable,str(self.worker(negative,cleanup_failure)),*argv],cwd=self.d,env=env,capture_output=True)
-        return result,json.loads(Path(str(meta)+'.runtime').read_text())
+        return result,json.loads(Path(str(meta)+'.runtime').read_text()) if Path(str(meta)+'.runtime').exists() else {}
     def test_cargo_metadata_stdout_through_build_slot_and_negative_control(self):
         (self.d/'Cargo.toml').write_text('[package]\nname="gate-stdout-fixture"\nversion="0.0.0"\nedition="2024"\n')
         (self.d/'src').mkdir();(self.d/'src/lib.rs').write_text('')
@@ -60,6 +62,17 @@ class RuntimeTests(unittest.TestCase):
         bad=subprocess.run(args,cwd=self.d,env=env,capture_output=True)
         self.assertEqual(bad.returncode,0,bad.stderr.decode())
         with self.assertRaises(json.JSONDecodeError):json.loads(bad.stdout)
+    def test_native_cold_entry_propagates_disabled_policy_before_execution(self):
+        script=self.d/'cold-build-slot'
+        script.write_text((HERE/'build-slot').read_text().replace('/home/var/bin/bb-job.py',str(self.worker())))
+        meta=self.d/'cold.receipt-meta.v2.json';meta.write_text('{}')
+        env={**os.environ,'BUILD_SLOT_RECEIPT_WRAPPED':'1','BB_ADMITTED':'1','BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1'}
+        env.pop('BB_JOB_ACTIVE',None);env.pop('BB_CACHE_DISABLED',None)
+        result=subprocess.run(['bash',str(script),'--cold',sys.executable,'-c','import os;print(os.environ["BB_CACHE_DISABLED"])'],cwd=self.d,env=env,capture_output=True)
+        self.assertEqual(result.returncode,0,result.stderr.decode())
+        self.assertEqual(result.stdout,b'1\n')
+        self.assertEqual(json.loads(Path(str(meta)+'.runtime').read_text())['cache'],'disabled')
+
     def test_stdout_bytes_modes_targets_and_xwin_cache(self):
         code='''import os,stat,sys
 from pathlib import Path
@@ -74,17 +87,122 @@ sys.stdout.buffer.write(bytes(range(256)))
         self.assertEqual(result.returncode,0,result.stderr.decode());self.assertEqual(result.stdout,bytes(range(256)))
         self.assertTrue(runtime['targets_removed']);self.assertFalse(Path(runtime['hermetic_home']).exists())
         self.assertIn(b'[buildbox]',result.stderr)
-    def test_only_shared_sccache_is_excluded_and_other_real_state_still_fails(self):
-        home=self.d/'real-home';(home/'.cache/sccache').mkdir(parents=True)
-        (home/'.local/share/acyclic').mkdir(parents=True)
-        before=job.inventory(home);(home/'.cache/sccache/shared-object').write_bytes(b'x')
-        self.assertEqual(job.growth(before,job.inventory(home)),[])
-        for rel in ['.cache/cargo-xwin/toolchain.cmake','.cache/other/object','.local/share/acyclic/harness/state']:
-            p=home/rel;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'leak')
-            self.assertIn(str(p),job.growth(before,job.inventory(home)))
-        result,runtime=self.run_job([sys.executable,'-c',f'from pathlib import Path;Path({str(home/".cache/real-leak")!r}).write_text("bad")'])
-        self.assertEqual(result.returncode,2);self.assertEqual(result.stdout,b'');self.assertIn(b'GATE_HOME_LEAK',result.stderr)
-        self.assertIn(str(home/'.cache/real-leak'),runtime['home_leaks'])
+    def test_job_and_descendant_real_home_writes_are_denied_and_negative_control(self):
+        home=self.real_home
+        (home/'.cache').mkdir();(home/'.cache/existing').write_text('keep')
+        alias=self.d/'alias';alias.symlink_to(home,target_is_directory=True)
+        for operation in [
+            f'Path({str(home/".cache/leak")!r}).write_text("bad")',
+            f'Path({str(alias/".cache/leak")!r}).write_text("bad")',
+            f'Path({str(home/".cache/existing")!r}).write_text("truncate")',
+            f'Path({str(home/".cache/existing")!r}).unlink()',
+        ]:
+            result,runtime=self.run_job([sys.executable,'-c','from pathlib import Path;'+operation])
+            self.assertEqual(result.returncode,1,result.stderr.decode())
+            self.assertIn(b'PermissionError',result.stderr)
+            self.assertFalse((home/'.cache/leak').exists())
+            self.assertEqual((home/'.cache/existing').read_text(),'keep')
+            self.assertEqual(runtime['home_guard']['writable'],False)
+        child=f'from pathlib import Path;Path({str(home/".cache/child")!r}).write_text("bad")'
+        result,_=self.run_job([sys.executable,'-c',f'import subprocess,sys;sys.exit(subprocess.call([sys.executable,"-c",{child!r}]))'])
+        self.assertEqual(result.returncode,1);self.assertFalse((home/'.cache/child').exists())
+        worker=self.worker();worker.write_text(worker.read_text().replace("runtime['home_guard']=protect_home(real_home)","runtime['home_guard']={'mechanism':'negative-control'}"))
+        meta=self.d/'negative.meta';meta.write_text('{}')
+        env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        env.pop('BB_JOB_ACTIVE',None)
+        result=subprocess.run([sys.executable,str(worker),sys.executable,'-c',child],env=env,capture_output=True)
+        self.assertEqual(result.returncode,0,result.stderr.decode());self.assertTrue((home/'.cache/child').exists())
+
+    def test_concurrent_other_tenant_writer_does_not_fail_job(self):
+        home=self.real_home;cache=home/'.cache/cloud/bb2-tools';cache.mkdir(parents=True)
+        meta=self.d/'concurrent.meta';meta.write_text('{}')
+        env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        env.pop('BB_JOB_ACTIVE',None)
+        process=subprocess.Popen([sys.executable,str(self.worker()),sys.executable,'-c','import sys;print("ready",flush=True);sys.stdin.readline();print("done")'],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        try:
+            self.assertEqual(process.stdout.readline(),b'ready\n')
+            before=set(cache.iterdir());(cache/'concurrent-object').write_text('outside writer')
+            self.assertNotEqual(before,set(cache.iterdir())) # old global diff false-positive
+            out,err=process.communicate(b'continue\n',timeout=3)
+            self.assertEqual(process.returncode,0,err.decode());self.assertEqual(out,b'done\n')
+            self.assertIn(b'GATE_HOME_GUARD',err)
+        finally:
+            if process.poll() is None:process.kill();process.communicate()
+
+    def test_missing_guard_or_inherited_home_output_is_infra(self):
+        worker=self.worker();worker.write_text(worker.read_text().replace('abi=call(444,0,0,1)','raise OSError("unavailable control")'))
+        meta=self.d/'unavailable.meta';meta.write_text('{}')
+        env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        env.pop('BB_JOB_ACTIVE',None)
+        args=[sys.executable,str(worker),sys.executable,'-c','print("must not execute")']
+        result=subprocess.run(args,env=env,capture_output=True)
+        self.assertEqual(result.returncode,224);self.assertEqual(result.stdout,b'');self.assertIn(b'HOME guard INFRA',result.stderr)
+        worker=self.worker()
+        with (self.real_home/'inherited-output').open('w') as output:
+            result=subprocess.run(args,env=env,stdout=output,stderr=subprocess.PIPE)
+        self.assertEqual(result.returncode,224);self.assertIn(b'writable inherited',result.stderr)
+        self.assertEqual((self.real_home/'inherited-output').read_text(),'')
+
+    def test_active_marker_does_not_bypass_kernel_home_guard(self):
+        path=self.real_home/'forged-active-marker'
+        result,_=self.run_job([sys.executable,'-c',f'from pathlib import Path;Path({str(path)!r}).write_text("bad")'],extra={'BB_JOB_ACTIVE':'1'})
+        # Nested execution reuses its owner's receipt; no new runtime is written.
+        self.assertEqual(result.returncode,1);self.assertIn(b'PermissionError',result.stderr)
+        self.assertFalse(path.exists())
+
+    def test_home_backed_git_refuses_a_shared_namespace(self):
+        repo=self.real_home/'repository';repo.mkdir()
+        subprocess.run(['git','init','--quiet',str(repo)],check=True)
+        before=(repo/'.git/HEAD').read_bytes()
+        with self.assertRaisesRegex(RuntimeError,'private buildbox worktree namespace'):
+            job.private_git(self.d,Path('/home/var'),str(repo))
+        self.assertEqual((repo/'.git/HEAD').read_bytes(),before)
+
+    def test_private_git_base_preserves_local_main_fallback(self):
+        repo=self.d/'repo';repo.mkdir()
+        def git(*args):return subprocess.check_output(['git','-C',str(repo),*args],text=True).strip()
+        git('init','--quiet');git('config','user.name','fixture');git('config','user.email','fixture@example.invalid')
+        git('-c','commit.gpgsign=false','commit','--quiet','--allow-empty','-m','base')
+        head=git('rev-parse','HEAD');git('update-ref','refs/heads/main',head)
+        missing=subprocess.run(['git','-C',str(repo),'rev-parse','--verify','refs/remotes/origin/main'],capture_output=True)
+        self.assertNotEqual(missing.returncode,0) # former remote-only lookup loses main
+        self.assertEqual(job.git_base(repo),head)
+        git('-c','commit.gpgsign=false','commit','--quiet','--allow-empty','-m','remote')
+        newer=git('rev-parse','HEAD');git('update-ref','refs/remotes/origin/main',newer)
+        self.assertEqual(job.git_base(repo),newer)
+        git('update-ref','-d','refs/remotes/origin/main');git('update-ref','-d','refs/heads/main')
+        self.assertIsNone(job.git_base(repo))
+
+    def test_ephemeral_targets_disable_incremental_and_retain_compute_receipt(self):
+        # Preserve the coordinator's live compiler-policy/compute additions.
+        result,runtime=self.run_job([sys.executable,'-c','import os;assert os.environ["CARGO_INCREMENTAL"]=="0"'],extra={'CARGO_INCREMENTAL':'1','CARGO_PROFILE_DEV_INCREMENTAL':'true'})
+        self.assertEqual(result.returncode,0,result.stderr.decode())
+        self.assertEqual(runtime['compute']['compiler_policy'],'ephemeral-target-no-incremental-v1')
+        self.assertGreaterEqual(runtime['compute']['attributed_cpu_seconds'],0)
+        self.assertGreaterEqual(runtime['compute']['payload_wall_seconds'],0)
+        env={'CARGO_INCREMENTAL':'1'}
+        self.assertNotEqual(env['CARGO_INCREMENTAL'],'0') # former inherited override
+        job.compiler_policy(env);self.assertEqual(env['CARGO_INCREMENTAL'],'0')
+    def test_gate_shell_selects_compiler_policy_without_overriding_other_tools(self):
+        for gate in [False,True]:
+            result,_=self.run_job([sys.executable,'-c','import os,json;print(json.dumps({"rustc":os.environ.get("RUSTC"),"wrapper":os.environ.get("RUSTC_WRAPPER")}))'],extra={'RUSTC':'fixture-capture-tool'},gate=gate)
+            self.assertEqual(result.returncode,0,result.stderr.decode())
+            self.assertEqual(json.loads(result.stdout)['rustc'],'/home/var/bin/bigstack/rustc' if gate else 'fixture-capture-tool')
+            self.assertEqual(json.loads(result.stdout)['wrapper'],'') # explicit cold/disabled policy remains
+
+    def test_exited_cache_cpu_is_incomplete_never_zero(self):
+        server={'pid':123,'identity':'fixture'}
+        with patch.object(job,'child_cpu',return_value=12),patch.object(job,'cache_cpu',return_value=None),patch.object(job.subprocess,'run') as stats:
+            receipt=job.cost_receipt({},server,2,3,time.monotonic())
+        self.assertIsNone(receipt['attributed_cpu_seconds'])
+        self.assertEqual(receipt['waited_children_cpu_seconds'],10)
+        self.assertIn('unavailable',receipt['cpu_incomplete_reason']);stats.assert_not_called()
+        self.assertEqual(10+(None or 0),10) # former false numeric cost drops all cache CPU
+        with patch.object(job,'child_cpu',return_value=12),patch.object(job,'cache_cpu',return_value=8),patch.object(job,'identity',return_value='fixture'),patch.object(job.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'{}','')):
+            complete=job.cost_receipt({},server,2,3,time.monotonic())
+        self.assertEqual(complete['attributed_cpu_seconds'],15)
+        self.assertNotIn('cpu_incomplete_reason',complete)
+
     def test_unreadable_directories_cleanup_negative_control(self):
         p=self.d/'job';(p/'moved/deep').mkdir(parents=True);(p/'moved/deep/data').write_bytes(b'x')
         (p/'moved').chmod(0)
@@ -106,6 +224,43 @@ sys.stdout.buffer.write(bytes(range(256)))
             with tarfile.open(manifest[0]['archive']) as tar:self.assertEqual(tar.extractfile('test.exe').read(),b'executable')
         finally:
             Path(str(prefix)+'.t0').unlink();shutil.rmtree(str(prefix)+'.exports',ignore_errors=True)
+    def test_cached_target_outputs_export_without_reexporting_old_source_files(self):
+        prefix=Path('/mnt/bb/jobs')/('r21-cached-export-'+str(os.getpid()))
+        Path(str(prefix)+'.t0').touch()
+        target=self.d/'cached-target';target.mkdir()
+        (target/'test.exe').write_bytes(b'cached executable')
+        (self.d/'source.txt').write_text('old source')
+        for path in [target/'test.exe',self.d/'source.txt']:os.utime(path,(1,1))
+        spec={'prefix':str(prefix),'cwd':str(self.d),'paths':['/work/target/test.exe','source.txt'],'build':False}
+        try:
+            exports.prepare(spec,str(target))
+            self.assertEqual(json.loads(Path(str(prefix)+'.exports/manifest.json').read_text()),[])
+            exports.prepare(spec,str(target),cache_reused=True)
+            manifest=json.loads(Path(str(prefix)+'.exports/manifest.json').read_text())
+            self.assertEqual(len(manifest),1);self.assertTrue(manifest[0]['target'])
+            import tarfile
+            with tarfile.open(manifest[0]['archive']) as tar:
+                self.assertEqual(tar.getnames(),['test.exe'])
+                self.assertEqual(tar.extractfile('test.exe').read(),b'cached executable')
+        finally:
+            Path(str(prefix)+'.t0').unlink();shutil.rmtree(str(prefix)+'.exports',ignore_errors=True)
+
+    def test_export_rejects_an_escaping_symlink_ancestor_and_negative_control(self):
+        prefix=Path('/mnt/bb/jobs')/('r21-export-escape-'+str(os.getpid()))
+        Path(str(prefix)+'.t0').touch()
+        target=self.d/'export-target';target.mkdir()
+        outside=self.d/'outside';outside.mkdir();(outside/'fixture').write_text('outside fixture')
+        (target/'alias').symlink_to(outside,target_is_directory=True)
+        spec={'prefix':str(prefix),'cwd':str(self.d),'paths':['/work/target/alias/fixture'],'build':True}
+        try:
+            with self.assertRaisesRegex(ValueError,'escapes its base'):exports.prepare(spec,str(target))
+            old=(HERE/'job_exports.py').read_text().replace('if not absolute.resolve().is_relative_to(base.resolve()):raise ValueError("declared output escapes its base")','')
+            namespace={};exec(compile(old,'unguarded-export','exec'),namespace)
+            namespace['prepare'](spec,str(target))
+            self.assertTrue(json.loads(Path(str(prefix)+'.exports/manifest.json').read_text()))
+        finally:
+            Path(str(prefix)+'.t0').unlink();shutil.rmtree(str(prefix)+'.exports',ignore_errors=True)
+
     def test_failed_export_is_infra_and_does_not_contaminate_stdout(self):
         result,runtime=self.run_job([sys.executable,'-c','print("child output",end="")'],extra={'BB_JOB_EXPORT_SPEC':json.dumps({'prefix':'/invalid','paths':[]})})
         self.assertEqual(result.returncode,224,result.stderr.decode())
@@ -363,6 +518,16 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
             self.assertEqual(job.server_identity(b/'sccache.sock')['pid'],second['pid'])
             self.assertEqual(envA['SCCACHE_DIR'],'/mnt/bb/sccache');self.assertEqual(envA['SCCACHE_IDLE_TIMEOUT'],'120')
         finally:job.stop_server(first);job.stop_server(second)
+
+    def test_cache_exit_during_pidfd_cleanup_is_already_stopped(self):
+        server={'pid':123,'identity':'fixture','endpoint':'/mnt/bb/jobs/fixture.sock'}
+        with patch.object(job,'identity',return_value='fixture'),patch.object(Path,'read_bytes',return_value=b'SCCACHE_SERVER_UDS=/mnt/bb/jobs/fixture.sock\0'):
+            with patch.object(job.os,'pidfd_open',side_effect=ProcessLookupError):
+                job.stop_server(server) # former unguarded open raised and prevented home cleanup
+            with patch.object(job.os,'pidfd_open',return_value=42),patch.object(job.signal,'pidfd_send_signal',side_effect=ProcessLookupError),patch.object(job.os,'close') as close:
+                job.stop_server(server);close.assert_called_once_with(42)
+            with patch.object(job.os,'pidfd_open',side_effect=PermissionError):
+                with self.assertRaises(PermissionError):job.stop_server(server) # unrelated failures stay visible
 
     def test_fixed_shared_port_negative_control(self):
         c=socket.socket();c.bind(('127.0.0.1',0));port=c.getsockname()[1];c.close()

@@ -5,31 +5,49 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
 const source=readFileSync(new URL('./gate-test-runner.sh',import.meta.url),'utf8');
-test('basename collisions retain libtest args; only linked fuzz drivers get bounded smoke args',()=>{
+test('Cargo artifact package, kind and executable identity distinguish same-name tests',()=>{
  const cwd=mkdtempSync(join(tmpdir(),'gate-fuzz-owner-'));
  try{
-  mkdirSync(join(cwd,'bin'));
-  const nm=join(cwd,'bin/nm');
-  writeFileSync(nm,`#!/bin/bash
-[ "$NM_FAIL" != 1 ] || exit 1
-case "$*" in *-fuzz) echo '000001 t LLVMFuzzerTestOneInput';; *) echo '000002 T main';; esac
-`);chmodSync(nm,0o755);
-  const bins=join(cwd,'bins');writeFileSync(bins,'filesystem_access\n');
-  for(const suffix of ['ordinary','fuzz']){
-   const binary=join(cwd,'filesystem_access-'+suffix);
-   writeFileSync(binary,`#!/bin/bash\nprintf '%s\\n' "$@"\n`);chmodSync(binary,0o755);
+  for(const dir of ['ordinary/src','ordinary/tests','fuzz'])mkdirSync(join(cwd,dir),{recursive:true});
+  writeFileSync(join(cwd,'Cargo.toml'),'[workspace]\nresolver="2"\nmembers=["ordinary","fuzz"]\n');
+  writeFileSync(join(cwd,'ordinary/Cargo.toml'),'[package]\nname="ordinary"\nversion="0.0.0"\nedition="2021"\n');
+  writeFileSync(join(cwd,'ordinary/src/lib.rs'),'');
+  writeFileSync(join(cwd,'ordinary/tests/filesystem_access.rs'),'#[test] fn ordinary_test() {}');
+  writeFileSync(join(cwd,'fuzz/Cargo.toml'),'[package]\nname="fuzz"\nversion="0.0.0"\nedition="2021"\n[package.metadata]\ncargo-fuzz=true\n[[bin]]\nname="filesystem_access"\npath="driver.rs"\ntest=false\nharness=false\n');
+  writeFileSync(join(cwd,'fuzz/driver.rs'),'fn main() { assert_eq!(std::env::args().skip(1).collect::<Vec<_>>(), vec!["-runs=1", "-seed=1"]); println!("fuzz-driver-ok"); }');
+  const runner=join(cwd,'runner');writeFileSync(runner,source);chmodSync(runner,0o755);
+  const env={...process.env,CARGO_TARGET_DIR:join(cwd,'target'),GATE_FUZZ_EXECUTABLES:join(cwd,'executables')};
+  delete env.CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER;
+  const lock=spawnSync('cargo',['generate-lockfile','--offline'],{cwd,env,encoding:'utf8'});assert.equal(lock.status,0,lock.stderr);
+  const metadata=spawnSync('cargo',['metadata','--offline','--no-deps','--format-version','1'],{cwd,env,encoding:'utf8'});
+  assert.equal(metadata.status,0,metadata.stderr);writeFileSync(join(cwd,'metadata'),metadata.stdout);
+  const build=spawnSync('bash',[runner,'--build',join(cwd,'metadata'),env.GATE_FUZZ_EXECUTABLES,'--','cargo','test','--locked','--workspace','--all-targets'],{cwd,env,encoding:'utf8'});
+  assert.equal(build.status,0,build.stdout+build.stderr);
+  const artifacts=readFileSync(env.GATE_FUZZ_EXECUTABLES+'.artifacts','utf8').trim().split('\n').map(JSON.parse);
+  const bins=artifacts.filter(a=>a.reason==='compiler-artifact'&&a.executable&&a.target.name==='filesystem_access');
+  assert.equal(bins.length,2);
+  const fuzz=bins.find(a=>a.target.kind[0]==='bin').executable;
+  const ordinary=bins.find(a=>a.target.kind[0]==='test').executable;
+  assert.equal(readFileSync(env.GATE_FUZZ_EXECUTABLES,'utf8'),fuzz+'\n');
+  for(const [path,negative,expected] of [[ordinary,false,0],[fuzz,false,0],[ordinary,true,101]]){
+   writeFileSync(runner,negative?source.replace('if [ "$match" = 0 ]; then','if [[ ${program##*/} == filesystem_access-* ]]; then'):source);
+   const result=spawnSync('bash',[runner,path,'--skip','does-not-exist'],{cwd,env,encoding:'utf8'});
+   // libtest rejects -runs with a nonzero status (the exact code varies by Rust).
+   if(negative){assert.notEqual(result.status,0);assert.match(result.stderr,/Unrecognized option: 'r'/);}
+   else{assert.equal(result.status,expected,result.stdout+result.stderr);assert.match(result.stdout,path===ordinary?/ordinary_test.*ok/:/fuzz-driver-ok/);}
   }
-  for(const [kind,broken,negative,status] of [['ordinary',false,false,0],['fuzz',false,false,0],['ordinary',true,false,2],['ordinary',false,true,0]]){
-   const runner=join(cwd,'runner');
-   const old=source.replace(/        if ! symbols=[\s\S]*?        fi\n        break;;/, '        echo "GATE_FUZZ_SMOKE bin=$bin runs=1 seed=1"\n        set -- -runs=1 -seed=1 -max_total_time=10\n        break;;');
-   assert.notEqual(old,source);
-   writeFileSync(runner,negative?old:source);
-   const r=spawnSync('bash',[runner,join(cwd,'filesystem_access-'+kind),'--skip','known-flake'],{encoding:'utf8',env:{...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,GATE_FUZZ_TEST_BIN_FILE:bins,NM_FAIL:broken?'1':'0'}});
-   assert.equal(r.status,status,r.stdout+r.stderr);
-   if(broken){assert.match(r.stderr,/GATE_RUNNER_INFRA/);continue;}
-   if(kind==='ordinary'&&!negative){assert.equal(r.stdout,'--skip\nknown-flake\n');assert.doesNotMatch(r.stdout,/GATE_FUZZ/);}
-   else{assert.match(r.stdout,/-runs=1\n-seed=1\n-max_total_time=10/);assert.doesNotMatch(r.stdout,/known-flake/);}
-  }
+  writeFileSync(runner,source);
+  const missing=spawnSync('bash',[runner,ordinary],{cwd,env:{...env,GATE_FUZZ_EXECUTABLES:join(cwd,'missing')},encoding:'utf8'});
+  assert.equal(missing.status,2);assert.match(missing.stderr,/missing completed compiler-artifact/);
+  // A bin from another package and a test target in the fuzz package are
+  // deliberately forged same-name events. Neither may enter the manifest.
+  const forged=bins.map(a=>({...a,package_id:a.target.kind[0]==='bin'?bins.find(b=>b.target.kind[0]==='test').package_id:bins.find(b=>b.target.kind[0]==='bin').package_id}));
+  writeFileSync(join(cwd,'forged'),forged.map(a=>JSON.stringify(a)+'\n').join(''));
+  const collect=spawnSync('bash',[runner,'--collect',join(cwd,'metadata'),join(cwd,'forged'),env.GATE_FUZZ_EXECUTABLES],{cwd,env,encoding:'utf8'});
+  assert.equal(collect.status,0,collect.stderr);assert.equal(readFileSync(env.GATE_FUZZ_EXECUTABLES,'utf8'),'');
+  writeFileSync(join(cwd,'forged'),'not Cargo JSON\n');
+  const invalid=spawnSync('bash',[runner,'--collect',join(cwd,'metadata'),join(cwd,'forged'),env.GATE_FUZZ_EXECUTABLES],{cwd,env,encoding:'utf8'});
+  assert.equal(invalid.status,2);assert.match(invalid.stderr,/error: GATE_RUNNER_INFRA compiler-artifact discovery:/);
  }finally{rmSync(cwd,{recursive:true,force:true});}
 });
 test('live main bootstrap uses the reviewed runner exactly',()=>{
@@ -48,7 +66,7 @@ test('main installs corrected helper before dispatching an older reviewed runner
   writeFileSync(join(cwd,'scripts/check-browser-targets.sh'),'');
   writeFileSync(join(cwd,'scripts/gate-feature-matrix.sh'),'');
   writeFileSync(join(cwd,'scripts/gate-test-runner.sh'),'old name-only runner');
-  writeFileSync(join(cwd,'scripts/main-gate-checks.sh'),'# Main baseline completion v2\ntest "$GATE_TEST_RUNNER_SCRIPT" = .gate-test-runner.sh || exit 71\ncmp .gate-test-runner.sh expected || exit 72\necho corrected-helper-selected\n');
+  writeFileSync(join(cwd,'scripts/main-gate-checks.sh'),'# Main baseline completion v2\n# Fuzz executable identity v2\ntest "$GATE_TEST_RUNNER_SCRIPT" = .gate-test-runner.sh || exit 71\ncmp .gate-test-runner.sh expected || exit 72\necho corrected-helper-selected\n');
   writeFileSync(join(cwd,'expected'),source);
   const complete=readFileSync(new URL('./buildbox/coordinator/gate-checks.sh',import.meta.url),'utf8');
   // Exercise main dispatch only; auxiliary Cargo phases belong to other tests.

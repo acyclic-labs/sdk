@@ -6,6 +6,7 @@ import hashlib
 import fcntl
 import json
 import os
+import resource
 from pathlib import Path
 import shutil
 import signal
@@ -16,6 +17,7 @@ import sys
 import tempfile
 import time
 import uuid
+import bb_target_store
 
 BIN=Path(__file__).parent
 NODE='/home/var/tools/node24/node-v24.3.0-linux-x64/bin/node'
@@ -40,25 +42,91 @@ def disk():
         readings.append({'path':path,'free_percent':pct,'free_bytes':s.f_bavail*s.f_frsize})
     return readings
 
-def inventory(real_home):
-    # Comparing each path catches directory growth even when another process
-    # deletes files elsewhere; symlinks are never followed.
-    result={}
-    for root in [real_home/'.local/share/acyclic',real_home/'.cache']:
-        if not root.exists(): continue
-        for where,dirs,files in os.walk(root,followlinks=False):
-            # ~/.cache/sccache belongs to the standing shared sccache server, which other
-            # tenants fill concurrently; jobs here use SCCACHE_DIR=/mnt/bb/sccache.
-            if where==str(root) and root.name=='.cache': dirs[:]=[d for d in dirs if d!='sccache']
-            for name in dirs+files:
-                p=Path(where)/name
+def protect_home(real_home):
+    """Deny writes below real HOME to this process and its descendants only."""
+    real_home=real_home.resolve(strict=True)
+    libc=ctypes.CDLL(None,use_errno=True)
+    def call(number,*args):
+        result=libc.syscall(ctypes.c_long(number),*args)
+        if result<0: raise OSError(ctypes.get_errno(),os.strerror(ctypes.get_errno()))
+        return result
+    # ABI 3 includes both truncate and cross-directory rename/link protection.
+    if os.uname().machine not in ['x86_64','aarch64']:
+        raise RuntimeError('unsupported Landlock architecture')
+    abi=call(444,0,0,1)
+    if abi<3:raise RuntimeError('real HOME guard requires Landlock ABI >= 3')
+    writes=sum(1<<bit for bit in [1,4,5,6,7,8,9,10,11,12,13,14])
+    class Ruleset(ctypes.Structure):_fields_=[('handled_access_fs',ctypes.c_uint64)]
+    class Rule(ctypes.Structure):
+        _pack_=1
+        _fields_=[('allowed_access',ctypes.c_uint64),('parent_fd',ctypes.c_int)]
+    attr=Ruleset(writes); rules=call(444,ctypes.byref(attr),ctypes.sizeof(attr),0)
+    try:
+        # Never grant a parent of HOME. Grant its other siblings at each
+        # ancestor; every present and future path inside HOME remains protected.
+        current=Path('/')
+        for part in real_home.parts[1:]:
+            for path in current.iterdir():
+                if path.name==part or path.is_symlink():continue
+                fd=os.open(path,os.O_PATH|os.O_NOFOLLOW|os.O_CLOEXEC)
                 try:
-                    s=p.lstat(); result[str(p)]=(0 if stat.S_ISDIR(s.st_mode) else s.st_size,s.st_mtime_ns)
-                except FileNotFoundError: pass
-    return result
+                    rights=writes if stat.S_ISDIR(os.fstat(fd).st_mode) else writes & ((1<<1)|(1<<14))
+                    rule=Rule(rights,fd);call(445,rules,1,ctypes.byref(rule),0)
+                finally:os.close(fd)
+            current=current/part
+        # Only stdio reaches the payload. An already-open write descriptor
+        # bypasses open checks, so real-HOME outputs must be refused up front.
+        for fd in [0,1,2]:
+            try:
+                link=os.readlink(f'/proc/self/fd/{fd}')
+                if not link.startswith('/'):continue # pipe/socket, not a filesystem path
+                target=Path(link).resolve()
+                if target.is_relative_to(real_home) and fcntl.fcntl(fd,fcntl.F_GETFL)&os.O_ACCMODE!=os.O_RDONLY:
+                    raise RuntimeError('writable inherited real HOME descriptor '+str(fd))
+            except FileNotFoundError:pass
+        if libc.prctl(38,1,0,0,0):raise OSError(ctypes.get_errno(),'PR_SET_NO_NEW_PRIVS')
+        call(446,rules,0)
+    finally:os.close(rules)
+    return {'mechanism':'landlock','abi':abi,'real_home':str(real_home),'writable':False}
 
-def growth(before,after):
-    return [p for p,v in after.items() if p not in before or v[0]>before[p][0]]
+def git_base(source):
+    for ref in ['refs/remotes/origin/main','refs/heads/main']:
+        result=subprocess.run(['git','-C',str(source),'rev-parse','--verify',ref],capture_output=True,text=True)
+        if result.returncode==0:return result.stdout.strip()
+    return None
+
+def private_git(job,real_home,source):
+    """Keep mutable Git state outside HOME without changing the shared copy.
+
+    buildbox already owns a private mount namespace. Bind only this job's .git
+    pointer there; source bytes and the host's pointer are unchanged. Objects
+    from the real mirror are read-only alternates; new objects/refs/index live
+    in the disposable job tree.
+    """
+    if not source:return None
+    def git(*args):
+        return subprocess.check_output(['git','-C',str(source),*args],stderr=subprocess.PIPE,text=True).strip()
+    probe=subprocess.run(['git','-C',str(source),'rev-parse','--show-toplevel'],capture_output=True,text=True)
+    if probe.returncode:return None
+    source=Path(probe.stdout.strip())
+    common=Path(git('rev-parse','--path-format=absolute','--git-common-dir')).resolve()
+    if not common.is_relative_to(real_home.resolve()):return None
+    if os.environ.get('BB_JOB_PRIVATE_MOUNT')!='1' or source!=Path('/work/src') or not (source/'.git').is_file():
+        raise RuntimeError('HOME-backed Git metadata requires the private buildbox worktree namespace')
+    own_ns=os.readlink('/proc/self/ns/mnt')
+    host_ns=subprocess.check_output(['sudo','-n','readlink','/proc/1/ns/mnt'],text=True).strip()
+    if own_ns==host_ns:raise RuntimeError('refusing private Git mount in the host namespace')
+    head=git('rev-parse','HEAD')
+    base=git_base(source)
+    private=job/'git';subprocess.run(['git','init','--bare','--quiet',str(private)],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    (private/'objects/info/alternates').write_text(str(common/'objects')+'\n')
+    def local(*args):subprocess.run(['git','--git-dir='+str(private),*args],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    local('config','core.bare','false');local('config','core.worktree',str(source))
+    local('update-ref','--no-deref','HEAD',head);local('read-tree',head)
+    if base:local('update-ref','refs/remotes/origin/main',base)
+    pointer=job/'git-pointer';pointer.write_text('gitdir: '+str(private)+'\n')
+    subprocess.run(['sudo','-n','mount','--bind',str(pointer),str(source/'.git')],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    return {'private_gitdir':str(private),'read_only_objects':str(common/'objects'),'mount_namespace':own_ns}
 
 def server_identity(endpoint):
     # SO_PEERCRED identifies the server, then /proc birth time protects against
@@ -76,9 +144,12 @@ def stop_server(server):
     try: env=Path(f'/proc/{server["pid"]}/environ').read_bytes().split(b'\0')
     except FileNotFoundError: return
     if ('SCCACHE_SERVER_UDS='+server['endpoint']).encode() not in env: return
-    fd=os.pidfd_open(server['pid'])
+    try:fd=os.pidfd_open(server['pid'])
+    except ProcessLookupError:return
     try:
-        if identity(server['pid'])==server['identity']: signal.pidfd_send_signal(fd,signal.SIGTERM)
+        if identity(server['pid'])==server['identity']:
+            try:signal.pidfd_send_signal(fd,signal.SIGTERM)
+            except ProcessLookupError:pass
     finally: os.close(fd)
 
 def start_cache(job,env):
@@ -108,20 +179,74 @@ def remove_home(job):
     shutil.rmtree(job)
 
 
+def compiler_policy(env):
+    # Every target is deleted at job exit. Incremental rustc output cannot be
+    # reused there, and its -C incremental argument bypasses sccache entirely.
+    # Cargo's global setting also wins over inherited per-profile overrides.
+    env['CARGO_INCREMENTAL']='0'
+
+
+def child_cpu():
+    usage=resource.getrusage(resource.RUSAGE_CHILDREN)
+    return usage.ru_utime+usage.ru_stime
+
+
+def cache_cpu(server):
+    if not server or identity(server['pid'])!=server['identity']:return None
+    try:
+        fields=Path(f'/proc/{server["pid"]}/stat').read_text().split(') ')[-1].split()
+        return sum(float(fields[i]) for i in [11,12,13,14])/os.sysconf('SC_CLK_TCK')
+    except (OSError,ValueError,IndexError):return None
+
+
+def cost_receipt(env,server,started_cpu,started_cache_cpu,started_wall):
+    own=max(0,child_cpu()-started_cpu)
+    now=cache_cpu(server)
+    cache=max(0,now-started_cache_cpu) if now is not None and started_cache_cpu is not None else None
+    out={'payload_wall_seconds':max(0,time.monotonic()-started_wall),
+         'waited_children_cpu_seconds':own,'owned_cache_cpu_seconds':cache,
+         'attributed_cpu_seconds':own+cache if cache is not None else (own if server is None else None),
+         'cpu_coverage':'waited-child-tree+owned-sccache; excludes unawaited descendants',
+         'compiler_policy':'ephemeral-target-no-incremental-v1'}
+    if server and cache is None:
+        out['cpu_incomplete_reason']='owned-sccache-unavailable-at-terminal-sample'
+        out['sccache_stats_error']='owned-server-unavailable'
+    elif server:
+        try:
+            result=subprocess.run([SCCACHE,'--show-stats','--stats-format','json'],env=env,capture_output=True,text=True,timeout=5)
+            if identity(server['pid'])!=server['identity']:out['sccache_stats_error']='owned-server-exited-during-stats'
+            elif result.returncode==0:out['sccache']=json.loads(result.stdout)
+            else:out['sccache_stats_error']='exit='+str(result.returncode)
+        except (OSError,ValueError,subprocess.TimeoutExpired) as error:
+            out['sccache_stats_error']=type(error).__name__
+    return out
+
+
 def run(argv):
     meta=os.environ.get('BUILD_SLOT_RECEIPT_META')
     if not meta: raise RuntimeError('bb-job requires a terminal-receipt owner')
+    compiler_job=Path(argv[0]).name=='cargo' or bool(json.loads(Path(meta).read_text()).get('gate_log'))
     # Nested build-slot reuses the enclosing job's home/admission/server, rather
     # than consuming a second tenant slot or changing the tested environment.
     if os.environ.get('BB_JOB_ACTIVE')=='1':
-        if Path(argv[0]).name=='cargo':
+        # The marker alone is not proof: callers and pre-upgrade parents may
+        # supply it without an inherited Landlock domain.
+        try:protect_home(Path('/home/var'))
+        except (OSError,RuntimeError) as error:
+            print('[buildbox] HOME guard INFRA: '+str(error),file=sys.stderr,flush=True)
+            return 224
+        os.environ['CARGO_HOME']='/mnt/bb/toolchains/cargo'
+        compiler_policy(os.environ)
+        if compiler_job:
             os.environ['RUSTC']='/home/var/bin/bigstack/rustc'
             if os.environ.get('BB_CACHE_DISABLED')=='1':os.environ['RUSTC_WRAPPER']=''
             else:os.environ.setdefault('RUSTC_WRAPPER','/home/var/bin/sccache-rustc')
+        if Path(argv[0]).name=='cargo': argv=['/home/var/bin/bb-cargo/cargo']+argv[1:]
         os.execvpe(argv[0],argv,os.environ)
     JOBS.mkdir(parents=True,exist_ok=True)
     job=Path(tempfile.mkdtemp(prefix='job-',dir=JOBS)); job.chmod(0o700)
     env=dict(os.environ); real_home=Path('/home/var')
+    compiler_policy(env)
     # sudo/runuser may strip admission env across the mount-namespace boundary.
     # The admitted wrapper persists it before privilege changes.
     admission_file=Path(meta+'.admission')
@@ -130,7 +255,7 @@ def run(argv):
     runtime={'hermetic_home':str(job),'targets_policy':'job-owned','cache':'not-started','disk_free':disk(),
              'admission':admission}
     runtimefile=Path(meta+'.runtime'); atomic(runtimefile,runtime)
-    server=None; child=None; before=None; rc=224; units=[]
+    server=None; child=None; rc=224; units=[]
     def interrupted(n,f):
         if child:
             try: os.killpg(child.pid,n)
@@ -145,17 +270,26 @@ def run(argv):
         env.update(HOME=str(job/'home'),XDG_DATA_HOME=str(job/'data'),XDG_STATE_HOME=str(job/'state'),
                    XDG_CACHE_HOME=str(job/'cache'),XDG_CONFIG_HOME=str(job/'config'),
                    XDG_RUNTIME_DIR=str(job/'runtime'),TMPDIR=str(job/'tmp'),
-                   CARGO_HOME='/home/var/.cargo',RUSTUP_HOME='/home/var/.rustup',
+                   CARGO_HOME='/mnt/bb/toolchains/cargo',RUSTUP_HOME='/home/var/.rustup',
                    BB_JOB_ACTIVE='1',BB_ADMITTED='1',BB_JOB_HOME=str(job/'home'),BB_JOB_TMP=str(job/'tmp'),BB_JOB_TARGET=str(job/'target'),
                    XWIN_CACHE_DIR='/mnt/bb/toolchains/cargo-xwin',
                    CARGO_TARGET_DIR=str(job/'target'),GATE_MAIN_TARGET_DIR=str(job/'gate-main'),
                    GATE_FEATURE_TARGET_DIR=str(job/'gate-features'),
                    GATE_WINDOWS_RUNTIME_TARGET_DIR=str(job/'gate-windows'))
+        metadata=json.loads(Path(meta).read_text())
+        # The launcher's existing bind is private and owned by this receipt.
+        # Stable paths keep build-script OUT_DIR and linked artifacts valid.
+        if metadata.get('repo')=='sdk' and bb_target_store.private_target(metadata):
+            env.update(CARGO_TARGET_DIR='/work/target', BB_JOB_TARGET='/work/target',
+                       GATE_MAIN_TARGET_DIR='/work/target/.gate-main',
+                       GATE_FEATURE_TARGET_DIR='/work/target/.gate-features',
+                       GATE_WINDOWS_RUNTIME_TARGET_DIR='/work/target/.gate-windows')
+            runtime['target_root']='/work/target'
         for key in ['HOME','XDG_DATA_HOME','XDG_STATE_HOME','XDG_CACHE_HOME','XDG_CONFIG_HOME','XDG_RUNTIME_DIR','TMPDIR']: Path(env[key]).mkdir(mode=0o700)
         # Targets are job-owned scratch; only the content-addressed compiler
         # cache and installed toolchains persist. Export requested artifacts
         # before deleting the job tree.
-        Path(env['CARGO_TARGET_DIR']).mkdir(mode=0o700)
+        Path(env['CARGO_TARGET_DIR']).mkdir(mode=0o700,exist_ok=True)
         target=Path(env['CARGO_TARGET_DIR'])
         try:
             parts=target.relative_to('/mnt/bb/targets').parts
@@ -165,36 +299,46 @@ def run(argv):
         except ValueError: pass
         # Preserve only persistent toolchain directories, never user state.
         env.setdefault('PATH','/home/var/.cargo/bin:/usr/bin:/bin')
-        before=inventory(real_home)
+        try:
+            runtime['git_metadata']=private_git(job,real_home,os.environ.get('BB_JOB_GIT_SOURCE'))
+            runtime['home_guard']=protect_home(real_home)
+        except (OSError,RuntimeError,subprocess.SubprocessError) as error:
+            runtime['home_guard_error']=str(error);atomic(runtimefile,runtime)
+            print('[buildbox] HOME guard INFRA: '+str(error),file=sys.stderr,flush=True)
+            return 224
+        print('GATE_HOME_GUARD '+json.dumps(runtime['home_guard']),file=sys.stderr,flush=True)
         if env.get('BB_CACHE_DISABLED')=='1' or env.get('RUSTC_WRAPPER')=='':
             env['BB_CACHE_DISABLED']='1';runtime['cache']='disabled'
         else:server,runtime['cache']=start_cache(job,env)
         runtime['sccache_server']=server
         atomic(runtimefile,runtime)
+        if compiler_job:env['RUSTC']='/home/var/bin/bigstack/rustc'
         if server is None:
             env['RUSTC_WRAPPER']=''; env['BB_CACHE_DISABLED']='1'
             print('[buildbox] '+runtime['cache']+'; building uncached',file=sys.stderr,flush=True)
-        elif Path(argv[0]).name=='cargo':
+        elif compiler_job:
             env['RUSTC']='/home/var/bin/bigstack/rustc';env.setdefault('RUSTC_WRAPPER','/home/var/bin/sccache-rustc')
         if not Path(meta+'.exec').exists() and env.get('BUILD_SLOT_EXEC_IN_PAYLOAD')!='1':
             subprocess.run([NODE,str(BIN/'buildbox-receipt.mjs'),'exec',meta],env=env,check=True)
         # Stay in the admission lease's process group. A killed client causes
         # the daemon/receipt watcher to terminate the entire leased group.
+        started_cpu=child_cpu(); started_cache_cpu=cache_cpu(server); started_wall=time.monotonic()
+        if Path(argv[0]).name=='cargo': argv=['/home/var/bin/bb-cargo/cargo']+argv[1:]
         child=subprocess.Popen(argv,env=env)
         rc=child.wait(); rc=128-rc if rc<0 else rc
+        cache_records=Path(meta+'.target-store.jsonl')
+        if cache_records.exists():
+            runtime['target_store']=[json.loads(line) for line in cache_records.read_text().splitlines() if line]
+        runtime['compute']=cost_receipt(env,server,started_cpu,started_cache_cpu,started_wall)
+        atomic(runtimefile,runtime)
         if rc==0 and env.get('BB_JOB_EXPORT_SPEC'):
             try:
                 from job_exports import prepare
-                prepare(json.loads(env['BB_JOB_EXPORT_SPEC']), env['CARGO_TARGET_DIR'])
+                prepare(json.loads(env['BB_JOB_EXPORT_SPEC']), env['CARGO_TARGET_DIR'],
+                        cache_reused=any(row.get('status')=='hit' for row in runtime.get('target_store',[])))
             except Exception as error:
                 print('[buildbox] export INFRA: '+str(error),file=sys.stderr,flush=True)
                 runtime['export_error']=str(error);rc=224
-        leaked=growth(before,inventory(real_home))
-        if leaked:
-            print('\nerror: GATE_HOME_LEAK real user state grew: '+', '.join(leaked[:30]),file=sys.stderr,flush=True)
-            runtime['home_leaks']=leaked; atomic(runtimefile,runtime)
-            if rc==0: rc=2
-        else: print('\nGATE_HOME_GUARD rc=0',file=sys.stderr,flush=True)
         return rc
     finally:
         # A signal does not leave test children running after their home/cache

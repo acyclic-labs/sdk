@@ -13,15 +13,25 @@ test('remote wrappers parse, retain isolation and archive outputs before cleanup
   const probe=String.raw`import {launchScript,pinGlibc} from './generator.mjs';
 import fs from 'node:fs';
 import {spawnSync} from 'node:child_process';
+import crypto from 'node:crypto';
 process.env.BUILD_SLOT_REMOTE_FETCH='/work/target/debug/tool';process.env.BUILD_SLOT_GLIBC='2.35';
-for(const input of [['bash','-c','echo okay'],['cargo','metadata','--format-version','1'],['cargo','build']]){
+for(const gate of [false,true])for(const input of [['bash','-c','echo okay'],['cargo','metadata','--format-version','1'],['cargo','build']]){
 const argv=pinGlibc(input);
 const id={commit:'a'.repeat(40),tree:'b'.repeat(40),content:'c'.repeat(64),forced:[],autocrlf:'false',groups:'e30='};
-const script=launchScript('/mnt/bb/wt-sdk/fixture.0','sdk/fixture','.',argv,'/mnt/bb/jobs/fixture','','sdk','',id,60,true,{repo:'sdk',argv});
+const script=launchScript('/mnt/bb/wt-sdk/fixture.0','sdk/fixture','.',argv,'/mnt/bb/jobs/fixture','','sdk','',id,60,true,{repo:'sdk',argv,gate_log:gate?'Q:/lanes/pr-gate/fixture.log':null});
 const bodies=[script,...[...script.matchAll(/echo ([A-Za-z0-9+/=]+) \| base64 -d > \$J\.(sh|wrap|admitted)\b/g)].map(m=>Buffer.from(m[1],'base64').toString())];
 if(bodies.length!==4)throw Error('missing generated shell');
 for(const body of bodies){const r=spawnSync('bash',['-n'],{input:body,encoding:'utf8'});if(r.status!==0)throw Error(r.stderr);}
 const inner=bodies[1];
+const cold=process.env.BUILD_SLOT_REMOTE_COLD==='1';
+const disable='export BB_CACHE_DISABLED=1 BB_TARGET_STORE_DISABLED=1';
+if(inner.includes(disable)!==cold || (cold && inner.indexOf(disable)>inner.indexOf('exec python3 /home/var/bin/bb-job.py')))throw Error('cold jobs can restore or publish snapshots');
+const first=inner.indexOf('\n');
+const requestHash=crypto.createHash('sha256').update(inner.slice(first+1).split('/mnt/bb/jobs/fixture').join('$JOBPREFIX')).digest('hex');
+if(inner.slice(0,first)!=='export BB_TARGET_REQUEST_SHA256='+requestHash)throw Error('generated Cargo provenance digest lost or incomplete');
+if(!inner.includes('PATH=/home/var/bin/bb-cargo:'))throw Error('nested Cargo bypasses target proxy');
+if(input[0]==='cargo' && !inner.includes('/home/var/bin/bb-cargo/cargo'))throw Error('explicit Cargo bypasses target proxy');
+if(inner.includes('unset RUSTC RUSTC_WRAPPER')===(gate||input[0]==='cargo'))throw Error('gate dropped compiler cache or generic toolchain was overridden');
 if(!inner.includes('CARGO_TARGET_DIR="$BB_JOB_TARGET"'))throw Error('target escaped job lifetime');
 if(!inner.includes('BB_JOB_EXPORT_SPEC='))throw Error('outputs not archived');
 if(input[1]==='build' && !inner.includes('"targetMapping":{"triple":"x86_64-unknown-linux-gnu","profiles":["debug","release"]}'))throw Error('glibc-pinned output mapping lost');
@@ -30,8 +40,18 @@ if(script.includes('/mnt/bb/targets/sdk/fixture'))throw Error('persistent target
 }
 `;
   const file=path.join(cwd,'probe.mjs');fs.writeFileSync(file,probe);
-  const result=spawnSync(process.execPath,[file],{encoding:'utf8'});
-  assert.equal(result.status,0,result.stdout+result.stderr);
+  for(const cold of ['0','1']){
+   const result=spawnSync(process.execPath,[file],{encoding:'utf8',env:{...process.env,BUILD_SLOT_REMOTE_COLD:cold}});
+   assert.equal(result.status,0,result.stdout+result.stderr);
+  }
+  const generator=path.join(cwd,'generator.mjs');
+  const original=fs.readFileSync(generator,'utf8');
+  fs.writeFileSync(generator,original.replace('cargoJob || Boolean(receipt?.gate_log)','cargoJob'));
+  const negative=spawnSync(process.execPath,[file],{encoding:'utf8'});
+  assert.notEqual(negative.status,0);assert.match(negative.stderr,/gate dropped compiler cache/);
+  fs.writeFileSync(generator,original.replaceAll('BB_CACHE_DISABLED=1 BB_TARGET_STORE_DISABLED=1','BB_COLD_DISABLED_CONTROL=1'));
+  const coldNegative=spawnSync(process.execPath,[file],{encoding:'utf8',env:{...process.env,BUILD_SLOT_REMOTE_COLD:'1'}});
+  assert.notEqual(coldNegative.status,0);assert.match(coldNegative.stderr,/cold jobs can restore or publish snapshots/);
  }finally{fs.rmSync(cwd,{recursive:true,force:true});}
 });
 
@@ -65,6 +85,19 @@ test('outer cleanup failure is INFRA and the former status handling is a negativ
    assert.equal(result.status,expected,result.stderr);
    const terminal=JSON.parse(fs.readFileSync(receipt));assert.equal(terminal.exit_status,expected);
    assert.equal(terminal.termination,negative?'command':'infra');assert.match(terminal.outer_cleanup_error,/forced outer cleanup refusal/);
+  }
+ }finally{fs.rmSync(cwd,{recursive:true,force:true});}
+});
+test('isolation and artifact-dispatch INFRA cannot become a source verdict',()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'isolation-verdict-'));
+ try{
+  fs.mkdirSync(path.join(cwd,'.codex-fleet'));
+  const source=fs.readFileSync(path.join(here,'coordinator/pr-gate.sh'),'utf8');
+  const block=source.slice(source.indexOf('# Executor isolation failures'),source.indexOf('# A successful payload'));
+  for(const diagnostic of ['[buildbox] HOME guard INFRA: unsupported','error: GATE_RUNNER_INFRA missing manifest','[buildbox] cleanup INFRA: refused','[buildbox] export INFRA: refused']){
+   const log=path.join(cwd,'gate.log');fs.writeFileSync(log,diagnostic+'\nGATE_DONE rc=101\n');
+   const result=spawnSync('bash',['-c',`log=${log};n=1\n${block}\nexit 0\n`],{encoding:'utf8',env:{...process.env,HOME:cwd}});
+   assert.equal(result.status,4,result.stdout+result.stderr);assert.match(result.stdout,/GATE INFRA/);
   }
  }finally{fs.rmSync(cwd,{recursive:true,force:true});}
 });

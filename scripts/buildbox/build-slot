@@ -11,8 +11,8 @@ unset BUILD_SLOT_RECEIPT_WRAPPED
 while [[ "${1:-}" = --remote || "${1:-}" = --local || "${1:-}" = --cold ]]; do [ "$1" != --cold ] || export BB_CACHE_DISABLED=1; shift; done
 [ "$#" -gt 0 ] || exit 2
 if [ "${1##*/}" = cargo ]; then
-  unset CARGO_INCREMENTAL
-  export CARGO_PROFILE_DEV_INCREMENTAL=true CARGO_PROFILE_TEST_INCREMENTAL=true CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
+  export CARGO_INCREMENTAL=0  # ephemeral targets cannot reuse incremental output
+  export CARGO_PROFILE_DEV_INCREMENTAL=false CARGO_PROFILE_TEST_INCREMENTAL=false CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
 
 fi
 export BUILD_SLOT=buildbox

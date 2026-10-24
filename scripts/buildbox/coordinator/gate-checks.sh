@@ -63,28 +63,60 @@ export GATE_BROWSER_SCRIPT=.gate-browser-targets.sh
 fi
 cat > .gate-test-runner.sh <<'GATE_FUZZ_BOOTSTRAP'
 #!/bin/bash
-# Cargo's --all-targets selects libFuzzer bins even when test=false. They have
-# their own main, so libtest's --skip arguments cannot be passed to them.
+# Compiler artifacts, not executable basenames, identify libFuzzer drivers.
 set -euo pipefail
+if [ "${1:-}" = --build ]; then
+  metadata=$2; manifest=$3; shift 3
+  [ "$1" = -- ] || exit 2
+  shift
+  # Complete artifact discovery before executing anything. Cargo's JSON stream
+  # otherwise races its runner, which may start before a consumer sees the event.
+  "$@" --no-run --message-format=json-render-diagnostics > "$manifest.artifacts" || exit $?
+  exec bash "$0" --collect "$metadata" "$manifest.artifacts" "$manifest"
+fi
+if [ "${1:-}" = --collect ]; then
+  shift
+  exec python3 - "$@" <<'PY'
+import json, os, sys
+from pathlib import Path
+try:
+    metadata, artifacts, output = map(Path, sys.argv[1:])
+    m = json.loads(metadata.read_text())
+    fuzz = {(p['id'], t['name']) for p in m['packages'] if (p.get('metadata') or {}).get('cargo-fuzz')
+            for t in p['targets'] if t['kind'] == ['bin']}
+    paths = set()
+    for line in artifacts.read_text().splitlines():
+        item = json.loads(line)
+        if item.get('reason') != 'compiler-artifact':
+            continue
+        if (item['package_id'], item['target']['name']) in fuzz and item['target']['kind'] == ['bin'] and item.get('executable'):
+            executable = Path(item['executable'])
+            if not executable.is_absolute() or not executable.is_file():
+                raise RuntimeError('invalid fuzz executable artifact: ' + str(executable))
+            paths.add(str(executable.resolve()))
+    tmp = Path(str(output) + '.tmp')
+    tmp.write_text(''.join(p + '\n' for p in sorted(paths)))
+    os.replace(tmp, output)
+except Exception as error:
+    print('error: GATE_RUNNER_INFRA compiler-artifact discovery: ' + str(error), file=sys.stderr)
+    sys.exit(2)
+PY
+fi
 program=$1; shift
-name=${program##*/}
-if [ -n "${GATE_FUZZ_TEST_BIN_FILE:-}" ]; then
-  while IFS= read -r bin; do
-    case "$name" in
-      "$bin"-*)
-        # Ordinary integration tests can share a fuzz target's basename.
-        # Require its linked libFuzzer driver before replacing libtest args.
-        if ! symbols=$(nm --defined-only -- "$program"); then
-          echo "error: GATE_RUNNER_INFRA cannot inspect $program" >&2
-          exit 2
-        fi
-        if awk '$NF == "LLVMFuzzerTestOneInput" { found=1 } END { exit !found }' <<< "$symbols"; then
-          echo "GATE_FUZZ_SMOKE bin=$bin runs=1 seed=1"
-          set -- -runs=1 -seed=1 -max_total_time=10
-        fi
-        break;;
-    esac
-  done < "$GATE_FUZZ_TEST_BIN_FILE"
+if [ -z "${GATE_FUZZ_EXECUTABLES:-}" ] || [ ! -f "$GATE_FUZZ_EXECUTABLES" ]; then
+  echo 'error: GATE_RUNNER_INFRA missing completed compiler-artifact manifest' >&2
+  exit 2
+fi
+program=$(realpath -e -- "$program")
+match=0
+grep -Fxq -- "$program" "$GATE_FUZZ_EXECUTABLES" || match=$?
+if [ "$match" -gt 1 ]; then
+  echo 'error: GATE_RUNNER_INFRA cannot read compiler-artifact manifest' >&2
+  exit 2
+fi
+if [ "$match" = 0 ]; then
+  echo "GATE_FUZZ_SMOKE executable=$program runs=1 seed=1"
+  set -- -runs=1 -seed=1
 fi
 if [ -n "${GATE_BASE_TEST_RUNNER:-}" ]; then
   exec "$GATE_BASE_TEST_RUNNER" "$program" "$@"
@@ -93,7 +125,7 @@ exec "$program" "$@"
 GATE_FUZZ_BOOTSTRAP
 export GATE_TEST_RUNNER_SCRIPT=.gate-test-runner.sh
 # Prefer a reviewed runner with complete phase coverage markers.
-if [ -f scripts/main-gate-checks.sh ] && [ -f scripts/gate-feature-matrix.sh ] && grep -q '^# Main baseline completion v2$' scripts/main-gate-checks.sh; then
+if [ -f scripts/main-gate-checks.sh ] && [ -f scripts/gate-feature-matrix.sh ] && grep -q '^# Main baseline completion v2$' scripts/main-gate-checks.sh && grep -q '^# Fuzz executable identity v2$' scripts/main-gate-checks.sh; then
   exec bash scripts/main-gate-checks.sh "$@"
 fi
 cat > .gate-feature-matrix.mjs <<'GATE_MATRIX_BOOTSTRAP'
@@ -288,8 +320,8 @@ clippy_target="$cache/clippy"
 echo "GATE_MAIN_START target=$target clippy_target=$clippy_target"
 cargo metadata --locked --offline --no-deps --format-version 1 > .gate-main-metadata.json || exit 2
 members=$(node -e 'const m=JSON.parse(require("fs").readFileSync(".gate-main-metadata.json","utf8")); const ids=new Set(m.workspace_members); console.log(m.packages.filter(p=>ids.has(p.id)).map(p=>p.name).sort().join(","))') || exit 2
-node -e 'const m=JSON.parse(require("fs").readFileSync(".gate-main-metadata.json","utf8")); for(const p of m.packages) if(p.metadata?.["cargo-fuzz"]) for(const t of p.targets) if(t.kind.includes("bin")) console.log(t.name)' > .gate-fuzz-bins || exit 2
-export GATE_FUZZ_TEST_BIN_FILE="$PWD/.gate-fuzz-bins"
+export GATE_FUZZ_EXECUTABLES="$PWD/.gate-fuzz-executables"
+: > "$GATE_FUZZ_EXECUTABLES" || exit 2
 export GATE_BASE_TEST_RUNNER=${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:-}
 test_runner="$PWD/${GATE_TEST_RUNNER_SCRIPT:-scripts/gate-test-runner.sh}"
 chmod +x "$test_runner" || exit 2
@@ -302,10 +334,18 @@ features=$!
 run_tests(){
   local phase=$1 status phase_started=$SECONDS; shift
   echo "GATE_TEST_START phase=$phase packages=$members"
-  CARGO_TARGET_DIR="$target" cargo test --locked --workspace --all-features --no-fail-fast \
-    "${cargo_args[@]}" "$@" -- "${harness[@]}" 2>&1 | tee ".gate-$phase.out"
-  status=("${PIPESTATUS[@]}")
-  if [ "${status[1]}" != 0 ]; then echo 'error: gate could not retain Cargo output'; return 2; fi
+  status=(0 0)
+  if [ "$phase" = targets ]; then
+    CARGO_TARGET_DIR="$target" bash "$test_runner" --build .gate-main-metadata.json "$GATE_FUZZ_EXECUTABLES" -- \
+      cargo test --locked --workspace --all-features --no-fail-fast "${cargo_args[@]}" "$@" 2>&1 | tee ".gate-$phase.out"
+    status=("${PIPESTATUS[@]}")
+  fi
+  if [ "${status[0]}" = 0 ] && [ "${status[1]}" = 0 ]; then
+    CARGO_TARGET_DIR="$target" cargo test --locked --workspace --all-features --no-fail-fast \
+      "${cargo_args[@]}" "$@" -- "${harness[@]}" 2>&1 | tee -a ".gate-$phase.out"
+    status=("${PIPESTATUS[@]}")
+  fi
+  if [ "${status[1]}" != 0 ]; then echo 'error: gate could not retain Cargo output'; status[0]=2; fi
   echo "GATE_TEST_WALL phase=$phase seconds=$((SECONDS-phase_started)) rc=${status[0]}"
   if [ "${status[0]}" = 0 ]; then
     echo "GATE_TEST_COVERAGE phase=$phase packages=$members"

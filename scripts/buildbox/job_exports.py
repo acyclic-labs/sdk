@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import tarfile
 
-def prepare(spec, target):
+def prepare(spec, target, *, cache_reused=False):
     prefix=Path(spec['prefix'])
     if prefix.parent!=Path('/mnt/bb/jobs'):raise ValueError('invalid export prefix')
     output=Path(str(prefix)+'.exports');output.mkdir(mode=0o700,exist_ok=True)
@@ -28,16 +28,17 @@ def prepare(spec, target):
         files=set()
         for p in paths:
             absolute=base/p
+            if not absolute.resolve().is_relative_to(base.resolve()):raise ValueError("declared output escapes its base")
             if absolute.is_symlink():raise ValueError('declared output is a symlink: '+str(absolute))
             if not absolute.exists():raise FileNotFoundError('missing declared output: '+str(absolute))
             if absolute.is_file():
-                if is_target and spec['build'] or absolute.stat().st_mtime_ns>start:files.add(p)
+                if is_target and (spec['build'] or cache_reused) or absolute.stat().st_mtime_ns>start:files.add(p)
             elif absolute.is_dir():
                 for where,dirs,names in os.walk(absolute,followlinks=False):
                     dirs[:]=[d for d in dirs if not (Path(where)/d).is_symlink()]
                     for name in names:
                         file=Path(where)/name
-                        if file.is_file() and not file.is_symlink() and file.stat().st_mtime_ns>start:files.add(file.relative_to(base))
+                        if file.is_file() and not file.is_symlink() and (is_target and cache_reused or file.stat().st_mtime_ns>start):files.add(file.relative_to(base))
         if not files:continue
         archive=output/f'{len(manifest)}.tar.gz'
         with tarfile.open(archive,'w:gz') as tar:
