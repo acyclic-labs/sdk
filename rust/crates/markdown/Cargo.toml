@@ -12,9 +12,6 @@ description = "Incremental Markdown presentation as renderer-independent styled 
 name = "streaming"
 path = "tests/streaming.rs"
 
-[[test]]
-name = "streaming_properties"
-path = "tests/streaming_properties.rs"
 
 [[bench]]
 name = "audit"
@@ -36,3 +33,6 @@ proptest.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+fuzzing = []

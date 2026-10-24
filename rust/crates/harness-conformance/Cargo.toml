@@ -35,10 +35,24 @@ acyclic-conformance = { version = "=0.2.0", path = "../conformance" }
 blake3.workspace = true
 serde_json.workspace = true
 
+[[test]]
+name = "provider-integration"
+path = "tests/provider-integration/main.rs"
+
 [dev-dependencies]
+acyclic-harness = { version = "=0.2.0", path = "../harness", features = ["test-support", "filesystem-local", "native-execution", "mcp-http", "mcp-stdio", "search-http"] }
+acyclic-harness-providers = { version = "=0.2.0", path = "../harness-providers" }
+acyclic-test-support = { path = "../test-support" }
+bytes.workspace = true
+prost.workspace = true
+proptest.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 async-trait.workspace = true
 axum.workspace = true
+tokio = { workspace = true, features = ["io-util", "net", "test-util"] }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 serde.workspace = true
 tempfile = "3.27.0"

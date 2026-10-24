@@ -1,9 +1,8 @@
 use super::index::Probe;
+use super::reference;
 use super::*;
 use proptest::prelude::*;
 use std::collections::BTreeMap;
-#[path = "reference.rs"]
-mod reference;
 
 type Paths = BTreeMap<String, Option<u64>>;
 struct Fixture {

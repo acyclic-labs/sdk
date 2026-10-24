@@ -95,8 +95,133 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 })?
                 .await;
             }
-            Box::pin(self.created_access_body(admission, visited, work)).await
+            crate::charged_box::history_frame(work, |work| {
+                self.created_access_body(admission, visited, work)
+            })?
+            .await
         }
+    }
+
+    // Synchronous checks run in frames of their own, never reserved in the
+    // recursive async frame that stays live under each proof's verification.
+    #[inline(never)]
+    fn admitted_request(
+        preparation: &TaskAdmissionRecord,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(
+        crate::charged_box::ChargedBox<crate::resource_preparation::ResourcePreparationRequest>,
+        u64,
+    )> {
+        let (request, held) = crate::resource_preparation::ResourcePreparationRequest::decode(
+            &preparation.input,
+            work,
+        )?;
+        Ok((crate::store::history::charged_box(request, work)?, held))
+    }
+
+    // The coordinator's checks of the preparation and its lineage run in a
+    // frame of their own, not in the poll frame live under the verifier.
+    #[inline(never)]
+    fn coordinated_origin(
+        &self,
+        coordinator: &DistributedCoordinator<P>,
+        preparation: &TaskAdmissionRecord,
+        inherited: bool,
+        parent: TaskId,
+        request: &crate::resource_preparation::ResourcePreparationRequest,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<usize> {
+        use crate::wire::ErrorCode;
+        let prepared = coordinator.observe_operation(
+            self.verifier.audience(),
+            &self.owner_scope,
+            &self.verifier,
+            preparation.operation_id,
+            work,
+        )?;
+        if prepared.cancellation_requested
+            || !matches!(prepared.outcome, Some(Outcome::Succeeded(_)))
+        {
+            return Err(crate::store::guarded_boundary(
+                work,
+                ErrorCode::Unauthorized,
+                "resource preparation did not succeed",
+            ));
+        }
+        let mut origin_distance = 0;
+        if inherited {
+            let mut lineage_custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let mut lineage = Vec::new();
+            let mut cursor = Some(OperationId::from_bytes(parent.into_bytes()));
+            let mut found = false;
+            while let Some(operation) = cursor {
+                if let Some(io) = lineage_custody.work().as_deref_mut() {
+                    io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
+                }
+                if operation == request.child.operation_id {
+                    origin_distance = lineage.len() + 1;
+                    found = true;
+                    break;
+                }
+                if Self::proof_contains(&lineage, &operation, lineage_custody.work())? {
+                    return Err(crate::store::guarded_boundary(
+                        lineage_custody.work(),
+                        ErrorCode::Conflict,
+                        "indexed operation lineage is cyclic",
+                    ));
+                }
+                let held = Self::reserve_proof_slots(&mut lineage, lineage_custody.work())?;
+                lineage_custody.adopt(held)?;
+                lineage.push(operation);
+                let state = coordinator.observe_operation(
+                    self.verifier.audience(),
+                    &self.owner_scope,
+                    &self.verifier,
+                    operation,
+                    lineage_custody.work(),
+                )?;
+                cursor = state.spec.parent.as_ref().map(|link| link.operation_id);
+            }
+            if !found {
+                return Err(crate::store::guarded_boundary(
+                    lineage_custody.work(),
+                    ErrorCode::Unauthorized,
+                    "resource proof belongs to another child lineage",
+                ));
+            }
+        }
+        Ok(origin_distance)
+    }
+
+    #[inline(never)]
+    fn check_receipt_provenance(
+        &self,
+        receipt: &crate::resource_preparation::CreatedResourceReceipt,
+        preparation_parent: TaskId,
+        proof: &crate::resource_preparation::ResourceCreationProofRef,
+        request: &crate::resource_preparation::ResourcePreparationRequest,
+        preparation: &TaskAdmissionRecord,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if &receipt.origin.owner != self.verifier.audience()
+            || receipt.origin.parent_task != preparation_parent
+            || receipt.origin.preparation_task != proof.preparation
+            || receipt.origin.intended_child != request.child.operation_id
+            || receipt.origin.admission_digest != preparation.canonical_digest_with_work(work)?
+            || receipt.origin.request_digest
+                != crate::executor::json::canonical_json_digest(
+                    request,
+                    acyclic_stream::MAX_RECORD_BYTES as u64,
+                    work,
+                )?
+        {
+            return Err(crate::store::guarded_boundary(
+                work,
+                crate::wire::ErrorCode::Unauthorized,
+                "resource allocation provenance changed",
+            ));
+        }
+        Ok(())
     }
 
     #[allow(
@@ -133,9 +258,17 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "created resource admission has no parent",
             )
         })?;
-        let parent_admission = self
-            .admission(OperationId::from_bytes(parent.into_bytes()), custody.work())
-            .await?;
+        let frame = crate::store::history::HistoryContentFuture::with_quota(
+            &mut custody,
+            |work| async move {
+                self.admission(OperationId::from_bytes(parent.into_bytes()), &mut *work)
+                    .await
+                    .and_then(|admission| crate::store::history::charged_box(admission, work))
+            },
+        )?;
+        let frame_bytes = frame.frame_bytes();
+        let parent_admission = frame.await?;
+        custody.relinquish(frame_bytes)?;
         let held = if custody.work().is_some() {
             std::mem::size_of::<TaskAdmissionRecord>() as u64
                 + parent_admission.logical_owned_bytes()?
@@ -164,12 +297,20 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 )
             })?;
             let mut proof_custody = crate::wire_codec::CodecQuota::new(custody.work(), 0)?;
-            let preparation = self
-                .admission(
-                    OperationId::from_bytes(proof.preparation.into_bytes()),
-                    proof_custody.work(),
-                )
-                .await?;
+            let frame = crate::store::history::HistoryContentFuture::with_quota(
+                &mut proof_custody,
+                |work| async move {
+                    self.admission(
+                        OperationId::from_bytes(proof.preparation.into_bytes()),
+                        &mut *work,
+                    )
+                    .await
+                    .and_then(|admission| crate::store::history::charged_box(admission, work))
+                },
+            )?;
+            let frame_bytes = frame.frame_bytes();
+            let preparation = frame.await?;
+            proof_custody.relinquish(frame_bytes)?;
             let held = if proof_custody.work().is_some() {
                 std::mem::size_of::<TaskAdmissionRecord>() as u64
                     + preparation.logical_owned_bytes()?
@@ -177,10 +318,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 0
             };
             proof_custody.adopt(held)?;
-            let (request, held) = crate::resource_preparation::ResourcePreparationRequest::decode(
-                &preparation.input,
-                proof_custody.work(),
-            )?;
+            let (request, held) = Self::admitted_request(&preparation, proof_custody.work())?;
             proof_custody.adopt(held)?;
             if preparation.parent != request.child.parent
                 || preparation.operation_id.into_bytes() != proof.preparation.into_bytes()
@@ -213,12 +351,20 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     "resource preparation has no original parent",
                 )
             })?;
-            let original_parent = self
-                .admission(
-                    OperationId::from_bytes(preparation_parent.into_bytes()),
-                    proof_custody.work(),
-                )
-                .await?;
+            let frame = crate::store::history::HistoryContentFuture::with_quota(
+                &mut proof_custody,
+                |work| async move {
+                    self.admission(
+                        OperationId::from_bytes(preparation_parent.into_bytes()),
+                        &mut *work,
+                    )
+                    .await
+                    .and_then(|admission| crate::store::history::charged_box(admission, work))
+                },
+            )?;
+            let frame_bytes = frame.frame_bytes();
+            let original_parent = frame.await?;
+            proof_custody.relinquish(frame_bytes)?;
             let held = if proof_custody.work().is_some() {
                 std::mem::size_of::<TaskAdmissionRecord>() as u64
                     + original_parent.logical_owned_bytes()?
@@ -236,7 +382,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 ));
             }
             let inherited = request.child != *admission;
-            let mut origin_distance = 0;
+            let origin_distance;
             if inherited {
                 if !parent_admission.resource_proofs.contains(proof) {
                     return Err(crate::store::guarded_boundary(
@@ -245,9 +391,20 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         "created resource proof is not inherited from the parent",
                     ));
                 }
-                let original_child = self
-                    .admission(request.child.operation_id, proof_custody.work())
-                    .await?;
+                let child = request.child.operation_id;
+                let frame = crate::store::history::HistoryContentFuture::with_quota(
+                    &mut proof_custody,
+                    |work| async move {
+                        self.admission(child, &mut *work)
+                            .await
+                            .and_then(|admission| {
+                                crate::store::history::charged_box(admission, work)
+                            })
+                    },
+                )?;
+                let frame_bytes = frame.frame_bytes();
+                let original_child = frame.await?;
+                proof_custody.relinquish(frame_bytes)?;
                 let held = if proof_custody.work().is_some() {
                     std::mem::size_of::<TaskAdmissionRecord>() as u64
                         + original_child.logical_owned_bytes()?
@@ -255,7 +412,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     0
                 };
                 proof_custody.adopt(held)?;
-                let matches = original_child == request.child;
+                let matches = *original_child == request.child;
                 drop(original_child);
                 proof_custody.relinquish(held)?;
                 if !matches {
@@ -268,67 +425,21 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
             {
                 let mut coordinator = self.coordinator.lock().await;
-                coordinator.refresh(proof_custody.work()).await?;
-                let prepared = coordinator.observe_operation(
-                    self.verifier.audience(),
-                    &self.owner_scope,
-                    &self.verifier,
-                    preparation.operation_id,
+                let frame = crate::store::history::HistoryContentFuture::with_quota(
+                    &mut proof_custody,
+                    |work| coordinator.refresh(work),
+                )?;
+                let frame_bytes = frame.frame_bytes();
+                frame.await?;
+                proof_custody.relinquish(frame_bytes)?;
+                origin_distance = self.coordinated_origin(
+                    &coordinator,
+                    &preparation,
+                    inherited,
+                    parent,
+                    &request,
                     proof_custody.work(),
                 )?;
-                if prepared.cancellation_requested
-                    || !matches!(prepared.outcome, Some(Outcome::Succeeded(_)))
-                {
-                    return Err(crate::store::guarded_boundary(
-                        proof_custody.work(),
-                        ErrorCode::Unauthorized,
-                        "resource preparation did not succeed",
-                    ));
-                }
-                if inherited {
-                    let mut lineage_custody =
-                        crate::wire_codec::CodecQuota::new(proof_custody.work(), 0)?;
-                    let mut lineage = Vec::new();
-                    let mut cursor = Some(OperationId::from_bytes(parent.into_bytes()));
-                    let mut found = false;
-                    while let Some(operation) = cursor {
-                        if let Some(io) = lineage_custody.work().as_deref_mut() {
-                            io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect {
-                                items: 1,
-                            })?;
-                        }
-                        if operation == request.child.operation_id {
-                            origin_distance = lineage.len() + 1;
-                            found = true;
-                            break;
-                        }
-                        if Self::proof_contains(&lineage, &operation, lineage_custody.work())? {
-                            return Err(crate::store::guarded_boundary(
-                                lineage_custody.work(),
-                                ErrorCode::Conflict,
-                                "indexed operation lineage is cyclic",
-                            ));
-                        }
-                        let held = Self::reserve_proof_slots(&mut lineage, lineage_custody.work())?;
-                        lineage_custody.adopt(held)?;
-                        lineage.push(operation);
-                        let state = coordinator.observe_operation(
-                            self.verifier.audience(),
-                            &self.owner_scope,
-                            &self.verifier,
-                            operation,
-                            lineage_custody.work(),
-                        )?;
-                        cursor = state.spec.parent.as_ref().map(|link| link.operation_id);
-                    }
-                    if !found {
-                        return Err(crate::store::guarded_boundary(
-                            lineage_custody.work(),
-                            ErrorCode::Unauthorized,
-                            "resource proof belongs to another child lineage",
-                        ));
-                    }
-                }
             }
             let receipt;
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -353,31 +464,32 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 observer.absorb_native_custody(guard)?;
                 receipt = verified;
             } else {
-                receipt = provider.verify(&request, proof).await?;
+                let frame = crate::store::history::HistoryContentFuture::with_quota(
+                    &mut proof_custody,
+                    |_| provider.verify(&request, proof),
+                )?;
+                let frame_bytes = frame.frame_bytes();
+                receipt = frame.await?;
+                proof_custody.relinquish(frame_bytes)?;
             }
             #[cfg(any(not(feature = "filesystem"), target_arch = "wasm32"))]
             {
-                receipt = provider.verify(&request, proof).await?;
+                let frame = crate::store::history::HistoryContentFuture::with_quota(
+                    &mut proof_custody,
+                    |_| provider.verify(&request, proof),
+                )?;
+                let frame_bytes = frame.frame_bytes();
+                receipt = frame.await?;
+                proof_custody.relinquish(frame_bytes)?;
             }
-            if &receipt.origin.owner != self.verifier.audience()
-                || receipt.origin.parent_task != preparation_parent
-                || receipt.origin.preparation_task != proof.preparation
-                || receipt.origin.intended_child != request.child.operation_id
-                || receipt.origin.admission_digest
-                    != preparation.canonical_digest_with_work(proof_custody.work())?
-                || receipt.origin.request_digest
-                    != crate::executor::json::canonical_json_digest(
-                        &request,
-                        acyclic_stream::MAX_RECORD_BYTES as u64,
-                        proof_custody.work(),
-                    )?
-            {
-                return Err(crate::store::guarded_boundary(
-                    proof_custody.work(),
-                    ErrorCode::Unauthorized,
-                    "resource allocation provenance changed",
-                ));
-            }
+            self.check_receipt_provenance(
+                &receipt,
+                preparation_parent,
+                proof,
+                &request,
+                &preparation,
+                proof_custody.work(),
+            )?;
             if receipt.content.iter().any(|binding| binding.default_writer)
                 && current_default.is_none_or(|(distance, _)| origin_distance < distance)
             {

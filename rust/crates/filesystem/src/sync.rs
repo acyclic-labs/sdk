@@ -8,9 +8,27 @@ pub(crate) use std::sync::*;
 #[cfg(feature = "native-mount")]
 pub(crate) mod native {
     #[cfg(any(acyclic_fs_loom, acyclic_fs_native_loom))]
-    pub(crate) use loom::{sync::*, thread};
+    pub(crate) use loom::sync::*;
     #[cfg(not(any(acyclic_fs_loom, acyclic_fs_native_loom)))]
-    pub(crate) use std::{sync::*, thread};
+    pub(crate) use std::sync::*;
+
+    // Keep backend selection private: callers cannot pass a modeled builder to
+    // a std-only spawn helper, or accidentally run modeled locks on an OS thread.
+    #[cfg(any(acyclic_fs_loom, acyclic_fs_native_loom))]
+    use loom::thread;
+    #[cfg(not(any(acyclic_fs_loom, acyclic_fs_native_loom)))]
+    use std::thread;
+
+    pub(crate) fn spawn<F, T>(work: F) -> std::io::Result<thread::JoinHandle<T>>
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        #[cfg(any(acyclic_fs_loom, acyclic_fs_native_loom))]
+        return thread::Builder::new().spawn(acyclic_grpc_observability::task::blocking(work));
+        #[cfg(not(any(acyclic_fs_loom, acyclic_fs_native_loom)))]
+        acyclic_grpc_observability::task::named_thread(thread::Builder::new(), work)
+    }
 
     #[cfg(any(acyclic_fs_loom, acyclic_fs_native_loom))]
     pub(crate) type RetirementSender = loom::sync::mpsc::Sender<()>;
@@ -24,6 +42,24 @@ pub(crate) mod native {
         return loom::sync::mpsc::channel();
         #[cfg(not(any(acyclic_fs_loom, acyclic_fs_native_loom)))]
         std::sync::mpsc::sync_channel(1)
+    }
+
+    #[cfg(all(test, any(acyclic_fs_loom, acyclic_fs_native_loom)))]
+    #[test]
+    fn modeled_native_spawn_keeps_worker_in_scheduler() {
+        loom::model(|| {
+            let seen = Arc::new(atomic::AtomicBool::new(false));
+            let worker_seen = Arc::clone(&seen);
+            let (retirement, receiver) = retirement_channel();
+            let worker = spawn(move || {
+                receiver.recv().unwrap();
+                worker_seen.store(true, atomic::Ordering::Release);
+            })
+            .unwrap();
+            retirement.send(()).unwrap();
+            worker.join().unwrap();
+            assert!(seen.load(atomic::Ordering::Acquire));
+        });
     }
 }
 

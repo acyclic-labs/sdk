@@ -86,3 +86,6 @@ mod tests {
         ));
     }
 }
+
+/// Shared property and mutation-fuzz cases using the harness API.
+pub mod fuzz_cases;

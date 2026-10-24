@@ -177,6 +177,7 @@ impl NativeSkills {
     ) -> Result<PinnedContextPath> {
         batch.retain(
             &self.journal,
+            // Unbudgeted: the record outlives this discovery's native work, in the retained batch.
             RetainedSource::Native(Box::new(Source {
                 volume: self.journal.clone(),
                 root: root.into(),
@@ -645,6 +646,7 @@ impl ProjectCatalog<'_> {
                 // selected child. Load through the journal with native work.
                 records.retain(
                     &self.sources.journal,
+                    // Unbudgeted: the record outlives this discovery's native work, in the retained batch.
                     RetainedSource::Shadow(Box::new(ShadowSource {
                         volume: self.sources.journal.clone(),
                         cut: self.cut,

@@ -198,6 +198,8 @@ impl CreationFixture {
                     .await?,
             )
         };
+        let (reserved, peak) = crate::executor::json::assert_layout_covers_decode(&fork);
+        eprintln!("ForkRequest layout reserved {reserved} B, decode peak {peak} B");
         let preparer = FilesystemForkPreparer::new(
             self.filesystem.clone(),
             reducer,
@@ -256,7 +258,8 @@ impl CreationFixture {
         let (preparation, _lease, _invocation) = self.prepare(&request).await?;
         let report = preparer
             .prepare_for_task(&fork, &Arc::new(preparation), None)
-            .await?;
+            .await?
+            .into_inner();
         let seed = report.clone().into_seed(&mut None)?;
         Ok(PreparedFilesystemChild {
             _runtime: issuer,

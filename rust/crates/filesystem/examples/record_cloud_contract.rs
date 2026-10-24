@@ -3,10 +3,10 @@
 #[path = "../tests/support/cloud_contract.rs"]
 mod contract;
 
+use acyclic_fs::{FilesystemWireLimits, FilesystemWireService, MemoryFs};
 use acyclic_fs_wire::wire::filesystem::v2::{
     self as wire, filesystem_service_server::FilesystemService,
 };
-use acyclic_fs::{FilesystemWireLimits, FilesystemWireService, MemoryFs};
 use serde_json::{Value, json};
 use tonic::Request;
 

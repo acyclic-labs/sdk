@@ -14,6 +14,7 @@ use crate::performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
 };
 use crate::watch_queue::{QueueReceiver, QueueSender};
+use acyclic_native_runtime::deadline::{self, Deadline, Waiter};
 #[cfg(not(windows))]
 use notify::RecursiveMode;
 #[cfg(not(windows))]
@@ -26,8 +27,10 @@ use std::mem::size_of;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{TryRecvError, TrySendError};
-use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+#[cfg(all(test, any(windows, target_os = "macos")))]
+use std::time::Instant;
 use thiserror::Error;
 
 /// The host's native event watcher.
@@ -389,7 +392,7 @@ fn invalidate_root_hints<W: crate::demand::SourceDemandReadWork>(
 struct RootHints {
     root: PathBuf,
     shared: Arc<Mutex<SharedState>>,
-    fenced: Arc<Condvar>,
+    fenced: Arc<Waiter>,
     _root_allocation: Option<crate::NativeAllocation>,
 }
 
@@ -477,7 +480,7 @@ impl crate::source_watch::HostChangeSink for RootHints {
 /// Holds a lost delivery batch as the watch's state: it stays invalidated,
 /// and every fence waiting on it wakes to refuse, until a rescan begins.
 #[cfg(any(test, target_os = "macos"))]
-fn lose_delivery(shared: &Mutex<SharedState>, fenced: &Condvar) {
+fn lose_delivery(shared: &Mutex<SharedState>, fenced: &Waiter) {
     if let Ok(mut state) = shared.lock() {
         state
             .invalidation
@@ -492,7 +495,7 @@ struct NativeEventDelivery {
     sender: QueueSender<QueuedWatchChange>,
     shared: Arc<Mutex<SharedState>>,
     queued: Arc<AtomicU32>,
-    fenced: Arc<Condvar>,
+    fenced: Arc<Waiter>,
 }
 
 #[cfg(target_os = "linux")]
@@ -1239,8 +1242,10 @@ pub struct NativeWatch {
     #[cfg(windows)]
     windows_delivery: Arc<NativeEventDelivery>,
     queued: Arc<AtomicU32>,
+    // Lock order: shared state -> waiter -> virtual clock. The fence releases
+    // shared state before parking; waiter and clock never lock shared state.
     shared: Arc<Mutex<SharedState>>,
-    fenced: Arc<Condvar>,
+    fenced: Arc<Waiter>,
     fences: u64,
     epoch: u64,
     next_sequence: u64,
@@ -1624,7 +1629,7 @@ impl NativeWatch {
         let state = SharedState::new(Some(WatchInvalidationReason::InitialSnapshotRequired));
         let shared = Arc::new(Mutex::new(state));
         Self::startup_control(work)?;
-        let fenced = Arc::new(Condvar::new());
+        let fenced = Arc::new(Waiter::new());
         #[cfg(windows)]
         let (context_root, context_allocation) = Self::copy_startup_path(&root, work, original)?;
         #[cfg(windows)]
@@ -1862,7 +1867,9 @@ impl NativeWatch {
     pub const fn reports_every_change(&self) -> bool {
         self.complete
     }
+}
 
+impl NativeWatch {
     /// Adds one exact directory to a non-recursive native watcher.
     pub fn watch_directory(&mut self, directory: &NamespacePath) -> Result<(), NativeWatchError> {
         #[cfg(not(any(target_os = "linux", windows)))]
@@ -2560,7 +2567,9 @@ impl NativeWatch {
         }
         Ok(())
     }
+}
 
+impl NativeWatch {
     /// Admits a demand-backed lazy baseline without enumerating the root.
     pub fn accept_lazy_baseline(&mut self) -> Result<WatchBatch, NativeWatchError> {
         self.accept_lazy_baseline_measured(WorkBudget::UNBOUNDED, &CancellationToken::new())
@@ -2713,6 +2722,7 @@ impl NativeWatch {
     pub fn accept_windows_usn_baseline(
         &mut self,
         checkpoint: crate::WindowsUsnCheckpoint,
+        work: &mut crate::NativeMaterializationWork,
     ) -> Result<Result<crate::WindowsUsnContinuity, crate::WindowsUsnError>, NativeWatchError> {
         if self.rescan_in_progress {
             return Err(NativeWatchError::RescanAlreadyInProgress);
@@ -2726,13 +2736,9 @@ impl NativeWatch {
         {
             return Err(NativeWatchError::RescanAlreadyInProgress);
         }
-        let verified = match crate::validate_windows_usn_checkpoint(&self.root, checkpoint) {
+        let verified = match crate::validate_windows_usn_checkpoint(&self.root, checkpoint, work) {
             Ok(crate::WindowsUsnContinuity::Unchanged) => crate::WindowsUsnContinuity::Unchanged,
-            Ok(_) => {
-                return Ok(Ok(crate::WindowsUsnContinuity::BaselineRequired(
-                    crate::WindowsUsnDiscontinuity::VolumeAdvanced,
-                )));
-            }
+            Ok(baseline) => return Ok(Ok(baseline)),
             Err(error) => return Ok(Err(error)),
         };
         // The journal verifies prior hints; this lock fences later callbacks.
@@ -2978,7 +2984,9 @@ impl NativeWatch {
         }
         Ok(())
     }
+}
 
+impl NativeWatch {
     /// Fences the actual native producers on the caller's original work.
     pub fn fence_with_native_work(
         &mut self,
@@ -3011,7 +3019,7 @@ impl NativeWatch {
             self.fenced.notify_all();
             return Err(error);
         }
-        let started = Instant::now();
+        let started = deadline::now();
         if timeout.is_zero() {
             self.shared
                 .lock()
@@ -3043,7 +3051,7 @@ impl NativeWatch {
             .map_err(demand_watch_error)?;
             children_delivered &= observed
                 .watcher
-                .fence_with_work(timeout.saturating_sub(started.elapsed()), work)
+                .fence_with_work(timeout.saturating_sub(deadline::elapsed(started)), work)
                 .map_err(demand_watch_error)?;
         }
         let delivered = match &self.watcher {
@@ -3053,7 +3061,7 @@ impl NativeWatch {
             }
             #[cfg(not(target_os = "macos"))]
             NativeWatchDriver::Source(watcher) => watcher
-                .fence_with_work(timeout.saturating_sub(started.elapsed()), work)
+                .fence_with_work(timeout.saturating_sub(deadline::elapsed(started)), work)
                 .map_err(demand_watch_error)?,
             NativeWatchDriver::StartupFailure(owner) => {
                 return Err(demand_watch_error(
@@ -3281,23 +3289,22 @@ impl NativeWatch {
     /// Reports whether the armed cookie's notification arrived in time, with
     /// no delivery lost before it.
     pub(crate) fn await_cookie(&self, timeout: Duration) -> Result<bool, NativeWatchError> {
-        let deadline = Instant::now() + timeout;
-        let mut state = self
-            .shared
-            .lock()
-            .map_err(|_| NativeWatchError::StatePoisoned)?;
-        while state.fence.is_some() && state.invalidation.is_none() {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
+        let deadline = Deadline::after(timeout);
+        loop {
+            let generation = self.fenced.listen();
+            let state = self
+                .shared
+                .lock()
+                .map_err(|_| NativeWatchError::StatePoisoned)?;
+            if state.fence.is_none() || state.invalidation.is_some() {
+                return Ok(state.invalidation.is_none());
+            }
+            if deadline.expired() {
                 return Ok(false);
             }
-            state = self
-                .fenced
-                .wait_timeout(state, remaining)
-                .map_err(|_| NativeWatchError::StatePoisoned)?
-                .0;
+            drop(state);
+            self.fenced.wait_after(generation, Some(deadline));
         }
-        Ok(state.invalidation.is_none())
     }
 
     /// The excluded directories that may hold fence cookies, in order. When
@@ -3330,7 +3337,9 @@ impl NativeWatch {
             .into_iter()
             .collect())
     }
+}
 
+impl NativeWatch {
     /// Moves at most `maximum_changes` contiguous hints from the native queue.
     pub fn poll(
         &mut self,
@@ -4116,6 +4125,9 @@ pub enum NativeWatchError {
     /// Original source does not support native custody.
     #[error("source does not support original native work custody")]
     NativeWorkUnavailable,
+    /// A native source was used before a mount admission attached its owner.
+    #[error("native mount admission is missing")]
+    NativeMountAdmissionMissing,
     /// Original mounted source cause, moved without formatting or boxing.
     #[cfg(feature = "native-mount")]
     #[error(transparent)]
@@ -4182,6 +4194,9 @@ fn demand_watch_error(error: crate::demand::DemandError) -> NativeWatchError {
         crate::demand::DemandError::Allocation(error) => NativeWatchError::NativeWork(
             crate::NativeTreeMaterializationError::AllocationFailed(error),
         ),
+        crate::demand::DemandError::NativeMountAdmissionMissing => {
+            NativeWatchError::NativeMountAdmissionMissing
+        }
         crate::demand::DemandError::NativeWorkUnavailable => {
             NativeWatchError::NativeWorkUnavailable
         }
@@ -4395,3 +4410,7 @@ mod demand_admission_tests {
 #[cfg(test)]
 #[path = "tests/watch/mod.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/watch/deadline.rs"]
+mod deadline_tests;

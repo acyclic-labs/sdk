@@ -168,14 +168,20 @@ pub(crate) fn body_named<'a>(
         }
     }
     sequence::finish(adapter, &mut messages);
-    let tools: Vec<Value> = request.tools.iter().map(|tool| { let name = names.wire(&tool.name)?; Ok(match adapter {
-        Adapter::Anthropic => json!({"name":name,"description":tool.description,"input_schema":tool.input_schema}),
-        Adapter::Responses => json!({"type":"function","name":name,"description":tool.description,
+    let tools: Vec<Value> = names.declarations().map(|(canonical, name, tool)| {
+        let description = if canonical == tool.name {
+            std::borrow::Cow::Borrowed(tool.description.as_str())
+        } else {
+            std::borrow::Cow::Owned(format!("{canonical}\n{}", tool.description))
+        };
+        match adapter {
+        Adapter::Anthropic => json!({"name":name,"description":description,"input_schema":tool.input_schema}),
+        Adapter::Responses => json!({"type":"function","name":name,"description":description,
             "parameters":tool.input_schema,"strict":false}),
         Adapter::Chat => json!({"type":"function","function":{"name":name,
-            "description":tool.description,"parameters":tool.input_schema}}),
-        Adapter::Gemini => json!({"name":name,"description":tool.description,"parametersJsonSchema":tool.input_schema}),
-    }) }).collect::<Result<_>>()?;
+            "description":description,"parameters":tool.input_schema}}),
+        Adapter::Gemini => json!({"name":name,"description":description,"parametersJsonSchema":tool.input_schema}),
+    } }).collect();
     system.retain(|text| !text.trim().is_empty());
     let max = request
         .max_output_tokens

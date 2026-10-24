@@ -10,7 +10,7 @@ pub(super) fn capture_work(
 
 pub(super) struct CaptureWorkScope {
     pub(super) native: crate::NativeMaterializationWork,
-    pub(super) custody: Option<std::sync::Arc<crate::demand::CaptureTransientCustody>>,
+    pub(super) custody: Option<crate::demand::CaptureCustody>,
 }
 
 impl CaptureWorkScope {
@@ -33,20 +33,11 @@ impl CaptureWorkScope {
         let Some(custody) = self.custody.take() else {
             return Ok(());
         };
-        while std::sync::Arc::strong_count(&custody) != 1 {
-            std::thread::yield_now();
-        }
-        let bytes = custody.take_retained_bytes();
-        drop(custody);
-        self.native
-            .with_original_leaf(|work| {
-                work.scope(
-                    |work| &mut work.capture_custody,
-                    None,
-                    |work| work.release(bytes),
-                )
-            })
-            .map_err(capture_demand_error)
+        // Closed accounting origins keep their backing funded but never hold
+        // shutdown open. Keeping this origin also rejects reuse of the scope.
+        // Closing and draining transient bytes share one original-leaf guard;
+        // this local owner is destroyed only after that guard has returned.
+        custody.close().map_err(capture_demand_error)
     }
 }
 

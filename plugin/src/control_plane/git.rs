@@ -79,13 +79,14 @@ impl ControlPlane {
             )
             .await
             .map_err(display)?;
-        if let Err(error) = self
-            .mounts
-            .get(agent_id)
-            .ok_or_else(|| "subagent mount is unavailable".to_owned())?
-            .sync()
-            .await
-            .map_err(display)
+        if let Err(error) = fs_call(
+            self.mounts
+                .get(agent_id)
+                .ok_or_else(|| "subagent mount is unavailable".to_owned())?
+                .sync(),
+        )
+        .await
+        .map_err(display)
         {
             let _ = operations.finish(&lease, now).await;
             return Err(error);
@@ -107,7 +108,7 @@ impl ControlPlane {
             }
         };
         let author = self.author_for_argv(&argv, agent_id)?;
-        let command = acyclic_harness::tools::git::run(
+        let command = fs_call(acyclic_harness::tools::git::run(
             acyclic_harness::tools::git::Workspace {
                 filesystem: &self.fs,
                 store: &self.store,
@@ -119,9 +120,11 @@ impl ControlPlane {
                 reserved: &[],
                 author: &author,
                 authored_at_seconds: i64::try_from(now / 1_000).unwrap_or(i64::MAX),
+                read_allowed: &|_| true,
+                search_progress: None,
             },
             &argv,
-        )
+        ))
         .await
         .map_err(display);
         let parent_head = parent
@@ -176,12 +179,14 @@ impl ControlPlane {
         }
         observed?;
         // A failed merge can still publish conflict markers the agent must edit.
-        self.mounts
-            .get(agent_id)
-            .ok_or_else(|| "subagent mount is unavailable".to_owned())?
-            .advance_to_head()
-            .await
-            .map_err(display)?;
+        fs_call(
+            self.mounts
+                .get(agent_id)
+                .ok_or_else(|| "subagent mount is unavailable".to_owned())?
+                .advance_to_head(),
+        )
+        .await
+        .map_err(display)?;
         let command = command?;
         if let Some(switched) = command.switched {
             self.unmount_agent(agent_id).await?;
@@ -253,6 +258,8 @@ impl ControlPlane {
                 reserved: &[],
                 author: &author,
                 authored_at_seconds: i64::try_from(now_millis() / 1_000).unwrap_or(i64::MAX),
+                read_allowed: &|_| true,
+                search_progress: None,
             },
             &argv,
         )

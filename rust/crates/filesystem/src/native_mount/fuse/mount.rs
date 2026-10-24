@@ -1,3 +1,4 @@
+use acyclic_native_runtime::command::{Child, Command, Stdio};
 use nix::mount::{MntFlags, MsFlags};
 use std::{
     ffi::CStr,
@@ -8,7 +9,6 @@ use std::{
         unix::{ffi::OsStrExt, fs::PermissionsExt, net::UnixStream},
     },
     path::Path,
-    process::{Child, Command, Stdio},
 };
 mod reply;
 use reply::receive_device;
@@ -314,4 +314,9 @@ fn spawn_mount_helper(
     // Drop Command before returning: it retains its configured stdin, which
     // otherwise suppresses EOF when the helper exits without sending a device.
     command.spawn()
+}
+
+#[cfg(all(feature = "fuzzing", target_os = "linux"))]
+pub(crate) fn fuzz_reply(input: &[u8]) {
+    reply::check::check(input);
 }

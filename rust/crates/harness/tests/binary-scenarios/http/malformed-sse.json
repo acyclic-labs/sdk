@@ -1,0 +1,4 @@
+{
+  "faults":[{"type":"malformed","body":"data: {broken json}\n\n"}],
+  "expect":{"exit":1,"result":{"completion":"failed","error":{"$contains":"invalid"}}}
+}

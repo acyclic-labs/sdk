@@ -1,7 +1,7 @@
 use super::*;
 
 /// An authoritative attribute state, shared by prompt rebuilds and updates.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ContextAttribute {

@@ -176,6 +176,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             observer.retain_owned(box_slots)?;
         }
         custody.adopt(box_slots)?;
+        // Charged above: the observer admits and retains the box.
         let seed = Box::new(seed);
         let command = Command {
             operation_id: seed.operation_id,

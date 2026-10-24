@@ -234,7 +234,7 @@ fn source_stat_preserves_a_denied_synchronize_open() -> Result<(), Box<dyn std::
     let root = test_root(temporary.path())?;
     let acl = |args: &[&str]| -> Result<(), Box<dyn std::error::Error>> {
         let output = acyclic_native_runtime::process_output(
-            std::process::Command::new("icacls.exe")
+            acyclic_native_runtime::command::Command::new("icacls.exe")
                 .arg(&path)
                 .args(args),
             std::time::Duration::from_secs(5),

@@ -177,7 +177,7 @@ async fn adjust_link_counts<S: AsyncObjectStore>(
                         if state.remaining_changes == 0 {
                             return Err(FsError::MergeChangeLimit);
                         }
-                        let (diff, allocation) = diff_tree_entries_with_accounting(
+                        let (diff, allocation) = diff_tree_entries_with_accounting::<_, false>(
                             store,
                             before,
                             after,

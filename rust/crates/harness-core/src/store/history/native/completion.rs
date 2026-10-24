@@ -226,6 +226,9 @@ impl HistoryIo for AcceptedCompletionIo {
     fn allocation_attempt(&mut self, _: u64) -> Result<()> {
         Err(Self::unsupported())
     }
+    fn charge_box(&mut self, _: u64) -> Result<crate::charged_box::BoxCharge> {
+        Err(Self::unsupported())
+    }
     fn reserve_text(&mut self, value: &mut String, capacity: usize) -> Result<()> {
         if capacity <= value.capacity() {
             Ok(())

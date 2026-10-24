@@ -2,7 +2,9 @@ use super::*;
 use records::validate_commands;
 
 /// Exact identity of a resumable implementation and its schemas.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[serde(deny_unknown_fields)]
 pub struct MachineIdentity {
     /// Namespaced implementation name.

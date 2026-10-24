@@ -9,7 +9,7 @@ mod bootstrap;
 #[cfg(not(acyclic_harness_loom))]
 mod performance_tests;
 
-mod mounts;
+pub(super) mod mounts;
 pub(super) mod projection;
 pub(super) mod volumes;
 #[cfg(test)]
@@ -99,6 +99,78 @@ impl LocalWorkspace {
             .map(|options| options.publication(acyclic_fs::MountPublication::Manual))
     }
 
+    /// Opens an existing task fork and its selected branch without mounting,
+    /// recovering, or creating a checkout.
+    pub(super) async fn existing_task_view(&self, task: TaskId) -> Result<Option<View>> {
+        let name = format!("task-{task}");
+        let id = self.filesystem.workspace_id(&name).map_err(storage)?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
+        if self
+            .store
+            .load_lazy_workspace(id, &mut accounting)
+            .await
+            .map_err(storage)?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        // Sparse task forks are authenticated by their saved lazy state and
+        // canonical task name. They need not have a Git lineage registration.
+        let original = self
+            .filesystem
+            .open_workspace(&name, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value;
+        self.selected_existing_view(original).await.map(Some)
+    }
+
+    /// Opens an allocated lazy project's selected logical branch without a
+    /// native projection or checkout recovery.
+    pub(super) async fn existing_volume_view(&self, id: acyclic_fs::WorkspaceId) -> Result<View> {
+        let original = acyclic_fs::WorkspaceResolver::resolve(
+            &(
+                self.filesystem.clone(),
+                acyclic_fs::WorkspaceGraph::new(self.store.clone()),
+            ),
+            id,
+        )
+        .await
+        .map_err(storage)?;
+        self.selected_existing_view(original).await
+    }
+
+    async fn selected_existing_view(
+        &self,
+        original: acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
+    ) -> Result<View> {
+        let (selected, _) = acyclic_fs::GitCompatRepository::new(original.id(), self.store.clone())
+            .checkout_selection()
+            .await
+            .map_err(storage)?;
+        let selected = if selected == original.id() {
+            original
+        } else {
+            acyclic_fs::WorkspaceResolver::resolve(
+                &(
+                    self.filesystem.clone(),
+                    acyclic_fs::WorkspaceGraph::new(self.store.clone()),
+                ),
+                selected,
+            )
+            .await
+            .map_err(storage)?
+        };
+        self.view
+            .open_related(
+                selected,
+                &mut acyclic_fs::WorkBudget::UNBOUNDED
+                    .accounting(&acyclic_fs::CancellationToken::new()),
+            )
+            .await
+            .map_err(storage)
+    }
     pub(super) async fn mounts_at(&self, path: &Path) -> Result<Arc<Mounts>> {
         let primary = self.mounts.named(None)?.1;
         let mut mounts = mounts::owner(
@@ -380,6 +452,7 @@ pub(super) async fn open(
         .register_root(view.workspace())
         .await
         .map_err(storage)?;
+    crate::workspace::reconcile_reserved_names(&view).await?;
     let mount_authority = attach
         .authority
         .map(|(issuer, agent)| crate::filesystem::NativeMountAuthority::new(issuer, agent))
@@ -472,35 +545,45 @@ async fn lazy_view(
         || acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
         |workspace| workspace.volume_config(),
     );
-    let source = held_source(
-        root,
-        config,
-        original.as_ref().map(|state| state.source),
-        native_mounts,
-        &work,
-        &cancellation,
-    )
+    let source = acyclic_fs::in_heap(|| {
+        held_source(
+            root,
+            config,
+            original.as_ref().map(|state| state.source),
+            native_mounts,
+            &work,
+            &cancellation,
+        )
+    })
     .await?;
     let fresh = original.is_none();
     let view = match selected {
         Some(workspace) if !fresh => {
-            LazyWorkspace::open(workspace, source, store.clone(), &mut accounting).await
+            acyclic_fs::in_heap(|| {
+                LazyWorkspace::open(workspace, source, store.clone(), &mut accounting)
+            })
+            .await
         }
         Some(workspace) => {
-            LazyWorkspace::bind(workspace, source, store.clone(), &mut accounting).await
+            acyclic_fs::in_heap(|| {
+                LazyWorkspace::bind(workspace, source, store.clone(), &mut accounting)
+            })
+            .await
         }
-        None => LazyWorkspace::attach(
-            filesystem,
-            &name,
-            source,
-            store.clone(),
-            acyclic_fs::VolumeInitialization {
-                config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
-                access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
-            },
-            operation,
-            &mut accounting,
-        )
+        None => acyclic_fs::in_heap(|| {
+            LazyWorkspace::attach(
+                filesystem,
+                &name,
+                source,
+                store.clone(),
+                acyclic_fs::VolumeInitialization {
+                    config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
+                    access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
+                },
+                operation,
+                &mut accounting,
+            )
+        })
         .await
         .map(|(view, ..)| view),
     }
@@ -535,6 +618,9 @@ async fn held_source(
     } else {
         Vec::new()
     };
+    for name in crate::workspace::RESERVED_NAMES {
+        exclusions.push(volumes::namespace(&path, config, &path.join(name))?);
+    }
     exclusions.push(volumes::namespace(
         &path,
         config,
@@ -652,3 +738,6 @@ pub(super) async fn open_volume(
         acyclic_fs::hold_root(&std::fs::canonicalize(&path).map_err(storage)?).map_err(storage)?;
     open(filesystem, attach, root, true, state).await
 }
+
+#[cfg(all(feature = "test-support", unix))]
+pub(crate) use volumes::fuzz_mount_exclusion;

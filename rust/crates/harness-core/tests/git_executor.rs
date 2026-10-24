@@ -119,6 +119,8 @@ async fn run_reserving(
             reserved,
             author: "test",
             authored_at_seconds: 1,
+            read_allowed: &|_| true,
+            search_progress: None,
         },
         &argv,
     )
@@ -214,6 +216,8 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
                 reserved: &[],
                 author: "test",
                 authored_at_seconds: 1,
+                read_allowed: &|_| true,
+                search_progress: None,
             },
             &["diff".into(), "agents/absent".into()],
         )
@@ -580,6 +584,1064 @@ async fn agent_merge_reserves_host_aliases_and_tracks_authored_files() -> Result
 }
 
 #[tokio::test]
+async fn volume_search_isolates_equal_volume_ids_in_different_authority_stores() -> Result<()> {
+    let (_first_temp, _first_root, _first_fs, _first_store, first) = fixture_native(false).await?;
+    let (_second_temp, _second_root, _second_fs, _second_store, second) =
+        fixture_native(false).await?;
+    // Negative control for a registry keyed by WorkspaceId alone: these are
+    // deliberately equal even though their backing authorities are separate.
+    assert_eq!(first.workspace().id(), second.workspace().id());
+    for (view, path) in [(&first, "/first-only.txt"), (&second, "/second-only.txt")] {
+        view.write(
+            path,
+            bytes::Bytes::new().into(),
+            IdempotencyKey::new(),
+            PublicationPermit::Unrestricted,
+            &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+        )
+        .await?;
+    }
+    let mut first_names = git::IndexedNames::open((&first).into()).await?;
+    let mut found_first = false;
+    while let Some(page) = first_names.next_page().await? {
+        found_first |= page.names.iter().any(|name| name.path == "first-only.txt");
+    }
+    assert!(found_first);
+    // Retain the first subscription while the other store opens its index.
+    let mut second_names = git::IndexedNames::open((&second).into()).await?;
+    let mut found_second = false;
+    while let Some(page) = second_names.next_page().await? {
+        assert!(!page.names.iter().any(|name| name.path == "first-only.txt"));
+        found_second |= page.names.iter().any(|name| name.path == "second-only.txt");
+    }
+    assert!(found_second);
+    assert!(first_names.next_page().await?.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn volume_search_index_rejects_authored_changes_after_publication() -> Result<()> {
+    let (_temp, _root, _fs, _store, main) = fixture_native(true).await?;
+    let mut first = git::IndexedNames::open((&main).into()).await?;
+    while first.next_page().await?.is_some() {}
+    let old = acyclic_fs::NameIndex::open(main.workspace())
+        .await?
+        .unwrap();
+    let before = old.manifest.pages;
+    main.write(
+        "/newly-authored.txt",
+        bytes::Bytes::from_static(b"new").into(),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+    )
+    .await?;
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            while let Some(page) = first.next_page().await? {
+                if page
+                    .names
+                    .iter()
+                    .any(|name| name.path == "newly-authored.txt")
+                {
+                    return Ok::<_, acyclic_harness_core::Error>(());
+                }
+            }
+            first.changed().await?;
+        }
+    })
+    .await??;
+    // A second client shares the updated files, without starting a walk.
+    let mut second = git::IndexedNames::open((&main).into()).await?;
+    let mut found = false;
+    while let Some(page) = second.next_page().await? {
+        found |= page
+            .names
+            .iter()
+            .any(|name| name.path == "newly-authored.txt");
+    }
+    assert!(found);
+    // Negative control: replaying the old immutable index misses the edit.
+    for page in 0..before {
+        assert!(
+            !old.page(page)
+                .await?
+                .iter()
+                .any(|name| name.path == "newly-authored.txt")
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn volume_search_streams_large_authored_revisions_without_diff_limit_failure() -> Result<()> {
+    let (_temp, _root, _fs, _store, main) = fixture_native(false).await?;
+    let mut names = git::IndexedNames::open((&main).into()).await?;
+    while names.next_page().await?.is_some() {}
+    let old = main
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await?
+        .value;
+    let paths: Vec<_> = (0..513).map(|i| format!("/bulk-{i}.txt")).collect();
+    let files: Vec<_> = paths
+        .iter()
+        .map(|path| {
+            (
+                path.as_str(),
+                acyclic_stream::OwnedBytes::from_static(b"bulk"),
+            )
+        })
+        .collect();
+    let stop = CancellationToken::new();
+    let mut transaction = main
+        .workspace()
+        .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value;
+    transaction
+        .write_batch(&[], &files, WorkBudget::UNBOUNDED, &stop)
+        .await?;
+    transaction
+        .commit(
+            None,
+            PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &stop,
+            |_| async {
+                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
+                    acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                    },
+                )
+            },
+        )
+        .await?;
+    let current = main
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value;
+    let bounded = old
+        .diff_to(&current, 512, WorkBudget::UNBOUNDED, &stop)
+        .await;
+    // Negative control: a bounded diff cannot certify this namespace revision.
+    assert!(match bounded {
+        Ok(receipt) =>
+            receipt.value.0.changes().truncated
+                || receipt
+                    .value
+                    .0
+                    .changed_paths(512, WorkBudget::UNBOUNDED, &stop)
+                    .await
+                    .is_err(),
+        Err(failure) => matches!(failure.error, acyclic_fs::WorkspaceError::JoinLimit),
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let mut count = 0;
+            while let Some(page) = names.next_page().await? {
+                if page.reset {
+                    count = 0;
+                }
+                count += page
+                    .names
+                    .iter()
+                    .filter(|name| name.path.starts_with("bulk-"))
+                    .count();
+            }
+            if count == 513 {
+                return Ok::<_, Error>(());
+            }
+            names.changed().await?;
+        }
+    })
+    .await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn volume_search_restores_nested_watches_before_open_returns() -> Result<()> {
+    let (_temp, root, _fs, _store, main) = fixture_native(false).await?;
+    std::fs::create_dir(root.join("nested"))?;
+    std::fs::write(root.join("nested/existing.txt"), b"existing")?;
+    // Publish an index without a live producer. Merely opening the durable
+    // pages must not leave this pre-existing subdirectory unobserved.
+    let ignore = git::search_ignore((&main).into()).await?;
+    let mut walk = git::walk_names((&main).into(), None, ignore).await?;
+    let stop = CancellationToken::new();
+    let mut expected = main
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value;
+    let mut pages = 0;
+    let old = loop {
+        let page = walk.next_page().await?;
+        pages += u64::from(page.is_some());
+        let manifest = acyclic_fs::NameIndexManifest {
+            schema: acyclic_fs::NameIndexManifest::SCHEMA,
+            cut: walk.cut(),
+            names_cut: walk.cut(),
+            observed_generation: expected.id(),
+            pages,
+            pending_directories: walk.pending_directories(),
+            complete: page.is_none(),
+            checkpoint: walk.checkpoint()?,
+        };
+        let index = acyclic_fs::NameIndex::publish(
+            main.workspace(),
+            &expected,
+            manifest,
+            page.as_deref(),
+            None,
+        )
+        .await?
+        .unwrap();
+        expected = index.generation();
+        if page.is_none() {
+            break index;
+        }
+    };
+    drop(walk);
+    let mut names = git::IndexedNames::open((&main).into()).await?;
+    while names.next_page().await?.is_some() {}
+    std::fs::write(root.join("nested/arrived.txt"), b"arrived")?;
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            while let Some(page) = names.next_page().await? {
+                if page
+                    .names
+                    .iter()
+                    .any(|name| name.path == "nested/arrived.txt")
+                {
+                    return Ok::<_, Error>(());
+                }
+            }
+            names.changed().await?;
+        }
+    })
+    .await??;
+    // Negative control: replaying the old index alone cannot discover it.
+    for page in 0..old.manifest.pages {
+        assert!(
+            !old.page(page)
+                .await?
+                .iter()
+                .any(|name| name.path == "nested/arrived.txt")
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn volume_search_rejects_a_durable_index_changed_while_the_source_was_closed() -> Result<()> {
+    restart_changed_native_index(RestartEdit::LeafBindings).await
+}
+
+#[tokio::test]
+async fn volume_search_rejects_offline_ignore_edits_without_a_directory_change() -> Result<()> {
+    restart_changed_native_index(RestartEdit::IgnorePolicy).await
+}
+
+#[tokio::test]
+async fn volume_search_restarts_when_an_indexed_directory_became_a_file() -> Result<()> {
+    restart_changed_native_index(RestartEdit::DirectoryToFile).await
+}
+
+enum RestartEdit {
+    LeafBindings,
+    IgnorePolicy,
+    DirectoryToFile,
+}
+
+#[derive(Default)]
+struct SearchDirectoryObservations(std::sync::Mutex<Vec<String>>);
+
+impl acyclic_fs::demand::DemandDirectoryObserver for SearchDirectoryObservations {
+    fn observe_directory(
+        &self,
+        directory: &acyclic_fs::kernel::NamespacePath,
+        _accounting: &mut acyclic_fs::kernel::KernelAccounting<'_>,
+    ) -> std::result::Result<(), acyclic_fs::demand::DemandError> {
+        let stop = CancellationToken::new();
+        let mut text = String::from("/");
+        for (ordinal, name) in directory.components().iter().enumerate() {
+            if ordinal != 0 {
+                text.push('/');
+            }
+            text.push_str(
+                &name
+                    .unicode_text(WorkBudget::UNBOUNDED, &stop)
+                    .map_err(|failure| acyclic_fs::demand::DemandError::from(failure.error))?
+                    .value,
+            );
+        }
+        self.0.lock().unwrap().push(text);
+        Ok(())
+    }
+}
+
+async fn restart_changed_native_index(edit: RestartEdit) -> Result<()> {
+    let (_temp, root, _fs, store, main) = fixture_native(false).await?;
+    std::fs::create_dir(root.join("nested"))?;
+    std::fs::write(root.join("nested/removed-offline.txt"), b"unread")?;
+    std::fs::create_dir(root.join("untouched"))?;
+    std::fs::write(root.join("untouched/retained.txt"), b"unread")?;
+    if matches!(edit, RestartEdit::IgnorePolicy) {
+        std::fs::write(root.join("nested/created-offline.txt"), b"unread")?;
+        std::fs::write(root.join("nested/.gitignore"), b"created-offline.txt\n")?;
+    }
+    let ignore = git::search_ignore((&main).into()).await?;
+    let mut walk = git::walk_names((&main).into(), None, ignore).await?;
+    let stop = CancellationToken::new();
+    let mut expected = main
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value;
+    let mut previous = None;
+    let mut pages = 0;
+    loop {
+        let page = walk.next_page().await?;
+        pages += u64::from(page.is_some());
+        let manifest = acyclic_fs::NameIndexManifest {
+            schema: acyclic_fs::NameIndexManifest::SCHEMA,
+            cut: walk.cut(),
+            names_cut: walk.cut(),
+            observed_generation: expected.id(),
+            pages,
+            pending_directories: walk.pending_directories(),
+            complete: page.is_none(),
+            checkpoint: walk.checkpoint()?,
+        };
+        let index = acyclic_fs::NameIndex::publish(
+            main.workspace(),
+            &expected,
+            manifest,
+            page.as_deref(),
+            previous.as_ref(),
+        )
+        .await?
+        .unwrap();
+        expected = index.generation();
+        previous = Some(index);
+        if page.is_none() {
+            break;
+        }
+    }
+    drop(walk);
+    let original = previous.unwrap();
+    let acyclic_fs::NameCut::Lazy(snapshot) = &original.manifest.cut else {
+        panic!("lazy cut");
+    };
+    let workspace = main.workspace().clone();
+    drop(main);
+    // No producer or source subscription exists during this offline mutation.
+    match edit {
+        RestartEdit::IgnorePolicy => {
+            let before = std::fs::metadata(root.join("nested"))?.modified()?;
+            std::fs::write(root.join("nested/.gitignore"), b"removed-offline.txt\n")?;
+            // Negative control: directory-only restart tokens certify stale rules.
+            assert_eq!(std::fs::metadata(root.join("nested"))?.modified()?, before);
+        }
+        RestartEdit::LeafBindings => {
+            std::fs::remove_file(root.join("nested/removed-offline.txt"))?;
+            std::fs::write(root.join("nested/created-offline.txt"), b"unread")?;
+        }
+        RestartEdit::DirectoryToFile => {
+            std::fs::remove_file(root.join("nested/removed-offline.txt"))?;
+            std::fs::remove_dir(root.join("nested"))?;
+            std::fs::write(root.join("nested"), b"unread")?;
+            assert!(std::fs::symlink_metadata(root.join("nested/.gitignore")).is_err());
+        }
+    }
+    let config = VolumeConfig::native(Lifecycle::Durable);
+    let listed = Arc::new(SearchDirectoryObservations::default());
+    let source = NativeDemandSource::open(
+        Cow::Borrowed(&root),
+        config.profile,
+        config.limits,
+        Some(snapshot.source),
+        Some(listed.clone()),
+        WorkBudget::UNBOUNDED,
+        &stop,
+    )
+    .await?
+    .value;
+    let reopened = LazyWorkspace::open(
+        workspace,
+        Arc::new(source),
+        store,
+        &mut WorkBudget::UNBOUNDED.accounting(&stop),
+    )
+    .await?;
+    let mut names = git::IndexedNames::open((&reopened).into()).await?;
+    let mut paths = Vec::new();
+    while let Some(page) = names.next_page().await? {
+        if page.reset {
+            paths.clear();
+        }
+        paths.extend(
+            page.names
+                .into_iter()
+                .filter(|name| name.regular)
+                .map(|name| name.path),
+        );
+    }
+    let arrived = if matches!(edit, RestartEdit::DirectoryToFile) {
+        "nested"
+    } else {
+        "nested/created-offline.txt"
+    };
+    assert!(paths.iter().any(|path| path == arrived));
+    assert_eq!(names.unavailable_entries().await, 0);
+    assert!(paths.iter().any(|path| path == "untouched/retained.txt"));
+    if !matches!(edit, RestartEdit::DirectoryToFile) {
+        let directories = listed.0.lock().unwrap();
+        assert!(directories.iter().any(|path| path == "/nested"));
+        // Restoring the two policy absence tokens observes their parent.
+        // The unchanged sibling needs no additional native observation.
+        let untouched = directories
+            .iter()
+            .filter(|path| *path == "/untouched")
+            .count();
+        assert_eq!(untouched, 2, "unexpected sibling work: {directories:?}");
+        drop(directories);
+        // Negative control: the former whole-tree recovery lists the sibling.
+        let mut full = git::walk_names(
+            (&reopened).into(),
+            None,
+            git::search_ignore((&reopened).into()).await?,
+        )
+        .await?;
+        while full.next_page().await?.is_some() {}
+        assert!(
+            listed
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|path| *path == "/untouched")
+                .count()
+                > untouched
+        );
+    }
+    assert!(
+        !paths
+            .iter()
+            .any(|path| path == "nested/removed-offline.txt")
+    );
+    // Negative control: the old immutable pages certify exactly the wrong names.
+    let mut old_paths = Vec::new();
+    for page in 0..original.manifest.pages {
+        old_paths.extend(original.page(page).await?.into_iter().map(|name| name.path));
+    }
+    assert!(
+        old_paths
+            .iter()
+            .any(|path| path == "nested/removed-offline.txt")
+    );
+    assert!(
+        !old_paths
+            .iter()
+            .any(|path| path == "nested/created-offline.txt")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn volume_search_follows_native_create_rename_and_delete_notifications() -> Result<()> {
+    let (_temp, root, _fs, _store, main) = fixture_native(true).await?;
+    let mut names = git::IndexedNames::open((&main).into()).await?;
+    while names.next_page().await?.is_some() {}
+    let old = acyclic_fs::NameIndex::open(main.workspace())
+        .await?
+        .unwrap();
+    async fn wait_for(names: &mut git::IndexedNames, present: &str, absent: &str) -> Result<()> {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                names.changed().await?;
+                let mut paths = Vec::new();
+                while let Some(page) = names.next_page().await? {
+                    if page.reset {
+                        paths.clear();
+                    }
+                    paths.extend(page.names.into_iter().map(|name| name.path));
+                }
+                if paths.iter().any(|path| path == present)
+                    && !paths.iter().any(|path| path == absent)
+                {
+                    return Ok::<_, Error>(());
+                }
+            }
+        })
+        .await??;
+        Ok(())
+    }
+    std::fs::write(root.join("host-created.txt"), b"host")?;
+    wait_for(&mut names, "host-created.txt", "host-renamed.txt").await?;
+    // Negative control: ordinary index-file replay alone misses native writes.
+    for page in 0..old.manifest.pages {
+        assert!(
+            !old.page(page)
+                .await?
+                .iter()
+                .any(|name| name.path == "host-created.txt")
+        );
+    }
+    std::fs::rename(root.join("host-created.txt"), root.join("host-renamed.txt"))?;
+    wait_for(&mut names, "host-renamed.txt", "host-created.txt").await?;
+    std::fs::remove_file(root.join("host-renamed.txt"))?;
+    wait_for(&mut names, "native.txt", "host-renamed.txt").await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn volume_search_grep_pins_candidates_without_exactifying_the_checkout() -> Result<()> {
+    let (_temp, root, fs, store, main) = fixture_native(true).await?;
+    std::fs::write(root.join("unrelated.txt"), b"must stay lazy\n")?;
+    // Search does not require merge attributes, even when they are invalid UTF-8.
+    std::fs::write(root.join(".gitattributes"), [0xff])?;
+    let before = main
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await?
+        .value;
+    let (output, _) = run(
+        &fs,
+        &store,
+        &main,
+        main.workspace().id(),
+        &["grep", "origin", "native.txt"],
+    )
+    .await?;
+    let GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data { value, .. }) = output
+    else {
+        return Err("expected grep result".into());
+    };
+    assert_eq!(value["matches"].as_array().unwrap().len(), 1);
+    assert_eq!(value["matches"][0]["path"], "native.txt");
+    assert_eq!(value["files_examined"], 1);
+    assert_eq!(value["complete"], true);
+    let after = main
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await?
+        .value;
+    assert_ne!(
+        before.id(),
+        after.id(),
+        "grep did not publish the shared name index"
+    );
+    assert!(
+        acyclic_fs::NameIndex::open(main.workspace())
+            .await?
+            .is_some()
+    );
+    assert!(
+        after
+            .stat(
+                "/native.txt",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await
+            .is_err(),
+        "grep authored candidate content instead of retaining its source pin"
+    );
+    assert!(
+        after
+            .stat(
+                "/unrelated.txt",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await
+            .is_err()
+    );
+    // Negative control: the former whole-tree preparation authors source files.
+    main.exactify(
+        "/",
+        PublicationPermit::Unrestricted,
+        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+    )
+    .await?;
+    let exact = main
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await?
+        .value;
+    assert_ne!(before.id(), exact.id());
+    assert!(
+        exact
+            .stat(
+                "/unrelated.txt",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await
+            .is_ok()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn volume_search_grep_marks_unrepresentable_entries_partial() -> Result<()> {
+    use std::os::unix::ffi::OsStringExt as _;
+    let (_temp, root, fs, store, main) = fixture_native(true).await?;
+    let raw = std::ffi::OsString::from_vec(vec![0xff]);
+    assert!(raw.to_str().is_none());
+    std::fs::write(root.join(raw), b"native hidden match")?;
+    let (output, _) = run(
+        &fs,
+        &store,
+        &main,
+        main.workspace().id(),
+        &["grep", "native"],
+    )
+    .await?;
+    let GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data { value, .. }) = output
+    else {
+        return Err("expected grep result".into());
+    };
+    assert_eq!(value["complete"], false);
+    assert_eq!(value["truncated"], true);
+    assert_eq!(value["matches"][0]["path"], "native.txt");
+    // Negative control: an empty/unavailable set must not certify no matches.
+    assert!(!value["matches"].as_array().unwrap().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn volume_search_grep_matches_original_bytes_before_display_decoding() -> Result<()> {
+    let (_temp, root, fs, store, main) = fixture_native(false).await?;
+    let bytes = b"other\r\n\xffneedle\r\nlast needle".to_vec();
+    std::fs::write(root.join("encoded.txt"), &bytes)?;
+    assert!(
+        std::str::from_utf8(&bytes).is_err(),
+        "UTF-8-only control accepted the fixture"
+    );
+    for (pattern, expected) in [("needle", 2), ("\u{fffd}", 0)] {
+        let (output, _) = run(
+            &fs,
+            &store,
+            &main,
+            main.workspace().id(),
+            &["grep", pattern, "encoded.txt"],
+        )
+        .await?;
+        let GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data { value, .. }) =
+            output
+        else {
+            panic!("expected grep data")
+        };
+        assert_eq!(value["matches"].as_array().unwrap().len(), expected);
+        assert_eq!(value["complete"], true);
+        if expected > 0 {
+            assert_eq!(value["matches"][0]["line"], 2);
+            assert_eq!(value["matches"][0]["text"], "\u{fffd}needle");
+            assert_eq!(value["matches"][1]["line"], 3);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn volume_search_live_index_reloads_the_volume_ignore_policy() -> Result<()> {
+    let (_temp, _root, _fs, _store, main) = fixture_native(true).await?;
+    let mut names = git::IndexedNames::open((&main).into()).await?;
+    let mut paths = Vec::new();
+    while let Some(page) = names.next_page().await? {
+        paths.extend(page.names.into_iter().map(|name| name.path));
+    }
+    assert!(paths.iter().any(|path| path == "native.txt"));
+    let old = acyclic_fs::NameIndex::open(main.workspace())
+        .await?
+        .unwrap();
+    main.workspace()
+        .write_text("/.gitignore", "native.txt\n")
+        .await?;
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            while let Some(page) = names.next_page().await? {
+                if page.reset {
+                    paths.clear();
+                }
+                paths.extend(page.names.into_iter().map(|name| name.path));
+            }
+            let current = acyclic_fs::NameIndex::open(main.workspace())
+                .await?
+                .unwrap();
+            if current.manifest.complete && current.manifest.cut != old.manifest.cut {
+                assert!(!paths.iter().any(|path| path == "native.txt"));
+                return Ok::<_, Box<dyn std::error::Error>>(());
+            }
+            names.changed().await?;
+        }
+    })
+    .await??;
+    // Negative control: the pinned pre-policy index still exposes this name.
+    let mut was_indexed = false;
+    for page in 0..old.manifest.pages {
+        was_indexed |= old
+            .page(page)
+            .await?
+            .iter()
+            .any(|name| name.path == "native.txt");
+    }
+    assert!(was_indexed);
+    Ok(())
+}
+
+#[tokio::test]
+async fn volume_search_root_exclude_is_shared_by_grep_and_live_names() -> Result<()> {
+    for authored in [false, true] {
+        let (_temp, root, fs, store, main) = fixture_native(true).await?;
+        if authored {
+            let stop = CancellationToken::new();
+            let mut transaction = main
+                .workspace()
+                .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop)
+                .await?
+                .value;
+            transaction
+                .write_batch(
+                    &["/.git", "/.git/info"],
+                    &[(
+                        "/.git/info/exclude",
+                        acyclic_stream::OwnedBytes::from_static(b"native.txt\n"),
+                    )],
+                    WorkBudget::UNBOUNDED,
+                    &stop,
+                )
+                .await?;
+            transaction
+                .commit(
+                    None,
+                    PublicationPermit::Unrestricted,
+                    WorkBudget::UNBOUNDED,
+                    &stop,
+                    |_| async {
+                        Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
+                            acyclic_fs::OperationReceipt {
+                                value: (),
+                                work: acyclic_fs::WorkCounters::UNCHARGED,
+                            },
+                        )
+                    },
+                )
+                .await?;
+        } else {
+            std::fs::create_dir_all(root.join(".git/info"))?;
+            std::fs::write(root.join(".git/info/exclude"), b"native.txt\n")?;
+        }
+        assert!(acyclic_fs::GitIgnorePolicy::default().eligible("native.txt", false, false));
+        assert!(
+            !git::search_ignore((&main).into())
+                .await?
+                .eligible("native.txt", false, false)
+        );
+        let mut names = git::IndexedNames::open((&main).into()).await?;
+        let mut paths = Vec::new();
+        while let Some(page) = names.next_page().await? {
+            paths.extend(page.names.into_iter().map(|name| name.path));
+        }
+        assert!(!paths.iter().any(|path| path == "native.txt"));
+        let (output, _) = run(
+            &fs,
+            &store,
+            &main,
+            main.workspace().id(),
+            &["grep", "origin"],
+        )
+        .await?;
+        let GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data {
+            value: output,
+            ..
+        }) = output
+        else {
+            panic!("expected grep data")
+        };
+        assert_eq!(output["matches"], serde_json::json!([]));
+        assert_eq!(output["complete"], true);
+        let old = acyclic_fs::NameIndex::open(main.workspace())
+            .await?
+            .unwrap();
+        if authored {
+            main.workspace()
+                .write_text("/.git/info/exclude", "other.txt\n")
+                .await?;
+        } else {
+            std::fs::write(root.join(".git/info/exclude"), b"other.txt\n")?;
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                while let Some(page) = names.next_page().await? {
+                    if page.reset {
+                        paths.clear();
+                    }
+                    paths.extend(page.names.into_iter().map(|name| name.path));
+                }
+                let current = acyclic_fs::NameIndex::open(main.workspace())
+                    .await?
+                    .unwrap();
+                if current.manifest.complete && current.manifest.cut != old.manifest.cut {
+                    assert!(paths.iter().any(|path| path == "native.txt"));
+                    return Ok::<_, Box<dyn std::error::Error>>(());
+                }
+                names.changed().await?;
+            }
+        })
+        .await??;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn volume_search_root_exclude_precedence_and_worktree_file() -> Result<()> {
+    let (_temp, root, _fs, _store, main) = fixture_native(true).await?;
+    std::fs::create_dir_all(root.join(".git/info"))?;
+    std::fs::write(root.join(".git/info/exclude"), b"native.txt\n")?;
+    std::fs::write(root.join(".gitignore"), b"!native.txt\n")?;
+    assert!(
+        git::search_ignore((&main).into())
+            .await?
+            .eligible("native.txt", false, false)
+    );
+    std::fs::write(root.join(".ignore"), b"native.txt\n")?;
+    assert!(
+        !git::search_ignore((&main).into())
+            .await?
+            .eligible("native.txt", false, false)
+    );
+
+    let (_temp, root, _fs, _store, main) = fixture_native(true).await?;
+    std::fs::write(root.join(".git"), b"gitdir: /outside-volume\n")?;
+    assert!(
+        git::search_ignore((&main).into())
+            .await?
+            .eligible("native.txt", false, false)
+    );
+    let mut walk = git::walk_names(
+        (&main).into(),
+        None,
+        git::search_ignore((&main).into()).await?,
+    )
+    .await?;
+    let mut found = false;
+    while let Some(page) = walk.next_page().await? {
+        found |= page.iter().any(|name| name.path == "native.txt");
+    }
+    assert!(found);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn volume_search_root_ignore_links_are_not_read_as_policy() -> Result<()> {
+    let (_temp, root, _fs, _store, main) = fixture_native(true).await?;
+    std::fs::create_dir_all(root.join(".git/info"))?;
+    for name in acyclic_fs::GitIgnorePolicy::SEARCH_ROOT_FILES {
+        std::os::unix::fs::symlink("native.txt", root.join(name))?;
+    }
+    let policy = git::search_ignore((&main).into()).await?;
+    assert!(policy.eligible("native.txt", false, false));
+    // Negative control: the explicit link reader returns the link payload. Parsing
+    // that spelling as policy would hide the native candidate incorrectly.
+    let bytes = main
+        .read_link(
+            "/.gitignore",
+            1024,
+            &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+        )
+        .await?
+        .bytes;
+    assert_eq!(bytes.as_ref(), b"native.txt");
+    assert!(
+        !acyclic_fs::GitIgnorePolicy::parse(std::str::from_utf8(&bytes)?).eligible(
+            "native.txt",
+            false,
+            false
+        )
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn volume_search_grep_checks_each_candidate_access_decision() -> Result<()> {
+    let (_temp, root, fs, store, main) = fixture_native(true).await?;
+    for denied in [true, false] {
+        let output = git::run(
+            git::Workspace {
+                filesystem: &fs,
+                store: &store,
+                view: (&main).into(),
+                root: &root,
+                repository: main.workspace().id(),
+                lease: None,
+                checkout: None,
+                reserved: &[],
+                author: "test",
+                authored_at_seconds: 1,
+                read_allowed: &|path| !(denied && path == "native.txt"),
+                search_progress: None,
+            },
+            &["grep".into(), "origin".into()],
+        )
+        .await?;
+        let Some(GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data {
+            value, ..
+        })) = output.command
+        else {
+            return Err("expected grep result".into());
+        };
+        assert_eq!(
+            value["matches"].as_array().unwrap().len(),
+            usize::from(!denied)
+        );
+        assert_eq!(value["files_examined"], u64::from(!denied));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn volume_search_publishes_partial_matches_and_honors_output_failure() -> Result<()> {
+    struct Progress {
+        values: std::sync::Mutex<Vec<git::GrepProgress>>,
+        fail: bool,
+    }
+    impl git::SearchProgress for Progress {
+        fn publish<'a>(
+            &'a self,
+            value: &'a git::GrepProgress,
+        ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness_core::Result<()>> {
+            Box::pin(async move {
+                self.values.lock().unwrap().push(value.clone());
+                if self.fail {
+                    Err(Error::Storage("output publication failed".into()))
+                } else {
+                    Ok(())
+                }
+            })
+        }
+    }
+    let (_temp, root, fs, store, main) = fixture_native(true).await?;
+    for fail in [false, true] {
+        let progress = Progress {
+            values: Default::default(),
+            fail,
+        };
+        let output = git::run(
+            git::Workspace {
+                filesystem: &fs,
+                store: &store,
+                view: (&main).into(),
+                root: &root,
+                repository: main.workspace().id(),
+                lease: None,
+                checkout: None,
+                reserved: &[],
+                author: "test",
+                authored_at_seconds: 1,
+                read_allowed: &|_| true,
+                search_progress: Some(&progress),
+            },
+            &["grep".into(), "origin".into(), "native.txt".into()],
+        )
+        .await;
+        let values = progress.values.lock().unwrap();
+        assert_eq!(values[0].files_examined, 0);
+        assert!(!values[0].complete);
+        if fail {
+            assert!(output.is_err());
+            assert_eq!(
+                values.len(),
+                1,
+                "search continued after losing its output publisher"
+            );
+        } else {
+            output?;
+            let has_partial_matches = |values: &[git::GrepProgress]| {
+                values
+                    .iter()
+                    .any(|value| !value.complete && !value.matches.is_empty())
+            };
+            assert!(has_partial_matches(&values));
+            let final_value = values.last().unwrap();
+            assert!(final_value.complete);
+            assert_eq!(final_value.files_examined, 1);
+            assert_eq!(final_value.matches.len(), 1);
+            // Negative control: publishing only a final response cannot prove
+            // that partial results reached a follower during the search.
+            assert!(!has_partial_matches(std::slice::from_ref(final_value)));
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn volume_search_grep_does_not_recover_pending_mutations() -> Result<()> {
+    let (_temp, _root, fs, store, main) = fixture_native(true).await?;
+    let repository = acyclic_fs::GitCompatRepository::new(main.workspace().id(), store.clone());
+    acyclic_fs::WorkspaceGraph::new(store.clone())
+        .register_root(main.workspace())
+        .await?;
+    let snapshot = main
+        .snapshot(&mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()))
+        .await?;
+    assert!(matches!(
+        repository
+            .execute(
+                acyclic_fs::GitCommand::Switch {
+                    branch: "topic".into(),
+                    create: true
+                },
+                acyclic_fs::GitTreeRef::Lazy(snapshot)
+            )
+            .await?,
+        GitCommandOutput::Prepared { .. }
+    ));
+    let pending = repository.pending_transition().await?.unwrap().id;
+    assert!(
+        run(
+            &fs,
+            &store,
+            &main,
+            main.workspace().id(),
+            &["grep", "origin"]
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(repository.pending_transition().await?.unwrap().id, pending);
+    // Negative control: the existing mutation recovery entry point consumes it.
+    let output = git::run(
+        git::Workspace {
+            filesystem: &fs,
+            store: &store,
+            view: (&main).into(),
+            root: std::path::Path::new("."),
+            repository: main.workspace().id(),
+            lease: None,
+            checkout: None,
+            reserved: &[],
+            author: "test",
+            authored_at_seconds: 1,
+            read_allowed: &|_| true,
+            search_progress: None,
+        },
+        &["log".into()],
+    )
+    .await?;
+    assert!(output.command.is_none());
+    assert!(repository.pending_transition().await?.is_none());
+    Ok(())
+}
+
+#[tokio::test]
 async fn agent_diff_exactifies_native_files_with_the_target_lease() -> Result<()> {
     let (_temp, root, fs, store, main) = fixture_native(true).await?;
     let repository = main.workspace().id();
@@ -631,6 +1693,8 @@ async fn agent_diff_exactifies_native_files_with_the_target_lease() -> Result<()
             reserved: &[],
             author: "test",
             authored_at_seconds: 1,
+            read_allowed: &|_| true,
+            search_progress: None,
         },
         &["diff".into(), "agents/child".into()],
     )
@@ -708,6 +1772,8 @@ async fn checkout_and_mounted_commands_both_reject_expired_leases() -> Result<()
                 reserved: &[],
                 author: "test",
                 authored_at_seconds: 1,
+                read_allowed: &|_| true,
+                search_progress: None,
             },
             &["tag".into(), tag.into()],
         )
@@ -730,6 +1796,8 @@ async fn checkout_and_mounted_commands_both_reject_expired_leases() -> Result<()
                 reserved: &[],
                 author: "test",
                 authored_at_seconds: 1,
+                read_allowed: &|_| true,
+                search_progress: None,
             },
             &["diff".into(), "agents/absent".into()],
         )
@@ -1119,6 +2187,8 @@ async fn merges_cut_at_every_step_resume_tracking_what_the_join_published() -> R
                 reserved: &[],
                 author: "test",
                 authored_at_seconds: 1,
+                read_allowed: &|_| true,
+                search_progress: None,
             },
             &["merge".to_owned(), "agents/kid".to_owned()],
             || {
@@ -1149,6 +2219,8 @@ async fn merges_cut_at_every_step_resume_tracking_what_the_join_published() -> R
                     reserved: &[],
                     author: "test",
                     authored_at_seconds: 1,
+                    read_allowed: &|_| true,
+                    search_progress: None,
                 },
                 &argv,
             )
@@ -1421,6 +2493,8 @@ async fn a_stash_cut_at_every_step_and_written_after_still_completes() -> Result
                 reserved: &[],
                 author: "test",
                 authored_at_seconds: 1,
+                read_allowed: &|_| true,
+                search_progress: None,
             },
             &["stash".to_owned()],
             || {
@@ -1450,6 +2524,8 @@ async fn a_stash_cut_at_every_step_and_written_after_still_completes() -> Result
                     reserved: &[],
                     author: "test",
                     authored_at_seconds: 1,
+                    read_allowed: &|_| true,
+                    search_progress: None,
                 },
                 &["status".to_owned()],
             )

@@ -15,9 +15,17 @@ pub struct DemandWork {
     pub(super) cancellation: CancellationToken,
     pub(crate) native_resource: Option<Weak<NativeResourceAllowance>>,
     pub(crate) native_invocation: Option<Weak<crate::materializer::NativeInvocationView>>,
-    pub(crate) capture_custody: Option<Weak<CaptureTransientCustody>>,
+    pub(crate) capture_custody: Option<CaptureCustody>,
     pub(crate) recheck_items: bool,
     pub(super) roots: Admissions,
+}
+/// One caller's view of a shared leaf: the invocation and resource it
+/// charges, the capture custody it holds, and whether its items recheck.
+pub(crate) struct NativeView {
+    pub(crate) invocation: Option<Weak<crate::materializer::NativeInvocationView>>,
+    pub(crate) resource: Option<Weak<NativeResourceAllowance>>,
+    pub(crate) custody: Option<CaptureCustody>,
+    pub(crate) recheck_items: bool,
 }
 impl DemandWork {
     /// Starts one bounded operation.
@@ -58,6 +66,34 @@ impl DemandWork {
         }
         answer.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     }
+    /// Installs one caller's view of this shared leaf for `operation` and
+    /// restores the previous view on return or unwind.
+    #[inline]
+    pub(crate) fn view_scope<R>(
+        &mut self,
+        view: NativeView,
+        operation: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let saved = self.swap_view(view);
+        let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(self)));
+        #[cfg(all(test, not(acyclic_fs_loom)))]
+        let restore = !super::scope_tests::omit_restore();
+        #[cfg(not(all(test, not(acyclic_fs_loom))))]
+        let restore = true;
+        if restore {
+            drop(self.swap_view(saved));
+        }
+        answer.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    }
+    #[inline]
+    fn swap_view(&mut self, view: NativeView) -> NativeView {
+        NativeView {
+            invocation: std::mem::replace(&mut self.native_invocation, view.invocation),
+            resource: std::mem::replace(&mut self.native_resource, view.resource),
+            custody: std::mem::replace(&mut self.capture_custody, view.custody),
+            recheck_items: std::mem::replace(&mut self.recheck_items, view.recheck_items),
+        }
+    }
     pub(crate) const fn original_budget(&self) -> WorkBudget {
         self.initial_budget
     }
@@ -65,8 +101,11 @@ impl DemandWork {
     pub(crate) fn cancellation(&self) -> &CancellationToken {
         &self.cancellation
     }
-    pub(crate) fn capture_custody(&self) -> Option<Arc<CaptureTransientCustody>> {
-        self.capture_custody.as_ref().and_then(Weak::upgrade)
+    pub(crate) fn capture_custody(&self) -> Option<CaptureCustody> {
+        self.capture_custody
+            .as_ref()
+            .filter(|owner| owner.is_open())
+            .cloned()
     }
     pub(crate) fn check(&self) -> Result<(), DemandError> {
         if self.roots.poisoned {
@@ -81,7 +120,7 @@ impl DemandWork {
         if self
             .capture_custody
             .as_ref()
-            .is_some_and(|owner| owner.strong_count() == 0)
+            .is_some_and(|owner| !owner.is_open())
         {
             return Err(DemandError::NativeWorkUnavailable);
         }
@@ -132,8 +171,12 @@ impl DemandWork {
         self.work
     }
     pub(crate) fn admit(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
-        let delta = self.item_charge(delta);
         self.reconcile_cancellation_registry()?;
+        self.admit_reconciled(delta)
+    }
+    // The caller has reconciled the registry under the same leaf.
+    pub(crate) fn admit_reconciled(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
+        let delta = self.item_charge(delta);
         self.check()?;
         if let Some(resource) = self.resource() {
             resource.admit(delta, 0)?;
@@ -178,7 +221,8 @@ impl DemandWork {
         self.reconcile_cancellation_registry()?;
         self.charge_reconciled(delta)
     }
-    pub(super) fn charge_reconciled(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
+    // The caller has reconciled the registry under the same leaf.
+    pub(crate) fn charge_reconciled(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
         #[cfg(test)]
         self.probe_write(delta);
         let delta = self.item_charge(delta);
@@ -236,13 +280,18 @@ impl DemandWork {
             bytes,
             |state| {
                 let mut work = state.work;
-                let mut ledger = state.allocations;
+                let mut ledger = state
+                    .allocations
+                    .preview()
+                    .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
                 work.charge(&delta, &state.budget)?;
                 ledger
                     .claim_bytes(bytes, operations, &mut work, state.budget)
                     .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
                 state.work = work;
-                state.allocations = ledger;
+                ledger
+                    .commit()
+                    .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
                 if let Some(capture) = state.capture_custody() {
                     capture.claim(bytes);
                 }
@@ -253,7 +302,7 @@ impl DemandWork {
     pub(crate) fn retain_native_owned(
         &mut self,
         bytes: u64,
-        capture: &Option<Arc<CaptureTransientCustody>>,
+        capture: &Option<CaptureCustody>,
     ) -> Result<(), DemandError> {
         if self.roots.poisoned {
             return Err(DemandError::OriginalWorkPoisoned);
@@ -273,7 +322,7 @@ impl DemandWork {
     pub(crate) fn record_native_owned_completed(
         &mut self,
         bytes: u64,
-        capture: &Option<Arc<CaptureTransientCustody>>,
+        capture: &Option<CaptureCustody>,
     ) -> (u64, Result<(), DemandError>) {
         if let Err(error) = self.allocations.record_owned_bytes(bytes, &mut self.work) {
             return (0, Err(error.into_work_or(DemandError::InvalidRequest)));
@@ -368,6 +417,14 @@ impl DemandWork {
     }
     pub(crate) fn take_native_io_failure(&mut self) -> Option<DemandError> {
         self.roots.io_failure.take()
+    }
+    /// Installs `failure` as the pending failure and returns the one it replaces, so an
+    /// invocation window reports only failures that happened inside it.
+    pub(crate) fn replace_native_io_failure(
+        &mut self,
+        failure: Option<DemandError>,
+    ) -> Option<DemandError> {
+        std::mem::replace(&mut self.roots.io_failure, failure)
     }
     pub(crate) fn poison_native_original_work(&mut self) {
         self.roots.poisoned = true;

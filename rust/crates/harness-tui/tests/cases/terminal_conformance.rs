@@ -9,8 +9,7 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config, TestRunner};
 use std::io;
 
-#[path = "../support/terminal_keys.rs"]
-mod table;
+use acyclic_harness_tui::fuzzing::terminal_keys as table;
 
 fn event(code: KeyCode, modifiers: KeyModifiers) -> InputEvent {
     InputEvent::Key(KeyEvent::new(code, modifiers))

@@ -263,7 +263,7 @@ impl Shared {
             result = result.and(self.record_cleanup(WRITE, work).and(closed));
         }
         result = result.and(self.record_cleanup(clear_records(&mut ancestors), work));
-        result = result.and(self.record_cleanup(clear_records(&mut watches), work));
+        result = result.and(self.record_cleanup(watches.clear(), work));
         result = result.and(self.record_cleanup(clear_records(&mut reading.cleanup), work));
         reading.buffer = Vec::new();
         reading.filled = 0;

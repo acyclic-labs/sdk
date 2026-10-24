@@ -56,3 +56,8 @@ fn unsupported(reason: &'static str) -> Error {
         reason,
     }
 }
+
+#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+fn unsupported(reason: &'static str) -> Error {
+    Error::Unsupported(reason.into())
+}

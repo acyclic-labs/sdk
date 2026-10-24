@@ -46,7 +46,9 @@ proptest! {
         names.push(long.clone());
         let request = crate::tests::tool_name_tests::request_with(&names.iter().map(String::as_str).collect::<Vec<_>>());
         // Independent byte count for the literal digest framing and salt.
-        let expected = 21 + 4 + long.len() as u64 + u64::from(taken + 1) * (21 + 4 + 7);
+        let expected = 21 + 4 + long.len() as u64 + u64::from(taken + 1) * (21 + 4 + 7)
+            + 21 + 4 + long.len() as u64 + 2 // the long name's exact revision
+            + 21 + 4 + 11; // the readable pinned-name collision
         funded(&request, expected, expected, true);
         funded(&request, expected - 1, expected, false);
         funded(&request, 0, expected, false);
@@ -59,7 +61,7 @@ fn negative_control_detects_unfunded_production_digest() {
     let long = format!("mcp.server.{}", "t".repeat(80));
     let request = crate::tests::tool_name_tests::request_with(&[&long]);
     SKIP_HASH_ADMISSION.with(|flag| flag.set(true));
-    let detected = std::panic::catch_unwind(|| funded(&request, 0, 116, true));
+    let detected = std::panic::catch_unwind(|| funded(&request, 0, 234, true));
     SKIP_HASH_ADMISSION.with(|flag| flag.set(false));
     let panic = detected.expect_err("unfunded production hashing must fail the ledger oracle");
     assert!(

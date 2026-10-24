@@ -16,6 +16,7 @@ pub use config::{McpConfig, McpServer, McpTransport};
     any(feature = "mcp-stdio", feature = "mcp-http")
 ))]
 mod install;
+mod layouts;
 #[cfg(all(
     not(target_arch = "wasm32"),
     any(feature = "mcp-stdio", feature = "mcp-http")
@@ -77,3 +78,11 @@ fn validate_operation_context(
     }
     Ok(())
 }
+
+/// Exercises executable resolution with explicitly supplied search paths.
+#[cfg(all(
+    feature = "test-support",
+    feature = "mcp-stdio",
+    not(target_arch = "wasm32")
+))]
+pub use install::fuzz_executable;

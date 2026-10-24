@@ -51,6 +51,7 @@ where
             id: ticket.id,
             expected_version,
             outcome: InteractionOutcome::Answered {
+                // Unbudgeted: the answer is staged with no `io`.
                 answer: Box::new(answer),
             },
             detail: None,

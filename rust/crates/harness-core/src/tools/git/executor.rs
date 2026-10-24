@@ -119,13 +119,15 @@ where
                 tracked_paths,
                 ..
             } => {
-                self.capture_commit(
-                    operation_id,
-                    workspace_tree,
-                    head_tree.as_ref(),
-                    head_workspace_tree.as_ref().as_ref(),
-                    tracked_paths,
-                )
+                acyclic_fs::in_heap(|| {
+                    self.capture_commit(
+                        operation_id,
+                        workspace_tree,
+                        head_tree.as_ref(),
+                        head_workspace_tree.as_ref().as_ref(),
+                        tracked_paths,
+                    )
+                })
                 .await
             }
             GitFilesystemAction::ForkBranch {
@@ -134,23 +136,23 @@ where
                 switch,
                 ..
             } => {
-                self.fork_branch(operation_id, branch, source_tree, *switch)
+                acyclic_fs::in_heap(|| self.fork_branch(operation_id, branch, source_tree, *switch))
                     .await
             }
             GitFilesystemAction::SwitchWorkspace { workspace_id } => {
-                self.switch_workspace(workspace_id).await
+                acyclic_fs::in_heap(|| self.switch_workspace(workspace_id)).await
             }
             GitFilesystemAction::Diff {
                 from,
                 to,
                 tracked_paths,
-            } => self.diff(from.as_ref(), to, tracked_paths).await,
+            } => acyclic_fs::in_heap(|| self.diff(from.as_ref(), to, tracked_paths)).await,
             GitFilesystemAction::RestoreGeneration { tree, paths } => {
-                self.restore_generation(operation_id, tree, paths.as_ref())
+                acyclic_fs::in_heap(|| self.restore_generation(operation_id, tree, paths.as_ref()))
                     .await
             }
             GitFilesystemAction::RestorePaths { tree, paths } => {
-                self.restore_paths(operation_id, *tree, paths).await
+                acyclic_fs::in_heap(|| self.restore_paths(operation_id, *tree, paths)).await
             }
             GitFilesystemAction::Join {
                 target_tree,
@@ -169,37 +171,52 @@ where
                 tracked_paths,
                 ..
             } => {
-                self.apply_commit(
-                    operation_id,
-                    base.as_ref(),
-                    source.as_ref(),
-                    paths,
-                    tracked_paths,
-                )
+                acyclic_fs::in_heap(|| {
+                    self.apply_commit(
+                        operation_id,
+                        base.as_ref(),
+                        source.as_ref(),
+                        paths,
+                        tracked_paths,
+                    )
+                })
                 .await
             }
-            GitFilesystemAction::Archive { tree } => self.archive(tree).await,
+            GitFilesystemAction::Archive { tree } => {
+                acyclic_fs::in_heap(|| self.archive(tree)).await
+            }
             GitFilesystemAction::Grep {
                 pattern,
                 path,
                 tree,
-            } => self.grep(pattern, path.as_deref(), tree).await,
-            GitFilesystemAction::Blame { path, commits } => self.blame(path, commits).await,
+            } => {
+                let result =
+                    acyclic_fs::in_heap(|| self.grep(*tree, pattern, path.as_deref())).await?;
+                Ok(GitFilesystemResult::Data {
+                    kind: "grep".to_owned(),
+                    value: serde_json::to_value(result).map_err(json_error)?,
+                })
+            }
+            GitFilesystemAction::Blame { path, commits } => {
+                acyclic_fs::in_heap(|| self.blame(path, commits)).await
+            }
             GitFilesystemAction::Clean {
                 dry_run,
                 tree,
                 tracked_paths,
             } => {
-                self.clean(operation_id, *dry_run, tree, tracked_paths)
+                acyclic_fs::in_heap(|| self.clean(operation_id, *dry_run, tree, tracked_paths))
                     .await
             }
             GitFilesystemAction::ApplyPatch { patch } => {
-                self.apply_patch(operation_id, patch).await
+                acyclic_fs::in_heap(|| self.apply_patch(operation_id, patch)).await
             }
             GitFilesystemAction::CheckIgnore { paths, tree } => {
-                self.check_ignore(paths, tree).await
+                acyclic_fs::in_heap(|| self.check_ignore(paths, tree)).await
             }
-            GitFilesystemAction::ShowFile { tree, path } => self.show_file(tree, path).await,
+            GitFilesystemAction::ShowFile { tree, path } => {
+                acyclic_fs::in_heap(|| self.show_file(tree, path)).await
+            }
             unsupported => Err(Self::error(format!(
                 "Git filesystem action is not yet available in the Codex adapter: {unsupported:?}"
             ))),

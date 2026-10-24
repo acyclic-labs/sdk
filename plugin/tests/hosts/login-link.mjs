@@ -1,6 +1,6 @@
 // Links a host's login file into a fixture home for one live run. The login
 // is never read or copied: only the link is made, and the caller removes it.
-import { linkSync, mkdirSync, symlinkSync } from "node:fs";
+import { linkSync, lstatSync, mkdirSync, renameSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -21,4 +21,35 @@ export function hostLogin(host, home, env = process.env) {
 export function linkLogin({ source, link }, platform = process.platform) {
   mkdirSync(dirname(link), { recursive: true });
   (platform === "win32" ? linkSync : symlinkSync)(resolve(source), link);
+}
+
+/**
+ * Ends the run's use of the login. A host that refreshes its token replaces
+ * the login file instead of writing through the link, and a refresh rotates
+ * the token: the one the link reached is then revoked. The replacement is the
+ * only valid login, so it is moved back over the source, never read or copied.
+ * A link that still reaches the source (symbolic, or a hard link to the same
+ * file) is only removed.
+ */
+export function releaseLogin({ source, link }) {
+  let entry;
+  try {
+    entry = lstatSync(link);
+  } catch {
+    return "absent";
+  }
+  const unchanged = entry.isSymbolicLink() || (() => {
+    try {
+      const original = statSync(source);
+      return original.ino === entry.ino && original.dev === entry.dev;
+    } catch {
+      return false;
+    }
+  })();
+  if (unchanged) {
+    rmSync(link, { force: true });
+    return "unlinked";
+  }
+  renameSync(link, source);
+  return "restored";
 }

@@ -34,3 +34,6 @@ doc = false
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(acyclic_sdk_docs_loom)'] }
+
+[features]
+test-support = []

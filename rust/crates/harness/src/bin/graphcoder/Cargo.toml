@@ -13,6 +13,7 @@ name = "graphcoder"
 path = "../graphcoder.rs"
 
 [dependencies]
+acyclic-fs = { path = "../../../../filesystem", default-features = false }
 acyclic-harness = { path = "../../..", features = ["filesystem-local", "native-execution", "terminal", "tui", "search-http"] }
 acyclic-harness-providers = { path = "../../../../harness-providers" }
 clap.workspace = true
@@ -40,15 +41,27 @@ path = "tests/cli.rs"
 name = "tui"
 path = "tests/tui.rs"
 
+[[test]]
+name = "scenarios"
+path = "tests/scenarios/main.rs"
+
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 rustix-openpty = "0.2"
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2.175"
 rustix = { workspace = true, features = ["fs"] }
+[dev-dependencies.tokio]
+workspace = true
+features = ["process", "net", "time", "sync"]
 
 [dev-dependencies.axum]
 workspace = true
 
 [dev-dependencies.tempfile]
 version = "3.27.0"
+
+[[test]]
+name = "stack_main"
+path = "tests/stack_main.rs"
+harness = false

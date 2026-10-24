@@ -3,6 +3,7 @@ use proc_macro::TokenStream;
 use syn::parse_macro_input;
 mod authorization;
 mod enumeration;
+mod heap_layout;
 mod message;
 mod options;
 mod registration;
@@ -251,6 +252,19 @@ pub fn service(args: TokenStream, item: TokenStream) -> TokenStream {
             .into();
     };
     registration::service(item, &file)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Derive the JSON heap layout of a type's serde decode.
+///
+/// It reads the serde attributes `#[derive(Deserialize)]` reads. A field or
+/// variant decoded by a custom function must name its layout with
+/// `#[heap_layout(as = Type)]` or `#[heap_layout(scalar)]`.
+#[proc_macro_derive(HeapLayout, attributes(heap_layout))]
+pub fn heap_layout(item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as syn::DeriveInput);
+    heap_layout::expand(&input)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

@@ -35,6 +35,7 @@ compio-driver = { version = "=0.12.5", default-features = false }
 windows-sys = { version = "0.61.2", features = [
   "Wdk_Storage_FileSystem",
   "Win32_Foundation",
+  "Win32_Globalization",
   "Win32_Security",
   "Win32_Storage_FileSystem",
   "Win32_System_Console",
@@ -42,6 +43,7 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_System_JobObjects",
   "Win32_System_Pipes",
   "Win32_System_Power",
+  "Win32_System_SystemInformation",
   "Win32_System_Threading",
   "Win32_UI_WindowsAndMessaging",
 ] }
@@ -50,6 +52,7 @@ windows-sys = { version = "0.61.2", features = [
 acyclic-test-support = { path = "../test-support" }
 tempfile = "3.27.0"
 loom = "=0.7.2"
+toml.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 futures-core = "0.3.31"
@@ -62,6 +65,10 @@ acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability
 acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 tracing-subscriber.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+# The command tests' echo helper reports its raw command line.
+windows-sys = { version = "0.61.2", features = ["Win32_System_Environment"] }
 
 [lints]
 workspace = true

@@ -6,17 +6,22 @@ pub(super) struct Entry {
     pub kind: CompletionKind,
     pub item: Rc<Completion>,
     pub theme: bool,
+    pub query: Option<String>,
 }
 
 impl CompletionMenu {
-    /// Fold one command/workspace file from a snapshot or cursor-follow change.
+    /// Fold one command or path-index file from a snapshot/follow change.
     /// Paths are logical volume paths: commands/*.json, commands/**/*.md,
-    /// workspace/**. `None` removes a file. A malformed replacement is atomic.
+    /// search/results.json. UI workspace files are never mention candidates.
     pub fn set_file(&mut self, path: &str, bytes: Option<&[u8]>) -> io::Result<()> {
         let entries = bytes
             .map(|bytes| parse_file(path, bytes))
             .transpose()?
             .unwrap_or_default();
+        let progress = progress(path, bytes)?;
+        if let Some(progress) = progress {
+            self.search_progress = progress;
+        }
         self.set_entries(path, bytes.is_some(), entries);
         Ok(())
     }
@@ -34,10 +39,13 @@ impl CompletionMenu {
                     .map(|bytes| parse_file(path, bytes))
                     .transpose()?
                     .unwrap_or_default();
-                Ok((path, bytes.is_some(), entries))
+                Ok((path, bytes.is_some(), entries, progress(path, bytes)?))
             })
             .collect::<io::Result<Vec<_>>>()?;
-        for (path, present, entries) in decoded {
+        for (path, present, entries, progress) in decoded {
+            if let Some(progress) = progress {
+                self.search_progress = progress;
+            }
             self.set_entries(path, present, entries);
         }
         Ok(())
@@ -110,7 +118,27 @@ impl CompletionMenu {
         self.next_file = 0;
         self.items.clear();
         self.selected = 0;
+        self.search_progress = None;
     }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub(super) struct Progress {
+    pub query: String,
+    pub pending_dirs: usize,
+    pub complete: bool,
+    pub unavailable_entries: usize,
+}
+
+fn progress(path: &str, bytes: Option<&[u8]>) -> io::Result<Option<Option<Progress>>> {
+    if path != "search/progress.json" {
+        return Ok(None);
+    }
+    let Some(bytes) = bytes else {
+        return Ok(Some(None));
+    };
+    let value: Progress = serde_json::from_slice(bytes)?;
+    Ok(Some(Some(value)))
 }
 
 fn make(
@@ -123,6 +151,7 @@ fn make(
     Entry {
         kind,
         theme: false,
+        query: None,
         item: Rc::new(Completion {
             label: if kind == CompletionKind::Command {
                 format!("/{value}")
@@ -138,14 +167,28 @@ fn make(
 }
 
 fn parse_file(path: &str, bytes: &[u8]) -> io::Result<Vec<Entry>> {
-    if let Some(path) = path.strip_prefix("workspace/") {
-        return Ok(vec![make(
-            CompletionKind::Mention,
-            path.into(),
-            String::new(),
-            false,
-            true,
-        )]);
+    if path == "search/results.json" {
+        #[derive(serde::Deserialize)]
+        struct Results {
+            query: String,
+            paths: Vec<String>,
+        }
+        let results: Results = serde_json::from_slice(bytes)?;
+        if results.paths.len() > super::PATH_RESULT_COUNT {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "search publication exceeds its top-k contract",
+            ));
+        }
+        return Ok(results
+            .paths
+            .into_iter()
+            .map(|path| {
+                let mut entry = make(CompletionKind::Mention, path, String::new(), false, true);
+                entry.query = Some(results.query.clone());
+                entry
+            })
+            .collect());
     }
     let Some(path) = path.strip_prefix("commands/") else {
         return Ok(vec![]);

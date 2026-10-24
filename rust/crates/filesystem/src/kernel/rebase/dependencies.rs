@@ -192,13 +192,23 @@ impl CheckoutDependencies {
         self.prepare(dependencies, maximum_dependencies, DependencyUse::Mutation)
     }
 
-    pub(crate) fn commit_with_data_custody<E: From<WorkError>>(
+    pub(crate) fn commit_with_data_custody<E: From<WorkError> + From<DependencyError>>(
         &mut self,
         extension: DependencyExtension,
         owner: Option<&Arc<ProofDataCustody>>,
         admit: impl FnMut(u64, u64, u64, u64) -> Result<(), E>,
     ) -> Result<(), E> {
-        self.commit_with_data_claims(
+        self.commit_with_data_custody_then(extension, owner, admit, || Ok(()))
+    }
+
+    pub(crate) fn commit_with_data_custody_then<E: From<WorkError> + From<DependencyError>, T>(
+        &mut self,
+        extension: DependencyExtension,
+        owner: Option<&Arc<ProofDataCustody>>,
+        admit: impl FnMut(u64, u64, u64, u64) -> Result<(), E>,
+        finish: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E> {
+        self.commit_with_data_claims::<true, _, _>(
             extension,
             admit,
             |bytes| {
@@ -207,6 +217,7 @@ impl CheckoutDependencies {
                     .unwrap_or_default())
             },
             |bytes, _| Ok(ProofDataClaim::new(owner, bytes)),
+            finish,
         )
     }
 
@@ -219,6 +230,26 @@ impl CheckoutDependencies {
         original: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<(), crate::FsError> {
+        self.commit_with_original_data_custody_then(
+            extension,
+            owner,
+            staged,
+            original,
+            cancellation,
+            |_| Ok(()),
+        )
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn commit_with_original_data_custody_then<T>(
+        &mut self,
+        extension: DependencyExtension,
+        owner: &Arc<ProofDataCustody>,
+        staged: &mut crate::NativeAllocation,
+        original: &crate::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+        finish: impl FnOnce(&mut crate::NativeAllocation) -> Result<T, crate::FsError>,
+    ) -> Result<T, crate::FsError> {
         if !staged.work().shares_ledger(original) {
             return Err(crate::FsError::NativeKernel(
                 crate::NativeTreeMaterializationError::InvalidLayout,
@@ -226,10 +257,11 @@ impl CheckoutDependencies {
         }
         cancellation.check()?;
         let witness = original.checkout_control_sink(owner)?;
+        let staged = std::cell::RefCell::new(staged);
         // The guard owns only this invocation's new COW buffers. Physical
         // map cloning and replacement happen outside every original-root loan.
         let copied_allocation = std::cell::RefCell::new(None::<crate::NativeAllocation>);
-        self.commit_with_data_claims(
+        self.commit_with_data_claims::<true, _, _>(
             extension,
             |bytes, operations, copied, items| {
                 cancellation.check()?;
@@ -269,37 +301,75 @@ impl CheckoutDependencies {
                         .map_err(Into::into)
                 } else {
                     staged
+                        .borrow_mut()
                         .transfer_checkout_data_bytes(bytes, owner, &witness)
                         .map_err(Into::into)
                 }
             },
+            || finish(&mut staged.borrow_mut()),
         )
     }
 
-    fn commit_with_data_claims<E: From<WorkError>>(
+    fn commit_with_data_claims<
+        const REVALIDATE: bool,
+        E: From<WorkError> + From<DependencyError>,
+        T,
+    >(
         &mut self,
-        extension: DependencyExtension,
+        mut extension: DependencyExtension,
         mut admit: impl FnMut(u64, u64, u64, u64) -> Result<(), E>,
         mut control: impl FnMut(u64) -> Result<ProofDataClaim, E>,
         mut data: impl FnMut(u64, bool) -> Result<ProofDataClaim, E>,
-    ) -> Result<(), E> {
-        let mut changes = false;
-        for region in extension.staged.keys() {
-            admit(0, 0, 0, 1)?;
-            if self
-                .captured
-                .entries
-                .get(region)
-                .is_none_or(|state| state.usage.with(extension.usage) != state.usage)
-            {
-                changes = true;
-            }
-        }
-        if !changes {
-            return Ok(());
-        }
+        finish: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E> {
         let copied = Arc::strong_count(&self.captured) > 1;
         let moved = !copied && Arc::weak_count(&self.captured) != 0;
+        let mut name_data_bytes = if copied {
+            self.cloned_name_data_bytes
+        } else {
+            self.name_data_bytes
+        };
+        let mut cloned_name_data_bytes = self.cloned_name_data_bytes;
+        let mut changes = false;
+        let mut distinct_new = 0usize;
+        for (region, state) in extension.staged.iter_mut() {
+            admit(0, 0, 0, 1)?;
+            match self.captured.entries.get(region) {
+                Some(existing) => {
+                    if REVALIDATE && existing.expected != state.expected {
+                        return Err(DependencyError::ContradictoryState.into());
+                    }
+                    changes |= existing.usage.with(extension.usage) != existing.usage;
+                }
+                None => {
+                    changes = true;
+                    distinct_new = distinct_new.checked_add(1).ok_or(WorkError::Overflow)?;
+                    let retained = dependency_name_bytes(region, false);
+                    name_data_bytes = name_data_bytes
+                        .checked_add(retained)
+                        .ok_or(WorkError::Overflow)?;
+                    cloned_name_data_bytes = cloned_name_data_bytes
+                        .checked_add(dependency_name_bytes(region, true))
+                        .ok_or(WorkError::Overflow)?;
+                    admit(retained, 0, 0, 0)?;
+                    state.data = data(retained, false)?;
+                }
+            }
+        }
+        // Preparation may precede an await. Shared observers can have added
+        // regions since then; admission must use the current proof under its lock.
+        if REVALIDATE
+            && self.captured.entries.len().saturating_add(distinct_new)
+                > extension.maximum_dependencies as usize
+        {
+            return Err(DependencyError::TooManyDependencies {
+                maximum: extension.maximum_dependencies,
+            }
+            .into());
+        }
+        if !changes {
+            return finish();
+        }
         let generation = if copied || moved {
             self.data_generation
                 .checked_add(1)
@@ -307,6 +377,8 @@ impl CheckoutDependencies {
         } else {
             self.data_generation
         };
+        let mut replacement = None;
+        let mut moved_control = None;
         if copied {
             let mut operations = 0_u64;
             for region in self.captured.entries.keys() {
@@ -325,54 +397,41 @@ impl CheckoutDependencies {
                 .ok_or(WorkError::Overflow)?;
             let operations = operations.checked_add(1).ok_or(WorkError::Overflow)?;
             admit(bytes, operations, self.cloned_name_data_bytes, 0)?;
-            let captured = Arc::make_mut(&mut self.captured);
+            let mut captured = self.captured.as_ref().clone();
             captured._control = control(control_bytes)?;
             for (region, value) in captured.entries.iter_mut() {
                 value.data = data(dependency_name_bytes(region, false), true)?;
             }
-            self.name_data_bytes = self.cloned_name_data_bytes;
+            replacement = Some(Arc::new(captured));
         } else if moved {
             let control_bytes = Self::empty_logical_owned_bytes() as u64;
             admit(control_bytes, 1, 0, 0)?;
-            let claim = control(control_bytes)?;
-            // Arc moves the keys without cloning them, but constructs a new
-            // known payload. Only its control claim is replaced.
-            Arc::make_mut(&mut self.captured)._control = claim;
+            moved_control = Some(control(control_bytes)?);
         }
-        self.data_generation = generation;
-        let DependencyExtension { staged, usage } = extension;
+        // Reserve the installation visits before the last fallible handoff.
+        // The staged nodes already carry every incoming key's custody claim.
+        admit(0, 0, 0, extension.staged.len() as u64)?;
+        let result = finish()?;
+        // The caller holds exclusive proof access. All admission, custody
+        // transfers and caller validation have succeeded; installation cannot fail.
+        if let Some(captured) = replacement {
+            self.captured = captured;
+        }
         let captured = Arc::make_mut(&mut self.captured);
-        for (region, expected) in staged {
-            admit(0, 0, 0, 1)?;
+        if let Some(control) = moved_control {
+            captured._control = control;
+        }
+        for (region, state) in extension.staged {
             if let Some(existing) = captured.entries.get_mut(&region) {
-                existing.usage = existing.usage.with(usage);
+                existing.usage = existing.usage.with(extension.usage);
             } else {
-                // The staged key owns its name buffer already; insertion
-                // moves that buffer rather than allocating or copying it.
-                let retained = dependency_name_bytes(&region, false);
-                let name_data_bytes = self
-                    .name_data_bytes
-                    .checked_add(retained)
-                    .ok_or(WorkError::Overflow)?;
-                let cloned_name_data_bytes = self
-                    .cloned_name_data_bytes
-                    .checked_add(dependency_name_bytes(&region, true))
-                    .ok_or(WorkError::Overflow)?;
-                admit(retained, 0, 0, 0)?;
-                let data = data(retained, false)?;
-                captured.entries.insert(
-                    region,
-                    CapturedState {
-                        expected,
-                        usage,
-                        data,
-                    },
-                );
-                self.name_data_bytes = name_data_bytes;
-                self.cloned_name_data_bytes = cloned_name_data_bytes;
+                captured.entries.insert(region, state);
             }
         }
-        Ok(())
+        self.data_generation = generation;
+        self.name_data_bytes = name_data_bytes;
+        self.cloned_name_data_bytes = cloned_name_data_bytes;
+        Ok(result)
     }
 
     #[cfg(any(feature = "native-mount", test))]
@@ -598,7 +657,7 @@ impl CheckoutDependencies {
         if maximum_dependencies == 0 {
             return Err(DependencyError::ZeroLimit);
         }
-        let mut staged = BTreeMap::new();
+        let mut staged: BTreeMap<DependencyRegion, CapturedState> = BTreeMap::new();
         for dependency in dependencies {
             dependency.region.validate()?;
             if let Some(existing) = self.captured.entries.get(&dependency.region)
@@ -607,12 +666,19 @@ impl CheckoutDependencies {
                 return Err(DependencyError::ContradictoryState);
             }
             match staged.get(&dependency.region) {
-                Some(expected) if *expected != dependency.expected => {
+                Some(expected) if expected.expected != dependency.expected => {
                     return Err(DependencyError::ContradictoryState);
                 }
                 Some(_) => {}
                 None => {
-                    staged.insert(dependency.region, dependency.expected);
+                    staged.insert(
+                        dependency.region,
+                        CapturedState {
+                            expected: dependency.expected,
+                            usage,
+                            data: ProofDataClaim::default(),
+                        },
+                    );
                 }
             }
         }
@@ -627,14 +693,19 @@ impl CheckoutDependencies {
                 maximum: maximum_dependencies,
             });
         }
-        Ok(DependencyExtension { staged, usage })
+        Ok(DependencyExtension {
+            staged,
+            usage,
+            maximum_dependencies,
+        })
     }
 }
 
 #[must_use]
 pub(crate) struct DependencyExtension {
-    staged: BTreeMap<DependencyRegion, DependencyState>,
+    staged: BTreeMap<DependencyRegion, CapturedState>,
     usage: DependencyUse,
+    maximum_dependencies: u32,
 }
 
 impl DependencyExtension {
@@ -657,3 +728,7 @@ impl DependencyExtension {
         Ok(bytes)
     }
 }
+
+#[cfg(all(test, not(acyclic_fs_loom)))]
+#[path = "../tests/dependency_delta.rs"]
+mod delta_tests;

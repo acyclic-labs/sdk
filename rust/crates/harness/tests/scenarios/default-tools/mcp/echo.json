@@ -1,0 +1,20 @@
+{
+  "seed":{"plans/a.md":"before\n"},
+  "wire_tools":{"mcp.fixture.echo":"Binary MCP echo"},
+  "settings":{
+    ".claude.json":"{\"mcpServers\":{\"fixture\":{\"command\":\"{{python}}\",\"args\":[\"-u\",\"{{settings}}/mcp.py\"],\"required\":true}}}",
+    "mcp.py":"import json, os, sys\nfor line in sys.stdin:\n    request = json.loads(line)\n    method = request['method']\n    with open(os.path.join(os.path.dirname(__file__), 'mcp.log'), 'a', newline='') as log:\n        log.write(method + '\\n')\n    if 'id' not in request:\n        continue\n    if method == 'initialize':\n        result = {'protocolVersion': request['params']['protocolVersion'], 'capabilities': {'tools': {}}, 'serverInfo': {'name': 'binary-fixture', 'version': '1'}}\n    elif method == 'tools/list':\n        result = {'tools': [{'name': 'echo', 'description': 'Binary MCP echo', 'inputSchema': {'type': 'object', 'properties': {'text': {'type': 'string'}}, 'required': ['text'], 'additionalProperties': False}}]}\n    elif method == 'tools/call':\n        assert request['params']['name'] == 'echo'\n        result = {'content': [{'type': 'text', 'text': 'MCP_BINARY_ECHO:' + request['params']['arguments']['text']}]}\n    else:\n        raise RuntimeError(method)\n    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)\n"
+  },
+  "turns":[
+    [{"type":"event","kind":"tool_call","call_id":"call","name":"mcp.fixture.echo","arguments":{"text":"ping"}},
+     {"type":"event","kind":"completed","metadata":null}],
+    "done"
+  ],
+  "expect":{
+    "wire":[],
+    "files":{"plans/a.md":"before\n"},
+    "results":{"call":{"name":"mcp.fixture.echo","content":{"kind":"json","value":{"content":[{"type":"text","text":"MCP_BINARY_ECHO:ping"}],"isError":false}}}},
+    "request_text":["MCP_BINARY_ECHO:ping"],
+    "settings_files":{"mcp.log":"initialize\nnotifications/initialized\ntools/list\ntools/call\n"}
+  }
+}

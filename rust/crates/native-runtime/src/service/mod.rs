@@ -163,12 +163,12 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> 
             {
                 use std::os::unix::process::CommandExt as _;
 
-                let mut command = std::process::Command::new(executable);
+                let mut command = crate::command::Command::new(executable);
                 command
                     .args(["__service", SERVICE_READY_ARGUMENT])
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::null());
+                    .stdin(crate::command::Stdio::null())
+                    .stdout(crate::command::Stdio::piped())
+                    .stderr(crate::command::Stdio::null());
                 command.process_group(0);
                 let mut child = command.spawn()?;
                 let readiness = child
@@ -186,14 +186,14 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> 
 
 /// Runs a trusted host command with closed stdin and bounded captured output.
 pub fn process_output(
-    command: &mut std::process::Command,
+    command: &mut crate::command::Command,
     timeout: std::time::Duration,
     max_bytes: usize,
 ) -> io::Result<std::process::Output> {
     command
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .stdin(crate::command::Stdio::null())
+        .stdout(crate::command::Stdio::piped())
+        .stderr(crate::command::Stdio::piped());
     ProcessTree::spawn(command)?
         .wait_with_output(
             timeout,
@@ -209,7 +209,7 @@ pub fn process_output(
 
 /// Runs a trusted host command with its configured streams and a bounded wait.
 pub fn process_status(
-    command: &mut std::process::Command,
+    command: &mut crate::command::Command,
     timeout: std::time::Duration,
 ) -> io::Result<std::process::ExitStatus> {
     let mut tree = ProcessTree::spawn(command)?;

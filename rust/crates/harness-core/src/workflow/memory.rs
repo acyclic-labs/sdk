@@ -17,6 +17,7 @@ impl WorkflowJournal for MemoryWorkflowJournal {
         &'a self,
         admission: WorkflowAdmission,
     ) -> BoxFuture<'a, Result<WorkflowAdmission>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move {
             admission.validate(None)?;
             let mut state = self
@@ -41,12 +42,13 @@ impl WorkflowJournal for MemoryWorkflowJournal {
     ) -> Result<
         crate::store::history::HistoryContentFuture<'a, (Option<WorkflowAdmission>, NativeCustody)>,
     > {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        // This journal charges nothing, so it refuses a live budget on every
+        // target rather than run unpaid under it.
         if io.is_some() {
             return Err(unsupported("journal has no native admission callback"));
         }
-        let _ = io;
         Ok(crate::store::history::HistoryContentFuture::Ordinary {
+            // Unbudgeted: a live `io` is refused above.
             future: Box::pin(async move {
                 self.state
                     .lock()
@@ -63,12 +65,13 @@ impl WorkflowJournal for MemoryWorkflowJournal {
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::store::history::HistoryContentFuture<'a, (Vec<WorkflowRecord>, NativeCustody)>>
     {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        // This journal charges nothing, so it refuses a live budget on every
+        // target rather than run unpaid under it.
         if io.is_some() {
             return Err(unsupported("journal has no native replay callback"));
         }
-        let _ = io;
         Ok(crate::store::history::HistoryContentFuture::Ordinary {
+            // Unbudgeted: a live `io` is refused above.
             future: Box::pin(async move {
                 if maximum == 0 {
                     return Err(Error::Invalid("workflow page bounds are invalid".into()));
@@ -105,6 +108,7 @@ impl WorkflowJournal for MemoryWorkflowJournal {
         key: IdempotencyKey,
         record: WorkflowRecord,
     ) -> BoxFuture<'a, Result<WorkflowRecord>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move {
             validate_workflow_commit(expected_revision, &key, &record, None)?;
             let mut state = self

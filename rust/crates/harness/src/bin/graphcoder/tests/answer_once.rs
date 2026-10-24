@@ -216,7 +216,7 @@ async fn shipping(directory: &std::path::Path, address: std::net::SocketAddr) ->
     }
     let args = crate::args::Args::try_parse_from(argv).unwrap();
     let credentials = acyclic_harness_providers::Credentials::explicit(Default::default());
-    crate::open(&args, credentials).await.unwrap()
+    crate::entry::open(&args, credentials, None).await.unwrap()
 }
 
 /// Whether the renderer's own client follows the canonical result file of a
@@ -360,7 +360,7 @@ async fn settled_transcript(provider: Provider, answer: String) -> Transcript {
     };
     let transcript = tokio::time::timeout(
         HANG_GUARD,
-        client::with_local_commands(local.clone(), operation, presentation),
+        client::with_local_commands(local.clone(), operation, move || presentation),
     )
     .await
     .expect("hang guard: the owner stalled before the turn settled")

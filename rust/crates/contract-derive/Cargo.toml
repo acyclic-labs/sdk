@@ -10,7 +10,7 @@ publish.workspace = true
 
 [lib]
 proc-macro = true
-test = false
+test = true
 
 [dependencies]
 heck = "0.5"
@@ -19,6 +19,8 @@ quote = "1"
 syn = { version = "3", features = ["full"] }
 
 [dev-dependencies]
+proptest.workspace = true
+prost-reflect.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 protoc-bin-vendored.workspace = true

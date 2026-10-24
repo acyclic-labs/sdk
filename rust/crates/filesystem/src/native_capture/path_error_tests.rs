@@ -118,7 +118,7 @@ fn check(
             source_bytes_read: leaf_bytes,
             bytes_copied: leaf_bytes,
             peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes()
-                + std::mem::size_of::<crate::demand::CaptureTransientCustody>() as u64
+                + crate::demand::CaptureTransientCustody::ALLOCATION_BYTES
                 + leaf_bytes,
             ..WorkCounters::UNCHARGED
         };

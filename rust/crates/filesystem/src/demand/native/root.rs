@@ -42,6 +42,23 @@ impl Drop for CancelWorkerOnDrop {
 }
 
 impl NativeDemandSource {
+    /// Initializes process-global source services before bounded native work.
+    pub fn initialize_services() -> Result<(), DemandError> {
+        #[cfg(target_os = "macos")]
+        crate::fsevents::EventStream::initialize_services()?;
+        Ok(())
+    }
+
+    #[cfg(all(windows, feature = "native-watch"))]
+    pub(crate) fn capture_name_journal(
+        &self,
+        work: &mut crate::NativeMaterializationWork,
+    ) -> Result<crate::NameJournalCheckpoint, crate::WindowsUsnError> {
+        crate::windows_usn::capture_held_checkpoint(&self.inner.root, work)?
+            .name_checkpoint(self.inner.identity)
+            .map_err(|_| crate::WindowsUsnError::InvalidCheckpoint)
+    }
+
     /// Returns the stable identity of the already-open native root.
     #[must_use]
     pub fn root_identity(&self) -> crate::NativeRootIdentity {
@@ -183,8 +200,8 @@ impl NativeDemandSource {
                             })
                         })();
                         (result, context)
-                    },
-                ))
+                    }),
+                )
                 .await
                 .map_err(|_| DemandError::WorkerUnavailable)?,
                 Err(error) => (Err(error), context),

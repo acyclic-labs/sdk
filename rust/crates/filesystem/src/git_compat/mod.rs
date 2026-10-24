@@ -67,3 +67,9 @@ pub use diff::*;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(feature = "fuzzing")]
+mod fuzz_markers;
+/// Exercises the streaming merge-marker recognizer across arbitrary chunk boundaries.
+#[cfg(feature = "fuzzing")]
+pub use fuzz_markers::check as fuzz_markers;

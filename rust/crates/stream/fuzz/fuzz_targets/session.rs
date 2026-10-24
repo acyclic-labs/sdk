@@ -10,12 +10,7 @@ use libfuzzer_sys::fuzz_target;
 use prost::Message;
 use std::sync::Arc;
 
-mod checks {
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../tests/support/follow_data.rs"
-    ));
-}
+use acyclic_stream::test_support::follow_data as checks;
 
 fuzz_target!(|input: &[u8]| {
     if input.len() > 4096 {

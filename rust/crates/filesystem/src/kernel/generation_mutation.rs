@@ -144,7 +144,11 @@ struct RecordState {
     base: Option<FileRecord>,
     working: FileRecord,
     present: bool,
+    /// Whether this batch already gave the record its content-change time.
+    stamped: bool,
 }
+
+pub(super) mod content_times;
 
 struct DirectoryEdit {
     directory_id: FileId,
@@ -173,6 +177,7 @@ pub async fn apply_generation_mutations<S: AsyncObjectStore>(
         generation,
         operations,
         config,
+        None,
         &mut accounting,
         cancellation,
     )
@@ -181,11 +186,15 @@ pub async fn apply_generation_mutations<S: AsyncObjectStore>(
     .map_err(|error| OperationFailure::new(generation_error(error), accounting.spent()))
 }
 
+/// `content_time` is the instant every regular file whose bytes or length
+/// change takes as its modification and status-change time, or `None` to
+/// leave metadata to the operations.
 pub(crate) async fn apply_generation_mutations_retaining_with_accounting<S: AsyncObjectStore>(
     store: &S,
     generation: &GenerationRoot,
     operations: Vec<Mutation>,
     config: VolumeConfig,
+    content_time: Option<i64>,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<
@@ -244,7 +253,14 @@ pub(crate) async fn apply_generation_mutations_retaining_with_accounting<S: Asyn
         allocation,
     };
     state
-        .simulate(store, &plan.value, config, accounting, cancellation)
+        .simulate(
+            store,
+            &plan.value,
+            config,
+            content_time,
+            accounting,
+            cancellation,
+        )
         .await?;
     let Owned {
         value: plan,
@@ -399,6 +415,7 @@ impl Owned<TransactionState> {
         store: &S,
         plan: &MutationPlan,
         config: VolumeConfig,
+        content_time: Option<i64>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), crate::FsError> {
@@ -409,21 +426,30 @@ impl Owned<TransactionState> {
             else {
                 continue;
             };
-            let (id, payload) = match action {
+            let (id, payload, changes_content) = match action {
                 RegularAction::Mutate {
                     id,
                     payload,
                     mutation,
                 } => {
-                    let receipt = super::regular_mutation::apply_regular_mutation_with_accounting(
-                        store,
-                        payload,
+                    let changes_content = !matches!(
                         mutation,
-                        config,
-                        accounting,
-                        cancellation,
-                    )
-                    .await
+                        RegularMutation::Preallocate {
+                            keep_size: true,
+                            ..
+                        }
+                    );
+                    // Boxed: the regular mutation frame stays out of this one.
+                    let receipt = crate::heap_future::metered!(erased accounting, |accounting| {
+                        super::regular_mutation::apply_regular_mutation_with_accounting(
+                            store,
+                            payload,
+                            mutation,
+                            config,
+                            accounting,
+                            cancellation,
+                        )
+                    })
                     .map_err(|error| {
                         if is_original(accounting) {
                             error
@@ -434,7 +460,7 @@ impl Owned<TransactionState> {
                             .into()
                         }
                     })?;
-                    (id, receipt.payload)
+                    (id, receipt.payload, changes_content)
                 }
                 RegularAction::Clone {
                     destination,
@@ -466,13 +492,17 @@ impl Owned<TransactionState> {
                             .into()
                         }
                     })?;
-                    (destination, receipt.destination)
+                    (destination, receipt.destination, true)
                 }
             };
             self.leaf(accounting, |state, leaf| {
                 state.record_mut(leaf, id)?.working.payload = payload;
                 Ok(())
             })?;
+            if let Some(at_ns) = content_time.filter(|_| changes_content) {
+                self.stamp_content_change(store, id, at_ns, config, accounting, cancellation)
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -1089,6 +1119,7 @@ impl TransactionState {
                 base,
                 working,
                 present: base.is_some(),
+                stamped: false,
             });
         }
         let path_comparisons = Cell::new(0_u64);
@@ -1189,7 +1220,7 @@ impl TransactionState {
             Mutation::Link { .. } => self.link(leaf, plan, ordinal, order)?,
             Mutation::SetMetadata { metadata, .. } => {
                 let id = path_id(self)?;
-                self.record_mut(leaf, id)?.working.metadata = *metadata;
+                self.set_metadata(leaf, id, *metadata)?;
             }
             Mutation::ValidateRegular { .. } => {
                 let id = path_id(self)?;
@@ -1301,7 +1332,7 @@ impl TransactionState {
                 }
                 FileMutation::SetMetadata { metadata } => {
                     self.identity_binding(leaf, *file_id)?;
-                    self.record_mut(leaf, *file_id)?.working.metadata = *metadata;
+                    self.set_metadata(leaf, *file_id, *metadata)?;
                 }
                 FileMutation::ValidateRegular => {
                     self.regular_payload(leaf, *file_id)?;
@@ -1945,6 +1976,20 @@ impl TransactionState {
                   (see `record_index` below), which guarantees `index < self.records.len()`, \
                   and nothing resizes `self.records` between that call and this indexing"
     )]
+    /// Explicit metadata replaces the record's; a later content change in
+    /// the same batch stamps it again.
+    fn set_metadata(
+        &mut self,
+        leaf: &mut MutationLeaf<'_, '_>,
+        file_id: FileId,
+        metadata: ObjectId,
+    ) -> Result<(), crate::FsError> {
+        let record = self.record_mut(leaf, file_id)?;
+        record.working.metadata = metadata;
+        record.stamped = false;
+        Ok(())
+    }
+
     fn record_mut(
         &mut self,
         leaf: &mut MutationLeaf<'_, '_>,

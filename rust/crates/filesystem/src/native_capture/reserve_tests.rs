@@ -77,7 +77,7 @@ fn expected(
     cancelled: bool,
 ) -> (WorkCounters, u64, u64, usize) {
     let header = NativeMaterializationWork::accounting_state_bytes()
-        + std::mem::size_of::<crate::demand::CaptureTransientCustody>() as u64;
+        + crate::demand::CaptureTransientCustody::ALLOCATION_BYTES;
     let growing = !cancelled && length + additional > capacity;
     let allocated = growing && denied != 1;
     let copied = allocated && (denied != 2 || length == 0);

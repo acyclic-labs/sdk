@@ -10,6 +10,8 @@ use crate::{
 use std::sync::Arc;
 
 mod command_machine;
+#[cfg(feature = "test-support")]
+pub use command_machine::fuzz_state as fuzz_command_state;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod subscription;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
@@ -38,7 +40,7 @@ impl HarnessCode {
         self,
         config: crate::local::LocalHarnessConfig,
     ) -> acyclic_stream::BoxProviderFuture<'static, Result<crate::local::LocalHarness>> {
-        Box::pin(crate::local::open::open(self, config))
+        acyclic_fs::in_heap(|| crate::local::open::open(self, config))
     }
 
     /// Builds every stock handler and its typed admission schema together.

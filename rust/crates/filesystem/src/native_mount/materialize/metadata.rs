@@ -86,14 +86,34 @@ where
         let retained = host_array_bytes
             .checked_add(payload_bytes)
             .ok_or(MaterializeError::Work(WorkError::Overflow))?;
-        generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
+        generation_action(
+            receipt.custody.work(),
+            before_effect,
+            NativeMaterializationActionPhase::Before,
+        )
+        .await?;
         apply_host_attributes_offloaded(host_root, host_path, attributes, retained, receipt)
             .await?;
-        generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
+        generation_action(
+            receipt.custody.work(),
+            before_effect,
+            NativeMaterializationActionPhase::Completed,
+        )
+        .await?;
     }
-    generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
+    generation_action(
+        receipt.custody.work(),
+        before_effect,
+        NativeMaterializationActionPhase::Before,
+    )
+    .await?;
     apply_host_metadata_offloaded(host_root, host_path, metadata, receipt).await?;
-    generation_action(before_effect, NativeMaterializationActionPhase::Completed).await
+    generation_action(
+        receipt.custody.work(),
+        before_effect,
+        NativeMaterializationActionPhase::Completed,
+    )
+    .await
 }
 
 pub(super) async fn apply_host_attributes_offloaded(

@@ -1,0 +1,14 @@
+{
+  "seed":{"plans/a.md":"before\n"},
+  "settings":{
+    ".claude/settings.json":"{\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"printf 'SessionStart\\n' >> '{{settings}}/hooks.log'; printf BINARY_HOOK_CONTEXT\"}]}]}}"
+  },
+  "turns":["done"],
+  "expect":{
+    "wire":[],
+    "files":{"plans/a.md":"before\n"},
+    "results":{},
+    "request_text":["BINARY_HOOK_CONTEXT"],
+    "settings_files":{"hooks.log":"SessionStart\n"}
+  }
+}

@@ -1,8 +1,8 @@
 use super::{acyclic, command, isolated_state};
+use acyclic_native_runtime::command::Command;
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 pub struct PackagedPlugin {
@@ -22,7 +22,6 @@ impl PackagedPlugin {
         );
         #[cfg(windows)]
         {
-            use std::os::windows::process::CommandExt as _;
             let mut shell = command("cmd");
             shell.raw_arg(format!("/D /S /C \"{invocation}\""));
             shell

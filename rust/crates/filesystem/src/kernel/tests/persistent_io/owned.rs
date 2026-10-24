@@ -28,15 +28,13 @@ fn page(
         OwnedPage {
             page: PageLease::Owned(Page::Leaf(records.value)),
             logical_bytes: records.bytes,
-            #[cfg(not(target_arch = "wasm32"))]
-            native_custody: None,
         },
         records.allocation,
     )
 }
 
 fn key() -> DecodedCacheKey {
-    DecodedCacheKey::new::<Page<FileTableFormat>>(
+    DecodedCacheKey::new::<SharedPage<FileTableFormat>>(
         ObjectId {
             kind: ObjectKind::FileTablePage,
             digest: crate::Digest::ZERO,
@@ -162,10 +160,8 @@ fn exact_ownership_oracle_rejects_the_old_shared_owner_path() {
 }
 
 #[test]
-fn standalone_handoff_keeps_the_existing_cancellation_checkpoints() {
-    // This internal transfer performs no new work. The read/decoder owns the
-    // cancellation checkpoints; the original shared-owner handoff has none.
-    for legacy in [false, true] {
+fn cancelled_sharing_allocates_nothing_and_retires_the_source() {
+    for sharing in [false, true] {
         let cancellation = CancellationToken::new();
         let mut allocations = AllocationLedger::default();
         let mut work = WorkCounters::UNCHARGED;
@@ -177,7 +173,8 @@ fn standalone_handoff_keeps_the_existing_cancellation_checkpoints() {
         );
         let input = page(2, &mut accounting);
         cancellation.cancel();
-        let (page, allocation) = if legacy {
+        let before = accounting.spent().allocation_operations;
+        let result = if sharing {
             admit_decoded_with_accounting(
                 &OwnedReadObjectStore::default(),
                 key(),
@@ -193,12 +190,18 @@ fn standalone_handoff_keeps_the_existing_cancellation_checkpoints() {
                 &mut accounting,
                 None,
             )
+        };
+        if sharing {
+            assert!(matches!(result, Err(crate::FsError::Cancelled(_))));
+        } else {
+            // A move-only handoff still performs no work or extra checkpoint.
+            let (page, allocation) = result.unwrap();
+            let bytes = page.logical_bytes;
+            Owned::new(page, allocation, bytes)
+                .retire(&mut accounting)
+                .unwrap();
         }
-        .unwrap();
-        let bytes = page.logical_bytes;
-        Owned::new(page, allocation, bytes)
-            .retire(&mut accounting)
-            .unwrap();
+        assert_eq!(accounting.spent().allocation_operations, before);
         assert_eq!(allocations.live_bytes(), 0);
     }
 }

@@ -68,7 +68,10 @@ async fn visibility_model<
             input.editor.set_text("@sec", 0);
             input
                 .completion
-                .set_file("workspace/second", Some(b"source"))
+                .set_file(
+                    "search/results.json",
+                    Some(br#"{"query":"sec","paths":["second"]}"#),
+                )
                 .unwrap();
             input.refresh_completions();
         }

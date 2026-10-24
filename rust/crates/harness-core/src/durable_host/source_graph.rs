@@ -429,11 +429,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .source_admission(parent, &mut budget, quota.work())
             .await?;
         quota.adopt(retained)?;
-        if crate::executor::json::canonical_json_digest(
-            &caller,
-            acyclic_stream::MAX_RECORD_BYTES as u64,
-            quota.work(),
-        )? != record.caller_admission_digest
+        // The record binds the caller's one canonical admission identity.
+        if caller.canonical_digest_with_work(quota.work())? != record.caller_admission_digest
             || caller
                 .run_limits
                 .deadline_epoch_ms

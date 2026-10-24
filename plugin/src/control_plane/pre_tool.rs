@@ -225,12 +225,14 @@ impl ControlPlane {
             .values()
             .any(|lease| lease.agent_id == agent_id);
         if first_overlapping_operation {
-            self.mounts
-                .get(&agent_id)
-                .ok_or_else(|| "subagent mount is unavailable".to_owned())?
-                .advance_to_head()
-                .await
-                .map_err(display)?;
+            fs_call(
+                self.mounts
+                    .get(&agent_id)
+                    .ok_or_else(|| "subagent mount is unavailable".to_owned())?
+                    .advance_to_head(),
+            )
+            .await
+            .map_err(display)?;
         }
         let operations = OperationWindowCoordinator::new(self.fs.operation_window_store());
         let parent_context = WorkspaceContextRegistry::new(self.store.clone())

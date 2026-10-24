@@ -110,6 +110,7 @@ type StreamCreate = unsafe extern "C" fn(
 type StreamSetDispatchQueue = unsafe extern "C" fn(FsEventStreamRef, DispatchQueue);
 type StreamStart = unsafe extern "C" fn(FsEventStreamRef) -> u8;
 type StreamAction = unsafe extern "C" fn(FsEventStreamRef);
+type StreamFlushAsync = unsafe extern "C" fn(FsEventStreamRef) -> u64;
 
 fn native_error(message: &'static str) -> DemandError {
     DemandError::Io(std::io::Error::other(message))

@@ -83,7 +83,7 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
         let mut state = MergeState::new(request.maximum_changes, accounting)?;
         state.content = request.content;
         let result = async {
-            let (ours, custody) = diff_file_records_with_accounting(
+            let (ours, custody) = diff_file_records_with_accounting::<_, false>(
                 store,
                 Some(request.base.file_table),
                 Some(request.ours.file_table),
@@ -96,7 +96,7 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
             let bytes = ours.retained_allocation_bytes;
             let ours = Owned::new(ours, custody, bytes);
             let result = async {
-                let (theirs, custody) = diff_file_records_with_accounting(
+                let (theirs, custody) = diff_file_records_with_accounting::<_, false>(
                     store,
                     Some(request.base.file_table),
                     Some(request.theirs.file_table),

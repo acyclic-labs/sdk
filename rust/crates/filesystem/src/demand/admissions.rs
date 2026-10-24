@@ -109,6 +109,11 @@ impl Admissions {
             .expect("balanced retained bytes")
     }
 }
+#[cfg(all(test, not(acyclic_fs_loom)))]
+std::thread_local! {
+    /// Registry reconciliations on this thread, for exact per-call counts.
+    pub(crate) static RECONCILES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 impl DemandWork {
     #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn admissions<T>(
@@ -146,6 +151,8 @@ impl DemandWork {
         Ok(())
     }
     pub(crate) fn reconcile_cancellation_registry(&mut self) -> Result<(), crate::WorkError> {
+        #[cfg(all(test, not(acyclic_fs_loom)))]
+        RECONCILES.with(|count| count.set(count.get() + 1));
         self.reconcile_native_controls()?;
         let mut failure = None;
         if let Some(shared) = &self.roots.proof_accounting {

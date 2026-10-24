@@ -4,7 +4,7 @@ use serde::Deserialize;
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 /// The selected search adapter. Selection never silently switches providers.
-#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchBackend {
     /// Exa Search.
@@ -32,7 +32,7 @@ impl SearchBackend {
 }
 
 /// Host-only configuration. Deliberately neither Debug nor Serialize.
-#[derive(Deserialize)]
+#[derive(Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct SearchConfig {
     /// Explicit provider, defaulting to Exa.

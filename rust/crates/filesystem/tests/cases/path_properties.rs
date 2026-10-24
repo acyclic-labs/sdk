@@ -1,6 +1,5 @@
 //! Shrinking properties for portable filesystem path admission.
-#[path = "../path_input.rs"]
-mod input;
+use acyclic_fs::fuzzing::path_input as input;
 use proptest::prelude::*;
 
 #[test]

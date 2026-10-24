@@ -1,7 +1,7 @@
 use super::*;
 
 /// Task-local execution bounds pinned separately from content/render limits.
-#[derive(Clone, Copy, Default, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Default, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct TaskRunLimits {
     /// Maximum concurrent tasks in a child group, when bounded.

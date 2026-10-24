@@ -169,6 +169,7 @@ async fn preparing_roots_reopen_as_intents_and_cannot_route_or_mutate() {
             },
             &mut None
         )
+        .unwrap()
         .await
         .is_err()
     );

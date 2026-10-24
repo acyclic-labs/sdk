@@ -1,13 +1,12 @@
 use super::*;
 use crate::kernel::codec::ReadAllocationStep;
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn clone_page<F: Format>(
-    page: &Page<F>,
+    page: PageRef<'_, F>,
     observe: &mut impl FnMut(crate::kernel::codec::ReadAllocationStep) -> Result<(), FsError>,
 ) -> Result<Page<F>, FsError> {
     match page {
-        Page::Leaf(values) => {
+        PageRef::Leaf(values) => {
             let mut cloned = Vec::new();
             crate::kernel::file_read::reserve_decoded_items(&mut cloned, values.len(), observe)?;
             for value in values {
@@ -21,7 +20,7 @@ pub(super) fn clone_page<F: Format>(
             }
             Ok(Page::Leaf(cloned))
         }
-        Page::Internal(children) => {
+        PageRef::Internal(children) => {
             let mut cloned = Vec::new();
             crate::kernel::file_read::reserve_decoded_items(&mut cloned, children.len(), observe)?;
             for child in children {
@@ -75,7 +74,6 @@ pub(crate) fn decode_read_with_accounting<F: Format>(
                 OwnedPage {
                     page: PageLease::Owned(page),
                     logical_bytes,
-                    native_custody: None,
                 },
                 allocation,
             )
@@ -158,8 +156,6 @@ pub(crate) fn decode_read_with_accounting<F: Format>(
         OwnedPage {
             page: PageLease::Owned(decoded),
             logical_bytes,
-            #[cfg(not(target_arch = "wasm32"))]
-            native_custody: None,
         },
         KernelOwnedAllocation::Standalone,
     ))

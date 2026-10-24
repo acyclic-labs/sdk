@@ -9,6 +9,17 @@ use crate::{
 #[cfg(all(any(test, feature = "native-execution"), unix))]
 #[tokio::test]
 async fn child_pre_tool_hook_uses_its_own_checkout_and_grants() -> Result<()> {
+    child_pre_tool_hook(false).await
+}
+
+#[cfg(all(feature = "native-execution", unix))]
+#[tokio::test]
+async fn volume_search_created_child_keeps_lazy_content_and_private_only_authority() -> Result<()> {
+    child_pre_tool_hook(true).await
+}
+
+#[cfg(all(feature = "native-execution", unix))]
+async fn child_pre_tool_hook(search_only: bool) -> Result<()> {
     use crate::task_volume::{ChildFile, Component, FileKey, FileValue, Query};
     use acyclic_fs::facade::FsWork as _;
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
@@ -117,10 +128,12 @@ async fn child_pre_tool_hook_uses_its_own_checkout_and_grants() -> Result<()> {
         panic!("child lease");
     };
     host.start_task(&lease, &mut None).await?;
-    let child_context = harness
-        .runtime
-        .task_context(child, LeaseFence::from(&lease.reservation))
-        .await?;
+    let child_context = Arc::new(
+        harness
+            .runtime
+            .task_context(child, LeaseFence::from(&lease.reservation))
+            .await?,
+    );
     let command: crate::workflow::WorkflowCommand =
         serde_json::from_value(admitted.input["model"].clone()).map_err(super::super::storage)?;
     let bytes = child_context.read_file(&command.payload, None).await?;
@@ -138,6 +151,133 @@ async fn child_pre_tool_hook_uses_its_own_checkout_and_grants() -> Result<()> {
         )
         .await?;
     assert!(!directory.path().join("child.txt").exists());
+    if search_only {
+        use crate::tool::ToolExecutor as _;
+        let workspace = harness.workspace().unwrap();
+        let tools = super::super::checkout_tools::CheckoutTools::new(
+            Arc::clone(workspace),
+            harness.project(),
+            Arc::new(acyclic_stream::SystemUnixMillisClock),
+            &harness.signed,
+            Arc::clone(&harness.task_files),
+        )
+        .await?;
+        let advances = workspace
+            .mount_advances
+            .load(std::sync::atomic::Ordering::Relaxed);
+        // Negative control: the exact SDK generation does not contain this
+        // still-lazy source file, so opening only that generation loses it.
+        assert!(
+            matches!(view.workspace().head(acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new()).await.map_err(super::super::storage)?.value
+            .stat("/source.txt", acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new()).await,
+            Err(failure) if matches!(failure.error, acyclic_fs::WorkspaceError::NotFound))
+        );
+        async fn grep(
+            tools: &super::super::checkout_tools::CheckoutTools,
+            task: Arc<crate::runtime::TaskContext>,
+            command: &str,
+            grants: Option<crate::Capabilities>,
+        ) -> Result<crate::tool::ToolResult> {
+            let invocation = crate::tool::ToolInvocation {
+                operation_id: OperationId::new(),
+                call_id: "search-child".into(),
+                name: "fs".into(),
+                arguments: json!({"command":command}),
+            };
+            let context = crate::runtime::ToolContext::new(
+                Arc::clone(&task),
+                invocation.operation_id,
+                &invocation.call_id,
+                None,
+            )?;
+            let context = match grants {
+                Some(grants) => context.scoped(grants, task.scope().limits())?,
+                None => context,
+            };
+            tools.execute(invocation, Some(context)).await
+        }
+        let result = grep(
+            &tools,
+            Arc::clone(&child_context),
+            "git grep 'parent source' source.txt",
+            None,
+        )
+        .await?;
+        assert!(
+            result.value.to_string().contains("parent source"),
+            "{result:?}"
+        );
+        assert_eq!(
+            workspace
+                .mount_advances
+                .load(std::sync::atomic::Ordering::Relaxed),
+            advances
+        );
+        let private = child_context
+            .scope()
+            .created_access
+            .as_ref()
+            .unwrap()
+            .content
+            .iter()
+            .find(|binding| binding.volume.class() == VolumeClass::AgentPrivate)
+            .unwrap()
+            .volume
+            .clone();
+        child_context
+            .stage_file(
+                Some(&private),
+                OperationId::new(),
+                "private-note.txt",
+                b"private needle",
+                "text/plain",
+                "private-note.txt",
+            )
+            .await?;
+        let project_read = project.capability(VolumeOperation::Read, &mut None)?;
+        let project_write = project.capability(VolumeOperation::Write, &mut None)?;
+        let private_grants = acyclic_harness::Capabilities::new(
+            child_context
+                .scope()
+                .grants()
+                .iter()
+                .filter(|grant| *grant != project_read && *grant != project_write)
+                .map(str::to_owned),
+        );
+        assert!(matches!(
+            grep(
+                &tools,
+                Arc::clone(&child_context),
+                "git grep needle",
+                Some(private_grants.clone())
+            )
+            .await,
+            Err(Error::Unauthorized(_))
+        ));
+        let result = grep(
+            &tools,
+            Arc::clone(&child_context),
+            "git --volume scratch grep 'private needle' private-note.txt",
+            Some(private_grants),
+        )
+        .await?;
+        assert!(
+            result.value.to_string().contains("private needle"),
+            "{result:?}"
+        );
+        assert_eq!(
+            workspace
+                .mount_advances
+                .load(std::sync::atomic::Ordering::Relaxed),
+            advances
+        );
+        assert!(!directory.path().join("private-note.txt").exists());
+        host.cancel(child).await?;
+        host.cancel(parent).await?;
+        return Ok(());
+    }
     let cancel = acyclic_fs::CancellationToken::new();
     let budget = acyclic_fs::WorkBudget::UNBOUNDED;
     let mut accounting = budget.accounting(&cancel);

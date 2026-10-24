@@ -94,11 +94,7 @@ where
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         E: From<MountSourceError> + From<crate::FsError> + Send + 'static,
     {
-        let crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } = &*accounting
-        else {
-            return Err(MountSourceError::OriginalSnapshotUnavailable.into());
-        };
-        let (work, cancellation) = (*work, *cancellation);
+        let (work, cancellation) = native_original(accounting)?;
         // Every binding of a shared source advances its epoch when any of
         // them observes a change, such as the root refreshing for a sibling's
         // spawn. Lookups follow that epoch; a publication follows it too
@@ -111,20 +107,11 @@ where
             .await
             .map_err(lazy_error)?;
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
-        let selected_proof = selected
-            .map(|(destination, plan, _)| {
-                plan.input_digest(destination, accounting)
-                    .map(|input| SelectedImportProof {
-                        destination,
-                        source: plan.source,
-                        config: plan.source_config,
-                        input,
-                    })
-                    .map_err(lazy_error)
-            })
-            .transpose()?;
-        if let Some(published) = self
-            .recover_publication(
+        let selected_proof = selected_import_proof(selected, accounting)?;
+        // Each publication stage is deep; each runs from its own allocation,
+        // so this frame never holds their polls.
+        if let Some(published) = claimed(work, || {
+            self.recover_publication(
                 permit,
                 accounting,
                 before_publication,
@@ -132,24 +119,26 @@ where
                 (selected, selected_proof),
                 accounting_failure,
             )
-            .await?
+        })?
+        .await?
         {
             return Ok(published);
         }
         let mut input_carrier = adapter::NativeDemandCarrier::Native(work);
         let mut input = adapter::InputBuffers::new(&mut input_carrier)?;
         let (removals, captured_records) = self.removal_inputs(&mut input)?;
-        let dirty = self.dirty_detached_records(work).await?;
+        let dirty = claimed(work, || self.dirty_detached_records(work))?.await?;
         if removals.is_empty() && dirty.value.is_empty() && selected.is_none() {
-            return self
-                .publish_clean(
+            return claimed(work, || {
+                self.publish_clean(
                     permit,
                     accounting,
                     before_publication,
                     acknowledged,
                     accounting_failure,
                 )
-                .await;
+            })?
+            .await;
         }
         let PreparedPublication {
             operation,
@@ -158,8 +147,8 @@ where
             _effects,
             changes,
             _records,
-        } = self
-            .prepare_publication(
+        } = claimed(work, || {
+            self.prepare_publication(
                 removals,
                 &dirty.value,
                 captured_records,
@@ -167,14 +156,16 @@ where
                 &mut input,
                 accounting,
             )
-            .await?;
-        let context = self
-            .publication_context(operation, None, selected_proof, accounting)
-            .await?;
+        })?
+        .await?;
+        let context = claimed(work, || {
+            self.publication_context(operation, None, selected_proof, accounting)
+        })?
+        .await?;
         let mut scratch_carrier = adapter::NativeDemandCarrier::Native(work);
         let mut scratch = adapter::InputBuffers::new(&mut scratch_carrier)?;
-        let (_namespace_allocations, _namespaces, installed, _allocation) = self
-            .publication_changes(
+        let (_namespace_allocations, _namespaces, installed, _allocation) = claimed(work, || {
+            self.publication_changes(
                 &candidate,
                 &paths,
                 changes.as_deref(),
@@ -182,18 +173,23 @@ where
                 accounting,
                 &mut carrier,
             )
-            .await?;
+        })?
+        .await?;
         candidate.operation = Some(operation);
-        self.install_publication(candidate, &installed, &mut carrier, cancellation)
-            .await?;
-        self.complete_publication(
-            permit,
-            (context, operation, selected_proof),
-            accounting,
-            before_publication,
-            acknowledged,
-            accounting_failure,
-        )
+        claimed(work, || {
+            self.install_publication(candidate, &installed, &mut carrier, cancellation)
+        })?
+        .await?;
+        claimed(work, || {
+            self.complete_publication(
+                permit,
+                (context, operation, selected_proof),
+                accounting,
+                before_publication,
+                acknowledged,
+                accounting_failure,
+            )
+        })?
         .await
     }
     pub(super) fn clear_mount_removals(&self) -> Result<(), MountSourceError> {
@@ -311,4 +307,48 @@ where
         let operation_id = crate::OperationId::new();
         Ok((operation_id, transaction, identity_records))
     }
+}
+
+/// The native invocation a publication runs on; other accounting cannot publish.
+fn native_original<'a>(
+    accounting: &crate::kernel::KernelAccounting<'a>,
+) -> Result<
+    (
+        &'a crate::NativeMaterializationWork,
+        &'a crate::CancellationToken,
+    ),
+    MountSourceError,
+> {
+    let crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } = accounting else {
+        return Err(MountSourceError::OriginalSnapshotUnavailable);
+    };
+    Ok((*work, *cancellation))
+}
+
+/// The proof a selected import publishes with, over the plan's exact input.
+fn selected_import_proof(
+    selected: SelectedPublication<'_>,
+    accounting: &mut crate::kernel::KernelAccounting<'_>,
+) -> Result<Option<SelectedImportProof>, MountSourceError> {
+    selected
+        .map(|(destination, plan, _)| {
+            plan.input_digest(destination, accounting)
+                .map(|input| SelectedImportProof {
+                    destination,
+                    source: plan.source,
+                    config: plan.source_config,
+                    input,
+                })
+                .map_err(lazy_error)
+        })
+        .transpose()
+}
+
+/// Builds `create`'s future in a heap frame claimed on the publication's work,
+/// so the publication's own frame never holds a stage's poll.
+fn claimed<F: Future>(
+    work: &crate::NativeMaterializationWork,
+    create: impl FnOnce() -> F,
+) -> Result<crate::heap_future::ClaimedFrame<crate::heap_future::HeapFrame<F>>, MountSourceError> {
+    crate::heap_future::in_heap_claimed(work, create).map_err(MountSourceError::from)
 }

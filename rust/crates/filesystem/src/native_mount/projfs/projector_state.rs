@@ -87,7 +87,11 @@ pub(super) struct Projector {
     pub(super) state: Mutex<ProjectorState>,
     pub(super) tree: Mutex<()>,
     pub(super) paths: KeyedLocks<MountPath>,
-    pub(super) changed: Condvar,
+    // State -> waiter -> virtual clock. park releases state before waiting;
+    // neither the waiter nor the clock ever acquires projector state.
+    pub(super) changed: Arc<acyclic_native_runtime::deadline::Waiter>,
+    #[cfg(feature = "test-support")]
+    pub(super) wait_clock: Option<acyclic_native_runtime::deadline::simulation::Clock>,
     pub(super) worker: Mutex<Option<std::thread::JoinHandle<()>>>,
     pub(super) lifecycle: Mutex<ProjectorLifecycle>,
     pub(super) lifecycle_changed: Condvar,

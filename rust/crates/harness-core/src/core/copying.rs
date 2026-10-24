@@ -147,12 +147,14 @@ impl<'a, 'w> CodecQuota<'a, 'w> {
     }
 }
 
+// Charged above: `retain_entry` charges the box on `quota` before it is made.
 pub(crate) fn copy_boxed<T>(
     source: &T,
     quota: &mut CodecQuota<'_, '_>,
     copy: impl FnOnce(&T, &mut CodecQuota<'_, '_>) -> Result<T>,
 ) -> Result<Box<T>> {
     retain_entry::<T>(quota)?;
+    // Charged above: the entry retained on `quota`.
     Ok(Box::new(copy(source, quota)?))
 }
 pub(in crate::core) fn box_value<T>(value: T, quota: &mut CodecQuota<'_, '_>) -> Result<Box<T>> {

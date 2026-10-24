@@ -120,7 +120,7 @@ impl LocalFileClient {
         );
         let attachment = subscription.take_attachment();
         Ok(Self {
-            host: Box::pin(subscription),
+            host: acyclic_fs::in_heap(|| subscription),
             attachment,
             local,
             operation,
@@ -205,7 +205,8 @@ impl LocalFileClient {
                 source: None,
                 mentions,
             }) if mentions.is_empty() => {
-                let resolution = self.local.resolve_input(self.operation, &text).await?;
+                let resolution =
+                    acyclic_fs::in_heap(|| self.local.resolve_input(self.operation, &text)).await?;
                 let mut captured = file.clone();
                 captured.bytes = serde_json::to_vec(&resolution)
                     .map_err(|error| Error::Invalid(error.to_string()))?
@@ -303,8 +304,8 @@ impl LocalFileClient {
                 if input_open {
                     match input.next().now_or_never() {
                         Some(Some(line)) => {
-                            self.submit(&parse_local_request(&line?, operation)?)
-                                .await?;
+                            let request = parse_local_request(&line?, operation)?;
+                            acyclic_fs::in_heap(|| self.submit(&request)).await?;
                             continue;
                         }
                         Some(None) | None => {}
@@ -330,8 +331,10 @@ impl LocalFileClient {
             };
             match next {
                 Next::Input(Some(line)) => {
-                    self.submit(&parse_local_request(&line?, operation)?)
-                        .await?
+                    // Boxed: submission resolves the prompt, and its future
+                    // would otherwise sit in every poll frame of this loop.
+                    let request = parse_local_request(&line?, operation)?;
+                    acyclic_fs::in_heap(|| self.submit(&request)).await?;
                 }
                 Next::Input(None) => {
                     input_open = false;
@@ -345,14 +348,13 @@ impl LocalFileClient {
                 Next::Host(result) => {
                     self.host_done = true;
                     self.host_error = result.err();
-                    self.drain_through = self
-                        .local
-                        .task_files()
-                        .inner
-                        .snapshot(&selection(operation)?, MAXIMUM_FILES)
-                        .await?
-                        .cursor
-                        .position;
+                    let selection = selection(operation)?;
+                    let files = self.local.task_files();
+                    self.drain_through =
+                        acyclic_fs::in_heap(|| files.inner.snapshot(&selection, MAXIMUM_FILES))
+                            .await?
+                            .cursor
+                            .position;
                 }
             }
         }
@@ -394,8 +396,8 @@ impl HeadlessClient for LocalFileClient {
         }
         validate(&command, operation)?;
         self.initial(output)?;
-        self.submit(&command).await?;
-        Box::pin(self.run(operation, futures::stream::empty(), false, output)).await
+        acyclic_fs::in_heap(|| self.submit(&command)).await?;
+        acyclic_fs::in_heap(|| self.run(operation, futures::stream::empty(), false, output)).await
     }
     async fn input<W: Write>(
         &mut self,
@@ -403,7 +405,7 @@ impl HeadlessClient for LocalFileClient {
         input: impl Stream<Item = Result<String>> + Unpin,
         output: &mut W,
     ) -> Result<HeadlessOutcome> {
-        Box::pin(self.run(operation, input, true, output)).await
+        acyclic_fs::in_heap(|| self.run(operation, input, true, output)).await
     }
 }
 

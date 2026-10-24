@@ -1,5 +1,4 @@
 use super::*;
-mod media_type;
 #[cfg(all(
     test,
     feature = "filesystem-local",
@@ -132,14 +131,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 )
                 .await?
             };
-            return Box::pin(self.read_private_path_indexed(
-                volume,
-                grant,
-                path,
-                Some(&generation),
-                maximum_bytes,
-                crate::conversation::ContentAccess { ceiling, io },
-            ))
+            return crate::charged_box::pinned_frame(io, || {
+                self.read_private_path_indexed(
+                    volume,
+                    grant,
+                    path,
+                    Some(&generation),
+                    maximum_bytes,
+                    crate::conversation::ContentAccess { ceiling, io },
+                )
+            })?
             .await;
         }
 
@@ -517,7 +518,11 @@ fn selected_reference<'a>(
                 volume.copy(work)?,
                 stock_string_copy(path, Some(io))?,
                 version,
-                FileDescriptor::from_bytes(bytes, media_type::classify(bytes), work)?,
+                FileDescriptor::from_bytes(
+                    bytes,
+                    crate::conversation::classify_file_media(bytes),
+                    work,
+                )?,
                 stock_string_copy(path.rsplit('/').next().unwrap_or(path), Some(io))?,
                 work,
             )

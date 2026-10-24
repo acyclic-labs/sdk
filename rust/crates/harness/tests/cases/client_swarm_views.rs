@@ -1,8 +1,6 @@
 //! The reducer is exercised through actual volume writes and platform frames.
-#[path = "../../../harness-fuzz/support/swarm_limits.rs"]
-mod limits;
-#[path = "../../../harness-fuzz/support/swarm_views.rs"]
-mod oracle;
+use acyclic_harness::test_support::fuzz_cases::swarm_limits as limits;
+use acyclic_harness::test_support::fuzz_cases::swarm_views as oracle;
 
 #[path = "../client_swarm_views_follow.rs"]
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
@@ -128,8 +126,7 @@ mod status;
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod membership;
 
-#[path = "../../../harness-fuzz/support/swarm_membership.rs"]
-mod membership_codec;
+use acyclic_harness::test_support::fuzz_cases::swarm_membership as membership_codec;
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
     #[test]
@@ -167,8 +164,7 @@ fn dropped_membership_removal_mutant_fails_the_same_source_oracle() {
     assert!(std::panic::catch_unwind(|| membership_codec::query(&[0, 0, 1, 0], true)).is_err());
 }
 
-#[path = "../../../harness-fuzz/support/notification_files.rs"]
-mod notification_files;
+use acyclic_harness::test_support::fuzz_cases::notification_files;
 proptest::proptest! {
     #[test]
     fn notification_schema_round_trips_and_rejects_wrong_owner(

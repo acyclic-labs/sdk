@@ -42,6 +42,8 @@ async fn execute(
             reserved: &[],
             author: "test",
             authored_at_seconds: 1,
+            read_allowed: &|_| true,
+            search_progress: None,
         },
         &args
             .iter()
@@ -120,6 +122,8 @@ async fn manual_binary_resolution_can_continue_without_committing_markers() -> T
             reserved: &[],
             author: "test",
             authored_at_seconds: 1,
+            read_allowed: &|_| true,
+            search_progress: None,
         },
         &["merge".into(), "topic".into()],
         || async {
@@ -666,6 +670,8 @@ async fn volume_merge_revalidates_the_execution_owner_without_a_checkout() -> Te
             reserved: &[],
             author: "test",
             authored_at_seconds: 1,
+            read_allowed: &|_| true,
+            search_progress: None,
         },
         &["merge".into(), "topic".into()],
         || {
@@ -701,6 +707,46 @@ async fn volume_merge_revalidates_the_execution_owner_without_a_checkout() -> Te
             .value
             .id(),
         before
+    );
+    Ok(())
+}
+
+// Bisect compares the bad commit's exact captured tree with the working copy.
+// A lazy reference never equals it, so a clean checkout used to be refused.
+#[tokio::test]
+async fn bisect_starts_from_a_clean_committed_workspace() -> TestResult {
+    let (_directory, filesystem, store, main) = fixture().await?;
+    let repository = main.id();
+    main.write_text("/note", "first\n").await?;
+    execute(
+        &filesystem,
+        &store,
+        (&main).into(),
+        repository,
+        &["commit", "-m", "first"],
+    )
+    .await?;
+    main.write_text("/note", "second\n").await?;
+    execute(
+        &filesystem,
+        &store,
+        (&main).into(),
+        repository,
+        &["commit", "-m", "second"],
+    )
+    .await?;
+    let started = execute(
+        &filesystem,
+        &store,
+        (&main).into(),
+        repository,
+        &["bisect", "start"],
+    )
+    .await?;
+    assert!(
+        matches!(started.command, Some(GitCommandOutput::Bisect(_))),
+        "a clean committed workspace starts bisect: {:?}",
+        started.command
     );
     Ok(())
 }

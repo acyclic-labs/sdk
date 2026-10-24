@@ -63,7 +63,10 @@ mod tests {
             std::future::ready(Ok::<_, ()>(Some(1)))
         }))
         .poll(&mut context);
-        assert!(matches!(current, Poll::Ready(Err(RetryError::MountCancelled))));
+        assert!(matches!(
+            current,
+            Poll::Ready(Err(RetryError::MountCancelled))
+        ));
         // Negative control: omitting the mount fence admits the same observation.
         let unfenced = std::pin::pin!(observe_policy_unfenced(&caller, &mount, || {
             std::future::ready(Ok::<_, ()>(Some(1)))

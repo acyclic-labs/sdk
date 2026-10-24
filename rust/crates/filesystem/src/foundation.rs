@@ -70,6 +70,16 @@ impl OperationId {
     pub const fn into_bytes(self) -> [u8; 16] {
         self.0.into_bytes()
     }
+
+    /// The instant a time-ordered identity was minted, in signed Unix-epoch
+    /// nanoseconds. Replaying the identity replays the instant.
+    pub(crate) fn time_ns(self) -> Option<i64> {
+        let (seconds, nanos) = self.0.get_timestamp()?.to_unix();
+        i64::try_from(seconds)
+            .ok()?
+            .checked_mul(1_000_000_000)?
+            .checked_add(i64::from(nanos))
+    }
 }
 
 impl Default for OperationId {

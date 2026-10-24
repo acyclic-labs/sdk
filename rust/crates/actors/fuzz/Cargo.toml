@@ -11,7 +11,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-acyclic-actors = { path = ".." }
+acyclic-actors = { path = ".." , features = ["fuzzing"] }
 
 [[bin]]
 name = "timer_record"

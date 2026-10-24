@@ -60,10 +60,20 @@ fn files_snapshot_follow_and_resume() -> Result {
                     "builtin {spelling} completes /thes"
                 );
             }
-            put(&volume, "commands/thesis.md", b"Draft a thesis").await?;
-            put(&volume, "workspace/Straße.rs", b"source").await?;
+            put(
+                &volume,
+                "commands/catalog.json",
+                br#"[{"name":"thesis","description":"Draft a thesis"}]"#,
+            )
+            .await?;
+            put(
+                &volume,
+                "search/results.json",
+                r#"{"query":"STRASSE","paths":["Straße.rs"]}"#.as_bytes(),
+            )
+            .await?;
             let mut input = PromptInput::new(Editor::new("/thes"));
-            let mut files = CompletionFiles::observe(&volume, &mut input, None, 100).await?;
+            let mut files = CompletionFiles::observe(&volume, &mut input, None).await?;
             assert_eq!(
                 input
                     .completion
@@ -79,16 +89,25 @@ fn files_snapshot_follow_and_resume() -> Result {
             input.editor.set_text("@new", 2);
             input.refresh_completions();
             assert!(!input.completion.active(&input.editor));
-            put(&volume, "workspace/new.rs", b"new source").await?;
+            put(
+                &volume,
+                "search/results.json",
+                br#"{"query":"new","paths":["new.rs"]}"#,
+            )
+            .await?;
             files.next(&mut input).await?;
             assert!(input.completion.active(&input.editor));
             assert_eq!(input.completion.items().next().unwrap().value, "new.rs");
             let cursor = files.cursor.clone();
             let work = input.completion.work;
-            let mut files =
-                CompletionFiles::observe(&volume, &mut input, Some(cursor), 100).await?;
+            let mut files = CompletionFiles::observe(&volume, &mut input, Some(cursor)).await?;
             assert_eq!(input.completion.work, work);
-            put(&volume, "commands/thesis.md", b"Updated description").await?;
+            put(
+                &volume,
+                "commands/catalog.json",
+                br#"[{"name":"thesis","description":"Updated description"}]"#,
+            )
+            .await?;
             files.next(&mut input).await?;
             input.editor.set_text("/thes", 5);
             input.refresh_completions();
@@ -138,9 +157,14 @@ fn pty_child() -> Result {
         .build()?
         .block_on(async {
             let volume = volume().await?;
-            put(&volume, "commands/theme.md", b"Choose a theme").await?;
+            put(
+                &volume,
+                "commands/catalog.json",
+                br#"[{"name":"theme","description":"Choose a theme","append_space":true}]"#,
+            )
+            .await?;
             let mut input = PromptInput::default();
-            let mut files = CompletionFiles::observe(&volume, &mut input, None, 100).await?;
+            let mut files = CompletionFiles::observe(&volume, &mut input, None).await?;
             checkpoint("READY")?;
             loop {
                 if let Event::Key(key) = event::read()? {
@@ -174,7 +198,12 @@ fn pty_child() -> Result {
             input.editor.set_text("@new", 2);
             input.refresh_completions();
             assert!(!input.completion.active(&input.editor));
-            put(&volume, "workspace/new.rs", b"created after snapshot").await?;
+            put(
+                &volume,
+                "search/results.json",
+                br#"{"query":"new","paths":["new.rs"]}"#,
+            )
+            .await?;
             files.next(&mut input).await?;
             assert!(input.completion.active(&input.editor));
             assert_eq!(input.completion.items().next().unwrap().value, "new.rs");
@@ -214,7 +243,7 @@ proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config { cases: 48, ..Default::default() })]
     #[test]
     fn source_paths_are_canonical_and_round_trip(path in ".{0,256}") {
-        for prefix in ["commands/", "workspace/", "config/"] {
+        for prefix in ["commands/", "search/", "config/"] {
             let path = format!("{prefix}{path}");
             path_sequences::exercise(path.as_bytes());
             if let Ok(key) = FileKey::parse(&path) {
@@ -232,10 +261,10 @@ proptest::proptest! {
 fn deserialization_cannot_bypass_source_path_validation() {
     for path in [
         "commands/../secret",
-        "workspace/",
-        "workspace/C:/secret",
-        "workspace/a\\b",
-        "workspace//x",
+        "search/",
+        "search/C:/secret",
+        "search/a\\b",
+        "search//x",
     ] {
         let encoded = serde_json::json!({"Input": path});
         assert!(serde_json::from_value::<FileKey>(encoded).is_err());

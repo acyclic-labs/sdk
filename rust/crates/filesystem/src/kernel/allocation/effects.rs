@@ -134,7 +134,9 @@ fn complete(
             .map_err(crate::NativeTreeMaterializationError::from)?;
         let native = crate::materializer::native_materialization_work_error;
         state.complete(credited, actual).map_err(native)?;
-        state.admit(WorkCounters::UNCHARGED).map_err(native)?;
+        state
+            .admit_reconciled(WorkCounters::UNCHARGED)
+            .map_err(native)?;
         cancellation.check().map_err(Into::into)
     })
 }

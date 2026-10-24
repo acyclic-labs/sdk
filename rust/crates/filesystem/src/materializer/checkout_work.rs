@@ -30,7 +30,7 @@ impl NativeMaterializationWork {
     pub(crate) fn transfer_capture_allocation(
         &self,
         bytes: u64,
-        custody: &Arc<crate::demand::CaptureTransientCustody>,
+        custody: &crate::demand::CaptureCustody,
     ) -> Result<NativeAllocation, NativeTreeMaterializationError> {
         if !custody.owns_native_work(self) {
             return Err(NativeTreeMaterializationError::InvalidLayout);

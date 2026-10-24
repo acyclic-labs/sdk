@@ -1,7 +1,8 @@
 //! The process boundary inherits the same scope as native workers and entropy.
 use super::*;
+use crate::command::Command;
 use crate::{CaptureInput, ProcessCaptureFailure, ProcessInput, ProcessOutput};
-use std::{io, process::Command, process::Output, time::Duration};
+use std::{io, process::Output, time::Duration};
 
 /// Original capture arguments, after command and ownership validation.
 pub struct ProcessCapture<'a> {

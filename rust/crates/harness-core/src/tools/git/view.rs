@@ -52,6 +52,8 @@ impl<'a> View<'a> {
         }
     }
 
+    // Each arm runs in a heap frame of its own: the arms' futures differ
+    // widely in size, and a dispatcher's frame otherwise carries the largest.
     pub(super) async fn read(
         self,
         path: &str,
@@ -59,26 +61,33 @@ impl<'a> View<'a> {
     ) -> crate::Result<acyclic_stream::OwnedBytes> {
         let cancellation = CancellationToken::new();
         match self {
-            Self::Checkout(view) => view
-                .read(
-                    path,
-                    maximum,
-                    &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
-                )
+            Self::Checkout(view) => {
+                acyclic_fs::in_heap(|| async {
+                    view.read(
+                        path,
+                        maximum,
+                        &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
+                    )
+                    .await
+                    .map(|chunk| chunk.bytes)
+                    .map_err(Error::from)
+                })
                 .await
-                .map(|chunk| chunk.bytes)
-                .map_err(Error::from),
+            }
             Self::Volume(view) => {
-                let generation = view
-                    .head(WorkBudget::UNBOUNDED, &cancellation)
-                    .await
-                    .map_err(|failure| failure.error)?
-                    .value;
-                Ok(generation
-                    .read(path, maximum, WorkBudget::UNBOUNDED, &cancellation)
-                    .await
-                    .map_err(|failure| failure.error)?
-                    .value)
+                acyclic_fs::in_heap(|| async {
+                    let generation = view
+                        .head(WorkBudget::UNBOUNDED, &cancellation)
+                        .await
+                        .map_err(|failure| failure.error)?
+                        .value;
+                    Ok(generation
+                        .read(path, maximum, WorkBudget::UNBOUNDED, &cancellation)
+                        .await
+                        .map_err(|failure| failure.error)?
+                        .value)
+                })
+                .await
             }
         }
     }
@@ -91,27 +100,37 @@ impl<'a> View<'a> {
         let cancellation = CancellationToken::new();
         match self {
             Self::Checkout(view) if exact => {
-                let generation = view
-                    .exactify(
-                        "/",
-                        permit,
-                        &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
-                    )
-                    .await?;
-                Ok(GitTreeRef::exact(view.workspace().id(), generation.id()))
-            }
-            Self::Checkout(view) => view
-                .snapshot(&mut WorkBudget::UNBOUNDED.accounting(&cancellation))
+                acyclic_fs::in_heap(|| async {
+                    let generation = view
+                        .exactify(
+                            "/",
+                            permit,
+                            &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
+                        )
+                        .await?;
+                    Ok(GitTreeRef::exact(view.workspace().id(), generation.id()))
+                })
                 .await
-                .map(GitTreeRef::Lazy)
-                .map_err(Error::from),
+            }
+            Self::Checkout(view) => {
+                acyclic_fs::in_heap(|| async {
+                    view.snapshot(&mut WorkBudget::UNBOUNDED.accounting(&cancellation))
+                        .await
+                        .map(GitTreeRef::Lazy)
+                        .map_err(Error::from)
+                })
+                .await
+            }
             Self::Volume(view) => {
-                let generation = view
-                    .head(WorkBudget::UNBOUNDED, &cancellation)
-                    .await
-                    .map_err(|failure| failure.error)?
-                    .value;
-                Ok(GitTreeRef::exact(view.id(), generation.id()))
+                acyclic_fs::in_heap(|| async {
+                    let generation = view
+                        .head(WorkBudget::UNBOUNDED, &cancellation)
+                        .await
+                        .map_err(|failure| failure.error)?
+                        .value;
+                    Ok(GitTreeRef::exact(view.id(), generation.id()))
+                })
+                .await
             }
         }
     }
@@ -125,49 +144,61 @@ impl<'a> View<'a> {
         let cancellation = CancellationToken::new();
         let key = IdempotencyKey::from_bytes(operation.into_bytes());
         match self {
-            Self::Checkout(view) => view
-                .fork(
-                    destination,
-                    key,
-                    permit,
-                    &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
-                )
-                .await
-                .map(|(child, _)| OwnedView::Checkout(child))
-                .map_err(Error::from),
-            Self::Volume(view) => {
-                let generation = view
-                    .head(WorkBudget::UNBOUNDED, &cancellation)
-                    .await
-                    .map_err(|failure| failure.error)?
-                    .value;
-                let child = view
-                    .fork::<_, _, WorkspaceError>(
+            Self::Checkout(view) => {
+                acyclic_fs::in_heap(|| async {
+                    view.fork(
                         destination,
-                        acyclic_fs::ForkOptions::from_generation(generation, key),
+                        key,
                         permit,
-                        WorkBudget::UNBOUNDED,
-                        &cancellation,
-                        (),
+                        &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
                     )
                     .await
-                    .map_err(|failure| failure.error)?
-                    .value;
-                Ok(OwnedView::Volume(child))
+                    .map(|(child, _)| OwnedView::Checkout(child))
+                    .map_err(Error::from)
+                })
+                .await
+            }
+            Self::Volume(view) => {
+                acyclic_fs::in_heap(|| async {
+                    let generation = view
+                        .head(WorkBudget::UNBOUNDED, &cancellation)
+                        .await
+                        .map_err(|failure| failure.error)?
+                        .value;
+                    let child = view
+                        .fork::<_, _, WorkspaceError>(
+                            destination,
+                            acyclic_fs::ForkOptions::from_generation(generation, key),
+                            permit,
+                            WorkBudget::UNBOUNDED,
+                            &cancellation,
+                            (),
+                        )
+                        .await
+                        .map_err(|failure| failure.error)?
+                        .value;
+                    Ok(OwnedView::Volume(child))
+                })
+                .await
             }
         }
     }
 
     pub(super) async fn related(self, workspace: LocalWorkspace) -> crate::Result<OwnedView> {
         match self {
-            Self::Checkout(view) => view
-                .open_related(
-                    workspace,
-                    &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
-                )
+            Self::Checkout(view) => {
+                let cancellation = CancellationToken::new();
+                acyclic_fs::in_heap(|| async {
+                    view.open_related(
+                        workspace,
+                        &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
+                    )
+                    .await
+                    .map(OwnedView::Checkout)
+                    .map_err(Error::from)
+                })
                 .await
-                .map(OwnedView::Checkout)
-                .map_err(Error::from),
+            }
             Self::Volume(_) => Ok(OwnedView::Volume(workspace)),
         }
     }

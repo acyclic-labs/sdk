@@ -158,8 +158,10 @@ pub(super) fn ownership_child_acts_on_its_namespace() -> Result<(), Box<dyn std:
     Ok(())
 }
 
-pub(super) fn ownership_child(root: &Path) -> Result<std::process::Command, std::io::Error> {
-    let mut child = std::process::Command::new(std::env::current_exe()?);
+pub(super) fn ownership_child(
+    root: &Path,
+) -> Result<acyclic_native_runtime::command::Command, std::io::Error> {
+    let mut child = acyclic_native_runtime::command::Command::new(std::env::current_exe()?);
     child
         .args([
             "--exact",

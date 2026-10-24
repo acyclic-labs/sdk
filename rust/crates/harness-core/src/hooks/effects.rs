@@ -47,9 +47,6 @@ where
     // A capture/merge overflow must always have room for its bounded outcome.
     super::budget::Budget::new(maximum_bytes)?;
     let mut failure = HookOutput::output_limit(false);
-    let maximum_owned = maximum_bytes
-        .checked_mul(256)
-        .ok_or_else(|| Error::Invalid("hook outcome ownership bound overflow".into()))?;
     // No additional lock: the task-volume generation CAS claims the effect.
     // Its index lock remains a leaf; authorization/provider IO happens outside it.
     let generation = loop {
@@ -68,7 +65,6 @@ where
                 std::marker::PhantomData::<HookOutput>,
                 &file.bytes,
                 bounds,
-                maximum_owned,
                 None,
                 None,
                 &mut |_| Ok(()),

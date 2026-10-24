@@ -42,6 +42,9 @@ impl Journal {
             syncing: false,
             root: root.to_path_buf(),
             torn_tail: None,
+            group_start: HEADER_BYTES as u64,
+            sealed_sequence: 0,
+            pending_seal: None,
             #[cfg(feature = "test-support")]
             flushed: 0,
         };
@@ -92,21 +95,46 @@ impl Journal {
             return Ok(journal);
         }
         if let Some(frame_start) = journal.torn_tail {
-            match acyclic_native_runtime::recover_log_tail(
-                &journal.file,
-                frame_start,
-                maximum_frame_bytes(),
-                native_durability(limits.durability),
-                frame_is_valid,
-            )? {
-                acyclic_native_runtime::LogTail::Torn => {}
-                acyclic_native_runtime::LogTail::Corrupt => return Err(LocalStreamError::Corrupt),
-            }
+            journal.recover_tail(frame_start)?;
         }
         // Frames a crashed process wrote but never flushed are replayed, so
         // they are made durable before anything can observe them.
+        journal.seal()?;
         sync_file_data(&journal.file, limits.durability)?;
         Ok(journal)
+    }
+
+    fn recover_tail(&mut self, frame_start: u64) -> Result<(), LocalStreamError> {
+        let mut offset = frame_start;
+        match acyclic_native_runtime::recover_log_tail(
+            &self.file,
+            frame_start,
+            maximum_frame_bytes(),
+            native_durability(self.limits.durability),
+            |bytes| {
+                offset += 1;
+                // Raw frames in this same unacknowledged group can land
+                // out of order. Only a later group's seal proves a flush
+                // completed before the damaged bytes were encountered.
+                bytes.starts_with(&42_u32.to_le_bytes())
+                    && bytes
+                        .get(4..46)
+                        .and_then(GroupSeal::decode)
+                        .is_some_and(|seal| {
+                            seal.epoch == self.epoch
+                                && seal.end == offset
+                                && seal.start > frame_start
+                                && seal.start < seal.end
+                                && seal.operations > self.operations
+                                && seal.operations <= self.limits.journal_operations
+                        })
+                    && frame_is_valid(bytes)
+            },
+        )? {
+            acyclic_native_runtime::LogTail::Torn => {}
+            acyclic_native_runtime::LogTail::Corrupt => return Err(LocalStreamError::Corrupt),
+        }
+        Ok(())
     }
 
     /// Hands every whole frame of a journal `length` long to `recovered`,
@@ -128,6 +156,20 @@ impl Journal {
                 self.torn_tail = Some(frame_start);
                 break;
             };
+            if let Some(seal) = GroupSeal::decode(&frame.command)
+            {
+                if seal.epoch != self.epoch
+                    || seal.start != self.group_start
+                    || seal.end != frame_start
+                    || seal.start >= seal.end
+                    || seal.operations != operations
+                {
+                    return Err(LocalStreamError::Corrupt);
+                }
+                valid_length += frame_bytes(&frame.length);
+                self.group_start = valid_length;
+                continue;
+            }
             // An intact frame was written whole, so one that does not decode
             // may be a committed command: fail closed.
             let (committed_at_millis, command) = frame
@@ -154,7 +196,7 @@ impl Journal {
         if valid_length > limits.journal_bytes {
             return Err(LocalStreamError::InvalidLimits);
         }
-        (&*self.file).seek(SeekFrom::End(0))?;
+        (&*self.file).seek(SeekFrom::Start(valid_length))?;
         span.record("frames", operations);
         span.record("bytes", valid_length);
         self.operations = operations;
@@ -179,8 +221,11 @@ impl Journal {
             None => sync_file(&self.file, self.limits.durability)?,
         }
         self.epoch = epoch;
+        self.pending_seal = None;
         self.operations = 0;
         self.bytes = u64::try_from(HEADER_BYTES).map_err(|_| LocalStreamError::InvalidLimits)?;
+        self.group_start = self.bytes;
+        self.sealed_sequence = self.appended;
         // The header was synchronized after the snapshot holding every frame.
         self.synced = self.appended;
         #[cfg(feature = "test-support")]
@@ -230,10 +275,14 @@ impl Journal {
     }
 
     fn admit(&self, frame: &PreparedFrame) -> Result<(), LocalStreamError> {
+        // An existing unsealed group can close between admission and append.
+        // Without one, only the new command's own seal can consume space.
+        let seals = 1 + u64::from(self.bytes != self.group_start);
         if self.operations >= self.limits.journal_operations
             || self
                 .bytes
                 .checked_add(frame.encoded.len() as u64)
+                .and_then(|value| value.checked_add(seals * GROUP_SEAL_BYTES as u64))
                 .is_none_or(|value| value > self.limits.journal_bytes)
         {
             return Err(LocalStreamError::InvalidLimits);
@@ -248,6 +297,7 @@ impl Journal {
         required: bool,
     ) -> Result<(), LocalStreamError> {
         frame.write(&mut &*self.file)?;
+        self.pending_seal = SealCredit::take(frame);
         tracing::trace!(
             bytes = frame.encoded.len() as u64,
             required,

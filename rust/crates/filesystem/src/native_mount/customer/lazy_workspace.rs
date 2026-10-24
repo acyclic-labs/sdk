@@ -66,12 +66,10 @@ where
         if options.writable && options.publication == MountPublication::PerMutation {
             return Err(MountSourceError::NativeUnsupported.into());
         }
-        let (authored, volume_id, root_text) = AdmittedRoot::admit(
-            &options,
-            self.workspace(),
-            self.workspace().head(work, work.cancellation()).await?.id(),
-            work,
-        )
+        let generation = self.workspace().head(work, work.cancellation()).await?.id();
+        let (authored, volume_id, root_text) = crate::heap_future::in_heap_claimed(work, || {
+            AdmittedRoot::admit(&options, self.workspace(), generation, work)
+        })?
         .await?
         .lazy_source(self, work)
         .await?;

@@ -1,7 +1,7 @@
 use super::*;
 
 /// Pull worker capacity and placement identity.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(
     feature = "wasm",
@@ -18,7 +18,7 @@ pub struct Worker {
 }
 
 /// Work atomically claimed from the coordinator.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct WorkLease {
@@ -145,8 +145,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 ));
             }
             if let Some((key, fingerprint)) = &identity
-                && let Some((_, event, _, _)) =
-                    read_intent(&self.client, key.as_str(), Some(self.revision), work).await?
+                && let Some((_, event, _, _)) = self.read_indexed_intent(key.as_str(), work).await?
             {
                 let SchedulerEvent::Admitted {
                     operation_id,
@@ -325,6 +324,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             if let Some(work) = lease_custody.work().as_deref_mut() {
                 work.admit_allocation(box_bytes)?;
             }
+            // Charged above: `admit_allocation` holds the box's bytes and attempt.
             let mut lease = Box::new(WorkLease {
                 operation,
                 reservation: Reservation {

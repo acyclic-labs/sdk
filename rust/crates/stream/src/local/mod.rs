@@ -43,7 +43,7 @@ use crate::{
     UnixMillisClock,
 };
 
-const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V1\0";
+const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V2\0";
 /// The magic, the limits, then the journal's epoch.
 const HEADER_BYTES: usize = HEADER_MAGIC.len() + LIMITS_BYTES + 8;
 const LIMITS_BYTES: usize = 8 * 8;
@@ -65,6 +65,8 @@ pub(crate) mod compaction_model;
 pub(crate) mod discovery_model;
 #[cfg(acyclic_loom)]
 pub(crate) mod follow_model;
+#[cfg(acyclic_loom)]
+pub(crate) mod group_model;
 #[cfg(acyclic_loom)]
 pub(crate) mod query_model;
 #[cfg(acyclic_loom)]
@@ -119,6 +121,7 @@ include!("follow_progress.rs");
 include!("journal_type.rs");
 
 include!("prepared_frame.rs");
+include!("group_seal.rs");
 include!("native_mutations.rs");
 include!("prepared_commit.rs");
 

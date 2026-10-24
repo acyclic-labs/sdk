@@ -22,7 +22,9 @@ pub enum Owner {
 }
 
 /// Tool records share the same immutable segment storage as assistant chunks.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub enum ToolFile {
@@ -39,7 +41,9 @@ pub enum ToolFile {
 }
 
 /// Files below one task, with numeric sequence identities rather than path strings.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub enum TaskFile {
@@ -169,7 +173,9 @@ mod input_path;
 pub use input_path::InputPath;
 
 /// Logical private-volume file identity; chunk keys retain no full path string.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum FileKey {
     /// UI-session requests and their immutable execution files.
@@ -290,10 +296,7 @@ impl FileKey {
                     name: id(name)?,
                 });
             }
-            [
-                "commands" | "workspace" | "config" | ".claude" | ".codex" | "skills",
-                ..,
-            ] => {
+            [root, ..] if InputPath::is_source_root(root) => {
                 return Ok(Self::Input(InputPath::try_from(path.to_owned())?));
             }
             ["GOAL.md"] => return Ok(Self::Goal),
@@ -465,7 +468,19 @@ mod query;
 pub use query::Query;
 
 /// Assistant channel; tools derive their channel from their logical key.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    crate::HeapLayout,
+)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum Channel {
     /// Visible assistant Markdown.

@@ -565,9 +565,9 @@ pub(crate) fn validate_shell_paths(command: &str, scope: &ChildScope<'_>) -> Res
 }
 
 /// Host subtrees owned by version control or SDK state, never workspace
-/// content. The order is the watcher fence placement preference: an existing
-/// `.git` hosts fence cookies, and only a root without one gains `.acyclic-sdk`.
-pub(crate) const RESERVED_ROOT_NAMES: [&str; 2] = [".acyclic-sdk", ".git"];
+/// content: the SDK's one reserved-name policy, so demand, capture and
+/// publication of a Pi root agree on every name.
+pub(crate) use acyclic_harness::workspace::RESERVED_NAMES as RESERVED_ROOT_NAMES;
 
 pub(crate) fn reserved_root_paths() -> Result<Vec<NamespacePath>, String> {
     RESERVED_ROOT_NAMES

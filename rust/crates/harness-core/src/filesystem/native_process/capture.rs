@@ -1,8 +1,6 @@
 use super::*;
-use std::{
-    process::{Command, Stdio},
-    time::Duration,
-};
+use acyclic_native_runtime::command::{Command, Stdio};
+use std::time::Duration;
 
 /// Observes borrowed output without copying it or changing the captured result.
 pub type NativeProcessObserver =

@@ -242,7 +242,6 @@ impl PiControlHost<'_> {
             &self.filesystem,
             operation,
             "selected-import-intent",
-            crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8,
             SELECTED_DIAGNOSTIC_LABEL_BYTES,
             context,
             work,

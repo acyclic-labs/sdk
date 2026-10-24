@@ -1,7 +1,7 @@
 use super::*;
 
 /// One compare-and-set resolution against an open interaction version.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct InteractionResolution {
     /// Address of the open request.

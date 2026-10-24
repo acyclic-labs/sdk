@@ -210,7 +210,7 @@ async fn complete_between<O: AsyncObjectStore>(
     cancellation: &CancellationToken,
 ) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
     let [from, to] = &endpoints;
-    let changes = crate::facade::diff_generation_file_tables(
+    let changes = crate::facade::diff_generation_file_tables::<_, true>(
         to.objects,
         from.root.file_table,
         to.root.file_table,

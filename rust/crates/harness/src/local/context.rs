@@ -84,7 +84,7 @@ impl LocalHarness {
 
     #[cfg(test)]
     pub(super) async fn stage_context_manifest(&self, operation: OperationId) -> Result<FileRef> {
-        self.stage_context_manifest_with(operation, None, self.input_publisher()?.as_ref())
+        self.stage_context_manifest_with(operation, None, self.input_publisher()?.as_ref(), None)
             .await
     }
 
@@ -94,8 +94,15 @@ impl LocalHarness {
         operation: OperationId,
         prompt: Option<&str>,
         publisher: &dyn ContentPublisher,
+        io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<FileRef> {
-        if let Some(reference) = self.observe_context_manifest(operation, publisher).await? {
+        // Each step runs in a heap frame of its own, paid for on `io` when a
+        // budget is live; this frame holds none.
+        if let Some(reference) = crate::conversation::BoundedOperationFuture::new(io, || {
+            self.observe_context_manifest(operation, publisher)
+        })?
+        .await?
+        {
             return Ok(reference);
         }
         let path = manifest_path(operation);
@@ -105,21 +112,32 @@ impl LocalHarness {
             ));
         }
         #[cfg(any(test, feature = "hooks"))]
-        let hooks =
-            crate::native_settings::NativeSettings::load_hooks(Arc::clone(&self.settings)).await?;
+        let hooks = crate::conversation::BoundedOperationFuture::new(io, || {
+            crate::native_settings::NativeSettings::load_hooks(Arc::clone(&self.settings))
+        })?
+        .await?;
         #[cfg(any(test, feature = "hooks"))]
         let hook_configuration = if hooks.is_empty() {
             None
         } else {
-            Some(hooks.publish(publisher, self.limits).await?)
+            Some(
+                crate::conversation::BoundedOperationFuture::new(io, || {
+                    hooks.publish(publisher, self.limits)
+                })?
+                .await?,
+            )
         };
         let policy = ContextDiscoveryPolicy::default();
         let limits = ContextDiscoveryLimits::default();
         let maximum = limits.instruction_bytes.min(self.limits.file_bytes);
-        let discovery = self
-            .instructions(&policy.instruction_names, maximum, publisher)
-            .await?;
-        let (goal, plans) = self.file_guidance(prompt.unwrap_or_default()).await?;
+        let discovery = crate::conversation::BoundedOperationFuture::new(io, || {
+            self.instructions(&policy.instruction_names, maximum, publisher)
+        })?
+        .await?;
+        let (goal, plans) = crate::conversation::BoundedOperationFuture::new(io, || {
+            self.file_guidance(prompt.unwrap_or_default())
+        })?
+        .await?;
         let manifest =
             ContextManifest::for_files(discovery, Vec::new(), self.tools(), goal, plans)?;
         #[cfg(any(any(test, feature = "native-execution"), feature = "hooks"))]
@@ -295,3 +313,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(feature = "test-support")]
+pub(crate) use guidance::fuzz_file_guidance;

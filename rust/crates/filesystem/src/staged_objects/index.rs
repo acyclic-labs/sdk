@@ -3,13 +3,13 @@ use super::*;
 pub(super) enum Staged {
     /// Held in memory. `referenced` records a read since the window last
     /// considered spilling it; `order` is its key in `Index::order`;
-    /// `decoded` holds its first decoded representation, which lives and
-    /// leaves with the resident bytes.
+    /// `decoded` holds its first decoded representation until durable
+    /// acknowledgement transfers it to the inner cache or it is spilled.
     Resident {
         bytes: OwnedBytes,
         referenced: AtomicBool,
         order: u64,
-        decoded: OnceLock<(DecodedCacheKey, DecodedCacheValue)>,
+        decoded: Option<(DecodedCacheKey, DecodedCacheValue)>,
     },
     Spilled {
         offset: u64,
@@ -104,7 +104,7 @@ impl Index {
                 bytes,
                 referenced: AtomicBool::new(false),
                 order,
-                decoded: OnceLock::new(),
+                decoded: None,
             },
         ) {
             self.spilled_objects -= 1;
@@ -159,12 +159,32 @@ impl Index {
 
     /// Forgets one object the durable provider has acknowledged, and
     /// remembers it as drained.
-    pub(super) fn acknowledge(&mut self, object_id: ObjectId) {
+    pub(super) fn acknowledge<S: AsyncObjectStore>(
+        &mut self,
+        object_id: ObjectId,
+        durable: &S,
+    ) -> Result<(), ObjectStoreError> {
+        // The caller has received the durable write acknowledgement (or
+        // already remembers it in drained). Keep staging visible until the
+        // inner cache accepts or explicitly declines the decoded owner.
+        #[cfg(all(test, feature = "memory"))]
+        let transfer = !super::decoded_tests::omit_transfer();
+        #[cfg(not(all(test, feature = "memory")))]
+        let transfer = true;
+        if transfer
+            && let Some(Staged::Resident {
+                decoded: Some((key, value)),
+                ..
+            }) = self.objects.get(&object_id)
+        {
+            durable.decoded_cache_admit(*key, value.clone())?;
+        }
         self.remove(object_id);
-        if self.drained.len() >= MAXIMUM_DRAINED_IDENTITIES {
+        if !self.drained.contains(&object_id) && self.drained.len() >= MAXIMUM_DRAINED_IDENTITIES {
             self.drained.clear();
         }
         self.drained.insert(object_id);
+        Ok(())
     }
 
     /// Forgets one staged object.

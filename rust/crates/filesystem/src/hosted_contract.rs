@@ -11,8 +11,8 @@ use crate::kernel::{
 };
 use crate::model::FilesystemProfile as EngineProfile;
 use crate::performance::WorkCounters;
-use acyclic_fs_wire::wire::filesystem::v2 as wire;
 use crate::workspace::{JoinHistory, WorkspaceExtentKind};
+use acyclic_fs_wire::wire::filesystem::v2 as wire;
 use serde_json::{Value, json};
 use strum::IntoEnumIterator;
 

@@ -92,13 +92,7 @@ impl MemoryObjects {
                 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 if let Some(journal) = &self.journal {
                     if self.defer_local {
-                        if let Some(value) = next
-                            .object
-                            .as_ref()
-                            .and_then(|change| change.value.as_ref())
-                        {
-                            journal.validate_body(&value.body)?;
-                        }
+                        journal.validate_bodies(before, next, next.object.as_ref())?;
                     } else {
                         journal
                             .commit(
@@ -149,20 +143,6 @@ impl MemoryObjects {
         if let Some(identity) = identity {
             next.receipt = Some(receipt(&response, identity)?);
         }
-        let mut count = next.buckets.len()
-            + next.uploads.len()
-            + next.receipts.len()
-            + usize::from(next.receipt.is_some())
-            + next
-                .buckets
-                .values()
-                .map(|bucket| bucket.objects.len())
-                .sum::<usize>()
-            + next
-                .uploads
-                .values()
-                .map(|upload| upload.parts.len())
-                .sum::<usize>();
         let mut bytes = stored_bytes(guard, &mut next.state).ok_or(Error::from(QuotaExceeded))?;
         if let Some(change) = &next.object {
             let bucket = next
@@ -170,20 +150,28 @@ impl MemoryObjects {
                 .get(change.bucket.as_str())
                 .ok_or(Error::from(NotFound))?;
             let old = bucket.objects.get(change.key.as_str());
-            count = count - usize::from(old.is_some()) + usize::from(change.value.is_some());
+            let old_count = usize::from(old.is_some());
             let old_bytes = old.map_or(0, |value| value.body.len());
             let new_bytes = change.value.as_ref().map_or(0, |value| value.body.len());
-            bytes = bytes
-                .checked_sub(old_bytes)
-                .and_then(|n| n.checked_add(new_bytes))
-                .ok_or(Error::from(QuotaExceeded))?;
-            next.state.body_bytes = next
-                .state
-                .body_bytes
-                .checked_sub(old_bytes)
-                .and_then(|n| n.checked_add(new_bytes))
+            next.state.nested_entries = adjusted_total(
+                next.state.nested_entries,
+                old_count,
+                usize::from(change.value.is_some()),
+            )
+            .ok_or(Error::from(QuotaExceeded))?;
+            bytes =
+                adjusted_total(bytes, old_bytes, new_bytes).ok_or(Error::from(QuotaExceeded))?;
+            next.state.object_bytes = adjusted_total(next.state.object_bytes, old_bytes, new_bytes)
                 .ok_or(Error::from(QuotaExceeded))?;
         }
+        let count = next
+            .buckets
+            .len()
+            .checked_add(next.uploads.len())
+            .and_then(|count| count.checked_add(next.receipts.len()))
+            .and_then(|count| count.checked_add(usize::from(next.receipt.is_some())))
+            .and_then(|count| count.checked_add(next.nested_entries))
+            .ok_or(Error::from(QuotaExceeded))?;
         if count > self.options.maximum_entries || bytes > self.options.maximum_bytes {
             return Err(Error::from(QuotaExceeded).into());
         }
@@ -340,13 +328,7 @@ impl MemoryObjects {
                 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 if let Some(journal) = &self.journal {
                     if self.defer_local {
-                        if let Some(value) = next
-                            .object
-                            .as_ref()
-                            .and_then(|change| change.value.as_ref())
-                        {
-                            journal.validate_body(&value.body)?;
-                        }
+                        journal.validate_bodies(before, next, next.object.as_ref())?;
                     } else {
                         journal.commit(
                             before,

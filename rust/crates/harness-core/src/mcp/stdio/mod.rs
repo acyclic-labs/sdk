@@ -27,3 +27,11 @@ use super::services;
 mod native;
 #[cfg(all(feature = "mcp-stdio", not(target_arch = "wasm32")))]
 pub use native::StdioMcpTransport;
+
+/// Exercises the bounded production MCP codec, including changing limits.
+#[cfg(all(
+    feature = "test-support",
+    feature = "mcp-stdio",
+    not(target_arch = "wasm32")
+))]
+pub use native::fuzz_codec;

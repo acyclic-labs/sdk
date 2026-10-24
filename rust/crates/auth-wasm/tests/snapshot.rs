@@ -1,6 +1,5 @@
 //! Holder trust adapters preserve the shared verifier's scope and revocations.
-#[path = "../../auth/tests/common/signed.rs"]
-mod signed;
+use acyclic_auth::fuzzing::signed;
 use acyclic_auth::{crypto::BlockId, verify::*};
 use acyclic_auth_wasm::{Snapshot, block_ids};
 use proptest::prelude::*;

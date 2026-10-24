@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn tree_walk_and_grep_are_generation_bound_and_portable() {
+async fn tree_walk_is_generation_bound_and_portable() {
     let workspace = memory_workspace("git-inspection").await;
     let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x32; 16])).await;
     transaction

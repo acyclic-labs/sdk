@@ -1,7 +1,6 @@
 //! Windows callback decoder CPU, allocation and peak-memory costs.
 
-#[path = "../src/native_mount/projfs/callback_path.rs"]
-mod callback_path;
+use acyclic_fs::fuzzing::callback_path;
 #[cfg(windows)]
 #[path = "../tests/support/projfs_legacy_path.rs"]
 mod legacy;

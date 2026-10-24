@@ -73,7 +73,7 @@ async fn write_through_a_handle_opened_before_a_rename_lands_at_the_new_name()
         [IO.File]::Move($seed, $moved);
         $h.Seek(0, 'End') | Out-Null; $h.WriteByte(33); $h.Close()";
     let output = acyclic_native_runtime::process_output(
-        std::process::Command::new("powershell.exe")
+        acyclic_native_runtime::command::Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
             .env("ACYCLIC_FS_TEST_ROOT", &destination),
         std::time::Duration::from_secs(120),
@@ -295,7 +295,7 @@ async fn projected_directories_rename_and_what_moved_with_them_reads()
         ["shared.rs", "sub"]
     );
     let moved = acyclic_native_runtime::process_output(
-        std::process::Command::new("cmd.exe")
+        acyclic_native_runtime::command::Command::new("cmd.exe")
             .args(["/D", "/C", "move pkg lib"])
             .current_dir(&destination),
         std::time::Duration::from_secs(120),
@@ -349,7 +349,7 @@ async fn a_file_renamed_before_it_is_read_stays_as_renamed()
         .mount(&destination, manual_mount_options())
         .await?;
     let external = acyclic_native_runtime::process_output(
-        std::process::Command::new("cmd.exe")
+        acyclic_native_runtime::command::Command::new("cmd.exe")
             .args(["/D", "/C", "ren before.txt after.txt"])
             .current_dir(&destination),
         std::time::Duration::from_secs(120),
@@ -382,7 +382,7 @@ async fn projected_file_rename_and_replacement_survive_remount()
         assert_eq!(std::fs::read(&original)?, b"original");
     }
     let external = acyclic_native_runtime::process_output(
-        std::process::Command::new("cmd.exe")
+        acyclic_native_runtime::command::Command::new("cmd.exe")
             .args([
                 "/D",
                 "/C",

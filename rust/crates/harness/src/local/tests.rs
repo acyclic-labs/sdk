@@ -18,6 +18,9 @@ use crate::{
 use acyclic_stream::BoxProviderFuture;
 use serde_json::{Value, json};
 mod bootstrap;
+#[cfg(target_os = "macos")]
+#[path = "tests/cold_source.rs"]
+pub(super) mod cold_source;
 mod compact;
 mod compaction;
 mod context;
@@ -784,6 +787,8 @@ mod checked_commands;
 mod checkout;
 #[cfg(all(any(test, feature = "native-execution"), windows))]
 mod powershell;
+#[cfg(all(feature = "native-execution", unix))]
+mod reserved_names;
 
 #[cfg(all(any(test, feature = "native-execution"), unix))]
 mod lazy_volumes;

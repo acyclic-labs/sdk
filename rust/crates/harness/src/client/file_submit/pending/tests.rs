@@ -1,106 +1,98 @@
-//! Admission outcomes are the oracle: an independent queue of generated
-//! (identity, size) pairs predicts every result, never the owner's counters.
-use super::*;
-use crate::client::FileClientDurability;
+//! Full input-derived queue histories, through one oracle and its real faults.
+mod controls;
+mod faults;
+mod fixture;
+mod observation;
+mod reference;
+
+use faults::Fault;
+pub(super) use faults::{admitted, checked, retired};
+use fixture::Input;
 use proptest::{
     prelude::*,
     test_runner::{Config, RngAlgorithm, TestError, TestRng, TestRunner},
 };
 
+type Action = Option<(u8, u8)>;
 const COMMANDS: usize = 3;
 const BYTES: u64 = 12;
 
-fn cursor(position: u64) -> Cursor {
-    Cursor {
-        volume: [0; 32],
-        epoch: uuid::Uuid::nil(),
-        schema: 0,
-        query: [0; 32],
-        position,
-        accepted: position,
-        durable: position,
-        commit: [0; 32],
+fn actions() -> impl Strategy<Value = Vec<Action>> {
+    proptest::collection::vec(proptest::option::of((0_u8..6, 0_u8..9)), 0..24)
+}
+
+fn config(name: &'static str) -> Config {
+    Config {
+        source_file: Some(file!()),
+        test_name: Some(name),
+        ..Config::with_cases(256)
     }
 }
 
-fn write(id: u8, size: u8) -> Write {
-    Write::new(
-        FileKey::parse(&format!(".tasks/task/requests/op{id}.json")).unwrap(),
-        vec![id; usize::from(size)],
-    )
+#[test]
+fn admission_and_retirement_move_entry_identity_and_bytes_together() {
+    let oracle = controls::oracle();
+    TestRunner::new(config(concat!(
+        module_path!(),
+        "::admission_and_retirement_move_entry_identity_and_bytes_together"
+    )))
+    .run(&actions(), |actions| {
+        oracle.check(&Input {
+            actions,
+            probe: None,
+        });
+        Ok(())
+    })
+    .unwrap();
 }
 
-/// `None` retires the oldest entry; `Some((id, size))` admits a request.
-fn check(actions: &[Option<(u8, u8)>]) -> std::result::Result<(), TestCaseError> {
-    let mut owner = PendingRequests::new(FileClientLimits {
-        commands: COMMANDS,
-        bytes: BYTES,
-        durability: FileClientDurability::Accepted,
-    });
-    // (identity, size, admission step) of every admitted, unretired request.
-    let mut reference: VecDeque<(u8, u8, u64)> = VecDeque::new();
-    for (step, action) in actions.iter().enumerate() {
-        match *action {
-            None => {
-                let expected = reference.pop_front();
-                let retired = owner.retire_front();
-                prop_assert_eq!(
-                    retired.map(|done| (done.write.bytes.len(), done.cursor.position)),
-                    expected.map(|(_, size, admitted)| (usize::from(size), admitted))
-                );
-            }
-            Some((id, size)) => {
-                let used: u64 = reference.iter().map(|(_, size, _)| u64::from(*size)).sum();
-                let expected = if reference.iter().any(|(held, _, _)| *held == id) {
-                    "conflict"
-                } else if reference.len() >= COMMANDS {
-                    "commands"
-                } else if used + u64::from(size) > BYTES {
-                    "bytes"
-                } else {
-                    "admitted"
-                };
-                let preflight = owner.check(u64::from(size));
-                let admitted = owner.admit(cursor(step as u64), write(id, size));
-                let actual = match &admitted {
-                    Ok(()) => "admitted",
-                    Err(FileClientError::CommandQuota { limit }) if *limit == COMMANDS => {
-                        "commands"
-                    }
-                    Err(FileClientError::ByteQuota { limit }) if *limit == BYTES => "bytes",
-                    Err(FileClientError::Harness(Error::Conflict(_))) => "conflict",
-                    Err(other) => return Err(TestCaseError::fail(format!("{other:?}"))),
-                };
-                prop_assert_eq!(actual, expected);
-                if expected != "conflict" {
-                    prop_assert_eq!(preflight.is_ok(), expected == "admitted");
-                }
-                if expected == "admitted" {
-                    reference.push_back((id, size, step as u64));
-                }
-            }
+#[test]
+fn preflight_preserves_command_priority_and_never_wraps_bytes() {
+    let oracle = controls::oracle();
+    TestRunner::new(config(concat!(
+        module_path!(),
+        "::preflight_preserves_command_priority_and_never_wraps_bytes"
+    )))
+    .run(&(actions(), any::<u64>()), |(actions, probe)| {
+        oracle.check(&Input {
+            actions,
+            probe: Some(probe),
+        });
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn mandatory_histories_cover_boundaries_and_identity_reuse() {
+    let oracle = controls::oracle();
+    for actions in [
+        vec![],
+        vec![None],
+        // Same request basename in distinct task namespaces is not a conflict.
+        vec![Some((0, 1)), Some((1, 1)), None, None],
+        vec![Some((0, 0)), Some((1, 0)), Some((2, 0)), Some((3, 0))],
+        vec![Some((0, 4)), Some((1, 4)), Some((2, 4)), Some((0, 1))],
+        vec![Some((0, 8)), Some((1, 4)), Some((2, 1))],
+        vec![Some((0, 3)), None, Some((0, 1)), None, None],
+        vec![Some((2, 1)), Some((0, 2)), None, None],
+    ] {
+        for probe in [0, 1, BYTES, u64::MAX] {
+            oracle.check(&Input {
+                actions: actions.clone(),
+                probe: Some(probe),
+            });
         }
-        prop_assert_eq!(owner.len(), reference.len());
-    }
-    Ok(())
-}
-
-fn actions() -> impl Strategy<Value = Vec<Option<(u8, u8)>>> {
-    proptest::collection::vec(proptest::option::of((0_u8..5, 0_u8..9)), 0..24)
-}
-
-proptest! {
-    #![proptest_config(Config::with_cases(256))]
-    #[test]
-    fn admission_and_retirement_move_entry_identity_and_bytes_together(actions in actions()) {
-        check(&actions)?;
     }
 }
 
 #[test]
 fn negative_control_leaking_retired_bytes_fails_and_shrinks() {
-    LEAK_RETIRED_BYTES.with(|flag| flag.set(true));
-    // Seeded so the shrunk witness is reproducible.
+    let oracle = controls::oracle();
+    oracle.check(&Input {
+        actions: vec![Some((0, 1)), None],
+        probe: None,
+    });
     let mut runner = TestRunner::new_with_rng(
         Config {
             cases: 256,
@@ -109,16 +101,46 @@ fn negative_control_leaking_retired_bytes_fails_and_shrinks() {
         },
         TestRng::deterministic_rng(RngAlgorithm::ChaCha),
     );
-    let result = runner.run(&actions(), |actions| check(&actions));
-    LEAK_RETIRED_BYTES.with(|flag| flag.set(false));
+    // The same fixture and named ownership invariant used by Oracle. This
+    // extra probe establishes shrinking; it is not another fault detector.
+    let result = runner.run(&actions(), |actions| {
+        let event = fixture::run(
+            &Input {
+                actions,
+                probe: None,
+            },
+            Some(Fault::LeakRefund),
+        );
+        observation::ownership(&event).map_err(TestCaseError::fail)
+    });
     let Err(TestError::Fail(_, minimal)) = result else {
-        panic!("leaked bytes escaped the admission oracle: {result:?}");
+        panic!("leaked bytes escaped the ownership invariant: {result:?}");
     };
-    // Every witness must fund a request, retire it, then have the leaked
-    // bytes reject a request the reference admits; leaks need a retirement.
     assert!(
         minimal.iter().any(Option::is_none),
-        "witness must retire: {minimal:?}"
+        "no retirement: {minimal:?}"
+    );
+    assert!(
+        minimal.iter().flatten().any(|(_, size)| *size > 0),
+        "no funded payload: {minimal:?}"
     );
     assert!(minimal.len() <= 6, "did not shrink: {minimal:?}");
+    eprintln!("LEAK_REFUND_SHRUNK {minimal:?}");
+    // Proptest can classify a panic as Fail. The final witness must also
+    // satisfy the shared runner's named-detection and deletion discipline;
+    // an infrastructure panic can never establish successful shrinking.
+    controls::builder()
+        .control(
+            "ownership",
+            Input {
+                actions: minimal.clone(),
+                probe: None,
+            },
+            Fault::LeakRefund,
+        )
+        .build()
+        .check(&Input {
+            actions: minimal,
+            probe: None,
+        });
 }

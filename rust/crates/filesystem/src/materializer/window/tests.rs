@@ -443,3 +443,64 @@ fn a_window_never_widens_a_native_work_handle() {
         words * std::mem::size_of::<usize>()
     );
 }
+
+#[test]
+fn one_window_overrunning_its_budget_leaves_every_other_window_running() {
+    let session = root();
+    let first = session.invocation_window().unwrap();
+    exceeded(
+        &first.record_admitted(appends(APPENDS + 1)).unwrap_err(),
+        "authority_records_appended",
+    );
+    // The overrun is the first window's own refusal, and it stays refused.
+    assert!(first.remaining().is_err());
+    let second = session.invocation_window().unwrap();
+    second.record_admitted(appends(APPENDS)).unwrap();
+    assert_eq!(second.remaining().unwrap().authority_records_appended, 0);
+    assert_eq!(
+        session.remaining().unwrap().authority_records_appended,
+        APPENDS
+    );
+    session
+        .invocation_window()
+        .unwrap()
+        .record_admitted(appends(1))
+        .unwrap();
+}
+
+#[test]
+fn the_same_overrun_on_the_shared_ledger_refuses_every_later_caller() {
+    let session = root();
+    exceeded(
+        &session.record_admitted(appends(APPENDS + 1)).unwrap_err(),
+        "authority_records_appended",
+    );
+    assert!(session.remaining().is_err());
+    assert!(
+        session
+            .outside_window()
+            .record_admitted(appends(1))
+            .is_err()
+    );
+}
+
+#[test]
+fn a_runtime_failure_is_reported_only_to_the_window_that_failed() {
+    let session = root();
+    let first = session.invocation_window().unwrap();
+    let copied = first.runtime_meter().examine(0, COPIED + 1).unwrap_err();
+    let second = session.invocation_window().unwrap();
+    let allocated = second.runtime_meter().allocate(PEAK + 1).unwrap_err();
+    exceeded(&second.runtime_error(allocated), "peak_allocation_bytes");
+    exceeded(&first.runtime_error(copied), "bytes_copied");
+    // A failure outside every window stays with the unwindowed ledger.
+    let plain = session.runtime_meter().examine(0, COPIED + 1).unwrap_err();
+    assert!(
+        session
+            .invocation_window()
+            .unwrap()
+            .take_native_io_failure()
+            .is_none()
+    );
+    exceeded(&session.runtime_error(plain), "bytes_copied");
+}

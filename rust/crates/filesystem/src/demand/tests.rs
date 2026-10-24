@@ -45,6 +45,190 @@ fn path(value: &str) -> Result<NamespacePath, Box<dyn Error>> {
     )?)
 }
 
+#[tokio::test]
+async fn name_search_metadata_token_detects_a_write_with_restored_mtime()
+-> Result<(), Box<dyn Error>> {
+    let root = tempfile::tempdir()?;
+    let file = root.path().join(".gitignore");
+    std::fs::write(&file, b"before\n")?;
+    let source = native_source(root.path()).await?;
+    let stop = CancellationToken::new();
+    let name = path("/.gitignore")?;
+    let before = lookup_node(&source, source.reference(), &name, &stop).await?;
+    let metadata = std::fs::metadata(&file)?;
+    std::fs::write(&file, b"after!\n")?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&file)?
+        .set_times(std::fs::FileTimes::new().set_modified(metadata.modified()?))?;
+    let after_metadata = std::fs::metadata(&file)?;
+    let after = lookup_node(&source, source.reference(), &name, &stop).await?;
+    // Negative control: size, identity and mtime cannot distinguish this
+    // offline policy edit. Windows must also include its native ChangeTime.
+    assert_eq!(metadata.len(), after_metadata.len());
+    assert_eq!(metadata.modified()?, after_metadata.modified()?);
+    assert_eq!(before.file_identity, after.file_identity);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        assert_eq!(metadata.created()?, after_metadata.created()?);
+        assert_eq!(metadata.file_attributes(), after_metadata.file_attributes());
+    }
+    assert_ne!(before.version, after.version);
+    Ok(())
+}
+
+#[tokio::test]
+async fn name_search_mount_check_uses_the_nearest_existing_directory() -> Result<(), Box<dyn Error>>
+{
+    let root = tempfile::tempdir()?;
+    std::fs::create_dir(root.path().join("nested-🦀"))?;
+    std::fs::write(root.path().join("nested-🦀/file"), b"metadata only")?;
+    let source = native_source(root.path()).await?;
+    let stop = CancellationToken::new();
+    for name in [
+        "/",
+        "/nested-🦀",
+        "/absent/deep/leaf",
+        "/nested-🦀/absent/leaf",
+        "/nested-🦀/file/child",
+    ] {
+        assert!(
+            source
+                .same_volume(
+                    source.reference(),
+                    &path(name)?,
+                    WorkBudget::UNBOUNDED,
+                    &stop
+                )
+                .await?
+                .value
+        );
+    }
+    // Negative control: checking only the requested path cannot classify an
+    // authored directory that does not yet exist in the native source.
+    assert_eq!(
+        std::fs::metadata(root.path().join("absent/deep/leaf"))
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::NotFound
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn name_search_native_cookie_resumes_after_source_restart_without_replaying_entries()
+-> Result<(), Box<dyn Error>> {
+    let root = tempfile::tempdir()?;
+    for ordinal in 0..47 {
+        std::fs::write(
+            root.path().join(format!("file-{ordinal:03}")),
+            b"never read",
+        )?;
+    }
+    let stop = CancellationToken::new();
+    let directory = path("/")?;
+    let mut provider = native_source(root.path()).await?;
+    let reference = provider.reference();
+    let mut cursor = None;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut last_cursor = None;
+    loop {
+        if seen.len() == 3 {
+            // Cancellation can retain a larger retry page. A smaller retry
+            // must checkpoint the accepted slice, not the reader's lookahead.
+            let mut abandoned = provider
+                .list_page(
+                    reference,
+                    &directory,
+                    cursor.clone(),
+                    7,
+                    WorkBudget::UNBOUNDED,
+                    &stop,
+                )
+                .await?;
+            abandoned
+                .value
+                .publication
+                .as_mut()
+                .ok_or("publication missing")?
+                .abort(&mut crate::kernel::KernelAccounting::standalone(
+                    WorkBudget::UNBOUNDED,
+                    &stop,
+                ))?;
+        }
+        let mut page = provider
+            .list_page(
+                reference,
+                &directory,
+                cursor,
+                3,
+                WorkBudget::UNBOUNDED,
+                &stop,
+            )
+            .await?;
+        assert!(page.work.source_entries_visited <= 4);
+        assert_eq!(page.work.source_bytes_read, 0);
+        for entry in &page.value.entries {
+            assert!(
+                seen.insert(entry.name.as_bytes().to_vec()),
+                "replayed a prior entry"
+            );
+        }
+        page.value
+            .publication
+            .as_mut()
+            .ok_or("publication missing")?
+            .accept(&mut crate::kernel::KernelAccounting::standalone(
+                WorkBudget::UNBOUNDED,
+                &stop,
+            ))?;
+        cursor = page.value.next.take();
+        if cursor.is_none() {
+            break;
+        }
+        last_cursor = cursor.clone();
+        if seen.len() == 3 {
+            // Keep this handle for the cancellation/smaller-retry case;
+            // subsequent boundaries all reopen the source.
+            continue;
+        }
+        drop(page);
+        drop(provider);
+        provider = NativeDemandSource::open(
+            std::borrow::Cow::Borrowed(root.path()),
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+            Some(reference),
+            None,
+            WorkBudget::UNBOUNDED,
+            &stop,
+        )
+        .await?
+        .value;
+    }
+    assert_eq!(seen.len(), 47);
+
+    // Without a durable cookie the old in-memory handle cannot be resumed.
+    let mut missing = last_cursor.clone().ok_or("continuation missing")?;
+    missing.resume = None;
+    assert!(
+        matches!(provider.list_page(reference, &directory, Some(missing), 3,
+        WorkBudget::UNBOUNDED, &stop).await, Err(failure)
+        if matches!(failure.error, DemandError::StaleCursor))
+    );
+
+    // Directory mutation invalidates the cookie, including an offline write.
+    std::fs::write(root.path().join("offline-new"), b"new")?;
+    assert!(
+        matches!(provider.list_page(reference, &directory, last_cursor, 3,
+        WorkBudget::UNBOUNDED, &stop).await, Err(failure)
+        if matches!(failure.error, DemandError::StaleCursor))
+    );
+    Ok(())
+}
+
 async fn native_source(
     path: impl AsRef<std::path::Path>,
 ) -> Result<NativeDemandSource, DemandError> {
@@ -780,7 +964,7 @@ async fn native_lookup_preserves_non_utf8_posix_names() -> Result<(), Box<dyn Er
 async fn native_lookup_preserves_utf16_windows_names() -> Result<(), Box<dyn Error>> {
     use crate::kernel::{LogicalName, NameEncoding};
 
-    let raw = "snowman-Ã¢ËœÆ’"
+    let raw = "snowman-☃"
         .encode_utf16()
         .flat_map(u16::to_le_bytes)
         .collect();
@@ -791,7 +975,7 @@ async fn native_lookup_preserves_utf16_windows_names() -> Result<(), Box<dyn Err
     )?;
     assert_lossless_name(
         FilesystemProfile::Windows,
-        std::ffi::OsString::from("snowman-Ã¢ËœÆ’"),
+        std::ffi::OsString::from("snowman-☃"),
         name,
     )
     .await

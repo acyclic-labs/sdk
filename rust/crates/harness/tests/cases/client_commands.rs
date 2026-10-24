@@ -39,8 +39,7 @@ mod client_command_views;
 #[path = "../../src/client/commands/name_index.rs"]
 mod command_name_index;
 #[cfg(not(target_arch = "wasm32"))]
-#[path = "../../../harness-fuzz/command_oracle.rs"]
-mod command_oracle;
+use acyclic_harness::test_support::fuzz_cases::command_oracle;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "../../src/client/commands/parse.rs"]
 mod command_parse;

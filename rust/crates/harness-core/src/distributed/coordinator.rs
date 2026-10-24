@@ -10,6 +10,8 @@ pub struct DistributedCoordinator<P> {
     pub(super) scheduler: Scheduler,
     pub(super) revision: u64,
     pub(super) last_committed_at_ms: u64,
+    pub(super) intents: super::intent_index::IntentIndex,
+    pub(super) intent_tail: super::intent_tail::IntentTail,
     pub(super) content_verifier: Arc<dyn ContentResidencyVerifier>,
     pub(super) payload_store: Option<Arc<dyn SchedulerPayloadStore>>,
 }
@@ -29,6 +31,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             scheduler: Scheduler::new(),
             revision: 0,
             last_committed_at_ms: 0,
+            intents: super::intent_index::IntentIndex::default(),
+            intent_tail: super::intent_tail::IntentTail::default(),
             content_verifier,
             payload_store,
         };
@@ -95,12 +99,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             self.verify_content(&spec.state, quota.work()).await?;
         }
         self.verify_published_result(&event, quota.work()).await?;
-        if let Some((_, existing, ..)) =
-            read_intent(&self.client, &key, Some(self.revision), quota.work()).await?
-        {
-            if quota.work().is_some() {
-                quota.adopt(existing.logical_owned_bytes()?)?;
-            }
+        if self.intents.get(&key).is_some() {
             return Err(guarded_boundary(
                 quota.work(),
                 wire::ErrorCode::Conflict,
@@ -117,7 +116,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "coordinator commit time is not increasing",
             ));
         }
-        self.scheduler.apply(&event, quota.work())?;
+        let scheduler = &mut self.scheduler;
+        self.intents
+            .insert_with(&key, record.sequence, quota, |work| {
+                scheduler.apply(&event, work)
+            })?;
         self.revision = revision;
         self.last_committed_at_ms = committed_at_ms;
         drop((key, event, record));
@@ -133,9 +136,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Option<bool>> {
         let mut custody = CodecQuota::new(work, 0)?;
-        let Some(intent) =
-            read_intent(&self.client, key, Some(self.revision), custody.work()).await?
-        else {
+        let Some(intent) = self.read_indexed_intent(key, custody.work()).await? else {
             return Ok(None);
         };
         if custody.work().is_some() {

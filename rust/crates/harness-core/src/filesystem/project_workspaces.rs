@@ -98,6 +98,7 @@ where
         child: &'a VolumeRef,
         key: &'a IdempotencyKey,
     ) -> BoxFuture<'a, Result<GenerationRef>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move {
             self.require_scope(scope)?;
             Ok(self
@@ -116,6 +117,7 @@ where
         source_project: &'a VolumeRef,
         source_generation: &'a GenerationRef,
     ) -> BoxFuture<'a, Result<Box<dyn ProjectJoinPlan>>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move {
             self.require_scope(scope)?;
             if destination.authority() != self.verifier.audience()
@@ -133,6 +135,7 @@ where
                 .await?;
             let source_generation = self.host.generation_ref_id(plan.source_head(), None)?;
             let target = self.host.generation_ref_id(plan.target_head(), None)?;
+            // Unbudgeted: this method takes no budget, and none is live at its call.
             Ok(Box::new(FilesystemProjectJoinPlan {
                 binding: self.clone(),
                 plan,
@@ -173,6 +176,7 @@ where
         notice: &'a ConversationMessage,
         selections: &'a [ProjectConflictSelection],
     ) -> BoxFuture<'a, Result<ProjectJoinOutcome>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move {
             self.binding.require_scope(scope)?;
             if child.kind != crate::core::AggregateKind::Conversation {
@@ -320,6 +324,7 @@ pub(super) fn decode_conflict(
                     .is_some()
                 {
                     return Error::NativeFilesystem {
+                        // Unbudgeted: an error source, boxed only as the work fails, to report it.
                         source: Box::new(acyclic_fs::FsError::Path(
                             acyclic_fs::kernel::PathLookupError::NamespacePath(
                                 acyclic_fs::kernel::NamespacePathError::Name(error),

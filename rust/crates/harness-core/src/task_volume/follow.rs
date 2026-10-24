@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Serializable next-record cursor. Never infer continuity from a native watch.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct Cursor {
@@ -48,7 +48,7 @@ impl Cursor {
 }
 
 /// One atomic-cut snapshot; file payloads remain shared segment slices.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 pub struct Snapshot {
     /// Current matching files in typed identity order (chunk sequences are numeric).
     pub files: Vec<FileValue>,
@@ -59,7 +59,7 @@ pub struct Snapshot {
 }
 
 /// One matching change, or a checkpoint after a nonmatching publication.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, crate::HeapLayout)]
 pub struct Change {
     /// Logical file value; `None` advances a filtered query past unrelated records.
     pub file: Option<FileValue>,
@@ -266,7 +266,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         #[cfg(not(acyclic_harness_loom))]
         let replace = true;
         if replace {
-            *self.index.lock().await = fresh.index.into_inner();
+            let replacement = std::mem::take(&mut *fresh.index.lock().await);
+            *self.index.lock().await = replacement;
         }
         self.snapshot_follow(query, maximum_files, true).await
     }

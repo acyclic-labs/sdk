@@ -5,7 +5,7 @@ use crate::{Error, Result, model::PreparedModelRequest};
 use serde::{Deserialize, Serialize};
 
 /// Actual context and output capacities of one immutable selected model.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelContextCapacity {
@@ -46,7 +46,7 @@ impl ModelContextCapacity {
 }
 
 /// Verified input admission count and separate planning weights for one request.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelTokenCount {

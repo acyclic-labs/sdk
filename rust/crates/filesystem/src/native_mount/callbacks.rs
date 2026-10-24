@@ -138,7 +138,7 @@ pub(crate) struct NativeMountMeterActivation {
     pub(super) meter: std::sync::Weak<crate::demand::NativeDemandReadMeter>,
     pub(super) resource_allowance:
         Option<std::sync::Weak<crate::materializer::NativeResourceAllowance>>,
-    pub(super) capture_origin: Option<std::sync::Weak<crate::demand::CaptureTransientCustody>>,
+    pub(super) capture_origin: Option<crate::demand::CaptureCustody>,
     pub(super) invocation: Option<std::sync::Weak<crate::materializer::NativeInvocationView>>,
     pub(super) execution: Option<std::sync::Weak<crate::materializer::NativeSourceExecutionView>>,
     pub(super) depth: u64,
@@ -175,8 +175,14 @@ impl NativeMountMeterActivation {
                 .as_ref()
                 .map(std::sync::Weak::as_ptr)
                 == work.resource.as_ref().map(Arc::as_ptr)
-            && self.capture_origin.as_ref().map(std::sync::Weak::as_ptr)
-                == work.capture_origin.as_ref().map(std::sync::Weak::as_ptr)
+            && self
+                .capture_origin
+                .as_ref()
+                .map(crate::demand::CaptureCustody::as_ptr)
+                == work
+                    .capture_origin
+                    .as_ref()
+                    .map(crate::demand::CaptureCustody::as_ptr)
             && self.execution.as_ref().map(std::sync::Weak::as_ptr)
                 == work.execution.as_ref().map(Arc::as_ptr)
             && self.invocation.as_ref().map(std::sync::Weak::as_ptr)

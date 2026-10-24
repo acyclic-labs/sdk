@@ -192,9 +192,7 @@ where
             reference.validate(&mut None)?;
         }
         self.host
-            .read_pinned_receipt_io(reference, self.maximum_payload_bytes, io)
-            .await?
-            .retain()
+            .read_pinned_io(reference, self.maximum_payload_bytes, io)
             .await
     }
 

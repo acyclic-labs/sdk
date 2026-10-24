@@ -7,13 +7,16 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<Option<LazyWorkspaceState>, crate::LazyWorkspaceError> {
         let work = core_lazy_work(accounting)?;
-        let state = finish_core_lazy(
+        // A refused frame still settles the work below.
+        let loaded = match crate::heap_future::in_heap_claimed(&work, || async {
             self.materialization(work.clone())
                 .load_logged::<LazyWorkspaceState>(id)
-                .await,
-            &work,
-            accounting,
-        )?;
+                .await
+        }) {
+            Ok(frame) => frame.await,
+            Err(refused) => Err(refused.into()),
+        };
+        let state = finish_core_lazy(loaded, &work, accounting)?;
         if state.as_ref().is_some_and(|state| {
             state.schema_version != crate::lazy_workspace::LAZY_STATE_SCHEMA
                 || state.workspace_id != id

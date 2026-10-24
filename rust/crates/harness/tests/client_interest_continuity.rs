@@ -9,8 +9,7 @@ use acyclic_stream::{MemoryStream, StreamProvider, wire};
 use futures::StreamExt as _;
 use std::{cell::RefCell, sync::Arc};
 
-#[path = "support/client_resume.rs"]
-mod resume;
+use acyclic_harness::test_support::fuzz_cases::client_resume as resume;
 
 proptest::proptest! {
     // Exact offset and anchor survive protobuf serialization; all malformed

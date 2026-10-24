@@ -28,6 +28,7 @@ dependencies = [
  "acyclic-tonic-web-wasm-client",
  "async-trait",
  "bytes",
+ "ctor",
  "futures",
  "http",
  "http-body",
@@ -156,7 +157,9 @@ version = "0.2.0"
 dependencies = [
  "heck",
  "proc-macro2",
+ "proptest",
  "prost",
+ "prost-reflect",
  "prost-types",
  "protoc-bin-vendored",
  "quote",
@@ -190,6 +193,7 @@ dependencies = [
  "cap-std",
  "cc",
  "crc-fast",
+ "ctor",
  "dirs",
  "divan",
  "fuser",
@@ -199,6 +203,7 @@ dependencies = [
  "hmac 0.13.0",
  "http",
  "icu_casemap",
+ "imbl",
  "indexed_db_futures",
  "js-sys",
  "libc",
@@ -208,6 +213,7 @@ dependencies = [
  "nix 0.31.3",
  "notify",
  "parking_lot",
+ "pin-project-lite",
  "proptest",
  "prost",
  "prost-reflect",
@@ -323,6 +329,8 @@ dependencies = [
 name = "acyclic-grpc-observability"
 version = "0.2.0"
 dependencies = [
+ "acyclic-test-support",
+ "ctor",
  "futures",
  "http-body",
  "pin-project-lite",
@@ -342,6 +350,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-fs",
+ "acyclic-grpc-observability",
  "acyclic-harness-core",
  "acyclic-harness-search",
  "acyclic-harness-tui",
@@ -356,6 +365,7 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "bytes",
+ "ctor",
  "diffy",
  "dirs",
  "futures",
@@ -417,18 +427,26 @@ dependencies = [
  "acyclic-conformance",
  "acyclic-fs",
  "acyclic-harness",
+ "acyclic-harness-providers",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",
+ "acyclic-test-support",
  "async-trait",
  "axum",
  "blake3",
+ "bytes",
  "futures",
+ "proptest",
+ "prost",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -437,8 +455,10 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-auth",
+ "acyclic-contract-derive",
  "acyclic-differential",
  "acyclic-fs",
+ "acyclic-grpc-observability",
  "acyclic-machines",
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -449,6 +469,7 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "bytes",
+ "ctor",
  "diffy",
  "dirs",
  "ed25519-dalek",
@@ -460,6 +481,7 @@ dependencies = [
  "jsonschema",
  "loom",
  "once_cell",
+ "pin-project-lite",
  "proc-macro2",
  "proptest",
  "prost",
@@ -787,6 +809,7 @@ dependencies = [
  "rustix 1.1.5",
  "tempfile",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "windows-sys 0.61.2",
@@ -1011,6 +1034,8 @@ version = "0.2.0"
 dependencies = [
  "acyclic-differential",
  "proptest",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -2054,9 +2079,9 @@ dependencies = [
 
 [[package]]
 name = "core-foundation"
-version = "0.9.4"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91e195e091a93c46f7102ec7818a2aa394e1e1771c3ab4825963fa03e45afb8f"
+checksum = "b2a6cd9ae233e7f62ba4e9353e81a88df7fc8a5987b8d445b4d90c879bd156f6"
 dependencies = [
  "core-foundation-sys",
  "libc",
@@ -2064,9 +2089,9 @@ dependencies = [
 
 [[package]]
 name = "core-foundation"
-version = "0.10.1"
+version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2a6cd9ae233e7f62ba4e9353e81a88df7fc8a5987b8d445b4d90c879bd156f6"
+checksum = "91e195e091a93c46f7102ec7818a2aa394e1e1771c3ab4825963fa03e45afb8f"
 dependencies = [
  "core-foundation-sys",
  "libc",
@@ -3016,6 +3041,7 @@ dependencies = [
 name = "graphcoder"
 version = "0.2.0"
 dependencies = [
+ "acyclic-fs",
  "acyclic-harness",
  "acyclic-harness-providers",
  "acyclic-stream",
@@ -3973,15 +3999,15 @@ dependencies = [
 
 [[package]]
 name = "linux-raw-sys"
-version = "0.4.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab"
-
-[[package]]
-name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
+
+[[package]]
+name = "linux-raw-sys"
+version = "0.4.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab"
 
 [[package]]
 name = "litemap"
@@ -5207,6 +5233,17 @@ checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
 
 [[package]]
 name = "rand"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65c9fb96cbc91e3478eaae79a69fcd3f1ae4ad052e471fe6732fff548984b4af"
+dependencies = [
+ "chacha20",
+ "getrandom 0.4.3",
+ "rand_core 0.10.1",
+]
+
+[[package]]
+name = "rand"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e058c7de0b26af77780c769414d6257830bb240f3c38477dbc2c16e5f54d6d4c"
@@ -5224,17 +5261,6 @@ checksum = "b9ef1d0d795eb7d84685bca4f72f3649f064e6641543d3a8c415898726a57b41"
 dependencies = [
  "rand_chacha 0.9.0",
  "rand_core 0.9.5",
-]
-
-[[package]]
-name = "rand"
-version = "0.10.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65c9fb96cbc91e3478eaae79a69fcd3f1ae4ad052e471fe6732fff548984b4af"
-dependencies = [
- "chacha20",
- "getrandom 0.4.3",
- "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -5259,6 +5285,12 @@ dependencies = [
 
 [[package]]
 name = "rand_core"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
+
+[[package]]
+name = "rand_core"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
@@ -5276,10 +5308,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "rand_core"
-version = "0.10.1"
+name = "rand_pcg"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
+checksum = "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a"
+dependencies = [
+ "rand_core 0.10.1",
+]
 
 [[package]]
 name = "rand_pcg"
@@ -5288,15 +5323,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "59cad018caf63deb318e5a4586d99a24424a364f40f1e5778c29aca23f4fc73e"
 dependencies = [
  "rand_core 0.6.4",
-]
-
-[[package]]
-name = "rand_pcg"
-version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a"
-dependencies = [
- "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -6432,18 +6458,18 @@ dependencies = [
 
 [[package]]
 name = "spin"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "023a211cb3138dbc438680b32560ad89f699977624c9f8dbb95a47d5b4c07dd3"
+
+[[package]]
+name = "spin"
 version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 dependencies = [
  "lock_api",
 ]
-
-[[package]]
-name = "spin"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "023a211cb3138dbc438680b32560ad89f699977624c9f8dbb95a47d5b4c07dd3"
 
 [[package]]
 name = "sqlite-wasm-rs"

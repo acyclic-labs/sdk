@@ -4,9 +4,18 @@ use super::*;
 pub(crate) struct EventBatch<'a> {
     paths: &'a [*const c_char],
     flags: &'a [u32],
+    ids: &'a [u64],
 }
 
 impl<'a> EventBatch<'a> {
+    pub(crate) fn last_id(&self) -> Option<u64> {
+        self.ids.iter().copied().max()
+    }
+
+    pub(crate) fn ids_wrapped(&self) -> bool {
+        self.flags.iter().any(|flags| flags & 0x0000_0008 != 0)
+    }
+
     pub(crate) fn iter(self) -> impl ExactSizeIterator<Item = (&'a Path, u32)> {
         self.paths.iter().zip(self.flags).map(|(&path, &flags)| {
             // SAFETY: the callback guarantees a live NUL-terminated string for
@@ -76,18 +85,49 @@ pub(super) extern "C" fn stream_callback(
     event_count: usize,
     event_paths: *mut c_void,
     event_flags: *const u32,
-    _event_ids: *const u64,
+    event_ids: *const u64,
 ) {
     // SAFETY: `info` is the stream's live `StreamContext`, and without
     // `kFSEventStreamCreateFlagUseCFTypes` the paths are an array of
     // `event_count` C strings, with as many flags.
-    let (context, paths, flags) = unsafe {
+    let (context, paths, flags, ids) = unsafe {
         (
             &*info.cast::<StreamContext>(),
             std::slice::from_raw_parts(event_paths.cast::<*const c_char>(), event_count),
             std::slice::from_raw_parts(event_flags, event_count),
+            std::slice::from_raw_parts(event_ids, event_count),
         )
     };
     let _active = ActiveStream(ACTIVE_STREAM.with(|active| active.replace(stream)));
-    (context.handler)(EventBatch { paths, flags });
+    (context.handler)(EventBatch { paths, flags, ids });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn name_search_fsevents_keeps_batch_ids_and_detects_wrapped_history() {
+        let paths = [c"/fixture/one".as_ptr(), c"/fixture/two".as_ptr()];
+        let ids = [42, 41];
+        let flags = [ITEM_CREATED, ITEM_REMOVED];
+        let batch = EventBatch {
+            paths: &paths,
+            flags: &flags,
+            ids: &ids,
+        };
+        assert_eq!(batch.last_id(), Some(42));
+        assert!(!batch.ids_wrapped());
+        assert_eq!(batch.iter().len(), ids.len());
+        let wrapped = EventBatch {
+            paths: &paths,
+            flags: &[0, 8],
+            ids: &[u64::MAX, 1],
+        };
+        assert_eq!(wrapped.last_id(), Some(u64::MAX));
+        assert!(wrapped.ids_wrapped());
+        // A numeric maximum alone would acknowledge a post-wrap barrier
+        // against unrelated pre-wrap delivery.
+        assert!(wrapped.last_id().unwrap() > 1);
+    }
 }

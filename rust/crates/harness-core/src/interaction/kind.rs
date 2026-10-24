@@ -1,7 +1,7 @@
 use super::*;
 
 /// Discriminator retained in the event without copying a participant-facing prompt.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case")]
 pub enum InteractionKind {
     /// Free-form schema-constrained answer.

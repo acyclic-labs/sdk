@@ -1,0 +1,4 @@
+{
+  "faults":[{"type":"reset","prefix":["data: "]}],
+  "expect":{"exit":1,"result":{"completion":"failed","error":{"$contains":"interrupted"}}}
+}

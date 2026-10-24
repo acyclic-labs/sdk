@@ -17,7 +17,7 @@ pub struct MailboxModelMachine {
     schema: Value,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct State {
     receive: WorkflowCommand,
@@ -26,7 +26,7 @@ struct State {
     mail: Option<InboxItem>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case")]
 enum Stage {
     Ready,

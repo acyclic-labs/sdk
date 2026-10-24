@@ -113,19 +113,19 @@ pub fn reserve_vec<T>(work: &mut NativeCustody, value: &mut Vec<T>, length: usiz
         return Ok(());
     }
     let length = length.max(value.capacity().checked_mul(2).unwrap_or(length));
-    let slots = std::mem::size_of::<T>();
+    let element = std::mem::size_of::<T>();
     let requested = length
-        .checked_mul(slots)
+        .checked_mul(element)
         .ok_or_else(|| capacity_overflow(work))?;
     let old = value
         .capacity()
-        .checked_mul(slots)
+        .checked_mul(element)
         .ok_or_else(|| capacity_overflow(work))?;
     admit(work, requested)?;
     value
         .try_reserve_exact(length - value.len())
         .map_err(|cause| allocation_error(work, cause, "tool vector allocation failed"))?;
-    capacity(work, requested, value.capacity() * slots, old)
+    capacity(work, requested, value.capacity() * element, old)
 }
 
 #[doc(hidden)]

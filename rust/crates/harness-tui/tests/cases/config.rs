@@ -1,5 +1,7 @@
 //! Configuration precedence, live rendering, parser invariants and negative controls.
 #![cfg(feature = "tui")]
+#[cfg(test)]
+use acyclic_harness_tui::fuzzing::config_sequences as sequences;
 use acyclic_harness_tui::ratatui::{
     Terminal,
     backend::TestBackend,
@@ -17,9 +19,6 @@ use acyclic_test_support::differential::oracle::{Observer, Oracle};
 use proptest::prelude::*;
 use sequences::{Parsed, Stage};
 use serde_json::json;
-#[cfg(test)]
-#[path = "../support/config_sequences.rs"]
-mod sequences;
 
 fn apply(view: &ConfigView, input: &mut PromptInput) {
     assert!(view.apply(input, &Capabilities::default()).is_ok());

@@ -9,6 +9,7 @@ use super::types::{
 };
 use crate::foundation::{FileId, usize_to_u64};
 use crate::kernel::Child;
+use crate::kernel::persistent_btree::entries::Entries;
 use crate::storage::{ObjectId, ObjectKind, object_digest};
 
 use crate::WorkCounters;
@@ -46,8 +47,8 @@ const VERSION: u16 = 1;
 const LEAF_TAG: u8 = 1;
 const INTERNAL_TAG: u8 = 2;
 
-pub(crate) fn encode_tree_leaf_entries<E>(
-    entries: &[TreeEntry],
+pub(crate) fn encode_tree_leaf_entries<'a, E>(
+    entries: impl Into<Entries<'a, TreeEntry>>,
     maximum_items: u32,
     semantic_tail: Option<u8>,
     data_custody: Option<&super::ProofDataCustody>,
@@ -57,6 +58,7 @@ pub(crate) fn encode_tree_leaf_entries<E>(
 where
     E: From<CanonicalDecodeError> + From<crate::WorkError>,
 {
+    let entries = entries.into();
     let mut emit = |step| super::codec::observe_encoding(&mut observe, step, data_custody);
     emit(EncodeWorkStep::Check)?;
     let page_length = tree_leaf_encoded_length(entries, maximum_items, &mut emit)?;
@@ -136,7 +138,7 @@ where
 }
 
 fn tree_leaf_encoded_length<E: From<CanonicalDecodeError>>(
-    entries: &[TreeEntry],
+    entries: Entries<'_, TreeEntry>,
     maximum_items: u32,
     observe: &mut impl FnMut(EncodeWorkStep) -> Result<(), E>,
 ) -> Result<usize, E> {

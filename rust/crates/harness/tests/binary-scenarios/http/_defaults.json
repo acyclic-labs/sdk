@@ -1,0 +1,5 @@
+{
+  "binary":true, "prompt":"HTTP_FAULT_PROBE_918", "turns":[],
+  "seed":{"sentinel.txt":"unchanged\n"},
+  "expect":{"files":{"sentinel.txt":"unchanged\n"}, "request_count":1}
+}

@@ -4,9 +4,9 @@
     reason = "field-level wire semantics are canonical in proto/machines/v1/machines.proto"
 )]
 
-use async_trait::async_trait;
 /// Shared canonical account-relative resource addressing.
 pub use acyclic_auth::addressing;
+use async_trait::async_trait;
 use futures::{Stream, StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};

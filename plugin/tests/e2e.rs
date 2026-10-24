@@ -11,8 +11,6 @@ mod support;
 
 use serde_json::Value;
 use std::fs;
-#[cfg(windows)]
-use std::os::windows::process::CommandExt as _;
 use std::path::Path;
 use std::time::Duration;
 use support::{
@@ -644,7 +642,7 @@ fn assert_host_timeout_cleanup(
     host_name: &str,
     home: &Path,
     provider: &ScriptedProvider,
-    mut host: std::process::Command,
+    mut host: acyclic_native_runtime::command::Command,
 ) {
     // The lifecycle run installed the integration; a fresh host proves it can start a new service.
     let service = ServiceGuard::new(home);
@@ -679,7 +677,7 @@ fn codex_host_command(
     home: &Path,
     workspace: &Path,
     provider: &ScriptedProvider,
-) -> std::process::Command {
+) -> acyclic_native_runtime::command::Command {
     let mut host = command(binary);
     host.current_dir(workspace);
     host.args([
@@ -726,7 +724,7 @@ fn claude_host_command(
     workspace: &Path,
     provider: &ScriptedProvider,
     debug_log: &Path,
-) -> std::process::Command {
+) -> acyclic_native_runtime::command::Command {
     let mut host = command(binary);
     host.current_dir(workspace).args([
         "-p",
@@ -801,13 +799,13 @@ fn install_host(
     ServiceGuard::new(home)
 }
 
-fn isolated_codex_state(command: &mut std::process::Command, root: &Path) {
+fn isolated_codex_state(command: &mut acyclic_native_runtime::command::Command, root: &Path) {
     isolated_state(command, root);
     command.env_remove("CODEX_PERMISSION_PROFILE");
     preserve_windows_profile_identity(command);
 }
 
-fn preserve_windows_profile_identity(command: &mut std::process::Command) {
+fn preserve_windows_profile_identity(command: &mut acyclic_native_runtime::command::Command) {
     if cfg!(windows) {
         for name in ["HOME", "USERPROFILE"] {
             if let Some(value) = std::env::var_os(name) {
@@ -817,7 +815,7 @@ fn preserve_windows_profile_identity(command: &mut std::process::Command) {
     }
 }
 
-fn prepend_binary_directory(command: &mut std::process::Command, binary: &Path) {
+fn prepend_binary_directory(command: &mut acyclic_native_runtime::command::Command, binary: &Path) {
     let mut paths = vec![binary.parent().expect("host binary parent").to_path_buf()];
     if let Some(existing) = std::env::var_os("PATH") {
         paths.extend(std::env::split_paths(&existing));

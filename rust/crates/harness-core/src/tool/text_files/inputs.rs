@@ -2,7 +2,7 @@ use super::*;
 
 /// Literal search arguments; there is no implicit regex, directory or shell search.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct SearchInput {
     /// Owner-authorized immutable source.
@@ -15,7 +15,7 @@ pub struct SearchInput {
 
 /// Durable literal-search result, independent of its model projection.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct SearchResult {
     /// Original reference, including provider, volume, generation and content identity.

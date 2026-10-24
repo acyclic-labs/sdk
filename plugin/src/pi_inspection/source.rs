@@ -1,6 +1,7 @@
 use super::*;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiNativeInspectionCursor {
     pub(crate) snapshot: acyclic_fs::LazySnapshotRef,

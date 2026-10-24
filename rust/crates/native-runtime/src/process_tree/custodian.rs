@@ -7,22 +7,23 @@
 //! custodian's to remove: each has one remover, its live owner or the
 //! reopened owner's fence.
 //!
-//! The custodian is the owner's own executable, started with [`SWITCH`] set:
-//! a CRT initializer runs it before the host's `main`, in every executable
-//! that links this crate, so no host has to dispatch it. Kill-on-close stays
-//! on the Job, so a killed custodian leaves the owner's handle to kill the
-//! tree when the owner exits.
+//! The custodian is the owner's own executable, started with [`SWITCH`] as
+//! its first argument: a CRT initializer runs it before the host's `main`,
+//! in every executable that links this crate, so no host has to dispatch it.
+//! It inherits no handle: it duplicates the Job and its ready event from the
+//! owner, so it never holds the owner's output or any other inherited
+//! handle. Kill-on-close stays on the Job, so a killed custodian leaves the
+//! owner's handle to kill the tree when the owner exits.
 
 use std::collections::BTreeMap;
 use std::ffi::c_void;
-use std::io::{self, BufRead as _, BufReader, Read as _, Write as _};
-use std::os::windows::io::AsRawHandle as _;
-use std::os::windows::process::CommandExt as _;
-use std::process::{Child, Command, Stdio};
+use std::io;
+use std::os::windows::ffi::OsStrExt as _;
+use std::os::windows::io::IntoRawHandle as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use windows_sys::Win32::Foundation::{
     CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE,
-    WAIT_FAILED,
+    WAIT_FAILED, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::System::IO::{
     CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED, PostQueuedCompletionStatus,
@@ -33,15 +34,14 @@ use windows_sys::Win32::System::JobObjects::{
     QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_NO_WINDOW, ExitProcess, GetCurrentProcess, GetProcessId, GetProcessTimes, INFINITE,
-    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-    RegisterWaitForSingleObject, UnregisterWaitEx, WT_EXECUTEONLYONCE, WaitForSingleObject,
+    CREATE_NO_WINDOW, CreateEventW, ExitProcess, GetCurrentProcess, GetProcessId, GetProcessTimes,
+    INFINITE, OpenProcess, PROCESS_DUP_HANDLE, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_SYNCHRONIZE, RegisterWaitForSingleObject, SetEvent, TerminateProcess, UnregisterWaitEx,
+    WT_EXECUTEONLYONCE, WaitForMultipleObjects, WaitForSingleObject,
 };
 
-/// The environment variable that makes a process a custodian.
-const SWITCH: &str = "ACYCLIC_PROCESS_CUSTODIAN";
-/// The line a custodian writes once it watches the Job.
-const READY: &str = "ready";
+/// The first argument that makes a process a custodian.
+const SWITCH: &str = "--acyclic-process-custodian";
 /// The Job message that a process joined it; its value is the PID.
 const JOB_OBJECT_MSG_NEW_PROCESS: u32 = 6;
 /// The completion key the owner watch posts once the owner has exited.
@@ -56,7 +56,10 @@ static ENTRY: extern "C" fn() = entry;
 
 /// Runs before `main`: serves as a custodian only when started as one.
 extern "C" fn entry() {
-    if std::env::var_os(SWITCH).is_none() {
+    if std::env::args_os()
+        .nth(1)
+        .is_none_or(|argument| argument != SWITCH)
+    {
         return;
     }
     let code = u32::from(serve().is_err());
@@ -64,49 +67,93 @@ extern "C" fn entry() {
     unsafe { ExitProcess(code) }
 }
 
+/// A started custodian, which this owner leaves running once its tree has
+/// a member, or stops when the tree never starts.
+pub(super) struct Custodian(HANDLE);
+
+impl Custodian {
+    /// Ends a custodian whose tree never started, and awaits its exit.
+    pub(super) fn stop(self) {
+        // SAFETY: the owned process handle; a failed termination leaves a
+        // custodian that exits on its own with this owner.
+        unsafe {
+            TerminateProcess(self.0, 1);
+            WaitForSingleObject(self.0, INFINITE);
+        }
+    }
+}
+
+impl Drop for Custodian {
+    fn drop(&mut self) {
+        // SAFETY: the process handle CreateProcessW returned.
+        unsafe { CloseHandle(self.0) };
+    }
+}
+
 /// Starts the custodian of `job` and names it in the tree's `record`, then
 /// returns once it watches the still-empty Job.
-pub(super) fn launch(job: HANDLE, record: &mut super::custody::Record) -> io::Result<Child> {
+pub(super) fn launch(job: HANDLE, record: &mut super::custody::Record) -> io::Result<Custodian> {
     // Keeps the initializer, and so the entry, in every linked executable
     // that can start a custodian.
     std::hint::black_box(&ENTRY);
-    let mut custodian = Command::new(std::env::current_exe()?)
-        .env(SWITCH, "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()?;
-    let handed = hand_over(&mut custodian, job)
-        .and_then(|()| record.name_custodian(&identity(custodian.as_raw_handle().cast())?));
-    if handed.is_err() {
-        let _ = custodian.kill();
-        let _ = custodian.wait();
+    // SAFETY: an unnamed manual-reset event, owned below; not inheritable.
+    let ready = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+    if ready.is_null() {
+        return Err(io::Error::last_os_error());
     }
-    handed.map(|()| custodian)
+    let started = start(job, ready).and_then(|custodian| {
+        let named = await_ready(&custodian, ready)
+            .and_then(|()| record.name_custodian(&identity(custodian.0)?));
+        match named {
+            Ok(()) => Ok(custodian),
+            Err(error) => {
+                custodian.stop();
+                Err(error)
+            }
+        }
+    });
+    // SAFETY: the event created above; the custodian holds its own copy.
+    unsafe { CloseHandle(ready) };
+    started
 }
 
-fn hand_over(custodian: &mut Child, job: HANDLE) -> io::Result<()> {
-    let target: HANDLE = custodian.as_raw_handle().cast();
-    // SAFETY: duplicating this process's owned Job handle into the custodian.
-    let job = unsafe { duplicate(job, target, 0, DUPLICATE_SAME_ACCESS) }?;
-    // SAFETY: a synchronize-only handle to this process, for the custodian.
-    let owner = unsafe { duplicate(GetCurrentProcess(), target, PROCESS_SYNCHRONIZE, 0) }?;
-    let mut input = custodian.stdin.take().ok_or(io::ErrorKind::BrokenPipe)?;
-    write!(
-        input,
-        "{}\n{}\n",
+/// Creates the custodian process, inheriting no handle: it duplicates the
+/// Job and `ready` from this owner, which it names by PID and creation time.
+fn start(job: HANDLE, ready: HANDLE) -> io::Result<Custodian> {
+    let program = std::env::current_exe()?;
+    let mut application: Vec<u16> = program.as_os_str().encode_wide().collect();
+    application.push(0);
+    // SAFETY: the pseudo handle of this process.
+    let owner_created = creation_time(unsafe { GetCurrentProcess() })?;
+    let mut line = std::ffi::OsString::from("\"");
+    line.push(&program);
+    line.push(format!(
+        "\" {SWITCH} {} {owner_created} {} {}",
+        std::process::id(),
         job.expose_provenance(),
-        owner.expose_provenance()
-    )?;
-    drop(input);
-    let mut ready = String::new();
-    BufReader::new(custodian.stdout.take().ok_or(io::ErrorKind::BrokenPipe)?)
-        .read_line(&mut ready)?;
-    if ready.trim_end() == READY {
-        Ok(())
-    } else {
-        Err(io::Error::other("the process custodian did not start"))
+        ready.expose_provenance(),
+    ));
+    let mut line: Vec<u16> = line.encode_wide().collect();
+    line.push(0);
+    let started = crate::command::start::start(crate::command::start::Start {
+        application: &application,
+        command_line: &mut line,
+        flags: CREATE_NO_WINDOW,
+        environment: None,
+        directory: None,
+        stdio: [std::ptr::null_mut(); 3],
+    })?;
+    Ok(Custodian(started.process.into_raw_handle()))
+}
+
+/// Returns once the custodian signals `ready`, or fails if it exits first.
+fn await_ready(custodian: &Custodian, ready: HANDLE) -> io::Result<()> {
+    let handles = [ready, custodian.0];
+    // SAFETY: two owned handles; waits for either.
+    match unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, INFINITE) } {
+        WAIT_OBJECT_0 => Ok(()),
+        WAIT_FAILED => Err(io::Error::last_os_error()),
+        _ => Err(io::Error::other("the process custodian did not start")),
     }
 }
 
@@ -167,29 +214,20 @@ pub(super) fn await_custodian(identity: &str) -> io::Result<()> {
     waited
 }
 
-/// Duplicates `source` into `target`, returning its value there.
-///
-/// # Safety
-///
-/// `source` must be a live handle of this process and `target` a live
-/// process handle with duplicate access.
-unsafe fn duplicate(
-    source: HANDLE,
-    target: HANDLE,
-    access: u32,
-    options: u32,
-) -> io::Result<HANDLE> {
+/// Duplicates the owner's handle `value` into this process.
+fn duplicate_from(owner: HANDLE, value: usize) -> io::Result<HANDLE> {
     let mut duplicated: HANDLE = std::ptr::null_mut();
-    // SAFETY: the caller's handles and a writable output.
+    // SAFETY: the owner's process handle with duplicate access, a value the
+    // owner named on the command line, and a writable output.
     if unsafe {
         DuplicateHandle(
+            owner,
+            std::ptr::with_exposed_provenance_mut(value),
             GetCurrentProcess(),
-            source,
-            target,
             &raw mut duplicated,
-            access,
             0,
-            options,
+            0,
+            DUPLICATE_SAME_ACCESS,
         )
     } == 0
     {
@@ -198,21 +236,48 @@ unsafe fn duplicate(
     Ok(duplicated)
 }
 
+/// Opens the owner `pid` created at `created`; a reused PID is not it.
+fn open_owner(pid: u32, created: u64) -> io::Result<HANDLE> {
+    // SAFETY: opening a handle to the owner's PID; owned by the caller.
+    let owner = unsafe {
+        OpenProcess(
+            PROCESS_DUP_HANDLE | PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+            0,
+            pid,
+        )
+    };
+    if owner.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    if creation_time(owner)? == created {
+        return Ok(owner);
+    }
+    // SAFETY: the handle opened above, to another process.
+    unsafe { CloseHandle(owner) };
+    Err(io::ErrorKind::NotFound.into())
+}
+
 /// The custodian: watches the Job, kills it when the owner exits, and
 /// exits once no member remains.
 fn serve() -> io::Result<()> {
-    let mut input = String::new();
-    io::stdin().read_to_string(&mut input)?;
-    let mut lines = input.lines();
-    let mut handle = || -> io::Result<HANDLE> {
-        let value = lines
-            .next()
-            .and_then(|line| line.parse::<usize>().ok())
-            .ok_or(io::ErrorKind::InvalidInput)?;
-        Ok(std::ptr::with_exposed_provenance_mut(value))
+    let arguments: Vec<String> = std::env::args().skip(2).collect();
+    let [pid, created, job, ready] = arguments.as_slice() else {
+        return Err(io::ErrorKind::InvalidInput.into());
     };
-    let job = handle()?;
-    let owner = handle()?;
+    let number = |value: &String| {
+        value
+            .parse::<u64>()
+            .map_err(|_| io::ErrorKind::InvalidInput)
+    };
+    let owner = open_owner(
+        u32::try_from(number(pid)?).map_err(|_| io::ErrorKind::InvalidInput)?,
+        number(created)?,
+    )?;
+    let handle = |value: &String| {
+        usize::try_from(number(value)?).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
+    };
+    let job = duplicate_from(owner, handle(job)?)?;
+    let ready = duplicate_from(owner, handle(ready)?)?;
     // SAFETY: a new completion port, not yet tied to any file.
     let port = unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, std::ptr::null_mut(), 0, 1) };
     if port.is_null() {
@@ -235,9 +300,13 @@ fn serve() -> io::Result<()> {
     {
         return Err(io::Error::last_os_error());
     }
-    let mut output = io::stdout();
-    writeln!(output, "{READY}")?;
-    output.flush()?;
+    // SAFETY: the owner's event, duplicated above and closed once set.
+    let signaled = unsafe { SetEvent(ready) };
+    // SAFETY: as above.
+    unsafe { CloseHandle(ready) };
+    if signaled == 0 {
+        return Err(io::Error::last_os_error());
+    }
     let (owner_watch, job_watch, port_watch) = (
         owner.expose_provenance(),
         job.expose_provenance(),

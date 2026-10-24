@@ -2,7 +2,7 @@
 
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::file_table_mutation::FileTableFormat;
-use super::persistent_btree::{Format, Page};
+use super::persistent_btree::{Format, Page, PageRef, entries::Entries};
 use super::persistent_io::{self, OwnedPage, PageLease};
 use super::persistent_point::{Owned, retire_allocation, split_allocation};
 use super::tree_mutation::TreeFormat;
@@ -12,6 +12,8 @@ use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::performance::{WorkCounters, WorkError};
 use crate::storage::ObjectId;
+
+mod leaf_pair;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ValueChange<K, V> {
@@ -42,6 +44,7 @@ async fn diff_with_accounting<
     F: Format,
     const PREFIX: bool,
     const RESET: bool,
+    const EARLY_EQUAL: bool,
 >(
     store: &S,
     before: Option<ObjectId>,
@@ -135,7 +138,30 @@ async fn diff_with_accounting<
                         right.retire(accounting)?;
                         return Err(error);
                     }
-                    if let (Some(left_children), Some(right_children)) = (
+                    // Public bounded diffs preserve the historical intermediate
+                    // union limit. Closure proof consumes only actual changes;
+                    // any truncated result still falls back to the full proof.
+                    if (EARLY_EQUAL || (tasks.value.is_empty() && values.value.is_empty()))
+                        && leaf_pair::can_compare::<F, EARLY_EQUAL>(
+                            &left.value,
+                            &right.value,
+                            maximum,
+                        )
+                    {
+                        let compared = leaf_pair::compare::<F, PREFIX, RESET>(
+                            &left.value,
+                            &right.value,
+                            &mut values,
+                            maximum,
+                            limits,
+                            accounting,
+                        );
+                        let retired_left = left.retire(accounting);
+                        let retired_right = right.retire(accounting);
+                        retired_left?;
+                        retired_right?;
+                        truncated |= compared?;
+                    } else if let (Some(left_children), Some(right_children)) = (
                         internal_children(&left.value),
                         internal_children(&right.value),
                     ) {
@@ -245,25 +271,25 @@ fn push_task(
 }
 
 fn align_children<F: Format>(
-    left: &[super::persistent_btree::Child<F::Key>],
-    right: &[super::persistent_btree::Child<F::Key>],
+    left: Entries<'_, super::persistent_btree::Child<F::Key>>,
+    right: Entries<'_, super::persistent_btree::Child<F::Key>>,
     tasks: &mut Owned<Vec<Task>>,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
     let mut left_start = 0;
     let mut right_start = 0;
     for (left_index, left_child) in left.iter().enumerate() {
-        if let Some(relative) = right.get(right_start..).and_then(|children| {
+        if let Some(relative) = right.slice(right_start..right.len()).and_then(|children| {
             children
                 .iter()
                 .position(|child| child.page == left_child.page)
         }) {
             let right_index = right_start + relative;
             push_unmatched::<F>(
-                left.get(left_start..left_index)
+                left.slice(left_start..left_index)
                     .ok_or(FsError::InvalidDiff)?,
                 right
-                    .get(right_start..right_index)
+                    .slice(right_start..right_index)
                     .ok_or(FsError::InvalidDiff)?,
                 tasks,
                 accounting,
@@ -273,16 +299,19 @@ fn align_children<F: Format>(
         }
     }
     push_unmatched::<F>(
-        left.get(left_start..).ok_or(FsError::InvalidDiff)?,
-        right.get(right_start..).ok_or(FsError::InvalidDiff)?,
+        left.slice(left_start..left.len())
+            .ok_or(FsError::InvalidDiff)?,
+        right
+            .slice(right_start..right.len())
+            .ok_or(FsError::InvalidDiff)?,
         tasks,
         accounting,
     )
 }
 
 fn push_unmatched<F: Format>(
-    left: &[super::persistent_btree::Child<F::Key>],
-    right: &[super::persistent_btree::Child<F::Key>],
+    left: Entries<'_, super::persistent_btree::Child<F::Key>>,
+    right: Entries<'_, super::persistent_btree::Child<F::Key>>,
     tasks: &mut Owned<Vec<Task>>,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
@@ -306,19 +335,12 @@ fn push_unmatched<F: Format>(
     Ok(())
 }
 
-fn page_view<F: Format>(page: &OwnedPage<F>) -> &Page<F> {
-    match &page.page {
-        PageLease::Owned(page) => page,
-        PageLease::Shared { page, .. } => page.as_ref(),
-    }
-}
-
 fn internal_children<F: Format>(
     page: &OwnedPage<F>,
-) -> Option<&[super::persistent_btree::Child<F::Key>]> {
-    match page_view(page) {
-        Page::Internal(children) => Some(children),
-        Page::Leaf(_) => None,
+) -> Option<Entries<'_, super::persistent_btree::Child<F::Key>>> {
+    match page.page.view() {
+        PageRef::Internal(children) => Some(children),
+        PageRef::Leaf(_) => None,
     }
 }
 
@@ -384,8 +406,8 @@ fn push_page<F: Format, const PREFIX: bool, const RESET: bool>(
                     )?;
                 }
             }
-            PageLease::Shared { page, .. } => {
-                if let Page::Leaf(entries) = page.as_ref() {
+            shared @ PageLease::Shared { .. } => {
+                if let PageRef::Leaf(entries) = shared.view() {
                     for value in entries {
                         if values.value.len() > maximum {
                             *truncated = true;
@@ -557,7 +579,10 @@ fn allocation_error(error: FsError) -> FsError {
     }
 }
 
-pub(crate) async fn diff_file_records_with_accounting<S: AsyncObjectStore>(
+pub(crate) async fn diff_file_records_with_accounting<
+    S: AsyncObjectStore,
+    const EARLY_EQUAL: bool,
+>(
     store: &S,
     before: Option<ObjectId>,
     after: Option<ObjectId>,
@@ -566,7 +591,7 @@ pub(crate) async fn diff_file_records_with_accounting<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(Diff<crate::FileId, FileRecord>, KernelOwnedAllocation), FsError> {
-    diff_with_accounting::<S, FileTableFormat, true, true>(
+    diff_with_accounting::<S, FileTableFormat, true, true, EARLY_EQUAL>(
         store,
         before,
         after,
@@ -578,7 +603,10 @@ pub(crate) async fn diff_file_records_with_accounting<S: AsyncObjectStore>(
     .await
 }
 
-pub(crate) async fn diff_tree_entries_with_accounting<S: AsyncObjectStore>(
+pub(crate) async fn diff_tree_entries_with_accounting<
+    S: AsyncObjectStore,
+    const EARLY_EQUAL: bool,
+>(
     store: &S,
     before: Option<ObjectId>,
     after: Option<ObjectId>,
@@ -587,7 +615,7 @@ pub(crate) async fn diff_tree_entries_with_accounting<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(Diff<LogicalName, TreeEntry>, KernelOwnedAllocation), FsError> {
-    diff_with_accounting::<S, TreeFormat, true, true>(
+    diff_with_accounting::<S, TreeFormat, true, true, EARLY_EQUAL>(
         store,
         before,
         after,

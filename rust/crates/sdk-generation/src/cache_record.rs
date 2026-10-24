@@ -45,3 +45,19 @@ pub fn decode(bytes: &[u8], key: &str) -> Option<String> {
         && record.checksum == checksum(key, &record.digest))
     .then_some(record.digest)
 }
+
+/// Exercises cache-record integrity and canonical round trips with synthetic bytes.
+#[cfg(feature = "test-support")]
+pub fn fuzz_check(bytes: &[u8]) {
+    let digest = format!("sha256:{:x}", Sha256::digest(bytes));
+    let encoded = encode(&digest, &digest);
+    assert_eq!(decode(&encoded, &digest), Some(digest));
+    if let Some(split) = bytes.iter().position(|byte| *byte == b'\n') {
+        if let Ok(key) = std::str::from_utf8(&bytes[..split]) {
+            if let Some(value) = decode(&bytes[split + 1..], key) {
+                let replay = encode(key, &value);
+                assert_eq!(decode(&replay, key), Some(value));
+            }
+        }
+    }
+}

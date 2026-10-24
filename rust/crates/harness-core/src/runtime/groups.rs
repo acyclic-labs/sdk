@@ -19,7 +19,7 @@ pub struct InputKey {
 }
 
 /// Group behavior retained with the exact batch identity.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "kebab-case")]
 pub enum BatchGroupPolicy {
     /// Preserve every admission and terminal outcome without cancelling siblings.
@@ -57,7 +57,7 @@ pub struct DurableBatchRequest {
     pub execution: Option<ExecutionPlacement>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub(super) struct DurableBatchWire {
     pub(super) contract: String,

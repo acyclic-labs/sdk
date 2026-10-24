@@ -229,6 +229,10 @@ fn successor(prefix: &str) -> Option<String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn timestamp() -> Result<prost_types::Timestamp, Error> {
+    #[cfg(all(test, not(objects_loom)))]
+    if let Some(timestamp) = test_clock::current() {
+        return Ok(timestamp);
+    }
     #[cfg(all(test, feature = "local"))]
     if let Some(timestamp) = persistence::work::timestamp() {
         return Ok(timestamp);
@@ -282,8 +286,12 @@ use native::*;
 use publication::*;
 use read::*;
 pub(super) use state::State;
-use state::{Bucket, Receipt, SharedInfo, Stored, Upload, stored_bytes};
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+use state::changed;
+use state::{Bucket, Receipt, SharedInfo, Stored, Upload, adjusted_total, stored_bytes};
 use transaction::{PendingObject, Transaction};
 
 #[cfg(test)]
 mod bootstrap_tests;
+#[cfg(all(test, not(target_arch = "wasm32"), not(objects_loom)))]
+mod test_clock;

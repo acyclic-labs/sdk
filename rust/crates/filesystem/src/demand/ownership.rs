@@ -11,6 +11,10 @@ pub(super) mod accounting;
 #[path = "ownership_loom_tests.rs"]
 mod loom_tests;
 
+#[cfg(all(test, feature = "native-watch", not(acyclic_fs_loom)))]
+#[path = "ownership_retain_tests.rs"]
+mod retain_tests;
+
 #[cfg(feature = "native-watch")]
 #[derive(Debug, Default)]
 pub(crate) enum SourcePayloadOwnership {
@@ -62,7 +66,7 @@ impl SourcePayloadOwnership {
                     .map_err(|_| crate::WorkError::Overflow)?;
                 if let Err(error) = work.with_original_leaf(|work| custody.retain(bytes, work)) {
                     retained.fetch_sub(bytes, Ordering::AcqRel);
-                    return Err(error.into());
+                    return Err(error);
                 }
                 Ok(())
             }
@@ -299,19 +303,20 @@ impl NativeMountAllocationCustody {
             .checked_add(bytes)
             .ok_or(crate::WorkError::Overflow)?;
         if !self.is_admitted(work)? {
-            return Err(DemandError::InvalidRequest);
+            return Err(DemandError::NativeMountAdmissionMissing);
         }
         work.claim_allocation(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)?;
-        self.retain(bytes, work).map_err(DemandError::from)
+        self.retain(bytes, work)
     }
     #[cfg(feature = "native-watch")]
-    pub(crate) fn retain(&self, bytes: u64, work: &mut DemandWork) -> Result<(), crate::WorkError> {
+    pub(crate) fn retain(&self, bytes: u64, work: &mut DemandWork) -> Result<(), DemandError> {
         let capture = self
             .original
             .as_ref()
             .and_then(|work| work.capture_origin.as_ref())
-            .and_then(std::sync::Weak::upgrade);
-        self.retain_allocation(bytes, work, capture.as_deref())
+            .filter(|capture| capture.is_open())
+            .map(|capture| &**capture);
+        self.retain_allocation(bytes, work, capture)
     }
     #[cfg(feature = "native-watch")]
     fn retain_allocation(
@@ -319,14 +324,18 @@ impl NativeMountAllocationCustody {
         bytes: u64,
         work: &mut DemandWork,
         capture: Option<&super::CaptureTransientCustody>,
-    ) -> Result<(), crate::WorkError> {
+    ) -> Result<(), DemandError> {
+        let gauge = self
+            .bytes
+            .as_ref()
+            .ok_or(DemandError::NativeMountAdmissionMissing)?;
         let entry = work
             .roots
             .native_mount_admissions
             .0
             .iter_mut()
-            .find(|entry| self.accounts_for(&entry.0))
-            .ok_or(crate::WorkError::Overflow)?;
+            .find(|entry| Arc::ptr_eq(gauge, &entry.0))
+            .ok_or(DemandError::NativeMountAdmissionMissing)?;
         let adopted = entry
             .1
             .checked_add(bytes)
@@ -337,10 +346,7 @@ impl NativeMountAllocationCustody {
         if let Some(capture) = capture {
             capture.transfer_retained_bytes(bytes)?;
         }
-        self.bytes
-            .as_ref()
-            .ok_or(crate::WorkError::Overflow)?
-            .fetch_add(bytes, Ordering::AcqRel);
+        gauge.fetch_add(bytes, Ordering::AcqRel);
         entry.1 = adopted;
         Ok(())
     }

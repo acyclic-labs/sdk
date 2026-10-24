@@ -34,8 +34,8 @@ use acyclic_stream::{StreamProvider, UnixMillisClock};
 use serde_json::Value;
 use std::sync::Arc;
 
-mod deadline;
 mod authority_custodian;
+mod deadline;
 mod inspection;
 mod reconciliation;
 pub use inspection::TaskSourceInspection;
@@ -69,11 +69,18 @@ pub trait TaskCommandHost: acyclic_stream::ProviderPlatform {
         _command: WorkflowCommand,
         _payload: Value,
     ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async {
             Err(Error::Unsupported(
                 "task command reconciliation is not bound".into(),
             ))
         })
+    }
+
+    /// The allocation budget live while this host's commands advance, which
+    /// pays for the frames that drive them; `None` where no budget is live.
+    fn frame_io(&self) -> Option<&crate::filesystem::PreparationIo> {
+        None
     }
 
     /// Executes on the original work ledger without constructing a legacy future.
@@ -149,7 +156,9 @@ enum CommandDispatch {
 }
 
 /// Resume hint for one finite coordinator discovery sweep.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, crate::HeapLayout,
+)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
@@ -381,6 +390,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
         dispatch: crate::model::ModelDispatch,
         fence: &'a LeaseFence,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<()>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(self.host.claim_model_from_context(context, dispatch, fence))
     }
     fn verify_owner<'a>(
@@ -402,6 +412,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     fn file_publication_condition(
         &self,
     ) -> BoxFuture<'_, Result<(acyclic_stream::CommitCondition, Option<u64>)>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move {
             #[cfg(not(target_arch = "wasm32"))]
             if self.native_custody.is_some() {
@@ -425,6 +436,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
         operation: OperationId,
         payload: crate::conversation::FileRef,
     ) -> BoxFuture<'a, Result<crate::conversation::FileRef>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move {
             let (task, fence) = self.owner.as_ref().task_binding();
             self.host
@@ -437,6 +449,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
         after: u64,
         maximum: usize,
     ) -> BoxFuture<'a, Result<Vec<crate::scheduler::InboxItem>>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move {
             self.owner.as_ref().verify(true, &mut None).await?;
             let (task, _) = self.owner.as_ref().task_binding();
@@ -544,15 +557,20 @@ where
         turn: OperationId,
     ) -> Result<Arc<FilesystemExecutionJournal<P, A, O>>> {
         let admission = self.host.observe_admission(task).await?;
-        Ok(Arc::new(
+        Ok(Arc::from(
             self.open_execution_journal(task, fence, turn, &admission)
                 .await?,
         ))
     }
 
     /// Constructs the ordinary retained scope/parent context with the exact current mailbox owner token.
-    pub async fn task_context(&self, task: TaskId, fence: LeaseFence) -> Result<TaskContext> {
-        self.task_context_with_cancellation(task, fence, None).await
+    pub fn task_context(
+        &self,
+        task: TaskId,
+        fence: LeaseFence,
+    ) -> acyclic_stream::BoxProviderFuture<'_, Result<TaskContext>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
+        acyclic_fs::in_heap(|| self.task_context_with_cancellation(task, fence, None))
     }
 
     #[doc(hidden)]

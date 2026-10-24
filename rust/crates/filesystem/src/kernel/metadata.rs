@@ -103,16 +103,16 @@ impl FileMetadata {
             && advanced(self.changed_ns, prior.changed_ns)
     }
 
-    /// Records a content change made at `at_ns`, in signed Unix-epoch nanoseconds: every represented modification and status-change time takes that instant.
+    /// Records a content change made at `at_ns`, in signed Unix-epoch
+    /// nanoseconds: the modification and status-change times both take that
+    /// instant, whether or not the source captured them, so tools keyed on
+    /// modification time (`make`, build caches) see the change. Returns
+    /// whether the record changed.
     pub fn stamp_content_change(&mut self, at_ns: i64) -> bool {
-        let mut stamped = false;
-        for time in [&mut self.modified_ns, &mut self.changed_ns] {
-            if let MetadataField::Value(time) = time {
-                *time = at_ns;
-                stamped = true;
-            }
-        }
-        stamped
+        let before = *self;
+        self.modified_ns = MetadataField::Value(at_ns);
+        self.changed_ns = MetadataField::Value(at_ns);
+        *self != before
     }
 
     fn validate(self) -> Result<(), CanonicalDecodeError> {

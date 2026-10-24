@@ -9,8 +9,7 @@ mod model;
 #[cfg(feature = "tui")]
 #[path = "../editor/render.rs"]
 mod render;
-#[path = "../support/sequences.rs"]
-mod sequences;
+use acyclic_harness_tui::fuzzing::sequences;
 
 #[test]
 fn checked_in_fuzz_corpus() {

@@ -189,252 +189,268 @@ impl LocalHarness {
         let retained = host.reconcile_admission(preparation_operation).await?;
         // Staging has no external execution: retain every input immediately,
         // then fence their authority log together before admitting preparation.
-        let (preparation_record, preparation_request, cut) = preparation::fenced_inputs(
-            async {
-                let prepared = if let Some((_, record)) = retained {
-                    if record.parent != Some(parent) {
-                        return Err(Error::Conflict("child preparation parent changed".into()));
-                    }
-                    let request: ResourcePreparationRequest =
-                        serde_json::from_value(record.input.clone()).map_err(storage)?;
-                    let checkpoint = request
-                        .source_checkpoint
-                        .as_ref()
-                        .ok_or_else(|| Error::Conflict("child source checkpoint missing".into()))?;
-                    let bytes = context.read_file(checkpoint, None).await?;
-                    let cut = crate::contract::json_from_slice(&bytes).map_err(storage)?;
-                    (record, request, cut)
-                } else {
-                    let (checkpoint, _) = publisher
-                        .observe_staged_once(
-                            checkpoint_operation,
-                            narrowed.limits().file_bytes,
-                            crate::conversation::ContentAccess::default(),
-                        )?
-                        .await?;
-                    let (checkpoint, cut) = if let Some(checkpoint) = checkpoint {
-                        let bytes = context.read_file(&checkpoint, None).await?;
-                        let cut = crate::contract::json_from_slice(&bytes).map_err(storage)?;
-                        (checkpoint, cut)
-                    } else {
-                        let mut accounting = io_ref.accounting(&cancellation);
-                        let cut = source.snapshot(&mut accounting).await;
-                        let cut = io.sdk(io_ref.finish(cut, &accounting))?;
-                        drop(accounting);
-                        let bytes = serde_json::to_vec(&cut).map_err(storage)?;
-                        let (checkpoint, _) = publisher
-                            .stage_once(
-                                checkpoint_operation,
-                                &format!("inputs/agents/{operation}/source.json"),
-                                &bytes,
-                                "application/json",
-                                "source.json",
-                                crate::conversation::ContentAccess::default(),
-                            )?
-                            .await?;
-                        (checkpoint, cut)
-                    };
-                    let source_generation = GenerationRef::from_resource(
-                        ResourceRef::new(
-                            ResourceKind::Generation,
-                            source_project.provider().clone(),
-                            cut.authored_generation.digest().as_bytes().to_vec(),
-                            None,
-                            &mut None,
-                        )?,
-                        &mut None,
-                    )?;
-                    let private_head = self
-                        .files
-                        .resolve(
-                            &crate::filesystem::workspace_ref(
-                                source_private.provider().clone(),
-                                &source_private.storage_name(&mut None)?,
-                            )?,
-                            None,
-                        )
-                        .await?;
-                    let fork = ForkRequest {
-                        operation_id: fork_operation,
-                        authorized_source: None,
-                        parent: self.verifier.audience().clone(),
-                        parent_revision: 0,
-                        child: Authority {
-                            kind: AggregateKind::Task,
-                            id: TaskId::from_bytes(operation.into_bytes()).to_string(),
-                        },
-                        child_agent,
-                        attached_agents: Vec::new(),
-                        boundary: None,
-                        preparation: ForkPreparation {
-                            child_project_volume: project.clone(),
-                            child_private_volume: private.clone(),
-                            child_result_volume: None,
-                            summary: None,
-                            inherited_through_sequence: 0,
-                            maximum_inherited_messages: 1,
-                            maximum_inherited_bytes: narrowed.limits().file_bytes,
-                            maximum_inherited_references: 1,
-                        },
-                        selections: vec![
-                            ForkSelection {
-                                required: true,
-                                revision: ResourceRevision::Project {
-                                    volume: (source_project.clone()).into(),
-                                    generation: (source_generation).into(),
+        let (preparation_record, preparation_request, cut) =
+            crate::conversation::BoundedOperationFuture::new(Some(io_ref), || {
+                preparation::fenced_inputs(
+                    async {
+                        let prepared = if let Some((_, record)) = retained {
+                            if record.parent != Some(parent) {
+                                return Err(Error::Conflict(
+                                    "child preparation parent changed".into(),
+                                ));
+                            }
+                            let request: ResourcePreparationRequest =
+                                serde_json::from_value(record.input.clone()).map_err(storage)?;
+                            let checkpoint =
+                                request.source_checkpoint.as_ref().ok_or_else(|| {
+                                    Error::Conflict("child source checkpoint missing".into())
+                                })?;
+                            let bytes = context.read_file(checkpoint, None).await?;
+                            let cut = crate::contract::json_from_slice(&bytes).map_err(storage)?;
+                            (record, request, cut)
+                        } else {
+                            let (checkpoint, _) = publisher
+                                .observe_staged_once(
+                                    checkpoint_operation,
+                                    narrowed.limits().file_bytes,
+                                    crate::conversation::ContentAccess::default(),
+                                )?
+                                .await?;
+                            let (checkpoint, cut) = if let Some(checkpoint) = checkpoint {
+                                let bytes = context.read_file(&checkpoint, None).await?;
+                                let cut =
+                                    crate::contract::json_from_slice(&bytes).map_err(storage)?;
+                                (checkpoint, cut)
+                            } else {
+                                let mut accounting = io_ref.accounting(&cancellation);
+                                let cut = source.snapshot(&mut accounting).await;
+                                let cut = io.sdk(io_ref.finish(cut, &accounting))?;
+                                drop(accounting);
+                                let bytes = serde_json::to_vec(&cut).map_err(storage)?;
+                                let (checkpoint, _) = publisher
+                                    .stage_once(
+                                        checkpoint_operation,
+                                        &format!("inputs/agents/{operation}/source.json"),
+                                        &bytes,
+                                        "application/json",
+                                        "source.json",
+                                        crate::conversation::ContentAccess::default(),
+                                    )?
+                                    .await?;
+                                (checkpoint, cut)
+                            };
+                            let source_generation = GenerationRef::from_resource(
+                                ResourceRef::new(
+                                    ResourceKind::Generation,
+                                    source_project.provider().clone(),
+                                    cut.authored_generation.digest().as_bytes().to_vec(),
+                                    None,
+                                    &mut None,
+                                )?,
+                                &mut None,
+                            )?;
+                            let private_head = self
+                                .files
+                                .resolve(
+                                    &crate::filesystem::workspace_ref(
+                                        source_private.provider().clone(),
+                                        &source_private.storage_name(&mut None)?,
+                                    )?,
+                                    None,
+                                )
+                                .await?;
+                            let fork = ForkRequest {
+                                operation_id: fork_operation,
+                                authorized_source: None,
+                                parent: self.verifier.audience().clone(),
+                                parent_revision: 0,
+                                child: Authority {
+                                    kind: AggregateKind::Task,
+                                    id: TaskId::from_bytes(operation.into_bytes()).to_string(),
                                 },
-                            },
-                            ForkSelection {
-                                required: true,
-                                revision: ResourceRevision::PrivateVolume {
-                                    volume: (source_private.clone()).into(),
-                                    generation: (private_head.generation).into(),
-                                    paths: Vec::new(),
+                                child_agent,
+                                attached_agents: Vec::new(),
+                                boundary: None,
+                                preparation: ForkPreparation {
+                                    child_project_volume: project.clone(),
+                                    child_private_volume: private.clone(),
+                                    child_result_volume: None,
+                                    summary: None,
+                                    inherited_through_sequence: 0,
+                                    maximum_inherited_messages: 1,
+                                    maximum_inherited_bytes: narrowed.limits().file_bytes,
+                                    maximum_inherited_references: 1,
                                 },
-                            },
-                        ],
-                    };
-                    self.prepare_inheritance(
-                        crate::runtime::task_id_for_admission(operation),
-                        Some(parent),
-                    )
-                    .await?;
-                    let (receive, model, manifest) = self
-                        .stage_turn_with_output(
-                            operation,
-                            "Follow the received child request.",
-                            narrowed.limits(),
-                            Some(&project),
-                        )
-                        .await?;
-                    let inputs = vec![receive.payload.clone(), model.payload.clone(), manifest];
-                    let definition = self
-                        .runtime
-                        .harness()
-                        .task::<serde_json::Value, serde_json::Value>("acyclic.child_agent@1")?;
-                    let mut child = self
-                        .runtime
-                        .harness()
-                        .registered_admission(
-                            operation,
-                            &definition.identity().name,
-                            &definition.identity().version,
-                            serde_json::json!({"receive":receive,"model":model}),
-                            Some((parent, context.scope())),
-                            None,
-                            None,
-                        )?
-                        .0;
-                    let mut excluded = [&source_project, &source_private]
-                        .into_iter()
-                        .flat_map(|volume| {
-                            [VolumeOperation::Read, VolumeOperation::Write]
-                                .into_iter()
-                                .map(move |operation| volume.capability(operation, &mut None))
-                        })
-                        .collect::<Result<Vec<_>>>()?;
-                    for volume in [&source_project, &source_private] {
-                        excluded.push(volume.directory_read_capability("", &mut None)?);
-                    }
-                    // New preparation proofs authenticate this child's own inputs.
-                    // Ancestor-only input readers belong to the parent's proof set.
-                    if let Some(access) = context.scope().created_access.as_ref() {
-                        for (file, _) in &access.references {
-                            excluded.push(file.read_capability(&mut None)?);
-                        }
-                    }
-                    child.grants = Capabilities::new(
-                        narrowed
-                            .grants()
-                            .iter()
-                            .filter(|grant| !excluded.iter().any(|denied| denied == grant))
-                            .map(str::to_owned)
-                            .chain(
-                                [&project, &private]
-                                    .into_iter()
-                                    .flat_map(|volume| {
-                                        [VolumeOperation::Read, VolumeOperation::Write]
-                                            .into_iter()
-                                            .map(move |operation| {
-                                                volume.capability(operation, &mut None)
-                                            })
-                                    })
-                                    .collect::<Result<Vec<_>>>()?,
+                                selections: vec![
+                                    ForkSelection {
+                                        required: true,
+                                        revision: ResourceRevision::Project {
+                                            volume: (source_project.clone()).into(),
+                                            generation: (source_generation).into(),
+                                        },
+                                    },
+                                    ForkSelection {
+                                        required: true,
+                                        revision: ResourceRevision::PrivateVolume {
+                                            volume: (source_private.clone()).into(),
+                                            generation: (private_head.generation).into(),
+                                            paths: Vec::new(),
+                                        },
+                                    },
+                                ],
+                            };
+                            self.prepare_inheritance(
+                                crate::runtime::task_id_for_admission(operation),
+                                Some(parent),
                             )
-                            .chain(
-                                inputs
+                            .await?;
+                            let (receive, model, manifest) = self
+                                .stage_turn_with_output(
+                                    operation,
+                                    "Follow the received child request.",
+                                    narrowed.limits(),
+                                    Some(&project),
+                                    Some(io_ref),
+                                )
+                                .await?;
+                            let inputs =
+                                vec![receive.payload.clone(), model.payload.clone(), manifest];
+                            let definition = self
+                                .runtime
+                                .harness()
+                                .task::<serde_json::Value, serde_json::Value>(
+                                    "acyclic.child_agent@1",
+                                )?;
+                            let mut child = self
+                                .runtime
+                                .harness()
+                                .registered_admission(
+                                    operation,
+                                    &definition.identity().name,
+                                    &definition.identity().version,
+                                    serde_json::json!({"receive":receive,"model":model}),
+                                    Some((parent, context.scope())),
+                                    None,
+                                    None,
+                                )?
+                                .0;
+                            let mut excluded = [&source_project, &source_private]
+                                .into_iter()
+                                .flat_map(|volume| {
+                                    [VolumeOperation::Read, VolumeOperation::Write]
+                                        .into_iter()
+                                        .map(move |operation| {
+                                            volume.capability(operation, &mut None)
+                                        })
+                                })
+                                .collect::<Result<Vec<_>>>()?;
+                            for volume in [&source_project, &source_private] {
+                                excluded.push(volume.directory_read_capability("", &mut None)?);
+                            }
+                            // New preparation proofs authenticate this child's own inputs.
+                            // Ancestor-only input readers belong to the parent's proof set.
+                            if let Some(access) = context.scope().created_access.as_ref() {
+                                for (file, _) in &access.references {
+                                    excluded.push(file.read_capability(&mut None)?);
+                                }
+                            }
+                            child.grants = Capabilities::new(
+                                narrowed
+                                    .grants()
                                     .iter()
-                                    .map(|file| file.read_capability(&mut None))
-                                    .collect::<Result<Vec<_>>>()?,
-                            ),
-                    );
-                    child = child.with_resource_proofs(preparer.creation_allocations(
-                        &fork,
-                        TaskId::from_bytes(preparation_operation.into_bytes()),
-                        Some(&io),
-                    )?)?;
-                    let fork_value = serde_json::to_value(&fork).map_err(storage)?;
-                    let bytes = serde_json::to_vec(&fork).map_err(storage)?;
-                    let (payload, _) = publisher
-                        .stage_once(
-                            fork_operation,
-                            &format!("inputs/agents/{operation}/fork.json"),
-                            &bytes,
-                            "application/json",
-                            "fork.json",
-                            crate::conversation::ContentAccess::default(),
-                        )?
-                        .await?;
-                    let request = ResourcePreparationRequest {
-                        provider: project.provider().clone(),
-                        child,
-                        creation_grant: "fork:publish".into(),
-                        maximum_resources: 2,
-                        maximum_work: 65_536,
-                        maximum_bytes: narrowed.limits().file_bytes,
-                        payload: fork_value,
-                        command: Some(WorkflowCommand {
-                            operation_id: fork_operation,
-                            kind: crate::filesystem::FORK_PREPARE_TASK_COMMAND_KIND.into(),
-                            payload,
-                        }),
-                        source_checkpoint: Some(checkpoint),
-                        input_files: inputs,
-                        read_authorization: None,
-                    };
-                    let definition = self
-                        .runtime
-                        .harness()
-                        .task::<ResourcePreparationRequest, crate::fork::ForkReport>(
-                            "acyclic.fork_preparation@1",
-                        )?;
-                    let record = self
-                        .runtime
-                        .harness()
-                        .registered_admission(
-                            preparation_operation,
-                            &definition.identity().name,
-                            &definition.identity().version,
-                            serde_json::to_value(&request).map_err(storage)?,
-                            Some((parent, context.scope())),
-                            None,
-                            None,
-                        )?
-                        .0;
-                    (record, request, cut)
-                };
-                Ok(prepared)
-            },
-            async {
-                let filesystem = workspace.filesystem.clone();
-                spawn_blocking(move || filesystem.flush_deferred_authority())
-                    .await
-                    .map_err(storage)?
-                    .map_err(storage)
-            },
-        )
-        .await?;
-        match host.admit_owned(preparation_record, fence.clone()).await? {
+                                    .filter(|grant| !excluded.iter().any(|denied| denied == grant))
+                                    .map(str::to_owned)
+                                    .chain(
+                                        [&project, &private]
+                                            .into_iter()
+                                            .flat_map(|volume| {
+                                                [VolumeOperation::Read, VolumeOperation::Write]
+                                                    .into_iter()
+                                                    .map(move |operation| {
+                                                        volume.capability(operation, &mut None)
+                                                    })
+                                            })
+                                            .collect::<Result<Vec<_>>>()?,
+                                    )
+                                    .chain(
+                                        inputs
+                                            .iter()
+                                            .map(|file| file.read_capability(&mut None))
+                                            .collect::<Result<Vec<_>>>()?,
+                                    ),
+                            );
+                            child = child.with_resource_proofs(preparer.creation_allocations(
+                                &fork,
+                                TaskId::from_bytes(preparation_operation.into_bytes()),
+                                Some(&io),
+                            )?)?;
+                            let fork_value = serde_json::to_value(&fork).map_err(storage)?;
+                            let bytes = serde_json::to_vec(&fork).map_err(storage)?;
+                            let (payload, _) = publisher
+                                .stage_once(
+                                    fork_operation,
+                                    &format!("inputs/agents/{operation}/fork.json"),
+                                    &bytes,
+                                    "application/json",
+                                    "fork.json",
+                                    crate::conversation::ContentAccess::default(),
+                                )?
+                                .await?;
+                            let request = ResourcePreparationRequest {
+                                provider: project.provider().clone(),
+                                child,
+                                creation_grant: "fork:publish".into(),
+                                maximum_resources: 2,
+                                maximum_work: 65_536,
+                                maximum_bytes: narrowed.limits().file_bytes,
+                                payload: fork_value,
+                                command: Some(WorkflowCommand {
+                                    operation_id: fork_operation,
+                                    kind: crate::filesystem::FORK_PREPARE_TASK_COMMAND_KIND.into(),
+                                    payload,
+                                }),
+                                source_checkpoint: Some(checkpoint),
+                                input_files: inputs,
+                                read_authorization: None,
+                            };
+                            let definition = self
+                                .runtime
+                                .harness()
+                                .task::<ResourcePreparationRequest, crate::fork::ForkReport>(
+                                    "acyclic.fork_preparation@1",
+                                )?;
+                            let record = self
+                                .runtime
+                                .harness()
+                                .registered_admission(
+                                    preparation_operation,
+                                    &definition.identity().name,
+                                    &definition.identity().version,
+                                    serde_json::to_value(&request).map_err(storage)?,
+                                    Some((parent, context.scope())),
+                                    None,
+                                    None,
+                                )?
+                                .0;
+                            (record, request, cut)
+                        };
+                        Ok(prepared)
+                    },
+                    async {
+                        let filesystem = workspace.filesystem.clone();
+                        spawn_blocking(move || filesystem.flush_deferred_authority())
+                            .await
+                            .map_err(storage)?
+                            .map_err(storage)
+                    },
+                )
+            })?
+            .await?;
+        match crate::conversation::BoundedOperationFuture::new(Some(io_ref), || {
+            host.admit_owned(preparation_record, fence.clone())
+        })?
+        .await?
+        {
             Admission::Accepted(_) => {}
             Admission::Rejected { reason } => return Err(Error::Conflict(reason)),
             Admission::Indeterminate { operation_id } => {

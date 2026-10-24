@@ -1,5 +1,5 @@
 [package]
-include = ["clippy.toml", "Cargo.toml", "README.md", "docs/**", "src/**", "tests/**", "examples/**", "fixtures/**", "conformance/**", "fuzz/corpus/**", "fuzz-context/fuzz_targets/file_guidance_input.rs", "fuzz-context/corpus/file_guidance/**"]
+include = ["clippy.toml", "Cargo.toml", "README.md", "docs/**", "src/**", "tests/**", "examples/**", "fixtures/**", "conformance/**", "fuzz/corpus/**", "fuzz-context/corpus/file_guidance/**"]
 autotests = false
 autobins = false
 name = "acyclic-harness"
@@ -58,7 +58,7 @@ required-features = ["filesystem"]
 
 [features]
 tui = ["dep:acyclic-harness-tui", "acyclic-harness-tui/tui", "acyclic-harness-core/tui"]
-test-support = ["acyclic-actors/test-support", "dep:tempfile", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-harness-search/test-support"]
+test-support = ["serde-saphyr/serialize", "acyclic-actors/test-support", "dep:tempfile", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-harness-search/test-support"]
 model-checking = ["dep:loom", "dep:same-file", "dep:tempfile", "acyclic-fs/model-checking", "acyclic-harness-core/model-checking"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser", "acyclic-harness-core/browser"]
 # Native presentation only; this does not select providers or grant authority.
@@ -127,6 +127,7 @@ wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["task-context"] }
 dirs = { workspace = true, optional = true }
 tempfile = { version = "3.27.0", optional = true }
 getrandom = { workspace = true, optional = true }
@@ -147,7 +148,7 @@ tokio = { version = "1.48.0", default-features = false, features = ["signal", "i
 [dev-dependencies]
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
 acyclic-harness-search = { version = "=0.2.0", path = "../harness-search", features = ["test-support"] }
-acyclic-test-support = { path = "../test-support" }
+acyclic-test-support = { path = "../test-support", features = ["capture"] }
 proc-macro2 = "=1.0.107"
 syn = { version = "=3.0.6", features = ["full", "visit"] }
 proptest.workspace = true
@@ -156,6 +157,7 @@ acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = 
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 which = "8.0.6"
+ctor = { version = "=1.0.13", default-features = false }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support", "native-execution"] }
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["local", "native-mount"] }
 tokio-util = { workspace = true, features = ["rt"] }

@@ -13,9 +13,10 @@ pub async fn consume_local_command<P: acyclic_stream::StreamProvider + ?Sized>(
     let settings = session.request_settings(request).await?;
     let result = session
         .consume(request, |operation, target, resolution| {
-            let future: acyclic_stream::BoxProviderFuture<'_, Result<serde_json::Value>> = Box::pin(
-                local.dispatch_configured_command(operation, target, resolution, &settings),
-            );
+            let future: acyclic_stream::BoxProviderFuture<'_, Result<serde_json::Value>> =
+                acyclic_fs::in_heap(|| {
+                    local.dispatch_configured_command(operation, target, resolution, &settings)
+                });
             future
         })
         .await?;
@@ -49,11 +50,14 @@ impl CommandSession<dyn acyclic_stream::StreamProvider> {
 
 /// Observe a runtime-owned command subscription while presenting its files.
 /// Closing presentation stops admission and joins admitted work before returning.
-pub async fn with_local_commands<T, E: From<Error>>(
+pub async fn with_local_commands<T, E: From<Error>, F>(
     local: Arc<LocalHarness>,
     session: OperationId,
-    presentation: impl std::future::Future<Output = std::result::Result<T, E>>,
-) -> std::result::Result<T, E> {
+    presentation: impl FnOnce() -> F,
+) -> std::result::Result<T, E>
+where
+    F: std::future::Future<Output = std::result::Result<T, E>>,
+{
     let mut subscription = crate::package::harness::CommandSubscription::start(
         local,
         &acyclic_stream::runtime::PlatformExecutor,
@@ -61,5 +65,10 @@ pub async fn with_local_commands<T, E: From<Error>>(
         false,
     );
     let attachment = subscription.take_attachment();
-    super::scheduling::drive_command_owner(subscription, presentation, || drop(attachment)).await
+    super::scheduling::drive_command_owner(
+        acyclic_fs::in_heap(|| subscription),
+        acyclic_fs::in_heap(presentation),
+        || drop(attachment),
+    )
+    .await
 }

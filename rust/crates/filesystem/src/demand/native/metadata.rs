@@ -51,6 +51,7 @@ fn version(metadata: &HostStat) -> SourceVersion {
     {
         hash.update(&metadata.raw.FileAttributes.to_le_bytes());
         hash.update(&metadata.raw.LastWriteTime.to_le_bytes());
+        hash.update(&metadata.raw.ChangeTime.to_le_bytes());
         hash.update(&metadata.raw.CreationTime.to_le_bytes());
         hash.update(&metadata.volume_serial_number.to_le_bytes());
         hash.update(&metadata.raw.FileId.to_le_bytes());
@@ -147,6 +148,10 @@ fn source_metadata(metadata: &HostStat) -> SourceMetadata {
     #[cfg(windows)]
     {
         result.windows_attributes = Some(metadata.raw.FileAttributes);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        result.posix_flags = Some(u64::from(metadata.raw.st_flags));
     }
     result
 }

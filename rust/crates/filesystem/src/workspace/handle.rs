@@ -63,6 +63,18 @@ impl<A, O> Workspace<A, O> {
     }
 }
 
+#[cfg(feature = "distributed")]
+impl<P, O> Workspace<crate::StreamAuthorityStore<P>, O> {
+    /// Existing durable file history used for snapshot-plus-follow queries.
+    /// Consumers follow this authority rather than polling mutable heads or
+    /// inventing a second notification protocol for a file projection.
+    pub fn authority_records(
+        &self,
+    ) -> Result<(Arc<P>, acyclic_stream::StreamPath), crate::AuthorityStoreError> {
+        self.volume.fs.authority_records(self.id.volume_id())
+    }
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     /// Returns the attached native source.
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]

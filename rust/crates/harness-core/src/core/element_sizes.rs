@@ -38,7 +38,7 @@ ceiling!(event, Event, 376);
 ceiling!(event_payload, EventPayload, 152);
 ceiling!(effect_status, EffectStatus, 24);
 ceiling!(effect_state, EffectState, 712);
-ceiling!(extension_binding, ExtensionBinding, 192);
+ceiling!(extension_binding, registry::ExtensionBinding, 192);
 ceiling!(extension_admission, ExtensionAdmission, 88);
 ceiling!(command, Command, 336);
 ceiling!(action, Action, 88);

@@ -176,7 +176,7 @@ fn ordered_child_matching_is_metered_and_linear() -> TestResult<()> {
                 page: old.first().ok_or("missing child")?.page,
             };
             let matched = context
-                .match_child(&old, &mut cursor, &child)?
+                .match_child((&old).into(), &mut cursor, &child)?
                 .ok_or("missing predecessor")?;
             assert_eq!(
                 matched,
@@ -208,7 +208,11 @@ fn ordered_child_matching_is_metered_and_linear() -> TestResult<()> {
         );
         assert!(
             denied
-                .match_child(&old, &mut old.len(), old.first().ok_or("missing child")?)
+                .match_child(
+                    (&old).into(),
+                    &mut old.len(),
+                    old.first().ok_or("missing child")?
+                )
                 .is_err()
         );
     }

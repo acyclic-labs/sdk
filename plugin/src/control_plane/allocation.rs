@@ -2,7 +2,8 @@
 
 use super::*;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RootBinding {
     pub(crate) root_id: [u8; 16],
@@ -12,7 +13,8 @@ pub(crate) struct RootBinding {
 
 /// Selected root intent exists before allocation. Only Created carries usable
 /// workspace/source references; neither variant grants authority by itself.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(
     tag = "state",
     content = "creation",
@@ -24,7 +26,8 @@ pub(crate) enum RootAllocation {
     Created(RootCreation),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RootCreation {
     pub(crate) repository_workspace_id: [u8; 16],

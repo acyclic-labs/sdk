@@ -120,7 +120,10 @@ async fn aliases_preserve_identity_metadata_and_latest_content() {
         );
         assert_eq!(a.0.link_count, 2);
         assert_eq!(a.1.posix_mode, MetadataField::Value(0o100640));
-        assert_eq!(b.1.modified_ns, MetadataField::Value(123456));
+        // The write changed the shared file's content, so every alias shows
+        // the transaction's change time rather than the captured one.
+        assert_eq!(a.1.modified_ns, b.1.modified_ns);
+        assert!(matches!(a.1.modified_ns, MetadataField::Value(at) if at > 123456));
     }
 }
 

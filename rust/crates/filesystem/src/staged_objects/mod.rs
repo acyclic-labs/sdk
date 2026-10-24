@@ -9,6 +9,7 @@ use crate::storage::{
     HashedObject, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError,
     ObjectWrite,
 };
+use crate::sync::{RwLock as IndexLock, RwLockReadGuard, RwLockWriteGuard};
 use crate::{
     AuthorityWork, CancellationToken, NativeAllocation, NativeMaterializationWork,
     NativeTreeMaterializationError, WorkBudget, WorkCounters,
@@ -19,7 +20,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock, PoisonError};
+use std::sync::{Arc, PoisonError};
 use tokio::sync::RwLock;
 
 const MAXIMUM_DRAIN_BYTES: u64 = 4 * 1_024 * 1_024;
@@ -41,7 +42,9 @@ mod spill;
 pub struct StagedObjects<S> {
     inner: S,
     spill: NativeFile,
-    index: std::sync::RwLock<Index>,
+    // Lock order: spill_io -> index -> inner decoded cache. No inner cache
+    // operation calls staging, and no index guard crosses an await.
+    index: IndexLock<Index>,
     spill_io: RwLock<()>,
     collection: Arc<crate::Collection>,
 }
@@ -56,7 +59,7 @@ impl<S> StagedObjects<S> {
         Ok(Self {
             inner,
             spill: NativeFile::from_file(spill, None).map_err(|(error, _)| error)?,
-            index: std::sync::RwLock::new(Index::default()),
+            index: IndexLock::new(Index::default()),
             spill_io: RwLock::new(()),
             collection: Arc::default(),
         })
@@ -64,10 +67,10 @@ impl<S> StagedObjects<S> {
     pub(crate) fn inner(&self) -> &S {
         &self.inner
     }
-    fn index(&self) -> std::sync::RwLockReadGuard<'_, Index> {
+    fn index(&self) -> RwLockReadGuard<'_, Index> {
         self.index.read().unwrap_or_else(PoisonError::into_inner)
     }
-    fn index_mut(&self) -> std::sync::RwLockWriteGuard<'_, Index> {
+    fn index_mut(&self) -> RwLockWriteGuard<'_, Index> {
         self.index.write().unwrap_or_else(PoisonError::into_inner)
     }
     fn lookup(&self, object_id: ObjectId) -> Lookup {
@@ -99,6 +102,8 @@ fn frame_allocation<F>(
         .map_err(Into::into)
 }
 
+#[cfg(all(test, feature = "memory"))]
+pub(crate) mod decoded_tests;
 #[cfg(test)]
 mod tests;
 

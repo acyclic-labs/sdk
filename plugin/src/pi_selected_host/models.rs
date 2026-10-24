@@ -4,7 +4,8 @@ use super::*;
 // Audited serde labels for selected commands, cursors and imports.
 pub(crate) const SELECTED_DIAGNOSTIC_LABEL_BYTES: u64 =
     crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES + 855;
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(
     deny_unknown_fields,
     bound(deserialize = "S: Deserialize<'de> + Default, P: Deserialize<'de> + Default")
@@ -26,7 +27,8 @@ pub(crate) struct PiSelectedCommand<S = String, P = Vec<String>> {
     pub(crate) approval_digest: Option<S>,
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SelectedImportIntent<S = String, V = VolumeRef, P = Vec<String>> {
     pub(super) caller: TaskId,

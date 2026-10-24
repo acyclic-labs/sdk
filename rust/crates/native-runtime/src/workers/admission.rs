@@ -200,6 +200,12 @@ pub(crate) fn poll_submission_with(
     let Some(mut job) = pending.take() else {
         return Poll::Ready(Ok(()));
     };
+    #[cfg(feature = "test-support")]
+    if let Some(actor) = job.test_terminal().test_actor() {
+        // Before acquiring queue admission: completion -> virtual clock locks
+        // are never nested, and the clock never takes an admission lock.
+        actor.queued(std::ptr::from_ref(workers) as usize, workers.threads);
+    }
     let meter = job.meter().cloned();
     if let Some(meter) = &meter
         && let Err(error) = meter.check()

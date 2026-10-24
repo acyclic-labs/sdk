@@ -10,10 +10,7 @@ use serde_json::{Value, json};
 #[path = "goal_workers_tests.rs"]
 mod workers;
 
-#[path = "../../../harness-fuzz/fuzz_targets/goal_parser_input.rs"]
-mod goal_parser_input;
-#[path = "../../../harness-fuzz/fuzz_targets/goal_scenario_input.rs"]
-mod goal_scenario_input;
+use acyclic_harness::test_support::fuzz_cases::{goal_parser_input, goal_scenario_input};
 
 fn text() -> impl Strategy<Value = String> {
     proptest::collection::vec(any::<char>(), 0..64)

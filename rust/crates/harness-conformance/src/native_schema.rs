@@ -5,6 +5,8 @@ use serde_json::Value;
 
 #[path = "../../harness/tests/support/schema/agents.rs"]
 mod agents;
+#[path = "../../harness/tests/support/schema/action.rs"]
+mod action_record;
 #[path = "../../harness/tests/support/schema/composer_entry.rs"]
 mod composer_entry;
 #[path = "../../harness/tests/support/expected_outcome.rs"]

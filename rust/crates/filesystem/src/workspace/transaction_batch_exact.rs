@@ -2,6 +2,7 @@ use super::*;
 
 fn check(invalid: bool, fault: Fault) -> TestCaseResult {
     let [(old, old_trace), (new, new_trace)] = pair(&[], invalid, fault);
+    prop_assert_eq!(new.0.is_ok(), !invalid, "staging result: {:?}", new.0);
     let expected: serde_json::Value =
         serde_json::from_str(include_str!("transaction_batch_expected.json")).unwrap();
     let expected = &expected[format!("staging.{invalid}")];

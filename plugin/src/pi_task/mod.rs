@@ -20,13 +20,15 @@ use std::sync::Arc;
 /// Resolves a creator-seeded native intent under the actual admitted child scope before staging its one-shot process effect.
 pub(crate) const NATIVE_LAUNCH_TASK_COMMAND_KIND: &str = "acyclic.pi.native.launch.v1";
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiControlInput {
     pub(crate) command: WorkflowCommand,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiControlReply {
     pub(crate) operation_id: OperationId,
@@ -34,21 +36,24 @@ pub(crate) struct PiControlReply {
 }
 
 /// Immutable admission input.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiTaskInput<B = PiTaskBinding, R = PiRootIntent, C = WorkflowCommand> {
     pub(crate) binding: B,
     pub(crate) execution: PiTaskExecution<R, C>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum PiTaskExecution<R = PiRootIntent, C = WorkflowCommand> {
     Host { root: R, preparation: C },
     Child { launch: C },
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 enum PiTaskState {
     Preparing {
@@ -80,20 +85,23 @@ enum PiTaskState {
     },
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 struct CommandResults {
     commands: Vec<CommandResult>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 struct CommandResult {
     operation_id: OperationId,
     value: Outcome<FileRef>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 struct ControlResults {
     commands: Vec<PiControlReply>,
@@ -144,8 +152,8 @@ mod codec;
 mod definition;
 mod execution;
 mod state;
+pub(crate) use codec::control_reply;
 use codec::*;
-pub(crate) use codec::{control_reply, native_metadata_quota};
 use state::*;
 #[cfg(test)]
 #[path = "../pi_task_tests.rs"]

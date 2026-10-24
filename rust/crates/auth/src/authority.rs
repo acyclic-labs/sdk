@@ -305,7 +305,8 @@ pub(crate) fn permits_resource_follow(
     r: &Request<'_>,
     policy: PolicyDecision,
 ) -> Result<(), Deny> {
-    if !matches!(r.target, Target::Resource { action: "fs/list", resource } if resource.starts_with("fs:/")) {
+    if !matches!(r.target, Target::Resource { action: "fs/list", resource } if resource.starts_with("fs:/"))
+    {
         return Err(Deny::Capability);
     }
     permits_operation(blocks, r, policy, false)

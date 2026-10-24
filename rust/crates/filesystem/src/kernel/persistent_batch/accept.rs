@@ -1,4 +1,5 @@
 use super::*;
+use crate::kernel::persistent_btree::{PageRef, entries::Entries};
 
 impl<F: Format> Machine<'_, F> {
     pub(super) fn accept(
@@ -8,10 +9,10 @@ impl<F: Format> Machine<'_, F> {
         allocation: KernelOwnedAllocation,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), crate::FsError> {
-        if let persistent_io::PageLease::Shared { page, .. } = &decoded.page {
-            let accepted = match page.as_ref() {
-                Page::Leaf(entries) => self.accept_shared_leaf(&request, entries, accounting),
-                Page::Internal(children) => self.accept_internal(&request, children, accounting),
+        if let persistent_io::PageLease::Shared { .. } = &decoded.page {
+            let accepted = match decoded.page.view() {
+                PageRef::Leaf(entries) => self.accept_shared_leaf(&request, entries, accounting),
+                PageRef::Internal(children) => self.accept_internal(&request, children, accounting),
             };
             let bytes = decoded.logical_bytes;
             drop(decoded);
@@ -34,7 +35,9 @@ impl<F: Format> Machine<'_, F> {
                 &mut page.bytes,
                 accounting,
             ),
-            Page::Internal(children) => self.accept_internal(&request, children, accounting),
+            Page::Internal(children) => {
+                self.accept_internal(&request, children.as_slice().into(), accounting)
+            }
         };
         page.retire(accounting)?;
         Self::retire_request(request, accounting)?;
@@ -54,7 +57,7 @@ impl<F: Format> Machine<'_, F> {
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), crate::FsError> {
         if !leaf_within::<F>(
-            entries,
+            entries.as_slice(),
             request.lower.as_ref().map(|key| &key.value),
             request.upper.as_ref().map(|key| &key.value),
         ) {
@@ -216,7 +219,7 @@ impl<F: Format> Machine<'_, F> {
     fn accept_internal(
         &mut self,
         request: &Request<F::Key>,
-        children: &[Child<F::Key>],
+        children: Entries<'_, Child<F::Key>>,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), crate::FsError> {
         if !children_within(
@@ -239,9 +242,9 @@ impl<F: Format> Machine<'_, F> {
                 .get(query)
                 .ok_or_else(|| query_error(Error::InvalidRouting))?
                 .key;
-            let child_index =
-                partition_point_with_accounting(children, accounting, |child| child.first <= *key)?
-                    .saturating_sub(1);
+            let child_index = children
+                .partition(accounting, |child| child.first <= *key)?
+                .saturating_sub(1);
             let child = children
                 .get(child_index)
                 .ok_or_else(|| query_error(Error::InvalidRouting))?;
@@ -316,7 +319,7 @@ impl<F: Format> Machine<'_, F> {
     fn accept_shared_leaf(
         &mut self,
         request: &Request<F::Key>,
-        entries: &[F::Value],
+        entries: Entries<'_, F::Value>,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), crate::FsError> {
         if !leaf_within::<F>(
@@ -335,9 +338,7 @@ impl<F: Format> Machine<'_, F> {
                 .get(query)
                 .ok_or_else(|| query_error(Error::InvalidRouting))?
                 .key;
-            if let Ok(index) =
-                binary_search_with_accounting(entries, accounting, |value| F::key(value).cmp(key))?
-            {
+            if let Ok(index) = entries.search(0, accounting, |value| F::key(value).cmp(key))? {
                 let value = entries
                     .get(index)
                     .ok_or_else(|| query_error(Error::InvalidRouting))?;

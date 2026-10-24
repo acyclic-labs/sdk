@@ -442,7 +442,6 @@ where
             super::pi_root_provider::guarded_pi_decode::<super::pi_native::PiNativeLaunchIntent>(
                 bytes.as_ref(),
                 super::MAXIMUM_ADAPTER_STATE_BYTES,
-                std::mem::size_of::<super::pi_native::PiNativeLaunchIntent>() as u64,
                 acyclic_harness::wire::ErrorCode::Invalid,
                 acyclic_harness::JsonValueSchema::None,
                 super::pi_native::PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES,
@@ -606,13 +605,14 @@ fn invalid(message: &'static str) -> Error {
 }
 
 /// Decodes closed Pi DTOs directly from their original Value.
-pub(crate) fn decode_recovery_value<T: serde::de::DeserializeOwned>(
+pub(crate) fn decode_recovery_value<
+    T: serde::de::DeserializeOwned + acyclic_harness::HeapLayout,
+>(
     value: std::borrow::Cow<'_, serde_json::Value>,
     schema: &'static acyclic_harness::JsonValueSchema,
     maximum_bytes: u64,
     work: &NativeMaterializationWork,
 ) -> Result<(T, NativeAllocation)> {
-    let borrowed = matches!(value, std::borrow::Cow::Borrowed(_));
     let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
     let mut retained_owned = 0;
     let remaining = work.remaining()?;
@@ -624,7 +624,6 @@ pub(crate) fn decode_recovery_value<T: serde::de::DeserializeOwned>(
     let result = acyclic_harness::json_from_value_bounded::<T, _>(
         value,
         bounds,
-        std::mem::size_of::<T>() as u64,
         Some(acyclic_harness::wire::ErrorCode::Invalid),
         schema,
         &mut |charge| {
@@ -633,9 +632,13 @@ pub(crate) fn decode_recovery_value<T: serde::de::DeserializeOwned>(
                 value_shape,
             } = charge
             {
-                let (additional, diagnostics) =
-                    recovery_conversion_quota::<T>(value_shape, borrowed)?;
-                retained_owned = checked_quota(maximum_owned_bytes, additional)?;
+                let diagnostics = acyclic_harness::json_typed_diagnostic_owned_bytes(
+                    value_shape,
+                    super::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES,
+                    Some(acyclic_harness::wire::ErrorCode::Invalid),
+                )?;
+                retained_owned =
+                    checked_quota(std::mem::size_of::<T>() as u64, maximum_owned_bytes)?;
                 custody
                     .resize(checked_quota(retained_owned, diagnostics)?)
                     .map_err(acyclic_harness::Error::from)
@@ -666,55 +669,6 @@ pub(crate) fn decode_recovery_value<T: serde::de::DeserializeOwned>(
             Err(error)
         }
     }
-}
-
-fn recovery_conversion_quota<T>(
-    shape: acyclic_harness::JsonValueShape,
-    borrowed: bool,
-) -> Result<(u64, u64)> {
-    let slot = [
-        std::mem::size_of::<acyclic_harness::resource_preparation::ResourcePreparationRequest>(),
-        std::mem::size_of::<acyclic_harness::runtime::TaskAdmissionRecord>(),
-        std::mem::size_of::<acyclic_harness::resource_preparation::ResourceCreationProofRef>(),
-        std::mem::size_of::<acyclic_harness::resources::ResourceRef>(),
-        std::mem::size_of::<acyclic_harness::resources::ProviderRef>(),
-        std::mem::size_of::<acyclic_harness::source_authorization::ProjectSourceAuthorization>(),
-        std::mem::size_of::<acyclic_harness::workflow::WorkflowCommand>(),
-        std::mem::size_of::<PiTaskInput>(),
-        std::mem::size_of::<PiTaskBinding>(),
-        std::mem::size_of::<FileRef>(),
-        std::mem::size_of::<(String, serde_json::Value)>(),
-    ]
-    .into_iter()
-    .fold(0, usize::max) as u64;
-    let nodes = checked_quota(shape.lexical_items(), shape.virtual_items())?;
-    let typed = if borrowed {
-        super::pi_task::native_metadata_quota::<T>(
-            shape.input_bytes(),
-            checked_quota(nodes, nodes)?,
-        )?
-    } else {
-        nodes
-            .checked_mul(8)
-            .and_then(|nodes| nodes.checked_mul(slot))
-            .ok_or_else(|| {
-                acyclic_harness::Error::from(NativeTreeMaterializationError::Work(
-                    WorkError::Overflow,
-                ))
-            })?
-    };
-    let additional = if borrowed {
-        acyclic_harness::json_value_decode_owned_bytes(shape)?
-    } else {
-        acyclic_harness::json_owned_value_conversion_additional_bytes(shape)?
-    };
-    let labels = super::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES;
-    let diagnostics = acyclic_harness::json_typed_diagnostic_owned_bytes(
-        shape,
-        labels,
-        Some(acyclic_harness::wire::ErrorCode::Invalid),
-    )?;
-    Ok((checked_quota(typed, additional)?, diagnostics))
 }
 
 fn checked_quota(left: u64, right: u64) -> Result<u64> {

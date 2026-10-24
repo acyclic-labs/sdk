@@ -29,7 +29,7 @@ impl Shared {
         #[cfg(test)]
         self.polling.store(false, Ordering::Release);
         let mut work = self.delivery.callback_work();
-        let started = std::time::Instant::now();
+        let started = acyclic_native_runtime::deadline::now();
         let delivered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             work.started_io(READ)?;
             self.read_events_and_deliver_locked(
@@ -114,7 +114,7 @@ impl Shared {
         if self.delivery.original.is_some() && !self.delivery.is_exact() {
             return Ok(false);
         }
-        let started = std::time::Instant::now();
+        let started = acyclic_native_runtime::deadline::now();
         let mut reading = self.reading();
         self.read_events_and_deliver_locked(&mut reading, started, timeout, work)
     }
@@ -141,13 +141,13 @@ impl Shared {
         let result = (|| {
             loop {
                 work.check()?;
-                if started.elapsed() >= timeout {
+                if acyclic_native_runtime::deadline::elapsed(started) >= timeout {
                     self.delivery.invalidate(work)?;
                     return Ok(false);
                 }
                 while let Some(path) = reading.cleanup.last().filter(|_| reading.alias_cursor == 0)
                 {
-                    if started.elapsed() >= timeout {
+                    if acyclic_native_runtime::deadline::elapsed(started) >= timeout {
                         self.delivery.invalidate(work)?;
                         return Ok(false);
                     }
@@ -252,8 +252,11 @@ impl Shared {
                     reading.alias_cursor = 0;
                     continue;
                 }
-                let cleanup_needed =
-                    mask & (REBINDING | libc::IN_DELETE_SELF | libc::IN_MOVE_SELF) != 0;
+                // Every registration is IN_ONLYDIR. A file rebinding cannot
+                // withdraw one; a replaced directory has its own ordered
+                // IN_ISDIR removal event (or an explicit overflow).
+                let cleanup_needed = mask & (libc::IN_DELETE_SELF | libc::IN_MOVE_SELF) != 0
+                    || mask & REBINDING != 0 && mask & libc::IN_ISDIR != 0;
                 let event_needed = mask
                     & (REBINDING
                         | libc::IN_MODIFY
@@ -265,23 +268,37 @@ impl Shared {
                         })
                     != 0;
                 loop {
-                    if started.elapsed() >= timeout {
+                    if !cleanup_needed && !event_needed {
+                        break;
+                    }
+                    if acyclic_native_runtime::deadline::elapsed(started) >= timeout {
                         self.delivery.invalidate(work)?;
                         return Ok(false);
                     }
-                    let watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
-                    let Some((alias, watched)) = watches.get(reading.alias_cursor) else {
+                    let mut watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
+                    if reading.alias_cursor == 0 {
+                        reading.alias_revision = watches.revision;
+                    } else if reading.alias_cursor != usize::MAX
+                        && reading.alias_revision != watches.revision
+                    {
+                        // Delivery releases the registry lock around the
+                        // callback. A concurrent removal can swap saved record
+                        // positions; never interpret that cursor as another alias.
+                        drop(watches);
+                        self.delivery.invalidate(work)?;
+                        break;
+                    }
+                    let Some((record, next_alias)) = watches.descriptor_alias(
+                        descriptor,
+                        reading.alias_cursor,
+                        work,
+                        &self.retained_variable_bytes,
+                        &self.ownership,
+                    )?
+                    else {
                         break;
                     };
-                    work.started_io(ITEM)?;
-                    if *watched != descriptor {
-                        reading.alias_cursor += 1;
-                        continue;
-                    }
-                    if !cleanup_needed && !event_needed {
-                        reading.alias_cursor += 1;
-                        continue;
-                    }
+                    let (alias, _) = &watches[record];
                     if alias.as_os_str().is_empty() && mask & libc::IN_DELETE_SELF != 0 {
                         drop(watches);
                         self.delivery.invalidate(work)?;
@@ -409,7 +426,7 @@ impl Shared {
                         }
                         return delivered.map(|()| false);
                     }
-                    reading.alias_cursor += 1;
+                    reading.alias_cursor = next_alias;
                     if cleanup_needed {
                         let retained_bytes = path.capacity() as u64;
 
@@ -430,11 +447,12 @@ impl Shared {
                     while let Some((_, watched)) = watches.get(at) {
                         work.started_io(ITEM)?;
                         if *watched == descriptor {
-                            let shifted = (watches.len() - at - 1)
+                            let shifted = usize::from(at + 1 != watches.len())
                                 .checked_mul(std::mem::size_of::<(PathBuf, i32)>())
                                 .ok_or(WorkError::Overflow)?;
+                            let slots = watches.prepare_remove(at, work)?;
                             work.started_io(copied(shifted as u64))?;
-                            let (path, _) = watches.remove(at);
+                            let (path, _) = watches.remove(at, slots);
                             let bytes = path.capacity() as u64;
 
                             drop(path);

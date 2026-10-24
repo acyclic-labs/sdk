@@ -1,4 +1,5 @@
 [package]
+autotests = false
 include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "examples/**", "tests/**", "benches/**", "fuzz/corpus/**"]
 name = "acyclic-actors"
 version.workspace = true
@@ -11,6 +12,7 @@ description = "Public Actors v1 contract and validation"
 readme = "README.md"
 
 [features]
+fuzzing = []
 test-support = ["dep:acyclic-native-runtime", "acyclic-native-runtime/test-support"]
 
 [dependencies]
@@ -48,8 +50,9 @@ tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] 
 url = "=2.5.8"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+ctor = { version = "=1.0.13", default-features = false }
 async-trait.workspace = true
-acyclic-test-support = { path = "../test-support" }
+acyclic-test-support = { path = "../test-support", features = ["capture"] }
 loom = "0.7"
 proptest.workspace = true
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
@@ -68,3 +71,22 @@ protoc-bin-vendored = "=3.3.0"
 
 [lints]
 workspace = true
+
+
+[dev-dependencies]
+
+[[test]]
+name = "descriptor_contract"
+path = "tests/descriptor_contract.rs"
+
+[[test]]
+name = "guest_contract"
+path = "tests/guest_contract.rs"
+
+[[test]]
+name = "guest_loom"
+path = "tests/guest_loom.rs"
+
+[[test]]
+name = "timer_loom"
+path = "tests/timer_loom.rs"

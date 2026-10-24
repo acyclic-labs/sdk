@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct ListFilesInput {
     path: String,
@@ -491,6 +491,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolExecut
         invocation: ToolInvocation,
         _context: Option<crate::runtime::ToolContext>,
     ) -> BoxFuture<'a, Result<ToolResult>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move {
             let mut observed = self.observed.lock().await;
             let admission_digest =
@@ -524,6 +525,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolExecut
         invocation: ToolInvocation,
         _context: Option<crate::runtime::ToolContext>,
     ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move {
             let observed = self.observed.lock().await;
             let admission_digest =

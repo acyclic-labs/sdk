@@ -1,9 +1,8 @@
 #![no_main]
 use acyclic_harness::client::InterestDocument;
+use acyclic_harness::test_support::fuzz_cases::client_resume as resume;
 use acyclic_stream::StreamPath;
 use libfuzzer_sys::fuzz_target;
-#[path = "../../harness/tests/support/client_resume.rs"]
-mod resume;
 
 fuzz_target!(|bytes: &[u8]| {
     resume::exercise(bytes);

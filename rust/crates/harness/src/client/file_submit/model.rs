@@ -4,6 +4,8 @@
 mod fixture;
 mod observation;
 mod provider;
+mod restoration;
+mod setup;
 use super::confirmation::Barrier;
 use acyclic_test_support::differential::oracle::Oracle;
 use observation::Event;
@@ -43,7 +45,15 @@ fn oracle() -> Oracle<Input, Fault, Event> {
         let fault = fault.copied();
         // Default builder: no preemption, permutation, iteration or time cap.
         loom::model(move || {
-            let event = fixture::run(input, fault);
+            // Dispatch before entering either scenario's async-operation frame.
+            // Nesting restoration inside the publication fixture retains both
+            // large frames on Loom's ordinary coroutine stack.
+            let event = match input.barrier {
+                Barrier::Intent | Barrier::Target | Barrier::Checkpoint => {
+                    fixture::run(input, fault)
+                }
+                Barrier::Restoration => restoration::run(input, fault),
+            };
             sink.lock().unwrap().push(event);
         });
         let observations = Arc::try_unwrap(observations).unwrap().into_inner().unwrap();
@@ -95,6 +105,22 @@ fn oracle() -> Oracle<Input, Fault, Event> {
         },
         Fault::Refuse,
     )
+    .control(
+        "prefix-before-effect",
+        Input {
+            barrier: Barrier::Restoration,
+            concurrent: false,
+        },
+        Fault::Skip(Barrier::Restoration),
+    )
+    .control(
+        "confirmed-intent-progress",
+        Input {
+            barrier: Barrier::Restoration,
+            concurrent: false,
+        },
+        Fault::Refuse,
+    )
     .build()
 }
 
@@ -116,6 +142,14 @@ fn target_precedes_checkpoint_publication() {
 fn checkpoint_precedes_retirement() {
     oracle().check(&Input {
         barrier: Barrier::Checkpoint,
+        concurrent: true,
+    });
+}
+
+#[test]
+fn restoration_requires_its_confirmed_checkpoint() {
+    oracle().check(&Input {
+        barrier: Barrier::Restoration,
         concurrent: true,
     });
 }

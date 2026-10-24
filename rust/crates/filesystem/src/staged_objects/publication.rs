@@ -118,7 +118,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                     }
                     if index.drained.contains(&id) {
                         self.collection.writing(unswept, [id]);
-                        index.remove(id);
+                        index.acknowledge(id, &self.inner)?;
                         continue;
                     }
                     match index.objects.get(&id) {
@@ -206,7 +206,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             self.inner.put_many(&writes, work).await?;
             let mut index = self.index_mut();
             for write in &writes {
-                index.acknowledge(write.object_id);
+                index.acknowledge(write.object_id, &self.inner)?;
             }
         }
         let truncate = {

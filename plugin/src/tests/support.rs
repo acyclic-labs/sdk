@@ -61,19 +61,18 @@ pub(super) async fn test_concurrent_service(
     ))
 }
 
-pub(super) fn run_large_stack<F>(name: &str, make: impl FnOnce() -> F + Send + 'static)
+pub(super) fn run_async_test<F>(name: &str, make: impl FnOnce() -> F + Send + 'static)
 where
     F: std::future::Future<Output = ()> + 'static,
 {
     std::thread::Builder::new()
         .name(name.into())
-        .stack_size(32 * 1024 * 1024)
         .spawn(|| {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(make());
+                .block_on(acyclic_fs::in_heap(make));
         })
         .unwrap()
         .join()

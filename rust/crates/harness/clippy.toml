@@ -62,4 +62,14 @@ disallowed-methods = [
 disallowed-macros = [
     { path = "std::env", reason = "compile-time environment discovery belongs in the Cargo metadata seam" },
     { path = "std::option_env", reason = "compile-time environment discovery belongs in the Cargo metadata seam" },
+
+    { path = "std::env::set_current_dir", reason = "process-wide; use Command::current_dir" },
+    { path = "tokio::spawn", reason = "use acyclic_grpc_observability::task::spawn" },
+    { path = "tokio::task::spawn_blocking", reason = "use acyclic_grpc_observability::task::spawn_blocking" },
+    { path = "tokio::task::JoinSet::spawn", reason = "use acyclic_grpc_observability::task::join_set" },
+    { path = "tokio::runtime::Handle::spawn", reason = "preserve the caller dispatcher at admission" },
+    { path = "tokio::runtime::Handle::spawn_blocking", reason = "use acyclic_grpc_observability::task::runtime_blocking" },
+    { path = "std::thread::spawn", reason = "use acyclic_grpc_observability::task::thread" },
+    { path = "std::thread::Builder::spawn", reason = "use acyclic_grpc_observability::task::named_thread" },
+    { path = "std::thread::Scope::spawn", reason = "use acyclic_grpc_observability::task::scoped_thread" },
 ]

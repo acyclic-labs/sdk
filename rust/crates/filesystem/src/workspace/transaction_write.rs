@@ -108,15 +108,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             || self.checkout.volume_config().case_sensitivity
                 != crate::model::CaseSensitivity::Sensitive
         {
-            return self
-                .write_batch_serial(directories, files, accounting, cancellation)
-                .await;
+            return crate::heap_future::metered!(erased accounting, |accounting| {
+                self.write_batch_serial(directories, files, accounting, cancellation)
+            });
         }
         let (paths, directory_count) =
             self.batch_paths(directories, files, accounting, cancellation)?;
-        let mut kinds = self
-            .batch_kinds(&paths.value, accounting, cancellation)
-            .await?;
+        let mut kinds = crate::heap_future::metered!(erased accounting, |accounting| {
+            self.batch_kinds(&paths.value, accounting, cancellation)
+        })?;
         classify_batch_paths(&paths.value, directory_count, &mut kinds.value, accounting)?;
         let capacity = directory_count
             .checked_add(
@@ -193,9 +193,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         if operations.value.is_empty() {
             return operations.retire(accounting).map_err(Into::into);
         }
-        self.checkout
-            .apply_authored_bulk_transaction_with_accounting(operations, accounting, cancellation)
-            .await?;
+        crate::heap_future::metered!(erased accounting, |accounting| {
+            self.checkout
+                .apply_authored_bulk_transaction_with_accounting(
+                    operations,
+                    accounting,
+                    cancellation,
+                )
+        })?;
         Ok(())
     }
 

@@ -111,15 +111,20 @@ where
     Fut: Future<Output = Result<(), NativeWorkspacePublicationError>> + Send,
 {
     let result = async {
-        let (materializer, journal) =
-            prepare_generation(from, to, state, publication, &work, &mut before_effect).await?;
-        materializer
-            .replay(
+        let (materializer, journal) = crate::heap_future::in_heap_claimed(&work, || {
+            prepare_generation(from, to, state, publication, &work, &mut before_effect)
+        })?
+        .await?;
+        // Erased: the replay's Send proof starts here, not in every caller's.
+        let replay = crate::heap_future::in_heap_claimed(&work, || {
+            materializer.replay(
                 journal,
                 MaterializationRecovery::Complete,
                 &mut before_effect,
             )
-            .await
+        })?
+        .map_frame(|frame| -> acyclic_stream::BoxProviderFuture<'_, _> { frame });
+        replay.await
     }
     .await;
     result
@@ -169,7 +174,9 @@ where
         .into());
     }
     let store = state.materialization(work.clone());
-    let mut journal = if let Some(journal) = store.load(request.operation_id).await? {
+    let mut journal = if let Some(journal) =
+        crate::heap_future::in_heap_claimed(work, || store.load(request.operation_id))?.await?
+    {
         if !valid_journal(&journal, request.operation_id)
             || journal.root_identity != Some(actual.to_bytes())
             || journal.plan.intent
@@ -184,12 +191,17 @@ where
         work.set_original_work(journal.work);
         journal
     } else {
-        let (plan, custody) = generation_plan(from, to, &request, work).await?;
-        let parent = super::directory_preparation::prepare_publication_parent(
-            &operation,
-            work,
-            before_effect,
-        )
+        let (plan, custody) = crate::heap_future::in_heap_claimed(work, || {
+            generation_plan(from, to, &request, work)
+        })?
+        .await?;
+        let parent = crate::heap_future::in_heap_claimed(work, || {
+            super::directory_preparation::prepare_publication_parent(
+                &operation,
+                work,
+                &mut *before_effect,
+            )
+        })?
         .await?;
         let journal = MaterializationJournal {
             version: JOURNAL_VERSION,
@@ -208,34 +220,44 @@ where
             work: work.journal_work()?,
             custody: Some(custody),
         };
-        let (stored, journal) = store
-            .compare_and_swap(request.operation_id, 0, journal)
-            .await?;
+        let (stored, journal) = crate::heap_future::in_heap_claimed(work, || {
+            store.compare_and_swap(request.operation_id, 0, journal)
+        })?
+        .await?;
         if !stored {
             return Err(NativeWorkspacePublicationError::MismatchedJournal);
         }
         journal
     };
     if journal.preparation_progress.is_some() {
-        journal = NativeTreeMaterializationBackend::prepare_allocations(
-            &store,
-            journal,
-            &root,
-            &operation,
-            work,
-            before_effect,
-        )
+        journal = crate::heap_future::in_heap_claimed(work, || {
+            NativeTreeMaterializationBackend::prepare_allocations(
+                &store,
+                journal,
+                &root,
+                &operation,
+                work,
+                &mut *before_effect,
+            )
+        })?
         .await?;
     }
     let backend = NativeTreeMaterializationBackend::new(root, operation, allocation, work.clone())?;
     let materializer = JournaledMaterializer::new(store, backend);
-    materializer.verify_allocation(&journal).await?;
+    crate::heap_future::in_heap_claimed(work, || materializer.verify_allocation(&journal))?.await?;
     if journal.phase == MaterializationPhase::Preparing && journal.preimages.is_empty() {
         before_effect().await?;
-        materializer.verify_effect_context(&journal).await?;
-        let completion = materializer.store.prepare_action(journal).await?;
-        let identity = materializer.backend.reset_target_directory("").await?;
-        journal = completion.await?;
+        crate::heap_future::in_heap_claimed(work, || materializer.verify_effect_context(&journal))?
+            .await?;
+        let completion = crate::heap_future::in_heap_claimed(work, || {
+            materializer.store.prepare_action(journal)
+        })?
+        .await?;
+        let identity = crate::heap_future::in_heap_claimed(work, || {
+            materializer.backend.reset_target_directory("")
+        })?
+        .await?;
+        journal = crate::heap_future::in_heap_claimed(work, || completion)?.await?;
         let mut storage = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         let mut selections = Vec::new();
         for edit in &journal.plan.edits {
@@ -253,9 +275,17 @@ where
                 maximum_extent_spans: request.options.maximum_extent_spans,
                 transfer_bytes: request.options.transfer_bytes,
             };
-            journal = materializer
-                .stage_generation(to, &selections, &options, journal, work, before_effect)
-                .await?;
+            journal = crate::heap_future::in_heap_claimed(work, || {
+                materializer.stage_generation(
+                    to,
+                    &selections,
+                    &options,
+                    journal,
+                    work,
+                    &mut *before_effect,
+                )
+            })?
+            .await?;
         }
     }
     Ok((materializer, journal))

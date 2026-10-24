@@ -6,6 +6,13 @@ use crate::storage::ObjectId;
 use std::mem::size_of;
 use thiserror::Error;
 
+pub(crate) fn arc_control_bytes<T>() -> Result<u64, WorkError> {
+    let (layout, _) = std::alloc::Layout::new::<[std::sync::atomic::AtomicUsize; 2]>()
+        .extend(std::alloc::Layout::new::<T>())
+        .map_err(|_| WorkError::Overflow)?;
+    Ok(usize_to_u64(layout.pad_to_align().size()))
+}
+
 pub(crate) fn bytes_owner_control_bytes<T>() -> Result<u64, WorkError> {
     let (layout, _) = std::alloc::Layout::new::<std::sync::atomic::AtomicUsize>()
         .extend(std::alloc::Layout::new::<T>())
@@ -13,10 +20,11 @@ pub(crate) fn bytes_owner_control_bytes<T>() -> Result<u64, WorkError> {
     Ok(usize_to_u64(layout.pad_to_align().size()))
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Debug, Default)]
 /// Tracks live and reserved logical allocation bytes.
 pub struct AllocationLedger {
     live_bytes: u64,
+    frame_retirements: Option<std::sync::Arc<FrameRetirements>>,
     // Accepted future payload/control capacity, not a physical allocation or peak.
     #[cfg(not(target_arch = "wasm32"))]
     reserved_bytes: u64,
@@ -178,6 +186,115 @@ impl LogicalVecCapacity {
 }
 
 impl AllocationLedger {
+    /// Borrows the ledger exclusively while a transaction previews numeric work.
+    /// Existing guards may retire meanwhile; admission conservatively retains
+    /// their bytes until commit, which applies those retirements exactly once.
+    pub(crate) fn preview(&mut self) -> Result<AllocationPreview<'_>, AllocationError> {
+        let (retired_at, reconciled) = self
+            .frame_retirements
+            .as_ref()
+            .map_or((0, 0), |state| (state.retired_total(), state.reconciled()));
+        let live = retired_at
+            .checked_sub(reconciled)
+            .and_then(|unreconciled| self.live_bytes.checked_sub(unreconciled))
+            .ok_or(AllocationError::ReleaseInvariant)?;
+        let scratch = Self {
+            live_bytes: live,
+            #[cfg(not(target_arch = "wasm32"))]
+            reserved_bytes: self.reserved_bytes,
+            ..Self::default()
+        };
+        Ok(AllocationPreview {
+            ledger: self,
+            scratch,
+            retired_at,
+        })
+    }
+
+    /// Native resource allowances never own standalone frames.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn unframed_snapshot(&self) -> Self {
+        assert!(
+            self.frame_retirements.is_none(),
+            "frame ledgers require an exclusive preview"
+        );
+        Self {
+            live_bytes: self.live_bytes,
+            #[cfg(not(target_arch = "wasm32"))]
+            reserved_bytes: self.reserved_bytes,
+            ..Self::default()
+        }
+    }
+    /// The control cell and first frame are admitted before either allocation.
+    pub(crate) fn claim_frame(
+        &mut self,
+        bytes: u64,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+    ) -> Result<StandaloneFrameReservation, AllocationError> {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        };
+        let control_bytes = if self.frame_retirements.is_none() {
+            usize_to_u64(
+                crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<FrameRetirements>())
+                    .map_err(|_| AllocationError::Overflow)?,
+            )
+        } else {
+            0
+        };
+        let before_work = *work;
+        self.claim_bytes(
+            bytes
+                .checked_add(control_bytes)
+                .ok_or(AllocationError::Overflow)?,
+            u64::from(bytes != 0) + u64::from(control_bytes != 0),
+            work,
+            budget,
+        )?;
+        let retired = if let Some(retired) = &self.frame_retirements {
+            if retired
+                .admitted
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |admitted| {
+                    admitted.checked_add(bytes)
+                })
+                .is_err()
+            {
+                self.release(bytes)?;
+                *work = before_work;
+                return Err(AllocationError::Overflow);
+            }
+            Arc::clone(retired)
+        } else {
+            let retired = Arc::new(FrameRetirements {
+                admitted: AtomicU64::new(bytes),
+                retired: AtomicU64::new(0),
+                reconciled: AtomicU64::new(0),
+                control_bytes,
+            });
+            self.frame_retirements = Some(Arc::clone(&retired));
+            retired
+        };
+        Ok(StandaloneFrameReservation { retired, bytes })
+    }
+
+    fn reconcile_frame_retirements(&mut self) -> Result<(), AllocationError> {
+        if let Some(retired) = &self.frame_retirements {
+            // Frame guards retire independently; the exclusively owned ledger
+            // applies each monotonic retirement exactly once.
+            let total = retired.retired_total();
+            let bytes = total
+                .checked_sub(retired.reconciled())
+                .ok_or(AllocationError::ReleaseInvariant)?;
+            self.live_bytes = self
+                .live_bytes
+                .checked_sub(bytes)
+                .ok_or(AllocationError::ReleaseInvariant)?;
+            retired.reconcile_to(total);
+        }
+        Ok(())
+    }
     #[inline]
     pub(crate) fn claim_elements<T>(
         &mut self,
@@ -201,6 +318,7 @@ impl AllocationLedger {
         work: &mut WorkCounters,
         budget: WorkBudget,
     ) -> Result<(), AllocationError> {
+        self.reconcile_frame_retirements()?;
         let next_live = self
             .live_bytes
             .checked_add(bytes)
@@ -230,6 +348,7 @@ impl AllocationLedger {
         work: &WorkCounters,
         budget: WorkBudget,
     ) -> Result<(), AllocationError> {
+        self.reconcile_frame_retirements()?;
         let reserved = self
             .reserved_bytes
             .checked_add(bytes)
@@ -265,6 +384,7 @@ impl AllocationLedger {
         bytes: u64,
         work: &mut WorkCounters,
     ) -> Result<(), AllocationError> {
+        self.reconcile_frame_retirements()?;
         let reserved = self
             .reserved_bytes
             .checked_sub(bytes)
@@ -293,6 +413,7 @@ impl AllocationLedger {
         bytes: u64,
         work: &mut WorkCounters,
     ) -> Result<(), AllocationError> {
+        self.reconcile_frame_retirements()?;
         let next_live = self
             .live_bytes
             .checked_add(bytes)
@@ -303,6 +424,7 @@ impl AllocationLedger {
     }
 
     pub(crate) fn release(&mut self, bytes: u64) -> Result<(), AllocationError> {
+        self.reconcile_frame_retirements()?;
         self.live_bytes = self
             .live_bytes
             .checked_sub(bytes)
@@ -310,12 +432,114 @@ impl AllocationLedger {
         Ok(())
     }
 
+    /// The retirement cell stays owned until this ledger itself is destroyed.
+    #[cfg(test)]
+    #[cfg(all(
+        feature = "memory",
+        feature = "distributed",
+        not(target_arch = "wasm32")
+    ))]
+    pub(crate) fn live_frame_bytes(&self) -> u64 {
+        self.frame_retirements.as_ref().map_or(0, |state| {
+            let admitted = state.admitted.load(std::sync::atomic::Ordering::Acquire);
+            let retired = state.retired.load(std::sync::atomic::Ordering::Acquire);
+            admitted
+                .checked_sub(retired)
+                .expect("a frame retires only its admitted bytes")
+        })
+    }
+
+    pub(crate) fn frame_control_bytes(&self) -> u64 {
+        self.frame_retirements
+            .as_ref()
+            .map_or(0, |retired| retired.control_bytes)
+    }
+
     /// Returns currently retained logical bytes.
-    pub const fn live_bytes(self) -> u64 {
-        self.live_bytes
+    pub fn live_bytes(&self) -> u64 {
+        let unreconciled = self.frame_retirements.as_ref().map_or(0, |retired| {
+            let total = retired.retired_total();
+            debug_assert!(total >= retired.reconciled(), "monotonic frame retirement");
+            total.saturating_sub(retired.reconciled())
+        });
+        // `claim_frame` admitted every retired frame into `live_bytes`, and
+        // reconciliation removes each retirement exactly once.
+        debug_assert!(unreconciled <= self.live_bytes, "balanced frame retirement");
+        self.live_bytes.saturating_sub(unreconciled)
     }
 }
 
+/// A numeric preview cannot admit standalone frames or race later ledger admissions.
+pub(crate) struct AllocationPreview<'a> {
+    ledger: &'a mut AllocationLedger,
+    scratch: AllocationLedger,
+    retired_at: u64,
+}
+impl AllocationPreview<'_> {
+    pub(crate) fn live_bytes(&self) -> u64 {
+        self.scratch.live_bytes()
+    }
+    pub(crate) fn claim_bytes(
+        &mut self,
+        bytes: u64,
+        operations: u64,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+    ) -> Result<(), AllocationError> {
+        self.scratch.claim_bytes(bytes, operations, work, budget)
+    }
+    pub(crate) fn commit(self) -> Result<(), AllocationError> {
+        self.ledger.live_bytes = self.scratch.live_bytes;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.ledger.reserved_bytes = self.scratch.reserved_bytes;
+        }
+        // The scratch ledger already excludes every retirement up to
+        // `retired_at`; later ones are applied by the reconciliation below.
+        if let Some(retired) = &self.ledger.frame_retirements {
+            retired.reconcile_to(self.retired_at);
+        }
+        self.ledger.reconcile_frame_retirements()
+    }
+}
+#[derive(Debug)]
+struct FrameRetirements {
+    admitted: std::sync::atomic::AtomicU64,
+    /// Cumulative bytes of retired frames; guards only add to it.
+    retired: std::sync::atomic::AtomicU64,
+    /// The prefix of `retired` the owning ledger has applied. Only that
+    /// ledger, through `&mut` access, writes it.
+    reconciled: std::sync::atomic::AtomicU64,
+    /// The bytes of this cell's own allocation, charged with its first frame.
+    control_bytes: u64,
+}
+
+impl FrameRetirements {
+    fn retired_total(&self) -> u64 {
+        self.retired.load(std::sync::atomic::Ordering::Acquire)
+    }
+    fn reconciled(&self) -> u64 {
+        self.reconciled.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn reconcile_to(&self, total: u64) {
+        self.reconciled
+            .store(total, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// A frame retires its own backing even when its borrowing future is cancelled.
+pub(crate) struct StandaloneFrameReservation {
+    retired: std::sync::Arc<FrameRetirements>,
+    bytes: u64,
+}
+impl Drop for StandaloneFrameReservation {
+    fn drop(&mut self) {
+        // Cumulative admitted frame bytes are bounded before constructing each guard.
+        self.retired
+            .retired
+            .fetch_add(self.bytes, std::sync::atomic::Ordering::AcqRel);
+    }
+}
 /// Retains the allocation backing a value returned by a kernel operation.
 #[cfg_attr(target_arch = "wasm32", derive(Clone, Copy))]
 pub enum KernelOwnedAllocation {

@@ -18,7 +18,8 @@ pub(crate) const ROOT_INPUT_DIRECTORY: &str = "pi-inputs";
 pub(crate) const ROOT_ALLOCATION_PROVIDER: &str = "acyclic.pi.root";
 pub(crate) const ROOT_ALLOCATION_EFFECT: &str = "acyclic.pi.root.allocate@1";
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiRootRequest {
     pub(crate) binding: PiTaskBinding,

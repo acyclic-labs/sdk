@@ -11,8 +11,7 @@ use acyclic_harness::{
 use acyclic_stream::{MemoryStream, StreamPath};
 use std::{collections::BTreeMap, sync::Arc};
 
-#[path = "../../../harness-fuzz/support/queries.rs"]
-mod query_inputs;
+use acyclic_harness::test_support::fuzz_cases::queries as query_inputs;
 
 const LIMITS: QueryViewLimits = QueryViewLimits {
     files: 128,

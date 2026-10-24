@@ -97,7 +97,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         let objects = &self.volume.fs.inner.objects;
         let limits = DecodeLimits::for_volume(self.volume.config);
-        let (files, allocation) = crate::kernel::diff_file_records_with_accounting(
+        let (files, allocation) = crate::kernel::diff_file_records_with_accounting::<_, false>(
             objects,
             Some(before),
             Some(self.root.file_table),
@@ -128,16 +128,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 if before == Some(after) {
                     continue;
                 }
-                let (bindings, allocation) = crate::kernel::diff_tree_entries_with_accounting(
-                    objects,
-                    before,
-                    Some(after),
-                    maximum,
-                    limits,
-                    accounting,
-                    cancellation,
-                )
-                .await?;
+                let (bindings, allocation) =
+                    crate::kernel::diff_tree_entries_with_accounting::<_, false>(
+                        objects,
+                        before,
+                        Some(after),
+                        maximum,
+                        limits,
+                        accounting,
+                        cancellation,
+                    )
+                    .await?;
                 let bytes = bindings.retained_allocation_bytes;
                 let bindings = Owned::new(bindings, allocation, bytes);
                 let result = async {

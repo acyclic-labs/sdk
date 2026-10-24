@@ -4,8 +4,7 @@ use acyclic_harness_tui::key_event::{InputEvent, KeyEvent, KeyModifiers};
 use acyclic_harness_tui::term::{Decoder, PROBE_LIMIT};
 use libfuzzer_sys::fuzz_target;
 
-#[path = "../../tests/support/terminal_keys.rs"]
-mod table;
+use acyclic_harness_tui::fuzzing::terminal_keys as table;
 
 fuzz_target!(|data: &[u8]| {
     let rows: Vec<_> = table::KITTY

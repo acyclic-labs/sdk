@@ -147,6 +147,7 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "bytes",
+ "dirs",
  "futures",
  "hex",
  "http",

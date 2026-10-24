@@ -169,15 +169,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     > {
         accounting.check()?;
         let before = readonly_standalone_live(accounting);
-        // The future is destroyed before its exact physical frame claim.
-        let mut frame_allocation = None;
-        let (mut future, frame_bytes) = crate::heap_future::in_heap_admitted(
-            (&mut *self, record, after, &mut *accounting, cancellation),
-            |(_, _, _, accounting, _), bytes| {
-                frame_allocation = Some(accounting.claim_owned(bytes, u64::from(bytes != 0))?);
-                Ok::<_, FsError>(())
-            },
-            |(this, record, after, accounting, cancellation)| async move {
+        let (result, reservation) =
+            crate::heap_future::in_heap_metered(&mut *accounting, |accounting| async move {
+                let this = self;
                 let FilePayload::Directory { entries } = record.payload else {
                     return Err(FsError::NotDirectory);
                 };
@@ -230,7 +224,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     );
                     let state = probe
                         .0
-                        .probe_async_with_accounting(
+                        .probe_inline_with_accounting(
                             GenerationId::new(this.root.base.digest),
                             &region.0,
                             accounting,
@@ -258,13 +252,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     this.extend_observations_with_accounting(staged, accounting, cancellation)?;
                 }
                 Ok((page.0, page.1))
-            },
-        )?;
-        let result = future.as_mut().await;
-        drop(future);
-        if let Some(mut allocation) = frame_allocation {
-            accounting.release_owned(&mut allocation, frame_bytes)?;
-        }
+            })?
+            .await;
+        crate::heap_future::FrameLedger::release_frame(accounting, reservation)?;
         let retained = result.as_ref().map_or(0, |(page, _)| {
             (page.entries.capacity() * size_of::<crate::kernel::TreeEntry>()) as u64
                 + page

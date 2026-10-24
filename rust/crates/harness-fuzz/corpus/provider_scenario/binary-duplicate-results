@@ -1,0 +1,1 @@
+{"wire_request":{"input":[{"type":"function_call_output","call_id":"call","output":"{\"text\":\"same\"}"},{"type":"function_call_output","call_id":"call","output":"{\"text\":\"same\"}"}]}}

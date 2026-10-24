@@ -51,7 +51,7 @@ fn reopen(files: &TaskFiles<MemoryStream>) -> Arc<TaskFiles<MemoryStream>> {
     let inner = TaskVolume {
         provider: files.inner.provider.clone(),
         path: files.inner.path.clone(),
-        index: crate::sync::Mutex::new(index),
+        index: Arc::new(crate::sync::Mutex::new(index)),
     };
     Arc::new(TaskFiles {
         inner,

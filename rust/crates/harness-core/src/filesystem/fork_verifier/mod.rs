@@ -376,6 +376,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ForkSeedVe
                     io.retain_owned(std::mem::size_of::<FilesystemForkPublicationGuard<A, O>>() as u64)?;
                     io.allocation_attempt(std::mem::size_of::<FilesystemForkPublicationGuard<A, O>>() as u64)?;
                 }
+                // Charged above: the guard's bytes are claimed on native work or retained on `io`.
                 let mut guard = Box::new(FilesystemForkPublicationGuard { workspace, reservation: None,
                     #[cfg(not(target_arch = "wasm32"))] native_binding });
                 let operation = acyclic_fs::OperationId::from_bytes(seed.operation_id.into_bytes());

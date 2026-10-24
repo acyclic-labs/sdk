@@ -42,7 +42,7 @@ where
         if let Some(replayed) = self.committed_restore(operation_id).await? {
             return Ok(replayed);
         }
-        let source = self.generation(tree).await?;
+        let source = acyclic_fs::in_heap(|| self.generation(tree)).await?;
         let current = self
             .current
             .head(

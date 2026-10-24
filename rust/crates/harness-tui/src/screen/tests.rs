@@ -11,7 +11,10 @@ fn model<const SCAN: bool, const UNGATED: bool>(length: usize, hidden: u8) {
         input.editor.set_text("@sec", 0);
         input
             .completion
-            .set_file("workspace/second", Some(b"source"))
+            .set_file(
+                "search/results.json",
+                Some(br#"{"query":"sec","paths":["second"]}"#),
+            )
             .unwrap();
         if hidden == 5 {
             let mut settings = *input.editor.settings();

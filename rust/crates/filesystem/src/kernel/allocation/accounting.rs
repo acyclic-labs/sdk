@@ -315,8 +315,13 @@ impl<'a> KernelAccounting<'a> {
             }
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeOriginal { work, cancellation } => {
-                work.record_admitted(delta)?;
-                work.admit(WorkCounters::UNCHARGED)?;
+                let native = crate::materializer::native_materialization_work_error;
+                work.state(|state| {
+                    state.record(delta).map_err(native)?;
+                    state
+                        .admit_reconciled(WorkCounters::UNCHARGED)
+                        .map_err(native)
+                })?;
                 cancellation.check().map_err(Into::into)
             }
         }
@@ -362,7 +367,10 @@ impl<'a> KernelAccounting<'a> {
                     let native = crate::materializer::native_materialization_work_error;
                     state.admit(WorkCounters::UNCHARGED).map_err(native)?;
                     cancellation.check()?;
-                    state.charge(delta).map_err(native).map_err(Into::into)
+                    state
+                        .charge_reconciled(delta)
+                        .map_err(native)
+                        .map_err(Into::into)
                 })
             }
         }
@@ -449,7 +457,10 @@ impl<'a> KernelAccounting<'a> {
                 let native = crate::materializer::native_materialization_work_error;
                 state.admit(WorkCounters::UNCHARGED).map_err(native)?;
                 cancellation.check()?;
-                state.admit(delta).map_err(native).map_err(Into::into)
+                state
+                    .admit_reconciled(delta)
+                    .map_err(native)
+                    .map_err(Into::into)
             }),
         }
     }
@@ -514,6 +525,10 @@ mod tests;
 #[cfg(test)]
 #[cfg(all(not(target_arch = "wasm32"), not(acyclic_fs_loom)))]
 mod charge_tests;
+
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32"), not(acyclic_fs_loom)))]
+mod reconcile_once_tests;
 
 #[cfg(test)]
 #[cfg(acyclic_fs_loom)]

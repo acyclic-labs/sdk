@@ -1,8 +1,8 @@
 //! Shared Ed25519 capability contract for hosted and in-process runtimes.
 #[cfg(any(test, feature = "test-support"))]
 extern crate self as acyclic_auth;
-pub mod admission;
 pub mod addressing;
+pub mod admission;
 pub mod authority;
 pub mod contract;
 pub mod credential;
@@ -11,8 +11,7 @@ mod resource;
 pub mod socket;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
-#[path = "../tests/common/signed.rs"]
-pub mod testing;
+pub use fuzzing::signed as testing;
 pub mod trust;
 mod validation;
 pub mod verify;
@@ -70,3 +69,31 @@ pub const KEY_DOMAIN: &[u8] = b"acyclic.auth.v1/key\0";
 pub const KEYRING_DOMAIN: &[u8] = b"acyclic.auth.v1/keyring\0";
 /// Supported capability format.
 pub const VERSION: u32 = 1;
+
+/// Shared property and mutation-fuzz exercises.
+#[cfg(any(test, feature = "test-support", feature = "fuzzing"))]
+pub mod fuzzing;
+
+#[cfg(test)]
+mod owner_admission;
+
+#[cfg(test)]
+mod owner_authorization_regressions;
+
+#[cfg(test)]
+mod owner_minting;
+
+#[cfg(test)]
+mod owner_proof_storage;
+
+#[cfg(test)]
+mod owner_properties;
+
+#[cfg(test)]
+mod owner_request_hardening;
+
+#[cfg(test)]
+mod owner_verifier;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+acyclic_test_support::counting_allocator!();

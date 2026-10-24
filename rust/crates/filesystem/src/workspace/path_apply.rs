@@ -35,50 +35,57 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             return Err(WorkspaceError::ForeignGeneration);
         }
         let cancellation = CancellationToken::new();
-        let current = self
-            .head(WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map_err(|failure| failure.error)?
-            .value;
+        // Unmetered: path application runs on unbounded budgets and holds no work ledger.
+        let current = crate::heap_future::in_heap_unmetered(|| {
+            self.head(WorkBudget::UNBOUNDED, &cancellation)
+        })
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
         if current.id != if_current {
             return Ok(WorkspacePathApply::Stale(current));
         }
         let mut base_checkout = match base {
             Some(base) => Some(
-                base.workspace
-                    .checkout(
+                // Unmetered: path application runs on unbounded budgets and holds no work ledger.
+                crate::heap_future::in_heap_unmetered(|| {
+                    base.workspace.checkout(
                         GenerationSelector::Exact(base.id),
                         CheckoutMode::read_only_pinned(),
                         WorkBudget::UNBOUNDED,
                         &cancellation,
                     )
-                    .await
-                    .map_err(|failure| failure.error)?
-                    .value,
+                })
+                .await
+                .map_err(|failure| failure.error)?
+                .value,
             ),
             None => None,
         };
         let mut source_checkout = match source {
             Some(source) => Some(
-                source
-                    .workspace
-                    .checkout(
+                // Unmetered: path application runs on unbounded budgets and holds no work ledger.
+                crate::heap_future::in_heap_unmetered(|| {
+                    source.workspace.checkout(
                         GenerationSelector::Exact(source.id),
                         CheckoutMode::read_only_pinned(),
                         WorkBudget::UNBOUNDED,
                         &cancellation,
                     )
-                    .await
-                    .map_err(|failure| failure.error)?
-                    .value,
+                })
+                .await
+                .map_err(|failure| failure.error)?
+                .value,
             ),
             None => None,
         };
-        let mut transaction = self
-            .begin_transaction(idempotency_key, WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map_err(|failure| failure.error)?
-            .value;
+        // Unmetered: path application runs on unbounded budgets and holds no work ledger.
+        let mut transaction = crate::heap_future::in_heap_unmetered(|| {
+            self.begin_transaction(idempotency_key, WorkBudget::UNBOUNDED, &cancellation)
+        })
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
         let config = self.volume.config;
         let parsed = paths
             .iter()
@@ -93,27 +100,43 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             .map(|(_, path)| path.clone())
             .collect::<Vec<_>>();
         let base_records = match &mut base_checkout {
-            Some(checkout) => checkout
-                .lookup_batch_no_follow(&lookup_paths, crate::WorkBudget::UNBOUNDED, &cancellation)
+            Some(checkout) => {
+                // Unmetered: path application runs on unbounded budgets and holds no work ledger.
+                crate::heap_future::in_heap_unmetered(|| {
+                    checkout.lookup_batch_no_follow(
+                        &lookup_paths,
+                        crate::WorkBudget::UNBOUNDED,
+                        &cancellation,
+                    )
+                })
                 .await
                 .map_err(WorkspaceError::engine)?
                 .value
                 .entries
                 .into_iter()
                 .map(|entry| entry.record)
-                .collect(),
+                .collect()
+            }
             None => vec![None; parsed.len()],
         };
         let source_records = match &mut source_checkout {
-            Some(checkout) => checkout
-                .lookup_batch_no_follow(&lookup_paths, crate::WorkBudget::UNBOUNDED, &cancellation)
+            Some(checkout) => {
+                // Unmetered: path application runs on unbounded budgets and holds no work ledger.
+                crate::heap_future::in_heap_unmetered(|| {
+                    checkout.lookup_batch_no_follow(
+                        &lookup_paths,
+                        crate::WorkBudget::UNBOUNDED,
+                        &cancellation,
+                    )
+                })
                 .await
                 .map_err(WorkspaceError::engine)?
                 .value
                 .entries
                 .into_iter()
                 .map(|entry| entry.record)
-                .collect(),
+                .collect()
+            }
             None => vec![None; parsed.len()],
         };
         let changed_paths = parsed
@@ -125,16 +148,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         let current_records = if changed_paths.is_empty() {
             Vec::new()
         } else {
-            transaction
-                .checkout
-                .lookup_batch_no_follow(&changed_paths, crate::WorkBudget::UNBOUNDED, &cancellation)
-                .await
-                .map_err(WorkspaceError::engine)?
-                .value
-                .entries
-                .into_iter()
-                .map(|entry| entry.record)
-                .collect()
+            // Unmetered: path application runs on unbounded budgets and holds no work ledger.
+            crate::heap_future::in_heap_unmetered(|| {
+                transaction.checkout.lookup_batch_no_follow(
+                    &changed_paths,
+                    crate::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+            })
+            .await
+            .map_err(WorkspaceError::engine)?
+            .value
+            .entries
+            .into_iter()
+            .map(|entry| entry.record)
+            .collect()
         };
         let mut current_records = current_records.into_iter();
         let mut operations = Vec::with_capacity(paths.len());
@@ -163,14 +191,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                     if record.kind != FileKind::Directory
                         && let Some((parent, _)) = relative.rsplit_once('/')
                     {
-                        transaction
-                            .create_dir_all(
-                                &format!("/{parent}"),
+                        let parent = format!("/{parent}");
+                        // Unmetered: path application runs on unbounded budgets and holds no work ledger.
+                        crate::heap_future::in_heap_unmetered(|| {
+                            transaction.create_dir_all(
+                                &parent,
                                 WorkBudget::UNBOUNDED,
                                 &cancellation,
                             )
-                            .await
-                            .map_err(|failure| failure.error)?;
+                        })
+                        .await
+                        .map_err(|failure| failure.error)?;
                     }
                     operations.push(crate::kernel::Mutation::Restore { path, record });
                 }
@@ -198,11 +229,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             }
             _ => (0, std::cmp::Reverse(0)),
         });
-        transaction
-            .checkout
-            .mutate(operations, crate::WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map_err(WorkspaceError::engine)?;
+        // Unmetered: path application runs on unbounded budgets and holds no work ledger.
+        crate::heap_future::in_heap_unmetered(|| {
+            transaction
+                .checkout
+                .mutate(operations, crate::WorkBudget::UNBOUNDED, &cancellation)
+        })
+        .await
+        .map_err(WorkspaceError::engine)?;
         Ok(
             match transaction
                 .commit(

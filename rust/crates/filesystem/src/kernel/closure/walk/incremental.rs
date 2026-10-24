@@ -15,7 +15,7 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
             } => {
                 let mut accounting =
                     crate::kernel::allocation::KernelAccounting::native(original, cancellation);
-                let (diff, allocation) = crate::facade::diff_generation_file_tables(
+                let (diff, allocation) = crate::facade::diff_generation_file_tables::<_, true>(
                     self.store,
                     before,
                     after,
@@ -40,7 +40,7 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
                     remaining,
                     cancellation,
                 );
-                let result = crate::facade::diff_generation_file_tables(
+                let result = crate::facade::diff_generation_file_tables::<_, true>(
                     self.store,
                     before,
                     after,
@@ -82,9 +82,8 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
         root: &GenerationRoot,
         previous: &CachedProof,
     ) -> Result<Option<(u64, u128, u64)>, crate::FsError> {
-        let diff = self
-            .changes(previous.root.file_table, root.file_table)
-            .await?;
+        let diff = paid!(self, |walker| walker
+            .changes(previous.root.file_table, root.file_table))?;
         if diff.0.truncated {
             return Ok(None);
         }
@@ -109,11 +108,12 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
         if file_count > self.limits.maximum_files {
             return Ok(None);
         }
-        self.collect_pages::<crate::kernel::file_table_mutation::FileTableFormat>(
-            root.file_table,
-            Some(previous.root.file_table),
-        )
-        .await?;
+        paid!(self, |walker| {
+            walker.collect_pages::<crate::kernel::file_table_mutation::FileTableFormat>(
+                root.file_table,
+                Some(previous.root.file_table),
+            )
+        })?;
         for change in &diff.0.files {
             let Some(record) = change.after else {
                 return Ok(None);
@@ -275,12 +275,41 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
         Ok(None)
     }
 
+    fn decoded_page<F: crate::kernel::persistent_btree::Format>(
+        &self,
+        id: ObjectId,
+        read: &crate::storage::ObjectRead,
+    ) -> Result<(crate::kernel::persistent_io::PageLease<F>, ProofGuard), crate::FsError> {
+        use crate::kernel::persistent_io::{PageLease, cached_page_with_accounting};
+        match self.meter.owned(|accounting| {
+            let cached = cached_page_with_accounting::<S, F>(
+                self.store,
+                id,
+                self.limits.decode,
+                accounting,
+            )?;
+            match cached {
+                Some((page, allocation)) => Ok((Some(page), allocation, 0)),
+                None => Ok((None, accounting.claim_owned(0, 0)?, 0)),
+            }
+        })? {
+            (Some(page), guard) => Ok((page, guard)),
+            (None, guard) => {
+                drop(guard);
+                let (page, guard) = self.meter.decode_steps(|observe| {
+                    F::decode(read, self.limits.decode, &mut |step| observe(step))
+                })?;
+                Ok((PageLease::Owned(page), guard))
+            }
+        }
+    }
+
     async fn collect_pages<F: crate::kernel::persistent_btree::Format>(
         &mut self,
         root: ObjectId,
         before: Option<ObjectId>,
     ) -> Result<(), crate::FsError> {
-        use crate::kernel::persistent_btree::Page;
+        use crate::kernel::persistent_btree::PageRef;
         Self::require_kind(root, F::kind())?;
         let mut pending: ProofVec<'_, (PendingPage<F::Key>, Option<ObjectId>)> =
             ProofVec::new(&self.meter);
@@ -309,26 +338,17 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
                 None
             };
             let bytes = self.read_object(id, true).await?;
-            let page = self.meter.decode_steps(|observe| {
-                F::decode(&bytes.0.bytes, self.limits.decode, &mut |step| {
-                    observe(step)
-                })
-            })?;
+            let page = self.decoded_page::<F>(id, &bytes.0)?;
             drop(bytes);
             let old = old_bytes
                 .as_ref()
-                .map(|bytes| {
-                    self.meter.decode_steps(|observe| {
-                        F::decode(&bytes.0.bytes, self.limits.decode, &mut |step| {
-                            observe(step)
-                        })
-                    })
-                })
+                .zip(before)
+                .map(|(bytes, id)| self.decoded_page::<F>(id, &bytes.0))
                 .transpose()?;
             drop(old_bytes);
-            let old_children = old.as_ref().and_then(|page| match &page.0 {
-                Page::Internal(children) => Some(children.as_slice()),
-                Page::Leaf(_) => None,
+            let old_children = old.as_ref().and_then(|page| match page.0.view() {
+                PageRef::Internal(children) => Some(children),
+                PageRef::Leaf(_) => None,
             });
             let mut reused = before == Some(id);
             if !reused {
@@ -342,11 +362,11 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
             }
             let lower = lower.as_ref().map(|key| &key.0);
             let upper = upper.as_ref().map(|key| &key.0);
-            match &page.0 {
-                Page::Leaf(values) => {
+            match page.0.view() {
+                PageRef::Leaf(values) => {
                     validate_ordered_bounds(values.iter().map(F::key), lower, upper)?;
                 }
-                Page::Internal(children) => {
+                PageRef::Internal(children) => {
                     validate_ordered_bounds(
                         children.iter().map(|child| &child.first),
                         lower,
@@ -395,7 +415,7 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
 
     fn match_child<'c, K: Ord>(
         &self,
-        old: &'c [crate::kernel::Child<K>],
+        old: crate::kernel::persistent_btree::entries::Entries<'c, crate::kernel::Child<K>>,
         cursor: &mut usize,
         child: &crate::kernel::Child<K>,
     ) -> Result<Option<&'c crate::kernel::Child<K>>, crate::FsError> {

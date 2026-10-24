@@ -284,42 +284,54 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let length = input.mutations().len();
         let mut created = Owned::<Vec<Option<FileId>>>::allocate(length, accounting)?;
         let mut metadata = AuthoredMetadataCache::new();
-        for _index in 0..length {
-            let authored = match &mut input {
-                AuthoredTransactionInput::Owned {
-                    mutations,
-                    allocation,
-                    ..
-                } => {
-                    let mutation = mutations.next().ok_or(FsError::InvalidDiff)?;
-                    let bytes = mutation.logical_owned_bytes();
-                    let allocation = split_allocation(allocation, bytes)?;
-                    Owned::new(mutation, allocation, bytes)
-                }
-                #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "native-watch")))]
-                AuthoredTransactionInput::Borrowed(mutations) => {
-                    accounting.check()?;
-                    clone_borrowed_authored_descriptor(
-                        mutations.get(_index).ok_or(FsError::InvalidDiff)?,
+        // One paid frame compiles the whole batch: the compile frame stays out
+        // of this one without a box per mutation.
+        let (this, input_ref, compiled, created_ref, cache) = (
+            &mut *self,
+            &mut input,
+            &mut operations,
+            &mut created,
+            &mut metadata,
+        );
+        crate::heap_future::metered!(erased accounting, |accounting| async move {
+            for _index in 0..length {
+                let authored = match &mut *input_ref {
+                    AuthoredTransactionInput::Owned {
+                        mutations,
+                        allocation,
+                        ..
+                    } => {
+                        let mutation = mutations.next().ok_or(FsError::InvalidDiff)?;
+                        let bytes = mutation.logical_owned_bytes();
+                        let allocation = split_allocation(allocation, bytes)?;
+                        Owned::new(mutation, allocation, bytes)
+                    }
+                    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "native-watch")))]
+                    AuthoredTransactionInput::Borrowed(mutations) => {
+                        accounting.check()?;
+                        clone_borrowed_authored_descriptor(
+                            mutations.get(_index).ok_or(FsError::InvalidDiff)?,
+                            accounting,
+                        )?
+                    }
+                };
+                let file_id = this
+                    .compile_authored_mutation_with_accounting(
+                        authored,
+                        &mut *compiled,
+                        &mut *cache,
                         accounting,
-                    )?
-                }
-            };
-            let file_id = self
-                .compile_authored_mutation_with_accounting(
-                    authored,
-                    &mut operations,
-                    &mut metadata,
-                    accounting,
-                    cancellation,
-                )
-                .await?;
-            accounting.charge(WorkCounters {
-                bytes_copied: crate::foundation::usize_to_u64(size_of::<Option<FileId>>()),
-                ..WorkCounters::UNCHARGED
-            })?;
-            created.value.push(file_id);
-        }
+                        cancellation,
+                    )
+                    .await?;
+                accounting.charge(WorkCounters {
+                    bytes_copied: crate::foundation::usize_to_u64(size_of::<Option<FileId>>()),
+                    ..WorkCounters::UNCHARGED
+                })?;
+                created_ref.value.push(file_id);
+            }
+            Ok::<(), FsError>(())
+        })?;
         input.retire(accounting)?;
         if operations.value.is_empty() {
             operations.retire(accounting)?;
@@ -332,8 +344,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             {
                 return Err(FsError::MutationNotAllowed);
             }
-            self.apply_mutations(operations, accounting, cancellation)
-                .await?;
+            crate::heap_future::metered!(erased accounting, |accounting| {
+                self.apply_mutations(operations, accounting, cancellation)
+            })?;
         }
         Ok(Owned::new(
             AuthoredTransactionResult {
@@ -373,9 +386,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 return Err(FsError::TooManyPendingMutations);
             }
             if !batch.value.is_empty() && (batch.value.len() == maximum || next > maximum - count) {
-                let output = candidate
-                    .apply_authored_transaction_with_accounting(batch, accounting, cancellation)
-                    .await?;
+                let output = crate::heap_future::metered!(erased accounting, |accounting| {
+                    candidate.apply_authored_transaction_with_accounting(
+                        batch,
+                        accounting,
+                        cancellation,
+                    )
+                })?;
                 output.retire(accounting)?;
                 batch = Owned::<Vec<AuthoredMutation>>::allocate(0, accounting)?;
                 count = 0;
@@ -397,10 +414,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         if batch.value.is_empty() {
             batch.retire(accounting)?;
         } else {
-            candidate
-                .apply_authored_transaction_with_accounting(batch, accounting, cancellation)
-                .await?
-                .retire(accounting)?;
+            crate::heap_future::metered!(erased accounting, |accounting| {
+                candidate.apply_authored_transaction_with_accounting(
+                    batch,
+                    accounting,
+                    cancellation,
+                )
+            })?
+            .retire(accounting)?;
         }
         let backing = match &input.1 {
             KernelOwnedAllocation::Standalone => backing,

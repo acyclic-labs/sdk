@@ -1,0 +1,3 @@
+{"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"fs","arguments":{"command":"diff"}},
+  {"type":"event","kind":"completed","metadata":null}],"done"],
+ "expect":{"results":{"call":{"name":"fs","content":{"kind":"json","value":{"result":{"Filesystem":{"Data":{"kind":"diff"}}}}}}}}}

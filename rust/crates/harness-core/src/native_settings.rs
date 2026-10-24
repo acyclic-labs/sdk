@@ -445,3 +445,11 @@ fn codex_directory(home: &Path, configured: Option<&std::ffi::OsStr>) -> PathBuf
 
 #[cfg(test)]
 mod tests;
+
+/// Exercises the production model selection parser.
+#[cfg(feature = "test-support")]
+pub use model_selection::fuzz_check as fuzz_model_selection;
+
+/// Exercises the production workspace key parser.
+#[cfg(feature = "test-support")]
+pub use workspace::fuzz_check as fuzz_workspace_key;

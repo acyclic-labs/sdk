@@ -44,8 +44,7 @@ impl ControlPlane {
             .map_err(display)?;
         let parent_context = registry.resolve(parent_context_id).await.map_err(display)?;
         if let Some(mount) = self.mounts.get(&agent) {
-            mount
-                .sync()
+            fs_call(mount.sync())
                 .await
                 .map_err(|error| format!("cannot synchronize child mount before merge: {error}"))?;
         }
@@ -143,7 +142,9 @@ impl ControlPlane {
             }
             Publication::Conflicted(publication) => {
                 if let Some(parent_mount) = self.mounts.get(caller) {
-                    parent_mount.advance_to_head().await.map_err(display)?;
+                    fs_call(parent_mount.advance_to_head())
+                        .await
+                        .map_err(display)?;
                 }
                 let conflicts = publication
                     .conflicts
@@ -162,8 +163,7 @@ impl ControlPlane {
             Publication::Applied(publication) => publication,
         };
         if let Some(parent_mount) = self.mounts.get(caller) {
-            parent_mount
-                .advance_to_head()
+            fs_call(parent_mount.advance_to_head())
                 .await
                 .map_err(|error| format!("cannot advance parent mount after merge: {error}"))?;
         }

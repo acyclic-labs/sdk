@@ -2,7 +2,7 @@
 use super::*;
 use acyclic_fs::access::*;
 
-pub(super) fn owner<T>(
+pub(in crate::local) fn owner<T>(
     root: &Path,
     volume: &VolumeRef,
     source: T,

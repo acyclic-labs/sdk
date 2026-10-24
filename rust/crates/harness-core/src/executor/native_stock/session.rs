@@ -294,10 +294,12 @@ impl StockExecutor {
             "acyclic.harness.executor.execute",
             operation_id = format_args!("{}", input.operation_id)
         );
-        traced(
-            span,
-            StockExecution::ordinary(self).execute_progress(&input, journal),
-        )
+        // Unbudgeted: an ordinary execution holds no `io`.
+        traced(span, || async move {
+            StockExecution::ordinary(self)
+                .execute_progress(&input, journal)
+                .await
+        })
         .await
     }
 }

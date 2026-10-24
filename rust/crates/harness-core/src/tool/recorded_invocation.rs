@@ -1,7 +1,7 @@
 use super::*;
 
 /// Durable invocation authority and the model's opaque continuation payload.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RecordedInvocation<I = ToolInvocation, M = Value> {
     pub invocation: I,
@@ -12,9 +12,6 @@ pub(crate) struct RecordedInvocation<I = ToolInvocation, M = Value> {
 impl crate::filesystem::PreparationRecord for RecordedInvocation {
     fn diagnostic_label_bytes() -> u64 {
         TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES
-    }
-    fn maximum_slot_bytes() -> u64 {
-        std::mem::size_of::<Self>().max(std::mem::size_of::<(String, Value)>()) as u64
     }
 }
 

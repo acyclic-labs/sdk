@@ -57,24 +57,7 @@ impl PiSession {
             (observer, allocation, BTreeMap::new())
         } else {
             let driver = self.command_host(work, None)?;
-            let progress = driver.drive_root().await?;
-            let unresolved = match progress.0 {
-                Some(acyclic_harness::filesystem::TaskWorkerAttempt::Unresolved {
-                    lease,
-                    error,
-                }) => {
-                    drop(lease);
-                    Some(error)
-                }
-                attempt => {
-                    drop(attempt);
-                    None
-                }
-            };
-            drop(progress.1);
-            if let Some(error) = unresolved {
-                return Err(error);
-            }
+            drop(driver.drive_root().await?);
             let handles = driver.created_roots().await;
             let (observer, allocation) = if let Some(output) = driver.root_output().await? {
                 output
@@ -205,6 +188,7 @@ impl PiSession {
                 &mut accounting,
             )
             .await?;
+            acyclic_harness::workspace::reconcile_reserved_names(&resumed).await?;
             let (key, handle) = pi_root_provider::PiRootHandle::from_observed_with_native_work(
                 resumed,
                 physical,

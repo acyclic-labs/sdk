@@ -75,51 +75,16 @@ impl Serialize for MetadataValue<'_> {
 pub(super) const NATIVE_METADATA_MAXIMUM: u64 = crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn native_metadata_quota<T>(
-    bytes: u64,
-    lexical_items: u64,
-) -> acyclic_harness::Result<u64> {
-    let overflow = || {
-        acyclic_harness::Error::from(acyclic_fs::NativeTreeMaterializationError::Work(
-            acyclic_fs::WorkError::Overflow,
-        ))
-    };
-    let tagged_slot = (4 * std::mem::size_of::<Value>()) as u64;
-    lexical_items
-        .checked_mul(tagged_slot)
-        .and_then(|owned| {
-            bytes
-                .checked_mul(8)
-                .and_then(|strings| owned.checked_add(strings))
-        })
-        .and_then(|owned| owned.checked_add(std::mem::size_of::<T>() as u64))
-        .and_then(|owned| owned.checked_add(std::mem::size_of::<WorkflowCommand>() as u64))
-        .ok_or_else(overflow)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(super) fn native_metadata<T: serde::de::DeserializeOwned>(
+pub(super) fn native_metadata<T: serde::de::DeserializeOwned + acyclic_harness::HeapLayout>(
     value: &impl Serialize,
     schema: &'static acyclic_harness::JsonValueSchema,
     label_bytes: u64,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> acyclic_harness::Result<(T, acyclic_fs::NativeAllocation)> {
-    let before_items = work.receipt().items_examined;
     let encoded = crate::pi_root_provider::guarded_pi_bytes(value, NATIVE_METADATA_MAXIMUM, work)?;
-    let items = work
-        .receipt()
-        .items_examined
-        .checked_sub(before_items)
-        .ok_or_else(|| {
-            acyclic_harness::Error::from(acyclic_fs::NativeTreeMaterializationError::Work(
-                acyclic_fs::WorkError::Overflow,
-            ))
-        })?;
-    let quota = native_metadata_quota::<T>(encoded.0.len() as u64, items)?;
     crate::pi_root_provider::guarded_pi_decode::<T>(
         &encoded.0,
         NATIVE_METADATA_MAXIMUM,
-        quota,
         acyclic_harness::wire::ErrorCode::Invalid,
         schema,
         label_bytes,

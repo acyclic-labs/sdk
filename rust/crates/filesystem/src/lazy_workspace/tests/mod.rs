@@ -41,7 +41,9 @@ async fn attach<
 struct SourceCounts {
     lookups: AtomicUsize,
     pages: AtomicUsize,
+    opens: AtomicUsize,
     ranges: AtomicUsize,
+    links: AtomicUsize,
     cancel_range: AtomicBool,
     // Zero keeps the fixture's original scalar; tests can simulate native unlink.
     link_count: AtomicU64,
@@ -51,8 +53,14 @@ struct CountingSource {
     node: SourceNode,
     versions: Mutex<BTreeMap<u64, Bytes>>,
     directory_entries: usize,
+    paged: bool,
     counts: Arc<SourceCounts>,
     cancel_on_page: AtomicBool,
+    cross_directory_mounts: bool,
+    unreadable_directory: Option<String>,
+    non_unicode_entry: bool,
+    directory_names: std::collections::BTreeSet<String>,
+    policy_files: bool,
 }
 impl CountingSource {
     fn new(bytes: Bytes) -> Self {
@@ -69,8 +77,14 @@ impl CountingSource {
             },
             versions: Mutex::new(BTreeMap::from([(3, bytes)])),
             directory_entries: 1,
+            paged: false,
             counts: Arc::default(),
             cancel_on_page: AtomicBool::new(false),
+            cross_directory_mounts: true,
+            unreadable_directory: None,
+            non_unicode_entry: false,
+            directory_names: Default::default(),
+            policy_files: false,
         }
     }
     fn replace(&self, bytes: Bytes) {
@@ -160,6 +174,16 @@ impl DemandFile for PinnedFile {
     }
 }
 impl DemandSource for CountingSource {
+    async fn same_volume<W: crate::facade::FsWork + Send>(
+        &self,
+        _source: SourceReference,
+        directory: &NamespacePath,
+        work: W,
+        cancel: &CancellationToken,
+    ) -> W::Output<bool, DemandError> {
+        let ctx = work.accounting(cancel);
+        work.finish(Ok(directory.is_root() || self.cross_directory_mounts), &ctx)
+    }
     fn reference(&self) -> SourceReference {
         SourceReference {
             identity: [7; 16],
@@ -181,8 +205,25 @@ impl DemandSource for CountingSource {
             })
             .map_err(DemandError::from)?;
             self.counts.lookups.fetch_add(1, Ordering::Relaxed);
+            if !self.policy_files
+                && _path
+                    .components()
+                    .last()
+                    .is_some_and(|name| matches!(name.as_bytes(), b".gitignore" | b".ignore"))
+            {
+                return Ok(None);
+            }
             self.versioned_node(source)
-                .map(Some)
+                .map(|mut node| {
+                    if _path.components().last().is_some_and(|name| {
+                        self.directory_names
+                            .iter()
+                            .any(|directory| directory.as_bytes() == name.as_bytes())
+                    }) {
+                        node.kind = SourceNodeKind::Directory;
+                    }
+                    Some(node)
+                })
                 .ok_or(DemandError::StaleSource)
         })();
         work.finish(result, &ctx)
@@ -192,41 +233,63 @@ impl DemandSource for CountingSource {
         source: SourceReference,
         _directory: &NamespacePath,
         cursor: Option<SourceCursor>,
-        _maximum: u32,
+        maximum: u32,
         work: W,
         cancel: &CancellationToken,
     ) -> W::Output<SourceDirectoryPage, DemandError> {
         let mut ctx = work.accounting(cancel);
         let result = (|| {
             self.counts.pages.fetch_add(1, Ordering::Relaxed);
+            if self.unreadable_directory.as_ref().is_some_and(|name| {
+                _directory
+                    .components()
+                    .last()
+                    .is_some_and(|component| component.as_bytes() == name.as_bytes())
+            }) {
+                return Err(DemandError::Io(std::io::Error::from(
+                    std::io::ErrorKind::PermissionDenied,
+                )));
+            }
             if self.cancel_on_page.swap(false, Ordering::Relaxed) {
                 cancel.cancel();
                 return Err(DemandError::Cancelled);
             }
-            if cursor.is_some() {
+            if cursor.is_some() && !self.paged {
                 return Err(DemandError::StaleCursor);
             }
+            let start = cursor.map_or(0, |cursor| cursor.token as usize);
+            let end = if self.paged {
+                start
+                    .saturating_add(maximum as usize)
+                    .min(self.directory_entries)
+            } else {
+                self.directory_entries
+            };
             let node = self
                 .versioned_node(source)
                 .ok_or(DemandError::StaleSource)?;
             ctx.charge(WorkCounters {
                 backend_read_operations: 1,
-                source_entries_visited: self.directory_entries as u64,
+                source_entries_visited: (end - start) as u64,
                 ..WorkCounters::UNCHARGED
             })
             .map_err(DemandError::from)?;
-            let mut entries =
-                Owned::allocate(self.directory_entries, &mut ctx).map_err(DemandError::from)?;
-            for index in 0..self.directory_entries {
+            let mut entries = Owned::allocate(end - start, &mut ctx).map_err(DemandError::from)?;
+            for index in start..end {
                 let name = if self.directory_entries == 1 {
                     "file.txt".to_owned()
                 } else {
                     format!("file-{index:04}.txt")
                 };
+                let (encoding, bytes) = if self.non_unicode_entry && index == 0 {
+                    (NameEncoding::PosixBytes, vec![0xff])
+                } else {
+                    (NameEncoding::Utf8, name.into_bytes())
+                };
                 let mut guard = ctx
-                    .claim_owned(name.capacity() as u64, 1)
+                    .claim_owned(bytes.capacity() as u64, 1)
                     .map_err(DemandError::from)?;
-                let name = LogicalName::new(NameEncoding::Utf8, name.into_bytes(), 255)
+                let name = LogicalName::new(encoding, bytes, 255)
                     .map_err(|_| DemandError::InvalidRequest)?;
                 entries
                     .allocation
@@ -235,7 +298,12 @@ impl DemandSource for CountingSource {
                 entries.bytes += name.logical_owned_bytes();
                 entries.value.push(SourceDirectoryEntry { name, node });
             }
-            SourceDirectoryPage::stateless(entries, None, SourceVersion([4; 32]), &mut ctx)
+            let next = (end < self.directory_entries).then_some(SourceCursor {
+                source,
+                token: end as u64,
+                resume: None,
+            });
+            SourceDirectoryPage::stateless(entries, next, SourceVersion([4; 32]), &mut ctx)
         })();
         work.finish(result, &ctx)
     }
@@ -269,6 +337,7 @@ impl DemandSource for CountingSource {
         cancel: &CancellationToken,
     ) -> W::Output<Box<dyn DemandFile>, DemandError> {
         let mut ctx = work.accounting(cancel);
+        self.counts.opens.fetch_add(1, Ordering::Relaxed);
         let result = (|| {
             let bytes = self.pinned(source, version)?;
             let guard = ctx
@@ -292,10 +361,12 @@ impl DemandSource for CountingSource {
         cancel: &CancellationToken,
     ) -> W::Output<OwnedSourceChunk, DemandError> {
         let ctx = work.accounting(cancel);
+        self.counts.links.fetch_add(1, Ordering::Relaxed);
         work.finish(Err(DemandError::InvalidRequest), &ctx)
     }
 }
 mod binding;
+mod name_search;
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 async fn native_source(
     path: &std::path::Path,

@@ -55,7 +55,7 @@ async fn a_dead_provider_is_preserved_under_held_recovery_custody()
     ));
     // SAFETY: name is live and a successful call transfers its event handle.
     let ready = unsafe { OwnedHandle::from_raw_handle(CreateEventW(None, true, false, &name)?.0) };
-    let mut command = std::process::Command::new(std::env::current_exe()?);
+    let mut command = acyclic_native_runtime::command::Command::new(std::env::current_exe()?);
     command
         .args([TEST, "--exact", "--nocapture", "--test-threads=1"])
         .env(ROLE, root.path())

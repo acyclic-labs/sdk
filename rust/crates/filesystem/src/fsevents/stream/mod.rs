@@ -29,11 +29,30 @@ unsafe impl Send for EventStream {}
 unsafe impl Sync for EventStream {}
 
 impl EventStream {
+    /// Returns the final queued event to await outside the stream mutex.
+    /// A callback cannot wait on its own serial queue.
+    pub(crate) fn flush_target<W: SourceDemandReadWork>(
+        &self,
+        work: &mut W,
+    ) -> Result<Option<u64>, DemandError> {
+        work.check()?;
+        if !self.started || ACTIVE_STREAM.with(|active| active.get() == self.stream) {
+            return Ok(None);
+        }
+        work.started_io(WorkCounters {
+            backend_read_operations: 1,
+            ..WorkCounters::UNCHARGED
+        })?;
+        // SAFETY: the caller holds custody of this started stream. This call
+        // queues a flush without waiting for or running its callbacks here.
+        Ok(Some(unsafe { (self.api.stream_flush_async)(self.stream) }))
+    }
+
     /// Initializes process-global framework services outside finite source work.
-    pub(crate) fn initialize_services() -> notify::Result<()> {
+    pub(crate) fn initialize_services() -> Result<(), DemandError> {
         let cancellation = crate::CancellationToken::new();
         let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        Api::get(&mut work).map(|_| ()).map_err(notify_error)
+        Api::get(&mut work).map(|_| ())
     }
     pub(crate) fn stop_with_work<W: SourceDemandReadWork>(
         &mut self,

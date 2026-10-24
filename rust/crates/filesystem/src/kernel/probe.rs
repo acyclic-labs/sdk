@@ -862,6 +862,37 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
         cancellation.check()?;
         accounting.check()?;
         let file_id = self.validate_region_error(region)?;
+        // Each step runs in a paid heap frame; this frame holds neither.
+        let record = crate::heap_future::metered!(erased accounting, |accounting| self
+            .record_with_accounting(generation, file_id, accounting, cancellation))?;
+        // A captured range lay within its file. Where the file now ends
+        // before the range does, that exact region no longer exists.
+        if range_past_end(record, region) {
+            return Ok(DependencyState::Absent);
+        }
+        crate::heap_future::metered!(erased accounting, |accounting| self
+        .capture_validated_record_with_accounting(
+            record,
+            region,
+            accounting,
+            cancellation,
+            self.data_custody,
+        ))
+    }
+
+    /// [`Self::probe_async_with_accounting`] with both steps inline, for the
+    /// per-page directory listing: its caller is already shallow, and a box
+    /// per listed page would be pure heap traffic on the hottest read path.
+    pub(crate) async fn probe_inline_with_accounting(
+        &self,
+        generation: GenerationId,
+        region: &DependencyRegion,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<DependencyState, crate::FsError> {
+        cancellation.check()?;
+        accounting.check()?;
+        let file_id = self.validate_region_error(region)?;
         let record = self
             .record_with_accounting(generation, file_id, accounting, cancellation)
             .await?;
@@ -1427,7 +1458,9 @@ fn range_past_end(record: Option<FileRecord>, region: &DependencyRegion) -> bool
         Some(FilePayload::Regular { logical_bytes, .. }) => logical_bytes,
         _ => return false,
     };
-    offset.checked_add(*length).is_none_or(|end| end > file_bytes)
+    offset
+        .checked_add(*length)
+        .is_none_or(|end| end > file_bytes)
 }
 
 fn region_owned_bytes(region: &DependencyRegion) -> u64 {

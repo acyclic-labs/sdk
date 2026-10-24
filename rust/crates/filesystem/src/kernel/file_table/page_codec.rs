@@ -1,4 +1,5 @@
 use super::*;
+use crate::kernel::persistent_btree::entries::Entries;
 
 /// Encodes one canonical page with before-effect admission.
 pub fn encode_file_table_page<E>(
@@ -27,8 +28,8 @@ where
     }
 }
 
-pub(crate) fn encode_file_table_leaf_records<E>(
-    records: &[FileRecord],
+pub(crate) fn encode_file_table_leaf_records<'a, E>(
+    records: impl Into<Entries<'a, FileRecord>>,
     maximum_items: u32,
     data_custody: Option<&ProofDataCustody>,
     mut observe: impl FnMut(crate::kernel::codec::EncodeWorkStep) -> Result<(), E>,
@@ -37,6 +38,7 @@ pub(crate) fn encode_file_table_leaf_records<E>(
 where
     E: From<CanonicalDecodeError> + From<WorkError>,
 {
+    let records = records.into();
     use crate::kernel::codec::EncodeWorkStep;
     let mut observe =
         |step| crate::kernel::codec::observe_encoding(&mut observe, step, data_custody);

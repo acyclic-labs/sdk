@@ -81,6 +81,107 @@ async fn an_unmounted_scratch_directory_captures_edits_and_additions() -> Result
 }
 
 #[tokio::test]
+async fn host_sdk_namespaces_stay_out_of_the_head_while_beside_edits_are_captured() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
+    // Capture and publication skip the root SDK namespaces. Demand used to
+    // expose these host bytes once and then never refresh them.
+    let reserved = [".git/existing", ".system/existing"];
+    // Negative control: equal names below the root remain ordinary content.
+    let ordinary = ["docs/.volumes/existing", "docs/.system/existing"];
+    for path in reserved.iter().chain(&ordinary) {
+        let path = directory.path().join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).map_err(super::super::storage)?;
+        std::fs::write(path, b"base").map_err(super::super::storage)?;
+    }
+    let provider = scripted([
+        call(0, "fs", "status"),
+        ScriptedTurn::Text("baseline".into()),
+        call(1, "fs", "status"),
+        ScriptedTurn::Text("captured".into()),
+    ]);
+    let fs = crate::tools::defaults()?
+        .get("fs", None, None)?
+        .unwrap()
+        .clone();
+    let harness = LocalHarness::open(
+        super::checkout_config(directory.path(), (model()?, provider))?
+            .state_directory(state.path())
+            .without_default_tools()
+            .tool(fs),
+    )
+    .await?;
+    let stop = acyclic_fs::CancellationToken::new();
+    let head = async || {
+        Ok::<_, Error>(
+            harness
+                .workspace()
+                .unwrap()
+                .view()
+                .workspace()
+                .head(acyclic_fs::WorkBudget::UNBOUNDED, &stop)
+                .await
+                .map_err(super::super::storage)?
+                .value,
+        )
+    };
+    let absent = async |path: &str| -> Result<bool> {
+        Ok(matches!(
+            head()
+                .await?
+                .stat(
+                    &format!("/{path}"),
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &stop
+                )
+                .await,
+            Err(acyclic_fs::OperationFailure {
+                error: acyclic_fs::WorkspaceError::NotFound,
+                ..
+            })
+        ))
+    };
+    let read = async |path: &str| -> Result<Vec<u8>> {
+        Ok(head()
+            .await?
+            .read(
+                &format!("/{path}"),
+                64,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &stop,
+            )
+            .await
+            .map_err(super::super::storage)?
+            .value
+            .as_ref()
+            .to_vec())
+    };
+    assert_eq!(harness.run("capture baseline").await?.text, "baseline");
+    for path in reserved {
+        assert!(absent(path).await?, "{path} entered the baseline head");
+    }
+    for path in ordinary {
+        assert_eq!(read(path).await?, b"base", "{path}");
+    }
+    for path in reserved.iter().chain(&ordinary) {
+        let path = directory.path().join(path);
+        std::fs::write(&path, b"changed").map_err(super::super::storage)?;
+        std::fs::write(path.with_file_name("added"), b"new").map_err(super::super::storage)?;
+    }
+    assert_eq!(harness.run("capture edits").await?.text, "captured");
+    for path in reserved {
+        assert!(absent(path).await?, "{path} entered the captured head");
+        let added = path.replace("existing", "added");
+        assert!(absent(&added).await?, "{added} entered the captured head");
+    }
+    for path in ordinary {
+        assert_eq!(read(path).await?, b"changed", "{path}");
+        assert_eq!(read(&path.replace("existing", "added")).await?, b"new");
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn checkout_without_bash_uses_directory_capture_without_mounts() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state = tempfile::tempdir().map_err(super::super::storage)?;

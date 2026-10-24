@@ -298,7 +298,6 @@ impl PiSession {
         let mut decoded: ((String, Route), NativeAllocation) = pi_root_provider::guarded_pi_decode(
             &bytes.0,
             MAXIMUM_ADAPTER_STATE_BYTES,
-            std::mem::size_of::<(String, Route)>() as u64,
             acyclic_harness::wire::ErrorCode::Invalid,
             acyclic_harness::JsonValueSchema::None,
             ROUTE_DIAGNOSTIC_BYTES,

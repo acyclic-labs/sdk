@@ -10,6 +10,7 @@ impl ForkCaptureProvider for ObjectContentStore {
         _request: &'a ForkRequest,
         selection: &'a ForkSelection,
     ) -> BoxFuture<'a, Result<Capture>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move {
             let ResourceRevision::Artifact(artifact) = &selection.revision else {
                 return Ok(Capture::Unsupported(
@@ -33,6 +34,7 @@ impl ForkCaptureProvider for ObjectContentStore {
         selection: &'a ForkSelection,
     ) -> BoxFuture<'a, Result<Option<Capture>>> {
         // Content verification is read-only and safe to observe again.
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move { self.capture(request, selection).await.map(Some) })
     }
 }

@@ -15,36 +15,54 @@ pub(super) async fn read_selected<
 ) -> W::Output<acyclic_stream::OwnedBytes, WorkspaceError> {
     let mut accounting = work.accounting(cancellation);
     let result = async {
-        let (mut checkout, path) = workspace
-            .open_read_path(selector, path, &mut accounting, cancellation)
-            .await?;
-        let lookup = {
-            let (lookup, _allocation) = checkout
-                .value
-                .lookup_no_follow_with_accounting(&path.value, &mut accounting, cancellation, true)
-                .await?;
-            lookup
-        };
-        let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
-        if record.kind != FileKind::Regular {
-            return Err(WorkspaceError::NotRegularFile);
-        }
-        let length = regular_file_bytes(record)?;
-        if length > maximum_bytes {
-            return Err(WorkspaceError::ReadLimitExceeded);
-        }
-        if length > checkout.value.volume_config().limits.maximum_read_bytes {
-            return Err(
-                crate::FsError::FileRead(crate::kernel::FileRangeReadError::InvalidRange).into(),
-            );
-        }
-        let range = crate::ByteRange { offset: 0, length };
-        checkout
-            .value
-            .read_record_range_with_accounting(record, range, range, &mut accounting, cancellation)
-            .await
-            .map(|read| read.bytes)
-            .map_err(WorkspaceError::from)
+        let (result, reservation) =
+            crate::heap_future::in_heap_metered(&mut accounting, |accounting| async move {
+                let (mut checkout, path) = workspace
+                    .open_read_path(selector, path, accounting, cancellation)
+                    .await?;
+                let lookup = {
+                    let (lookup, _allocation) = checkout
+                        .value
+                        .lookup_no_follow_with_accounting(
+                            &path.value,
+                            accounting,
+                            cancellation,
+                            true,
+                        )
+                        .await?;
+                    lookup
+                };
+                let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
+                if record.kind != FileKind::Regular {
+                    return Err(WorkspaceError::NotRegularFile);
+                }
+                let length = regular_file_bytes(record)?;
+                if length > maximum_bytes {
+                    return Err(WorkspaceError::ReadLimitExceeded);
+                }
+                if length > checkout.value.volume_config().limits.maximum_read_bytes {
+                    return Err(crate::FsError::FileRead(
+                        crate::kernel::FileRangeReadError::InvalidRange,
+                    )
+                    .into());
+                }
+                let range = crate::ByteRange { offset: 0, length };
+                checkout
+                    .value
+                    .read_record_range_with_accounting(
+                        record,
+                        range,
+                        range,
+                        accounting,
+                        cancellation,
+                    )
+                    .await
+                    .map(|read| read.bytes)
+                    .map_err(WorkspaceError::from)
+            })?
+            .await;
+        crate::heap_future::FrameLedger::release_frame(&mut accounting, reservation)?;
+        result
     }
     .await;
     finish(workspace, &work, result, &mut accounting, cancellation).await

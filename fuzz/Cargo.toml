@@ -11,7 +11,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-acyclic-actors = { path = "../rust/crates/actors" }
+acyclic-actors = { path = "../rust/crates/actors", features = ["fuzzing"] }
 serde_json = "1"
 acyclic-objects = { path = "../rust/crates/objects", default-features = false }
 prost = "0.14.4"

@@ -8,7 +8,7 @@ async fn created_and_renamed_files_stay_observed_after_capture()
     let (_root, destination, mut session) = mount_source(&source)?;
     let external = |command: &str| -> Result<(), Box<dyn std::error::Error>> {
         let output = acyclic_native_runtime::process_output(
-            std::process::Command::new("cmd.exe")
+            acyclic_native_runtime::command::Command::new("cmd.exe")
                 .args(["/D", "/C", command])
                 .current_dir(&destination),
             std::time::Duration::from_secs(120),
@@ -80,7 +80,7 @@ async fn native_watcher_observes_both_projected_rename_paths()
     ));
 
     let external = acyclic_native_runtime::process_output(
-        std::process::Command::new("cmd.exe")
+        acyclic_native_runtime::command::Command::new("cmd.exe")
             .arg("/D")
             .arg("/C")
             .arg("ren original.txt renamed.txt && echo replacement> original.txt")

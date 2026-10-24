@@ -22,7 +22,8 @@ pub async fn connect_local(
 /// Other clients retain a shared runtime until its final owner disconnects.
 pub async fn disconnect_local(local: Arc<LocalHarness>) -> Result<()> {
     if let Some(local) = Arc::into_inner(local) {
-        local.disconnect().await?;
+        // Retirement is the largest client future; its callers hold a pointer.
+        acyclic_fs::in_heap(|| local.disconnect()).await?;
     }
     Ok(())
 }
@@ -42,9 +43,12 @@ pub async fn local_completions(
     local: &LocalHarness,
     input: &mut crate::tui::PromptInput,
 ) -> Result<crate::tui_files::CompletionFiles> {
-    // TODO(#495): take this resident query bound from the followed client settings.
-    crate::tui_files::CompletionFiles::observe_authorized(local.task_files(), input, None, 4096)
-        .await
+    let mut files =
+        crate::tui_files::CompletionFiles::observe_authorized(local.task_files(), input, None)
+            .await?;
+    #[cfg(feature = "native-execution")]
+    local.bind_name_search(&mut files, input).await?;
+    Ok(files)
 }
 
 /// Open the file-backed UI session. Its identity is supplied by the client binding.

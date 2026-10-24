@@ -11,12 +11,19 @@ where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
 {
-    let live = workspace
-        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    capture_git_compatible_generation_from(live, policy, already_tracked, operation_id).await
+    let cancellation = CancellationToken::new();
+    // Unmetered: git capture runs on unbounded budgets and holds no work ledger.
+    let live = crate::heap_future::erase(crate::heap_future::in_heap_unmetered(|| {
+        workspace.head(WorkBudget::UNBOUNDED, &cancellation)
+    }))
+    .await
+    .map(|receipt| receipt.value)
+    .map_err(|failure| failure.error)?;
+    // Unmetered: git capture runs on unbounded budgets and holds no work ledger.
+    crate::heap_future::erase(crate::heap_future::in_heap_unmetered(|| {
+        capture_git_compatible_generation_from(live, policy, already_tracked, operation_id)
+    }))
+    .await
 }
 
 /// Captures an ignore-aware tree from one exact immutable generation.
@@ -31,12 +38,19 @@ where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
 {
-    let live = workspace
-        .generation(generation, WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    capture_git_compatible_generation_from(live, policy, already_tracked, operation_id).await
+    let cancellation = CancellationToken::new();
+    // Unmetered: git capture runs on unbounded budgets and holds no work ledger.
+    let live = crate::heap_future::erase(crate::heap_future::in_heap_unmetered(|| {
+        workspace.generation(generation, WorkBudget::UNBOUNDED, &cancellation)
+    }))
+    .await
+    .map(|receipt| receipt.value)
+    .map_err(|failure| failure.error)?;
+    // Unmetered: git capture runs on unbounded budgets and holds no work ledger.
+    crate::heap_future::erase(crate::heap_future::in_heap_unmetered(|| {
+        capture_git_compatible_generation_from(live, policy, already_tracked, operation_id)
+    }))
+    .await
 }
 
 /// Forks `source` with each of `paths` restored to its state in `target`.

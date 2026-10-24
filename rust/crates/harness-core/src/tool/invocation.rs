@@ -1,7 +1,7 @@
 use super::*;
 
 /// One admitted invocation.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct ToolInvocation {
     /// Runtime-owned identity for execution and reconciliation.
@@ -12,6 +12,7 @@ pub struct ToolInvocation {
     pub name: String,
     /// Schema-validated arguments.
     #[serde(deserialize_with = "crate::deserialize_json_value")]
+    #[heap_layout(as = serde_json::Value)]
     pub arguments: Value,
 }
 
@@ -104,11 +105,12 @@ fn valid_call_id(call_id: &str) -> bool {
 }
 
 /// Result returned by a tool executor.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct ToolResult {
     /// Schema-validated structured value.
     #[serde(deserialize_with = "crate::deserialize_json_value")]
+    #[heap_layout(as = serde_json::Value)]
     pub value: Value,
 }
 
@@ -134,9 +136,6 @@ impl crate::filesystem::PreparationRecord for ToolInvocation {
     fn diagnostic_label_bytes() -> u64 {
         TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES
     }
-    fn maximum_slot_bytes() -> u64 {
-        std::mem::size_of::<Self>().max(std::mem::size_of::<(String, Value)>()) as u64
-    }
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -153,8 +152,5 @@ impl crate::filesystem::UploadRecord for ToolResult {
 impl crate::filesystem::PreparationRecord for ToolResult {
     fn diagnostic_label_bytes() -> u64 {
         TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES
-    }
-    fn maximum_slot_bytes() -> u64 {
-        std::mem::size_of::<Self>().max(std::mem::size_of::<(String, Value)>()) as u64
     }
 }

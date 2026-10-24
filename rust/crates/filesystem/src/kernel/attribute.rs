@@ -7,6 +7,7 @@ use super::codec::{
 use super::types::digest_object;
 use crate::foundation::usize_to_u64;
 use crate::kernel::Child;
+use crate::kernel::persistent_btree::entries::Entries;
 use crate::storage::{ObjectId, ObjectKind, object_digest};
 use crate::{WorkCounters, WorkError};
 use thiserror::Error;
@@ -189,8 +190,8 @@ impl AttributePage {
     }
 }
 
-pub(crate) fn encode_attribute_leaf_entries<E>(
-    entries: &[AttributeEntry],
+pub(crate) fn encode_attribute_leaf_entries<'a, E>(
+    entries: impl Into<Entries<'a, AttributeEntry>>,
     maximum_items: u32,
     mut observe: impl FnMut(super::codec::EncodeWorkStep) -> Result<(), E>,
     allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
@@ -198,6 +199,7 @@ pub(crate) fn encode_attribute_leaf_entries<E>(
 where
     E: From<CanonicalDecodeError> + From<WorkError>,
 {
+    let entries = entries.into();
     use super::codec::EncodeWorkStep;
     observe(EncodeWorkStep::Check)?;
     if count(entries.len())? > maximum_items {
@@ -344,10 +346,11 @@ where
     Ok(encoder.finish())
 }
 
-pub(crate) fn attribute_leaf_page_encoded_length(
-    entries: &[AttributeEntry],
+pub(crate) fn attribute_leaf_page_encoded_length<'a>(
+    entries: impl Into<Entries<'a, AttributeEntry>>,
     maximum_items: u32,
 ) -> Result<usize, CanonicalDecodeError> {
+    let entries = entries.into();
     if count(entries.len())? > maximum_items {
         return Err(CanonicalDecodeError::LengthOverflow);
     }

@@ -298,7 +298,11 @@ pub(super) fn acquire_lock(
 }
 
 pub(super) fn retry_record_lock(deadline: Instant) -> bool {
-    retry_record_lock_at(deadline, Instant::now(), std::thread::sleep)
+    retry_record_lock_at(
+        deadline,
+        acyclic_native_runtime::deadline::now(),
+        acyclic_native_runtime::deadline::sleep,
+    )
 }
 
 pub(super) fn retry_record_lock_at(
@@ -342,7 +346,7 @@ fn acquire_lock_with_retry(
         .as_ref()
         .map(|work| work.reserve_cleanup_write())
         .transpose()?;
-    let deadline = Instant::now() + RECORD_LOCK_DEADLINE;
+    let deadline = acyclic_native_runtime::deadline::now() + RECORD_LOCK_DEADLINE;
     loop {
         if let Some(work) = &work {
             work.charge(crate::WorkCounters {

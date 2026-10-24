@@ -14,6 +14,11 @@ use std::{
 };
 use uuid::Uuid;
 
+#[cfg(any(test, feature = "filesystem", feature = "test-support"))]
+mod media_type;
+#[cfg(any(test, feature = "filesystem", feature = "test-support"))]
+pub(crate) use media_type::classify as classify_file_media;
+
 /// Maximum normalized UTF-8 path length admitted by the Harness protocol.
 pub const MAX_PATH_BYTES: usize = MAX_PORTABLE_COUNT;
 /// Maximum UTF-8 bytes in a protocol label or display name.
@@ -55,7 +60,7 @@ pub const MAX_CONVERSATION_PAGE_MESSAGES: usize = u32::MAX as usize;
 pub const DEFAULT_CONVERSATION_PAGE_MESSAGES: u32 = 1_024;
 
 /// Admission and rendering bounds.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct Limits {
     /// Maximum bytes in one referenced file admitted to a conversation.
@@ -198,8 +203,8 @@ pub(crate) use content::content_error;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use content::require_owner_reader;
 pub use content::{
-    BoundedContentFuture, CompositeContentVerifier, ContentAccess, ContentHold, ContentIo,
-    ContentMountResolver, ContentPublisher, ContentResidencyVerifier,
+    BoundedContentFuture, BoundedOperationFuture, CompositeContentVerifier, ContentAccess,
+    ContentHold, ContentIo, ContentMountResolver, ContentPublisher, ContentResidencyVerifier,
 };
 pub use directory::{
     MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryEntry, PrivateDirectoryEntryKind,
@@ -217,7 +222,7 @@ pub use volumes::{
 mod tests;
 
 /// Projection of one agent-owned conversation.
-#[derive(Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(try_from = "ConversationStateWire")]
 pub struct ConversationState {
     /// Set once at admission.
@@ -237,7 +242,7 @@ pub struct ConversationState {
 }
 
 /// Only an issuer-authenticated reducer snapshot makes this a trusted prefix.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ArchivedConversationPrefix {
     through_sequence: u64,
@@ -245,7 +250,7 @@ pub(crate) struct ArchivedConversationPrefix {
     checkpoint: FileRef,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ConversationStateWire {
     pub(crate) agent: Option<AgentId>,
@@ -307,7 +312,7 @@ impl TryFrom<ConversationStateWire> for ConversationState {
 }
 
 /// Exact history revision and ordered subset selected for one model request.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct ModelContextSelection {
     /// Number of canonical messages observed when selecting.

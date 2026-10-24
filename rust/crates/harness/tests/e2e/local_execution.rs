@@ -34,6 +34,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let provider = Arc::new(ScriptedModelProvider::new([]));
     let home = temporary.path().join("home");
     seed_home(&home, &case.home)?;
+    crate::scenario_data::seed_settings(&home, &case.settings)?;
     let harness = open_harness(&directory, &home, &state, &volume, &provider).await?;
     if !state.join("owner.json").is_file() {
         return Err("harness did not use the fixture-owned state directory".into());
@@ -68,6 +69,11 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     }
     let requests = provider.requests();
     verify_model_requests(&case.expect, &requests, steps)?;
+    for (path, text) in &case.expect.settings_files {
+        if std::fs::read_to_string(home.join(path))? != *text {
+            return Err(format!("settings file differs: {path}").into());
+        }
+    }
     verify_tool_files(
         &harness,
         task_id,
@@ -276,6 +282,11 @@ fn verify_model_requests(
 ) -> TestResult {
     if requests.len() != steps {
         return Err("local scenario did not consume exactly its scripted model turns".into());
+    }
+    for text in &expect.request_text {
+        if !requests.iter().any(|request| serde_json::to_string(request).is_ok_and(|body| body.contains(text))) {
+            return Err(format!("model requests omitted {text:?}").into());
+        }
     }
     check_requests(expect, requests)?;
     if let Some(expected) = &expect.results {

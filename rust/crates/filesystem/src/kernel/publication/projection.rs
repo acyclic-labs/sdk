@@ -53,7 +53,11 @@ async fn check_inner<O: crate::AsyncObjectStore, A: crate::AsyncAuthorityStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(), crate::FsError> {
-    let Candidate { request, root: candidate, lease } = candidate;
+    let Candidate {
+        request,
+        root: candidate,
+        lease,
+    } = candidate;
     let mut work = match &*accounting {
         #[cfg(not(target_arch = "wasm32"))]
         KernelAccounting::NativeOriginal { work, .. } => {

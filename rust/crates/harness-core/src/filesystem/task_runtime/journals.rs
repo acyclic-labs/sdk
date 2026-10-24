@@ -120,15 +120,31 @@ where
         Ok((journal.into_native_shared(work)?, operation))
     }
 
+    // Unbudgeted: the journal is opened and bound with no `io`.
     pub(super) async fn open_execution_journal(
         &self,
         task: TaskId,
         fence: LeaseFence,
         turn: OperationId,
         admission: &TaskAdmissionRecord,
-    ) -> Result<FilesystemExecutionJournal<P, A, O>> {
+    ) -> Result<Box<FilesystemExecutionJournal<P, A, O>>> {
+        // Unbudgeted: the owner is opened with no `io`.
+        let owner = acyclic_fs::in_heap(|| self.host.journal_owner(task, &fence, None)).await?;
+        self.bind_execution_journal(owner, task, turn, admission)
+    }
+
+    // Synchronous binding stays out of the async frame that awaits the owner.
+    #[inline(never)]
+    // Unbudgeted: the journal is opened and bound with no `io`.
+    fn bind_execution_journal(
+        &self,
+        owner: crate::durable_host::TaskJournalOwner<P>,
+        task: TaskId,
+        turn: OperationId,
+        admission: &TaskAdmissionRecord,
+    ) -> Result<Box<FilesystemExecutionJournal<P, A, O>>> {
         let journal = FilesystemExecutionJournal::for_task(
-            self.host.journal_owner(task, &(fence), None).await?,
+            owner,
             execution_operation(task, turn, None)?,
             turn,
             self.filesystem.clone(),
@@ -146,15 +162,20 @@ where
             .contains(crate::contract::capability::INTERACTION_ROUTE)
             && let Some(owner) = &self.interaction_owner
         {
-            return journal.with_interaction_owner(
-                &owner.verifier,
-                &owner.schemas,
-                &owner.scope,
-                &owner.volume,
-                None,
-            );
+            return journal
+                .with_interaction_owner(
+                    &owner.verifier,
+                    &owner.schemas,
+                    &owner.scope,
+                    &owner.volume,
+                    None,
+                )
+                // Unbudgeted: the journal is opened with no allocation budget
+                // (`io: None` above).
+                .map(Box::new);
         }
-        Ok(journal)
+        // Unbudgeted: the journal is opened with no allocation budget.
+        Ok(Box::new(journal))
     }
 
     /// Opens the canonical tool-effect workflow under the original caller reservation.

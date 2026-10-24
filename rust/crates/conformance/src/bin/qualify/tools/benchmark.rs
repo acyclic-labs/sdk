@@ -66,7 +66,7 @@ pub(super) fn mount_run(args: &[String]) -> Result<(), Failure> {
     let run = |directory: &Path| -> Result<f64, Failure> {
         let started = Instant::now();
         let output = acyclic_native_runtime::process_output(
-            std::process::Command::new(program)
+            acyclic_native_runtime::command::Command::new(program)
                 .args(arguments)
                 .current_dir(directory),
             std::time::Duration::from_secs(120),
@@ -340,7 +340,7 @@ pub(super) fn workload(
     fs::create_dir_all(writes).map_err(io_at("create", writes))?;
     let written = files.min(500);
     let output = acyclic_native_runtime::process_output(
-        std::process::Command::new(std::env::current_exe()?)
+        acyclic_native_runtime::command::Command::new(std::env::current_exe()?)
             .arg("mount-bench-writer")
             .arg(writes)
             .arg(written.to_string())

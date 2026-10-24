@@ -410,7 +410,7 @@ mod runtime {
             !filtered || metadata.name() != "test.grpc.call"
         }));
         (
-            Dispatch::new(tracing_subscriber::registry().with(layer)),
+            acyclic_test_support::capture::dispatch(tracing_subscriber::registry().with(layer)),
             log,
         )
     }

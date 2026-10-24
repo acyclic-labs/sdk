@@ -247,14 +247,16 @@ impl PiRootProvider {
                         original
                             .validate_root_binding(workspace.id(), input.0)
                             .map_err(crate::pi_fork_host::native_lazy_error)?;
-                        LocalLazyWorkspace::open(
+                        let view = LocalLazyWorkspace::open(
                             workspace,
                             Arc::clone(&physical.source),
                             self.store.clone(),
                             &mut accounting,
                         )
                         .await
-                        .map_err(crate::pi_fork_host::native_lazy_error)?
+                        .map_err(crate::pi_fork_host::native_lazy_error)?;
+                        acyclic_harness::workspace::reconcile_reserved_names(&view).await?;
+                        view
                     } else {
                         let operation =
                             self.creation_operation_with_native_work(effect, attempt, key, work)?;

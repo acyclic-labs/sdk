@@ -1,5 +1,5 @@
 use super::*;
-use crate::testing::claims as common;
+use crate::fuzzing::claims as common;
 #[path = "../../tests/common/request_hardening.rs"]
 mod hardening;
 use proptest::{

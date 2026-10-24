@@ -290,7 +290,10 @@ where
 
     /// Advances a clean checkout and settles its native visibility.
     pub async fn advance_to_head(&self) -> Result<(), MountLifecycleError> {
-        let advanced = self.source.advance_to_head_async().await;
+        // Unmetered: an advance after an external publication is charged to no
+        // caller's work; it runs on the checkout's own unbounded accounting.
+        let advanced =
+            crate::heap_future::in_heap_unmetered(|| self.source.advance_to_head_async()).await;
         self.revalidate_async().await?;
         advanced.map_err(Into::into)
     }

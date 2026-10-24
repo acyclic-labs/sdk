@@ -93,7 +93,6 @@ fn hidden_raw_values_are_bounded_before_decode() {
             std::marker::PhantomData,
             document.as_bytes(),
             bounds,
-            0,
             Some(crate::wire::ErrorCode::Storage),
             Some(JsonValueSchema::Root),
             &mut |event| {
@@ -124,7 +123,6 @@ fn hidden_raw_values_are_bounded_before_decode() {
                 maximum_depth: 2,
                 ..limits
             },
-            0,
             Some(crate::wire::ErrorCode::Storage),
             Some(JsonValueSchema::Root),
             &mut |_| Ok(())

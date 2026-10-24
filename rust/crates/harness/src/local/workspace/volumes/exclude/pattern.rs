@@ -39,3 +39,31 @@ pub(super) fn pattern(path: &Path) -> Result<String> {
     }
     Ok(result)
 }
+
+/// Exercises opaque-byte exclusion matching and pattern encoding.
+#[cfg(all(feature = "test-support", unix))]
+pub(crate) fn fuzz_check(input: &[u8]) {
+    use std::os::unix::ffi::OsStrExt;
+
+    // Exercise the same opaque-byte line matcher used for existing excludes.
+    // The independent oracle searches framed bytes instead of splitting lines.
+    let mut framed = Vec::with_capacity(input.len() + 2);
+    framed.push(b'\n');
+    framed.extend_from_slice(input);
+    framed.push(b'\n');
+    let rule = "/.volumes/scratch";
+    let expected = [
+        b"\n/.volumes/scratch\n".as_slice(),
+        b"\n/.volumes/scratch\r\n".as_slice(),
+    ]
+    .iter()
+    .any(|needle| framed.windows(needle.len()).any(|bytes| bytes == *needle));
+    assert_eq!(contains(input, rule), expected);
+    let path = std::path::Path::new(std::ffi::OsStr::from_bytes(input));
+    if let Ok(encoded) = pattern(path) {
+        assert!(path.to_str().is_some());
+        assert!(encoded.starts_with('/'));
+        assert!(!encoded.contains(['\r', '\n', '\0']));
+        assert!(!encoded.ends_with('/'));
+    }
+}

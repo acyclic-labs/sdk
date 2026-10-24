@@ -204,6 +204,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
         context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
         let Some(context) = context else {
+            // Unbudgeted: recursive tools run with no `io`.
             return Box::pin(async {
                 Err(Error::Unauthorized(
                     "recursive tools require their durable context".into(),
@@ -213,6 +214,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
 
         let cancellation = CancellationToken::new();
         let stop = InvocationCancellation(cancellation.clone());
+        // Unbudgeted: recursive tools run with no `io`.
         Box::pin(async move {
             let _stop = stop;
             self.run(&context, &invocation, &cancellation, None)
@@ -226,6 +228,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
         context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
         let Some(context) = context else {
+            // Unbudgeted: recursive tools run with no `io`.
             return Box::pin(async {
                 Err(Error::Unauthorized(
                     "recursive tools require their durable context".into(),
@@ -235,6 +238,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
 
         let cancellation = CancellationToken::new();
         let stop = InvocationCancellation(cancellation.clone());
+        // Unbudgeted: recursive tools run with no `io`.
         Box::pin(async move {
             let _stop = stop;
             self.run(&context, &invocation, &cancellation, None).await

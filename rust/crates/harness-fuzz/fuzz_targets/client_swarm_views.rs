@@ -1,12 +1,8 @@
 #![no_main]
-#[path = "../support/swarm_limits.rs"]
-mod limits;
-#[path = "../support/swarm_membership.rs"]
-mod membership;
-#[path = "../support/notification_files.rs"]
-mod notifications;
-#[path = "../support/swarm_views.rs"]
-mod oracle;
+use acyclic_harness::test_support::fuzz_cases::notification_files as notifications;
+use acyclic_harness::test_support::fuzz_cases::swarm_limits as limits;
+use acyclic_harness::test_support::fuzz_cases::swarm_membership as membership;
+use acyclic_harness::test_support::fuzz_cases::swarm_views as oracle;
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     notifications::exercise(bytes);
     membership::exercise(bytes);

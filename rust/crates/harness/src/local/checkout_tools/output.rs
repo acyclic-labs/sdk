@@ -38,6 +38,47 @@ pub(super) struct Output {
     runtime: tokio::runtime::Handle,
 }
 
+pub(super) struct SearchOutput(AsyncMutex<(Output, usize)>);
+
+impl SearchOutput {
+    pub(super) fn new(output: Output) -> Self {
+        Self(AsyncMutex::new((output, 0)))
+    }
+
+    pub(super) async fn finish(&self, result: &ToolResult) -> Result<()> {
+        self.0.lock().await.0.finish(result).await
+    }
+}
+
+impl crate::tools::git::SearchProgress for SearchOutput {
+    fn publish<'a>(
+        &'a self,
+        progress: &'a crate::tools::git::GrepProgress,
+    ) -> BoxProviderFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let mut state = self.0.lock().await;
+            let (output, matches_from) = &mut *state;
+            // A matching line appears once in the stdout stream. Repeating
+            // all accumulated matches for every metadata page would multiply
+            // output by the size of a huge nonmatching remainder.
+            let mut bytes = serde_json::to_vec(&serde_json::json!({
+                "matches_from": *matches_from,
+                "matches": &progress.matches[*matches_from..],
+                "files_examined": progress.files_examined,
+                "bytes_read": progress.bytes_read,
+                "pending_directories": progress.pending_directories,
+                "complete": progress.complete,
+                "truncated": progress.truncated,
+            }))
+            .map_err(storage)?;
+            bytes.push(b'\n');
+            output.stdout(bytes.into()).await?;
+            *matches_from = progress.matches.len();
+            Ok(())
+        })
+    }
+}
+
 impl Output {
     pub(super) async fn open(
         context: &ToolContext,
@@ -142,6 +183,20 @@ impl Output {
                 .map_err(std::io::Error::other)
         })?;
         self.sequence = next;
+        Ok(())
+    }
+
+    async fn stdout(&mut self, bytes: OwnedBytes) -> Result<()> {
+        for chunk in bytes.chunks(64 * 1024) {
+            let next = self
+                .sequence
+                .0
+                .checked_add(1)
+                .ok_or_else(|| Error::Storage("tool output sequence overflow".into()))?;
+            self.publish(ToolFile::Stdout(self.sequence.0), chunk.to_vec().into())
+                .await?;
+            self.sequence.0 = next;
+        }
         Ok(())
     }
 

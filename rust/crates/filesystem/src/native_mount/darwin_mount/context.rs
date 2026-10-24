@@ -20,6 +20,8 @@ pub(super) struct CacheEpochs {
 }
 
 pub(super) struct DarwinMountContext {
+    #[cfg(feature = "test-support")]
+    wait_clock: Option<acyclic_native_runtime::deadline::simulation::Clock>,
     pub(super) source: Arc<dyn MountFilesystem>,
     pub(super) clock: super::super::clock::Clock,
     pub(super) handler_failure: Arc<DarwinOwned<Mutex<DarwinCallbackState>>>,
@@ -134,6 +136,8 @@ impl DarwinMountContext {
             (meter.budget, meter.cancellation().clone())
         };
         Ok(Self {
+            #[cfg(feature = "test-support")]
+            wait_clock: acyclic_native_runtime::deadline::simulation::Clock::capture(),
             source,
             clock: super::super::clock::Clock::capture(),
             writable,
@@ -232,6 +236,14 @@ impl DarwinMountContext {
     }
 
     pub(super) fn revalidate(&self, work: &Work) -> Result<bool, NativeMountError> {
+        #[cfg(feature = "test-support")]
+        if let Some(clock) = &self.wait_clock {
+            return clock.enter(|| self.revalidate_inner(work));
+        }
+        self.revalidate_inner(work)
+    }
+
+    fn revalidate_inner(&self, work: &Work) -> Result<bool, NativeMountError> {
         work.admit(WorkCounters::UNCHARGED)?;
         let unconfirmed = self.unconfirmed.load(Ordering::Acquire);
         if self.verified.load(Ordering::Acquire) < unconfirmed && !self.verify_labels(work)? {

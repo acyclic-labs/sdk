@@ -35,6 +35,9 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
         syncing: false,
         root: PathBuf::new(),
         torn_tail: None,
+        group_start: header.len() as u64,
+        sealed_sequence: 0,
+        pending_seal: None,
         _ownership_anchor: None,
         #[cfg(feature = "test-support")]
         flushed: 0,
@@ -53,6 +56,7 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
             ),
             commit_clock,
             journal: Arc::new(Mutex::new(journal)),
+            device: Mutex::new(()),
             visibility: RwLock::new(()),
             publication: RwLock::new(()),
             synced: watch::channel(0).0,

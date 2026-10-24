@@ -2,7 +2,7 @@ use super::*;
 use acyclic_stream::{BoxProviderFuture as BoxFuture, BoxProviderStream as BoxStream};
 
 /// Ordered streaming model event.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelEvent {
@@ -28,11 +28,12 @@ pub enum ModelEvent {
         /// Usage and finish metadata.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
         #[serde(deserialize_with = "crate::deserialize_json_value")]
+        #[heap_layout(as = serde_json::Value)]
         metadata: Value,
     },
 }
 /// Executor identity supplied separately from canonical model bytes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelDispatch {
@@ -68,6 +69,7 @@ impl<'a> NativeModelStream<'a> {
             acyclic_fs::WorkCounters::UNCHARGED,
         )?;
         Ok(Self {
+            // Charged above: `custody` claims the stream frame.
             stream: Box::pin(build()),
             custody,
         })
@@ -152,6 +154,7 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
         &'a self,
         _: &'a PreparedModelRequest,
     ) -> BoxFuture<'a, Result<crate::context::ModelTokenCount>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async {
             Err(Error::Unsupported(
                 "selected model token counting is unavailable".into(),
@@ -170,6 +173,7 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
         _: ModelDispatch,
         _: &'a [ModelEvent],
     ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async { Ok(None) })
     }
     /// Pure native capability query.

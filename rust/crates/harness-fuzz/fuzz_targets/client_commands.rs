@@ -3,7 +3,7 @@
 use acyclic_harness::{AgentId, conversation, resources};
 
 use acyclic_harness::{
-    Error, OperationId, Result,
+    Error, OperationId,
     client::{
         CommandCatalog, CommandFileChange, CommandFileSnapshot, CommandPaletteState,
         CommandResolution,
@@ -12,14 +12,7 @@ use acyclic_harness::{
 };
 use libfuzzer_sys::fuzz_target;
 
-#[path = "../../harness/src/package/harness/command_machine.rs"]
-mod command_machine;
-#[path = "../command_oracle.rs"]
-mod command_oracle;
-#[path = "../../harness/src/client/commands/syntax.rs"]
-mod syntax;
-use acyclic_harness::workflow::ResumableMachine as _;
-use acyclic_harness::{Outcome, filesystem, runtime, tool, workflow};
+use acyclic_harness::test_support::fuzz_cases::command_oracle;
 struct NoReads;
 impl ContentResidencyVerifier for NoReads {}
 
@@ -120,19 +113,7 @@ fuzz_target!(|input: &[u8]| {
             Ok::<_, Error>(())
         });
     }
-    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(input) {
-        let machine = std::sync::Arc::new(command_machine::DirectTool::new());
-        let definition = machine.definition().unwrap();
-        assert_eq!(definition.identity().name, machine.identity().name);
-        assert_eq!(definition.identity().version, machine.identity().version);
-        if let Ok(state) = machine.initialize(&value) {
-            let encoded = serde_json::to_vec(&state).unwrap();
-            let restored = serde_json::from_slice(&encoded).unwrap();
-            assert_eq!(state, restored);
-            let _ = machine.transition(&restored, &value);
-        }
-        let _ = machine.transition(&value, &value);
-    }
+    acyclic_harness::local::fuzz_command_state(input);
     if let Ok(control) = acyclic_harness::client::CommandControl::from_bytes(input, 8192) {
         let bytes = serde_json::to_vec(&control).unwrap();
         assert_eq!(
@@ -212,28 +193,29 @@ fuzz_target!(|input: &[u8]| {
         );
     }
     let maximum = input.len() as u64;
-    let result = syntax::split(input, maximum);
+    let result = acyclic_harness::client::fuzz_split_command(input, maximum);
     assert!(command_oracle::accepts(input, maximum, &result));
     let bounded = maximum.saturating_sub(1);
     assert!(command_oracle::accepts(
         input,
         bounded,
-        &syntax::split(input, bounded)
+        &acyclic_harness::client::fuzz_split_command(input, bounded)
     ));
     if input.is_empty() {
         assert!(result.is_err());
     } else if let Some((name, arguments)) = result.expect("positive exact input bound") {
         let normalized = format!("/{name} {arguments}");
         assert_eq!(
-            syntax::split(&normalized, normalized.len() as u64).unwrap(),
+            acyclic_harness::client::fuzz_split_command(&normalized, normalized.len() as u64)
+                .unwrap(),
             Some((name, arguments))
         );
     } else {
         assert!(!input.trim_start().starts_with('/'));
     }
-    assert!(syntax::split(input, 0).is_err());
+    assert!(acyclic_harness::client::fuzz_split_command(input, 0).is_err());
     if !input.is_empty() {
-        assert!(syntax::split(input, maximum - 1).is_err());
+        assert!(acyclic_harness::client::fuzz_split_command(input, maximum - 1).is_err());
     }
     let index =
         input.as_bytes().first().copied().unwrap_or_default() as usize % catalog.commands().count();

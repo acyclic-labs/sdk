@@ -61,7 +61,7 @@ pub(crate) enum Dialect {
     Codex,
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Default, Deserialize, crate::HeapLayout)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct ImportedServer {
     #[serde(rename = "type")]

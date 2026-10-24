@@ -479,7 +479,7 @@ fn view(state: &State) -> Result<View, Error> {
                 .map(|(_, body)| body.len()),
         )
         .sum::<usize>();
-    if bytes != state.body_bytes {
+    if bytes != (state.object_bytes + state.upload_bytes) {
         return Err(Unavailable.into());
     }
     let mut buckets = Vec::new();

@@ -13,7 +13,7 @@ pub const GOAL_METADATA_HEADROOM: usize =
     "---\nstatus: blocked\nreason: \n---\n".len() + GOAL_REASON_BYTES;
 
 /// Validated goal frontmatter status.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum GoalStatus {
@@ -39,7 +39,7 @@ pub enum GoalBlockedReason {
 }
 
 /// Parsed contents of an observed GOAL.md, without inventing a filesystem reference.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct GoalState {
@@ -70,7 +70,7 @@ impl GoalState {
 }
 
 /// Disposable rendering of one immutable private goal file.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct GoalView {
     /// Exact file observed through the owner's ordinary filesystem grant.
@@ -84,7 +84,7 @@ pub struct GoalView {
     pub markdown: String,
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Default, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct Frontmatter {
     #[serde(default)]
@@ -93,7 +93,7 @@ struct Frontmatter {
 }
 
 /// Finite allowance for one goal loop; edits do not reset the allowance.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(default, deny_unknown_fields)]
 pub struct GoalContinuationPolicy {
     /// Maximum unique automatic admissions; zero blocks at the first settle.
@@ -312,4 +312,13 @@ fn parse(text: &str) -> Result<(Frontmatter, &str)> {
         end += line.len();
     }
     Err(Error::Invalid("unclosed goal frontmatter".into()))
+}
+
+/// Checks the production request-head codec with synthetic bytes.
+#[cfg(feature = "test-support")]
+pub fn fuzz_request_head(input: &[u8]) {
+    if let Ok(turn) = request_head::decode(input) {
+        let bytes = serde_json::to_vec(&turn).unwrap();
+        assert_eq!(request_head::decode(&bytes).unwrap(), turn);
+    }
 }

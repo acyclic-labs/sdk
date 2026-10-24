@@ -252,8 +252,14 @@ pub(in crate::native_mount) fn same_work(
     right: &crate::NativeMaterializationWork,
 ) -> bool {
     left.shares_allocation_context(right)
-        && left.capture_origin.as_ref().map(Weak::as_ptr)
-            == right.capture_origin.as_ref().map(Weak::as_ptr)
+        && left
+            .capture_origin
+            .as_ref()
+            .map(crate::demand::CaptureCustody::as_ptr)
+            == right
+                .capture_origin
+                .as_ref()
+                .map(crate::demand::CaptureCustody::as_ptr)
         && left.invocation.as_ref().map(Arc::as_ptr) == right.invocation.as_ref().map(Arc::as_ptr)
         && left.execution.as_ref().map(Arc::as_ptr) == right.execution.as_ref().map(Arc::as_ptr)
 }

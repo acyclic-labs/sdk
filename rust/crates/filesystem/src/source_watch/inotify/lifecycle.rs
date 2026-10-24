@@ -54,7 +54,7 @@ impl NativeSourceWatch {
                 retained_variable_bytes: AtomicU64::new(0),
                 reading: Reading::default(),
                 reading_changed: Condvar::new(),
-                watches: Mutex::new(Vec::new()),
+                watches: Mutex::new(Registrations::default()),
                 stopping: AtomicBool::new(false),
                 completed: AtomicBool::new(false),
                 controller_alive: AtomicBool::new(true),
@@ -123,10 +123,11 @@ impl NativeSourceWatch {
                 .ancestors
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner) = std::mem::take(&mut ancestors);
-            *initialized
+            initialized
                 .watches
                 .lock()
-                .unwrap_or_else(PoisonError::into_inner) = std::mem::take(&mut watches);
+                .unwrap_or_else(PoisonError::into_inner)
+                .records = std::mem::take(&mut watches);
             // The watch's registrations now withdraw with its other payload.
             initialized
                 .inotify

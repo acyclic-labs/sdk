@@ -55,8 +55,8 @@ windows-sys = { version = "0.61.2", features = [
 rustix = { workspace = true, features = ["fs", "process"] }
 
 [dev-dependencies]
-acyclic-test-support = { path = "../rust/crates/test-support" }
 tokio = { workspace = true, features = ["test-util"] }
+acyclic-test-support = { path = "../rust/crates/test-support" }
 async-trait.workspace = true
 axum.workspace = true
 bytes.workspace = true

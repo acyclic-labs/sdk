@@ -42,6 +42,64 @@ fn watcher(root: &Path) -> io::Result<NativeSourceWatch> {
         .map_err(crate::native_host::ordinary_error)
 }
 
+#[test]
+fn name_search_native_file_events_do_not_scan_unrelated_directory_registrations()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let count = 512;
+    for ordinal in 0..count {
+        std::fs::create_dir(root.path().join(format!("directory-{ordinal}")))?;
+    }
+    let watch = watcher(root.path())?;
+    watch.shared.reading().blocked = true;
+    let mut work = crate::native_host::ordinary_work();
+    for ordinal in 0..count {
+        assert!(watch.admit_with_work(Path::new(&format!("directory-{ordinal}")), &mut work)?);
+    }
+    // The first event folds the new registration suffix. Later ordinary file
+    // events must depend on their descriptor aliases, not this directory count.
+    std::fs::write(root.path().join("warm"), b"unread")?;
+    assert!(watch.fence_events_with_work(std::time::Duration::MAX, &mut work)?);
+    let before = work.receipt().items_examined;
+    std::fs::write(root.path().join("regular"), b"unread")?;
+    assert!(watch.fence_events_with_work(std::time::Duration::MAX, &mut work)?);
+    let examined = work.receipt().items_examined - before;
+    assert!(
+        examined < count as u64,
+        "file event inspected {examined} items"
+    );
+    // Negative control: even one former descriptor scan alone visited all
+    // registrations; its file-rebinding cleanup did another full traversal.
+    assert!(
+        watch
+            .shared
+            .watches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len() as u64
+            > examined
+    );
+
+    std::fs::rename(root.path().join("directory-0"), root.path().join("renamed"))?;
+    assert!(watch.fence_events_with_work(std::time::Duration::MAX, &mut work)?);
+    assert!(
+        !watch
+            .shared
+            .watches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(Path::new("directory-0"), &mut work)?
+    );
+    assert!(watch.admit_with_work(Path::new("renamed"), &mut work)?);
+    std::fs::write(root.path().join("renamed/after-removal"), b"unread")?;
+    assert!(watch.fence_events_with_work(std::time::Duration::MAX, &mut work)?);
+    // This fixture borrows ordinary caller work rather than retaining a native
+    // owner. Its explicit stop must use that caller's cleanup admission too.
+    watch.stop_with_work(&mut work)?;
+    assert!(watch.shared.physically_cleared());
+    Ok(())
+}
+
 #[cfg(feature = "native-mount")]
 #[test]
 fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()

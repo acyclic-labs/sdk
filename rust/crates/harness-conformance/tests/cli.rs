@@ -7,12 +7,9 @@ use acyclic_conformance::{
         harness_protocol_identity, harness_suite_digest,
     },
 };
+use acyclic_native_runtime::command::{Command, Stdio};
 use serde::Deserialize;
-use std::{
-    fs,
-    io::Write,
-    process::{Command, Stdio},
-};
+use std::{fs, io::Write};
 
 #[derive(Deserialize)]
 struct Suite {

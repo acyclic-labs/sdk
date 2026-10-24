@@ -102,6 +102,10 @@ impl ControlPlane {
                 )
                 .await
                 .map_err(display)?;
+                // The child forks this head, so it inherits the reconciliation.
+                acyclic_harness::workspace::reconcile_reserved_names(&parent_lazy)
+                    .await
+                    .map_err(display)?;
                 let root_name = route_name(*root_id);
                 let child_name = format!("{}-{root_name}", pending.workspace_name);
                 let fork_generation = parent_lazy
@@ -199,23 +203,23 @@ impl ControlPlane {
             .await
             .map_err(display)?;
             let options = super::access::mount_options(&workspace, &pending.workspace_name).await?;
-            roots.push((
-                root.mount_name(),
-                LazyWorkspace::open(
-                    workspace,
-                    source,
-                    self.store.clone(),
-                    &mut acyclic_fs::kernel::KernelAccounting::Standalone {
-                        allocations: Default::default(),
-                        work: acyclic_fs::WorkCounters::UNCHARGED,
-                        budget: WorkBudget::UNBOUNDED,
-                        cancellation: &CancellationToken::new(),
-                    },
-                )
+            let view = LazyWorkspace::open(
+                workspace,
+                source,
+                self.store.clone(),
+                &mut acyclic_fs::kernel::KernelAccounting::Standalone {
+                    allocations: Default::default(),
+                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                    budget: WorkBudget::UNBOUNDED,
+                    cancellation: &CancellationToken::new(),
+                },
+            )
+            .await
+            .map_err(display)?;
+            acyclic_harness::workspace::reconcile_reserved_names(&view)
                 .await
-                .map_err(display)?,
-                options,
-            ));
+                .map_err(display)?;
+            roots.push((root.mount_name(), view, options));
         }
         let mount = LocalMount::mount(roots, &pending.mount_path)
             .await
@@ -302,7 +306,7 @@ impl ControlPlane {
         let pending = pending.clone();
         self.persist()?;
         if let Some(mount) = self.pending_mounts.get(&pending.fork_key) {
-            mount.unmount().await?;
+            fs_call(mount.unmount()).await?;
             self.pending_mounts.remove(&pending.fork_key);
         }
         if let Ok(context) = WorkspaceContextRegistry::new(self.store.clone())

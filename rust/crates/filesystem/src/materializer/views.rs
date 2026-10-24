@@ -106,7 +106,7 @@ impl NativeMaterializationWork {
             _ => false,
         };
         let same_capture = match (&bound.capture_origin, &original.capture_origin) {
-            (Some(a), Some(b)) => Weak::ptr_eq(a, b),
+            (Some(a), Some(b)) => crate::demand::CaptureCustody::ptr_eq(a, b),
             (None, None) => true,
             _ => false,
         };
@@ -152,13 +152,13 @@ impl NativeMaterializationWork {
     #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn with_capture_custody(
         &self,
-        capture: &Arc<crate::demand::CaptureTransientCustody>,
+        capture: &crate::demand::CaptureCustody,
     ) -> Result<Self, NativeTreeMaterializationError> {
         if !capture.owns_native_work(self) {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
         let mut work = self.allocation_work();
-        work.capture_origin = Some(Arc::downgrade(capture));
+        work.capture_origin = Some(capture.clone());
         self.retain_source(work)
     }
     fn retain_source(&self, work: Self) -> Result<Self, NativeTreeMaterializationError> {

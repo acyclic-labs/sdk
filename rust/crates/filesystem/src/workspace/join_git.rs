@@ -185,12 +185,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         let Some(path) = path else {
             return Ok(None);
         };
-        let Some(replaced) = self.replaced_file(file_id, path).await? else {
+        // Each step runs in a frame of its own, so this frame holds neither.
+        // Unmetered: conflict staging runs on unbounded budgets and holds no work ledger.
+        let Some(replaced) =
+            crate::heap_future::in_heap_unmetered(|| self.replaced_file(file_id, path)).await?
+        else {
             return Ok(None);
         };
-        self.replaced_file_resolution(file_id, replaced, resolution)
-            .await
-            .map(Some)
+        // Unmetered: conflict staging runs on unbounded budgets and holds no work ledger.
+        crate::heap_future::in_heap_unmetered(|| {
+            self.replaced_file_resolution(file_id, replaced, resolution)
+        })
+        .await
+        .map(Some)
     }
 
     /// Resolves a replaced file to the selected content under the base
@@ -215,20 +222,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 }
             },
             MergeResolution::Text(text) => {
-                volume
-                    .fs
-                    .stage_merge_regular_record(
-                        volume,
-                        template,
-                        Bytes::copy_from_slice(text.as_bytes()),
-                    )
-                    .await?
+                let bytes = Bytes::copy_from_slice(text.as_bytes());
+                // Unmetered: conflict staging runs on unbounded budgets and holds no work ledger.
+                crate::heap_future::in_heap_unmetered(|| {
+                    volume
+                        .fs
+                        .stage_merge_regular_record(volume, template, bytes)
+                })
+                .await?
             }
             MergeResolution::Binary(bytes) => {
-                volume
-                    .fs
-                    .stage_merge_regular_record(volume, template, Bytes::copy_from_slice(bytes))
-                    .await?
+                let bytes = Bytes::copy_from_slice(bytes);
+                // Unmetered: conflict staging runs on unbounded budgets and holds no work ledger.
+                crate::heap_future::in_heap_unmetered(|| {
+                    volume
+                        .fs
+                        .stage_merge_regular_record(volume, template, bytes)
+                })
+                .await?
             }
             MergeResolution::Metadata(_)
             | MergeResolution::Binding(_)
@@ -239,7 +250,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             }
         };
         if self.git_metadata {
-            record.metadata = self.git_merged_metadata(&records).await?;
+            // Unmetered: conflict staging runs on unbounded budgets and holds no work ledger.
+            record.metadata =
+                crate::heap_future::in_heap_unmetered(|| self.git_merged_metadata(&records))
+                    .await?;
         }
         Ok(MergeConflictResolution::File(Some(record)))
     }

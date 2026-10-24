@@ -1,5 +1,5 @@
 #![no_main]
-use acyclic_harness as harness;
+use acyclic_harness::test_support::fuzz_cases::file_views;
 use acyclic_harness::{
     client::{CommandFileRoot, CommandSession, PromptFiles, restore_tui_prompt, tui_scroll},
     task_volume::{FileKey, Query, TaskVolume, Write},
@@ -10,8 +10,6 @@ use acyclic_harness::{
 };
 use acyclic_stream::{MemoryStream, StreamPath};
 use libfuzzer_sys::fuzz_target;
-#[path = "../../harness/tests/support/file_views.rs"]
-mod file_views;
 use std::sync::Arc;
 
 fuzz_target!(|data: &[u8]| {

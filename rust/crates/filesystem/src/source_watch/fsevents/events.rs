@@ -35,7 +35,7 @@ impl Shared {
                 // A volume mounted or unmounted at a path beneath the root
                 // rebinds only that path; one above the root, or lost
                 // notifications, may have changed anything.
-                if flags & (USER_DROPPED | KERNEL_DROPPED) != 0 {
+                if flags & (USER_DROPPED | KERNEL_DROPPED | 0x00000008) != 0 {
                     changes.push(HostChange::Everything);
                 } else if let Some(relative) = relative_path(path, &self.root, work)? {
                     let (relative, bytes) = clone_path(relative, work)?;

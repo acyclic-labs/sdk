@@ -122,7 +122,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
         return Ok(None);
     };
     let maximum = state.remaining_changes.max(1);
-    let (ours_diff, allocation) = diff_tree_entries_with_accounting(
+    let (ours_diff, allocation) = diff_tree_entries_with_accounting::<_, false>(
         store,
         Some(base_entries),
         Some(ours_entries),
@@ -135,7 +135,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
     let bytes = ours_diff.retained_allocation_bytes;
     let ours_diff = Owned::new(ours_diff, allocation, bytes);
     let result = async {
-        let (theirs_diff, allocation) = diff_tree_entries_with_accounting(
+        let (theirs_diff, allocation) = diff_tree_entries_with_accounting::<_, false>(
             store,
             Some(base_entries),
             Some(theirs_entries),

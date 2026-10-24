@@ -63,7 +63,9 @@ async fn observation_dependency_storage_is_admitted_with_cache_residency()
     assert_eq!(failure.work.backend_read_operations, 0);
     assert_eq!(
         failure.work.allocation_operations,
-        cache_work.allocation_operations + 1
+        // The admitted frame and its ledger-lifetime retirement cell are
+        // separate physical allocations, both preceding the cache backing.
+        cache_work.allocation_operations + 2
     );
 
     // Isolate the actual name leaf, retaining the real cache/dependency backing.

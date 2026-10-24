@@ -41,4 +41,7 @@ pub use codec::decode;
 pub use codec::value;
 
 #[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod erasure_tests;
+#[cfg(test)]
 mod tests;

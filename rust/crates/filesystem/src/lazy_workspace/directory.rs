@@ -103,6 +103,53 @@ impl LazyDirectoryCursor {
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
     LazyWorkspace<A, O, D, S>
 {
+    /// Observes a native metadata token without enumerating or reading content.
+    /// Authored directory bindings do not hide changes in their native remainder.
+    pub async fn source_metadata_version_at_snapshot(
+        &self,
+        snapshot: LazySnapshotRef,
+        path: &str,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<crate::demand::SourceVersion>, LazyWorkspaceError> {
+        self.source_metadata_at_snapshot(snapshot, path, accounting)
+            .await
+            .map(|node| node.map(|node| node.version))
+    }
+
+    /// Observes source identity and version without directory enumeration or
+    /// content reads, including native children beneath authored directories.
+    pub async fn source_metadata_at_snapshot(
+        &self,
+        snapshot: LazySnapshotRef,
+        path: &str,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<SourceNode>, LazyWorkspaceError> {
+        self.validate_snapshot(snapshot, accounting).await?;
+        let namespace = self.namespace_path(path, accounting)?;
+        let observed = accounted!(accounting, |work, stop| self.source.lookup(
+            snapshot.source,
+            &namespace.value,
+            work,
+            stop
+        ));
+        namespace.retire(accounting)?;
+        match observed {
+            Ok(node) => Ok(node),
+            // An indexed directory may have been removed or replaced by a
+            // file while the source was closed. Its former descendants are
+            // absent, rather than an environmental failure of the index.
+            Err(LazyWorkspaceError::Demand(crate::demand::DemandError::Io(error)))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Lists the current merged directory.
     pub async fn list_directory(
         &self,
@@ -111,7 +158,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         maximum: u32,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(LazyDirectoryPage, KernelOwnedAllocation), LazyWorkspaceError> {
-        let state = self.state(ctx).await?;
+        let state = crate::heap_future::metered!(ctx, |ctx| self.state(ctx))?;
         let mut checkout = self
             .checkout(crate::model::GenerationSelector::Head, ctx)
             .await?;
@@ -172,7 +219,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(LazyDirectoryPage, LazyWorkspaceState, KernelOwnedAllocation), LazyWorkspaceError>
     {
-        let state = self.state(ctx).await?;
+        let state = crate::heap_future::metered!(ctx, |ctx| self.state(ctx))?;
         let (page, _, guard) = self
             .list_directory_at(&state, checkout, path, cursor, maximum, mask, ctx)
             .await?;

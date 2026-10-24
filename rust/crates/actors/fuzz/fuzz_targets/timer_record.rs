@@ -1,8 +1,7 @@
 #![no_main]
+use acyclic_actors::fuzzing::timer_oracle as oracle;
 use acyclic_actors::timers::TimerRecord;
 use libfuzzer_sys::fuzz_target;
-#[path = "../../tests/support/timer_oracle.rs"]
-mod oracle;
 
 fuzz_target!(|bytes: &[u8]| {
     if let Ok(record) = TimerRecord::decode(bytes) {

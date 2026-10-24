@@ -66,7 +66,7 @@ impl ToolExecutor for WorkspaceExecutor {
         invocation: ToolInvocation,
         context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
-        Box::pin(async move {
+        acyclic_fs::in_heap(|| async move {
             let context = context.ok_or_else(|| {
                 boundary(
                     None,
@@ -80,7 +80,9 @@ impl ToolExecutor for WorkspaceExecutor {
                     .arguments
                     .get("command")
                     .and_then(serde_json::Value::as_str)
-                    && let Some(result) = super::agent_files::inspect(&context, command).await?
+                    && let Some(result) =
+                        acyclic_fs::in_heap(|| super::agent_files::inspect(&context, command))
+                            .await?
                 {
                     return Ok(result);
                 }
@@ -95,7 +97,7 @@ impl ToolExecutor for WorkspaceExecutor {
         invocation: ToolInvocation,
         context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-        Box::pin(async move {
+        acyclic_fs::in_heap(|| async move {
             let context = context.ok_or_else(|| {
                 boundary(
                     None,
@@ -109,7 +111,9 @@ impl ToolExecutor for WorkspaceExecutor {
                     .arguments
                     .get("command")
                     .and_then(serde_json::Value::as_str)
-                    && let Some(result) = super::agent_files::inspect(&context, command).await?
+                    && let Some(result) =
+                        acyclic_fs::in_heap(|| super::agent_files::inspect(&context, command))
+                            .await?
                 {
                     return Ok(Some(result));
                 }

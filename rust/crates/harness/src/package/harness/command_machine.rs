@@ -98,3 +98,21 @@ impl ResumableMachine for DirectTool {
 #[cfg(test)]
 #[path = "command_machine_tests.rs"]
 mod tests;
+
+#[cfg(feature = "test-support")]
+pub fn fuzz_state(input: &[u8]) {
+    use crate::workflow::ResumableMachine as _;
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(input) {
+        let machine = std::sync::Arc::new(DirectTool::new());
+        let definition = machine.definition().unwrap();
+        assert_eq!(definition.identity().name, machine.identity().name);
+        assert_eq!(definition.identity().version, machine.identity().version);
+        if let Ok(state) = machine.initialize(&value) {
+            let encoded = serde_json::to_vec(&state).unwrap();
+            let restored = serde_json::from_slice(&encoded).unwrap();
+            assert_eq!(state, restored);
+            let _ = machine.transition(&restored, &value);
+        }
+        let _ = machine.transition(&value, &value);
+    }
+}

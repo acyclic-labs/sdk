@@ -370,31 +370,6 @@ where
         })
     }
 
-    /// Searches the Git-visible files of a tree.
-    pub(super) async fn grep(
-        &self,
-        pattern: &str,
-        path: Option<&str>,
-        tree: &GitTreeRef,
-    ) -> Result<GitFilesystemResult, Error> {
-        let generation = self.generation(*tree).await?;
-        let result = grep_git_generation(
-            &generation,
-            &self.ignore,
-            pattern,
-            path,
-            100_000,
-            16 * 1024 * 1024,
-            100_000,
-        )
-        .await
-        .map_err(Error::from)?;
-        Ok(GitFilesystemResult::Data {
-            kind: "grep".to_owned(),
-            value: serde_json::to_value(result).map_err(json_error)?,
-        })
-    }
-
     /// Attributes the lines of `path` across `commits`.
     pub(super) async fn blame(
         &self,

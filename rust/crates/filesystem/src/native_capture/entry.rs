@@ -476,29 +476,41 @@ pub(crate) async fn capture_subtrees_with_native_work<
         let capture = meter
             .capture_origin
             .as_ref()
-            .and_then(std::sync::Weak::upgrade)
             .ok_or(crate::NativeTreeMaterializationError::OriginalWorkPoisoned)?;
+        let capture = crate::demand::CaptureTransientCustody::worker(capture)?;
         let task_meter = meter.runtime_meter();
+        // Capture one tuple rather than separate fields: rejection and unwind
+        // destroy every input before the final worker token.
+        let inputs = (canonical, source_path, host_policy, worker, capture);
         let task = acyclic_native_runtime::run_blocking_io(
             move || {
+                let mut inputs = inputs;
                 let result = (|| {
                     let mut observed = Vec::new();
                     let source_root = scan_host_subtree_roots(
-                        (&source_path, expected_identity),
+                        (&inputs.1, expected_identity),
                         (profile, limits),
                         maximum,
-                        &canonical,
-                        &host_policy,
+                        &inputs.0,
+                        &inputs.2,
                         &mut observed,
-                        &worker,
+                        &inputs.3,
                     )?;
-                    Ok((canonical, source_root, observed))
+                    Ok((source_root, observed))
                 })();
-                let cleanup =
-                    release_host_scan_inputs(host_policy, source_path, source_path_bytes, &worker);
+                let cleanup = release_host_scan_inputs(
+                    std::mem::take(&mut inputs.2),
+                    std::mem::take(&mut inputs.1),
+                    source_path_bytes,
+                    &inputs.3,
+                );
                 let result = result.and_then(|value| cleanup.map(|()| value));
-                // Completion storage drops the payload before its accounting token.
-                (result, capture)
+                let (canonical, _, _, _, capture) = inputs;
+                // Completion storage also destroys the payload before its token.
+                (
+                    result.map(|(root, observed)| (canonical, root, observed)),
+                    capture,
+                )
             },
             Some((task_meter, false)),
         );

@@ -18,7 +18,7 @@ pub trait ContextSource: acyclic_stream::ProviderPlatform {
 }
 
 /// Placement of source messages relative to existing context.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ContextPlacement {

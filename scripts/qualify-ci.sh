@@ -207,8 +207,9 @@ case "$lane" in
     node --test scripts/check-crate-tests.test.mjs
     node scripts/check-crate-tests.mjs 2
     node scripts/check-hermetic-clippy.mjs
-    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
-      cargo check --locked -p acyclic-harness-fuzz --bins
+    node --test scripts/check-fuzz-boundaries.test.mjs scripts/qualify-harness-fuzz.test.mjs
+    node scripts/check-fuzz-boundaries.mjs
+    cargo check --locked --workspace --all-features --all-targets
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
       cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --features model-checking --lib
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \

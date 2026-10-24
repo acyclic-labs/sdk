@@ -1,6 +1,5 @@
 use super::*;
-#[path = "../../../sdk-docs/src/sync.rs"]
-mod sync;
+use sdk_docs::sync;
 
 thread_local! {
     static GIT: PathBuf = resolve_git();

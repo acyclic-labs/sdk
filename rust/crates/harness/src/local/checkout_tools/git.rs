@@ -40,7 +40,7 @@ impl CheckoutTools {
         let (relative, mount) = workspace.mounts.named(parsed.volume.as_deref())?;
         let read_only = matches!(
             parsed.arguments[0].as_str(),
-            "diff" | "log" | "show" | "status"
+            "diff" | "log" | "show" | "status" | "grep"
         );
         for (action, operation) in std::iter::once((Action::Read, VolumeOperation::Read))
             .chain((!read_only).then_some((Action::Write, VolumeOperation::Write)))
@@ -57,7 +57,7 @@ impl CheckoutTools {
         }
         if !relative.is_empty() && !read_only && parsed.arguments[0] != "merge" {
             return Err(Error::Unsupported(
-                "--volume supports diff, log, show, status and merge".into(),
+                "--volume supports diff, log, show, status, grep and merge".into(),
             ));
         }
         if !relative.is_empty() && mount.view.source.is_none() {
@@ -75,11 +75,6 @@ impl CheckoutTools {
     ) -> Result<ToolResult> {
         let (source, reserved) =
             self.fs_target_with_reserved_paths(workspace, &parsed, context.effective_scope())?;
-        let native = match &source {
-            Some(source) => Some(source.native().await),
-            None => None,
-        };
-        let native = native.as_ref().and_then(|guard| guard.as_ref());
         let State {
             active, watcher, ..
         } = state;
@@ -93,6 +88,21 @@ impl CheckoutTools {
             .as_ref()
             .ok_or_else(|| Error::Unauthorized("git command has no execution owner".into()))?;
         owner.verify_owner(None)?.await?;
+        let (_, mount) = workspace.mounts.named(parsed.volume.as_deref())?;
+        let read_allowed = |path: &str| {
+            mount
+                .check(
+                    acyclic_fs::access::Action::Read,
+                    path,
+                    self.clock.now_unix_millis() / 1000,
+                )
+                .is_ok()
+        };
+        let native = match &source {
+            Some(source) => Some(source.native().await),
+            None => None,
+        };
+        let native = native.as_ref().and_then(|guard| guard.as_ref());
         let (task, fence) = owner.task_binding();
         let lease_id = lease_identity(task, context.operation_id(), fence);
         let coordinator = acyclic_fs::OperationWindowCoordinator::new(
@@ -156,30 +166,34 @@ impl CheckoutTools {
                 )
                 .await?;
             }
-            crate::tools::git::run_with_guard(
-                crate::tools::git::Workspace {
-                    filesystem: &workspace.filesystem,
-                    store: &workspace.store,
-                    view,
-                    root: source.as_ref().map_or(workspace.path.as_path(), |source| {
-                        source.destination.as_path()
-                    }),
-                    repository: if source.is_some() {
-                        volume.id()
-                    } else {
-                        workspace.view().workspace().id()
+            acyclic_fs::in_heap(|| {
+                crate::tools::git::run_with_guard(
+                    crate::tools::git::Workspace {
+                        filesystem: &workspace.filesystem,
+                        store: &workspace.store,
+                        view,
+                        root: source.as_ref().map_or(workspace.path.as_path(), |source| {
+                            source.destination.as_path()
+                        }),
+                        repository: if source.is_some() {
+                            volume.id()
+                        } else {
+                            workspace.view().workspace().id()
+                        },
+                        lease: Some(lease.clone()),
+                        checkout: (source.is_none() && workspace.mounted.is_none())
+                            .then_some(workspace.identity),
+                        reserved: &reserved,
+                        author: "LocalHarness",
+                        authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
+                            .unwrap_or(i64::MAX),
+                        read_allowed: &read_allowed,
+                        search_progress: None,
                     },
-                    lease: Some(lease.clone()),
-                    checkout: (source.is_none() && workspace.mounted.is_none())
-                        .then_some(workspace.identity),
-                    reserved: &reserved,
-                    author: "LocalHarness",
-                    authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
-                        .unwrap_or(i64::MAX),
-                },
-                &parsed.arguments,
-                || async { owner.verify_owner(None)?.await },
-            )
+                    &parsed.arguments,
+                    || async { owner.verify_owner(None)?.await },
+                )
+            })
             .await
         }
         .await;

@@ -61,7 +61,7 @@ impl CallbackGate {
                 return Ok(());
             }
             work.charge(READ_WORK)?;
-            std::thread::sleep(CALLBACK_DRAIN_POLL);
+            acyclic_native_runtime::deadline::sleep(CALLBACK_DRAIN_POLL);
         }
     }
 }

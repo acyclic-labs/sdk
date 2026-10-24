@@ -62,18 +62,19 @@ enum Ownership {
     /// Each transaction is admitted by a shared `owner.lock`.
     Shared,
     /// Sole owner; clones share its lock and record cache.
-    Owned(Arc<Owner>),
+    Owned(owners::OwnerRef),
 }
 
 /// Lifetime-long exclusive ownership of one namespace.
 #[derive(Debug)]
 struct Owner {
-    _lock: OwnerLock,
     /// Cached logged records, `None` when absent. Joinable owners bound this cache.
     residents: Arc<RwLock<Residents>>,
     /// Core-state log, opened by the first logged transaction. Its mutex
     log: Mutex<Option<CoreLog>>,
     cache_limit: Option<usize>,
+    // Last: release admission only after resident/WAL teardown.
+    _lock: OwnerLock,
 }
 
 /// One held `owner.lock`, released when dropped.
@@ -161,7 +162,7 @@ enum Admission {
     Shared {
         _lock: OwnerLock,
     },
-    Owned(Arc<Owner>),
+    Owned(owners::OwnerRef),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -185,15 +186,10 @@ impl LocalCoreStateStore {
     /// Owns the namespace exclusively until this store and all its clones drop.
     pub fn open_owned(root: impl Into<PathBuf>) -> Result<Self, LocalCoreStateStoreError> {
         let root = root.into();
-        let lock = OwnerLock::acquire(&root, LockMode::Exclusive)?;
+        let owner = owners::exclusive(&root)?;
         Ok(Self {
             root: Arc::new(root),
-            ownership: Ownership::Owned(Arc::new(Owner {
-                _lock: lock,
-                residents: Arc::default(),
-                log: Mutex::default(),
-                cache_limit: None,
-            })),
+            ownership: Ownership::Owned(owner),
             deferral: None,
             journal_work: None,
             ownership_anchor: None,
@@ -275,7 +271,7 @@ impl LocalCoreStateStore {
             (Ownership::Shared, None) => Admission::Shared {
                 _lock: OwnerLock::acquire(&root, LockMode::Shared)?,
             },
-            (Ownership::Owned(owner), _) => Admission::Owned(Arc::clone(owner)),
+            (Ownership::Owned(owner), _) => Admission::Owned(owner.clone()),
         };
         let deferred = matches!(admission, Admission::Owned(_))
             && self

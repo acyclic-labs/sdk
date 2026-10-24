@@ -1,6 +1,51 @@
 use super::*;
 use proptest::prelude::*;
 
+#[test]
+fn unfinished_walk_paints_progress_even_when_there_are_no_matches() {
+    let mut menu = CompletionMenu::default();
+    let editor = Editor::new("@absent");
+    menu.refresh(&editor);
+    menu.set_file(
+        "search/progress.json",
+        Some(br#"{"query":"absent","pending_dirs":23,"complete":false,"unavailable_entries":0}"#),
+    )
+    .unwrap();
+    let area = Rect::new(0, 0, 60, 3);
+    let mut buffer = Buffer::empty(area);
+    CompletionPopup::new(&menu, &editor).render(area, &mut buffer);
+    let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+    assert!(text.contains("still indexing (23 dirs)"));
+    menu.set_file(
+        "search/progress.json",
+        Some(br#"{"query":"absent","pending_dirs":0,"complete":false,"unavailable_entries":0}"#),
+    )
+    .unwrap();
+    assert!(menu.active(&editor));
+    let mut buffer = Buffer::empty(area);
+    CompletionPopup::new(&menu, &editor).render(area, &mut buffer);
+    let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+    assert!(text.contains("searching indexed files"));
+    assert!(!text.contains("still indexing (0 dirs)"));
+    menu.set_file(
+        "search/progress.json",
+        Some(br#"{"query":"absent","pending_dirs":0,"complete":true,"unavailable_entries":0}"#),
+    )
+    .unwrap();
+    assert!(!menu.active(&editor));
+    // Negative control above: only an actually complete empty result closes.
+    menu.set_file(
+        "search/progress.json",
+        Some(br#"{"query":"absent","pending_dirs":0,"complete":true,"unavailable_entries":2}"#),
+    )
+    .unwrap();
+    assert!(menu.active(&editor));
+    let mut buffer = Buffer::empty(area);
+    CompletionPopup::new(&menu, &editor).render(area, &mut buffer);
+    let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+    assert!(text.contains("partial index (2 unavailable)"));
+}
+
 fn allocation_bound(bytes: usize, long_label: bool, broken: bool) {
     let name = if long_label {
         "x".repeat(bytes)

@@ -6,6 +6,7 @@ mod instruction_review;
 #[cfg(test)]
 #[cfg(unix)]
 mod killed_tool_tree;
+mod main_thread;
 mod web_outcomes;
 use acyclic_harness::{
     OperationId,

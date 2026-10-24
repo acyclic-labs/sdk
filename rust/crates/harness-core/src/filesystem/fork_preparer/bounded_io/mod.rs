@@ -26,11 +26,71 @@ pub(crate) use quota::native_decoded;
 pub(crate) use quota::{DecodeReservation, retain_decoded};
 pub use records::PreparationRecord;
 pub use records::UploadRecord;
-pub(crate) use records::preparation_slot_bytes;
-use records::{decode_allowance_error, decode_allowance_with_code};
+use records::decode_allowance_error;
 pub(in crate::filesystem) use sdk::{
     content_workspace, create, generation_ref, operation_key, retain,
 };
+
+/// Spent work and live owned bytes of a standalone preparation attempt.
+pub type OwnedLedger = SyncMutex<(
+    WorkCounters,
+    std::result::Result<AllocationLedger, acyclic_fs::WorkError>,
+)>;
+
+/// A standalone ledger with the limits and cancellation it is charged under,
+/// shared by the attempt and by each box charge it hands out.
+pub struct OwnedShared {
+    budget: WorkBudget,
+    cancellation: CancellationToken,
+    ledger: OwnedLedger,
+}
+
+impl OwnedShared {
+    pub(crate) fn new(
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+        state: (
+            WorkCounters,
+            std::result::Result<AllocationLedger, acyclic_fs::WorkError>,
+        ),
+    ) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            budget,
+            cancellation: cancellation.clone(),
+            ledger: SyncMutex::new(state),
+        })
+    }
+}
+
+impl std::ops::Deref for OwnedShared {
+    type Target = OwnedLedger;
+    fn deref(&self) -> &OwnedLedger {
+        &self.ledger
+    }
+}
+
+/// Returns `bytes` of owned custody to a standalone ledger.
+///
+/// A ledger that cannot take them back is poisoned, so the attempt's next
+/// call reports the fault instead of continuing on a wrong total.
+fn release_standalone(
+    work: &OwnedLedger,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    bytes: u64,
+) {
+    let mut state = work
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (spent, allocations) = &mut *state;
+    if let Ok(ledger) = allocations
+        && KernelAccounting::borrowed_standalone(ledger, spent, budget, cancellation)
+            .release_owned(&mut KernelOwnedAllocation::Standalone, bytes)
+            .is_err()
+    {
+        *allocations = Err(acyclic_fs::WorkError::Overflow);
+    }
+}
 
 /// Work and retained ownership for one preparation attempt.
 pub enum PreparationIo {
@@ -40,12 +100,7 @@ pub enum PreparationIo {
         budget: WorkBudget,
         /// Spent work and live owned bytes. This ledger is acquired alone;
         /// callbacks must not acquire another preparation ledger or reenter it.
-        work: Box<
-            SyncMutex<(
-                WorkCounters,
-                std::result::Result<AllocationLedger, acyclic_fs::WorkError>,
-            )>,
-        >,
+        work: std::sync::Arc<OwnedShared>,
         /// Cancellation for this attempt.
         cancellation: CancellationToken,
     },
@@ -113,10 +168,11 @@ impl PreparationIo {
         cancellation.check()?;
         Ok(Self::Owned {
             budget,
-            work: Box::new(SyncMutex::new((
-                WorkCounters::default(),
-                Ok(AllocationLedger::default()),
-            ))),
+            work: OwnedShared::new(
+                budget,
+                cancellation,
+                (WorkCounters::default(), Ok(AllocationLedger::default())),
+            ),
             cancellation: cancellation.clone(),
         })
     }
@@ -124,10 +180,11 @@ impl PreparationIo {
         cancellation.check()?;
         Ok(Self::Owned {
             budget: WorkBudget::UNBOUNDED,
-            work: Box::new(SyncMutex::new((
-                WorkCounters::default(),
-                Ok(AllocationLedger::default()),
-            ))),
+            work: OwnedShared::new(
+                WorkBudget::UNBOUNDED,
+                cancellation,
+                (WorkCounters::default(), Ok(AllocationLedger::default())),
+            ),
             cancellation: cancellation.clone(),
         })
     }
@@ -435,6 +492,31 @@ impl PreparationIo {
                 .map_err(Into::into),
         }
     }
+    /// Charges a box of `bytes` on this attempt before the box is made: its
+    /// bytes are owned custody and its allocation is one attempt. The charge
+    /// returns the bytes when it is dropped, after the box it paid for.
+    pub(crate) fn charge_box(&self, bytes: u64) -> Result<crate::charged_box::BoxCharge> {
+        self.check_cancellation()?;
+        match self {
+            Self::Owned { work, .. } => {
+                self.retain_owned(bytes)?;
+                // Built before the attempt is charged: a refused attempt
+                // still returns the bytes it retained.
+                let charge = crate::charged_box::BoxCharge::owned(OwnedCharge {
+                    work: std::sync::Arc::clone(work),
+                    bytes,
+                });
+                self.allocation_attempt(bytes)?;
+                Ok(charge)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native { work, .. } => Ok(crate::charged_box::BoxCharge::native(work.claim(
+                bytes,
+                u64::from(bytes != 0),
+                WorkCounters::UNCHARGED,
+            )?)),
+        }
+    }
     pub(crate) fn allocation_attempt(&self, bytes: u64) -> Result<()> {
         self.charged(WorkCounters {
             allocation_operations: u64::from(bytes != 0),
@@ -590,3 +672,18 @@ impl PreparationIo {
 }
 
 use crate::executor::stock_boundary;
+
+/// Owned custody that one charged box holds on a standalone ledger.
+pub(crate) struct OwnedCharge {
+    work: std::sync::Arc<OwnedShared>,
+    bytes: u64,
+}
+
+impl Drop for OwnedCharge {
+    fn drop(&mut self) {
+        if self.bytes != 0 {
+            let work = &*self.work;
+            release_standalone(&work.ledger, work.budget, &work.cancellation, self.bytes);
+        }
+    }
+}

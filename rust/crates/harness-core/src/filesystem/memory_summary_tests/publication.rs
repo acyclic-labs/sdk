@@ -428,7 +428,7 @@ async fn published_summary(
         .await?;
     let preparer = preparer.with_task_preparation(task_preparation)?;
     let report = aggregate.prepare_fork(&preparer, request.clone()).await?;
-    assert_eq!(report, lost_acknowledgement);
+    assert_eq!(report, *lost_acknowledgement);
     assert_eq!(
         aggregate.prepare_fork(&preparer, request.clone()).await?,
         report

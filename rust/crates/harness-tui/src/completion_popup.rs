@@ -49,6 +49,9 @@ impl<'a> CompletionPopup<'a> {
             self.menu
                 .items()
                 .len()
+                .saturating_add(usize::from(
+                    self.menu.indexing().is_some() || self.menu.unavailable_entries() != 0,
+                ))
                 .saturating_add(2)
                 .min(self.editor.settings().completion_max_height),
         );
@@ -93,16 +96,38 @@ impl Widget for CompletionPopup<'_> {
             .style(self.style);
         let inner = block.inner(area);
         block.render(area, buffer);
-        let first = self
-            .menu
-            .selected
-            .saturating_sub(usize::from(inner.height) - 1);
+        let rows = inner.height.saturating_sub(u16::from(
+            self.menu.indexing().is_some() || self.menu.unavailable_entries() != 0,
+        ));
+        if self.menu.indexing().is_some() || self.menu.unavailable_entries() != 0 {
+            let text = match self.menu.indexing() {
+                Some(0) => "searching indexed files".to_owned(),
+                Some(pending) => format!("still indexing ({pending} dirs)"),
+                None => format!(
+                    "partial index ({} unavailable)",
+                    self.menu.unavailable_entries()
+                ),
+            };
+            let mut x = inner.x;
+            render_part(
+                &text,
+                &mut x,
+                inner.right(),
+                inner.bottom().saturating_sub(1),
+                self.style,
+                buffer,
+            );
+        }
+        if rows == 0 {
+            return;
+        }
+        let first = self.menu.selected.saturating_sub(usize::from(rows) - 1);
         for (index, item) in self
             .menu
             .items()
             .enumerate()
             .skip(first)
-            .take(usize::from(inner.height))
+            .take(usize::from(rows))
         {
             let style = if index == self.menu.selected {
                 self.style.patch(self.selected_style)

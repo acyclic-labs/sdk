@@ -2,40 +2,9 @@
 
 use super::*;
 
-pub(in crate::filesystem) fn recursive_decode_slot_bytes<T>() -> u64 {
-    let typed = [
-        std::mem::size_of::<Plan>(),
-        std::mem::size_of::<RecursiveForkToolPlan>(),
-        std::mem::size_of::<RecursiveMergeToolPlan>(),
-        std::mem::size_of::<crate::resource_preparation::ResourcePreparationRequest>(),
-        std::mem::size_of::<TaskAdmissionRecord>(),
-        std::mem::size_of::<ForkRequest>(),
-        std::mem::size_of::<ForkReport>(),
-        std::mem::size_of::<ForkSeed>(),
-        std::mem::size_of::<crate::fork::ForkSelection>(),
-        std::mem::size_of::<crate::fork::CapturedResource>(),
-        std::mem::size_of::<crate::fork::Capture>(),
-        std::mem::size_of::<crate::fork::ResourceRevision>(),
-        std::mem::size_of::<crate::fork::SummaryForkCapture>(),
-        std::mem::size_of::<ProjectMergeReceipt>(),
-        std::mem::size_of::<crate::merge::ProviderJoinProof>(),
-        std::mem::size_of::<WorkflowCommand>(),
-        std::mem::size_of::<crate::source_authorization::ProjectSourceAuthorization>(),
-    ]
-    .into_iter()
-    .max()
-    .unwrap_or(0) as u64;
-    let content =
-        std::mem::size_of::<serde::__private229::de::Content<'static>>().max(std::mem::size_of::<(
-            serde::__private229::de::Content<'static>,
-            serde::__private229::de::Content<'static>,
-        )>()) as u64;
-    crate::filesystem::preparation_slot_bytes::<T>().max(typed + 2 * 5 * content) + 2 * 2 * content
-}
 macro_rules! recursive_preparation_records {
     ($($record:ty => $schema:ident),+ $(,)?) => {$(
         impl crate::filesystem::PreparationRecord for $record {
-            fn maximum_slot_bytes() -> u64 { recursive_decode_slot_bytes::<Self>() }
             fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
                 crate::executor::json::JsonValueSchema::$schema
             }
@@ -124,6 +93,7 @@ pub(super) fn recursive_encoded_equal<T: Serialize>(
     crate::filesystem::PreparationIo::release_since(io, before)?;
     Ok(equal)
 }
+// Charged above: the box is retained and attempted on `io` when one is live.
 pub(in crate::filesystem) fn recursive_box<T>(
     value: T,
     io: Option<&crate::filesystem::PreparationIo>,
@@ -133,6 +103,7 @@ pub(in crate::filesystem) fn recursive_box<T>(
         io.retain_owned(bytes)?;
         io.allocation_attempt(bytes)?;
     }
+    // Charged above: the box is retained and attempted on `io` when one is live.
     Ok(Box::new(value))
 }
 pub(super) fn derived(

@@ -1,4 +1,5 @@
 use super::*;
+use crate::heap_future::metered;
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
     LazyWorkspace<A, O, D, S>
 {
@@ -31,9 +32,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         permit: crate::PublicationPermit,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Self, LazySnapshotRef), LazyWorkspaceError> {
-        let cut = self
-            .prepare_fork_snapshot(destination, cut, key.operation_id(), ctx)
-            .await?;
+        let cut = metered!(erased ctx, |ctx| self.prepare_fork_snapshot(
+            destination,
+            cut,
+            key.operation_id(),
+            ctx
+        ))?;
         let generation = crate::Generation {
             workspace: self.workspace.clone(),
             id: cut.authored_generation,
@@ -61,8 +65,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 cancel
             ))?
         .ok_or(LazyWorkspaceError::Concurrent)?;
-        self.bind_prepared_fork(cut, child, original.id(), key.operation_id(), ctx)
-            .await
+        let original = original.id();
+        metered!(erased ctx, |ctx| self.bind_prepared_fork(
+            cut,
+            child,
+            original,
+            key.operation_id(),
+            ctx
+        ))
     }
     /// Authenticates the creator's original generation before opening the child.
     pub async fn bind_prepared_fork(
@@ -78,7 +88,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         {
             return Err(WorkspaceError::ForeignGeneration.into());
         }
-        self.validate_snapshot(cut, ctx).await?;
+        metered!(erased ctx, |ctx| self.validate_snapshot(cut, ctx))?;
         let original = accounted!(ctx, |work, cancel| self
             .workspace
             .volume
@@ -170,9 +180,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         if id == self.workspace.id() {
             return Err(LazyWorkspaceError::Concurrent);
         }
-        self.validate_snapshot(cut, ctx).await?;
+        crate::heap_future::metered!(ctx, |ctx| self.validate_snapshot(cut, ctx))?;
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            if let Some(state) = self.store.load_lazy_workspace(id, ctx).await? {
+            if let Some(state) =
+                crate::heap_future::metered!(ctx, |ctx| self.store.load_lazy_workspace(id, ctx))?
+            {
                 let origin = self.fork_origin(&state, id, operation)?;
                 return if origin.snapshot == cut {
                     Ok(cut)
@@ -200,10 +212,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 }),
                 ..LazyWorkspaceState::new(id, cut.source, cut.overlay, cut.shadows)
             };
-            let swapped = self
-                .store
-                .compare_and_swap_lazy_workspace(id, 0, state, ctx)
-                .await;
+            let swapped = crate::heap_future::metered!(ctx, |ctx| {
+                self.store
+                    .compare_and_swap_lazy_workspace(id, 0, state, ctx)
+            });
             drop(hold);
             if swapped? {
                 return Ok(cut);

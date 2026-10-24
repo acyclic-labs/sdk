@@ -1,9 +1,10 @@
-//! Windows file I/O and detached service startup.
+//! Windows file I/O, process start and detached service startup.
 #![allow(
     unsafe_code,
     reason = "native operations retain kernel-visible handles and buffers"
 )]
 
+pub(crate) mod command;
 mod driver;
 mod io;
 mod service;

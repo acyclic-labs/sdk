@@ -371,16 +371,18 @@ pub(crate) async fn clone_extent_range_with_accounting<S: AsyncObjectStore>(
         });
     }
     plan.retire(accounting)?;
-    let receipt = super::extent_mutation::apply_extent_mutations_with_accounting(
-        store,
-        (request.destination_root, request.destination_logical_bytes),
-        &mutations.value,
-        request.maximum_mutations,
-        limits,
-        accounting,
-        cancellation,
-    )
-    .await
+    // Boxed: the extent mutation frame stays out of every caller's frame.
+    let receipt = crate::heap_future::metered!(erased accounting, |accounting| {
+        super::extent_mutation::apply_extent_mutations_with_accounting(
+            store,
+            (request.destination_root, request.destination_logical_bytes),
+            &mutations.value,
+            request.maximum_mutations,
+            limits,
+            accounting,
+            cancellation,
+        )
+    })
     .map_err(|error| clone_stage_error(error, CloneStage::Destination));
     mutations.retire(accounting)?;
     let receipt = receipt?;
@@ -797,16 +799,19 @@ async fn apply_sparse<S: AsyncObjectStore>(
             .await;
         }
     };
-    let receipt = super::extent_mutation::apply_extent_mutations_with_accounting(
-        store,
-        (extents, logical_bytes),
-        &[extent_mutation],
-        1,
-        DecodeLimits::for_volume(config),
-        accounting,
-        cancellation,
-    )
-    .await?;
+    // Boxed: the extent mutation frame stays out of every caller's frame.
+    let extent_mutations = [extent_mutation];
+    let receipt = crate::heap_future::metered!(erased accounting, |accounting| {
+        super::extent_mutation::apply_extent_mutations_with_accounting(
+            store,
+            (extents, logical_bytes),
+            &extent_mutations,
+            1,
+            DecodeLimits::for_volume(config),
+            accounting,
+            cancellation,
+        )
+    })?;
     if !demotion_known_impossible
         && receipt.logical_bytes <= usize_to_u64(MAXIMUM_INLINE_FILE_BYTES)
         && let Some(data) = try_demote_sparse_async(

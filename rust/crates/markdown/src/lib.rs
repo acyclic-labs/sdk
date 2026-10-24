@@ -742,3 +742,13 @@ fn blocks<'a>(
 #[cfg(test)]
 #[path = "../tests/full_parse.rs"]
 mod tests;
+
+/// Shared property and mutation-fuzz exercises.
+#[cfg(any(test, feature = "fuzzing"))]
+pub mod fuzzing;
+
+#[cfg(test)]
+extern crate self as acyclic_markdown;
+
+#[cfg(test)]
+mod owner_streaming_properties;

@@ -1,11 +1,12 @@
 use super::ScriptedProvider;
 use acyclic_native_runtime::ProcessTree;
+use acyclic_native_runtime::command::{Command, Stdio};
 use std::{
     ffi::OsStr,
     fs,
     io::{Read as _, Seek as _, Write as _},
     path::Path,
-    process::{Command, Output, Stdio},
+    process::Output,
     time::{Duration, Instant},
 };
 

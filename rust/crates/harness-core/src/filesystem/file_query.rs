@@ -134,6 +134,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FileQuerySource
         maximum_files: usize,
         maximum_bytes: usize,
     ) -> BoxProviderFuture<'_, task_volume::Result<Observation>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move {
             if maximum_files == 0
                 || maximum_files as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
@@ -274,6 +275,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
                 }
             },
         );
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(stream)
     }
 

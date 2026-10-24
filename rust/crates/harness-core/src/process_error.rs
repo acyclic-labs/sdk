@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Platform-neutral process failure, retained and propagated without translation.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ProcessError<M = String> {
     /// Executable was absent.

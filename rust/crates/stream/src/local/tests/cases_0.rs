@@ -95,6 +95,12 @@ fn cancelled_real_open_retains_ownership_until_journal_open_stops()
 #[test]
 fn cancelled_persist_retains_ownership_until_the_journal_task_stops()
 -> Result<(), Box<dyn std::error::Error>> {
+    if crate::test_trace::isolate(&format!(
+        "{}::cancelled_persist_retains_ownership_until_the_journal_task_stops",
+        module_path!()
+    ))? {
+        return Ok(());
+    }
     let _serial = PERSIST_BLOCKER_TESTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -160,6 +166,19 @@ fn cancelled_persist_retains_ownership_until_the_journal_task_stops()
             std::time::Duration::from_secs(1),
             Arc::clone(&lifecycle).lock_owned(),
         )
+        .await?;
+        // Root ownership can be released just before the detached operation
+        // records its terminal span fields. Await that evidence explicitly.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while captured
+                .fields("acyclic.stream.append")
+                .get("outcome")
+                .map(String::as_str)
+                != Some("ok")
+            {
+                tokio::task::yield_now().await;
+            }
+        })
         .await?;
         let fields = captured.fields("acyclic.stream.append");
         assert_eq!(
@@ -469,7 +488,7 @@ async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
         assert_eq!(
             std::fs::metadata(&path)?.len(),
             u64::try_from(if cut == frame.encoded.len() {
-                bytes.len()
+                bytes.len() + GROUP_SEAL_BYTES
             } else {
                 HEADER_BYTES
             })?

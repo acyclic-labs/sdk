@@ -183,22 +183,23 @@ impl ControlPlane {
             )
             .await
             .map_err(display)?;
-            self.roots.insert(
-                key.clone(),
-                LazyWorkspace::bind(
-                    workspace,
-                    Arc::clone(&source),
-                    self.store.clone(),
-                    &mut acyclic_fs::kernel::KernelAccounting::Standalone {
-                        allocations: Default::default(),
-                        work: acyclic_fs::WorkCounters::UNCHARGED,
-                        budget: WorkBudget::UNBOUNDED,
-                        cancellation: &CancellationToken::new(),
-                    },
-                )
+            let view = LazyWorkspace::bind(
+                workspace,
+                Arc::clone(&source),
+                self.store.clone(),
+                &mut acyclic_fs::kernel::KernelAccounting::Standalone {
+                    allocations: Default::default(),
+                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                    budget: WorkBudget::UNBOUNDED,
+                    cancellation: &CancellationToken::new(),
+                },
+            )
+            .await
+            .map_err(display)?;
+            acyclic_harness::workspace::reconcile_reserved_names(&view)
                 .await
-                .map_err(display)?,
-            );
+                .map_err(display)?;
+            self.roots.insert(key.clone(), view);
             self.physical_roots.insert(key, physical);
         }
         self.persist()

@@ -1,0 +1,1 @@
+{"wire_request":{"input":[{"type":"function_call","call_id":"call","name":"wait","arguments":"{}"},{"type":"function_call_output","call_id":"call","output":"{\"answer\":\"retained\"}"},{"type":"function_call_output","call_id":"call","output":"{\"answer\":\"retained\"}"}]}}

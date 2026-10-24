@@ -90,13 +90,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             .map_err(Into::into)
     }
 
-    /// Validates a candidate and stages immutable records without publishing.
-    /// Callers may recheck their execution owner before applying the returned map.
-    pub async fn prepare_candidate(
+    /// Refuses a candidate planned against other heads, or whose resolutions
+    /// do not answer exactly its complete set of conflicts.
+    fn check_candidate(
         &self,
         candidate: &UnpublishedMergeCandidate,
-    ) -> Result<BTreeMap<MergeConflict, crate::kernel::MergeConflictResolution>, DrivenJoinError>
-    {
+    ) -> Result<(), DrivenJoinError> {
         let conflict_keys = candidate
             .plan
             .conflicts
@@ -113,6 +112,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         {
             return Err(DrivenJoinError::StaleCandidate);
         }
+        Ok(())
+    }
+
+    /// Validates a candidate and stages immutable records without publishing.
+    /// Callers may recheck their execution owner before applying the returned map.
+    pub async fn prepare_candidate(
+        &self,
+        candidate: &UnpublishedMergeCandidate,
+    ) -> Result<BTreeMap<MergeConflict, crate::kernel::MergeConflictResolution>, DrivenJoinError>
+    {
+        self.check_candidate(candidate)?;
         let mut resolutions = BTreeMap::new();
         for conflict in &candidate.plan.conflicts {
             let resolution = candidate
@@ -122,52 +132,56 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             if !resolution_matches_conflict(&conflict.key, resolution) {
                 return Err(DrivenJoinError::UnsupportedResolution(conflict.key.clone()));
             }
+            // Unmetered: conflict staging runs on unbounded budgets and holds no work ledger.
             if let ConflictKey::File(file_id) = conflict.key
-                && let Some(resolution) = self
-                    .replaced_conflict_resolution(file_id, conflict.path.as_deref(), resolution)
-                    .await?
+                && let Some(resolution) = crate::heap_future::in_heap_unmetered(|| {
+                    self.replaced_conflict_resolution(file_id, conflict.path.as_deref(), resolution)
+                })
+                .await?
             {
                 resolutions.insert(MergeConflict::File(file_id), resolution);
                 continue;
             }
             let resolution = match resolution {
                 MergeResolution::Select(side) => side_resolution(*side),
-                MergeResolution::Text(text) => crate::kernel::MergeConflictResolution::File(Some(
-                    self.stage_regular_resolution(
-                        &conflict.key,
-                        Bytes::copy_from_slice(text.as_bytes()),
-                    )
-                    .await?,
-                )),
-                MergeResolution::Binary(bytes) => {
+                MergeResolution::Text(text) => {
+                    let bytes = Bytes::copy_from_slice(text.as_bytes());
+                    // Unmetered: conflict staging runs on unbounded budgets and holds no work ledger.
                     crate::kernel::MergeConflictResolution::File(Some(
-                        self.stage_regular_resolution(&conflict.key, Bytes::copy_from_slice(bytes))
-                            .await?,
+                        crate::heap_future::in_heap_unmetered(|| {
+                            self.stage_regular_resolution(&conflict.key, bytes)
+                        })
+                        .await?,
+                    ))
+                }
+                MergeResolution::Binary(bytes) => {
+                    let bytes = Bytes::copy_from_slice(bytes);
+                    // Unmetered: conflict staging runs on unbounded budgets and holds no work ledger.
+                    crate::kernel::MergeConflictResolution::File(Some(
+                        crate::heap_future::in_heap_unmetered(|| {
+                            self.stage_regular_resolution(&conflict.key, bytes)
+                        })
+                        .await?,
                     ))
                 }
                 MergeResolution::Metadata(bytes) => {
                     let file_id = conflict_file_id(&conflict.key).ok_or_else(|| {
                         DrivenJoinError::UnsupportedResolution(conflict.key.clone())
                     })?;
-                    let mut record = self
-                        .target_head
-                        .workspace
-                        .volume
-                        .fs
-                        .workspace_conflict_record(
-                            &self.target_head.workspace.volume,
-                            self.target_head.id,
-                            file_id,
-                        )
-                        .await?
-                        .ok_or(WorkspaceError::InvalidMergeResolution)?;
-                    record.metadata = self
-                        .target_head
-                        .workspace
-                        .volume
-                        .fs
-                        .stage_merge_metadata(&self.target_head.workspace.volume, bytes)
-                        .await?;
+                    let volume = &self.target_head.workspace.volume;
+                    // Unmetered: conflict staging runs on unbounded budgets and holds no work ledger.
+                    let mut record = crate::heap_future::in_heap_unmetered(|| {
+                        volume
+                            .fs
+                            .workspace_conflict_record(volume, self.target_head.id, file_id)
+                    })
+                    .await?
+                    .ok_or(WorkspaceError::InvalidMergeResolution)?;
+                    // Unmetered: conflict staging runs on unbounded budgets and holds no work ledger.
+                    record.metadata = crate::heap_future::in_heap_unmetered(|| {
+                        volume.fs.stage_merge_metadata(volume, bytes)
+                    })
+                    .await?;
                     crate::kernel::MergeConflictResolution::File(Some(record))
                 }
                 MergeResolution::Binding(file_id) => {
@@ -177,9 +191,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                     return Err(DrivenJoinError::UnsupportedResolution(conflict.key.clone()));
                 }
             };
-            let resolution = self.git_resolution(&conflict.key, resolution).await?;
-            self.git_delete_binding(conflict, &resolution, &mut resolutions)
-                .await?;
+            // Each staging step runs in a frame of its own: this loop is
+            // polled under the whole merge, so its frame holds none of them.
+            // Unmetered: conflict staging runs on unbounded budgets and holds no work ledger.
+            let resolution = crate::heap_future::in_heap_unmetered(|| {
+                self.git_resolution(&conflict.key, resolution)
+            })
+            .await?;
+            // Unmetered: conflict staging runs on unbounded budgets and holds no work ledger.
+            crate::heap_future::in_heap_unmetered(|| {
+                self.git_delete_binding(conflict, &resolution, &mut resolutions)
+            })
+            .await?;
             resolutions.insert(
                 kernel_conflict(
                     &conflict.key,

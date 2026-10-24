@@ -11,9 +11,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
         request: &'a ResourcePreparationRequest,
         proof: &'a ResourceCreationProofRef,
     ) -> BoxFuture<'a, Result<CreatedResourceReceipt>> {
+        // Unbudgeted: the attempt's budget is created inside this frame.
         Box::pin(async move {
-            let io = PreparationIo::new(request, &CancellationToken::new())?;
-            self.receipt(request, proof, &io).await
+            let io = boxed_io(request)?;
+            self.receipt(request, proof, &io)?.await
         })
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -26,7 +27,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
     {
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            let receipt = self.receipt(request, proof, &io).await?;
+            let receipt = self.receipt(request, proof, &io)?.await?;
             let retained = io.owned_bytes()?;
             let custody = io.into_native_custody(retained)?;
             Ok((receipt, custody))
@@ -34,17 +35,35 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
     }
 }
 
+#[inline(never)]
+// Unbudgeted: this box holds the budget it creates; none is live before it.
+fn boxed_io(request: &ResourcePreparationRequest) -> Result<Box<PreparationIo>> {
+    // Unbudgeted: this box holds the budget it creates; none is live before it.
+    PreparationIo::new(request, &CancellationToken::new()).map(Box::new)
+}
+
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     FilesystemResourceCreationProvider<A, O>
 {
-    async fn receipt(
+    fn receipt<'a>(
+        &'a self,
+        request: &'a ResourcePreparationRequest,
+        proof: &'a ResourceCreationProofRef,
+        io: &'a PreparationIo,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, CreatedResourceReceipt>> {
+        crate::conversation::BoundedContentFuture::new(Some(io), || {
+            self.receipt_body(request, proof, io)
+        })
+    }
+
+    async fn receipt_body(
         &self,
         request: &ResourcePreparationRequest,
         proof: &ResourceCreationProofRef,
         io: &PreparationIo,
     ) -> Result<CreatedResourceReceipt> {
         let allocation =
-            authenticate(&self.host, self.issuer.audience(), request, proof, Some(io)).await?;
+            authenticate(&self.host, self.issuer.audience(), request, proof, Some(io))?.await?;
         // Verify immutable input bodies once when issuing the reader. Rechecking
         // its protected allocation identity must not reload those bodies on each read.
         if allocation.authority.is_some() {
@@ -190,3 +209,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         })
     }
 }
+
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32"), not(acyclic_harness_loom)))]
+#[path = "frame_tests.rs"]
+mod frame_tests;

@@ -392,6 +392,7 @@ impl ToolExecutor for FileTool {
         context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
         let Some(context) = context else {
+            // Unbudgeted: the portable file tool runs with no `io`.
             return Box::pin(async {
                 Err(Error::Unsupported(
                     "portable file tool requires owner-bound task context".into(),
@@ -399,6 +400,7 @@ impl ToolExecutor for FileTool {
             });
         };
 
+        // Unbudgeted: the portable file tool runs with no `io`.
         Box::pin(async move {
             self.run(&context, &invocation, None)
                 .await
@@ -412,6 +414,7 @@ impl ToolExecutor for FileTool {
         context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
         let Some(context) = context else {
+            // Unbudgeted: the portable file tool runs with no `io`.
             return Box::pin(async {
                 Err(Error::Unsupported(
                     "portable file reconciliation requires owner-bound task context".into(),
@@ -419,6 +422,7 @@ impl ToolExecutor for FileTool {
             });
         };
 
+        // Unbudgeted: the portable file tool runs with no `io`.
         Box::pin(async move {
             self.run(&context, &invocation, None)
                 .await

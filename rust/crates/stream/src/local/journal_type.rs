@@ -20,6 +20,11 @@ struct Journal {
     syncing: bool,
     root: PathBuf,
     torn_tail: Option<u64>,
+    /// End of the previous seal; raw writes following it form the next group.
+    group_start: u64,
+    /// The previous seal must be synchronized before another is written.
+    sealed_sequence: u64,
+    pending_seal: Option<SealCredit>,
     /// While a persistence cut is installed: the length of this epoch's
     /// journal known flushed. It lives beside `epoch`, and `restart` resets it.
     #[cfg(feature = "test-support")]

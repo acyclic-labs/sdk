@@ -22,14 +22,14 @@ pub struct ContentAccess<'scope, 'io> {
     /// Original operation ledger, retained independently from authority.
     pub io: Option<&'io ContentIo>,
 }
+/// A content result whose allocation remains owned until its physical drop.
+pub type BoundedContentFuture<'a, T> = BoundedOperationFuture<'a, Result<T>>;
 
 /// An operation future whose allocation remains owned until its physical drop.
-pub struct BoundedContentFuture<'a, T> {
-    pub(super) future: BoxFuture<'a, Result<T>>,
-    #[cfg(feature = "filesystem")]
-    pub(super) _hold: Option<ContentHold<'a>>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) _native: Option<acyclic_fs::NativeAllocation>,
+pub struct BoundedOperationFuture<'a, T> {
+    // Declared first: the frame is freed before its charge is returned.
+    pub(super) future: BoxFuture<'a, T>,
+    pub(super) _charge: crate::charged_box::BoxCharge,
 }
 
 #[cfg(test)]
@@ -38,7 +38,7 @@ thread_local! {
     static PAD_FRAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-impl<'a, T> BoundedContentFuture<'a, T> {
+impl<'a, T> BoundedOperationFuture<'a, T> {
     #[cfg(test)]
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn with_padded_frame<R>(enabled: bool, operation: impl FnOnce() -> R) -> R {
@@ -55,38 +55,39 @@ impl<'a, T> BoundedContentFuture<'a, T> {
     /// Admits the concrete future before invoking its builder.
     pub fn new<F>(io: Option<&'a ContentIo>, build: impl FnOnce() -> F) -> Result<Self>
     where
-        F: std::future::Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a,
+        F: std::future::Future<Output = T> + acyclic_stream::ProviderTask + 'a,
     {
         #[cfg(feature = "filesystem")]
-        let mut hold = None;
-        #[cfg(feature = "filesystem")]
-        if let Some(io) = io {
-            io.check_cancellation()?;
-            let bytes = std::mem::size_of::<F>() as u64;
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = io.original_native_work() {
-                let native = if bytes == 0 {
-                    work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?
-                } else {
-                    work.claim(
-                        bytes,
-                        u64::from((bytes) != 0),
-                        acyclic_fs::WorkCounters::UNCHARGED,
-                    )?
-                };
-                return Ok(Self {
-                    future: Box::pin(build()),
-                    _hold: None,
-                    _native: Some(native),
-                });
-            }
-            io.retain_owned(bytes)?;
-            hold = Some(io.guard_owned(bytes)?);
-            if bytes != 0 {
-                io.allocation_attempt(bytes)?;
-            }
-        }
-        let _ = io;
+        let charge = crate::charged_box::BoxCharge::on(io, std::mem::size_of::<F>() as u64)?;
+        #[cfg(not(feature = "filesystem"))]
+        let charge = {
+            let _ = io;
+            crate::charged_box::BoxCharge::unbudgeted()
+        };
+        Self::charged(charge, build)
+    }
+
+    /// Admits the concrete future on the original native ledger, when one is
+    /// live, before invoking its builder with that ledger.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn on_native_work<F>(
+        work: &'a mut Option<acyclic_fs::NativeMaterializationWork>,
+        build: impl FnOnce(&'a mut Option<acyclic_fs::NativeMaterializationWork>) -> F,
+    ) -> Result<Self>
+    where
+        F: std::future::Future<Output = T> + acyclic_stream::ProviderTask + 'a,
+    {
+        let charge = crate::charged_box::BoxCharge::on_native(
+            work.as_ref(),
+            std::mem::size_of::<F>() as u64,
+        )?;
+        Self::charged(charge, || build(work))
+    }
+
+    fn charged<F>(charge: crate::charged_box::BoxCharge, build: impl FnOnce() -> F) -> Result<Self>
+    where
+        F: std::future::Future<Output = T> + acyclic_stream::ProviderTask + 'a,
+    {
         #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
         if PAD_FRAME.get() {
             // Size-only mutation: keep the shipping future inline in its one
@@ -99,22 +100,19 @@ impl<'a, T> BoundedContentFuture<'a, T> {
                     std::hint::black_box(padding);
                     result
                 }),
-                _hold: hold,
-                _native: None,
+                _charge: charge,
             });
         }
         Ok(Self {
-            future: Box::pin(build()),
-            #[cfg(feature = "filesystem")]
-            _hold: hold,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            _native: None,
+            // Charged above: `charge` holds this frame.
+            future: acyclic_fs::in_heap(build),
+            _charge: charge,
         })
     }
 }
 
-impl<T> std::future::Future for BoundedContentFuture<'_, T> {
-    type Output = Result<T>;
+impl<T> std::future::Future for BoundedOperationFuture<'_, T> {
+    type Output = T;
     fn poll(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,

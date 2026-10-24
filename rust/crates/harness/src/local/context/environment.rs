@@ -1,6 +1,7 @@
 //! Task-binding environment facts, framed like Codex's `<environment_context>`.
 //!
 //! Facts are recorded once at admission. Resumed turns use the retained manifest.
+use acyclic_native_runtime::command::{Command, Stdio};
 use std::path::Path;
 mod porcelain;
 use porcelain::summarize;
@@ -51,16 +52,16 @@ pub(super) async fn gather(
 
 /// One-line summary of `git status`, or `None` outside a work tree.
 async fn git_status(cwd: &Path) -> Option<String> {
-    let command = tokio::process::Command::new(which::which("git").ok()?);
+    let command = Command::new(which::which("git").ok()?);
     git_status_from(cwd, command).await
 }
 
-async fn git_status_from(cwd: &Path, mut command: tokio::process::Command) -> Option<String> {
-    use tokio::io::AsyncReadExt as _;
+async fn git_status_from(cwd: &Path, mut command: Command) -> Option<String> {
+    use acyclic_native_runtime::{ProcessInput, ProcessTree};
     for name in REPOSITORY_ENVIRONMENT {
         command.env_remove(name);
     }
-    let mut child = command
+    command
         .current_dir(cwd)
         .args([
             "status",
@@ -71,32 +72,38 @@ async fn git_status_from(cwd: &Path, mut command: tokio::process::Command) -> Op
         ])
         // Read-only: never take the index lock another git process may need.
         .env("GIT_OPTIONAL_LOCKS", "0")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .ok()?;
-    let stdout = child.stdout.take()?;
-    let collected = tokio::time::timeout(GIT_STATUS_TIMEOUT, async {
-        let mut bytes = Vec::new();
-        stdout
-            .take(GIT_STATUS_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .await
-            .ok()?;
-        let truncated = bytes.len() as u64 > GIT_STATUS_BYTES;
-        if truncated {
-            child.start_kill().ok()?;
-            child.wait().await.ok()?;
-        } else if !child.wait().await.ok()?.success() {
-            return None;
-        }
-        Some((bytes, truncated))
-    })
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let maximum = usize::try_from(GIT_STATUS_BYTES).ok()?;
+    let captured = acyclic_native_runtime::run_blocking_io(
+        move || {
+            ProcessTree::spawn(&mut command).map(|mut tree| {
+                tree.wait_with_output(
+                    GIT_STATUS_TIMEOUT,
+                    maximum,
+                    None,
+                    || Ok(()),
+                    |_| Ok(ProcessInput::default()),
+                    None,
+                    None,
+                )
+            })
+        },
+        None,
+    )
+    .ok()?
     .await
-    .ok()??;
-    Some(summarize(&collected.0, collected.1))
+    .ok()?
+    .ok()?;
+    match captured {
+        Ok(output) if output.status.success() => Some(summarize(&output.stdout, false)),
+        // A larger status is summarized from its bounded prefix.
+        Err(failure) if failure.error.kind() == std::io::ErrorKind::FileTooLarge => {
+            Some(summarize(&failure.stdout, true))
+        }
+        Ok(_) | Err(_) => None,
+    }
 }
 
 #[cfg(test)]
@@ -126,7 +133,7 @@ mod tests {
         std::fs::write(bound.path().join("bound.txt"), "bound").unwrap();
         std::fs::write(other.path().join("other.txt"), "other").unwrap();
         std::fs::write(other.path().join("second.txt"), "other").unwrap();
-        let mut command = tokio::process::Command::new(git);
+        let mut command = Command::new(git);
         command
             .env("GIT_DIR", other.path().join(".git"))
             .env("GIT_WORK_TREE", other.path())

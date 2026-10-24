@@ -21,6 +21,8 @@ pub(crate) mod host;
 pub(crate) use host::Pool as HostPool;
 pub use host::blocking_on;
 mod process;
+#[cfg(windows)]
+pub use crate::windows::command::testing::{Tether, TetherEvent, Tethered, close_standard_output};
 pub use process::{ProcessCapture, capture_process};
 mod metadata;
 pub use metadata::{NativeMetadataInput, NativeTimes, capture_native_times};
@@ -336,8 +338,12 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
+    use tracing::instrument::WithSubscriber as _;
+    let future = future.with_current_subscriber();
     let Some(context) = Context::current() else {
-        return TaskHandle::native(tokio::spawn(future));
+        return TaskHandle::native(tokio::spawn(crate::deadline::simulation::inherit_future(
+            future,
+        )));
     };
     let active = context.accept("task");
     let owned = active.0.clone();
@@ -359,6 +365,8 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
+    let dispatch = tracing::dispatcher::get_default(Clone::clone);
+    let work = move || tracing::dispatcher::with_default(&dispatch, work);
     let owner = if let Some(context) = Context::current() {
         let active = context.accept("blocking");
         let owned = active.0.clone();
@@ -387,13 +395,13 @@ where
                 result
             }),
         ))
-    } else if crate::inline_blocking_allowed() {
+    } else if crate::inline_blocking_allowed() || crate::deadline::simulation::is_active() {
         // These closures may use Tokio blocking locks, so they need a real
         // worker outside the driver's runtime. Reuse the native service instead
         // of creating a private Tokio blocking pool for every replay driver.
-        BlockingOwner::Shared(tokio::spawn(async move {
-            host_work(crate::run_blocking_io(work, None), None).await
-        }))
+        BlockingOwner::Shared(tokio::spawn(crate::deadline::simulation::inherit_future(
+            async move { host_work(crate::run_blocking_io(work, None), None).await },
+        )))
     } else {
         // Without a simulation this is the production path: Tokio's blocking
         // pool, which a paused Tokio clock observes as outstanding work, so
@@ -485,6 +493,7 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
+    let future = crate::deadline::simulation::inherit_future(future);
     match &context.schedule.0.executor {
         Some(executor) => executor.spawn(future),
         None => TaskHandle::native(tokio::spawn(future)),

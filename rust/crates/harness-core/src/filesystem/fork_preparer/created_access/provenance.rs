@@ -38,7 +38,7 @@ impl CreatedProvenance {
                     "created content handle names another volume".into(),
                 ));
             }
-            let current = authenticate(host, owner, &self.request, &self.proof, io).await?;
+            let current = authenticate(host, owner, &self.request, &self.proof, io)?.await?;
             if current.origin != self.origin
                 || current.volume != self.volume
                 || current.generation != self.generation

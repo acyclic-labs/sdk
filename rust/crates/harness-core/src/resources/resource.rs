@@ -1,6 +1,6 @@
 use super::*;
 /// Semantic kind of a provider-owned reference.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceKind {
     /// Mutable workspace head.
@@ -30,13 +30,18 @@ pub struct ResourceRef {
     pub(super) version: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct ResourceRefWire {
     kind: ResourceKind,
     provider: ProviderRef,
     key: Vec<u8>,
     version: Option<String>,
+}
+
+impl crate::HeapLayout for ResourceRef {
+    const LAYOUT: &'static crate::heap_layout::JsonLayout =
+        <ResourceRefWire as crate::HeapLayout>::LAYOUT;
 }
 
 impl<'de> Deserialize<'de> for ResourceRef {

@@ -15,6 +15,9 @@ pub mod admission_work;
 ))]
 #[doc(hidden)]
 pub mod crash_cuts;
+/// Recorded invocation mutation oracle, owned beside the projection implementation.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub mod recorded_invocation_input;
 mod scripted;
 #[cfg(feature = "test-support")]
 mod task_volume_work;
@@ -64,4 +67,21 @@ pub fn hold_io_clock() -> tokio::sync::oneshot::Sender<()> {
         let _ = wait.blocking_recv();
     }));
     release
+}
+
+/// Classifies candidate file bytes with the production media classifier.
+pub fn fuzz_classify_media(bytes: &[u8]) -> &'static str {
+    crate::conversation::classify_file_media(bytes)
+}
+
+/// Exercises the production directory selector against the independent reference.
+#[cfg(all(feature = "test-support", feature = "filesystem"))]
+pub fn fuzz_memory_directory(data: &[u8]) {
+    crate::memory_store::fuzz_memory_directory(data);
+}
+
+/// Exercises production ordered path conflict detection with synthetic names.
+#[cfg(all(feature = "test-support", feature = "filesystem"))]
+pub fn fuzz_memory_path_conflicts(data: &[u8]) {
+    crate::memory_store::fuzz_path_conflicts(data);
 }

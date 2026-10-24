@@ -30,13 +30,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         if self.live_operation_id.is_some() {
             return Err(FsError::PendingLiveMutation);
         }
-        let (decision, allocation) = self
-            .rebase_head_with_accounting(
-                self.volume.config.limits.maximum_checkout_dependencies,
-                accounting,
-                cancellation,
-            )
-            .await?;
+        let maximum = self.volume.config.limits.maximum_checkout_dependencies;
+        // Boxed: the rebase frame stays out of every live lookup's.
+        let (decision, allocation) = crate::heap_future::metered!(erased accounting, |accounting| {
+            self.rebase_head_with_accounting(maximum, accounting, cancellation)
+        })?;
         match decision {
             RebaseDecision::Safe { .. } => Ok(()),
             RebaseDecision::Conflicted {

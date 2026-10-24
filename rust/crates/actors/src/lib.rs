@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::disallowed_methods))]
 #![doc = include_str!("../README.md")]
 /// Shared canonical account-relative resource addressing.
 pub use acyclic_auth::addressing;
@@ -271,8 +272,10 @@ mod tests {
 
         use acyclic_grpc_observability::tests::Capture;
         let seen = Capture::default();
-        let _guard =
-            tracing::subscriber::set_default(tracing_subscriber::registry().with(seen.clone()));
+        let dispatch = acyclic_test_support::capture::dispatch(
+            tracing_subscriber::registry().with(seen.clone()),
+        );
+        let _guard = tracing::dispatcher::set_default(&dispatch);
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
@@ -352,3 +355,21 @@ mod tests {
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod grpc_tests;
+
+/// Shared property and mutation-fuzz exercises.
+#[cfg(any(test, feature = "fuzzing"))]
+pub mod fuzzing;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod test_capture;
+
+#[cfg(test)]
+extern crate self as acyclic_actors;
+
+#[cfg(test)]
+mod owner_guest_metadata;
+
+#[cfg(test)]
+mod owner_timer_contract;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+acyclic_test_support::counting_allocator!();

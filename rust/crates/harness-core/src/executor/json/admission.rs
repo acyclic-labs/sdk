@@ -1,3 +1,4 @@
+use super::layout::{Entries, JsonLayout, LayoutCost, Placement};
 use super::schema::{JsonValueSchema, NONE, ROOT, UNKNOWN};
 use super::*;
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
@@ -12,7 +13,6 @@ struct Counts {
     frames: u64,
     depth: u32,
     unresolved: bool,
-    value_string_bytes: u64,
 }
 impl Counts {
     fn add(&mut self, other: Self) -> Result<()> {
@@ -30,11 +30,6 @@ impl Counts {
         )?;
         self.depth = self.depth.max(other.depth);
         self.unresolved |= other.unresolved;
-        self.value_string_bytes = checked(
-            self.value_string_bytes
-                .checked_add(other.value_string_bytes),
-            "JSON Value string count overflow",
-        )?;
         Ok(())
     }
 }
@@ -78,6 +73,7 @@ struct Walk<'a, 'b> {
     depth: u32,
     virtual_value: bool,
     raw: Option<&'static JsonValueSchema>,
+    layout: Option<Placement<'a>>,
     charge: &'a Charge<'b>,
     failed: &'a RefCell<Option<Error>>,
 }
@@ -102,10 +98,12 @@ impl<'a, 'b> Walk<'a, 'b> {
         &self,
         schema: &'static JsonValueSchema,
         raw: Option<&'static JsonValueSchema>,
+        layout: Option<Placement<'a>>,
     ) -> Walk<'a, 'b> {
         Walk {
             schema,
             raw,
+            layout,
             depth: self.depth + 1,
             virtual_value: self.virtual_value,
             charge: self.charge,
@@ -151,14 +149,15 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
         Ok(self.base())
     }
     fn visit_str<E: de::Error>(self, text: &str) -> std::result::Result<Branches, E> {
-        let mut counts = self.base();
-        // Value accepts every JSON string. These decoded source bytes cannot
-        // appear in an invalid-type diagnostic at a typed metadata boundary.
-        // Virtual RawValue expansion has no disjoint original source span.
-        if !self.virtual_value && self.raw.is_none() && std::ptr::eq(self.schema, &ROOT) {
-            counts.always.value_string_bytes = text.len() as u64;
+        if let Some(layout) = self.layout {
+            layout.string(text.len());
         }
-        match self.raw {
+        // A `Value` expands a raw member into the document its text holds.
+        let expands =
+            self.raw.is_some() && self.layout.is_some_and(|layout| layout.decodes_value());
+        let raw = if expands { Some(&ROOT) } else { self.raw };
+        let mut counts = self.base();
+        match raw {
             Some(schema) if std::ptr::eq(schema, &ROOT) => {
                 self.charge.borrow_mut()(JsonCodecCharge::Inspect {
                     items: text.len() as u64,
@@ -167,6 +166,7 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
                 let mut nested = document(
                     text.as_bytes(),
                     &ROOT,
+                    self.layout.map(Placement::expanded),
                     self.depth,
                     true,
                     self.charge,
@@ -197,12 +197,15 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
         mut values: A,
     ) -> std::result::Result<Branches, A::Error> {
         let mut counts = self.base();
+        let mut entries = Entries::new(self.layout, false);
         let mut index = 0;
         loop {
             let (schema, gate) = self.schema.child(b"", Some(index));
-            let Some(child) = values.next_element_seed(self.child(schema, None))? else {
+            let layout = entries.child(None, index);
+            let Some(child) = values.next_element_seed(self.child(schema, None, layout))? else {
                 break;
             };
+            entries.count += 1;
             counts
                 .add(child, gate)
                 .map_err(|error| self.error::<A::Error>(error))?;
@@ -215,19 +218,13 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
         mut fields: A,
     ) -> std::result::Result<Branches, A::Error> {
         let mut counts = self.base();
+        let mut entries = Entries::new(self.layout, true);
         let (mut index, mut tag) = (0, None);
         while let Some(key) = fields.next_key::<String>()? {
+            entries.count += 1;
+            entries.key(key.len());
             let key = key.as_bytes();
-            if !self.virtual_value && std::ptr::eq(self.schema, &ROOT) {
-                counts.always.value_string_bytes = checked(
-                    counts
-                        .always
-                        .value_string_bytes
-                        .checked_add(key.len() as u64),
-                    "JSON Value key count overflow",
-                )
-                .map_err(|error| self.error::<A::Error>(error))?;
-            }
+            let layout = entries.child(Some(key), index);
             if self.virtual_value {
                 counts
                     .always
@@ -242,16 +239,21 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
             let mut child = if !self.schema.tag.is_empty() && key == self.schema.tag.as_bytes() {
                 let label: &serde_json::value::RawValue = fields.next_value()?;
                 let label = serde_json::from_str::<String>(label.get()).unwrap_or_default();
+                if let Some(layout) = layout {
+                    layout.string(label.len());
+                }
                 tag = Some(if tag.is_some() {
                     0
                 } else {
                     self.schema.mask(label.as_bytes())
                 });
-                self.child(schema, None).base()
+                self.child(schema, None, layout).base()
             } else {
-                fields.next_value_seed(
-                    self.child(schema, (index == 0 && key == RAW).then_some(schema)),
-                )?
+                fields.next_value_seed(self.child(
+                    schema,
+                    (index == 0 && key == RAW).then_some(schema),
+                    layout,
+                ))?
             };
             if std::ptr::eq(schema, &NONE) {
                 child = Branches::default();
@@ -272,6 +274,7 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
 fn document(
     bytes: &[u8],
     schema: &'static JsonValueSchema,
+    layout: Option<Placement<'_>>,
     depth: u32,
     virtual_value: bool,
     charge: &Charge<'_>,
@@ -289,6 +292,7 @@ fn document(
         depth,
         virtual_value,
         raw: None,
+        layout,
         charge,
         failed,
     }
@@ -387,8 +391,18 @@ impl Lexical {
 
 pub(super) fn source(
     bytes: &[u8],
+    bounds: JsonBounds,
+    schema: Option<&'static JsonValueSchema>,
+    code: Option<crate::wire::ErrorCode>,
+    charge: &mut dyn FnMut(JsonCodecCharge) -> Result<()>,
+) -> Result<JsonValueShape> {
+    laid_out(bytes, bounds, schema, None, code, charge)
+}
+fn laid_out(
+    bytes: &[u8],
     mut bounds: JsonBounds,
     schema: Option<&'static JsonValueSchema>,
+    layout: Option<Placement<'_>>,
     code: Option<crate::wire::ErrorCode>,
     charge: &mut dyn FnMut(JsonCodecCharge) -> Result<()>,
 ) -> Result<JsonValueShape> {
@@ -410,6 +424,7 @@ pub(super) fn source(
     let counts = document(
         bytes,
         schema.unwrap_or(&UNKNOWN),
+        layout,
         0,
         false,
         &charge,
@@ -445,8 +460,8 @@ fn finish(
         return Err(input_error(JsonInputError::Depth, code));
     }
     Ok(JsonValueShape {
+        longest_string: 0,
         input_bytes: bytes,
-        value_string_bytes: counts.value_string_bytes,
         lexical_items: items,
         containers,
         virtual_items: counts.nodes,
@@ -468,13 +483,112 @@ pub(crate) fn admit_json<F: FnMut(JsonCodecCharge) -> Result<()>>(
 ) -> Result<()> {
     source(bytes, bounds, Some(JsonValueSchema::None), None, charge).map(|_| ())
 }
-pub(crate) fn admit_json_value_shape<F: FnMut(JsonCodecCharge) -> Result<()>>(
+
+/// Admits a typed document's value shape and the heap its decode allocates
+/// at each position of `layout`.
+#[cfg(test)]
+pub(crate) fn admit_json_layout(
     bytes: &[u8],
     bounds: JsonBounds,
-    schema: &'static JsonValueSchema,
-    charge: &mut F,
-) -> Result<JsonValueShape> {
-    source(bytes, bounds, Some(schema), None, charge)
+    schema: Option<&'static JsonValueSchema>,
+    layout: &'static JsonLayout,
+    code: Option<crate::wire::ErrorCode>,
+    charge: &mut dyn FnMut(JsonCodecCharge) -> Result<()>,
+) -> Result<(JsonValueShape, LayoutCost)> {
+    admit_typed(bytes, bounds, schema, layout, code, charge)?
+        .map_err(|(_, syntax)| super::records::decode_error(syntax, code))
+}
+
+/// A typed document's layout admission, or the shape and syntax error of a
+/// document the typed decode would fail to parse.
+pub(super) type Typed =
+    std::result::Result<(JsonValueShape, LayoutCost), (JsonValueShape, serde_json::Error)>;
+
+pub(super) fn admit_typed(
+    bytes: &[u8],
+    bounds: JsonBounds,
+    schema: Option<&'static JsonValueSchema>,
+    layout: &'static JsonLayout,
+    code: Option<crate::wire::ErrorCode>,
+    charge: &mut dyn FnMut(JsonCodecCharge) -> Result<()>,
+) -> Result<Typed> {
+    // Admission refusals are the caller's boundary; a decode's own failure
+    // keeps the caller's code.
+    let boundary_code = code.map(|_| crate::wire::ErrorCode::Invalid);
+    let cost = RefCell::new(LayoutCost::default());
+    let shape = laid_out(
+        bytes,
+        bounds,
+        schema,
+        Some(Placement::root(layout, &cost)),
+        boundary_code,
+        charge,
+    )?;
+    if shape.unresolved_raw() {
+        // A document the walk cannot parse fails the typed decode with the
+        // same syntax error, so report that cause. The parse keeps one byte
+        // per open container in a vector that doubles, at most twice the
+        // admitted depth while it grows.
+        let scratch = u64::from(bounds.maximum_depth.min(256)) * 2;
+        charge(JsonCodecCharge::Retain { bytes: scratch })?;
+        let parsed = serde_json::from_slice::<serde::de::IgnoredAny>(bytes);
+        charge(JsonCodecCharge::Release { bytes: scratch })?;
+        if let Err(syntax) = parsed {
+            return Ok(Err((shape, syntax)));
+        }
+    }
+    typed_cost(shape, cost.into_inner(), boundary_code).map(Ok)
+}
+/// What a typed decode of `bytes` into `T` reserves at its entry point, or
+/// `None` when admission refuses the document.
+#[cfg(test)]
+pub(crate) fn layout_reservation<T: super::layout::HeapLayout>(bytes: &[u8]) -> Option<u64> {
+    let bounds = JsonBounds {
+        maximum_bytes: u64::MAX,
+        maximum_items: u64::MAX,
+        maximum_depth: 256,
+    };
+    admit_json_layout(bytes, bounds, None, T::LAYOUT, None, &mut |_| Ok(()))
+        .ok()
+        .and_then(|(_, cost)| super::records::decoded_bytes::<T>(cost).ok())
+}
+/// Encodes `value`, reserves its typed decode from the layout, and measures
+/// the decode's real peak: the reservation must cover it. Returns both.
+#[cfg(test)]
+pub(crate) fn assert_layout_covers_decode<T>(value: &T) -> (u64, u64)
+where
+    T: serde::Serialize + DeserializeOwned + super::layout::HeapLayout,
+{
+    let bytes = serde_json::to_vec(value).expect("sample encodes");
+    let reserved = layout_reservation::<T>(&bytes).expect("layout admits its own encoding");
+    let mut decoded = None;
+    let measured = acyclic_test_support::measure(|| {
+        decoded = Some(serde_json::from_slice::<T>(&bytes));
+    })
+    .bytes_max as u64;
+    assert!(
+        decoded.is_some_and(|decoded| decoded.is_ok()),
+        "sample decodes"
+    );
+    assert!(
+        measured <= reserved,
+        "{} decode peak {measured} exceeds its reservation {reserved}",
+        std::any::type_name::<T>()
+    );
+    (reserved, measured)
+}
+/// A walk that stopped early, or met a shape its layout does not bound,
+/// admits nothing: the typed decode would reject that document.
+fn typed_cost(
+    mut shape: JsonValueShape,
+    cost: LayoutCost,
+    code: Option<crate::wire::ErrorCode>,
+) -> Result<(JsonValueShape, LayoutCost)> {
+    if shape.unresolved_raw() || cost.refused {
+        return Err(boundary("JSON shape is outside its typed layout", code));
+    }
+    shape.longest_string = cost.longest();
+    Ok((shape, cost))
 }
 
 pub(crate) fn json_owned_value_shape_bounded<F: FnMut(JsonCodecCharge) -> Result<()>>(
@@ -483,6 +597,26 @@ pub(crate) fn json_owned_value_shape_bounded<F: FnMut(JsonCodecCharge) -> Result
     schema: &'static JsonValueSchema,
     charge: &mut F,
 ) -> Result<JsonValueShape> {
-    owned::inspect(value, bounds, schema, charge)
+    owned::inspect(value, bounds, schema, None, charge)
+}
+/// Admits a resident value's shape and the heap a typed decode of it
+/// allocates at each position of `layout`.
+pub(crate) fn admit_value_layout(
+    value: &Value,
+    bounds: JsonBounds,
+    schema: &'static JsonValueSchema,
+    layout: &'static JsonLayout,
+    code: Option<crate::wire::ErrorCode>,
+    charge: &mut dyn FnMut(JsonCodecCharge) -> Result<()>,
+) -> Result<(JsonValueShape, LayoutCost)> {
+    let cost = RefCell::new(LayoutCost::default());
+    let shape = owned::inspect(
+        value,
+        bounds,
+        schema,
+        Some(Placement::root(layout, &cost)),
+        charge,
+    )?;
+    typed_cost(shape, cost.into_inner(), code)
 }
 mod owned;

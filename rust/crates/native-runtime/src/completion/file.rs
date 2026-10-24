@@ -49,11 +49,15 @@ impl<T> FileCompletion<T> {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             outcome.result = Some(result);
             let waker = outcome.waker.take();
+            #[cfg(feature = "test-support")]
+            let actor = outcome.actor.take();
             drop(outcome);
             if let Some(fence) = fence.take() {
                 fence.complete();
             }
             drop(state.take());
+            #[cfg(feature = "test-support")]
+            let waker = crate::deadline::simulation::completed(actor, waker);
             waker
         })
     }

@@ -10,6 +10,7 @@ cargo-fuzz = true
 [workspace]
 
 [dependencies]
+acyclic-fs = { path = "../../crates/filesystem", features = ["native-mount", "fuzzing"] }
 libfuzzer-sys = "0.4"
 
 [[bin]]

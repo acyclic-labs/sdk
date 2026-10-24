@@ -573,8 +573,7 @@ async fn hashed_admission_skips_rehashing_and_unproven_bytes_are_refused()
         __object_work.receipt(__object_result)
     }?;
     assert_eq!(admitted.work.bytes_hashed, 0);
-    // A resident page keeps its own decoded representation, which leaves
-    // with it once publication makes the page durable.
+    // Publication transfers the resident decoding to the durable cache.
     let key = DecodedCacheKey::new::<u32>(object.object_id(), DecodeLimits::default());
     let decoded = DecodedCacheValue {
         value: Arc::new(7_u32),
@@ -600,7 +599,10 @@ async fn hashed_admission_skips_rehashing_and_unproven_bytes_are_refused()
             .await;
         __object_work.receipt(__object_result)
     }?;
-    assert!(store.decoded_cache_get(key)?.is_none());
+    let published = store
+        .decoded_cache_get(key)?
+        .ok_or("durable page lost its decoding")?;
+    assert!(Arc::ptr_eq(&cached.value, &published.value));
     let (object_id, _) = object.into_parts();
     let forged = {
         let __object_args = (

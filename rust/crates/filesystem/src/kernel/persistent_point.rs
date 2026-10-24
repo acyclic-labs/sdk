@@ -2,7 +2,7 @@
 
 use super::allocation::{KernelAccounting, KernelOwnedAllocation, VisitedObjectSet};
 use super::persistent_batch::Error;
-use super::persistent_btree::{Format, Page, children_within, leaf_within};
+use super::persistent_btree::{Format, PageRef, children_within, leaf_within};
 use super::{DecodeLimits, persistent_io};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
@@ -246,12 +246,9 @@ where
             .await?;
             let decoded_bytes = decoded.logical_bytes;
             let decoded = Owned::new(decoded, allocation, decoded_bytes);
-            let view = match &decoded.value.page {
-                persistent_io::PageLease::Owned(page) => page,
-                persistent_io::PageLease::Shared { page, .. } => page.as_ref(),
-            };
+            let view = decoded.value.page.view();
             let step = (|| match view {
-                Page::Leaf(values) => {
+                PageRef::Leaf(values) => {
                     if !leaf_within::<F>(
                         values,
                         lower.as_ref().map(|key| &key.value),
@@ -259,11 +256,7 @@ where
                     ) {
                         return Err(query_error(Error::ChildBoundsMismatch));
                     }
-                    let position = super::search::binary_search_with_accounting(
-                        values,
-                        accounting,
-                        |value| F::key(value).cmp(key),
-                    )?;
+                    let position = values.search(0, accounting, |value| F::key(value).cmp(key))?;
                     let result = position
                         .ok()
                         .and_then(|index| values.get(index))
@@ -282,7 +275,7 @@ where
                         None => (None, accounting.claim_owned(0, 0)?),
                     }))
                 }
-                Page::Internal(children) => {
+                PageRef::Internal(children) => {
                     if !children_within(
                         children,
                         lower.as_ref().map(|key| &key.value),
@@ -290,12 +283,9 @@ where
                     ) {
                         return Err(query_error(Error::ChildBoundsMismatch));
                     }
-                    let selected = super::search::partition_point_with_accounting(
-                        children,
-                        accounting,
-                        |child| child.first <= *key,
-                    )?
-                    .saturating_sub(1);
+                    let selected = children
+                        .partition(accounting, |child| child.first <= *key)?
+                        .saturating_sub(1);
                     let child = children
                         .get(selected)
                         .ok_or_else(|| query_error(Error::InvalidRouting))?;

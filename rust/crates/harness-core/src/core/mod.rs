@@ -85,4 +85,3 @@ pub(in crate::core) use records::{
     validate_interaction_transition, validate_lifecycle,
 };
 pub use reducer::Reducer;
-pub(in crate::core) use registry::ExtensionBinding;

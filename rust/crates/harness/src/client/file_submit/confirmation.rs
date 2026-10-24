@@ -11,13 +11,14 @@ pub(super) enum Barrier {
     Intent,
     Target,
     Checkpoint,
+    Restoration,
 }
 impl Barrier {
     fn message(self) -> &'static str {
         match self {
             Self::Intent => "outbox publication awaits durability",
             Self::Target => "target publication awaits durability",
-            Self::Checkpoint => "outbox checkpoint awaits durability",
+            Self::Checkpoint | Self::Restoration => "outbox checkpoint awaits durability",
         }
     }
 }

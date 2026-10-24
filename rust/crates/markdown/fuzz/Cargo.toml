@@ -8,7 +8,7 @@ publish = false
 cargo-fuzz = true
 
 [dependencies]
-acyclic-markdown = { path = ".." }
+acyclic-markdown = { path = ".." , features = ["fuzzing"] }
 libfuzzer-sys = "0.4"
 unicode-width = "0.2"
 

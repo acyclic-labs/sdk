@@ -142,15 +142,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             if maximum == 0 {
                 return Err(WorkspaceError::JoinLimit);
             }
-            let mut checkout = source
+            // Each kernel step runs in a paid heap frame; this frame holds none.
+            let mut checkout = crate::heap_future::metered!(erased accounting, |accounting| source
                 .workspace
                 .open_checkout(
                     GenerationSelector::Exact(source.id),
                     CheckoutMode::read_only_pinned(),
                     accounting,
                     cancellation,
-                )
-                .await?;
+                ))?;
             let mut overrides = Owned::<Vec<FileRecord>>::allocate(0, accounting)?;
             let mut directory_count = 0;
             // Root is always pruned; other prefixes are visited once, outside selected subtrees.
@@ -200,10 +200,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     let bytes = directory.retained_bytes();
                     let directory = Owned::new(directory, allocation, bytes);
                     let lookup = {
-                        let (lookup, _allocation) = checkout
-                        .value
-                        .lookup_no_follow_with_accounting(&directory.value, accounting, cancellation, false)
-                        .await?;
+                        let (lookup, _allocation) =
+                            crate::heap_future::metered!(erased accounting, |accounting| checkout
+                                .value
+                                .lookup_no_follow_with_accounting(
+                                    &directory.value,
+                                    accounting,
+                                    cancellation,
+                                    false,
+                                ))?;
                         lookup
                     };
                     let original = lookup.record.ok_or(WorkspaceError::NotFound)?;
@@ -241,10 +246,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         let bytes = child.retained_bytes();
                         let child = Owned::new(child, allocation, bytes);
                         let lookup = {
-                            let (lookup, _allocation) = checkout
-                            .value
-                            .lookup_no_follow_with_accounting(&child.value, accounting, cancellation, false)
-                            .await?;
+                            let (lookup, _allocation) =
+                                crate::heap_future::metered!(erased accounting, |accounting| checkout
+                                    .value
+                                    .lookup_no_follow_with_accounting(
+                                        &child.value,
+                                        accounting,
+                                        cancellation,
+                                        false,
+                                    ))?;
                             lookup
                         };
                         child.retire(accounting)?;
@@ -270,23 +280,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         )?;
                     }
                     directory.retire(accounting)?;
-                    let empty = checkout
+                    let empty = crate::heap_future::metered!(erased accounting, |accounting| checkout
                         .value
-                        .stage_empty_tree_with_accounting(accounting, cancellation)
-                        .await?;
+                        .stage_empty_tree_with_accounting(accounting, cancellation))?;
                     let entries = if mutations.value.is_empty() {
                         empty
                     } else {
-                        apply_tree_mutations_with_accounting(
-                            &self.inner.objects,
-                            empty,
-                            &mutations.value,
-                            u32::try_from(maximum).map_err(|_| WorkspaceError::JoinLimit)?,
-                            DecodeLimits::for_volume(config),
-                            accounting,
-                            cancellation,
-                        )
-                        .await?
+                        let limit = u32::try_from(maximum).map_err(|_| WorkspaceError::JoinLimit)?;
+                        crate::heap_future::metered!(erased accounting, |accounting| {
+                            apply_tree_mutations_with_accounting(
+                                &self.inner.objects,
+                                empty,
+                                &mutations.value,
+                                limit,
+                                DecodeLimits::for_volume(config),
+                                accounting,
+                                cancellation,
+                            )
+                        })?
                         .value
                     };
                     mutations.retire(accounting)?;
@@ -302,15 +313,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 path.retire(accounting)?;
             }
             selected.retire(accounting)?;
-            self.select_fork_file_table(
-                root,
-                overrides,
-                DecodeLimits::for_volume(config),
-                maximum,
-                accounting,
-                cancellation,
-            )
-            .await
+            crate::heap_future::metered!(erased accounting, |accounting| self
+                .select_fork_file_table(
+                    root,
+                    overrides,
+                    DecodeLimits::for_volume(config),
+                    maximum,
+                    accounting,
+                    cancellation,
+                ))
         }
         .await;
         readonly_cleanup_standalone(accounting, baseline, 0)?;

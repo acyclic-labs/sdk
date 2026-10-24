@@ -3,6 +3,9 @@ struct LocalInner {
     commit_clock: Arc<PinnedCommitClock>,
     // Lock order: visibility -> publication -> journal -> synced watch; never acquire provider state while holding journal.
     journal: Arc<Mutex<Journal>>,
+    // Lock order: visibility/publication (when held) -> device -> journal.
+    // Raw appends never acquire this gate, preserving group-commit overlap.
+    device: Mutex<()>,
     // Serializes mutations and their snapshot/journal cut, including compaction.
     // Lock order: visibility -> publication -> provider state -> journal/watch.
     visibility: RwLock<()>,
@@ -74,41 +77,86 @@ impl LocalInner {
         self.synced.send_modify(|published| *published = synced);
     }
 
-    /// Flushes the journal through `target`, the latest frame written when
-    fn flush_through(
+    /// Seals and flushes the latest group, returning command count and bytes.
+    fn flush_through(&self, work: Option<&crate::memory::Work>) -> Result<(u64, u64), StreamError> {
+        let _device = self.device.lock().map_err(|_| self.poison())?;
+        self.flush_under_device(work)
+    }
+
+    // The Loom negative control bypasses only the gate, retaining production IO.
+    fn flush_under_device(
         &self,
-        target: u64,
-        file: &File,
-        durability: LocalDurability,
         work: Option<&crate::memory::Work>,
-    ) {
+    ) -> Result<(u64, u64), StreamError> {
+        if *self.failed.borrow() {
+            return Err(StreamError::Unavailable);
+        }
+        let (target, before, bytes, file, durability) = {
+            let mut journal = self.journal.lock().map_err(|_| self.poison())?;
+            if journal.appended <= journal.synced {
+                journal.syncing = false;
+                return Ok((0, journal.bytes));
+            }
+            journal.seal().map_err(|_| self.poison())?;
+            (
+                journal.appended,
+                journal.synced,
+                journal.bytes,
+                Arc::clone(&journal.file),
+                journal.limits.durability,
+            )
+        };
         #[cfg(test)]
         {
             let journal_identity = Arc::as_ptr(&self.journal) as usize;
-            if let Ok(mut hook) = JOURNAL_PERSIST_BLOCKER.lock()
-                && hook
+            let gate = {
+                let mut hook = JOURNAL_PERSIST_BLOCKER
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if hook
                     .as_ref()
-                    .is_some_and(|(expected_journal, _, _)| *expected_journal == journal_identity)
-                && let Some((_, started, release)) = hook.take()
-            {
+                    .is_some_and(|(identity, _, _)| *identity == journal_identity)
+                {
+                    hook.take()
+                } else {
+                    None
+                }
+            };
+            if let Some((_, started, release)) = gate {
                 let _ = started.send(());
                 let _ = release.recv();
             }
         }
         let flushed = match &work {
-            Some(work) => work.sync(|| sync_file_data(file, durability)),
-            None => sync_file_data(file, durability),
+            Some(work) => work.sync(|| sync_file_data(&file, durability)),
+            None => sync_file_data(&file, durability),
         };
         let Ok(mut journal) = self.journal.lock() else {
-            self.poison();
-            return;
+            return Err(self.poison());
         };
         journal.syncing = false;
         if flushed.is_ok() {
+            #[cfg(feature = "test-support")]
+            {
+                journal.flushed = bytes;
+            }
             self.publish_synced(&mut journal, target);
+            Ok((target - before, bytes))
         } else {
             drop(journal);
-            self.poison();
+            Err(self.poison())
+        }
+    }
+
+    fn trace_flush(&self, (count, bytes): (u64, u64)) {
+        if count != 0 {
+            tracing::debug!(
+                fsyncs = 1_u64,
+                batch_len = count,
+                journal_bytes = bytes,
+                waiters = self.synced.receiver_count(),
+                "acyclic.stream.fsync"
+            );
         }
     }
 }

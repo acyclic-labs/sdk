@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_fs::in_heap;
 
 /// The task-selected managed workspace and its publication authority.
 pub struct Workspace<'a> {
@@ -23,6 +24,10 @@ pub struct Workspace<'a> {
     pub author: &'a str,
     /// Commit timestamp in seconds since the Unix epoch.
     pub authored_at_seconds: i64,
+    /// Evaluates the caller's path access decision before each search read.
+    pub read_allowed: &'a (dyn Fn(&str) -> bool + Send + Sync),
+    /// Existing task-file output publisher, when the caller follows live search.
+    pub search_progress: Option<&'a dyn SearchProgress>,
 }
 
 /// A facade result and any branch view selected by checkout.
@@ -53,14 +58,23 @@ where
         PublicationPermit::Unrestricted,
         OperationWindowLease::publication_permit,
     );
-    let patch = git_apply_patch(workspace.view, workspace.root, args).await?;
-    let (ignore, merge_drivers) = git_policy(workspace.view).await?;
+    let patch = in_heap(|| git_apply_patch(workspace.view, workspace.root, args)).await?;
+    let (ignore, merge_drivers) = if args.first().is_some_and(|command| command == "grep") {
+        (
+            in_heap(|| search_ignore(workspace.view)).await?,
+            Arc::new(MergeDriverRegistry::new()),
+        )
+    } else {
+        in_heap(|| git_policy(workspace.view)).await?
+    };
     let ignore = ignore.reserving(workspace.reserved);
     let repository =
         crate::filesystem::workspace_policy::git_view_policy("").reserving(workspace.reserved);
-    let tree = git_workspace_tree(workspace.view, args, Some(permit)).await?;
+    let tree = in_heap(|| git_workspace_tree(workspace.view, args, Some(permit))).await?;
     let executor = WorkspaceGitExecutor {
         before_effect: &before_effect,
+        read_allowed: workspace.read_allowed,
+        search_progress: workspace.search_progress,
         fs: workspace.filesystem,
         store: workspace.store,
         current: workspace.view.workspace().clone(),
@@ -76,25 +90,19 @@ where
     };
     if let Some(branch) = crate::tools::fs_command::agent_diff(args) {
         before_effect().await?;
-        let output = executor.diff_agent(branch, tree).await?;
+        let output = in_heap(|| executor.diff_agent(branch, tree)).await?;
         before_effect().await?;
         return Ok(output);
     }
     let command = if let Some(identity) = workspace.checkout {
-        execute(
-            &workspace,
-            args,
-            tree,
-            patch.as_deref(),
-            &RootMaterializingGitExecutor {
-                inner: &executor,
-                root: workspace.root,
-                source_root_identity: identity,
-            },
-        )
-        .await?
+        let executor = RootMaterializingGitExecutor {
+            inner: &executor,
+            root: workspace.root,
+            source_root_identity: identity,
+        };
+        in_heap(|| execute(&workspace, args, tree, patch.as_deref(), &executor)).await?
     } else {
-        execute(&workspace, args, tree, patch.as_deref(), &executor).await?
+        in_heap(|| execute(&workspace, args, tree, patch.as_deref(), &executor)).await?
     };
     Ok(Output {
         command: command.map(|output| without_host_paths(output, &executor.repository)),

@@ -19,6 +19,8 @@ use thiserror::Error;
 mod accounting;
 #[cfg(test)]
 mod capture_policy_tests;
+#[cfg(all(test, not(acyclic_fs_loom), feature = "memory"))]
+mod custody_lifetime_tests;
 mod entry;
 mod model;
 #[cfg(test)]
@@ -63,6 +65,9 @@ mod transaction;
 use transaction::*;
 mod stage;
 use stage::*;
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod held_root_tests;
 mod metadata;
 #[cfg(test)]
 #[cfg(feature = "test-support")]
@@ -73,9 +78,6 @@ mod rescan_probe_tests;
 #[cfg(test)]
 #[cfg(all(target_os = "linux", feature = "memory"))]
 mod stat_probe_tests;
-#[cfg(test)]
-#[cfg(target_os = "linux")]
-mod held_root_tests;
 use metadata::*;
 #[cfg(test)]
 #[cfg(feature = "memory")]

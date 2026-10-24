@@ -283,20 +283,26 @@ where
             WorkBudget::UNBOUNDED,
             self.authored.cancellation(),
         );
-        if self
+        if crate::heap_future::metered!(&mut accounting, |accounting| self
             .lazy
-            .publication_cut(None, &mut accounting)
-            .await
-            .is_ok_and(|state| state.source == self.lazy.source_reference())
+            .publication_cut(None, accounting))
+        .is_ok_and(|state| state.source == self.lazy.source_reference())
         {
-            let result = self.authored.advance_to_head_async().await;
+            // Unmetered: an advance after an external publication is charged to no
+            // caller's work; it runs on the checkout's own unbounded accounting.
+            let result =
+                crate::heap_future::in_heap_unmetered(|| self.authored.advance_to_head_async())
+                    .await;
             self.cursors.clear();
             return result;
         }
         self.source_view.begin_transition();
         let result = async {
-            self.authored.advance_to_head_async().await?;
-            self.lazy.state(&mut accounting).await.map_err(lazy_error)?;
+            // Unmetered: an advance after an external publication is charged to no
+            // caller's work; it runs on the checkout's own unbounded accounting.
+            crate::heap_future::in_heap_unmetered(|| self.authored.advance_to_head_async()).await?;
+            crate::heap_future::metered!(&mut accounting, |accounting| self.lazy.state(accounting))
+                .map_err(lazy_error)?;
             // Every unauthored node may read differently from the new epoch.
             self.authored.record_projection_change(
                 &ViewChange::Everything,

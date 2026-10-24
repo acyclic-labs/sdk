@@ -43,6 +43,9 @@ pub enum DemandError {
     /// An original leaf panicked; no new work may use its poisoned state.
     #[error("original native work state is poisoned")]
     OriginalWorkPoisoned,
+    /// The allocation owner has no admission in the original native ledger.
+    #[error("native mount allocation admission is missing")]
+    NativeMountAdmissionMissing,
     /// Explicit native preparation allowance was exhausted.
     #[error(transparent)]
     Work(#[from] crate::WorkError),
@@ -194,6 +197,25 @@ pub trait SourceWatch: Send + Sync {
 pub trait DemandSource: Send + Sync {
     /// Current opaque source reference.
     fn reference(&self) -> SourceReference;
+
+    /// Whether recursive metadata enumeration may enter this directory without
+    /// leaving the source's volume. Logical sources have no native mount boundary.
+    fn same_volume<W: crate::facade::FsWork + Send>(
+        &self,
+        _source: SourceReference,
+        _directory: &NamespacePath,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = W::Output<bool, DemandError>> + Send {
+        async move {
+            let accounting = work.accounting(cancellation);
+            let result = cancellation
+                .check()
+                .map(|()| true)
+                .map_err(|_| DemandError::Cancelled);
+            work.finish(result, &accounting)
+        }
+    }
 
     /// Resolve only the requested path. `None` is known absence.
     fn lookup<W: crate::facade::FsWork + Send>(

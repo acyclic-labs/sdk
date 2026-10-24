@@ -1,6 +1,7 @@
 use acyclic_harness_core::{
     Result,
     model::{ModelContentPart, ModelRequest},
+    tool::ToolDefinition,
 };
 use std::borrow::Cow;
 
@@ -16,8 +17,9 @@ const MAXIMUM: usize = crate::protocol::name::TOOL.maximum;
 const DIGEST_DOMAIN: &[u8] = b"acyclic:tool-name:v1\0";
 
 struct Binding<'a> {
-    canonical: &'a str,
+    canonical: Cow<'a, str>,
     wire: Cow<'a, str>,
+    definition: Option<&'a ToolDefinition>,
 }
 
 /// An alias whose first candidate was taken, and its latest salt.
@@ -55,18 +57,20 @@ pub(crate) struct Names<'a> {
     by_wire: Vec<usize>,
 }
 
-fn names(request: &ModelRequest) -> impl Iterator<Item = &str> {
-    request.tools.iter().map(|tool| tool.name.as_str()).chain(
-        request
-            .messages
-            .iter()
-            .flat_map(|message| message.content.parts())
-            .filter_map(|part| match part {
-                ModelContentPart::ToolCall(call) => Some(call.name.as_str()),
-                ModelContentPart::ToolResult { name, .. } => Some(name.as_str()),
-                _ => None,
-            }),
-    )
+fn history_names(request: &ModelRequest) -> impl Iterator<Item = &str> {
+    request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .filter_map(|part| match part {
+            ModelContentPart::ToolCall(call) => Some(call.name.as_str()),
+            ModelContentPart::ToolResult { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+}
+
+fn count(request: &ModelRequest) -> usize {
+    request.tools.len() * 2 + history_names(request).count()
 }
 
 fn unchanged(name: &str) -> bool {
@@ -226,6 +230,31 @@ impl<'a> Names<'a> {
     #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
     pub(crate) fn assert_round_trip(request: &'a ModelRequest) {
         let table = Self::new(request);
+        let expected = request
+            .tools
+            .iter()
+            .flat_map(|tool| {
+                [
+                    tool.name.clone(),
+                    format!("{}@{}", tool.name, tool.revision),
+                ]
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let declared = table
+            .declarations()
+            .map(|(canonical, _, _)| canonical.to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            declared.len(),
+            expected.len(),
+            "each granted binding is declared once"
+        );
+        assert_eq!(
+            declared
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+            expected
+        );
         for adapter in [
             crate::Adapter::Anthropic,
             crate::Adapter::Responses,
@@ -236,7 +265,11 @@ impl<'a> Names<'a> {
             let _ = table.controls(adapter, &mut options);
         }
         let mut seen = std::collections::BTreeSet::new();
-        for name in table.bindings.iter().map(|binding| binding.canonical) {
+        for name in table
+            .bindings
+            .iter()
+            .map(|binding| binding.canonical.as_ref())
+        {
             let wire = table.wire(name).unwrap();
             assert!(!wire.is_empty() && wire.len() <= 64);
             assert!(wire.as_bytes()[0].is_ascii_alphabetic() || wire.starts_with('_'));
@@ -265,7 +298,7 @@ impl<'a> Names<'a> {
     }
 
     pub(crate) fn new(request: &'a ModelRequest) -> Self {
-        Self::build(request, names(request).count(), &mut |_| Ok(()))
+        Self::build(request, count(request), &mut |_| Ok(()))
             .expect("unfunded tool-name construction cannot deny admission")
             .0
     }
@@ -275,7 +308,8 @@ impl<'a> Names<'a> {
     /// exactly sized aliases per name (a first alias and its replacement).
     /// Probes: one per re-salted name plus one per declared name equal to one
     /// of its candidates, so at most twice the name count.
-    pub(crate) fn claim(count: u64) -> Option<Built> {
+    pub(crate) fn claim(request: &ModelRequest) -> Option<Built> {
+        let count = count(request) as u64;
         if count == 0 {
             return Some(Built::default());
         }
@@ -283,9 +317,21 @@ impl<'a> Names<'a> {
             + std::mem::size_of::<usize>()
             + std::mem::size_of::<Resalted>()
             + 2 * MAXIMUM) as u64;
+        let pinned_bytes = request.tools.iter().try_fold(0u64, |bytes, tool| {
+            bytes
+                .checked_add(tool.name.len() as u64)?
+                .checked_add(1)?
+                .checked_add(tool.revision.len() as u64)
+        })?;
         Some(Built {
-            allocations: count.checked_mul(2)?.checked_add(4)?,
-            bytes: count.checked_mul(per_name)?.checked_add(MAXIMUM as u64)?,
+            allocations: count
+                .checked_mul(2)?
+                .checked_add(4)?
+                .checked_add(request.tools.len() as u64)?,
+            bytes: count
+                .checked_mul(per_name)?
+                .checked_add(MAXIMUM as u64)?
+                .checked_add(pinned_bytes)?,
             probes: count.checked_mul(2)?,
             ..Built::default()
         })
@@ -293,7 +339,7 @@ impl<'a> Names<'a> {
 
     #[cfg(test)]
     pub(crate) fn built(request: &'a ModelRequest) -> (Self, Built) {
-        Self::build(request, names(request).count(), &mut |_| Ok(())).unwrap()
+        Self::build(request, count(request), &mut |_| Ok(())).unwrap()
     }
 
     /// Each retained alias's length and capacity.
@@ -339,23 +385,46 @@ impl<'a> Names<'a> {
         }
         let mut bindings = Vec::with_capacity(count);
         charge(&mut built, count * std::mem::size_of::<Binding<'_>>());
-        bindings.extend(names(request).map(|canonical| Binding {
-            canonical,
+        for definition in &request.tools {
+            bindings.push(Binding {
+                canonical: Cow::Borrowed(&definition.name),
+                wire: Cow::Borrowed(&definition.name),
+                definition: Some(definition),
+            });
+            let mut pinned =
+                String::with_capacity(definition.name.len() + 1 + definition.revision.len());
+            pinned.push_str(&definition.name);
+            pinned.push('@');
+            pinned.push_str(&definition.revision);
+            charge(&mut built, pinned.capacity());
+            bindings.push(Binding {
+                canonical: Cow::Owned(pinned),
+                wire: Cow::Borrowed(""),
+                definition: Some(definition),
+            });
+        }
+        bindings.extend(history_names(request).map(|canonical| Binding {
+            canonical: Cow::Borrowed(canonical),
             wire: Cow::Borrowed(canonical),
+            definition: None,
         }));
-        bindings.sort_unstable_by(|a, b| a.canonical.cmp(b.canonical));
+        bindings.sort_unstable_by(|a, b| {
+            a.canonical
+                .cmp(&b.canonical)
+                .then_with(|| b.definition.is_some().cmp(&a.definition.is_some()))
+        });
         bindings.dedup_by(|a, b| a.canonical == b.canonical);
         let mut buffer = String::new();
         for binding in &mut bindings {
-            if !unchanged(binding.canonical) {
-                let alias = if let Some(alias) = readable(binding.canonical) {
+            if !unchanged(&binding.canonical) {
+                let alias = if let Some(alias) = readable(&binding.canonical) {
                     alias
                 } else {
                     if buffer.capacity() == 0 {
                         buffer.reserve_exact(MAXIMUM);
                         charge(&mut built, MAXIMUM);
                     }
-                    digest_into(&mut buffer, binding.canonical, 0, &mut built, fund)?;
+                    digest_into(&mut buffer, &binding.canonical, 0, &mut built, fund)?;
                     exact(&buffer)
                 };
                 charge(&mut built, alias.capacity());
@@ -368,8 +437,8 @@ impl<'a> Names<'a> {
             let (a, b) = (&bindings[a], &bindings[b]);
             a.wire
                 .cmp(&b.wire)
-                .then_with(|| unchanged(b.canonical).cmp(&unchanged(a.canonical)))
-                .then(a.canonical.cmp(b.canonical))
+                .then_with(|| unchanged(&b.canonical).cmp(&unchanged(&a.canonical)))
+                .then(a.canonical.cmp(&b.canonical))
         };
         let mut by_wire = Vec::with_capacity(bindings.len());
         charge(&mut built, bindings.len() * std::mem::size_of::<usize>());
@@ -399,7 +468,7 @@ impl<'a> Names<'a> {
         // digest itself collides, which the repeat pass below repairs.
         loop {
             for entry in resalted.iter_mut().filter(|entry| entry.alias.is_empty()) {
-                let canonical = bindings[entry.index].canonical;
+                let canonical = bindings[entry.index].canonical.as_ref();
                 loop {
                     entry.salt += 1;
                     digest_into(&mut buffer, canonical, entry.salt, &mut built, fund)?;
@@ -437,7 +506,7 @@ impl<'a> Names<'a> {
         }
         let table = Self { bindings, by_wire };
         debug_assert!(
-            Self::claim(count as u64).is_some_and(|claim| built.within(&claim)),
+            Self::claim(request).is_some_and(|claim| built.within(&claim)),
             "tool name table exceeded its claim: {built:?}"
         );
         Ok((table, built))
@@ -450,23 +519,42 @@ impl<'a> Names<'a> {
         }
         let index = self
             .bindings
-            .binary_search_by(|binding| binding.canonical.cmp(name))
+            .binary_search_by(|binding| binding.canonical.as_ref().cmp(name))
             .map_err(|_| crate::invalid("missing tool name binding"))?;
         Ok(Cow::Borrowed(self.bindings[index].wire.as_ref()))
+    }
+
+    // Declarations and restoration use this single table. History-only names
+    // remain available for replay but cannot expose a hidden tool to the model.
+    pub(crate) fn declarations(&self) -> impl Iterator<Item = (&str, &str, &ToolDefinition)> {
+        self.bindings.iter().filter_map(|binding| {
+            let definition = binding.definition?;
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            if crate::tests::tool_names_pinned_tests::DROP_PINNED.with(std::cell::Cell::get)
+                && binding.canonical.as_ref() != definition.name
+            {
+                return None;
+            }
+            Some((
+                binding.canonical.as_ref(),
+                binding.wire.as_ref(),
+                definition,
+            ))
+        })
     }
 
     /// The canonical name behind a provider alias; `None` for a wire name
     /// that is itself canonical or undeclared, which tool admission validates.
     /// A name outside the provider grammar was never declared, so it rejects
     /// the response.
-    pub(crate) fn canonical(&self, wire: &str) -> Result<Option<&'a str>> {
+    pub(crate) fn canonical(&self, wire: &str) -> Result<Option<&str>> {
         match self
             .by_wire
             .binary_search_by(|&index| self.bindings[index].wire.as_ref().cmp(wire))
         {
             Ok(found) => {
                 let binding = &self.bindings[self.by_wire[found]];
-                Ok((binding.canonical != wire).then_some(binding.canonical))
+                Ok((binding.canonical != wire).then_some(binding.canonical.as_ref()))
             }
             Err(_) if unchanged(wire) => Ok(None),
             Err(_) => Err(crate::invalid("provider named an undeclared tool alias")),
@@ -492,8 +580,8 @@ impl<'a> Names<'a> {
     ) -> Result<(Self, acyclic_harness_core::NativeCustody)> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
-            let count = names(request).count() as u64;
-            let claim = Self::claim(count)
+            let count = count(request) as u64;
+            let claim = Self::claim(request)
                 .ok_or_else(|| crate::invalid("tool name binding size overflow"))?;
             let custody = work.claim(
                 claim.bytes,

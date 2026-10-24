@@ -4,8 +4,9 @@ use acyclic_stream::StreamProvider;
 use futures::StreamExt as _;
 use std::sync::Arc;
 
-/// Disposable source subscription. The owner publishes filesystem arrivals to
-/// its ordinary input-file query; catalog revisions use the same volume.
+/// Disposable subscription to declared command/skill source publications.
+/// Filesystem path-name search has its own generation-bound index; UI state
+/// and workspace input files are not evidence of source-tree arrivals.
 pub struct CommandSources {
     changes: crate::task_volume::ChangeStream,
     base: Vec<u8>,

@@ -8,15 +8,24 @@ impl StockExecution<'_> {
     ) -> Result<ExecutionProgress<TurnOutput>> {
         let _execution = journal.claim_execution(input.operation_id, self.io)?;
         self.verify_task_context_binding(input.operation_id)?;
-        self.verify_execution_owner().await?;
-        self.validate_turn_input(journal, input).await?;
+        crate::conversation::BoundedOperationFuture::new(self.io, || {
+            self.verify_execution_owner()
+        })?
+        .await?;
+        crate::conversation::BoundedOperationFuture::new(self.io, || {
+            self.validate_turn_input(journal, input)
+        })?
+        .await?;
         if let Some(source) = self.stock.summary_source.as_deref() {
-            return crate::conversation::BoundedContentFuture::new(self.io, || {
+            return crate::conversation::BoundedOperationFuture::new(self.io, || {
                 self.summarize_file(journal, input, source)
             })?
             .await;
         }
-        self.ensure_started(journal, input).await?;
+        crate::conversation::BoundedOperationFuture::new(self.io, || {
+            self.ensure_started(journal, input)
+        })?
+        .await?;
         let mut prior_messages = Vec::new();
         let mut hook_context = Vec::new();
         let mut text = String::new();
@@ -45,7 +54,10 @@ impl StockExecution<'_> {
                 // A Stop block prevents settlement and consumes the step budget.
                 #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
                 if let Some(reason) =
-                    Box::pin(self.stop_hook(input.operation_id, step, stop_active)).await?
+                    crate::conversation::BoundedOperationFuture::new(self.io, || {
+                        self.stop_hook(input.operation_id, step, stop_active)
+                    })?
+                    .await?
                 {
                     // Every denial continues. At the final step, falling out
                     // of the loop reports the same budget exhaustion as tools.
@@ -64,8 +76,8 @@ impl StockExecution<'_> {
                 }));
             }
             for (invocation, invocation_index) in calls {
-                match self
-                    .resolve_tool_call(
+                match crate::conversation::BoundedOperationFuture::new(self.io, || {
+                    self.resolve_tool_call(
                         journal,
                         input.operation_id,
                         step,
@@ -74,7 +86,8 @@ impl StockExecution<'_> {
                         &mut prior_messages,
                         &mut hook_context,
                     )
-                    .await?
+                })?
+                .await?
                 {
                     ExecutionProgress::Ready(()) => {}
                     ExecutionProgress::Pending(wait) => {

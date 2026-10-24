@@ -2,8 +2,7 @@
 use libfuzzer_sys::fuzz_target;
 use prost::Message;
 
-#[path = "../../../../../rust/crates/stream/tests/support/follow_data.rs"]
-mod follow_data;
+use acyclic_stream::test_support::follow_data;
 
 fuzz_target!(|bytes: &[u8]| {
     let mut next = [0; 8];

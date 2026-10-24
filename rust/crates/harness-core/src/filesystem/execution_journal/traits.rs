@@ -12,6 +12,7 @@ where
         operation: OperationId,
         digest: [u8; 32],
     ) -> BoxFuture<'a, Result<()>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(self.verify_tool_approval_with_io(id, operation, digest, None))
     }
 }
@@ -41,6 +42,7 @@ where
     }
 
     fn model_cancellation(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<()>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(self.follow_cancellation())
     }
 
@@ -111,18 +113,21 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
         if io.is_none() {
-            return crate::conversation::BoundedContentFuture::new(None, || async move {
-                let span = obs_span!(
-                    "acyclic.harness.journal.replay",
-                    rev = after,
-                    items = crate::obs::Empty
-                );
-                crate::obs::traced_future(span, async move {
-                    let records = self.records(operation, after, maximum, None).await?;
-                    crate::obs::obs_record!("items" = records.len());
-                    Ok(records)
-                })
-                .await
+            return crate::conversation::BoundedContentFuture::new(None, || {
+                crate::obs::traced_future(
+                    move || {
+                        obs_span!(
+                            "acyclic.harness.journal.replay",
+                            rev = after,
+                            items = crate::obs::Empty
+                        )
+                    },
+                    || async move {
+                        let records = self.records(operation, after, maximum, None).await?;
+                        crate::obs::obs_record!("items" = records.len());
+                        Ok(records)
+                    },
+                )
             });
         }
         crate::conversation::BoundedContentFuture::new(io, || async move {
@@ -132,7 +137,8 @@ where
                     rev = after,
                     items = crate::obs::Empty
                 );
-                return traced(span, async move {
+                // Unbudgeted: `io` is none on this path.
+                return traced(span, || async move {
                     let records = self.records(operation, after, maximum, io).await?;
                     crate::obs::obs_record!("items" = records.len());
                     Ok(records)
@@ -158,20 +164,22 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         if io.is_none() {
-            return crate::conversation::BoundedContentFuture::new(None, || async move {
-                let span = obs_span!("acyclic.harness.journal.load", bytes = crate::obs::Empty);
-                crate::obs::traced_future(span, async move {
-                    let bytes = self.load_content(reference, None).await?;
-                    crate::obs::obs_record!("bytes" = bytes.len());
-                    Ok(bytes)
-                })
-                .await
+            return crate::conversation::BoundedContentFuture::new(None, || {
+                crate::obs::traced_future(
+                    || obs_span!("acyclic.harness.journal.load", bytes = crate::obs::Empty),
+                    || async move {
+                        let bytes = self.load_content(reference, None).await?;
+                        crate::obs::obs_record!("bytes" = bytes.len());
+                        Ok(bytes)
+                    },
+                )
             });
         }
         crate::conversation::BoundedContentFuture::new(io, || async move {
             if io.is_none() {
                 let span = obs_span!("acyclic.harness.journal.load", bytes = crate::obs::Empty);
-                return traced(span, async move {
+                // Unbudgeted: `io` is none on this path.
+                return traced(span, || async move {
                     let bytes = self.load_content(reference, io).await?;
                     crate::obs::obs_record!("bytes" = bytes.len());
                     Ok(bytes)
@@ -190,14 +198,15 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         if io.is_none() {
-            return crate::conversation::BoundedContentFuture::new(None, || async move {
-                let span = obs_span!("acyclic.harness.journal.append");
+            return crate::conversation::BoundedContentFuture::new(None, || {
                 crate::obs::traced_future(
-                    span,
-                    self.append_with_chunks(operation, None, key, event, None),
+                    || obs_span!("acyclic.harness.journal.append"),
+                    || async move {
+                        self.append_with_chunks(operation, None, key, event, None)
+                            .await
+                            .map(|_| ())
+                    },
                 )
-                .await
-                .map(|_| ())
             });
         }
         crate::conversation::BoundedContentFuture::new(io, || async move {
@@ -215,7 +224,7 @@ where
                 return result.map(|_| ());
             }
             let span = obs_span!("acyclic.harness.journal.append");
-            traced(span, async move {
+            crate::obs::traced_on(io, span, || async move {
                 self.append_validated(operation, None, key, event, io)
                     .await?;
                 if io.is_some() {
@@ -236,16 +245,16 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
         if io.is_none() {
-            return crate::conversation::BoundedContentFuture::new(None, || async move {
-                let span = obs_span!(
-                    "acyclic.harness.journal.append_if_tail",
-                    rev = expected_tail
-                );
+            return crate::conversation::BoundedContentFuture::new(None, || {
                 crate::obs::traced_future(
-                    span,
-                    self.append_with_chunks(operation, Some(expected_tail), key, event, None),
+                    move || {
+                        obs_span!(
+                            "acyclic.harness.journal.append_if_tail",
+                            rev = expected_tail
+                        )
+                    },
+                    || self.append_with_chunks(operation, Some(expected_tail), key, event, None),
                 )
-                .await
             });
         }
         crate::conversation::BoundedContentFuture::new(io, || async move {
@@ -263,10 +272,9 @@ where
                 "acyclic.harness.journal.append_if_tail",
                 rev = expected_tail
             );
-            traced(
-                span,
-                self.append_with_chunks(operation, Some(expected_tail), key, event, io),
-            )
+            crate::obs::traced_on(io, span, || {
+                self.append_with_chunks(operation, Some(expected_tail), key, event, io)
+            })
             .await
         })
     }
@@ -280,13 +288,11 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
         if io.is_none() {
-            return crate::conversation::BoundedContentFuture::new(None, || async move {
-                let span = obs_span!("acyclic.harness.journal.stage", bytes = bytes.len());
+            return crate::conversation::BoundedContentFuture::new(None, || {
                 crate::obs::traced_future(
-                    span,
-                    self.stage_with_io(operation, key, bytes, media, None),
+                    move || obs_span!("acyclic.harness.journal.stage", bytes = bytes.len()),
+                    || self.stage_with_io(operation, key, bytes, media, None),
                 )
-                .await
             });
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -341,7 +347,10 @@ where
                 return Ok(file);
             }
             let span = obs_span!("acyclic.harness.journal.stage", bytes = bytes.len());
-            traced(span, self.stage_with_io(operation, key, bytes, media, io)).await
+            crate::obs::traced_on(io, span, || {
+                self.stage_with_io(operation, key, bytes, media, io)
+            })
+            .await
         })
     }
 

@@ -39,6 +39,8 @@ pub(crate) mod context;
 mod files;
 mod inheritance;
 mod input;
+#[cfg(all(feature = "tui", feature = "native-execution"))]
+mod name_search;
 pub(crate) mod open;
 mod orphans;
 mod owner;
@@ -183,4 +185,39 @@ impl LocalHarness {
 
 fn storage(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
+}
+
+/// Exercises the production direct-tool state machine.
+#[cfg(feature = "test-support")]
+pub use crate::package::harness::fuzz_command_state;
+
+/// Applies the production checkout/state separation check to an explicit fixture path.
+#[cfg(feature = "test-support")]
+pub fn fuzz_separated_directory(
+    state: &std::path::Path,
+    checkout: Option<&std::path::Path>,
+) -> Result<PathBuf> {
+    owner::separated_directory(state, checkout)
+}
+
+/// Checks the production owner-record codec with synthetic bytes.
+#[cfg(feature = "test-support")]
+pub fn fuzz_owner_record(input: &[u8]) {
+    if let Ok(owner) = serde_json::from_slice::<owner_record::Owner>(input) {
+        let encoded = serde_json::to_vec(&owner).unwrap();
+        let restored: owner_record::Owner = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(serde_json::to_vec(&restored).unwrap(), encoded);
+    }
+}
+
+/// Exercises exclusion matching using explicitly supplied opaque bytes.
+#[cfg(all(feature = "test-support", unix))]
+pub fn fuzz_mount_exclusion(input: &[u8]) {
+    workspace::fuzz_mount_exclusion(input);
+}
+
+/// Exercises the production file-guidance selector against its independent oracle.
+#[cfg(feature = "test-support")]
+pub fn fuzz_file_guidance(input: &[u8]) {
+    context::fuzz_file_guidance(input);
 }

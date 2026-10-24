@@ -9,12 +9,8 @@ use acyclic_fs::{
     CancellationToken, LazyWorkspace, MemoryLazyWorkspaceStore, MountPublication,
     NativeMaterializationWork, PublicationPermit,
 };
-use std::{
-    borrow::Cow,
-    os::windows::process::CommandExt,
-    process::{Command, Stdio},
-    time::Duration,
-};
+use acyclic_native_runtime::command::{Command, Stdio};
+use std::{borrow::Cow, time::Duration};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()

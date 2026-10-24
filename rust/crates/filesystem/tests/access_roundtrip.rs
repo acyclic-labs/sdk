@@ -1,6 +1,5 @@
 use super::*;
-#[path = "access_input.rs"]
-mod input;
+use acyclic_fs::fuzzing::access_input as input;
 
 #[test]
 fn shared_access_oracle_detects_a_corrupted_decision() -> Result<(), Box<dyn std::error::Error>> {
