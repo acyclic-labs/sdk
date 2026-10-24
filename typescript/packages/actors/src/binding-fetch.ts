@@ -19,7 +19,7 @@ export async function readBindingRequestBody(request: Request, signal: AbortSign
   } finally { signal.removeEventListener("abort",cancel); reader.releaseLock(); }
 }
 /** One Fetch response boundary, including statuses that forbid a body. */
-export function bindingResponse(result: {readonly body: readonly number[] | Uint8Array; readonly status: number; readonly headers: readonly {readonly name:string;readonly value:string}[]}, method: string): Response {
+export function bindingResponse(result: {readonly body: ArrayLike<number>; readonly status: number; readonly headers: readonly {readonly name:string;readonly value:string}[]}, method: string): Response {
   const body = method === "HEAD" || [204,205,304].includes(result.status) ? null : Uint8Array.from(result.body);
   return new Response(body, {status:result.status,headers:result.headers.map(h => [h.name,h.value])});
 }
