@@ -6,6 +6,10 @@
 set -u
 exec 2>&1
 started=$SECONDS
+gate_output=$PWD
+if [ -f scripts/gate-target-cache.py ]; then
+  gate_output=$(python3 scripts/gate-target-cache.py output) || exit 2
+fi
 each=(); harness=(); cargo_args=()
 while (($#)); do
   case "$1" in
@@ -35,31 +39,35 @@ trap 'touch "$cache"' EXIT
 target="$cache/tests"
 clippy_target="$cache/clippy"
 echo "GATE_MAIN_START target=$target clippy_target=$clippy_target"
-cargo metadata --locked --offline --no-deps --format-version 1 > .gate-main-metadata.json || exit 2
-members=$(node -e 'const m=JSON.parse(require("fs").readFileSync(".gate-main-metadata.json","utf8")); const ids=new Set(m.workspace_members); console.log(m.packages.filter(p=>ids.has(p.id)).map(p=>p.name).sort().join(","))') || exit 2
-export GATE_FUZZ_EXECUTABLES="$PWD/.gate-fuzz-executables"
+cargo metadata --locked --offline --no-deps --format-version 1 > "$gate_output/.gate-main-metadata.json" || exit 2
+members=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const ids=new Set(m.workspace_members); console.log(m.packages.filter(p=>ids.has(p.id)).map(p=>p.name).sort().join(","))' "$gate_output/.gate-main-metadata.json") || exit 2
+export GATE_FUZZ_EXECUTABLES="$gate_output/.gate-fuzz-executables"
 : > "$GATE_FUZZ_EXECUTABLES" || exit 2
 export GATE_BASE_TEST_RUNNER=${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:-}
 test_runner="$PWD/${GATE_TEST_RUNNER_SCRIPT:-scripts/gate-test-runner.sh}"
-chmod +x "$test_runner" || exit 2
+if [ -f scripts/gate-target-cache.py ]; then
+  test_runner=$(python3 scripts/gate-target-cache.py runner "$test_runner") || exit 2
+else
+  chmod +x "$test_runner" || exit 2
+fi
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$test_runner"
 ( CARGO_TARGET_DIR="$clippy_target" cargo clippy --locked --keep-going --workspace --all-targets --all-features --message-format=short \
-    -- --cap-lints warn > .gate-clippy.out 2>&1; echo $? > .gate-clippy.rc ) &
+    -- --cap-lints warn > "$gate_output/.gate-clippy.out" 2>&1; echo $? > "$gate_output/.gate-clippy.rc" ) &
 clippy=$!
-( bash scripts/gate-feature-matrix.sh "${each[@]}" > .gate-features.out 2>&1; echo $? > .gate-features.rc ) &
+( bash scripts/gate-feature-matrix.sh "${each[@]}" > "$gate_output/.gate-features.out" 2>&1; echo $? > "$gate_output/.gate-features.rc" ) &
 features=$!
 run_tests(){
   local phase=$1 status phase_started=$SECONDS; shift
   echo "GATE_TEST_START phase=$phase packages=$members"
   status=(0 0)
   if [ "$phase" = targets ]; then
-    CARGO_TARGET_DIR="$target" bash "$test_runner" --build .gate-main-metadata.json "$GATE_FUZZ_EXECUTABLES" -- \
-      cargo test --locked --workspace --all-features --no-fail-fast "${cargo_args[@]}" "$@" 2>&1 | tee ".gate-$phase.out"
+    CARGO_TARGET_DIR="$target" bash "$test_runner" --build "$gate_output/.gate-main-metadata.json" "$GATE_FUZZ_EXECUTABLES" -- \
+      cargo test --locked --workspace --all-features --no-fail-fast "${cargo_args[@]}" "$@" 2>&1 | tee "$gate_output/.gate-$phase.out"
     status=("${PIPESTATUS[@]}")
   fi
   if [ "${status[0]}" = 0 ] && [ "${status[1]}" = 0 ]; then
     CARGO_TARGET_DIR="$target" cargo test --locked --workspace --all-features --no-fail-fast \
-      "${cargo_args[@]}" "$@" -- "${harness[@]}" 2>&1 | tee -a ".gate-$phase.out"
+      "${cargo_args[@]}" "$@" -- "${harness[@]}" 2>&1 | tee -a "$gate_output/.gate-$phase.out"
     status=("${PIPESTATUS[@]}")
   fi
   if [ "${status[1]}" != 0 ]; then echo 'error: gate could not retain Cargo output'; status[0]=2; fi
@@ -76,7 +84,7 @@ run_tests docs --doc; docs_rc=$?
 # Keep this sequential with tests to avoid adding more compiler contention.
 browser_started=$SECONDS
 echo "GATE_BROWSER_START target=$cache/browser"
-CARGO_TARGET_DIR="$cache/browser" bash "${GATE_BROWSER_SCRIPT:-scripts/check-browser-targets.sh}" 2>&1 | tee .gate-browser.out
+CARGO_TARGET_DIR="$cache/browser" bash "${GATE_BROWSER_SCRIPT:-scripts/check-browser-targets.sh}" 2>&1 | tee "$gate_output/.gate-browser.out"
 browser_status=("${PIPESTATUS[@]}")
 browser_rc=${browser_status[0]}
 if [ "${browser_status[1]}" != 0 ]; then
@@ -86,7 +94,7 @@ fi
 echo "GATE_BROWSER_WALL seconds=$((SECONDS-browser_started)) rc=$browser_rc"
 loom_started=$SECONDS
 echo "GATE_HARNESS_LOOM_START target=$cache/loom"
-CARGO_TARGET_DIR="$cache/loom" bash scripts/check-harness-models.sh 2>&1 | tee .gate-harness-loom.out
+CARGO_TARGET_DIR="$cache/loom" bash scripts/check-harness-models.sh 2>&1 | tee "$gate_output/.gate-harness-loom.out"
 loom_status=("${PIPESTATUS[@]}")
 loom_rc=${loom_status[0]}
 if [ "${loom_status[1]}" != 0 ]; then
@@ -95,23 +103,23 @@ if [ "${loom_status[1]}" != 0 ]; then
 fi
 echo "GATE_HARNESS_LOOM_WALL seconds=$((SECONDS-loom_started)) rc=$loom_rc"
 wait "$clippy"
-echo "GATE_CLIPPY rc=$(cat .gate-clippy.rc)"
-if [ "$(cat .gate-clippy.rc)" != 0 ]; then sed 's/^/GATE_CLIPPY_RAW /' .gate-clippy.out; fi
-grep -aE '^[^ ]+\.rs:[0-9]+:[0-9]+: (warning|error): ' .gate-clippy.out | sed -E 's/:[0-9]+:[0-9]+: (warning|error): /: /' \
+echo "GATE_CLIPPY rc=$(cat "$gate_output/.gate-clippy.rc")"
+if [ "$(cat "$gate_output/.gate-clippy.rc")" != 0 ]; then sed 's/^/GATE_CLIPPY_RAW /' "$gate_output/.gate-clippy.out"; fi
+grep -aE '^[^ ]+\.rs:[0-9]+:[0-9]+: (warning|error): ' "$gate_output/.gate-clippy.out" | sed -E 's/:[0-9]+:[0-9]+: (warning|error): /: /' \
   | sort | uniq -c | sed -E 's/^ *([0-9]+) /GATE_CLIPPY_FINDING \1 /'
-grep -aE '^error(\[E[0-9]+\])?: ' .gate-clippy.out | grep -v 'could not compile' | sort -u | sed 's/^/GATE_CLIPPY_ERROR /'
+grep -aE '^error(\[E[0-9]+\])?: ' "$gate_output/.gate-clippy.out" | grep -v 'could not compile' | sort -u | sed 's/^/GATE_CLIPPY_ERROR /'
 wait "$features"
-echo "GATE_FEATURES rc=$(cat .gate-features.rc)"
-grep -aE '^(feature matrix:|FAILED cargo)' .gate-features.out | sed -E 's|--manifest-path [^ ]*/([^/ ]+/Cargo\.toml)|--manifest-path \1|; s/^/GATE_FEATURES /'
-grep -a '^feature check: ' .gate-features.out | sed 's/^/GATE_FEATURE_CHECK /'
-grep -aE '^GATE_FEATURES_(CACHE|WALL) ' .gate-features.out
-if [ "$(cat .gate-features.rc)" != 0 ]; then cat .gate-features.out; fi
+echo "GATE_FEATURES rc=$(cat "$gate_output/.gate-features.rc")"
+grep -aE '^(feature matrix:|FAILED cargo)' "$gate_output/.gate-features.out" | sed -E 's|--manifest-path [^ ]*/([^/ ]+/Cargo\.toml)|--manifest-path \1|; s/^/GATE_FEATURES /'
+grep -a '^feature check: ' "$gate_output/.gate-features.out" | sed 's/^/GATE_FEATURE_CHECK /'
+grep -aE '^GATE_FEATURES_(CACHE|WALL) ' "$gate_output/.gate-features.out"
+if [ "$(cat "$gate_output/.gate-features.rc")" != 0 ]; then cat "$gate_output/.gate-features.out"; fi
 bash scripts/gate-windows-features.sh full; windows_features_rc=$?
 rc=$targets_rc; [ "$rc" != 0 ] || rc=$docs_rc
 [ "$rc" != 0 ] || rc=$browser_rc
 [ "$rc" != 0 ] || rc=$loom_rc
 # A partial auxiliary step must not leave the main baseline falsely green.
-if [ "$rc" = 0 ] && { [ "$(cat .gate-clippy.rc)" != 0 ] || [ "$(cat .gate-features.rc)" != 0 ]; }; then rc=1; fi
+if [ "$rc" = 0 ] && { [ "$(cat "$gate_output/.gate-clippy.rc")" != 0 ] || [ "$(cat "$gate_output/.gate-features.rc")" != 0 ]; }; then rc=1; fi
 [ "$rc" != 0 ] || rc=$windows_features_rc
 if [ "$targets_rc" = 0 ] && [ "$docs_rc" = 0 ]; then
   echo "GATE_TEST_COVERAGE all-targets+doc packages=$members"

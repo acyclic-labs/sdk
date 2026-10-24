@@ -22,7 +22,12 @@ flock -x 9
 waited=$((SECONDS-started))
 echo "GATE_FEATURES_CACHE target=$target workers=$workers lock_wait_seconds=$waited"
 rc=0
-CARGO_TARGET_DIR="$target" node "${GATE_FEATURE_SCRIPT:-scripts/check-feature-matrix.mjs}" "$workers" "$@" || rc=$?
+if [ -f scripts/gate-target-cache.py ]; then
+  CARGO_TARGET_DIR="$target" python3 scripts/gate-target-cache.py matrix "$target" -- \
+    node "${GATE_FEATURE_SCRIPT:-scripts/check-feature-matrix.mjs}" "$workers" "$@" || rc=$?
+else
+  CARGO_TARGET_DIR="$target" node "${GATE_FEATURE_SCRIPT:-scripts/check-feature-matrix.mjs}" "$workers" "$@" || rc=$?
+fi
 # The target-pruner reads the unit's own mtime, not its nested artifacts.
 for ((i=0; i<workers; i++)); do
   unit=$target; ((i == 0)) || unit="$target-features-$i"

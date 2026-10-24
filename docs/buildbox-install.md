@@ -9,6 +9,15 @@ sudo /home/var/bin/bb-install.py --source /mnt/bb/<candidate>/scripts/buildbox
 sudo python3 /mnt/bb/tmp/bb-install-<qualified-generation>/bb-install.py --publish /mnt/bb/tmp/bb-install-<qualified-generation>
 ```
 
+For a change confined to selected tools, add `--only bb_target_store.py
+bb-install.py` to publication. The complete frozen candidate still qualifies;
+only the named tools are replaced, and the manifest records the actual live
+hashes of all tools. Qualification records installed predecessors. Publication
+refuses a selected destination that changed afterward, preserving another
+lane's newer deployment. Unselected tools are preserved, even if they advanced
+during qualification. The Cargo source-namespace controls are mandatory in the
+installer's qualification suite.
+
 The installer freezes a root-owned candidate, runs the receipt, runtime,
 admission and publication controls as `var`, and publishes only after they
 pass. Publication writes a temporary file beside the destination, flushes it,

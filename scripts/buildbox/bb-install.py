@@ -79,7 +79,9 @@ def publish(destination, data, mode=0o555):
 def qualify(source, user):
     commands = [[NODE, '--test', 'generated.test.mjs', 'receipt-namespace.test.mjs'],
                 ['python3', 'runtime.test.py'], ['python3', 'admission.test.py'],
-                ['python3', 'install.test.py'], ['python3', 'limits.test.py']]
+                ['python3', 'install.test.py'], ['python3', 'limits.test.py'],
+                ['python3', 'prune.test.py'],
+                ['python3', 'cargo_cache.test.py']]
     for command in commands:
         # The tested code cannot modify its frozen source or installed tools.
         subprocess.run(['runuser', '-u', user, '--', *command], cwd=source, check=True, stdout=sys.stderr)
@@ -100,6 +102,10 @@ def prepare(source):
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 publish(destination, item.read_bytes(), 0o444)
         hashes = {name: hashlib.sha256((stage/name).read_bytes()).hexdigest() for name in TOOLS}
+        # Fence only the selected publication destinations. Unrelated runtime
+        # modules may advance while this candidate qualifies and stay intact.
+        previous = {name: file_hash(BIN/name) for name in TOOLS}
+        publish(stage/'.predecessors.json', json.dumps(previous).encode(), 0o400)
         qualify(stage, account.pw_name)
         publish(stage/'.qualified.json', json.dumps(hashes).encode(), 0o400)
         return stage
@@ -108,13 +114,25 @@ def prepare(source):
         raise
 
 
-def publish_candidate(candidate):
+def file_hash(file):
+    return hashlib.sha256(file.read_bytes()).hexdigest() if file.exists() else None
+
+
+def select_tools(only):
+    selected = list(TOOLS) if only is None else list(only)
+    if not selected or len(set(selected)) != len(selected) or any(name not in TOOLS for name in selected):
+        raise ValueError('publication selection must contain distinct qualified tools')
+    return selected
+
+
+def publish_candidate(candidate, only=None):
     if os.geteuid() != 0: raise PermissionError('bb-install requires sudo')
     stage=Path(candidate)
     if stage.parent != Path('/mnt/bb/tmp') or not stage.name.startswith('bb-install-') or stage.is_symlink():
         raise ValueError('not an installer candidate')
-    token=stage/'.qualified.json'
-    for file in [stage, token, *[stage/name for name in TOOLS]]:
+    token=stage/'.qualified.json'; fence=stage/'.predecessors.json'
+    selected=select_tools(only)
+    for file in [stage, token, fence, *[stage/name for name in TOOLS]]:
         if file.is_symlink() or file.stat().st_uid != 0 or file.stat().st_mode & 0o022:
             raise PermissionError('candidate custody is unproven: '+str(file))
     hashes=json.loads(token.read_text())
@@ -128,9 +146,17 @@ def publish_candidate(candidate):
     import fcntl
     with open('/mnt/bb/locks/bb-install.lock', 'a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        previous=json.loads(fence.read_text())
+        if (not isinstance(previous,dict) or set(previous)!=set(TOOLS)
+                or any(value is not None and (not isinstance(value,str) or len(value)!=64
+                       or any(c not in '0123456789abcdef' for c in value)) for value in previous.values())):
+            raise ValueError('invalid installed predecessor record')
+        if any(file_hash(BIN/name) != previous.get(name) for name in selected):
+            raise ValueError('installed predecessor changed; re-qualify against current tools')
         BIN.mkdir(exist_ok=True)
         store=secure_bin()
-        for name, data in payload.items():
+        for name in selected:
+            data=payload[name]
             destination=store/name; backup=store/(name+'.bak-gatespeed')
             if destination.exists() and not backup.exists():publish(backup,destination.read_bytes())
             publish(destination,data)
@@ -141,14 +167,18 @@ def publish_candidate(candidate):
             for name in files:
                 file=Path(directory)/name
                 if not file.is_symlink():os.chown(file,0,0);file.chmod(0o555)
-        publish(store/'installed-tools.json',json.dumps({'schema_version':1,'sha256':hashes}).encode(),0o444)
-    return hashes
+        installed={name:file_hash(store/name) for name in TOOLS}
+        publish(store/'installed-tools.json',json.dumps({'schema_version':1,'sha256':installed}).encode(),0o444)
+    return {name:hashes[name] for name in selected}
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     group=parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--source');group.add_argument('--publish')
+    parser.add_argument('--only',nargs='+',choices=TOOLS)
     args = parser.parse_args()
-    if args.source:print(prepare(args.source))
-    else:print(json.dumps(publish_candidate(args.publish)),file=__import__('sys').stderr)
+    if args.source:
+        if args.only:parser.error('--only requires --publish')
+        print(prepare(args.source))
+    else:print(json.dumps(publish_candidate(args.publish,args.only)),file=__import__('sys').stderr)

@@ -70,6 +70,14 @@ esac
     });
     assert.equal(windowsFailure.status, 101, windowsFailure.stdout + windowsFailure.stderr);
     assert.match(windowsFailure.stdout, /GATE_DONE rc=101/u);
+    writeFileSync(join(cwd,'scripts/gate-target-cache.py'),readFileSync(join(dirname(runner),'gate-target-cache.py')));
+    rmSync(join(cwd,'.gate-main-metadata.json'),{force:true});
+    const privateRun=spawnSync('bash',[runner],{cwd,encoding:'utf8',env:{...process.env,PATH:`${join(cwd,'bin')}:${process.env.PATH}`,GATE_MAIN_TARGET_DIR:join(cwd,'cache'),EARLY_FAIL:'0',TARGET_RC:'0',DOC_RC:'0',FEATURE_RC:'0',BROWSER_RC:'0',WINDOWS_FEATURE_RC:'0'}});
+    assert.equal(privateRun.status,0,privateRun.stdout+privateRun.stderr);
+    assert.throws(()=>readFileSync(join(cwd,'.gate-main-metadata.json')),/ENOENT/);
+    const output=spawnSync('python3',[join(cwd,'scripts/gate-target-cache.py'),'output'],{cwd,encoding:'utf8'});
+    assert.equal(output.status,0,output.stderr);
+    assert.ok(JSON.parse(readFileSync(join(output.stdout.trim(),'.gate-main-metadata.json'),'utf8')).packages.length);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

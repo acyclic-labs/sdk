@@ -14,6 +14,22 @@ import bb_cargo_cache as cache
 
 
 class LocalTargetLease(unittest.TestCase):
+    @staticmethod
+    def source_fixture(root):
+        source=root/'src';source.mkdir()
+        env={key:value for key,value in os.environ.items() if not key.startswith('GIT_')}
+        env.update(GIT_DIR=str(source/'.git'),GIT_WORK_TREE=str(source))
+        subprocess.run(['git','init','-q',str(source)],env=env,check=True)
+        file=source/'lib.rs';file.write_text('original')
+        subprocess.run(['git','add','lib.rs'],cwd=source,env=env,check=True)
+        s=file.stat();clock=root/'clock.json'
+        clock.write_text(json.dumps({'root':str(source),'content_sha256':'fixture','cacheable':True,
+                                     'namespace':{'version':1,'pathspec':[],'skip':'(?!)'},
+                                     'files':[['lib.rs',*map(str,[s.st_mode,s.st_size,s.st_mtime_ns,s.st_ctime_ns]),
+                                               cache.store.hashlib.sha256(file.read_bytes()).hexdigest()]]}))
+        env['BB_SOURCE_TIMES_FILE']=str(clock)
+        return source,env,{'source':{'content_sha256':'fixture'}}
+
     def test_gate_markers_do_not_suppress_snapshot_restore_or_publication(self):
         for former,mutated in [(False,False),(True,False),(False,True)]:
             # Exercise real reflinks on the target store's production filesystem.
@@ -56,11 +72,7 @@ class LocalTargetLease(unittest.TestCase):
     def test_source_clock_rejects_changed_content_even_when_mtime_is_restored(self):
         store=cache.store
         with tempfile.TemporaryDirectory() as temporary:
-            root=Path(temporary);file=root/'lib.rs';file.write_text('original')
-            s=file.stat();clock=root/'clock.json'
-            clock.write_text(json.dumps({'root':str(root),'content_sha256':'fixture','cacheable':True,
-                                         'files':[['lib.rs',*map(str,[s.st_mode,s.st_size,s.st_mtime_ns,s.st_ctime_ns]),store.hashlib.sha256(file.read_bytes()).hexdigest()]]}))
-            meta={'source':{'content_sha256':'fixture'}};env={'BB_SOURCE_TIMES_FILE':str(clock)}
+            root,env,meta=self.source_fixture(Path(temporary));file=root/'lib.rs';s=file.stat()
             self.assertTrue(store.source_unchanged(meta,env,root))
             file.write_text('mutated!');os.utime(file,ns=(s.st_atime_ns,s.st_mtime_ns))
             self.assertFalse(store.source_unchanged(meta,env,root))
@@ -71,6 +83,57 @@ class LocalTargetLease(unittest.TestCase):
             old={};exec(compile(source,'missing-ctime-control','exec'),old)
             self.assertTrue(old['source_unchanged'](meta,env,root))
             self.assertFalse(store.source_unchanged({'source':{'content_sha256':'other'}},env,root))
+
+    def test_namespace_addition_during_actual_cargo_compile_cannot_publish(self):
+        store=cache.store;original_run=subprocess.run;guard=store.source_unchanged
+        for mutation in ['unchanged','added','indexed','renamed','deleted','link']:
+            for blind in ([False,True] if mutation in ['added','indexed'] else [False]):
+                with self.subTest(mutation=mutation,blind=blind), tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+                    root=Path(temporary);source,env,meta=self.source_fixture(root)
+                    target=root/'target';target.mkdir();metadata=root/'meta.json'
+                    metadata.write_text(json.dumps({'repo':'sdk',**meta}))
+                    env.update(BUILD_SLOT_RECEIPT_META=str(metadata),BB_JOB_HOME=str(root/'job/home'),
+                               CARGO_TARGET_DIR=str(target),RUSTC_WRAPPER='sccache')
+                    for name in ['BB_CACHE_DISABLED','BB_TARGET_STORE_DISABLED']:env.pop(name,None)
+                    def compiler(argv,**kwargs):
+                        if argv[0]!=cache.CARGO:return original_run(argv,**kwargs)
+                        (target/'artifact').write_text('compiled')
+                        if mutation in ['added','indexed']:
+                            (source/'new.rs').write_text('new source input')
+                            if mutation=='indexed':original_run(['git','add','new.rs'],cwd=source,env=env,check=True)
+                        elif mutation=='renamed':(source/'lib.rs').rename(source/'renamed.rs')
+                        elif mutation=='deleted':(source/'lib.rs').unlink()
+                        elif mutation=='link':
+                            (source/'lib.rs').unlink();(source/'lib.rs').symlink_to('/etc/hostname')
+                        return subprocess.CompletedProcess(argv,0)
+                    with patch.dict(os.environ,env,clear=True),patch.object(store,'ROOT',root/'store'), \
+                         patch.object(store,'private_target',return_value=True), \
+                         patch.object(cache,'target_path',return_value=target), \
+                         patch.object(cache,'local_target_leases',side_effect=lambda *args:nullcontext([])), \
+                         patch.object(store,'request_key',return_value='namespace-fixture'), \
+                         patch.object(store,'source_unchanged',side_effect=lambda m,e:guard(m,e,source)), \
+                         patch.object(store,'namespace_unchanged',wraps=store.namespace_unchanged) as inventory, \
+                         patch.object(subprocess,'run',side_effect=compiler):
+                        if blind:inventory.side_effect=lambda *args:True
+                        self.assertEqual(cache.run(['check','--locked']),0)
+                    published=(root/'store/entries/namespace-fixture/complete.json').is_file()
+                    self.assertEqual(published,mutation=='unchanged' or blind)
+                    records=[json.loads(line) for line in Path(str(metadata)+'.target-store.jsonl').read_text().splitlines()]
+                    self.assertEqual(records[-1]['publish'],'completed' if published else 'source-mutated')
+
+    def test_malformed_clock_or_git_inventory_failure_refuses_publication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root,env,meta=self.source_fixture(Path(temporary));clock=Path(env['BB_SOURCE_TIMES_FILE'])
+            original=clock.read_text()
+            for malformed in [None,[],{'files':[[]]}, {'files':[['..','a','b','c','d','e']]}]:
+                clock.write_text(json.dumps(malformed))
+                self.assertFalse(cache.store.source_unchanged(meta,env,root))
+            clock.write_text(original)
+            legacy=json.loads(original);legacy.pop('namespace');clock.write_text(json.dumps(legacy))
+            self.assertFalse(cache.store.source_unchanged(meta,env,root))
+            clock.write_text(original)
+            with patch.object(subprocess,'run',side_effect=subprocess.CalledProcessError(128,['git'])):
+                self.assertFalse(cache.store.source_unchanged(meta,env,root))
 
     def test_request_diagnostics_preserve_key_and_hash_every_component(self):
         store=cache.store

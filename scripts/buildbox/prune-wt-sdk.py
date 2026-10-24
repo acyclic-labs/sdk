@@ -41,7 +41,11 @@ def prune(root,mirror,locks,max_age=43200,max_count=128,active=None,now=None):
         fcntl.flock(global_lock,fcntl.LOCK_EX)
         groups={}
         for p in root.iterdir():
-            if p.is_dir() and not p.is_symlink():groups.setdefault(p.name.removesuffix('.prep'),[]).append(p)
+            if p.is_dir() and not p.is_symlink():
+                # Retirement retains the original lease identity. A failed
+                # removal must not grow another .prune- prefix on every call.
+                name=p.name.removeprefix('.prune-').removesuffix('.prep')
+                groups.setdefault(name,[]).append(p)
         rows=[]
         for name,paths in groups.items():
             metadata=mirror/'worktrees'/name
@@ -64,9 +68,10 @@ def prune(root,mirror,locks,max_age=43200,max_count=128,active=None,now=None):
                 for p in paths:
                     # Only immediate, resolved children can be renamed/deleted.
                     if p.parent!=root or p.resolve().parent!=root:raise ValueError('unsafe source path')
-                    tomb=root/('.prune-'+p.name+'-'+str(os.getpid()))
-                    try:p.rename(tomb)
-                    except FileNotFoundError:continue
+                    tomb=p if p.name.startswith('.prune-') else root/('.prune-'+p.name)
+                    if p!=tomb:
+                        try:p.rename(tomb)
+                        except FileNotFoundError:continue
                     remove_tree(tomb)
                 count-=1;removed.append(name)
         return {'removed':removed,'remaining':count,'held':held,'over_cap':count>max_count}

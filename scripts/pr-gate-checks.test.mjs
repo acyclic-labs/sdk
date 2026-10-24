@@ -68,5 +68,26 @@ esac
     const failed=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,BROKEN_METADATA:'1'}});
     assert.equal(failed.status,2);assert.match(failed.stdout+failed.stderr,/metadata control/);
     assert.ok(readFileSync(join(cwd,'calls'),'utf8').split('\n').filter(Boolean).every(c=>c.startsWith('metadata ')));
+    // Exercise the real helper too: private jobs keep generated metadata,
+    // artifacts, diagnostics and statuses outside the uploaded source tree.
+    writeFileSync(join(cwd,'scripts/gate-target-cache.py'),readFileSync(join(scripts,'gate-target-cache.py')));
+    writeFileSync(join(cwd,'runner.sh'),source);
+    for(const file of ['.gate-pr-metadata.json','.gate-fuzz-executables','.gate-fuzz-executables.artifacts','.gate-clippy.out','.gate-clippy.rc','.gate-tests.out'])rmSync(join(cwd,file),{force:true});
+    const privateRun=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,CARGO_TARGET_DIR:join(cwd,'target'),BROKEN_FUZZ:'0'}});
+    assert.equal(privateRun.status,0,privateRun.stdout+privateRun.stderr);
+    assert.throws(()=>readFileSync(join(cwd,'.gate-pr-metadata.json')),/ENOENT/);
+    const output=spawnSync('python3',[join(cwd,'scripts/gate-target-cache.py'),'output'],{cwd,encoding:'utf8'});
+    assert.equal(output.status,0,output.stderr);
+    assert.ok(JSON.parse(readFileSync(join(output.stdout.trim(),'.gate-pr-metadata.json'),'utf8')).packages.length);
+    writeFileSync(join(cwd,'scripts/check-feature-matrix.mjs'),"console.log('FAILED cargo check --manifest-path fixture/Cargo.toml');console.error('error[E0000]: retained feature diagnostic');console.log('feature matrix: 0/1 sets ok');process.exitCode=101;\n");
+    for(const negative of [false,true]){
+      const retaining='if [ "$(cat "$gate_output/.gate-features.rc")" != 0 ]; then cat "$gate_output/.gate-features.out"; fi';
+      writeFileSync(join(cwd,'runner.sh'),negative?source.replace(retaining,''):source);
+      const failedFeatures=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,CARGO_TARGET_DIR:join(cwd,'target'),BROKEN_FUZZ:'0'}});
+      assert.equal(failedFeatures.status,0,failedFeatures.stdout+failedFeatures.stderr); // coordinator applies the feature ratchet
+      assert.match(failedFeatures.stdout,/GATE_FEATURES rc=101/);
+      if(negative)assert.doesNotMatch(failedFeatures.stdout,/error\[E0000\]: retained feature diagnostic/);
+      else assert.match(failedFeatures.stdout,/error\[E0000\]: retained feature diagnostic/);
+    }
   }finally{rmSync(cwd,{recursive:true,force:true});}
 });

@@ -559,7 +559,7 @@ console.error('[buildbox] shared target ' + mapF.replace(/\\/[^/]*$/, '') + ': '
 // apply to a mutable target shared across source trees: hash-derived times are
 // not monotonic. Later writes in this job retain their actual fresh mtimes.
 const SOURCE_TIMES = `const fs=require('fs'),crypto=require('crypto');const [records,root,clock,content]=process.argv.slice(1);
-const files=[],names=[];let cacheable=true;
+const files=[],names=[],directories=new Map();let cacheable=true;
 for(const record of fs.readFileSync(records,'utf8').split('\\0')){
  if(!record)continue;
  const blob=record.slice(0,record.indexOf(' ')),name=record.slice(record.indexOf('\\t')+1);
@@ -567,6 +567,21 @@ for(const record of fs.readFileSync(records,'utf8').split('\\0')){
  const seconds=946684800+parseInt(blob.slice(0,8),16)%(20*365*86400);
  fs.lutimesSync(root+'/'+name,seconds,seconds);
  names.push(name);
+ const parts=name.split('/');
+ for(let count=0;count<parts.length;count++){
+  const directory=parts.slice(0,count).join('/');
+  if(!directories.has(directory))directories.set(directory,crypto.createHash('sha256'));
+  directories.get(directory).update(blob+'\\t'+parts.slice(count).join('/')+'\\0');
+ }
+}
+// Cargo build scripts may watch directories (proto/data), not just files.
+// Fresh checkout directory times would otherwise invalidate a complete target.
+// Only this exact private uploaded tree receives deterministic past times.
+for(const [name,hash] of directories){
+ const directory=root+(name?'/'+name:''),real=fs.realpathSync(directory);
+ if((real!==root&&!real.startsWith(root+'/'))||!fs.lstatSync(directory).isDirectory()){cacheable=false;continue;}
+ const seconds=946684800+parseInt(hash.digest('hex').slice(0,8),16)%(20*365*86400);
+ fs.utimesSync(directory,seconds,seconds);
 }
 // Normalize every target before inspecting symlink aliases to those targets.
 for(const name of names){
@@ -577,7 +592,8 @@ for(const name of names){
   files.push([name,...[s.mode,s.size,s.mtimeNs,s.ctimeNs].map(String),crypto.createHash('sha256').update(fs.readFileSync(real)).digest('hex')]);
  }catch{cacheable=false;}
 }
-fs.writeFileSync(clock+'.tmp',JSON.stringify({root,content_sha256:content,cacheable,files}));fs.renameSync(clock+'.tmp',clock);
+fs.writeFileSync(clock+'.tmp',JSON.stringify({root,content_sha256:content,cacheable,files,
+ namespace:{version:1,pathspec:${JSON.stringify(IDENT_ADD)},skip:${JSON.stringify(IDENT_SKIP)}}}));fs.renameSync(clock+'.tmp',clock);
 console.error('[buildbox] source clock: exact-content private targets');`;
 // node_modules for every job that is not cargo (2026-10-18 crit-bslot): remote trees often had none and JS gates died
 // rc 127 ("./node_modules/.bin/tsc: No such file or directory", #5338, #5341) when the lane forgot `npm ci`. Every tracked
@@ -646,6 +662,7 @@ elif [ -d .git ] && [ -d $BBM ]; then  # rsync tree: borrow the mirror's objects
 fi
 if [ ${repo} = cloud ] && ! { git rev-parse -q --verify refs/remotes/origin/main >/dev/null && git merge-base refs/remotes/origin/main HEAD >/dev/null 2>&1; }; then
   echo >&2 "[build-slot] remote failed: no-base-ref (origin/main missing or unrelated to HEAD in the synced checkout)"; exit 224; fi
+${cargoJob ? '' : NPM_ENSURE}
 # Tree identity (2026-10-16 treeid): the content this job runs on must be exactly the client's. Same digest as treeIdentity().
 # A throwaway index seeded from the client's commit without stat data, so every file is hashed again under the client's
 # core.autocrlf (an entry the commit block cached was hashed without it), while committed CRLF blobs stay as committed
@@ -671,7 +688,7 @@ if [ "$BB_HOST_TARGET" != ${TD} ] && ! node -e ${q(MTIME_MAP)} "$bbI.recs" "$BB_
 rm -f "$bbI.recs"
 export BUILD_SLOT_TREE="${id.commit} ${id.tree} ${id.content}"
 export BUILD_SLOT_RECEIPT_META=${J}.receipt-meta.v2.json
-${cargoJob ? '' : NPM_ENSURE}${passEnv()}
+${passEnv()}
 cd /work/src/${q(rel)} && node ${J}.receipt-tool.mjs exec ${J}.receipt-meta.v2.json && ${argv.map((a, i) => q(i === 0 && path.basename(a) === 'cargo' ? '/home/var/bin/bb-cargo/cargo' : a)).join(' ')}`;
   // Hash the complete generated build environment/driver before adding the
   // digest itself. Dispatch filenames are operational, not compiler inputs.

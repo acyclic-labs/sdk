@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import subprocess
@@ -18,7 +19,7 @@ import time
 
 # Earlier snapshots did not exclude writers in nested target directories.
 # A new key generation prevents any such snapshot from being reused.
-VERSION = 'sdk-target-reflink-v3-source-clock'
+VERSION = 'sdk-target-reflink-v4-input-namespace'
 ROOT = Path('/mnt/bb/sdk-target-store-v1')
 BUDGET = 64 * 1024**3  # Logical upper bound, including shared extents.
 SCAFFOLD = {'.host-targets', '.host-src', '.gate.lock', '.cargo-lock',
@@ -72,6 +73,24 @@ def tool_identity():
     return result
 
 
+def namespace_unchanged(clock, env, root):
+    # Reuse the producer's actual upload rules, including tracked ignored
+    # files. No job-created source path gets a new exclusion here.
+    namespace = clock['namespace']
+    if (not isinstance(namespace, dict) or namespace.get('version') != 1
+            or not isinstance(namespace.get('pathspec'), list)
+            or not all(isinstance(p, str) for p in namespace['pathspec'])
+            or not isinstance(namespace.get('skip'), str)):
+        return False
+    inventory = subprocess.run(['git', 'ls-files', '--cached', '--others',
+                                '--exclude-standard', '-z', '--', '.', *namespace['pathspec']],
+                               cwd=root, env={**env, 'GIT_OPTIONAL_LOCKS': '0'},
+                               capture_output=True, check=True).stdout.decode('utf-8')
+    current = [name for name in inventory.split('\0')
+               if name and not re.search(namespace['skip'], '\t' + name)]
+    return sorted(current) == sorted(row[0] for row in clock['files'])
+
+
 def source_unchanged(meta, env, root=Path('/work/src')):
     """A completed compile must still describe the initially uploaded inputs.
 
@@ -81,8 +100,20 @@ def source_unchanged(meta, env, root=Path('/work/src')):
     """
     try:
         clock = json.loads(Path(env['BB_SOURCE_TIMES_FILE']).read_text())
+        if (not isinstance(clock, dict) or not isinstance(clock.get('files'), list)
+                or any(not isinstance(row, list) or len(row) != 6
+                       or not all(isinstance(value, str) for value in row)
+                       or Path(row[0]).is_absolute() or '..' in Path(row[0]).parts
+                       for row in clock['files'])):
+            return False
         if (not clock['cacheable'] or clock['root'] != str(root) or not clock['files']
                 or clock['content_sha256'] != meta['source']['content_sha256']):
+            return False
+        # The producer carries the actual upload inventory rules. Reuse those
+        # rules, including tracked ignored files, rather than inventing an
+        # allowlist for newly created source. Existing-file hashes alone miss
+        # additions (and files added to Git's index by a build command).
+        if not namespace_unchanged(clock, env, root):
             return False
         for name, *record in clock['files']:
             expected, content = record[:-1], record[-1]
@@ -95,7 +126,7 @@ def source_unchanged(meta, env, root=Path('/work/src')):
             if hashlib.sha256(file.read_bytes()).hexdigest() != content:
                 return False
         return True
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, re.error, subprocess.SubprocessError):
         return False
 
 
