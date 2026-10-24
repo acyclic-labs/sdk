@@ -26,8 +26,8 @@ export async function exerciseDiscovery(engine, label, reopen) {
   const readerAgent = "09090909-0909-0909-0909-090909090909";
   const grant = core.directoryReadCapability(volume, "");
   const scope = core.issueScope("reader", [grant], readerAgent);
-  let prefixes = 0;
-  let bodies = 0;
+  const prefixes = [];
+  const bodies = [];
   async function retained(reference) {
     const pinned = await engine.openWorkspace(reference.version ?? workspace.name);
     const generation = await pinned.generation(Uint8Array.from(reference.key));
@@ -47,15 +47,15 @@ export async function exerciseDiscovery(engine, label, reopen) {
       const page = await generation.listDirectory(`/${query.path}`, after, query.maximum_entries);
       return { generation: generationRef(generation), hasMore: page.hasMore,
         entries: page.entries.map(entry => {
-          assert(entry.name.encoding === "utf8", "unsupported owner filename encoding");
+          assert(["utf8", "posix-bytes", "windows-utf16le"].includes(entry.name.encoding), "unsupported owner filename encoding");
           assert(entry.kind === "regular" || entry.kind === "directory", "unsupported owner entry kind");
-          return { name: new TextDecoder("utf-8", { fatal: true }).decode(entry.name.bytes),
+          return { name: new TextDecoder(entry.name.encoding === "windows-utf16le" ? "utf-16le" : "utf-8", { fatal: true }).decode(entry.name.bytes),
             kind: entry.kind === "regular" ? "file" : "directory" };
         }) };
     },
     async prefix(query) {
       authorize(query.source.root, query.source.path);
-      prefixes++;
+      prefixes.push(query.source.path);
       const generation = await retained(query.source.generation);
       const stat = await generation.stat(`/${query.source.path}`);
       assert(stat.kind === "regular", "prefix requires regular file");
@@ -64,7 +64,7 @@ export async function exerciseDiscovery(engine, label, reopen) {
     },
     async read(query) {
       authorize(query.source.root, query.source.path);
-      bodies++;
+      bodies.push(query.source.path);
       const generation = await retained(query.source.generation);
       const bytes = await generation.read(`/${query.source.path}`, query.maximum_bytes);
       const file = contracts.validate("file_ref", { volume, path: query.source.path,
@@ -87,7 +87,8 @@ export async function exerciseDiscovery(engine, label, reopen) {
       limits: { entries: 64, directories: 8, header_bytes: 256, instruction_bytes: 512 } };
     const snapshot = await contracts.captureDiscoveredContext(declaration, reader);
     assert(snapshot.instructions.length === 2 && snapshot.skills.length === 1, "discovery omitted sources");
-    assert(bodies === 2 && prefixes === 3, "discovery eagerly read skill body");
+    assert(JSON.stringify(bodies) === JSON.stringify(["AGENTS.md", "src/AGENTS.md"]), "discovery changed instruction reads or eagerly read a skill body");
+    assert(JSON.stringify(prefixes) === JSON.stringify(["inspect/SKILL.md"]), "discovery changed the sole lazy skill-prefix read");
     assert(snapshot.skills[0].fields.rank === 7n, "frontmatter integer wire changed");
     const projected = contracts.projectDiscoveredContext(snapshot, { messages: [], metadata: {} }, "prepend", DEFAULT_LIMITS);
     assert(typeof projected.messages[0].content.file.descriptor.byte_length === "number", "file byte length is not admitted wire");
