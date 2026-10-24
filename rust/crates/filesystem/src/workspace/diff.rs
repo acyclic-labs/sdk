@@ -1,6 +1,7 @@
 use super::*;
 
 mod created;
+mod moved;
 mod paths;
 
 /// Immutable semantic delta between two exact generations.
@@ -168,7 +169,7 @@ pub(crate) async fn complete_changed_paths<O: AsyncObjectStore>(
     collect_all_paths(endpoints, maximum_entries, accounting, cancellation).await
 }
 
-async fn collect_all_paths<O: AsyncObjectStore>(
+pub(super) async fn collect_all_paths<O: AsyncObjectStore>(
     endpoints: [Option<super::namespace_view::NamespaceView<'_, O>>; 2],
     maximum_entries: u32,
     accounting: &mut KernelAccounting<'_>,
@@ -229,9 +230,9 @@ async fn complete_between<O: AsyncObjectStore>(
     // directories have all of their records in the Merkle delta already.
     let moves_directory = moves_existing_directory(&changes.0, accounting)?;
     let result = if moves_directory {
-        let [from, to] = endpoints;
-        collect_all_paths(
-            [Some(from), Some(to)],
+        moved::expand(
+            &endpoints,
+            &changes.0,
             maximum_entries,
             accounting,
             cancellation,
@@ -446,8 +447,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
         if self.changes.truncated {
             return Err(WorkspaceError::ChangedPathLimit);
         }
-        // The path bound limits output. Namespace work remains charged to the
-        // caller's ledger, including unchanged descendants of moved directories.
+        // The output bound includes unchanged descendants of moved directories;
+        // only those changed bindings are expanded on the original ledger.
         let result = if moves_existing_directory(&self.changes, accounting)? {
             let from = self
                 .from
@@ -474,8 +475,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
                 config: self.from.workspace.volume.config(),
                 root,
             };
-            let result = collect_all_paths(
-                [Some(view(from.value.root())), Some(view(to.value.root()))],
+            let result = moved::expand(
+                &[view(from.value.root()), view(to.value.root())],
+                &self.changes,
                 u32::MAX,
                 accounting,
                 cancellation,

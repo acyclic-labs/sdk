@@ -363,11 +363,15 @@ pub(crate) async fn collect_namespace<O: AsyncObjectStore>(
     if remaining == Some(0) {
         return Ok(true);
     }
+    let pending = initial_walk(limits, accounting)?;
     walk_namespace(
         view,
-        ids,
-        remaining,
-        maximum_entries,
+        WalkSelection {
+            ids,
+            remaining,
+            maximum_entries,
+        },
+        pending,
         matches,
         accounting,
         cancellation,
@@ -375,20 +379,56 @@ pub(crate) async fn collect_namespace<O: AsyncObjectStore>(
     .await
 }
 
-/// Walks the namespace from its root, inserting every path that binds one of
-/// `ids` into `matches`. Returns false when the walk stopped at
-/// `maximum_entries` before examining every entry.
+pub(super) async fn collect_descendants<O: AsyncObjectStore>(
+    view: &super::namespace_view::NamespaceView<'_, O>,
+    path: &NamespacePath,
+    maximum_entries: u32,
+    matches: &mut (NamespaceRecordSearch, KernelOwnedAllocation),
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<bool, FsError> {
+    let mut pending = (Vec::new(), accounting.claim_owned(0, 0)?);
+    reverse_grow(&mut pending.0, &mut pending.1, accounting)?;
+    pending
+        .0
+        .push(path.clone_with_accounting(accounting, cancellation)?);
+    walk_namespace(
+        view,
+        WalkSelection {
+            ids: None,
+            remaining: None,
+            maximum_entries,
+        },
+        pending,
+        matches,
+        accounting,
+        cancellation,
+    )
+    .await
+}
+
+struct WalkSelection<'a> {
+    ids: Option<&'a [FileId]>,
+    remaining: Option<u64>,
+    maximum_entries: u32,
+}
+
+/// Walks only the supplied pending subtrees. Returns false if the entry bound
+/// prevents examining every entry needed by the selection.
 async fn walk_namespace<O: AsyncObjectStore>(
     view: &super::namespace_view::NamespaceView<'_, O>,
-    ids: Option<&[FileId]>,
-    mut remaining: Option<u64>,
-    maximum_entries: u32,
+    selection: WalkSelection<'_>,
+    mut pending: PendingDirectories,
     matches: &mut (NamespaceRecordSearch, KernelOwnedAllocation),
     accounting: &mut KernelAccounting<'_>,
     cancellation: &crate::CancellationToken,
 ) -> Result<bool, FsError> {
     let limits = view.config.limits;
-    let mut pending = initial_walk(limits, accounting)?;
+    let WalkSelection {
+        ids,
+        mut remaining,
+        maximum_entries,
+    } = selection;
     let mut examined = 0_u32;
     while let Some(directory) = pending.0.pop() {
         let mut after: Option<(LogicalName, KernelOwnedAllocation)> = None;

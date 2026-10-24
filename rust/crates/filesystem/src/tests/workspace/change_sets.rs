@@ -19,6 +19,17 @@ async fn raw_endpoint_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     original: &crate::NativeMaterializationWork,
     cancellation: &CancellationToken,
 ) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
+    raw_endpoint_paths_mode(changes, maximum_entries, original, cancellation, false).await
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn raw_endpoint_paths_mode<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    changes: &ChangeSet<A, O>,
+    maximum_entries: u32,
+    original: &crate::NativeMaterializationWork,
+    cancellation: &CancellationToken,
+    full_scan: bool,
+) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
     let mut accounting = KernelAccounting::native(original, cancellation);
     let from = changes
         .from
@@ -52,7 +63,15 @@ async fn raw_endpoint_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             root: to.value.root(),
         },
     ];
-    let result = {
+    let result = if full_scan {
+        crate::workspace::diff::collect_all_paths(
+            endpoints.map(Some),
+            maximum_entries,
+            &mut accounting,
+            cancellation,
+        )
+        .await
+    } else {
         crate::workspace::complete_changed_paths(
             endpoints.map(Some),
             maximum_entries,
@@ -64,6 +83,68 @@ async fn raw_endpoint_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     to.retire(&mut accounting)?;
     from.retire(&mut accounting)?;
     result
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn small_directory_move_does_not_materialize_unrelated_file_records()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = unbounded!(fs, create_workspace("small-move-bounded"))?;
+    let mut seed = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(seed, create_dir_all("/src/deep"))?;
+    unbounded!(seed, create_dir_all("/unrelated"))?;
+    seed.write_text("/src/deep/file", "retained").await?;
+    for index in 0..128 {
+        seed.write_text(&format!("/unrelated/file-{index:03}"), "unchanged")
+            .await?;
+    }
+    let TransactionCommit::Committed(before) = commit(&mut seed).await? else {
+        return Err("seed did not commit".into());
+    };
+    let mut moved = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(moved, rename("/src", "/lib", false))?;
+    let TransactionCommit::Committed(after) = commit(&mut moved).await? else {
+        return Err("move did not commit".into());
+    };
+    let changes = unbounded!(before, diff_to(&after, 64))?.0;
+    let cancellation = CancellationToken::new();
+    let mut observed = Vec::new();
+    for full_scan in [false, true] {
+        let original =
+            crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
+                .map_err(|(error, _)| error)?;
+        let (paths, guard) =
+            raw_endpoint_paths_mode(&changes, u32::MAX, &original, &cancellation, full_scan)
+                .await?;
+        assert_eq!(paths.len(), 6);
+        let names = paths
+            .iter()
+            .map(|entry| namespace_path_text(&entry.path))
+            .collect::<Result<Vec<_>, _>>()?;
+        assert!(names.iter().all(|path| !path.starts_with("/unrelated")));
+        observed.push(original.journal_work()?);
+        drop((paths, guard));
+    }
+    // Actual former full-namespace production path is the independent control.
+    // Replacing subtree expansion with it makes both strict inequalities fail.
+    assert!(
+        observed[0].items_examined < observed[1].items_examined,
+        "{observed:?}"
+    );
+    assert!(
+        observed[0].peak_allocation_bytes < observed[1].peak_allocation_bytes,
+        "{observed:?}"
+    );
+    let original =
+        crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
+            .map_err(|(error, _)| error)?;
+    let (retained, guard) = raw_changed_paths(&changes, 6, &original, &cancellation).await?;
+    assert_eq!(retained.len(), 6);
+    assert!(original.journal_work()?.items_examined < observed[1].items_examined);
+    drop((retained, guard));
+    println!("SMALL_DIRECTORY_MOVE_WORK {observed:?}");
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]

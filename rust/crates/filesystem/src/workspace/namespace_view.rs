@@ -77,6 +77,32 @@ impl<O: AsyncObjectStore> NamespaceView<'_, O> {
         Ok(matches)
     }
 
+    pub(super) async fn descendants(
+        &self,
+        path: &NamespacePath,
+        maximum_entries: u32,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(NamespaceRecordSearch, KernelOwnedAllocation), FsError> {
+        let mut matches = (
+            NamespaceRecordSearch {
+                records: Vec::new(),
+                complete: false,
+            },
+            accounting.claim_owned(0, 0)?,
+        );
+        matches.0.complete = super::reverse_traversal::collect_descendants(
+            self,
+            path,
+            maximum_entries,
+            &mut matches,
+            accounting,
+            cancellation,
+        )
+        .await?;
+        Ok(matches)
+    }
+
     pub(super) async fn list(
         &self,
         path: &NamespacePath,
