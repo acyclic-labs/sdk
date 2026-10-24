@@ -149,6 +149,8 @@ test('direct completion refuses a malformed terminal instead of returning a forg
   run(module,`r.atomic(${JSON.stringify(file)},{owner:{pid:process.pid,identity:r.processIdentity(process.pid),pid_namespace:r.pidNamespace()},argv:[],admission_start:new Date().toISOString(),receipt_file:${JSON.stringify(receipt)}});r.atomic(${JSON.stringify(receipt)},{exit_status:0});`);
   const failed=spawnSync(process.execPath,[module,'finish',file,'101','command'],{encoding:'utf8'});
   assert.notEqual(failed.status,0);assert.match(failed.stderr,/receipt terminal INFRA/);
+  const recovered=run(module,`r.recover(${JSON.stringify(root)});`);
+  assert.match(recovered.stderr,/invalid-terminal/,'damaged terminals must be visible to CLI and admission operators');
   const mutant=root+'/unchecked-terminal.mjs';
   fs.writeFileSync(mutant,fs.readFileSync(module,'utf8').replace("if (result.kind !== 'valid') throw new Error(`receipt terminal INFRA: ${result.reason}: ${file}`);",'if (result.kind !== "valid") return read(file);'));
   const old=spawnSync(process.execPath,[mutant,'finish',file,'101','command'],{encoding:'utf8'});

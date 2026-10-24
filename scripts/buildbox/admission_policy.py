@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 
 QUERIES = frozenset({'metadata', 'tree', 'locate-project', 'pkgid', 'verify-project', 'read-manifest'})
 
@@ -31,16 +32,30 @@ def canonical_argv(argv, env):
     return argv
 
 
-def resolve_wrapper(env, compiler=False):
+def resolve_wrapper(env, compiler=False, cwd=None):
+    cwd = Path(cwd or os.getcwd()).resolve()
+    search = os.pathsep.join(str((cwd/entry).resolve()) if not os.path.isabs(entry) else entry
+                             for entry in env.get('PATH', os.defpath).split(os.pathsep))
+    def executable_path(command):
+        candidate = str(cwd/command) if not os.path.isabs(command) and os.path.dirname(command) else command
+        return shutil.which(candidate, path=search)
     wrapper = env.get('RUSTC_WRAPPER', '/home/var/bin/sccache-rustc' if compiler else '')
     if not wrapper or env.get('BB_CACHE_DISABLED') == '1': return None
-    executable = shutil.which(wrapper, path=env.get('PATH'))
+    executable = executable_path(wrapper)
     if not executable: raise RuntimeError('RUSTC_WRAPPER_MISSING admission-INFRA: ' + wrapper)
     executable = str(Path(executable).resolve(strict=True))
     data = Path(executable).read_bytes()
     if data.startswith(b'#!'):
-        interpreter = data.splitlines()[0][2:].strip().split()[0].decode()
+        fields = shlex.split(data.splitlines()[0][2:].decode())
+        interpreter = fields[0] if fields else ''
         if not os.path.isabs(interpreter) or not os.access(interpreter, os.X_OK):
             raise RuntimeError('RUSTC_WRAPPER_INTERPRETER_MISSING admission-INFRA: ' + interpreter)
+        if Path(interpreter).name == 'env':
+            # Support only the portable one-program form. Refuse flags, env
+            # assignments and -S split strings before any build executes.
+            if len(fields) != 2 or fields[1].startswith('-') or '=' in fields[1]:
+                raise RuntimeError('RUSTC_WRAPPER_SHEBANG_UNSUPPORTED admission-INFRA')
+            selected = executable_path(fields[1])
+            if not selected: raise RuntimeError('RUSTC_WRAPPER_INTERPRETER_MISSING admission-INFRA: ' + fields[1])
     env['RUSTC_WRAPPER'] = executable
     return {'path': executable, 'sha256': hashlib.sha256(data).hexdigest()}

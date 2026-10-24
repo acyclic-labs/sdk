@@ -265,7 +265,12 @@ export function recover(dir) {
     try {
     const m = parsed.value, t = recoveryRecord(m.receipt_file, 'terminal');
     const terminal = t.kind === 'valid' ? t.value : null;
-    if (t.kind === 'invalid') { outcomes.push({file, outcome:'invalid-terminal', reason:t.reason}); continue; }
+    if (t.kind === 'invalid') {
+      const outcome = {file, outcome:'invalid-terminal', reason:t.reason};
+      outcomes.push(outcome);
+      process.stderr.write('[buildbox] receipt recovery ' + JSON.stringify(outcome) + '\n');
+      continue;
+    }
     if (terminal && m.ledger && canObserveOwner(m.owner)) {
       if (!seen.has(m.ledger)) {
         let records = [];

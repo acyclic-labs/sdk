@@ -65,5 +65,28 @@ class InstallTests(unittest.TestCase):
             unprotected=Path(temporary)/'unprotected';unprotected.write_bytes(b'old');unprotected.write_bytes(b'partial')
             self.assertEqual(unprotected.read_bytes(),b'partial')
 
+    def test_writable_home_cannot_replace_pinned_tool_directory(self):
+        import uuid
+        with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+            root=Path(temporary);alias=root/'bin';alias.mkdir();(alias/'tool').write_text('original')
+            store=Path('/opt')/('gate-speed-install-fixture-'+uuid.uuid4().hex)
+            driver='''import importlib.util,sys,os,subprocess
+from pathlib import Path
+s=importlib.util.spec_from_file_location('installer',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+alias=Path(sys.argv[2]);store=Path(sys.argv[3]);os.chown(alias,0,0);m.secure_bin(alias,store,False)
+m.secure_bin(alias,store,False) # repeated publication preserves the pinned entry
+probe="from pathlib import Path;import sys,errno;p=Path(sys.argv[1]);\\ntry:p.rename(p.with_name('replaced'))\\nexcept OSError as e:assert e.errno==errno.EBUSY\\nelse:raise AssertionError('tool entry replaced')"
+subprocess.run(['runuser','-u','var','--','python3','-c',probe,str(alias)],check=True)
+assert (alias/'tool').read_text()=='original'
+'''
+            try:
+                subprocess.run(['sudo','-n','unshare','--mount','--propagation','private','python3','-c',driver,str(HERE/'bb-install.py'),str(alias),str(store)],check=True)
+                # The old unmounted root-owned entry is still movable from a
+                # writable parent: ownership of files alone is insufficient.
+                alias.rename(root/'old-replaced');self.assertTrue((root/'old-replaced/tool').exists())
+            finally:
+                subprocess.run(['sudo','-n','python3','-c','import shutil,sys;shutil.rmtree(sys.argv[1],ignore_errors=True)',str(store)],check=True)
+                subprocess.run(['sudo','-n','python3','-c','import os,sys;from pathlib import Path;[(os.chown(p,int(sys.argv[2]),int(sys.argv[3]))) for p in Path(sys.argv[1]).iterdir() if p.is_dir()]',str(root),str(os.getuid()),str(os.getgid())],check=True)
+
 
 if __name__=='__main__':unittest.main()

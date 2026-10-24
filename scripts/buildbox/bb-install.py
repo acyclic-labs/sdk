@@ -23,6 +23,37 @@ TOOLS = ['admission_policy.py', 'job_exports.py', 'bb_target_store.py', 'bb_carg
          'prune-wt-sdk.py', 'buildbox-receipt.mjs', 'bb-job.py', 'bb-admit.py', 'bb-admit', 'build-slot', 'bb-install.py']
 
 
+def secure_bin(alias=BIN, store=Path('/opt/buildbox/bin'), persistent=True):
+    """Pin the legacy entry point to a store below protected root parents.
+
+    A root-owned directory alone can be renamed by its writable HOME parent.
+    A bind mount cannot: rename/unlink of the mountpoint returns EBUSY. Keep
+    the canonical store outside HOME, with every ancestor root-protected.
+    """
+    alias=Path(alias); store=Path(store)
+    store.mkdir(parents=True, exist_ok=True, mode=0o755)
+    for parent in [store, *store.parents]:
+        info=parent.stat()
+        if parent.is_symlink() or info.st_uid != 0 or info.st_mode & 0o022:
+            raise PermissionError('unprotected canonical tool parent: '+str(parent))
+    # stat-based ismount misses same-filesystem bind mounts.
+    if subprocess.run(['mountpoint', '-q', str(alias)]).returncode != 0:
+        for directory, dirs, files in os.walk(alias, followlinks=False):
+            destination=store/Path(directory).relative_to(alias)
+            destination.mkdir(exist_ok=True, mode=0o755)
+            for name in [*dirs, *files]:
+                if (Path(directory)/name).is_symlink():raise ValueError('tool alias symlink refused')
+            for name in files:publish(destination/name,(Path(directory)/name).read_bytes())
+        if persistent:
+            unit=b'[Unit]\nDescription=Qualified buildbox tool entry point\n[Mount]\nWhat=/opt/buildbox/bin\nWhere=/home/var/bin\nType=none\nOptions=bind\n[Install]\nWantedBy=local-fs.target\n'
+            publish('/etc/systemd/system/home-var-bin.mount',unit,0o644)
+            subprocess.run(['systemctl','daemon-reload'],check=True)
+            subprocess.run(['systemctl','enable','--now','home-var-bin.mount'],check=True)
+        else:subprocess.run(['mount','--bind',str(store),str(alias)],check=True)
+    if (alias.stat().st_dev,alias.stat().st_ino)!=(store.stat().st_dev,store.stat().st_ino):
+        raise PermissionError('tool entry point is not pinned to its canonical store')
+
+
 def publish(destination, data, mode=0o555):
     """Same-directory write + fsync + rename + directory fsync, never truncate."""
     destination = Path(destination)
@@ -83,6 +114,8 @@ def publish_candidate(candidate):
     payload={name:(stage/name).read_bytes() for name in TOOLS}
     if hashes != {name:hashlib.sha256(data).hexdigest() for name,data in payload.items()}:
         raise ValueError('qualified candidate changed')
+    if hashes['bb-install.py'] != hashlib.sha256(Path(__file__).read_bytes()).hexdigest():
+        raise ValueError('use the qualified candidate installer to publish this generation')
     # Kernel file lock serializes installers, not jobs. Qualification happens
     # before the coordinator's idle gate lock; only publication takes that lock.
     import fcntl
@@ -90,6 +123,7 @@ def publish_candidate(candidate):
         fcntl.flock(lock, fcntl.LOCK_EX)
         BIN.mkdir(exist_ok=True)
         os.chown(BIN, 0, 0); BIN.chmod(0o755)
+        secure_bin()
         for name, data in payload.items():
             destination=BIN/name; backup=BIN/(name+'.bak-gatespeed')
             if destination.exists() and not backup.exists():publish(backup,destination.read_bytes())

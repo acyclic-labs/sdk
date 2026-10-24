@@ -6,7 +6,7 @@ All lanes and the efficiency loop must install bb2 tools through:
 sudo /home/var/bin/bb-install.py --source /mnt/bb/<candidate>/scripts/buildbox
 # prints /mnt/bb/tmp/bb-install-<qualified-generation>
 # after acquiring the idle PR mkdir lock:
-sudo /home/var/bin/bb-install.py --publish /mnt/bb/tmp/bb-install-<qualified-generation>
+sudo python3 /mnt/bb/tmp/bb-install-<qualified-generation>/bb-install.py --publish /mnt/bb/tmp/bb-install-<qualified-generation>
 ```
 
 The installer freezes a root-owned candidate, runs the receipt, runtime,
@@ -15,6 +15,10 @@ pass. Publication writes a temporary file beside the destination, flushes it,
 renames it and flushes the directory. Failed qualification changes no tool.
 `installed-tools.json` records the qualified hashes. Bin directories and tools
 are root-owned and unwritable by the job/lane account; direct writes fail.
+The canonical store is `/opt/buildbox/bin`, below protected root parents.
+`home-var-bin.mount` pins the legacy `/home/var/bin` entry to that store, so a
+lane cannot rename it through its writable HOME parent. The mount is enabled
+at boot. The installer verifies that the entry and store have the same inode.
 Do not use sudo to bypass this boundary. The installer is the only privileged
 publication path. Existing jobs keep their running interpreter/inode.
 

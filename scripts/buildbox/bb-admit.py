@@ -193,7 +193,7 @@ def serve():
                     t['conn'].send(json.dumps({'rc':224}).encode());sched.release(t);close_client(t['conn']);return
             command=t['argv']
             actual=canonical_argv(command, env)
-            wrapper=resolve_wrapper(env, compiler=bool(actual and Path(actual[0]).name=='cargo'))
+            wrapper=resolve_wrapper(env, compiler=bool(actual and Path(actual[0]).name=='cargo'), cwd=t['cwd'])
             if wrapper: os.write(t['fds'][2],('BB_WRAPPER_ADMITTED '+json.dumps(wrapper)+'\n').encode())
             if env.get('BB_ADMIT_WRAPPED_COMMAND')!='1':
                 command=[sys.executable,str(Path(__file__).with_name('bb-job.py')),*command]

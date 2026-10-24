@@ -31,6 +31,41 @@ class AdmissionTests(unittest.TestCase):
             script.write_text('#!/bin/sh\nexit 0\n')
             self.assertEqual(resolve_wrapper({**env,'RUSTC_WRAPPER':str(script)})['path'],str(script))
 
+    def test_relative_wrappers_and_path_are_resolved_in_job_cwd(self):
+        with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+            root=Path(temporary);workspace=root/'workspace';(workspace/'tools').mkdir(parents=True)
+            script=workspace/'tools/wrapper';script.write_text('#!/bin/sh\nexit 0\n');script.chmod(0o755)
+            env={'PATH':'tools:/usr/bin:/bin','RUSTC_WRAPPER':'./tools/wrapper'}
+            self.assertEqual(resolve_wrapper(env,cwd=workspace)['path'],str(script))
+            self.assertEqual(resolve_wrapper({'PATH':'tools','RUSTC_WRAPPER':'wrapper'},cwd=workspace)['path'],str(script))
+            # The daemon is in a different directory; the former lookup fails
+            # or chooses its own unrelated wrapper.
+            with self.assertRaisesRegex(RuntimeError,'RUSTC_WRAPPER_MISSING'):resolve_wrapper({'PATH':'tools','RUSTC_WRAPPER':'wrapper'},cwd=root)
+
+    def test_env_shebang_missing_interpreter_and_unsupported_forms_are_infra(self):
+        with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+            script=Path(temporary)/'wrapper'
+            for shebang in ['#!/usr/bin/env missing-interpreter-control','#!/usr/bin/env -S python3 -u']:
+                script.write_text(shebang+'\n');script.chmod(0o755)
+                with self.assertRaisesRegex(RuntimeError,'admission-INFRA'):resolve_wrapper({'PATH':'/usr/bin:/bin','RUSTC_WRAPPER':str(script)})
+                self.assertTrue(os.access('/usr/bin/env',os.X_OK),'old interpreter-only check admits both')
+            script.write_text('#!/usr/bin/env python3\n');self.assertEqual(resolve_wrapper({'PATH':'/usr/bin:/bin','RUSTC_WRAPPER':str(script)})['path'],str(script))
+
+    def test_shared_daemon_selects_each_workspaces_relative_wrapper(self):
+        with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+            root=Path(temporary);queue=root/'admit'
+            env={**os.environ,'BB_ADMIT_ROOT':str(queue),'BB_ADMIT_WRAPPED_COMMAND':'1','RUSTC_WRAPPER':'./tools/wrapper','PATH':'tools:/usr/bin:/bin'}
+            env.pop('BUILD_SLOT_RECEIPT_META',None)
+            try:
+                for name in ['first','second']:
+                    workspace=root/name;(workspace/'tools').mkdir(parents=True)
+                    wrapper=workspace/'tools/wrapper';wrapper.write_text('#!/bin/sh\n# '+name+'\n');wrapper.chmod(0o755)
+                    run=subprocess.run([sys.executable,str(HERE/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c','import os;print(os.environ["RUSTC_WRAPPER"])'],cwd=workspace,env=env,capture_output=True)
+                    self.assertEqual(run.returncode,0,run.stderr.decode());self.assertEqual(run.stdout.decode().strip(),str(wrapper))
+                self.assertNotEqual(str(root/'first/tools/wrapper'),run.stdout.decode().strip(),'second job cannot inherit daemon cwd wrapper')
+            finally:
+                if (queue/'daemon.json').exists():os.kill(json.loads((queue/'daemon.json').read_text())['pid'],signal.SIGTERM)
+
     def test_metadata_bypasses_saturated_build_queue_and_old_policy_negative(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
             root=Path(temporary); queue=root/'admit';queue.mkdir()
