@@ -99,8 +99,28 @@ for (const kind of ["actor","worker"] as const) {
       const pending = source === "request" ? target.fetch(new Request("https://example.com/",init)) : target.fetch("https://example.com/",init);
       const settled = pending.then(() => "fulfilled",() => "rejected");
       await reading; abort.abort(new Error("cancelled"));
+      // An owned stream is cancelled during abort dispatch. The negative
+      // forwarding-stream control fails this assertion and closes its source.
       try {expect(cancelled).toBe(1);expect(calls).toBe(0);} finally {if (!cancelled) controller.close();}
       expect(await settled).toBe("rejected");
     }
   });
 }
+
+
+test("pre-aborted and queued actor Fetch bodies are released before transport", async () => {
+  for (const preAborted of [false,true]) {
+    let cancelled = 0, calls = 0;
+    const body = () => new ReadableStream<Uint8Array>({cancel() {cancelled++;}},{highWaterMark:0});
+    const stub = new ActorNamespaceBinding(account,"ClassOne",{async invokeActor() {calls++;throw new Error("unexpected transport");}},"OBJECTS").getByName("same");
+    const abort = new AbortController();
+    if (preAborted) abort.abort(new Error("cancelled"));
+    const first = preAborted ? undefined : stub.fetch("https://example.com/",{method:"POST",body:body(),duplex:"half"} as RequestInit);
+    const pending = stub.fetch("https://example.com/",{method:"POST",body:body(),duplex:"half",signal:abort.signal} as RequestInit);
+    const settled = Promise.allSettled(first ? [first,pending] : [pending]);
+    if (!preAborted) abort.abort(new Error("cancelled"));
+    expect(cancelled).toBe(preAborted ? 1 : 2);
+    expect((await settled).every(result => result.status === "rejected")).toBe(true);
+    expect(calls).toBe(0);
+  }
+});

@@ -1,4 +1,4 @@
-import { bindingResponse, bindingSignal, readBindingRequestBody } from "@acyclic-labs/actors";
+import { bindingRequest, bindingResponse, bindingSignal, readBindingRequestBody } from "@acyclic-labs/actors";
 import { ResourceIdentity, validateResourceLabel } from "@acyclic-labs/auth/addressing";
 import type { ActorsClient, ActorsCallOptions } from "@acyclic-labs/actors";
 import type { semantic as Semantic } from "@acyclic-labs/actors";
@@ -22,7 +22,7 @@ export class WorkerServiceBinding {
       ...(rpcMethod === undefined ? {} : {rpcMethod}) };
   }
   async fetch(input: RequestInfo | URL, init?: RequestInit, options?: ActorsCallOptions): Promise<Response> {
-    const request = new Request(input, init);
+    const request = bindingRequest(input, init);
     const signal = bindingSignal(request,options?.signal);
     const result = await this.#transport.invokeWorker(this.#request(request.method, request.url, await readBindingRequestBody(request,signal), Array.from(request.headers, ([name, value]) => ({ name, value }))), {...options,signal});
     return bindingResponse(result,request.method);

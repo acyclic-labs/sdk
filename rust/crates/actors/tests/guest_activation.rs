@@ -151,12 +151,20 @@ fn opaque_account_runtime_and_caller_use_the_shared_actor_vectors()
     ))?;
     let decode = |value: &serde_json::Value| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let text = value.as_str().ok_or("hex field")?;
-        (0..text.len())
-            .step_by(2)
-            .map(|i| Ok(u8::from_str_radix(&text[i..i + 2], 16)?))
+        let (pairs, remainder) = text.as_bytes().as_chunks::<2>();
+        if !remainder.is_empty() {
+            return Err("odd hex field".into());
+        }
+        pairs
+            .iter()
+            .map(|pair| Ok(u8::from_str_radix(std::str::from_utf8(pair)?, 16)?))
             .collect()
     };
-    for vector in vectors["actors"].as_array().ok_or("actor vectors")? {
+    for vector in vectors
+        .get("actors")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("actor vectors")?
+    {
         let account = decode(&vector["account_hex"])?;
         let namespace = String::from_utf8(decode(&vector["namespace_hex"])?)?;
         let id = String::from_utf8(decode(&vector["id_hex"])?)?;
@@ -194,10 +202,12 @@ fn opaque_account_runtime_and_caller_use_the_shared_actor_vectors()
         if std::str::from_utf8(&account).is_err() {
             assert_ne!(String::from_utf8_lossy(&account).as_bytes(), account);
             let mut raw = serde_json::to_value(&caller)?;
-            raw["accountId"] = serde_json::json!(String::from_utf8_lossy(&account));
+            *raw.get_mut("accountId").ok_or("caller account")? =
+                serde_json::json!(String::from_utf8_lossy(&account));
             assert!(serde_json::from_value::<AdmittedCaller>(raw).is_err());
             let mut raw = serde_json::to_value(&runtime)?;
-            raw["account"] = serde_json::json!(String::from_utf8_lossy(&account));
+            *raw.get_mut("account").ok_or("runtime account")? =
+                serde_json::json!(String::from_utf8_lossy(&account));
             assert!(serde_json::from_value::<ActorRuntime>(raw).is_err());
         }
     }

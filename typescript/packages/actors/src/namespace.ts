@@ -1,4 +1,4 @@
-import { bindingResponse, bindingSignal, readBindingRequestBody } from "./binding-fetch.js";
+import { bindingRequest, bindingResponse, bindingSignal, readBindingRequestBody } from "./binding-fetch.js";
 import { ActorReference, actorLocationHint } from "@acyclic-labs/auth/addressing";
 import type { ActorsClient, ActorsCallOptions } from "./client.js";
 import type * as Semantic from "./generated/semantic/actors/readonly.js";
@@ -113,8 +113,14 @@ export class ActorStub {
       ...(rpcMethod === undefined ? {} : {rpcMethod}) };
   }
   async fetch(input: RequestInfo | URL, init?: RequestInit, options?: ActorsCallOptions): Promise<Response> {
-    const request = new Request(input, init);
-    const result = await this.#call(async signal => this.#request(request.method, request.url, await readBindingRequestBody(request,signal), Array.from(request.headers, ([name, value]) => ({ name, value }))), {...options,signal:bindingSignal(request,options?.signal)});
+    if (this.#broken) throw new Error("actor stub is broken; obtain a new stub");
+    const request = bindingRequest(input, init);
+    const signal = AbortSignal.any([bindingSignal(request,options?.signal),this.#lifetime.signal]);
+    // Own each body before queueing admission, so a cancelled queued call cannot
+    // strand its stream. Only admission/sequence order is serialized.
+    const body = readBindingRequestBody(request,signal);
+    void body.catch(() => undefined);
+    const result = await this.#call(async () => this.#request(request.method, request.url, await body, Array.from(request.headers, ([name, value]) => ({ name, value }))), {...options,signal});
     return bindingResponse(result,request.method);
   }
   /** Named RPC payload bytes use the same namespace binding, never a public HTTP credential. */
