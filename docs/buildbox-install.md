@@ -48,3 +48,17 @@ otherwise raises soft nofile to hard nofile before admission observes it. A
 nested entry captures its own current limits, preserving deliberate changes.
 There is no fixed nofile limit. Terminal runtime receipts record both the
 requested and execution limits; mismatches or malformed limits fail as INFRA.
+
+Cargo storage admission precedes every cache bypass, including cold builds.
+Cargo's own metadata resolves the effective target and intermediate build
+directories from CLI overrides, environment and configuration. Both must be
+on the data filesystem and inside the current job or its receipt-proven private
+target mount. The launcher and Cargo proxy share the same filesystem check.
+The cache consumes this admitted target; it has no second path selector.
+
+Use expanded Cargo commands instead of aliases, whose expansion can hide path
+overrides. Installation builds must name a local `--path` producer so Cargo can
+discover that producer's configuration; registry/git installation requests must
+first supply their local source. `install --list` remains a read-only query.
+The installer's mandatory proxy suite exercises root paths, escaping symlinks,
+other jobs' paths, config discovery and the former uncached-launch bypass.

@@ -25,6 +25,36 @@ SCAFFOLD = {'.host-targets', '.host-src', '.gate.lock', '.cargo-lock',
             '.gate-cache-boot', '.gate-cache-inflight'}
 
 
+def require_data_path(path):
+    """Check the effective filesystem, including bind mounts and symlinks."""
+    path = Path(path).resolve()
+    ancestor = path
+    while not ancestor.exists():
+        ancestor = ancestor.parent
+    device = ancestor.stat().st_dev
+    if device != Path('/mnt/bb').stat().st_dev or device == Path('/').stat().st_dev:
+        raise RuntimeError('target/tmp must reside on /mnt/bb filesystem: ' + str(path))
+    return {'path': str(path), 'device': device}
+
+
+def require_job_target(path, env):
+    """A data-disk path is not permission to write another job's targets."""
+    reading = require_data_path(path)
+    path = Path(reading['path'])
+    home = Path(env.get('BB_JOB_HOME', '')).absolute()
+    job = home.parent
+    if (not env.get('BB_JOB_HOME') or home.name != 'home'
+            or job.parent != Path('/mnt/bb/jobs') or job.is_symlink()):
+        raise RuntimeError('Cargo target requires current job custody')
+    if path.is_relative_to(job.resolve()):
+        return reading
+    file = env.get('BUILD_SLOT_RECEIPT_META')
+    if (path.is_relative_to(Path('/work/target')) and file
+            and private_target(json.loads(Path(file).read_text()))):
+        return reading
+    raise RuntimeError('Cargo target is outside the current job: ' + str(path))
+
+
 def children(root):
     return [p for p in Path(root).iterdir() if p.name not in SCAFFOLD]
 

@@ -14,6 +14,13 @@ import bb_cargo_cache as cache
 
 
 class LocalTargetLease(unittest.TestCase):
+    def setUp(self):
+        # This class isolates cache/lease semantics. Real Cargo storage
+        # admission is exercised separately below, including the cold path.
+        self.admission = patch.object(cache, 'admit_storage')
+        self.admission.start()
+        self.addCleanup(self.admission.stop)
+
     def test_gate_markers_do_not_suppress_snapshot_restore_or_publication(self):
         for former,mutated in [(False,False),(True,False),(False,True)]:
             # Exercise real reflinks on the target store's production filesystem.
@@ -134,6 +141,7 @@ finally:session.close()
         # The former proxy reaches store metadata for a cold native job.
         source=Path(cache.__file__).read_text().replace('store.disabled(env)',"env.get('BB_TARGET_STORE_DISABLED') == '1'")
         namespace={};exec(compile(source,'old-cold-proxy','exec'),namespace)
+        namespace['admit_storage'] = lambda argv, env: None
         with patch.dict(os.environ,{'BB_CACHE_DISABLED':'1','BUILD_SLOT_RECEIPT_META':'/missing-cold-fixture'},clear=True), \
              patch.object(cache.os,'execv',side_effect=Executed) as execute:
             with self.assertRaises(FileNotFoundError):namespace['run'](['check','--locked'])
@@ -219,6 +227,158 @@ except BlockingIOError:sys.exit(73)
                 fcntl.flock(held,fcntl.LOCK_EX)
                 self.assertEqual(self.contender(cache.local_target_lock(job,child)).returncode,0)
             self.assertEqual(contender(child).returncode,0)
+
+
+class CargoStorageAdmission(unittest.TestCase):
+    class Executed(Exception):
+        pass
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='job-storage-control-', dir='/mnt/bb/jobs')
+        self.addCleanup(self.temporary.cleanup)
+        self.job = Path(self.temporary.name)
+        self.project = self.job / 'project'
+        (self.project / 'src').mkdir(parents=True)
+        (self.project / 'src/lib.rs').write_text('')
+        (self.project / 'Cargo.toml').write_text(
+            '[package]\nname="storage-control"\nversion="0.0.0"\nedition="2024"\n[workspace]\n')
+        self.metadata = self.job / 'receipt.json'
+        self.metadata.write_text('{}')
+        self.env = {**os.environ, 'BB_JOB_HOME': str(self.job / 'home'),
+                    'CARGO_TARGET_DIR': str(self.job / 'target'),
+                    'BUILD_SLOT_RECEIPT_META': str(self.metadata), 'BB_CACHE_DISABLED': '1'}
+        self.env.pop('CARGO_BUILD_BUILD_DIR', None)
+        self.env.pop('CARGO_BUILD_TARGET_DIR', None)
+        previous = Path.cwd()
+        os.chdir(self.project)
+        self.addCleanup(os.chdir, previous)
+
+    def launched(self, argv, env=None, implementation=None):
+        with patch.dict(os.environ, env or self.env, clear=True), \
+             patch.object(cache.os, 'execv', side_effect=self.Executed) as execute:
+            with self.assertRaises(self.Executed):
+                (implementation or cache.run)(argv)
+            execute.assert_called_once_with(cache.CARGO, [cache.CARGO, *argv])
+
+    def rejected(self, argv, env=None, message='/mnt/bb filesystem'):
+        with patch.dict(os.environ, env or self.env, clear=True), \
+             patch.object(cache.os, 'execv') as execute:
+            with self.assertRaisesRegex(RuntimeError, message):
+                cache.run(argv)
+            execute.assert_not_called()
+
+    def test_actual_proxy_rejects_root_targets_before_every_cache_bypass(self):
+        source = Path(cache.__file__).read_text().replace(
+            '    admitted_target = admit_storage(argv, env)\n',
+            "    admitted_target = os.environ.get('CARGO_TARGET_DIR')\n")
+        old = {}
+        exec(compile(source, 'old-unadmitted-cargo-proxy', 'exec'), old)
+        root = '/work/main-green-storage-root-control'
+        for flags in ({'BB_CACHE_DISABLED': '1'}, {'BB_CACHE_DISABLED': '0', 'RUSTC_WRAPPER': 'sccache'},
+                      {'BB_TARGET_STORE_DISABLED': '1'}, {'RUSTC_WRAPPER': ''},
+                      {'BUILD_SLOT_RECEIPT_META': ''}):
+            env = {**self.env, **flags, 'CARGO_TARGET_DIR': root}
+            with self.subTest(flags=flags):
+                self.rejected(['check', '--locked'], env)
+                self.launched(['check', '--locked'], env, old['run'])
+        self.assertFalse(Path(root).exists(), 'controls must never launch a compiler')
+
+    def test_cli_environment_and_config_select_the_effective_directories(self):
+        root = '/work/main-green-storage-root-control'
+        for args, env in [(['build', '--target-dir', root], self.env),
+                          (['build', '--target-dir=' + root], self.env),
+                          (['build'], {**self.env, 'CARGO_TARGET_DIR': root}),
+                          (['build'], {**self.env, 'CARGO_BUILD_BUILD_DIR': root}),
+                          (['build', '--config', 'build.build-dir="' + root + '"'], self.env),
+                          (['build', '--config=build.build-dir="' + root + '"'], self.env)]:
+            with self.subTest(args=args, env_override=env != self.env):
+                self.rejected(args, env)
+        # Cargo's dedicated target environment overrides its config value.
+        self.launched(['build', '--config', 'build.target-dir="' + root + '"'])
+        without_target = {k: v for k, v in self.env.items() if k != 'CARGO_TARGET_DIR'}
+        self.rejected(['build', '--config', 'build.target-dir="' + root + '"'], without_target)
+        self.rejected(['build'], {**without_target, 'CARGO_BUILD_TARGET_DIR': root})
+        self.assertFalse(Path(root).exists())
+
+    def test_config_files_and_workspace_configuration_use_cargos_parser(self):
+        configuration = self.project / '.cargo'
+        configuration.mkdir()
+        file = configuration / 'config.toml'
+        file.write_text('[build]\nbuild-dir="/work/main-green-storage-root-control"\n')
+        self.rejected(['check'])
+        file.unlink()
+        supplied = self.job / 'extra-config.toml'
+        supplied.write_text('[build]\nbuild-dir="/work/main-green-storage-root-control"\n')
+        self.rejected(['check', '--config', str(supplied)])
+
+    def test_metadata_must_prove_both_output_directories(self):
+        complete = {'target_directory': str(self.job / 'target'),
+                    'build_directory': str(self.job / 'intermediate')}
+        for missing in complete:
+            incomplete = {key: value for key, value in complete.items() if key != missing}
+            with self.subTest(missing=missing), patch.object(cache.subprocess, 'run', side_effect=[
+                    subprocess.CompletedProcess([], 0, stdout=''),
+                    subprocess.CompletedProcess([], 0, stdout=json.dumps(incomplete))]):
+                self.rejected(['check'], message='both target and build directories')
+
+    def test_global_configuration_keeps_the_compilation_and_storage_identity(self):
+        args = ['--config', 'build.build-dir="/work/main-green-storage-root-control"', 'check']
+        self.assertEqual(cache.compilation(args), (args, False))
+        self.rejected(args)
+
+    def test_effective_device_and_job_custody_cover_aliases_and_foreign_paths(self):
+        alias = self.job / 'root-alias'
+        alias.symlink_to('/work', target_is_directory=True)
+        self.rejected(['check', '--target-dir', str(alias / 'main-green-storage-root-control')])
+        with tempfile.TemporaryDirectory(dir='/mnt/bb/jobs', prefix='job-foreign-control-') as other:
+            self.rejected(['check', '--target-dir', str(Path(other) / 'target')], message='outside the current job')
+            alias.unlink()
+            alias.symlink_to(other, target_is_directory=True)
+            self.rejected(['check', '--target-dir', str(alias / 'target')], message='outside the current job')
+        self.rejected(['check'], {**self.env, 'BB_JOB_HOME': ''}, 'current job custody')
+        self.launched(['check', '--target-dir', str(self.job / 'target/nested')])
+        self.launched(['check', '--target-dir', str(self.job / 'target/../other-target')])
+
+    def test_every_compilation_entry_and_runtime_arguments_pass_admission(self):
+        for verb in ('build', 'check', 'clippy', 'test', 'bench', 'run', 'doc', 'rustc',
+                     'rustdoc', 'package', 'publish', 'fix', 'xwin', 'nextest'):
+            with self.subTest(verb=verb):
+                self.launched([verb, '--locked'])
+        self.launched(['test', '--doc'])
+        self.launched(['test', '--', '--target-dir', '/work/runtime-argument-is-not-cargo'])
+        self.launched(['check'], {**self.env, 'BB_CACHE_DISABLED': '0', 'RUSTC_WRAPPER': 'sccache'})
+
+    def test_configured_aliases_cannot_hide_target_overrides(self):
+        for command in ('build --target-dir /work/main-green-storage-root-control',
+                        '!cargo build --target-dir /work/main-green-storage-root-control'):
+            self.rejected(['--config', 'alias.storage-control="' + command + '"', 'storage-control'],
+                          message='expanded alias command')
+
+    def test_local_install_discovers_the_producers_configuration(self):
+        producer = self.job / 'producer'
+        (producer / 'src').mkdir(parents=True)
+        (producer / 'src/lib.rs').write_text('')
+        (producer / 'Cargo.toml').write_text(
+            '[package]\nname="install-producer"\nversion="0.0.0"\nedition="2024"\n[workspace]\n')
+        (producer / '.cargo').mkdir()
+        config = producer / '.cargo/config.toml'
+        config.write_text('[build]\nbuild-dir="/work/main-green-storage-root-control"\n')
+        source = Path(cache.__file__).read_text().replace(
+            "if verb == 'install' and install_path is not None:", 'if False:')
+        old = {}
+        exec(compile(source, 'missing-install-config-discovery-control', 'exec'), old)
+        for args in (['install', '--path', str(producer)], ['install', '--path=' + str(producer)]):
+            with self.subTest(args=args):
+                self.rejected(args)
+                self.launched(args, implementation=old['run'])
+        config.unlink()
+        self.launched(['install', '--path', str(producer)])
+
+    def test_install_cannot_borrow_an_unrelated_workspaces_configuration(self):
+        for args in (['install', 'a-registry-producer'],
+                     ['install', '--git', 'https://example.invalid/producer']):
+            self.rejected(args, message='local --path producer')
+        self.launched(['install', '--list'])
 
 
 if __name__ == '__main__':

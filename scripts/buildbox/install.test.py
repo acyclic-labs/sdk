@@ -55,6 +55,22 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(tool.read_bytes(),b'original')
             self.assertEqual(list(Path(temporary).iterdir()),[tool])
 
+    def test_proxy_storage_failure_blocks_tool_qualification(self):
+        def rejected(command, **kwargs):
+            if 'cargo_cache.test.py' in command:
+                raise subprocess.CalledProcessError(1, command)
+            return subprocess.CompletedProcess(command, 0)
+        with patch.object(installer.subprocess, 'run', side_effect=rejected):
+            with self.assertRaises(subprocess.CalledProcessError):
+                installer.qualify(HERE, 'var')
+            source = Path(installer.__file__).read_text().replace(
+                "                ['python3', 'cargo_cache.test.py']]",
+                '                ]')
+            old = {'__file__': installer.__file__}
+            exec(compile(source, 'missing-proxy-admission-qualification-control', 'exec'), old)
+            # The old publication boundary accepts this failing proxy suite.
+            old['qualify'](HERE, 'var')
+
     def test_privileged_publication_refuses_direct_lane_edits(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
             tool=Path(temporary)/'tool'

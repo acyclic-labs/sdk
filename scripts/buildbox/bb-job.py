@@ -49,16 +49,6 @@ def disk():
         readings.append({'path':path,'free_percent':pct,'free_bytes':s.f_bavail*s.f_frsize})
     return readings
 
-def require_data_path(path):
-    """Check the effective filesystem, including bind mounts and symlinks."""
-    path=Path(path).resolve()
-    ancestor=path
-    while not ancestor.exists():ancestor=ancestor.parent
-    device=ancestor.stat().st_dev
-    if device!=Path('/mnt/bb').stat().st_dev or device==Path('/').stat().st_dev:
-        raise RuntimeError('target/tmp must reside on /mnt/bb filesystem: '+str(path))
-    return {'path':str(path),'device':device}
-
 def home_lease(job,exclusive=False):
     directory=Path('/mnt/bb/locks/job-home');directory.mkdir(parents=True,exist_ok=True)
     lease=open(directory/(job.name+'.lock'),'a')
@@ -452,7 +442,7 @@ def run(argv,namespace_ready=False):
                        GATE_WINDOWS_RUNTIME_TARGET_DIR='/work/target/.gate-windows')
             runtime['target_root']='/work/target'
         for key in ['HOME','XDG_DATA_HOME','XDG_STATE_HOME','XDG_CACHE_HOME','XDG_CONFIG_HOME','XDG_RUNTIME_DIR','TMPDIR']: Path(env[key]).mkdir(mode=0o700)
-        runtime['storage_paths']=[require_data_path(env[key]) for key in
+        runtime['storage_paths']=[bb_target_store.require_data_path(env[key]) for key in
                 ['CARGO_TARGET_DIR','GATE_MAIN_TARGET_DIR','GATE_FEATURE_TARGET_DIR','GATE_WINDOWS_RUNTIME_TARGET_DIR','TMPDIR']]
         # Targets are job-owned scratch; only the content-addressed compiler
         # cache and installed toolchains persist. Export requested artifacts

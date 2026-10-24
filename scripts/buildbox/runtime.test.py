@@ -671,10 +671,10 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
         self.assertFalse(job.admitted_owner(owner,root),'an unobservable or replaced daemon cannot certify an owner')
 
     def test_storage_device_rejects_root_and_live_cleanup_requires_custody(self):
-        self.assertEqual(job.require_data_path(self.d/'not-created/target')['device'],Path('/mnt/bb').stat().st_dev)
-        with self.assertRaisesRegex(RuntimeError,'/mnt/bb filesystem'):job.require_data_path('/work/root-target-negative-control')
+        self.assertEqual(job.bb_target_store.require_data_path(self.d/'not-created/target')['device'],Path('/mnt/bb').stat().st_dev)
+        with self.assertRaisesRegex(RuntimeError,'/mnt/bb filesystem'):job.bb_target_store.require_data_path('/work/root-target-negative-control')
         alias=self.d/'root-alias';alias.symlink_to('/work',target_is_directory=True)
-        with self.assertRaisesRegex(RuntimeError,'/mnt/bb filesystem'):job.require_data_path(alias/'target')
+        with self.assertRaisesRegex(RuntimeError,'/mnt/bb filesystem'):job.bb_target_store.require_data_path(alias/'target')
         directory=Path(tempfile.mkdtemp(prefix='job-custody-control-',dir=job.JOBS))
         file=self.d/'runtime.json';file.write_text(json.dumps({'hermetic_home':str(directory)}))
         try:
