@@ -116,106 +116,116 @@ pub(super) fn assert_roundtrip(input: &[u8]) {
                 )
                 .unwrap();
                 for work in [1, encoded_work - 1, encoded_work] {
-                    let request = PreparedModelRequest::prepare(
-                        ModelRequest {
-                            model: provider.model().clone(),
-                            messages: vec![ModelMessage {
-                                role: ModelRole::User,
-                                content: ModelContent::Parts(vec![
-                                    ModelContentPart::Text {
-                                        text: "before".into(),
-                                    },
-                                    ModelContentPart::File {
-                                        file: file.clone(),
-                                        policy: FileProjectionPolicy::Native(Box::new(
-                                            NativeMediaPolicy {
-                                                intent: NativeMediaIntent::Image {
-                                                    detail: ImageDetail::Auto,
-                                                },
-                                                maximum_bytes: bytes.len() as u64,
-                                                maximum_work: work,
-                                                configuration: None,
-                                            },
-                                        )),
-                                    },
-                                    ModelContentPart::Text {
-                                        text: "after".into(),
-                                    },
-                                ]),
-                            }],
-                            tools: vec![],
-                            max_output_tokens: Some(64),
-                        },
-                        Limits::default(),
-                        None,
-                    )
-                    .unwrap();
-                    let encoded = crate::dispatch::encode(
-                        &provider,
-                        &request,
-                        &crate::tool_names::Names::new(request.request()),
-                        None,
-                        &provider.reasoning_origin(None, None),
-                    )
-                    .await;
-                    if work < encoded_work {
-                        assert!(
-                            encoded
-                                .unwrap_err()
-                                .to_string()
-                                .contains("projection work limit")
-                        );
-                        assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
-                        continue;
-                    }
-                    let body: Value = serde_json::from_slice(&encoded.unwrap()).unwrap();
-                    assert!(crate::validate_input(adapter, &body).is_empty(), "{body}");
-                    let parts: Vec<_> = match adapter {
-                        Adapter::Responses => body["input"]
-                            .as_array()
-                            .unwrap()
-                            .iter()
-                            .flat_map(|item| item["content"].as_array().unwrap())
-                            .collect(),
-                        Adapter::Chat | Adapter::Anthropic => body["messages"][0]["content"]
-                            .as_array()
-                            .unwrap()
-                            .iter()
-                            .collect(),
-                        Adapter::Gemini => body["contents"][0]["parts"]
-                            .as_array()
-                            .unwrap()
-                            .iter()
-                            .collect(),
-                    };
-                    assert_eq!(parts.len(), 3);
-                    assert_eq!(parts[0]["text"], "before");
-                    assert_eq!(parts[2]["text"], "after");
-                    let data = match adapter {
-                        Adapter::Responses => {
-                            parts[1]["image_url"]
-                                .as_str()
-                                .unwrap()
-                                .split_once(',')
-                                .unwrap()
-                                .1
-                        }
-                        Adapter::Chat => {
-                            parts[1]["image_url"]["url"]
-                                .as_str()
-                                .unwrap()
-                                .split_once(',')
-                                .unwrap()
-                                .1
-                        }
-                        Adapter::Anthropic => parts[1]["source"]["data"].as_str().unwrap(),
-                        Adapter::Gemini => parts[1]["inlineData"]["data"].as_str().unwrap(),
-                    };
-                    assert_eq!(STANDARD.decode(data).unwrap().as_slice(), bytes.as_slice());
-                    assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+                    check_projection(&provider, &reader, &file, bytes, adapter, work).await;
                 }
             }
         }
     });
     let _ = image_media_type(input);
+}
+
+async fn check_projection(
+    provider: &crate::ResolvedModel,
+    reader: &Reader,
+    file: &FileRef,
+    bytes: &[u8],
+    adapter: Adapter,
+    work: u64,
+) {
+    let encoded_work = bytes.len() as u64;
+    let request = PreparedModelRequest::prepare(
+        ModelRequest {
+            model: provider.model().clone(),
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Parts(vec![
+                    ModelContentPart::Text {
+                        text: "before".into(),
+                    },
+                    ModelContentPart::File {
+                        file: file.clone(),
+                        policy: FileProjectionPolicy::Native(Box::new(NativeMediaPolicy {
+                            intent: NativeMediaIntent::Image {
+                                detail: ImageDetail::Auto,
+                            },
+                            maximum_bytes: bytes.len() as u64,
+                            maximum_work: work,
+                            configuration: None,
+                        })),
+                    },
+                    ModelContentPart::Text {
+                        text: "after".into(),
+                    },
+                ]),
+            }],
+            tools: vec![],
+            max_output_tokens: Some(64),
+        },
+        Limits::default(),
+        None,
+    )
+    .unwrap();
+    let encoded = crate::dispatch::encode(
+        provider,
+        &request,
+        &crate::tool_names::Names::new(request.request()),
+        None,
+        &provider.reasoning_origin(None, None),
+    )
+    .await;
+    if work < encoded_work {
+        assert!(
+            encoded
+                .unwrap_err()
+                .to_string()
+                .contains("projection work limit")
+        );
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
+        return;
+    }
+    let body: Value = serde_json::from_slice(&encoded.unwrap()).unwrap();
+    assert!(crate::validate_input(adapter, &body).is_empty(), "{body}");
+    let parts: Vec<_> = match adapter {
+        Adapter::Responses => body["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|item| item["content"].as_array().unwrap())
+            .collect(),
+        Adapter::Chat | Adapter::Anthropic => body["messages"][0]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .collect(),
+        Adapter::Gemini => body["contents"][0]["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .collect(),
+    };
+    assert_eq!(parts.len(), 3);
+    assert_eq!(parts[0]["text"], "before");
+    assert_eq!(parts[2]["text"], "after");
+    let data = match adapter {
+        Adapter::Responses => {
+            parts[1]["image_url"]
+                .as_str()
+                .unwrap()
+                .split_once(',')
+                .unwrap()
+                .1
+        }
+        Adapter::Chat => {
+            parts[1]["image_url"]["url"]
+                .as_str()
+                .unwrap()
+                .split_once(',')
+                .unwrap()
+                .1
+        }
+        Adapter::Anthropic => parts[1]["source"]["data"].as_str().unwrap(),
+        Adapter::Gemini => parts[1]["inlineData"]["data"].as_str().unwrap(),
+    };
+    assert_eq!(STANDARD.decode(data).unwrap().as_slice(), bytes);
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
 }
