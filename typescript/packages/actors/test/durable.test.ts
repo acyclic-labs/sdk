@@ -177,3 +177,21 @@ test("durable host receives the exact triple; validation rejects bounds before a
   expect(delivered).toEqual(["initialize","fetch","rpc","alarm","message","close","error"]);
   await state.deleteAll(); expect(seen.at(-1)).toBe("deleteAll");
 });
+
+
+test("fencing between admission and delivery prevents every handler effect", async () => {
+  // Model ownership revocation exactly at the public admission boundary.
+  class FencedAtDelivery extends ActorActivation<number> {
+    override async blockConcurrencyWhile<Result>(callback: (state: number) => Result | Promise<Result>): Promise<Result> {
+      const value = await super.blockConcurrencyWhile(callback);
+      this.fence();
+      return value;
+    }
+  }
+  let effects = 0;
+  const activation = new FencedAtDelivery(() => 1);
+  await expect(activation.deliver(() => { effects++; })).rejects.toThrow("fenced");
+  expect(effects).toBe(0); // Negative control: admission-only fencing calls the handler.
+  await expect(activation.deliver(() => { effects++; })).rejects.toThrow();
+  expect(effects).toBe(0);
+});

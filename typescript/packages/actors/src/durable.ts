@@ -106,6 +106,8 @@ export class ActorActivation<State> {
   }
   async deliver<Result>(handler: (state: State) => Result | Promise<Result>): Promise<Result> {
     const state = await this.blockConcurrencyWhile(state => state);
+    // Ownership may be revoked after admission resolves but before this continuation.
+    if (this.#fenced) throw new Error("activation fenced; host must discard heap");
     return handler(state);
   }
   /** Host cancellation/ownership loss permanently invalidates this heap. */
