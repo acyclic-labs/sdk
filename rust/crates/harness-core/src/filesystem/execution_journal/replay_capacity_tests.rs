@@ -8,7 +8,7 @@ type Journal = FilesystemExecutionJournal<
     acyclic_fs::MemoryObjectBackend,
 >;
 
-async fn journal() -> Result<Journal> {
+async fn journal() -> Result<(Journal, AuthorityIssuer)> {
     let provider = ProviderRef::new("replay".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
     let agent = AgentId::from_bytes([1; 16]);
@@ -38,7 +38,7 @@ async fn journal() -> Result<Journal> {
         None,
         &mut None,
     )?;
-    FilesystemExecutionJournal::new(
+    let journal = FilesystemExecutionJournal::new(
         Arc::new(crate::test_stream::LostSessionAck::default()),
         host,
         &SchemaRegistry::new(),
@@ -49,7 +49,8 @@ async fn journal() -> Result<Journal> {
             maximum_bytes: 4096,
             io: None,
         },
-    )
+    )?;
+    Ok((journal, issuer))
 }
 
 proptest! {
@@ -62,7 +63,7 @@ proptest! {
     ) {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
-            let journal = journal().await.unwrap();
+            let (journal, _issuer) = journal().await.unwrap();
             let operation = OperationId::from_bytes([4; 16]);
             let event = ExecutionEvent::Started { request_digest: [9; 32] };
             if count != 0 {

@@ -4,6 +4,13 @@ use super::*;
 const PACK_LIMIT: usize = 64 * 1024;
 const TEMPORARY: &str = ".v1-checkpoint.tmp";
 
+mod packing;
+mod snapshot;
+#[cfg(test)]
+mod tests;
+use packing::Pending;
+use snapshot::Change;
+
 impl Journal {
     pub(super) fn compact(
         &self,
@@ -23,7 +30,6 @@ impl Journal {
                 let mut publication = Publication::new(meter);
                 publication.check()?;
                 self.check()?;
-                let snapshot = difference(&State::default(), state, 0, &mut publication)?;
                 let temporary = crate::physical::local_path(
                     &self.root.path,
                     TEMPORARY,
@@ -34,41 +40,9 @@ impl Journal {
                     "mutations.log",
                     publication.native.as_ref().map(|(meter, _)| meter),
                 )?;
-                let mut file = crate::physical::open_publication(&temporary.value, &publication)?;
-                let header = publication.encode(&self.header)?;
-                let header_length =
-                    u32::try_from(header.len()).map_err(|_| Error::from(QuotaExceeded))?;
-                let digest = publication.codec(0, 0, header.len(), || blake3::hash(&header))?;
-                crate::physical::write_publication(&mut file, 0, MAGIC, &mut publication)?;
-                crate::physical::write_publication(
-                    &mut file,
-                    MAGIC.len() as u64,
-                    &header_length.to_le_bytes(),
-                    &mut publication,
-                )?;
-                crate::physical::write_publication(
-                    &mut file,
-                    (MAGIC.len() + 4) as u64,
-                    digest.as_bytes(),
-                    &mut publication,
-                )?;
-                crate::physical::write_publication(
-                    &mut file,
-                    (MAGIC.len() + 36) as u64,
-                    &header,
-                    &mut publication,
-                )?;
-                let mut output = Checkpoint {
-                    file,
-                    limits: self.limits,
-                    operations: 0,
-                    bytes: (MAGIC.len() + 36 + header.len()) as u64,
-                    pending: Delta {
-                        sequence: state.sequence,
-                        ..Default::default()
-                    },
-                };
-                output.snapshot(snapshot, &mut publication)?;
+                let file = crate::physical::open_publication(&temporary.value, &publication)?;
+                let mut output = Checkpoint::begin(file, self, state.sequence, &mut publication)?;
+                output.snapshot(state)?;
                 #[cfg(test)]
                 self.checkpoint_fault(1)
                     .map_err(|_| Error::from(Unavailable))?;
@@ -129,98 +103,92 @@ struct Checkpoint {
     limits: LocalObjectsLimits,
     operations: u64,
     bytes: u64,
-    pending: Delta,
+    pending: Pending,
 }
 impl Checkpoint {
-    fn snapshot(
-        &mut self,
-        snapshot: Delta,
+    fn begin(
+        mut file: File,
+        journal: &Journal,
+        sequence: u64,
         publication: &mut Publication,
-    ) -> Result<(), NativeObjectsError> {
-        // Pack buckets, objects, uploads/parts, then receipts.
-        macro_rules! append {
-            ($field:ident) => {
-                for item in snapshot.$field {
-                    if self.has_changes()
-                        && self
-                            .pending
-                            .encoded_len()
-                            .saturating_add(item.encoded_len() + 12)
-                            > PACK_LIMIT
-                    {
-                        self.flush(publication)?;
-                    }
-                    publication.push(&mut self.pending.$field, item)?;
-                }
-            };
-        }
-        append!(buckets);
-        append!(objects);
-        append!(uploads);
-        append!(parts);
-        append!(receipts);
-        if self.has_changes() || self.operations == 0 && self.pending.sequence != 0 {
-            self.flush(publication)?;
-        }
-        Ok(())
+    ) -> Result<Self, NativeObjectsError> {
+        let header = publication.encode(&journal.header)?;
+        let length = u32::try_from(header.len()).map_err(|_| Error::from(QuotaExceeded))?;
+        let digest = publication.codec(0, 0, header.len(), || blake3::hash(&header))?;
+        crate::physical::write_publication(&mut file, 0, MAGIC, publication)?;
+        crate::physical::write_publication(
+            &mut file,
+            MAGIC.len() as u64,
+            &length.to_le_bytes(),
+            publication,
+        )?;
+        crate::physical::write_publication(
+            &mut file,
+            (MAGIC.len() + 4) as u64,
+            digest.as_bytes(),
+            publication,
+        )?;
+        crate::physical::write_publication(
+            &mut file,
+            (MAGIC.len() + 36) as u64,
+            &header,
+            publication,
+        )?;
+        Ok(Self {
+            file,
+            limits: journal.limits,
+            operations: 0,
+            bytes: (MAGIC.len() + 36 + header.len()) as u64,
+            pending: Pending::new(
+                sequence,
+                publication
+                    .native
+                    .as_ref()
+                    .map(|(meter, _)| Arc::clone(meter)),
+            ),
+        })
     }
-    fn has_changes(&self) -> bool {
-        !self.pending.buckets.is_empty()
-            || !self.pending.objects.is_empty()
-            || !self.pending.uploads.is_empty()
-            || !self.pending.parts.is_empty()
-            || !self.pending.receipts.is_empty()
-    }
-    fn flush(&mut self, publication: &mut Publication) -> Result<(), NativeObjectsError> {
+
+    fn flush(&mut self) -> Result<(), NativeObjectsError> {
+        let replacement = Pending::new(self.pending.delta.sequence, self.pending.meter());
+        // Values and their original ledger move together and retire together.
+        let mut pending = std::mem::replace(&mut self.pending, replacement);
         // Multipart frames must fit the authenticated record limit.
-        self.pending.ordinal = self
+        pending.delta.ordinal = self
             .operations
             .checked_add(1)
             .ok_or(Error::from(QuotaExceeded))?;
-        let length = self.pending.encoded_len();
+        let length = pending.delta.encoded_len();
         let end = self
             .bytes
             .checked_add(36 + length as u64)
             .ok_or(Error::from(QuotaExceeded))?;
         if length > RECORD_LIMIT
             || end > self.limits.maximum_journal_bytes
-            || self.pending.ordinal > self.limits.maximum_journal_operations
+            || pending.delta.ordinal > self.limits.maximum_journal_operations
         {
             return Err(Error::from(QuotaExceeded).into());
         }
         // Each encoded frame owns temporary custody.
-        let mut frame = Publication::new(
-            publication
-                .native
-                .as_ref()
-                .map(|(meter, _)| Arc::clone(meter)),
-        );
-        let encoded = frame.encode(&self.pending)?;
+        let frame = &mut pending.publication;
+        let encoded = frame.encode(&pending.delta)?;
         let length = u32::try_from(encoded.len()).map_err(|_| Error::from(QuotaExceeded))?;
         let digest = frame.codec(0, 0, encoded.len(), || blake3::hash(&encoded))?;
         crate::physical::write_publication(
             &mut self.file,
             self.bytes,
             &length.to_le_bytes(),
-            &mut frame,
+            frame,
         )?;
         crate::physical::write_publication(
             &mut self.file,
             self.bytes + 4,
             digest.as_bytes(),
-            &mut frame,
+            frame,
         )?;
-        crate::physical::write_publication(&mut self.file, self.bytes + 36, &encoded, &mut frame)?;
+        crate::physical::write_publication(&mut self.file, self.bytes + 36, &encoded, frame)?;
         self.bytes = end;
-        self.operations = self.pending.ordinal;
-        // Reuse pending-array capacities without changing packing inputs.
-        self.pending.ordinal = 0;
-        self.pending.buckets.clear();
-        self.pending.objects.clear();
-        self.pending.uploads.clear();
-        self.pending.parts.clear();
-        self.pending.receipts.clear();
-        self.pending.inline_data.clear();
+        self.operations = pending.delta.ordinal;
         Ok(())
     }
 }

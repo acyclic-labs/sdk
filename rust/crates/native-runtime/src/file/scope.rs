@@ -110,19 +110,11 @@ fn admitted<T>(
     if in_file_scope(health) {
         return run();
     }
-    let (predecessor, completion) = {
-        let mut last = health
-            .tail
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let predecessor = last.clone();
-        let completion = Arc::new(OperationFence {
-            health: Some(Arc::downgrade(health)),
-            ..OperationFence::default()
-        });
-        *last = Some(Arc::clone(&completion));
-        (predecessor, completion)
-    };
+    let completion = Arc::new(OperationFence {
+        health: Some(Arc::downgrade(health)),
+        ..OperationFence::default()
+    });
+    let predecessor = completion.enqueue(health);
     if let Some(predecessor) = predecessor {
         predecessor.wait_until_complete();
     }

@@ -4,6 +4,7 @@ struct Retained {
     replay_left: Option<usize>,
     replay_right: Option<usize>,
     replay_height: u8,
+    commit_branch: Option<CommitBranch>,
     digest: [u8; 32],
     result: IdempotencyOutcome,
     envelope: Option<CommittedEnvelope>,

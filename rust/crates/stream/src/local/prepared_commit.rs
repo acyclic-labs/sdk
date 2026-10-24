@@ -36,12 +36,16 @@ impl LocalStream {
                 work.record(work.meter.record_codec(0, copied as u64, 0))?;
                 drop(input);
                 let (plan, recovery) = provider.prepare(request, maximum).await?;
-                let capacity = command
-                    .encoded_len()
-                    .checked_add(maximum)
-                    .and_then(|bytes| {
-                        bytes.checked_add(4 + FRAME_TIME_BYTES + FRAME_CHECKSUM_BYTES + 20)
-                    })
+                let Command::Commit(request) = &command else {
+                    unreachable!()
+                };
+                let size =
+                    crate::wire_codec::requests::prepared_commit_command_len(request, maximum);
+                if size > MAX_COMMAND_BYTES {
+                    return Err(StreamError::Capacity);
+                }
+                let capacity = size
+                    .checked_add(4 + FRAME_TIME_BYTES + FRAME_CHECKSUM_BYTES)
                     .ok_or(StreamError::Capacity)?;
                 let frame = PreparedFrame::reserve(capacity, Some(Arc::clone(&work)))
                     .map_err(|error| stream.frame_error(error))?;

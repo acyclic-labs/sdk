@@ -117,15 +117,16 @@ pub(crate) async fn retained_model_step<'a>(
         {
             started = Some((*request_digest, request));
         }
-        if let ExecutionEvent::Model {
-            step: event_step,
-            purpose: event_purpose,
-            event,
-        } = &record.event
-            && *event_step == step
-            && *event_purpose == purpose
-        {
-            let event = retain_preparation(load_json::<ModelEvent>(journal, event, io).await?)?;
+        if super::model_observation::matches_turn(&record.event, step, purpose) {
+            let event = super::model_observation::load(journal, &record.event, io)
+                .await?
+                .ok_or_else(|| {
+                    stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Storage,
+                        "model observation is missing",
+                    )
+                })?;
             stock_vec_push(&mut events, event, io)?;
             let event = events.last().ok_or_else(|| {
                 stock_boundary(

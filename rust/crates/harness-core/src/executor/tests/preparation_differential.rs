@@ -158,7 +158,7 @@ fn check(text: &[String; 3], invalid: bool, restore: bool) -> TestCaseResult {
             && old.2 == new.2
             && old.3 == new.3
             && semantic(&old_trace) == semantic(&new_trace)
-            && preparations(&old_trace) == if invalid { 0 } else { 3 }
+            && preparations(&old_trace) == if invalid { 0 } else { 4 }
             && preparations(&new_trace) == if invalid { 0 } else { 1 },
         "independent preparation differs or repeats removed work: old={old:?}, new={new:?}, old_trace={old_trace:?}, new_trace={new_trace:?}"
     );
@@ -211,6 +211,11 @@ fn exact(invalid: bool, restore: bool) -> TestCaseResult {
         .unwrap(),
     )
     .unwrap();
+    // Exact snapshot of capture using the stable inline projection. Request
+    // headers and segments are staged only when dispatch is claimed.
+    // The response context helper drops its copied ContextInput before
+    // accounting/staging: one allocation and eight peak bytes in this fixture.
+    // This is not a growing allowance; restoring extra preparation must still fail.
     // The table is feature-independent: the boxed source projection, whose
     // size follows cfg-gated filesystem state, is added from its type.
     let mut expected = expected[format!("preparation.{invalid}")].clone();

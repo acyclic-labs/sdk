@@ -2,6 +2,7 @@
 struct State {
     paths: BTreeMap<StreamPath, PathState>,
     replay_root: Option<usize>,
+    commit_root: Option<CommitLink>,
     replay_count: usize,
     retained: Vec<Retained>,
     path_bytes: usize,
@@ -41,11 +42,14 @@ impl State {
     fn replay_count(&self) -> usize {
         self.replay_count
     }
+    #[cfg(any(test, feature = "local"))]
     fn commit(&self, id: &CommitId) -> Option<&CommittedEnvelope> {
-        self.retained
-            .iter()
-            .rev()
-            .filter_map(Retained::envelope)
-            .find(|envelope| envelope.commit_id == *id)
+        match self.find_commit(id, || Ok::<_, std::convert::Infallible>(())) {
+            Ok(value) => value,
+            Err(never) => match never {},
+        }
     }
 }
+
+#[cfg(test)]
+std::thread_local! { static COMMIT_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }

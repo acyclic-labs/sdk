@@ -117,7 +117,7 @@ async fn canonical_consumers(adapter: &str) -> TestResult {
         step: 0,
         request_digest: request.request_digest(),
     };
-    let events: Vec<_> = provider.generate(request, dispatch).try_collect().await?;
+    let events: Vec<_> = provider.generate(&request, dispatch).try_collect().await?;
     server.await??;
     let calls: Vec<_> = events
         .into_iter()

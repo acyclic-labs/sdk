@@ -28,21 +28,21 @@ fuzz_target!(|input: &[u8]| {
     if input.len() > limits.render_bytes as usize {
         return;
     }
-    if let Ok(hooks) = serde_json::from_slice::<acyclic_harness::hooks::Hooks>(input) {
-        if let Ok(encoded) = hooks.encode(limits.file_bytes) {
-            let decoded: acyclic_harness::hooks::Hooks = serde_json::from_slice(&encoded).unwrap();
-            assert_eq!(decoded.encode(limits.file_bytes).unwrap(), encoded);
-            assert_eq!(hooks.is_empty(), decoded.is_empty());
-        }
+    if let Ok(hooks) = serde_json::from_slice::<acyclic_harness::hooks::Hooks>(input)
+        && let Ok(encoded) = hooks.encode(limits.file_bytes)
+    {
+        let decoded: acyclic_harness::hooks::Hooks = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded.encode(limits.file_bytes).unwrap(), encoded);
+        assert_eq!(hooks.is_empty(), decoded.is_empty());
     }
-    if let Ok(command) = serde_json::from_slice::<ModelTaskCommand>(input) {
-        if command.context_manifest.validate(&mut None).is_ok() {
-            let encoded = serde_json::to_vec(&command).unwrap();
-            assert_eq!(
-                serde_json::from_slice::<ModelTaskCommand>(&encoded).unwrap(),
-                command
-            );
-        }
+    if let Ok(command) = serde_json::from_slice::<ModelTaskCommand>(input)
+        && command.context_manifest.validate(&mut None).is_ok()
+    {
+        let encoded = serde_json::to_vec(&command).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<ModelTaskCommand>(&encoded).unwrap(),
+            command
+        );
     }
     if let Ok(source) = serde_json::from_slice::<Context>(input) {
         let encoded = serde_json::to_vec(&source).unwrap();

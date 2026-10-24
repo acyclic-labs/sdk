@@ -5,12 +5,23 @@ use super::*;
 /// failure after its start, or a refusal recorded without a start.
 #[derive(Default)]
 struct StepExchanges {
-    /// Reasoning blocks and calls in model order: record sequence, the call if any, event file.
-    assistant: Vec<(u64, Option<crate::model::ToolCall>, FileRef)>,
+    /// Reasoning blocks and calls in model order.
+    assistant: Vec<AssistantExchange>,
     /// Start records by call identity.
     started: BTreeMap<String, crate::executor::ExecutionRecord>,
     /// Settlement records by call identity.
     settled: BTreeMap<String, crate::executor::ExecutionRecord>,
+}
+
+enum AssistantExchange {
+    Reasoning {
+        sequence: u64,
+        content: FileRef,
+    },
+    Call {
+        sequence: u64,
+        call: crate::model::ToolCall,
+    },
 }
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
@@ -66,55 +77,8 @@ where
                     }
                     model => model,
                 };
-                match (record.event, model) {
-                    (
-                        ExecutionEvent::Model {
-                            purpose: crate::executor::ModelPurpose::Response,
-                            event,
-                            ..
-                        },
-                        Some(ModelEvent::ReasoningBlock { .. }),
-                    ) => exchanges.assistant.push((record.sequence, None, event)),
-                    (
-                        ExecutionEvent::Model {
-                            purpose: crate::executor::ModelPurpose::Response,
-                            event,
-                            ..
-                        },
-                        Some(ModelEvent::ToolCall(call)),
-                    ) => exchanges
-                        .assistant
-                        .push((record.sequence, Some(call), event)),
-                    (event @ ExecutionEvent::ToolStarted { .. }, _) => {
-                        let ExecutionEvent::ToolStarted { call_id, .. } = &event else {
-                            unreachable!("matched above")
-                        };
-                        let call_id = call_id.clone();
-                        Self::record_once(
-                            &mut exchanges.started,
-                            call_id,
-                            crate::executor::ExecutionRecord { event, ..record },
-                        )?;
-                    }
-                    (
-                        event @ (ExecutionEvent::ToolCompleted { .. }
-                        | ExecutionEvent::ToolFailed { .. }),
-                        _,
-                    ) => {
-                        let (ExecutionEvent::ToolCompleted { call_id, .. }
-                        | ExecutionEvent::ToolFailed { call_id, .. }) = &event
-                        else {
-                            unreachable!("matched above")
-                        };
-                        let call_id = call_id.clone();
-                        Self::record_once(
-                            &mut exchanges.settled,
-                            call_id,
-                            crate::executor::ExecutionRecord { event, ..record },
-                        )?;
-                    }
-                    _ => {}
-                }
+                self.collect_exchange(operation_id, &mut exchanges, record, model)
+                    .await?;
             }
         }
         if let Some(closed) = current_step {
@@ -122,6 +86,95 @@ where
                 .await?;
         }
         Ok(usage)
+    }
+
+    async fn collect_exchange(
+        &self,
+        operation_id: OperationId,
+        exchanges: &mut StepExchanges,
+        record: crate::executor::ExecutionRecord,
+        model: Option<ModelEvent>,
+    ) -> Result<()> {
+        let sequence = record.sequence;
+        match (record.event, model) {
+            (
+                ExecutionEvent::Model {
+                    purpose: crate::executor::ModelPurpose::Response,
+                    event,
+                    ..
+                },
+                Some(ModelEvent::ReasoningBlock { .. }),
+            ) => exchanges.assistant.push(AssistantExchange::Reasoning {
+                sequence,
+                content: event,
+            }),
+            (
+                ExecutionEvent::ModelInline {
+                    purpose: crate::executor::ModelPurpose::Response,
+                    event,
+                    ..
+                },
+                Some(ModelEvent::ReasoningBlock { .. }),
+            ) => {
+                // Canonical messages expose one immutable reasoning artifact,
+                // materialized at publication rather than for every stream delta.
+                let key = format!("inline-reasoning:{sequence}");
+                let content = self
+                    .stage(
+                        operation_id,
+                        &key,
+                        event.as_bytes(),
+                        "application/json",
+                        None,
+                    )?
+                    .await?;
+                exchanges
+                    .assistant
+                    .push(AssistantExchange::Reasoning { sequence, content });
+            }
+            (
+                ExecutionEvent::Model {
+                    purpose: crate::executor::ModelPurpose::Response,
+                    ..
+                }
+                | ExecutionEvent::ModelInline {
+                    purpose: crate::executor::ModelPurpose::Response,
+                    ..
+                },
+                Some(ModelEvent::ToolCall(call)),
+            ) => exchanges
+                .assistant
+                .push(AssistantExchange::Call { sequence, call }),
+            (event @ ExecutionEvent::ToolStarted { .. }, _) => {
+                let ExecutionEvent::ToolStarted { call_id, .. } = &event else {
+                    unreachable!("matched above")
+                };
+                let call_id = call_id.clone();
+                Self::record_once(
+                    &mut exchanges.started,
+                    call_id,
+                    crate::executor::ExecutionRecord { event, ..record },
+                )?;
+            }
+            (
+                event @ (ExecutionEvent::ToolCompleted { .. } | ExecutionEvent::ToolFailed { .. }),
+                _,
+            ) => {
+                let (ExecutionEvent::ToolCompleted { call_id, .. }
+                | ExecutionEvent::ToolFailed { call_id, .. }) = &event
+                else {
+                    unreachable!("matched above")
+                };
+                let call_id = call_id.clone();
+                Self::record_once(
+                    &mut exchanges.settled,
+                    call_id,
+                    crate::executor::ExecutionRecord { event, ..record },
+                )?;
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn record_once(
@@ -149,11 +202,21 @@ where
         mut exchanges: StepExchanges,
     ) -> Result<()> {
         let mut calls = Vec::new();
-        for (sequence, call, content) in exchanges.assistant {
-            let Some(call) = call else {
-                self.publish_reasoning(aggregate, operation_id, user_id, limits, sequence, content)
+        for exchange in exchanges.assistant {
+            let (sequence, call) = match exchange {
+                AssistantExchange::Reasoning { sequence, content } => {
+                    self.publish_reasoning(
+                        aggregate,
+                        operation_id,
+                        user_id,
+                        limits,
+                        sequence,
+                        content,
+                    )
                     .await?;
-                continue;
+                    continue;
+                }
+                AssistantExchange::Call { sequence, call } => (sequence, call),
             };
             let started = exchanges.started.remove(&call.call_id);
             let (publication, content) = match started {

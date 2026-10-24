@@ -78,7 +78,9 @@ pub(super) fn request_control_capacity(request: &CommitRequest) -> usize {
             .sum::<usize>()
 }
 
-pub(super) async fn prepared_fixture(provider: &LocalStream) -> Result<CommitRequest, StreamError> {
+pub(super) async fn prepared_fixture<P: StreamProvider + ?Sized>(
+    provider: &P,
+) -> Result<CommitRequest, StreamError> {
     for path in ["prepared/owner", "prepared/target"] {
         provider
             .append(AppendRequest {

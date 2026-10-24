@@ -89,8 +89,8 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                     provider: crate::core::copy_text(&plan.provider, &mut quota)?,
                     guarantee: plan.guarantee,
                     effect_kind: crate::core::copy_text(&plan.effect_kind, &mut quota)?,
-                    request: Box::new(request),
-                    result_schema: Box::new(schema),
+                    request: quota.boxed(request)?,
+                    result_schema: quota.boxed(schema)?,
                 }
             } else {
                 Action::MarkEffectDispatched {
@@ -198,7 +198,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                 scope,
                 causal_parent: None,
                 action: Action::ResolveEffect {
-                    observation: (observation).into(),
+                    observation: quota.boxed(observation)?,
                 },
             };
             if quota.work().is_some() {

@@ -482,7 +482,7 @@ pub(super) async fn stock_restart_with_publication_fault(
                         matches!(interrupted, Err(Error::Indeterminate(id)) if id == operation),
                     _ => matches!(interrupted, Err(Error::Storage(_))),
                 },
-                "{interrupted:?}"
+                "fault={fault:?}, cancellation={cancel_after_failure}, direct={direct_executor}: {interrupted:?}"
             );
             assert_eq!(
                 stream_provider.execution_faults.load(Ordering::SeqCst),

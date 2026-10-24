@@ -797,10 +797,15 @@ async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -
                     _ => None,
                 })
                 .ok_or_else(|| Error::NotFound("media model request".into()))?;
-            let prepared: acyclic_harness::model::ModelRequest =
-                serde_json::from_slice(disk.load(file, None)?.await?.as_ref())
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
-            assert_eq!(model.requests().as_slice(), std::slice::from_ref(&prepared));
+            let retained = acyclic_harness::executor::load_model_request(
+                disk.as_ref(),
+                file,
+                Limits::default(),
+                None,
+            )
+            .await?;
+            let prepared = retained.request();
+            assert_eq!(model.requests().as_slice(), std::slice::from_ref(prepared));
             assert!(
                 prepared.tools.is_empty(),
                 "unadvertised sampling tools leaked from the supplied executor"

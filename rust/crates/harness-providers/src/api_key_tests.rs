@@ -185,7 +185,7 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
                 events
             } else {
                 provider
-                    .generate(prepared, dispatch)
+                    .generate(&prepared, dispatch)
                     .try_collect::<Vec<_>>()
                     .await?
             };

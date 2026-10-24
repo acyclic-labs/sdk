@@ -207,8 +207,8 @@ fn run_task(
         completion.complete();
     }
     let waker = terminal.publish();
-    // The observer may take the result before this reference
-    // drops, so the state's charge travels with the observer.
+    // This shared owner retains the state's charge until it is released,
+    // including when the observer has already taken the result.
     crate::sync::release(terminal);
     waker
 }

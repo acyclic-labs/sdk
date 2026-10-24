@@ -115,6 +115,7 @@ impl StockExecution<'_> {
             .map(|(_, prepared)| prepared)
     }
 
+    #[cfg(test)]
     pub(super) async fn canonical_base(
         &self,
         journal: &dyn ExecutionJournal,
@@ -123,29 +124,41 @@ impl StockExecution<'_> {
         prior_messages: &[ModelMessage],
     ) -> Result<crate::context::Context> {
         let mut context_input = ContextInput::copy_for_turn(input, step, prior_messages, self.io)?;
+        self.canonical_base_for_turn(journal, input.operation_id, &mut context_input)
+            .await
+    }
+
+    pub(super) async fn canonical_base_for_input(
+        &self,
+        journal: &dyn ExecutionJournal,
+        context_input: &mut ContextInput,
+    ) -> Result<crate::context::Context> {
+        // A stage observes the same input used to assemble its base. Temporarily
+        // remove the owner-resolved checkpoint, then restore its exact reference
+        // before any fallible load or stage can observe the input.
         let checkpoint = context_input
             .selected_context
             .as_mut()
             .and_then(|selected| selected.selection.checkpoint.take());
-        let delta = ContextPipeline::base_context(&context_input, self.stock.limits, self.io)?;
-        let Some(reference) = checkpoint else {
+        let delta = ContextPipeline::base_context(context_input, self.stock.limits, self.io);
+        if let Some(selected) = context_input.selected_context.as_mut() {
+            selected.selection.checkpoint = checkpoint;
+        }
+        let delta = delta?;
+        let Some(selected) = context_input.selected_context.as_ref() else {
+            return Ok(delta);
+        };
+        let Some(reference) = selected.selection.checkpoint.as_ref() else {
             return Ok(delta);
         };
         let (envelope, retained) = load_canonical_checkpoint(
             journal,
-            &reference,
+            reference,
             self.stock.limits,
             self.io.map(|_| &self.stock.tool_scope),
             self.io,
         )
         .await?;
-        let selected = input.selected_context.as_ref().ok_or_else(|| {
-            stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Invalid,
-                "checkpoint has no canonical delta",
-            )
-        })?;
         if selected.selection.conversation_revision <= envelope.selection.conversation_revision {
             return Err(stock_boundary(
                 self.io,
@@ -156,15 +169,14 @@ impl StockExecution<'_> {
         ContextPipeline::continue_base(retained, delta, self.stock.limits, self.io)
     }
 
+    #[cfg(test)]
     pub(super) async fn transform_projection(
         &self,
         input: &ContextInput,
         base: crate::context::Context,
     ) -> Result<crate::context::Context> {
         let (mut context, prepared) = self.prepare_transformed_request(input, base).await?;
-        if self.io.is_none() {
-            context.messages = prepared.into_messages();
-        }
+        context.messages = prepared.into_messages();
         Ok(context)
     }
 
@@ -226,11 +238,7 @@ impl StockExecution<'_> {
         if prefix_count != 0 || self.context_pipeline().has_optional() {
             crate::context::validate_projected_context(&context, self.stock.limits, self.io)?;
         }
-        request.messages = if self.io.is_some() {
-            crate::model::clone_messages(&context.messages, self.io)?
-        } else {
-            std::mem::take(&mut context.messages)
-        };
+        request.messages = std::mem::take(&mut context.messages);
         let prepared =
             crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io)?;
         Ok((context, prepared))
@@ -243,6 +251,7 @@ impl StockExecution<'_> {
         self.request_from_messages(crate::model::clone_messages(&context.messages, self.io)?)
     }
 
+    #[cfg(test)]
     pub(super) fn request_taking_context(
         &self,
         context: &mut crate::context::Context,
@@ -257,9 +266,23 @@ impl StockExecution<'_> {
         &self,
         messages: Vec<ModelMessage>,
     ) -> Result<ModelRequest> {
+        let tools_required = self.request_tools_required(&messages)?;
+        Ok(ModelRequest {
+            model: crate::model::clone_model(&self.stock.model, self.io)?,
+            messages,
+            tools: if tools_required {
+                stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)?
+            } else {
+                Vec::new()
+            },
+            max_output_tokens: self.output_budget()?,
+        })
+    }
+
+    fn request_tools_required(&self, messages: &[ModelMessage]) -> Result<bool> {
         let mut tools_required = self.summary.is_none();
         if !tools_required {
-            for message in &messages {
+            for message in messages {
                 crate::model::charge_items(self.io, 1)?;
                 for part in message.content.parts() {
                     crate::model::charge_items(self.io, 1)?;
@@ -273,16 +296,36 @@ impl StockExecution<'_> {
                 }
             }
         }
-        Ok(ModelRequest {
-            model: crate::model::clone_model(&self.stock.model, self.io)?,
-            messages,
-            tools: if tools_required {
-                stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)?
-            } else {
-                Vec::new()
-            },
-            max_output_tokens: self.output_budget()?,
-        })
+        Ok(tools_required)
+    }
+
+    pub(super) fn validate_response_request(
+        &self,
+        prepared: &crate::model::PreparedModelRequest,
+    ) -> Result<()> {
+        let request = prepared.request();
+        #[cfg(feature = "filesystem")]
+        let scope = crate::filesystem::PreparationScope::new(self.io)?;
+        #[cfg(feature = "filesystem")]
+        let io = scope.io();
+        #[cfg(not(feature = "filesystem"))]
+        let io = self.io;
+        let tools = if self.request_tools_required(&request.messages)? {
+            stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, io)?
+        } else {
+            Vec::new()
+        };
+        if request.model != self.stock.model
+            || request.tools != tools
+            || request.max_output_tokens != self.output_budget()?
+        {
+            return Err(stock_boundary(
+                self.io,
+                crate::wire::ErrorCode::Storage,
+                "retained response request differs from selected model or tools",
+            ));
+        }
+        Ok(())
     }
 }
 

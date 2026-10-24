@@ -65,6 +65,11 @@ impl StockExecution<'_> {
                 summary_output,
             )),
             compaction: once_cell::sync::OnceCell::new(),
+            records: tokio::sync::Mutex::new(Default::default()),
+            working_context: tokio::sync::OnceCell::new(),
+            working_tail: tokio::sync::Mutex::new(Default::default()),
+            request_cache: tokio::sync::Mutex::new(Default::default()),
+            content_admission: Default::default(),
         };
         let input = TurnInput {
             operation_id,
@@ -83,20 +88,8 @@ impl StockExecution<'_> {
         } else {
             executor.ensure_started(journal, &input).await?;
         }
-        if let Some(source_bytes) = &source_bytes {
-            let source_key = with_history_io(self.io, |work| {
-                crate::executor::preparation_format(format_args!("summary:{step}:source"), work)
-            })?;
-            stage_bytes(
-                journal,
-                operation_id,
-                &source_key,
-                source_bytes,
-                true,
-                self.io,
-            )
+        self.stage_summary_source(journal, operation_id, step, source_bytes.as_deref())
             .await?;
-        }
         let events = executor
             .run_model_step(journal, &input, step, &[], ModelPurpose::Summary, phase)?
             .await?;
@@ -110,6 +103,22 @@ impl StockExecution<'_> {
             text,
         )
         .await
+    }
+
+    async fn stage_summary_source(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation_id: OperationId,
+        step: u32,
+        source: Option<&[u8]>,
+    ) -> Result<()> {
+        if let Some(source) = source {
+            let source_key = with_history_io(self.io, |work| {
+                crate::executor::preparation_format(format_args!("summary:{step}:source"), work)
+            })?;
+            stage_bytes(journal, operation_id, &source_key, source, true, self.io).await?;
+        }
+        Ok(())
     }
 
     fn summary_source_identity(

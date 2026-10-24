@@ -155,6 +155,7 @@ fn measured_sync_wait_cancellation_wake_drains_real_read_prefix() -> io::Result<
         let body_meter = meter.clone();
         let (entered_tx, entered) = mpsc::sync_channel(1);
         let (release_tx, released) = mpsc::sync_channel(1);
+        let (retired_tx, retired) = mpsc::channel();
         let terminal = Arc::new(AtomicBool::new(false));
         let body_terminal = terminal.clone();
         let mut task = run_blocking_io(
@@ -173,6 +174,10 @@ fn measured_sync_wait_cancellation_wake_drains_real_read_prefix() -> io::Result<
         submit(&mut task);
         let release = || {
             entered.recv().unwrap();
+            *meter
+                .memory_retired
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(retired_tx.clone());
             meter.cancelled.store(true, Ordering::Release);
             release_tx.send(()).unwrap();
         };
@@ -195,6 +200,9 @@ fn measured_sync_wait_cancellation_wake_drains_real_read_prefix() -> io::Result<
         );
         assert!(terminal.load(Ordering::Acquire));
         assert_eq!(meter.read.load(Ordering::Acquire), 3);
+        // Result visibility can precede the worker dropping its final waker.
+        // Join actual retirement rather than assuming an early meter refund.
+        retired.recv().map_err(io::Error::other)?;
         assert_eq!(meter.memory.load(Ordering::Acquire), 0);
     }
     Ok(())

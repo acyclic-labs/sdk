@@ -122,8 +122,29 @@ macro_rules! demand_meter {
             fn record_codec(&self, encoded: u64, copied: u64, hashed: u64) -> std::io::Result<()> {
                 self.io(|state| state.record(crate::WorkCounters { bytes_encoded: encoded, bytes_copied: copied, bytes_hashed: hashed, ..crate::WorkCounters::UNCHARGED }))
             }
+            fn reserve_codec(&self, maximum: acyclic_native_runtime::NativeCodecWork) -> std::io::Result<()> {
+                self.io(|state| state.reserve(codec_counters(maximum)))
+            }
+            fn cancel_reserved_codec(&self, unused: acyclic_native_runtime::NativeCodecWork) {
+                self.cancel(|state| state.refund(codec_counters(unused)));
+            }
+            fn record_reserved_codec(&self, actual: acyclic_native_runtime::NativeCodecWork) -> std::io::Result<()> {
+                self.io(|state| {
+                    let actual = codec_counters(actual);
+                    state.complete(actual, actual)
+                })
+            }
         }
     };
+}
+
+pub(super) fn codec_counters(work: acyclic_native_runtime::NativeCodecWork) -> crate::WorkCounters {
+    crate::WorkCounters {
+        bytes_encoded: work.encoded,
+        bytes_copied: work.copied,
+        bytes_hashed: work.hashed,
+        ..crate::WorkCounters::UNCHARGED
+    }
 }
 
 demand_meter!(crate::demand::NativeDemandReadMeter);

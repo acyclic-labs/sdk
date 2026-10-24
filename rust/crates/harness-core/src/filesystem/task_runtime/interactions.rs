@@ -163,7 +163,7 @@ where
         input: &super::super::ModelTaskCommand,
         io: Option<&super::super::PreparationIo>,
     ) -> Result<bool> {
-        use crate::executor::{ExecutionEvent, ExecutionReplay, ModelPurpose};
+        use crate::executor::{ExecutionEvent, ExecutionRecordQuery, ModelPurpose};
         #[cfg(not(target_arch = "wasm32"))]
         let local_io = approval_io(io)?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -222,55 +222,50 @@ where
                 (Arc::new(journal), operation)
             }
         };
-        let mut replay = ExecutionReplay::new(operation);
-        let mut latest = None;
-        while let Some(page) = replay.next_page(journal.as_ref(), io).await? {
-            let mut history = io.map(super::super::PreparationIo::history_io);
-            self.host
-                .verify_model_history(
-                    task,
-                    operation,
-                    page.iter(),
-                    &mut history
-                        .as_mut()
-                        .map(|history| history as &mut dyn crate::store::history::HistoryIo),
-                )
-                .await?;
-            for record in page {
-                if let ExecutionEvent::ModelStarted {
-                    step,
-                    purpose: ModelPurpose::Response,
-                    ..
-                } = record.event
-                {
-                    if step >= input.max_steps {
-                        return Err(observed::boundary(
-                            io,
-                            crate::wire::ErrorCode::Conflict,
-                            "retained model step exceeds command",
-                        ));
-                    }
-                    latest = Some(latest.map_or(step, |previous: u32| previous.max(step)));
-                }
-            }
-        }
-        let Some(step) = latest else {
+        let Some(step) = journal.latest_response_step(operation, io).await? else {
             return Ok(false);
         };
+        if step >= input.max_steps {
+            return Err(observed::boundary(
+                io,
+                crate::wire::ErrorCode::Conflict,
+                "retained model step exceeds command",
+            ));
+        }
         let select = |event: &ExecutionEvent| {
             matches!(event,
             ExecutionEvent::ModelStarted { step: recorded, purpose: ModelPurpose::Response, .. }
-            | ExecutionEvent::Model { step: recorded, purpose: ModelPurpose::Response, .. } if *recorded == step)
+            | ExecutionEvent::Model { step: recorded, purpose: ModelPurpose::Response, .. }
+            | ExecutionEvent::ModelInline { step: recorded, purpose: ModelPurpose::Response, .. } if *recorded == step)
         };
-        let (_, records, hold) = crate::executor::replay_execution(
+        let (_, records, hold) = crate::executor::selected_step_records(
             journal.as_ref(),
-            operation,
-            limits.model_events_per_step.saturating_add(1),
-            select,
+            ExecutionRecordQuery {
+                operation,
+                step,
+                include_started: false,
+                maximum_step_records: ExecutionRecordQuery::step_bound(limits),
+                maximum: limits.model_events_per_step.saturating_add(1),
+                select: &select,
+            },
             io,
         )
         .await?;
         let records = crate::executor::retain_preparation((records, hold))?;
+        // The ordinary passive reader has no fenced owner embedded in the
+        // journal. Check the selected dispatch against its scheduler claim on
+        // every read; the signed checkpoint authenticates only the old prefix.
+        let mut history = io.map(super::super::PreparationIo::history_io);
+        self.host
+            .verify_model_history(
+                task,
+                operation,
+                records.iter(),
+                &mut history
+                    .as_mut()
+                    .map(|history| history as &mut dyn crate::store::history::HistoryIo),
+            )
+            .await?;
         let retained = crate::executor::retain_preparation(
             crate::executor::retained_model_step(
                 journal.as_ref(),
@@ -318,9 +313,19 @@ where
                     | ExecutionEvent::ToolFailed { step: recorded, call_id, .. }
                     if *recorded == step && call_id == &invocation.call_id)
                 };
-                let (_, records, hold) =
-                    crate::executor::replay_execution(journal.as_ref(), operation, 3, select, io)
-                        .await?;
+                let (_, records, hold) = crate::executor::selected_step_records(
+                    journal.as_ref(),
+                    ExecutionRecordQuery {
+                        operation,
+                        step,
+                        include_started: false,
+                        maximum_step_records: ExecutionRecordQuery::step_bound(limits),
+                        maximum: 3,
+                        select: &select,
+                    },
+                    io,
+                )
+                .await?;
                 let records = crate::executor::retain_preparation((records, hold))?;
                 // A failed call is settled: the model received the failure as its result.
                 if records

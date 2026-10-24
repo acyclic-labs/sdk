@@ -4,7 +4,7 @@ use crate::{
     conversation::{ContentPublisher, ContentResidencyVerifier, FileRef},
     executor::{ExecutionEvent, ExecutionJournal},
     filesystem::{FilesystemContentVerifier, MODEL_TASK_COMMAND_KIND, ModelTaskCommand},
-    model::{ModelContent, ModelRequest},
+    model::ModelContent,
     test_support::{ScriptedModelProvider, ScriptedTurn},
 };
 use proptest::prelude::*;
@@ -402,9 +402,10 @@ async fn native_request_uses_manifest_and_original_ledger() -> Result<()> {
             _ => None,
         })
         .expect("native model request must be retained");
-    let bytes = journal.load(reference, Some(&io))?.await?;
-    let request: ModelRequest =
-        serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+    let prepared =
+        crate::executor::load_model_request(&journal, reference, Limits::default(), Some(&io))
+            .await?;
+    let request = prepared.request();
     assert_eq!(request.tools, tools);
     let files: Vec<_> = request
         .messages

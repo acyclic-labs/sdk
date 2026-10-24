@@ -102,8 +102,13 @@ impl Drop for DecodeReservation<'_> {
             return;
         }
         match self.io {
-            PreparationIo::Owned { .. } => {
-                let _ = self.io.release(self.bytes);
+            PreparationIo::Owned { work, .. } => {
+                if self.io.release(self.bytes).is_err() {
+                    // A poisoned ledger cannot admit further work; the next call returns the fault.
+                    work.lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .1 = Err(acyclic_fs::WorkError::Overflow);
+                }
             }
             #[cfg(not(target_arch = "wasm32"))]
             PreparationIo::Native { .. } => {}

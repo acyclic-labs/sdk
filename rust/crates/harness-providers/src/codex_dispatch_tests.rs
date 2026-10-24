@@ -115,7 +115,7 @@ async fn cli_unauthorized_recovery_refreshes_then_streams_the_same_prepared_requ
     provider.model.options["reasoning"] = serde_json::Value::Null;
     let (request, dispatch) = crate::tests::request(&provider)?;
     let events = provider
-        .generate(request, dispatch)
+        .generate(&request, dispatch)
         .try_collect::<Vec<_>>()
         .await?;
     assert_eq!(events.len(), 2);
@@ -179,7 +179,7 @@ async fn api_key_precedence_uses_public_responses_without_reading_cli_login()
     .resolve("openai/gpt-5")?;
     let (request, dispatch) = crate::tests::request(&provider)?;
     provider
-        .generate(request, dispatch)
+        .generate(&request, dispatch)
         .try_collect::<Vec<_>>()
         .await?;
     let requests = server
@@ -207,7 +207,7 @@ async fn a_second_unauthorized_response_is_terminal() -> acyclic_harness_core::R
     let (request, dispatch) = crate::tests::request(&provider)?;
     assert!(
         provider
-            .generate(request, dispatch)
+            .generate(&request, dispatch)
             .try_collect::<Vec<_>>()
             .await
             .is_err()
@@ -271,7 +271,7 @@ async fn resolving_again_accepts_a_new_cli_account_without_switching_an_active_m
     let active = registry.resolve("openai/gpt-5")?;
     let (request, dispatch) = crate::tests::request(&active)?;
     active
-        .generate(request, dispatch)
+        .generate(&request, dispatch)
         .try_collect::<Vec<_>>()
         .await?;
     let path = root.path().join("auth.json");
@@ -281,7 +281,7 @@ async fn resolving_again_accepts_a_new_cli_account_without_switching_an_active_m
     let (request, dispatch) = crate::tests::request(&active)?;
     assert!(
         active
-            .generate(request, dispatch)
+            .generate(&request, dispatch)
             .try_collect::<Vec<_>>()
             .await
             .is_err()
@@ -289,7 +289,7 @@ async fn resolving_again_accepts_a_new_cli_account_without_switching_an_active_m
     let selected = registry.resolve("openai/gpt-5")?;
     let (request, dispatch) = crate::tests::request(&selected)?;
     selected
-        .generate(request, dispatch)
+        .generate(&request, dispatch)
         .try_collect::<Vec<_>>()
         .await?;
     let requests = server

@@ -61,6 +61,7 @@ impl StreamProvider for MemoryStream {
         )?;
         reserve_paths(&state, &request.destination, self.limits)?;
         reserve_commit(&state, self.limits)?;
+        self.reserve_commit_index(&mut probes)?;
         let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
         let commit_id = commit_identity(decision, digest);
         let receipt = ForkReceipt {
@@ -240,7 +241,13 @@ impl StreamProvider for MemoryStream {
         self.state
             .read()
             .await
-            .commit(&commit_id)
+            .find_commit(&commit_id, || {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(work) = &self.work {
+                    work.record(work.meter.examine(1, 0))?;
+                }
+                Ok::<_, StreamError>(())
+            })?
             .cloned()
             .ok_or(StreamError::NotFound)
     }

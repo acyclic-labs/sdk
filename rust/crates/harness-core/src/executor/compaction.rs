@@ -12,13 +12,14 @@ impl StockExecution<'_> {
     pub(super) async fn compact_response(
         &self,
         journal: &dyn ExecutionJournal,
-        turn: (&TurnInput, u32),
+        turn: (&TurnInput, u32, usize),
         captured: (ResponseProjection, ContextAccounting),
-        context: crate::context::Context,
+        source: (crate::context::Context, bool),
         policy: &crate::context::ThresholdCompaction,
         phase: &mut DispatchPhase,
     ) -> Result<crate::model::PreparedModelRequest> {
-        let (input, step) = turn;
+        let (input, step, prior) = turn;
+        let (context, pre_stage) = source;
         let (projection, accounting) = captured;
         let (through, maximum) = self
             .summary_budget(
@@ -26,29 +27,13 @@ impl StockExecution<'_> {
                 accounting.count,
                 accounting.capacity,
                 &context,
+                pre_stage,
                 policy,
             )
             .await?;
-        let (source, instruction) = self.prepare_summary_source(&context, through)?;
-        let (summary, text) = crate::conversation::BoundedContentFuture::new(self.io, || {
-            self.summarize(
-                journal,
-                Some(input),
-                input.operation_id,
-                step,
-                (source, instruction),
-                phase,
-            )
-        })?
-        .await?;
-        #[cfg(feature = "filesystem")]
-        let text_hold = self
-            .io
-            .map(|io| io.guard_owned(text.capacity() as u64))
-            .transpose()?;
-        drop(text);
-        #[cfg(feature = "filesystem")]
-        drop(text_hold);
+        let summary = self
+            .summarize_compaction(journal, input, step, (&context, through), phase)
+            .await?;
         if self.stock.reconciliation_only {
             return Err(Error::Indeterminate(input.operation_id));
         }
@@ -80,28 +65,32 @@ impl StockExecution<'_> {
                 (&compaction, &reference),
             )
             .await?;
-        let (compacted, request) = if checkpoint.is_some() {
-            let context_input = ContextInput::copy_for_turn(input, step, &[], self.io)?;
-            let (mut compacted, request) = self
-                .prepare_transformed_request(&context_input, compacted)
-                .await?;
-            if self.io.is_none() {
-                compacted.messages =
-                    crate::model::clone_messages(&request.request().messages, self.io)?;
-            }
-            (compacted, request)
+        let working = if pre_stage && journal.working_checkpoint_authority().is_some() {
+            Some(
+                self.stage_working_cut(
+                    journal,
+                    working_tail::WorkingCompaction {
+                        input,
+                        step,
+                        prior,
+                        source: &context,
+                        retained: &compacted,
+                        compaction: &compaction,
+                    },
+                )
+                .await?,
+            )
         } else {
-            let request = crate::model::PreparedModelRequest::prepare(
-                self.request_from_context(&compacted)?,
-                self.stock.limits,
-                self.io,
-            )?;
-            (compacted, request)
+            projection.working
         };
+        let (compacted, request) = self
+            .prepare_compacted_request(input, step, compacted, pre_stage)
+            .await?;
         let compacted = ResponseProjection {
             context: compacted,
             canonical: projection.canonical,
             checkpoint,
+            working,
         };
         self.finish_compaction(
             journal,
@@ -114,12 +103,65 @@ impl StockExecution<'_> {
         .await
     }
 
+    async fn summarize_compaction(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        source: (&crate::context::Context, usize),
+        phase: &mut DispatchPhase,
+    ) -> Result<crate::context::ContextSummary> {
+        let material = self.prepare_summary_source(source.0, source.1)?;
+        let (summary, text) = crate::conversation::BoundedContentFuture::new(self.io, || {
+            self.summarize(
+                journal,
+                Some(input),
+                input.operation_id,
+                step,
+                material,
+                phase,
+            )
+        })?
+        .await?;
+        #[cfg(feature = "filesystem")]
+        let text_hold = self
+            .io
+            .map(|io| io.guard_owned(text.capacity() as u64))
+            .transpose()?;
+        drop(text);
+        #[cfg(feature = "filesystem")]
+        drop(text_hold);
+        Ok(summary)
+    }
+
+    async fn prepare_compacted_request(
+        &self,
+        input: &TurnInput,
+        step: u32,
+        compacted: crate::context::Context,
+        pre_stage: bool,
+    ) -> Result<(crate::context::Context, crate::model::PreparedModelRequest)> {
+        if pre_stage {
+            let context_input = ContextInput::copy_for_turn(input, step, &[], self.io)?;
+            self.prepare_transformed_request(&context_input, compacted)
+                .await
+        } else {
+            let request = crate::model::PreparedModelRequest::prepare(
+                self.request_from_context(&compacted)?,
+                self.stock.limits,
+                self.io,
+            )?;
+            Ok((compacted, request))
+        }
+    }
+
     async fn summary_budget(
         &self,
         projection: &ResponseProjection,
         count: crate::context::ModelTokenCount,
         capacity: crate::context::ModelContextCapacity,
         context: &crate::context::Context,
+        pre_stage: bool,
         policy: &crate::context::ThresholdCompaction,
     ) -> Result<(usize, usize)> {
         let canonical_request = crate::model::PreparedModelRequest::prepare(
@@ -127,7 +169,7 @@ impl StockExecution<'_> {
             self.stock.limits,
             self.io,
         )?;
-        let count = if projection.canonical.is_some() {
+        let count = if pre_stage {
             stock_count_tokens(self.stock.provider.as_ref(), &canonical_request, self.io).await?
         } else {
             count
@@ -231,18 +273,20 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
-        compacted: &ResponseProjection,
+        compacted: (&ResponseProjection, &crate::model::PreparedModelRequest),
         compaction: FileRef,
         accounting: &ContextAccounting,
     ) -> Result<()> {
+        let (compacted, request) = compacted;
         let projection_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}:compacted"), work)
         })?;
-        let projection = stage_json(
+        let projection = transcript::stage_projection(
             journal,
             input.operation_id,
             &projection_key,
             compacted,
+            request,
             self.io,
         )
         .await?;
@@ -314,7 +358,7 @@ impl StockExecution<'_> {
             journal,
             input,
             step,
-            &compacted,
+            (&compacted, &request),
             compaction,
             &ContextAccounting { capacity, count },
         )

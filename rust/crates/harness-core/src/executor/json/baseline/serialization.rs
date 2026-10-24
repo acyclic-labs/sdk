@@ -18,21 +18,6 @@ impl Scope<'_> {
         }
         (self.charge)(event)
     }
-    pub(super) fn map_nodes(&mut self, entries: usize) -> Result<()> {
-        // An insertion can split each ancestor and add a root. Branching is
-        // at least two, so this bounds allocations even with full ancestors.
-        let nodes = if entries == 0 {
-            1
-        } else {
-            1 + usize::BITS - entries.leading_zeros()
-        };
-        for _ in 0..nodes {
-            self.event(JsonCodecCharge::AllocationOperation {
-                bytes: std::mem::size_of::<(String, Value)>() as u64,
-            })?;
-        }
-        Ok(())
-    }
     pub(super) fn retain(&mut self, bytes: u64) -> Result<()> {
         let retained = checked(self.retained.checked_add(bytes), "JSON retention overflow")?;
         self.event(JsonCodecCharge::Retain { bytes })?;

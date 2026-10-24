@@ -11,6 +11,11 @@ struct PreparedFrame {
             Arc<dyn acyclic_native_runtime::NativeReadMeter>,
         >,
     >,
+    codec: Option<
+        acyclic_native_runtime::NativeCodecReservation<
+            Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+        >,
+    >,
     _allocation: Option<acyclic_native_runtime::ReadAllocation>,
 }
 
@@ -53,18 +58,25 @@ impl PreparedFrame {
                 )
             })
             .transpose()?;
-        if let Some(work) = &work {
-            work.meter.admit_codec(
-                capacity as u64,
-                capacity as u64,
-                (capacity + b"acyclic-stream-local-frame-v1\0".len()) as u64,
-            )?;
-        }
+        let codec = work
+            .as_ref()
+            .map(|work| {
+                acyclic_native_runtime::NativeCodecReservation::new(
+                    Arc::clone(&work.meter),
+                    acyclic_native_runtime::NativeCodecWork {
+                        encoded: capacity as u64,
+                        copied: capacity as u64,
+                        hashed: capacity as u64 + b"acyclic-stream-local-frame-v1\0".len() as u64,
+                    },
+                )
+            })
+            .transpose()?;
         Ok(Self {
             encoded,
             work,
             operation,
             transfer,
+            codec,
             _allocation: allocation,
         })
     }
@@ -111,11 +123,15 @@ impl PreparedFrame {
         self.encoded.extend_from_slice(&checksum);
         if let Some(work) = &self.work {
             let hashed = b"acyclic-stream-local-frame-v1\0".len() + 4 + FRAME_TIME_BYTES + size;
-            let _ = work.record(work.meter.record_codec(
-                size as u64,
-                (4 + FRAME_TIME_BYTES + size) as u64,
-                hashed as u64,
-            ));
+            let codec = self
+                .codec
+                .as_mut()
+                .ok_or(LocalStreamError::IncompleteFrame)?;
+            let _ = work.record(codec.record(acyclic_native_runtime::NativeCodecWork {
+                encoded: size as u64,
+                copied: (4 + FRAME_TIME_BYTES + size) as u64,
+                hashed: hashed as u64,
+            }));
         }
         Ok(())
     }

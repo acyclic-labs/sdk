@@ -3,6 +3,13 @@ use super::*;
 use crate::wire::ErrorCode::Unsupported;
 use futures::future::Either;
 
+struct PreparedDispatchStep {
+    request: crate::model::PreparedModelRequest,
+    admission: ModelEventAdmission,
+    events: Vec<ModelEvent>,
+    started: bool,
+}
+
 impl StockExecution<'_> {
     /// Cancellation covers preparation and response headers as well as chunks.
     pub(super) async fn cancellable_model_step(
@@ -20,6 +27,7 @@ impl StockExecution<'_> {
         );
         match futures::future::select(cancellation, execution).await {
             Either::Left((result, _)) => {
+                super::phase::seal(journal, self.io).await?;
                 result?;
                 Err(Error::InteractionRejected(
                     crate::InteractionRejection::Cancelled,
@@ -40,29 +48,13 @@ impl StockExecution<'_> {
         phase: &mut DispatchPhase,
     ) -> Result<Vec<ModelEvent>> {
         let io = self.io;
-        self.require_model_producer().await?;
-        let RetainedModelStep {
-            request: retained_request,
+        let PreparedDispatchStep {
+            request,
             mut admission,
             events: replayed,
+            started,
         } = self
-            .retained_dispatch_step(journal, input.operation_id, step, purpose)
-            .await?;
-        let started = retained_request.is_some();
-        if started {
-            phase.start();
-        }
-        if self.stock.reconciliation_only && !started && purpose != ModelPurpose::Response {
-            return Err(Error::Indeterminate(input.operation_id));
-        }
-        let request = self
-            .resolve_model_request(
-                journal,
-                input,
-                (step, prior_messages, purpose),
-                retained_request,
-                phase,
-            )
+            .prepare_dispatch_step(journal, input, step, prior_messages, purpose, phase)
             .await?;
         let request_digest = request.request_digest();
         let purpose_key = model_purpose_key(purpose);
@@ -70,6 +62,10 @@ impl StockExecution<'_> {
         self.record_model_phase(&admission, started);
         if admission.completed {
             crate::obs::obs_record!("items" = replayed.len());
+            if purpose == ModelPurpose::Response {
+                self.retain_response_request(journal, input, step, prior_messages.len(), request)
+                    .await?;
+            }
             return Ok(replayed);
         }
         let dispatch = crate::model::ModelDispatch {
@@ -99,14 +95,14 @@ impl StockExecution<'_> {
                 self.resume_model_attempt(input.operation_id, dispatch, replayed.is_empty(), phase)
                     .await?
             } else {
-                self.claim_model_dispatch(
+                super::phase::claim(self.claim_model_dispatch(
                     journal,
                     input,
                     (step, purpose, purpose_key),
                     &request,
                     dispatch,
                     phase,
-                )
+                ))
                 .await?
             };
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -118,24 +114,75 @@ impl StockExecution<'_> {
                         .map(|result| self.admit_model_event(result)),
                 )
             } else {
-                Either::Left(attempt.generate(self.stock.provider.as_ref(), request, dispatch))
+                Either::Left(attempt.generate(self.stock.provider.as_ref(), &request, dispatch))
             };
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let generated = attempt.generate(self.stock.provider.as_ref(), request, dispatch);
+            let generated = attempt.generate(self.stock.provider.as_ref(), &request, dispatch);
             Either::Right(generated)
         };
-        let observed = self
-            .record_model_events(
+        let observed = super::phase::run(
+            journal,
+            io,
+            self.record_model_events(
                 journal,
                 input.operation_id,
                 (step, purpose, purpose_key),
                 replayed,
                 &mut admission,
                 stream,
-            )
-            .await?;
+            ),
+        )
+        .await?;
+        if purpose == ModelPurpose::Response && admission.completed {
+            self.retain_response_request(journal, input, step, prior_messages.len(), request)
+                .await?;
+        }
         crate::obs::obs_record!("items" = observed.len());
         Ok(observed)
+    }
+
+    async fn prepare_dispatch_step(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        prior_messages: &[ModelMessage],
+        purpose: ModelPurpose,
+        phase: &mut DispatchPhase,
+    ) -> Result<PreparedDispatchStep> {
+        self.require_model_producer().await?;
+        let RetainedModelStep {
+            request,
+            admission,
+            events,
+        } = self
+            .retained_dispatch_step(journal, input.operation_id, step, purpose)
+            .await?;
+        let started = request.is_some();
+        if started {
+            phase.start();
+        }
+        if self.stock.reconciliation_only && !started && purpose != ModelPurpose::Response {
+            return Err(Error::Indeterminate(input.operation_id));
+        }
+        let preparation = self.resolve_model_request(
+            journal,
+            input,
+            (step, prior_messages, purpose),
+            request,
+            phase,
+        );
+        let request = if started {
+            preparation.await?
+        } else {
+            super::phase::run(journal, self.io, preparation).await?
+        };
+        Ok(PreparedDispatchStep {
+            request,
+            admission,
+            events,
+            started,
+        })
     }
 
     #[cfg(feature = "filesystem")]
@@ -209,7 +256,7 @@ impl StockExecution<'_> {
         phase: &mut DispatchPhase,
     ) -> Result<crate::model::PreparedModelRequest> {
         let (step, prior_messages, purpose) = turn;
-        let request = match retained_request {
+        let mut request = match retained_request {
             Some(recorded) => {
                 if purpose == ModelPurpose::Summary
                     && self
@@ -230,7 +277,8 @@ impl StockExecution<'_> {
             }
             None => self.prepare_request(input, step, prior_messages).await?,
         };
-        self.verify_model_request_content(journal, &request).await?;
+        self.verify_model_request_content(journal, &mut request)
+            .await?;
         Ok(request)
     }
 
@@ -307,15 +355,13 @@ impl StockExecution<'_> {
                 work,
             )
         })?;
-        let reference = stage_bytes(
-            journal,
-            input.operation_id,
-            &request_key,
-            request.bytes(),
-            true,
-            io,
-        )
-        .await?;
+        let reference = if purpose == ModelPurpose::Response {
+            self.stage_response_request(journal, input, step, &request_key, request)
+                .await?
+        } else {
+            transcript::stage_request(journal, input.operation_id, &request_key, request, None, io)
+                .await?
+        };
         let attempt = phase.start();
         self.claim_task_model(dispatch).await?;
         match journal
@@ -468,19 +514,15 @@ impl StockExecution<'_> {
                     )
                 })?;
                 admission.observe(event, self.stock.limits, io)?;
-                let reference = stage_json(journal, operation_id, &key, event, io).await?;
-                journal
-                    .append(
-                        operation_id,
-                        &key,
-                        &ExecutionEvent::Model {
-                            step,
-                            purpose,
-                            event: reference,
-                        },
-                        io,
-                    )?
-                    .await?;
+                super::model_observation::append(
+                    journal,
+                    operation_id,
+                    &key,
+                    (step, purpose),
+                    event,
+                    io,
+                )
+                .await?;
             }
         }
         Ok(observed)

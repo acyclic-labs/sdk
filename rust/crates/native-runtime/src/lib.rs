@@ -85,8 +85,9 @@ pub use service::{
 pub use shell::shell_command;
 mod meter;
 pub use meter::{
-    NativeByteReservation, NativeOperationKind, NativeOperationReservation, NativeReadMeter,
-    ReadAllocation, ReadAllocationReservation,
+    NativeByteReservation, NativeCodecReservation, NativeCodecWork, NativeOperationKind,
+    NativeOperationReservation, NativeReadMeter, ReadAllocation, ReadAllocationReservation,
+    arc_allocation_bytes,
 };
 mod blocking;
 mod task;

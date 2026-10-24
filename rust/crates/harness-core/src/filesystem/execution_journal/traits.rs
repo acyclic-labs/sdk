@@ -22,6 +22,21 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn cache_identity(&self) -> Option<crate::executor::ExecutionJournalCacheId> {
+        Some(self.cache_identity)
+    }
+
+    fn supports_deferred_durability(&self) -> bool {
+        self.can_defer_durability()
+    }
+
+    fn durability_barrier<'a>(
+        &'a self,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || self.seal_phase(io))
+    }
+
     fn claim_execution<'a>(
         &'a self,
         operation: OperationId,
@@ -46,6 +61,19 @@ where
 
     fn canonical_authority(&self) -> Option<&crate::core::Authority> {
         Some(self.verifier.audience())
+    }
+
+    fn working_checkpoint_authority(&self) -> Option<&crate::core::AuthorityVerifier> {
+        Some(&self.verifier)
+    }
+
+    fn indexed_records<'a>(
+        &'a self,
+        query: crate::executor::ExecutionRecordQuery<'a>,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<Option<crate::executor::IndexedExecutionFuture<'a>>> {
+        crate::conversation::BoundedContentFuture::new(io, || self.indexed_step(query, io))
+            .map(Some)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -271,6 +299,35 @@ where
         })
     }
 
+    fn stage_prepared_model_request<'a>(
+        &'a self,
+        operation: OperationId,
+        key: &'a str,
+        prepared: &'a crate::model::PreparedModelRequest,
+        previous: Option<&'a FileRef>,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<Option<crate::conversation::BoundedContentFuture<'a, FileRef>>> {
+        let limits = self
+            .owner
+            .as_ref()
+            .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
+        if !crate::executor::transcript::limits_admit(prepared.admitted_limits(), limits) {
+            return Ok(None);
+        }
+        crate::conversation::BoundedContentFuture::new(io, || {
+            crate::executor::transcript::stage_attested_request(
+                self,
+                operation,
+                key,
+                prepared,
+                previous,
+                &self.verifier,
+                io,
+            )
+        })
+        .map(Some)
+    }
+
     fn stage<'a>(
         &'a self,
         operation: OperationId,
@@ -354,6 +411,10 @@ where
         crate::conversation::BoundedContentFuture::new(io, || {
             self.verify_input_file_with_io(reference, io)
         })
+    }
+
+    fn has_file_bound_model_verification(&self) -> bool {
+        true
     }
 
     fn verify_model_content<'a>(

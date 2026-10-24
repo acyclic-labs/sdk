@@ -16,7 +16,14 @@ pub(crate) struct OperationFenceState {
 }
 
 impl OperationFence {
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+    pub(crate) fn enqueue(self: &Arc<Self>, health: &Arc<FileHealth>) -> Option<Arc<Self>> {
+        let mut tail = health
+            .tail
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        tail.replace(Arc::clone(self))
+    }
+
     pub(crate) fn wait_until_complete(&self) {
         let mut state = self
             .state
@@ -122,17 +129,12 @@ pub(crate) fn reserve_if_needed(
     let Some(health) = health.clone() else {
         return Ok(());
     };
-    let mut tail = health
-        .tail
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *predecessor = tail.clone();
     let allocation = match pending.as_ref() {
         Some(NativeJob::Task {
             meter: Some(meter), ..
         }) => Some(ReadAllocation::new(
             meter,
-            std::mem::size_of::<OperationFence>(),
+            arc_allocation_bytes::<OperationFence>(),
         )?),
         _ => None,
     };
@@ -149,7 +151,7 @@ pub(crate) fn reserve_if_needed(
     {
         *completion = Some(Arc::clone(&fence));
     }
-    *tail = Some(Arc::clone(&fence));
+    *predecessor = fence.enqueue(&health);
     *completion = Some(fence);
     Ok(())
 }

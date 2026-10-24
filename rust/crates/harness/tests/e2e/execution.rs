@@ -413,14 +413,72 @@ async fn replay(
         }
         for record in records {
             after = record.sequence;
-            let mut value = serde_json::to_value(&record.event)?;
-            if let ExecutionEvent::Model { event, .. } = &record.event {
-                *value.get_mut("event").ok_or("missing model event")? =
-                    serde_json::from_slice(&journal.load(event, None)?.await?)?;
-            }
-            events.push(value);
+            events.push(normalized_observation(journal, &record.event).await?);
         }
     }
+}
+
+/// Scenario and resume expectations describe the model contract independently
+/// of its inline or file-backed journal representation.
+pub(super) async fn normalized_observation(
+    journal: &dyn acyclic_harness::executor::ExecutionJournal,
+    event: &ExecutionEvent,
+) -> TestResult<Value> {
+    let mut value = serde_json::to_value(event)?;
+    let decoded = match event {
+        ExecutionEvent::Model { event, .. } => Some(serde_json::from_slice::<Value>(
+            &journal.load(event, None)?.await?,
+        )?),
+        ExecutionEvent::ModelInline { event, .. } => Some(serde_json::from_str(event)?),
+        _ => None,
+    };
+    if let Some(decoded) = decoded {
+        *value.get_mut("kind").ok_or("missing observation kind")? = Value::from("model");
+        *value.get_mut("event").ok_or("missing model event")? = decoded;
+    }
+    Ok(value)
+}
+
+#[tokio::test]
+async fn scenario_observations_normalize_inline_and_file_events() -> TestResult {
+    use acyclic_harness::executor::ModelPurpose;
+    let storage = MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let journal = storage.journal();
+    let event = serde_json::to_string(&acyclic_harness::model::ModelEvent::Content {
+        delta: "hello".into(),
+    })?;
+    let reference = journal
+        .stage(
+            OperationId::new(),
+            "event",
+            event.as_bytes(),
+            "application/json",
+            None,
+        )?
+        .await?;
+    let file = ExecutionEvent::Model {
+        step: 0,
+        purpose: ModelPurpose::Response,
+        event: reference,
+    };
+    let inline = ExecutionEvent::ModelInline {
+        step: 0,
+        purpose: ModelPurpose::Response,
+        event,
+    };
+    let expected = normalized_observation(journal.as_ref(), &file).await?;
+    assert_eq!(
+        normalized_observation(journal.as_ref(), &inline).await?,
+        expected
+    );
+    assert_eq!(expected.get("kind"), Some(&Value::from("model")));
+    assert_eq!(
+        expected.get("event").and_then(|event| event.get("delta")),
+        Some(&Value::from("hello"))
+    );
+    // The former reader leaves inline storage details in the scenario trace.
+    assert_ne!(serde_json::to_value(&inline)?, expected);
+    Ok(())
 }
 
 pub(super) async fn check_files<

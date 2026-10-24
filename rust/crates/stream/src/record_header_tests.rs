@@ -3,6 +3,10 @@ use crate::{
     IdempotencyKey, MAX_RECORD_BYTES, OwnedBytes, RecordHeaders, StreamError, StreamPath,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "record_header_tests/native.rs"]
+mod native;
+
 fn body(key: &'static [u8], attribute: &'static [u8]) -> Result<AppendRecord, StreamError> {
     Ok(AppendRecord {
         value: OwnedBytes::from_static(b"same body"),

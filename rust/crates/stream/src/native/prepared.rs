@@ -71,7 +71,7 @@ impl NativeCommitRecordSlot {
     pub(crate) fn new(
         meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> std::io::Result<Arc<Self>> {
-        let bytes = std::mem::size_of::<Self>();
+        let bytes = acyclic_native_runtime::arc_allocation_bytes::<Self>();
         let allocation = acyclic_native_runtime::ReadAllocation::new(meter, bytes)?;
         meter.admit_codec(0, bytes as u64, 0)?;
         let record = Arc::new(Self {
@@ -133,5 +133,41 @@ impl NativeCommitRecordSlot {
         if let Some(waiter) = waiter {
             waiter.wake();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_meter::Meter;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn prepared_ingress_retains_its_arc_counters_until_the_last_owner()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let meter = Arc::new(Meter::default());
+        let allocation = acyclic_native_runtime::ReadAllocation::empty(&meter.original());
+        let mut physical = None;
+        let observed = acyclic_test_support::measure(|| {
+            physical = Some(Arc::new(NativeCommitRecordSlot {
+                state: std::sync::Mutex::new((None, None)),
+                _allocation: allocation,
+            }));
+        });
+        let bytes = u64::try_from(observed.bytes_current)?;
+        assert_eq!(observed.count_current, 1);
+        drop(physical);
+        let slot = NativeCommitRecordSlot::new(&meter.original())?;
+        let retained = slot.clone();
+        drop(slot);
+        assert_eq!(
+            meter.held.load(Ordering::SeqCst),
+            bytes,
+            "prepared ingress omitted Arc counters"
+        );
+        retained.close();
+        drop(retained);
+        meter.assert_refunded();
+        Ok(())
     }
 }

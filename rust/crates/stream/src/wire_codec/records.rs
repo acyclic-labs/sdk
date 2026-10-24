@@ -58,7 +58,7 @@ fn headers_wire(headers: &crate::RecordHeaders) -> (Vec<Bytes>, Vec<wire::Attrib
             .attributes()
             .iter()
             .map(|attribute| wire::Attribute {
-                name: attribute.name.clone(),
+                name: attribute.name.to_owned(),
                 value: Bytes::from_owner(attribute.value.clone()),
             })
             .collect(),

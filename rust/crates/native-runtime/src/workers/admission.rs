@@ -2,25 +2,29 @@ use crate::sync::{Mutex, mpsc};
 use crate::*;
 
 // Lock order: queue admission, then channel or waiter nodes. Admission serializes
-// edits to adjacent nodes; release notification holds only one node at a time.
+// edits to adjacent nodes and the release cursor. Notification never follows a
+// retired node: unlinking advances the shared cursor before clearing its edges.
 // Wakes run after every lock is released. A notifier may still hold a node
-// while it wakes the owner, so the owner takes the node's charge out under the
-// lock that unlinks it and drops it after admission. The Loom models exercise
-// both orders of registration and capacity release, and owner admission or
-// cancellation against a notifier that still holds the node, on these locks.
+// while it wakes the owner, so the charge stays with the shared node. The Loom
+// models exercise both registration/release orders and retired shared owners.
 
 pub(crate) struct AdmissionState {
     pub(crate) head: Option<Arc<CapacityWaiter>>,
     pub(crate) tail: Weak<CapacityWaiter>,
     pub(crate) waiter_count: usize,
     pub(crate) queued_jobs: usize,
+    notifying: bool,
+    notify_again: bool,
+    notify_next: Option<Arc<CapacityWaiter>>,
     #[cfg(all(test, acyclic_native_runtime_loom))]
     pub(crate) broken_wake: bool,
     #[cfg(all(test, acyclic_native_runtime_loom))]
     pub(crate) broken_accounting: bool,
-    /// Leaves a retired waiter's charge on its node, for the Loom control.
+    /// Refunds a live shared node early, for the Loom negative control.
     #[cfg(all(test, acyclic_native_runtime_loom))]
     pub(crate) broken_charge: bool,
+    #[cfg(all(test, acyclic_native_runtime_loom))]
+    pub(crate) broken_broadcast: bool,
 }
 
 pub(crate) struct CapacityWaiter {
@@ -32,8 +36,8 @@ pub(crate) struct CapacityWaiterState {
     pub(crate) next: Option<Arc<CapacityWaiter>>,
     pub(crate) waker: Waker,
     pub(crate) queued: bool,
-    /// The node's own allocation charge, taken back by its owner on retirement.
-    pub(crate) charge: Option<ReadAllocation>,
+    /// The node's original allocation charge, retained through its final owner.
+    pub(crate) _allocation: Option<ReadAllocation>,
 }
 
 impl AdmissionState {
@@ -43,12 +47,17 @@ impl AdmissionState {
             tail: Weak::new(),
             waiter_count: 0,
             queued_jobs: 0,
+            notifying: false,
+            notify_again: false,
+            notify_next: None,
             #[cfg(all(test, acyclic_native_runtime_loom))]
             broken_wake: false,
             #[cfg(all(test, acyclic_native_runtime_loom))]
             broken_accounting: false,
             #[cfg(all(test, acyclic_native_runtime_loom))]
             broken_charge: false,
+            #[cfg(all(test, acyclic_native_runtime_loom))]
+            broken_broadcast: false,
         }
     }
 
@@ -87,32 +96,30 @@ impl AdmissionState {
         self.waiter_count += 1;
     }
 
-    /// Retires the owner's waiter and returns the next waiter's waker with the
-    /// owner's charge, which the caller drops after releasing admission. The
-    /// charge leaves the node under the same lock that unlinks it, queued or
-    /// not, because a notifier may still hold the node after the owner lets go.
-    pub(crate) fn retire_owner(
-        &mut self,
-        node: Arc<CapacityWaiter>,
-    ) -> (Option<Waker>, Option<ReadAllocation>) {
+    /// Unlinks the owner's waiter and returns the next waiter's waker. The
+    /// allocation stays funded while a notifier still owns the retired node.
+    pub(crate) fn retire_owner(&mut self, node: Arc<CapacityWaiter>) -> Option<Waker> {
         let mut state = node
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         #[cfg(all(test, acyclic_native_runtime_loom))]
-        let charge = if self.broken_charge {
-            None
-        } else {
-            state.charge.take()
-        };
-        #[cfg(not(all(test, acyclic_native_runtime_loom)))]
-        let charge = state.charge.take();
+        if self.broken_charge {
+            state._allocation.take();
+        }
         if !state.queued {
-            return (None, charge);
+            return None;
         }
         state.queued = false;
-        let previous = state.previous.upgrade();
-        let next = state.next.clone();
+        let previous = std::mem::take(&mut state.previous).upgrade();
+        let next = state.next.take();
+        if self
+            .notify_next
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, &node))
+        {
+            self.notify_next = next.clone();
+        }
         if let Some(previous) = &previous {
             previous
                 .state
@@ -134,7 +141,11 @@ impl AdmissionState {
         // The owner's reference ends here; a notifier may still hold the node.
         drop(state);
         drop(node);
-        let next = if previous.is_none() {
+        #[cfg(all(test, acyclic_native_runtime_loom))]
+        let notify = !self.broken_wake;
+        #[cfg(not(all(test, acyclic_native_runtime_loom)))]
+        let notify = true;
+        if previous.is_none() && notify {
             self.head.as_ref().map(|head| {
                 head.state
                     .lock()
@@ -144,8 +155,7 @@ impl AdmissionState {
             })
         } else {
             None
-        };
-        (next, charge)
+        }
     }
 }
 
@@ -155,7 +165,7 @@ impl AdmissionState {
 pub(crate) fn prepay_capacity_waiter(
     meter: &Arc<dyn NativeReadMeter>,
 ) -> io::Result<ReadAllocation> {
-    ReadAllocation::new(meter, std::mem::size_of::<CapacityWaiter>())
+    ReadAllocation::new(meter, arc_allocation_bytes::<CapacityWaiter>())
 }
 
 pub(crate) fn capacity_waiter(allocation: Option<ReadAllocation>) -> Arc<CapacityWaiter> {
@@ -165,7 +175,7 @@ pub(crate) fn capacity_waiter(allocation: Option<ReadAllocation>) -> Arc<Capacit
             next: None,
             waker: Waker::noop().clone(),
             queued: false,
-            charge: allocation,
+            _allocation: allocation,
         }),
     })
 }
@@ -212,43 +222,20 @@ pub(crate) fn poll_submission_with(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(node) = waiter.as_ref() {
-        let queued = node
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .queued;
-        if !queued && admission.queued_jobs != 0 && admission.head.is_some() {
-            admission.register_existing(node, context.waker());
-        }
         node.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .waker
             .clone_from(context.waker());
-        if admission.queued_jobs != 0
-            && admission
-                .head
-                .as_ref()
-                .is_some_and(|head| !Arc::ptr_eq(head, node))
-        {
-            *pending = Some(job);
-            return Poll::Pending;
-        }
-    } else if admission.queued_jobs != 0 && admission.head.is_some() {
-        *waiter = Some(admission.register(context.waker(), job.take_admission()));
-        *pending = Some(job);
-        return Poll::Pending;
     }
     // A job that never waits retires its prepaid waiter charge on admission.
     let prepaid = job.take_admission();
     match workers.sender.try_send(job) {
         Ok(()) => {
             admission.queued_jobs += 1;
-            let (next, charge) = waiter
-                .take()
-                .map_or((None, None), |node| admission.retire_owner(node));
+            let next = waiter.take().and_then(|node| admission.retire_owner(node));
             drop(admission);
-            drop((charge, prepaid));
+            drop(prepaid);
             wake_capacity_waiter(next);
             Poll::Ready(Ok(()))
         }
@@ -271,11 +258,9 @@ pub(crate) fn poll_submission_with(
             Poll::Pending
         }
         Err(mpsc::TrySendError::Disconnected(_)) => {
-            let (next, charge) = waiter
-                .take()
-                .map_or((None, None), |node| admission.retire_owner(node));
+            let next = waiter.take().and_then(|node| admission.retire_owner(node));
             drop(admission);
-            drop((charge, prepaid));
+            drop(prepaid);
             wake_capacity_waiter(next);
             Poll::Ready(Err(io::Error::from(io::ErrorKind::BrokenPipe)))
         }
@@ -290,9 +275,8 @@ pub(crate) fn remove_capacity_waiter(workers: &NativeWorkers, waiter: Option<Arc
         .admission
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (next, charge) = admission.retire_owner(waiter);
+    let next = admission.retire_owner(waiter);
     drop(admission);
-    drop(charge);
     wake_capacity_waiter(next);
 }
 
@@ -303,7 +287,7 @@ pub(crate) fn wake_capacity_waiter(waiter: Option<Waker>) {
 }
 
 pub(crate) fn notify_capacity_released(admission: &Mutex<AdmissionState>) {
-    let (mut node, count) = {
+    {
         let mut admission = admission
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -313,27 +297,46 @@ pub(crate) fn notify_capacity_released(admission: &Mutex<AdmissionState>) {
             return;
         }
         admission.queued_jobs = admission.queued_jobs.saturating_sub(1);
-        let count = if admission.queued_jobs == 0 {
-            admission.waiter_count
-        } else {
-            usize::from(admission.head.is_some())
-        };
         #[cfg(all(test, acyclic_native_runtime_loom))]
-        let count = if admission.broken_wake { 0 } else { count };
-        (admission.head.clone(), count)
-    };
-    for _ in 0..count {
-        let Some(current) = node else {
-            break;
-        };
-        let (next, waker) = {
-            let state = current
+        if admission.broken_wake {
+            return;
+        }
+        if admission.notifying {
+            // A waiter already visited by the active notifier may have polled
+            // while the channel was full. Cover this release in a fresh pass.
+            admission.notify_again = true;
+            return;
+        }
+        admission.notifying = true;
+        admission.notify_next = admission.head.clone();
+    }
+    loop {
+        let waker = {
+            let mut admission = admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if admission.notify_next.is_none() && admission.notify_again {
+                admission.notify_again = false;
+                admission.notify_next = admission.head.clone();
+            }
+            let Some(node) = admission.notify_next.take() else {
+                admission.notifying = false;
+                return;
+            };
+            let state = node
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            (state.next.clone(), state.waker.clone())
+            admission.notify_next = state.next.clone();
+            #[cfg(all(test, acyclic_native_runtime_loom))]
+            if admission.broken_broadcast {
+                admission.notify_next = None;
+            }
+            state.waker.clone()
         };
-        node = next;
+        // A consumer may cancel, poll, or release more capacity synchronously.
+        // The cursor lives under admission, so those edits cannot strand the
+        // remainder and concurrent releases coalesce without allocating.
         wake_capacity_waiter(Some(waker));
     }
 }

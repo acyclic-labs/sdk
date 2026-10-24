@@ -79,45 +79,16 @@ pub(super) fn bucket_changes(
     delta: &mut Delta,
     publication: &mut Publication,
 ) -> Result<(), NativeObjectsError> {
-    fn changed(
-        name: &str,
-        key: &str,
-        value: &Stored,
-        publication: &mut Publication,
-    ) -> Result<ObjectChange, NativeObjectsError> {
-        Ok(ObjectChange {
-            bucket: publication.text(name)?,
-            key: publication.text(key)?,
-            info: Some(publication.info(&value.info)?),
-            bodies: bodies(&value.body, publication)?,
-        })
-    }
     let mut removed = Vec::new();
     for (name, bucket) in &next.buckets {
         let old = before.buckets.get(name);
         if old.is_none_or(|old| old.info != bucket.info) {
-            let info = wire::Bucket {
-                bucket: bucket
-                    .info
-                    .bucket
-                    .as_ref()
-                    .map(|bucket| {
-                        publication
-                            .text(&bucket.name)
-                            .map(|name| wire::BucketRef { name })
-                    })
-                    .transpose()?,
-                created_at: bucket.info.created_at,
-            };
-            let change = BucketChange {
-                name: publication.text(name)?,
-                info: Some(info),
-            };
+            let change = bucket_record(name, bucket, publication)?;
             publication.push(&mut delta.buckets, change)?;
         }
         let Some(old) = old else {
             for (key, value) in &bucket.objects {
-                let change = changed(name, key.as_str(), value, publication)?;
+                let change = object_record(name, key.as_str(), value, publication)?;
                 publication.push(&mut delta.objects, change)?;
             }
             continue;
@@ -125,7 +96,7 @@ pub(super) fn bucket_changes(
         for item in old.objects.diff(&bucket.objects) {
             match item {
                 imbl::ordmap::DiffItem::Add(key, value) => {
-                    let change = changed(name, key.as_str(), value, publication)?;
+                    let change = object_record(name, key.as_str(), value, publication)?;
                     publication.push(&mut delta.objects, change)?;
                 }
                 imbl::ordmap::DiffItem::Update {
@@ -202,18 +173,7 @@ pub(super) fn difference(
             }
         };
         if old.is_none() {
-            let metadata = upload
-                .metadata
-                .as_ref()
-                .map(|value| publication.metadata(value))
-                .transpose()?;
-            let change = UploadChange {
-                id: publication.text(id)?,
-                bucket: publication.text(&upload.bucket)?,
-                key: publication.text(&upload.key)?,
-                metadata,
-                deleted: false,
-            };
+            let change = upload_record(id, upload, publication)?;
             publication.push(&mut delta.uploads, change)?;
         }
         let empty = OrdMap::new();
@@ -229,28 +189,13 @@ pub(super) fn difference(
                 } if old != receipt => (number, receipt, body),
                 _ => continue,
             };
-            let refs = bodies(body, publication)?;
-            let change = PartChange {
-                upload: publication.text(id)?,
-                number: *number,
-                receipt: Some(wire::UploadedPart {
-                    etag: publication.text(&receipt.etag)?,
-                    part_number: receipt.part_number,
-                    size: receipt.size,
-                }),
-                bodies: refs,
-            };
+            let change = part_record(id, *number, receipt, body, publication)?;
             publication.push(&mut delta.parts, change)?;
         }
     }
     for item in before.receipts.diff(&next.receipts) {
         if let imbl::ordmap::DiffItem::Add(key, receipt) = item {
-            let change = ReceiptChange {
-                key: publication.text(key.as_str())?,
-                digest: publication.bytes(&receipt.digest)?,
-                response: publication.bytes(receipt.response.as_ref())?,
-                kind: receipt.kind,
-            };
+            let change = receipt_record(key, receipt, publication)?;
             publication.push(&mut delta.receipts, change)?;
         }
     }

@@ -551,6 +551,18 @@ pub(crate) fn canonical_digest_with_work<T: Serialize + ?Sized>(
             value, bounds, code, observer,
         );
     }
+    let mut digest = blake3::Hasher::new();
+    canonical_update_with_work(value, bounds, code, observer, &mut digest)?;
+    Ok(*digest.finalize().as_bytes())
+}
+
+pub(super) fn canonical_update_with_work<T: Serialize + ?Sized>(
+    value: &T,
+    bounds: JsonBounds,
+    code: Option<crate::wire::ErrorCode>,
+    observer: &mut dyn crate::store::HistoryIo,
+    digest: &mut blake3::Hasher,
+) -> Result<u64> {
     let observer = RefCell::new(observer);
     let mut charge = |event| observer.borrow_mut().codec_charge(event);
     let mut scope = scope(bounds, code, &mut charge);
@@ -558,8 +570,7 @@ pub(crate) fn canonical_digest_with_work<T: Serialize + ?Sized>(
     let capacity = bytes.capacity() as u64;
     drop(bytes);
     scope.release(capacity)?;
-    let mut digest = blake3::Hasher::new();
-    write(
+    let written = write(
         &value,
         &mut scope,
         None,
@@ -577,7 +588,7 @@ pub(crate) fn canonical_digest_with_work<T: Serialize + ?Sized>(
     drop(value);
     scope.release(scope.retained)?;
     scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
-    Ok(*digest.finalize().as_bytes())
+    Ok(written)
 }
 
 /// Sorted-key encoding with funded buffers and Value storage. The returned

@@ -399,6 +399,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             | ExecutionEvent::ContextCompacted { .. }
             | ExecutionEvent::ToolStarted { .. } => JournalWrite::Fresh,
             ExecutionEvent::Model { .. }
+            | ExecutionEvent::ModelInline { .. }
             | ExecutionEvent::ModelStopped { .. }
             | ExecutionEvent::ToolCompleted { .. }
             | ExecutionEvent::ToolFailed { .. } => JournalWrite::Settlement,
@@ -411,9 +412,19 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         event: &crate::executor::ExecutionEvent,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
-        self.condition(Self::execution_write(operation, event)?, work)
+        self.execution_condition(operation, event, work)
             .await
             .map(|_| ())
+    }
+
+    pub(crate) async fn execution_condition(
+        &self,
+        operation: OperationId,
+        event: &crate::executor::ExecutionEvent,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<acyclic_stream::CommitCondition> {
+        self.condition(Self::execution_write(operation, event)?, work)
+            .await
     }
 
     pub(crate) async fn verify_model_history<'a>(
@@ -528,31 +539,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         drop(outcome);
         drop(received);
         result
-    }
-
-    pub(crate) async fn append_execution(
-        &self,
-        operation: OperationId,
-        expected_tail: u64,
-        key: &StreamKey,
-        bytes: OwnedBytes,
-        event: &crate::executor::ExecutionEvent,
-        work: &mut Option<&mut dyn crate::store::HistoryIo>,
-    ) -> Result<bool> {
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let path = crate::distributed::execution_path(operation, quota.work())?;
-        if quota.work().is_some() {
-            quota.adopt(path.as_str().len() as u64)?;
-        }
-        self.append(
-            path,
-            expected_tail,
-            Some(key),
-            bytes,
-            Self::execution_write(operation, event)?,
-            quota.work(),
-        )
-        .await
     }
 
     pub(crate) async fn append_workflow(

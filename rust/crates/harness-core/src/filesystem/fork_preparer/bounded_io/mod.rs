@@ -16,8 +16,10 @@ mod codec_properties;
 mod history;
 mod quota;
 mod records;
+mod scope;
 mod sdk;
 mod standalone_custody;
+pub(crate) use scope::PreparationScope;
 #[cfg(test)]
 mod tests;
 pub(in crate::filesystem) use codec::decode_record;
@@ -28,8 +30,8 @@ pub(crate) use quota::native_decoded;
 pub(crate) use quota::{DecodeReservation, retain_decoded};
 pub use records::PreparationRecord;
 pub use records::UploadRecord;
-pub(crate) use records::preparation_slot_bytes;
 use records::{decode_allowance_error, decode_allowance_with_code};
+pub(crate) use records::{preparation_file_record_slot_bytes, preparation_slot_bytes};
 pub(in crate::filesystem) use sdk::{
     content_workspace, create, generation_ref, operation_key, retain,
 };
@@ -203,6 +205,48 @@ impl PreparationIo {
             Self::Native { work, .. } => Some(work),
         }
     }
+
+    pub(in crate::filesystem) fn shares_ledger(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Owned { work: left, .. }, Self::Owned { work: right, .. }) => {
+                std::sync::Arc::ptr_eq(left, right)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            (Self::Native { work: left, .. }, Self::Native { work: right, .. }) => {
+                left.shares_allocation_context(right)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            _ => false,
+        }
+    }
+
+    /// Updates invocation work without moving retained allocation ownership.
+    pub(in crate::filesystem) fn use_current_context(&mut self, current: &Self) {
+        match (self, current) {
+            (
+                Self::Owned {
+                    budget,
+                    cancellation,
+                    ..
+                },
+                Self::Owned {
+                    budget: current_budget,
+                    cancellation: current_cancellation,
+                    ..
+                },
+            ) => {
+                *budget = *current_budget;
+                *cancellation = current_cancellation.clone();
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            (Self::Native { work, .. }, Self::Native { work: current, .. }) => {
+                *work = current.clone();
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            _ => unreachable!("retained pool was checked against the current ledger"),
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn absorb_native_custody(
         &self,
@@ -301,6 +345,7 @@ impl PreparationIo {
                 work,
                 custody,
                 cancellation,
+                ..
             } => {
                 let mut state = work
                     .lock()

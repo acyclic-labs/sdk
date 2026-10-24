@@ -190,11 +190,9 @@ where
             _ => None,
         })
         .ok_or_else(|| Error::NotFound("compacted native response".into()))?;
-    let admitted = PreparedModelRequest::decode(
-        &journal.load(request, None)?.await?,
-        Limits::default(),
-        None,
-    )?;
+    let admitted =
+        acyclic_harness::executor::load_model_request(&journal, request, Limits::default(), None)
+            .await?;
     assert!(
         admitted
             .request()
@@ -551,12 +549,9 @@ where
         captures
     );
     assert_eq!(
-        PreparedModelRequest::decode(
-            &journal.load(request, None)?.await?,
-            Limits::default(),
-            None
-        )?
-        .bytes(),
+        acyclic_harness::executor::load_model_request(&journal, request, Limits::default(), None)
+            .await?
+            .bytes(),
         admitted.bytes()
     );
     Ok(())

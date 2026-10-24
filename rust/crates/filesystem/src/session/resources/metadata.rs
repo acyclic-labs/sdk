@@ -40,7 +40,7 @@ pub(super) fn project(
             .attributes()
             .iter()
             .map(|a| Attribute {
-                name: a.name.clone(),
+                name: a.name.to_owned(),
                 value: a.value.to_vec(),
             })
             .collect(),
@@ -88,7 +88,7 @@ pub(super) fn project(
             .attributes()
             .iter()
             .filter(|a| a.name != "acyclic.record")
-            .cloned()
+            .map(acyclic_stream::RecordAttribute::to_owned)
             .collect(),
     )?;
     record.value = projected.value;

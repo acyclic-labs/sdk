@@ -51,4 +51,17 @@ impl ToolCall {
             )?,
         )
     }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn retained_payload_bytes(&self) -> crate::Result<u64> {
+        use super::inventory::add;
+        use crate::executor::json::json_value_retained_owned_bytes;
+        add(
+            add(self.call_id.capacity() as u64, self.name.capacity() as u64)?,
+            add(
+                json_value_retained_owned_bytes(&self.arguments)?,
+                json_value_retained_owned_bytes(&self.metadata)?,
+            )?,
+        )
+    }
 }

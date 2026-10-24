@@ -224,13 +224,13 @@ impl ModelProvider for ScaleProvider {
     }
     fn generate<'a>(
         &'a self,
-        request: PreparedModelRequest,
+        request: &'a PreparedModelRequest,
         _: ModelDispatch,
     ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
         Box::pin(
             futures::stream::once(async move {
-                let prompt = self.prompt(&request).await?;
-                let events = self.reply(&request, &prompt)?;
+                let prompt = self.prompt(request).await?;
+                let events = self.reply(request, &prompt)?;
                 Ok::<_, Error>(futures::stream::iter(events.into_iter().map(Ok)))
             })
             .try_flatten(),

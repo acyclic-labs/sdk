@@ -8,11 +8,47 @@ struct Node<T> {
     bit: u16,
     children: [usize; 2],
 }
-pub(super) struct Index<T = Position> {
+pub(crate) struct Index<T = Position> {
     nodes: Vec<Node<T>>,
     roots: [Option<usize>; 2],
+    vacant: Vec<usize>,
+}
+impl<T> Default for Index<T> {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            roots: [None; 2],
+            vacant: Vec::new(),
+        }
+    }
 }
 impl<T: Copy> Index<T> {
+    /// Visits live leaf entries when building an initial durable snapshot.
+    #[cfg(any(test, feature = "filesystem"))]
+    pub(crate) fn entries(&self) -> impl Iterator<Item = ([u8; 32], T)> + '_ {
+        self.nodes
+            .iter()
+            .filter_map(|node| node.value.map(|value| (node.key, value)))
+    }
+
+    /// Funds two nodes for another key without rebuilding the retained prefix.
+    pub(crate) fn reserve_key(&mut self, io: Option<&PreparationIo>) -> Result<()> {
+        let required = self
+            .nodes
+            .len()
+            .checked_add(2_usize.saturating_sub(self.vacant.len()))
+            .ok_or_else(super::inventory::overflow)?;
+        if required > self.nodes.capacity() {
+            let capacity = self
+                .nodes
+                .capacity()
+                .max(2)
+                .checked_mul(2)
+                .ok_or_else(super::inventory::overflow)?;
+            crate::executor::stock_vec_reserve(&mut self.nodes, capacity, io)?;
+        }
+        Ok(())
+    }
     pub(super) fn new(
         parts: usize,
         quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
@@ -23,15 +59,103 @@ impl<T: Copy> Index<T> {
         Ok(Self {
             nodes: crate::core::reserve_copy_vector(capacity, quota)?,
             roots: [None; 2],
+            vacant: Vec::new(),
         })
     }
-    pub(super) fn get(
+    pub(crate) fn get(
         &self,
         domain: usize,
         key: &[u8; 32],
         io: Option<&PreparationIo>,
     ) -> Result<Option<T>> {
         self.get_with(domain, key, |items| step(io, items))
+    }
+
+    /// Removes a key and its redundant branch without retaining tombstones.
+    #[cfg(any(test, feature = "filesystem"))]
+    pub(crate) fn remove(
+        &mut self,
+        domain: usize,
+        key: &[u8; 32],
+        io: Option<&PreparationIo>,
+    ) -> Result<Option<T>> {
+        step(io, 1)?;
+        let Some(mut current) = *self
+            .roots
+            .get(domain)
+            .ok_or_else(super::inventory::overflow)?
+        else {
+            return Ok(None);
+        };
+        let mut parent = None;
+        let mut grandparent = None;
+        loop {
+            step(io, 1)?;
+            let node = self
+                .nodes
+                .get(current)
+                .ok_or_else(super::inventory::overflow)?;
+            if node.bit == 256 {
+                if node.key != *key || node.value.is_none() {
+                    return Ok(None);
+                }
+                break;
+            }
+            let side = direction(key, node.bit);
+            grandparent = parent;
+            parent = Some((current, side));
+            current = *node
+                .children
+                .get(side)
+                .ok_or_else(super::inventory::overflow)?;
+        }
+        let count = self
+            .vacant
+            .len()
+            .checked_add(2)
+            .ok_or_else(super::inventory::overflow)?;
+        if count > self.vacant.capacity() {
+            let capacity = self
+                .vacant
+                .capacity()
+                .checked_mul(2)
+                .map(|n| n.max(count))
+                .ok_or_else(super::inventory::overflow)?;
+            crate::executor::stock_vec_reserve(&mut self.vacant, capacity, io)?;
+        }
+        let value = self
+            .nodes
+            .get_mut(current)
+            .ok_or_else(super::inventory::overflow)?
+            .value
+            .take();
+        if let Some((parent, side)) = parent {
+            let sibling = *self
+                .nodes
+                .get(parent)
+                .and_then(|node| node.children.get(1 - side))
+                .ok_or_else(super::inventory::overflow)?;
+            if let Some((grandparent, side)) = grandparent {
+                *self
+                    .nodes
+                    .get_mut(grandparent)
+                    .and_then(|node| node.children.get_mut(side))
+                    .ok_or_else(super::inventory::overflow)? = sibling;
+            } else {
+                *self
+                    .roots
+                    .get_mut(domain)
+                    .ok_or_else(super::inventory::overflow)? = Some(sibling);
+            }
+            self.vacant.push(parent);
+        } else {
+            *self
+                .roots
+                .get_mut(domain)
+                .ok_or_else(super::inventory::overflow)? = None;
+        }
+        self.vacant.push(current);
+        Ok(value)
     }
     pub(super) fn get_history(
         &self,
@@ -61,7 +185,7 @@ impl<T: Copy> Index<T> {
             node = current.children[direction(key, current.bit)];
         }
     }
-    pub(super) fn set(
+    pub(crate) fn set(
         &mut self,
         domain: usize,
         key: [u8; 32],
@@ -88,7 +212,7 @@ impl<T: Copy> Index<T> {
     ) -> Result<()> {
         charge(1)?;
         let Some(mut node) = self.roots[domain] else {
-            self.roots[domain] = Some(self.leaf(key, value));
+            self.roots[domain] = Some(self.leaf(key, value)?);
             return Ok(());
         };
         while self.nodes[node].bit < 256 {
@@ -105,7 +229,7 @@ impl<T: Copy> Index<T> {
             self.nodes[node].value = value;
             return Ok(());
         };
-        let leaf = self.leaf(key, value);
+        let leaf = self.leaf(key, value)?;
         let mut current = self.roots[domain].unwrap();
         let mut parent = None;
         while self.nodes[current].bit < bit {
@@ -116,32 +240,42 @@ impl<T: Copy> Index<T> {
         }
         let mut children = [current; 2];
         children[direction(&key, bit)] = leaf;
-        let branch = self.nodes.len();
-        self.nodes.push(Node {
+        let branch = self.insert_node(Node {
             key: [0; 32],
             value: None,
             bit,
             children,
-        });
+        })?;
         match parent {
             Some((parent, side)) => self.nodes[parent].children[side] = branch,
             None => self.roots[domain] = Some(branch),
         }
         Ok(())
     }
-    fn leaf(&mut self, key: [u8; 32], value: Option<T>) -> usize {
+    fn leaf(&mut self, key: [u8; 32], value: Option<T>) -> Result<usize> {
+        self.insert_node(Node {
+            key,
+            value,
+            bit: 256,
+            children: [0; 2],
+        })
+    }
+
+    fn insert_node(&mut self, value: Node<T>) -> Result<usize> {
+        if let Some(node) = self.vacant.pop() {
+            *self
+                .nodes
+                .get_mut(node)
+                .ok_or_else(super::inventory::overflow)? = value;
+            return Ok(node);
+        }
         let node = self.nodes.len();
         assert!(
             node < self.nodes.capacity(),
             "preflighted instruction index capacity"
         );
-        self.nodes.push(Node {
-            key,
-            value,
-            bit: 256,
-            children: [0; 2],
-        });
-        node
+        self.nodes.push(value);
+        Ok(node)
     }
 }
 fn direction(key: &[u8; 32], bit: u16) -> usize {
@@ -228,4 +362,52 @@ pub(super) fn traced<T>(run: impl FnOnce() -> T) -> T {
     }
     let _reset = Reset;
     run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(index: u64) -> [u8; 32] {
+        let mut key = [0; 32];
+        key[..8].copy_from_slice(&index.to_be_bytes());
+        key
+    }
+
+    #[test]
+    fn removing_radix_keys_reuses_storage_and_preserves_both_domains() -> Result<()> {
+        let mut index = Index::<u64>::default();
+        for domain in 0..2 {
+            for value in 0..32 {
+                index.reserve_key(None)?;
+                index.set(domain, key(value), Some(value), None)?;
+            }
+        }
+        let nodes = index.nodes.len();
+        let capacity = index.nodes.capacity();
+        for cycle in 0..1_000 {
+            for value in 0..32 {
+                assert_eq!(
+                    index.remove(0, &key(value + cycle * 32), None)?,
+                    Some(value)
+                );
+                assert_eq!(index.remove(0, &key(value + cycle * 32), None)?, None);
+                assert_eq!(index.get(1, &key(value), None)?, Some(value));
+            }
+            assert!(index.roots[0].is_none());
+            for value in 0..32 {
+                index.reserve_key(None)?;
+                index.set(0, key(value + (cycle + 1) * 32), Some(value), None)?;
+                assert_eq!(index.get(0, &key(value + cycle * 32), None)?, None);
+            }
+            assert_eq!(index.nodes.len(), nodes, "retired nodes accumulated");
+            assert_eq!(
+                index.nodes.capacity(),
+                capacity,
+                "churn grew the radix arena"
+            );
+            assert_eq!(index.entries().count(), 64);
+        }
+        Ok(())
+    }
 }

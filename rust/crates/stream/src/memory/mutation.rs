@@ -21,14 +21,6 @@ fn reserve_append(
     reserve_records(state, records.len(), bytes, limits)
 }
 
-fn commit_identity(decision: u64, digest: [u8; 32]) -> CommitId {
-    let mut hash = Sha256::new();
-    hash.update(b"acyclic.stream.commit.v1\0");
-    hash.update(decision.to_le_bytes());
-    hash.update(digest);
-    CommitId::from_bytes(hash.finalize().into())
-}
-
 impl MemoryStream {
     fn replay_outcome<'a>(
         &self,
@@ -110,6 +102,7 @@ fn retain(
         replay_left: None,
         replay_right: None,
         replay_height: 1,
+        commit_branch: None,
         digest,
         result,
         envelope,
@@ -117,8 +110,12 @@ fn retain(
     };
     if entry.envelope().is_some() || entry.replay.is_some() {
         let keyed = entry.replay.is_some();
+        let committed = entry.envelope().is_some();
         let index = state.retained.len();
         state.retained.push(entry);
+        if committed {
+            state.insert_commit(index, probe);
+        }
         if keyed {
             state.replay_root = Some(state.insert_replay(state.replay_root, index, probe));
             state.replay_count += 1;

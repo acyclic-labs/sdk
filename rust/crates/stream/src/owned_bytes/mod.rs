@@ -12,8 +12,10 @@ use std::{
 use std::{io, sync::Arc};
 #[cfg(not(target_arch = "wasm32"))]
 mod prepared;
+mod unique;
 #[cfg(not(target_arch = "wasm32"))]
 pub use prepared::{PreparedOwnedBytes, PreparedOwnedBytesError, PreparedOwnedBytesFailure};
+pub use unique::UniqueOwnedBytes;
 
 #[derive(Clone)]
 enum Data {
@@ -30,6 +32,9 @@ struct GuardBundle<G: ?Sized> {
 }
 #[cfg(not(target_arch = "wasm32"))]
 impl<G: Send + Sync + 'static> GuardBundle<G> {
+    const fn allocation_bytes() -> usize {
+        acyclic_native_runtime::arc_allocation_bytes::<Self>()
+    }
     fn new(
         data: Vec<u8>,
         guard: G,
@@ -37,7 +42,7 @@ impl<G: Send + Sync + 'static> GuardBundle<G> {
     ) -> Result<Arc<Self>, PreparedOwnedBytesFailure<G>> {
         Self::with_allocation(
             (data, guard),
-            ReadAllocation::new(meter, std::mem::size_of::<Self>()),
+            ReadAllocation::new(meter, Self::allocation_bytes()),
         )
     }
 
@@ -110,7 +115,7 @@ impl OwnedBytes {
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub const fn vec_guard_header_bytes<G: Send + Sync + 'static>() -> u64 {
-        std::mem::size_of::<GuardBundle<G>>() as u64
+        GuardBundle::<G>::allocation_bytes() as u64
     }
 
     /// Reserves the ownership header before a native producer starts I/O.
@@ -450,6 +455,8 @@ use std::cell::Cell;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod comparison_work;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod header_tests;
 
 #[inline]
 fn checked_range(bytes: &[u8], range: Range<usize>) -> &[u8] {

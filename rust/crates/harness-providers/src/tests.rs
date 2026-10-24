@@ -373,7 +373,7 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
             8192
         );
         let events = provider
-            .generate(request, dispatch)
+            .generate(&request, dispatch)
             .try_collect::<Vec<_>>()
             .await?;
         assert_eq!(
@@ -461,7 +461,7 @@ async fn http_errors_and_changed_dispatches_never_complete() -> Result<()> {
         let (request, dispatch) = request(&provider)?;
         assert!(
             provider
-                .generate(request, dispatch)
+                .generate(&request, dispatch)
                 .try_collect::<Vec<_>>()
                 .await
                 .is_err()
@@ -470,7 +470,7 @@ async fn http_errors_and_changed_dispatches_never_complete() -> Result<()> {
         dispatch.request_digest[0] ^= 1;
         assert!(
             provider
-                .generate(request, dispatch)
+                .generate(&request, dispatch)
                 .try_collect::<Vec<_>>()
                 .await
                 .is_err()
@@ -597,7 +597,7 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
             request_digest: prepared.request_digest(),
         };
         provider
-            .generate(prepared, dispatch)
+            .generate(&prepared, dispatch)
             .try_collect::<Vec<_>>()
             .await?;
         let sent = script

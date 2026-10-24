@@ -9,11 +9,11 @@ use acyclic_stream::BoxProviderStream;
 use futures::StreamExt as _;
 use std::{borrow::Cow, collections::BTreeMap};
 
-pub(crate) fn generate(
-    provider: &ResolvedModel,
-    request: PreparedModelRequest,
+pub(crate) fn generate<'a>(
+    provider: &'a ResolvedModel,
+    request: &'a PreparedModelRequest,
     dispatch: ModelDispatch,
-) -> BoxProviderStream<'_, Result<ModelEvent>> {
+) -> BoxProviderStream<'a, Result<ModelEvent>> {
     Box::pin(async_stream::try_stream! {
         provider.validate(&request.request().model)?;
         if request.request_digest() != dispatch.request_digest {
@@ -22,8 +22,8 @@ pub(crate) fn generate(
         let names = crate::tool_names::Names::new(request.request());
         let auth = authenticate(provider, #[cfg(not(target_arch = "wasm32"))] None).await?;
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
-        let body = bytes::Bytes::from(encode(provider,&request,&names,None,&origin).await?);
-        let mut events = generate_encoded(provider, &request, dispatch, body, auth, names);
+        let body = bytes::Bytes::from(encode(provider,request,&names,None,&origin).await?);
+        let mut events = generate_encoded(provider, request, dispatch, body, auth, names);
         while let Some(event) = events.next().await { yield event?; }
     })
 }

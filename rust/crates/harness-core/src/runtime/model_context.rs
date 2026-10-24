@@ -180,7 +180,7 @@ impl TaskContext {
                 .map_err(|_| Error::Invalid("model step exceeds portable bound".into()))?,
             request_digest: request.request_digest(),
         };
-        let mut stream = binding.provider.generate(request, dispatch);
+        let mut stream = binding.provider.generate(&request, dispatch);
         loop {
             let next = match deadline {
                 Some(deadline) => crate::live::timeout_until(deadline, stream.next()).await?,

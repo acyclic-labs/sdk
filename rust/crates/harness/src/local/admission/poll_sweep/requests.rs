@@ -4,17 +4,12 @@ use crate::{
     core::SchemaRegistry,
     executor::ExecutionJournal,
     filesystem::{FilesystemExecutionJournal, FilesystemJournalBinding},
-    model::{ModelRequest, ModelRole, PreparedModelRequest},
+    model::{ModelRequest, ModelRole},
 };
 
 pub(super) async fn check(harness: &Harness, fixture: &Fixture) -> Result<()> {
     let dispatches = fixture.provider.dispatches();
-    let turn = harness
-        .current_turn()
-        .await?
-        .0
-        .expect("retained root turn")
-        .root;
+    let turn = root_model_turn(harness).await?;
     let operation = match fixture.scenario {
         Scenario::Compaction => dispatches.last(),
         _ => dispatches.first(),
@@ -34,19 +29,28 @@ pub(super) async fn check(harness: &Harness, fixture: &Fixture) -> Result<()> {
         },
     )?
     .with_turn(operation, turn);
+    let records = journal.replay(operation, 0, 64, None)?.await?;
     let mut checked = 0;
     for dispatch in dispatches
         .iter()
         .filter(|dispatch| dispatch.operation_id == operation)
     {
-        let key = format!(
-            "model:{}:request:{}",
-            dispatch.step,
-            blake3::Hash::from(dispatch.request_digest).to_hex(),
-        );
-        let request = journal.staged_ref_with_io(operation, &key, None).await?;
-        let bytes = journal.load(&request, None)?.await?;
-        let prepared = PreparedModelRequest::decode(&bytes, harness.limits, None)?;
+        let request = records
+            .iter()
+            .find_map(|record| match &record.event {
+                crate::executor::ExecutionEvent::ModelStarted {
+                    step,
+                    request_digest,
+                    request,
+                    ..
+                } if *step == dispatch.step && *request_digest == dispatch.request_digest => {
+                    Some(request)
+                }
+                _ => None,
+            })
+            .ok_or_else(|| Error::NotFound("admitted model request".into()))?;
+        let prepared =
+            crate::executor::load_model_request(&journal, request, harness.limits, None).await?;
         if matches!(fixture.scenario, Scenario::Compaction) {
             use crate::conversation::ContentResidencyVerifier;
             let prompt = prepared
@@ -89,6 +93,27 @@ pub(super) async fn check(harness: &Harness, fixture: &Fixture) -> Result<()> {
         }
     );
     Ok(())
+}
+
+async fn root_model_turn(harness: &Harness) -> Result<OperationId> {
+    let root = harness
+        .current_turn()
+        .await?
+        .0
+        .expect("retained root turn")
+        .root;
+    let admission = harness
+        .runtime
+        .task_host()
+        .observe_admission(crate::runtime::task_id_for_admission(root))
+        .await?;
+    // A goal continuation changes the current command; a selected-history
+    // admission can also differ from its command's original turn. Read the
+    // immutable root input rather than guessing either identity from HEAD.
+    let command: crate::workflow::WorkflowCommand =
+        serde_json::from_value(admission.input["model"].clone())
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+    Ok(command.operation_id)
 }
 
 fn check_prompt(request: &ModelRequest) -> Result<()> {

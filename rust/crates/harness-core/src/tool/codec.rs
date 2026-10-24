@@ -50,7 +50,7 @@ pub(crate) fn clone_value(
     }
     io.retain_owned(std::mem::size_of::<Value>() as u64)?;
     let copied = crate::model::clone_value(value, Some(&io))?;
-    let retained = crate::executor::json::json_value_logical_owned_bytes(&copied)?;
+    let retained = retained_value_bytes(&copied)?;
     let custody = io.into_native_custody(retained)?;
     Ok((copied, custody))
 }
@@ -66,14 +66,7 @@ pub fn value<T: Serialize>(
     if let Some(work) = work {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let value = io.value_json(value, maximum_bytes.min(work.remaining()?.bytes_encoded))?;
-        let retained = (std::mem::size_of::<Value>() as u64)
-            .checked_add(crate::executor::json::json_value_logical_owned_bytes(
-                &value,
-            )?)
-            .ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "tool JSON ownership overflow",
-            })?;
+        let retained = retained_value_bytes(&value)?;
         let custody = io.into_native_custody(retained)?;
         return Ok((value, Some(custody)));
     }
@@ -85,6 +78,21 @@ pub fn value<T: Serialize>(
         .map(|value| (value, None))
         .map_err(|error| Error::Invalid(error.to_string()))
 }
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn retained_value_bytes(value: &Value) -> Result<u64> {
+    (std::mem::size_of::<Value>() as u64)
+        .checked_add(crate::executor::json::json_value_retained_owned_bytes(
+            value,
+        )?)
+        .ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid,
+            reason: "tool JSON ownership overflow",
+        })
+}
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod custody_tests;
 
 /// Closed tool DTO diagnostic labels.
 #[cfg(feature = "filesystem")]

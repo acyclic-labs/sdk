@@ -446,7 +446,7 @@ async fn indexed_original_reservation_work_is_independent_of_coordinator_history
     let verifier = issuer.verifier(&mut None)?;
     let mut measurements = Vec::new();
     let mut history_walk_control = Vec::new();
-    for phase in 0..3 {
+    for phase in 0u64..3 {
         if phase == 1 {
             // Grow the canonical history while keeping the replay-key index
             // fixed: valid checkpoints retain the running operation's fence.
@@ -527,16 +527,25 @@ async fn indexed_original_reservation_work_is_independent_of_coordinator_history
             measured.items_examined,
         ));
         drop((proof, custody));
-        // Deliberately restore one old canonical sequence lookup. Its SDK
-        // cursor walks retained history for the started record, beyond the
-        // initial-batch prefix cache, even though the payload stays bounded.
+        // Restore the former full canonical replay, not a sequence lookup:
+        // sequence lookups now share the SDK's balanced history index too.
         let mut control =
             HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?);
         let source = coordinator_stream(&client, &mut Some(&mut control))?;
-        let record =
-            operations::one_record(&client, source.0.path(), 2, &mut Some(&mut control)).await?;
-        assert!(record.is_some());
-        drop((record, source));
+        let mut observed = Some(&mut control as &mut dyn crate::store::HistoryIo);
+        let mut quota = CodecQuota::new(&mut observed, 0)?;
+        let mut records = read_records(&client, &source.0, 0, 1024, quota.work()).await?;
+        let mut next = 0;
+        let mut started = None;
+        while let Some(record) = next_record(&mut records, &mut next, 1024, &mut quota).await? {
+            let event = decode(&record, quota.work())?.4;
+            if matches!(event, SchedulerEvent::Started { .. }) {
+                started = Some(event);
+            }
+        }
+        assert!(started.is_some());
+        assert_eq!(next, 3 + phase * 128);
+        drop((records, quota, source));
         drop(control.into_custody()?);
         let measured = native.receipt();
         let calls = client.io_snapshot();

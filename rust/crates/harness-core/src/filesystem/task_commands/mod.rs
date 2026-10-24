@@ -7,7 +7,7 @@ use crate::{
     context::ContextPipeline,
     conversation::FileRef,
     durable_tool::DurableToolRunner,
-    executor::{ExecutionJournal, TurnInput},
+    executor::TurnInput,
     model::{Model, ModelContent, ModelProvider},
     projection::SelectedModelContext,
     runtime::{TaskContext, ToolContext},

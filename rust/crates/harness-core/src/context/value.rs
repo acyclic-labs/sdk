@@ -145,6 +145,8 @@ impl ContextInput {
         prior: &[ModelMessage],
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Self> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let _span = tracing::debug_span!("acyclic.harness.context.copy_input").entered();
         let input = crate::executor::with_history_io(io, |work| {
             crate::model::clone_content(&turn.input, work).map(|(copy, _)| copy)
         })?;

@@ -134,12 +134,12 @@ proptest! {
             }]).unwrap();
             let dispatch = ModelDispatch { request_digest: request.request_digest(), ..parser_dispatch() };
             // Negative control: the original unbound composition cannot issue HTTP.
-            let error = provider.generate(request.clone(), dispatch).try_collect::<Vec<_>>().await.unwrap_err();
+            let error = provider.generate(&request, dispatch).try_collect::<Vec<_>>().await.unwrap_err();
             assert!(error.to_string().contains("model file byte resolution is unavailable"));
             assert!(script.sent.lock().unwrap().is_empty());
             let reader = Arc::new(Reader { data: text.as_bytes().to_vec(), reads: AtomicUsize::new(0) });
             let bound = provider.bind_content(reader.clone(), 4096).unwrap();
-            bound.generate(request, dispatch).try_collect::<Vec<_>>().await.unwrap();
+            bound.generate(&request, dispatch).try_collect::<Vec<_>>().await.unwrap();
             assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
             let sent = script.sent.lock().unwrap();
             let body = crate::json(&sent[0].body).unwrap();
@@ -352,7 +352,7 @@ async fn invalid_file_policies_lengths_utf8_and_digests_fail_before_http() -> Re
         };
         assert!(
             provider
-                .generate(prepared, dispatch)
+                .generate(&prepared, dispatch)
                 .try_collect::<Vec<_>>()
                 .await
                 .is_err()
@@ -413,7 +413,7 @@ async fn tool_result_file_parts_preserve_order_and_custom_headers_reach_the_tran
         .insert("x-owner".into(), "project".into());
     let (prepared, dispatch) = request(&provider)?;
     provider
-        .generate(prepared, dispatch)
+        .generate(&prepared, dispatch)
         .try_collect::<Vec<_>>()
         .await?;
     assert_eq!(

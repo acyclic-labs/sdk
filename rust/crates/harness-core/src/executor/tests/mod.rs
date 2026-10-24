@@ -1,6 +1,9 @@
 use super::*;
 mod pre_dispatch;
 
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod phase_claim_tests;
+
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod original_preparation;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -369,6 +372,9 @@ struct Journal(
     AtomicUsize,
     AtomicUsize,
     ExecutionClaims,
+    AtomicUsize,
+    Option<crate::core::AuthorityVerifier>,
+    ExecutionJournalCacheId,
 );
 
 impl Journal {
@@ -430,6 +436,38 @@ impl crate::context::ContextSource for ChangingContextSource {
 }
 
 impl ExecutionJournal for Journal {
+    fn has_file_bound_model_verification(&self) -> bool {
+        true
+    }
+
+    fn working_checkpoint_authority(&self) -> Option<&crate::core::AuthorityVerifier> {
+        self.8.as_ref()
+    }
+
+    fn cache_identity(&self) -> Option<ExecutionJournalCacheId> {
+        Some(self.9)
+    }
+
+    fn stage_prepared_model_request<'a>(
+        &'a self,
+        operation: OperationId,
+        key: &'a str,
+        prepared: &'a crate::model::PreparedModelRequest,
+        previous: Option<&'a FileRef>,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<Option<crate::conversation::BoundedContentFuture<'a, FileRef>>> {
+        self.8
+            .as_ref()
+            .map(|verifier| {
+                crate::conversation::BoundedContentFuture::new(io, || {
+                    crate::executor::transcript::stage_attested_request(
+                        self, operation, key, prepared, previous, verifier, io,
+                    )
+                })
+            })
+            .transpose()
+    }
+
     fn claim_execution<'a>(
         &'a self,
         operation: OperationId,
@@ -494,7 +532,7 @@ impl ExecutionJournal for Journal {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             self.3.fetch_add(1, Ordering::SeqCst);
             validate_execution_page(maximum)?;
-            Ok(self
+            let records: Vec<_> = self
                 .0
                 .lock()
                 .unwrap()
@@ -502,7 +540,9 @@ impl ExecutionJournal for Journal {
                 .filter(|record| record.operation_id == operation_id && record.sequence > after)
                 .take(maximum as usize)
                 .cloned()
-                .collect())
+                .collect();
+            self.7.fetch_add(records.len(), Ordering::SeqCst);
+            Ok(records)
         })
     }
 
@@ -728,6 +768,8 @@ mod compaction;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod compaction_resolution;
 mod content;
+#[cfg(not(target_arch = "wasm32"))]
+mod context_input_reuse;
 mod final_message;
 mod invocation_bounds;
 mod live_execution;
@@ -736,6 +778,8 @@ mod output_bounds;
 mod reconciliation_scan;
 mod recovery;
 mod replay;
+#[cfg(feature = "filesystem")]
+mod request_continuation;
 #[cfg(not(target_arch = "wasm32"))]
 mod request_ownership;
 #[cfg(feature = "filesystem")]
@@ -747,6 +791,12 @@ mod tool_hooks;
 mod tool_metadata;
 mod tools_1;
 mod tools_2;
+mod transcript_delta;
+mod turn_cost;
+#[cfg(not(target_arch = "wasm32"))]
+mod working_context;
+#[cfg(feature = "filesystem")]
+mod working_tail;
 fn echo_tools(
     executor: Arc<dyn crate::tool::ToolExecutor>,
     input_schema: Value,

@@ -84,7 +84,7 @@ pub(crate) fn task_completion<T: Send + 'static>(
         .map(|meter| {
             ReadAllocation::new(
                 meter,
-                std::mem::size_of::<CompletionMutex<CompletionState<T>>>(),
+                arc_allocation_bytes::<CompletionMutex<CompletionState<T>>>(),
             )
         })
         .transpose()?;

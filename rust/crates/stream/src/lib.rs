@@ -118,6 +118,7 @@ pub use local::{CutSimulationError, PersistenceCut, fail_cut_truncation};
 #[cfg(feature = "local")]
 pub use local::{
     LocalDurability, LocalStream, LocalStreamError, LocalStreamLimits, deferring_durability,
+    requiring_durability,
 };
 pub use memory::{MemoryLimits, MemoryStream};
 
@@ -166,7 +167,8 @@ mod changes;
 mod record_headers;
 pub use changes::ChangeEntryRef;
 pub use record_headers::{
-    MAX_RECORD_ATTRIBUTES, MAX_RECORD_KEY_BYTES, MAX_RECORD_KEYS, RecordHeaders,
+    MAX_RECORD_ATTRIBUTES, MAX_RECORD_KEY_BYTES, MAX_RECORD_KEYS, RecordAttribute,
+    RecordAttributeIter, RecordAttributes, RecordHeaders,
 };
 
 include!("lib/provider.rs");
@@ -178,7 +180,7 @@ include!("lib/error.rs");
 include!("lib/tests.rs");
 
 mod owned_bytes;
-pub use owned_bytes::OwnedBytes;
+pub use owned_bytes::{OwnedBytes, UniqueOwnedBytes};
 #[cfg(not(target_arch = "wasm32"))]
 pub use owned_bytes::{PreparedOwnedBytes, PreparedOwnedBytesError, PreparedOwnedBytesFailure};
 #[cfg(not(target_arch = "wasm32"))]

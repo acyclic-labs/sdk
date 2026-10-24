@@ -3,15 +3,12 @@ use crate::*;
 pub(crate) struct BlockingWaitWake {
     pub(crate) notified: Mutex<bool>,
     pub(crate) changed: Condvar,
+    _allocation: ReadAllocation,
 }
 
-/// A wait's notifier and its charge. The waiting thread owns the charge, not
-/// the shared notifier: the worker that wakes it may still hold its waker
-/// clone for a moment after the waiter returns, and the charge must already
-/// be retired when the observer sees the result.
+/// Every retained waker owns the notifier's original allocation charge.
 pub(crate) struct PreparedWake {
     wake: Arc<BlockingWaitWake>,
-    _allocation: ReadAllocation,
 }
 
 impl BlockingWaitWake {
@@ -65,13 +62,13 @@ impl std::task::Wake for BlockingWaitWake {
 pub(crate) fn allocate_blocking_wait_wake(
     meter: &Arc<dyn NativeReadMeter>,
 ) -> io::Result<PreparedWake> {
-    let allocation = ReadAllocation::new(meter, std::mem::size_of::<BlockingWaitWake>())?;
+    let allocation = ReadAllocation::new(meter, arc_allocation_bytes::<BlockingWaitWake>())?;
     Ok(PreparedWake {
         wake: Arc::new(BlockingWaitWake {
             notified: Mutex::new(false),
             changed: Condvar::new(),
+            _allocation: allocation,
         }),
-        _allocation: allocation,
     })
 }
 

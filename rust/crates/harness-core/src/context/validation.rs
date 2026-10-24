@@ -61,26 +61,49 @@ pub(crate) fn validate_projected_context(
     limits: Limits,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
+    validate_projected_messages(context, &context.messages, limits, io)
+}
+
+/// Validate projection metadata against messages owned by an admitted request.
+/// The borrowed encoding is identical to `Context` and needs no second history.
+pub(crate) fn validate_projected_messages(
+    context: &Context,
+    messages: &[ModelMessage],
+    limits: Limits,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
     let invalid = |reason| stock_boundary(io, ErrorCode::Invalid, reason);
     crate::executor::with_history_io(io, |work| {
         limits.validate(work)?;
-        context.validate_current_input(io)?;
-        if context.messages.len() > limits.context_messages
-            || context.metadata.len() > limits.attachments
+        if context
+            .current_input_index
+            .is_some_and(|index| index as usize >= messages.len())
         {
+            return Err(invalid("current input index is outside context"));
+        }
+        if messages.len() > limits.context_messages || context.metadata.len() > limits.attachments {
             return Err(invalid("context projection exceeded declared bounds"));
         }
-        for message in &context.messages {
+        for message in messages {
             message.content.validate_limits(limits, work)?;
         }
         for file in context.metadata.values() {
             limits.validate_file(file, work)?;
         }
-        crate::executor::json::json_byte_length(context, limits.render_bytes, work)
+        let borrowed = BorrowedContext {
+            messages: ContextMessages {
+                first: messages,
+                user: None,
+                second: &[],
+            },
+            metadata: &context.metadata,
+            current_input_index: context.current_input_index,
+        };
+        crate::executor::json::json_byte_length(&borrowed, limits.render_bytes, work)
     })
     .and_then(|bytes| {
         let mut remaining = limits.render_bytes - bytes;
-        crate::model::reserve_instruction_bodies(&context.messages, &mut remaining, io)
+        crate::model::reserve_instruction_bodies(messages, &mut remaining, io)
     })
 }
 

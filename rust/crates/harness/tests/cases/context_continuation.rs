@@ -34,9 +34,7 @@ use stream_fault::LostSessionAck;
 struct StoredContent(Arc<MemoryHarnessStorage>);
 
 fn summary_model(turns: usize) -> (Arc<ScriptedModelProvider>, Arc<AtomicUsize>) {
-    let counts = Arc::new(AtomicUsize::new(0));
-    let counter = counts.clone();
-    let provider = ScriptedModelProvider::new((0..turns).map(|_| {
+    summary_model_with_turns((0..turns).map(|_| {
         ScriptedTurn::Events(vec![
             ScriptedEvent::Event(ModelEvent::Content {
                 delta: "retained summary".into(),
@@ -46,38 +44,45 @@ fn summary_model(turns: usize) -> (Arc<ScriptedModelProvider>, Arc<AtomicUsize>)
             }),
         ])
     }))
-    .with_context_capacity(ModelContextCapacity {
-        context_tokens: 131_072,
-        output_tokens: Some(4_096),
-    })
-    .with_token_counter(move |request| {
-        counter.fetch_add(1, Ordering::SeqCst);
-        let message_tokens = request
-            .request()
-            .messages
-            .iter()
-            .map(|message| {
-                let encoded = serde_json::to_vec(message)
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
-                let bytes =
-                    message
-                        .content
-                        .file_refs()
-                        .try_fold(encoded.len() as u64, |total, file| {
+}
+
+fn summary_model_with_turns(
+    turns: impl IntoIterator<Item = ScriptedTurn>,
+) -> (Arc<ScriptedModelProvider>, Arc<AtomicUsize>) {
+    let counts = Arc::new(AtomicUsize::new(0));
+    let counter = counts.clone();
+    let provider = ScriptedModelProvider::new(turns)
+        .with_context_capacity(ModelContextCapacity {
+            context_tokens: 131_072,
+            output_tokens: Some(4_096),
+        })
+        .with_token_counter(move |request| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            let message_tokens = request
+                .request()
+                .messages
+                .iter()
+                .map(|message| {
+                    let encoded = serde_json::to_vec(message)
+                        .map_err(|error| Error::Invalid(error.to_string()))?;
+                    let bytes = message.content.file_refs().try_fold(
+                        encoded.len() as u64,
+                        |total, file| {
                             total
                                 .checked_add(file.descriptor().byte_length())
                                 .ok_or_else(|| Error::Invalid("synthetic count overflow".into()))
-                        })?;
-                u32::try_from(bytes)
-                    .map_err(|_| Error::Invalid("synthetic count exceeds u32".into()))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(ModelTokenCount::from_upper_bounds(
-            request.request_digest(),
-            512,
-            message_tokens,
-        ))
-    });
+                        },
+                    )?;
+                    u32::try_from(bytes)
+                        .map_err(|_| Error::Invalid("synthetic count exceeds u32".into()))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(ModelTokenCount::from_upper_bounds(
+                request.request_digest(),
+                512,
+                message_tokens,
+            ))
+        });
     (Arc::new(provider), counts)
 }
 
@@ -341,3 +346,6 @@ use recovery::*;
 #[path = "../context_continuation/publication.rs"]
 mod publication;
 use publication::*;
+
+#[path = "../context_continuation/working_cut.rs"]
+mod working_cut;

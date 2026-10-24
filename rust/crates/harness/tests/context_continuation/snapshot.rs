@@ -305,14 +305,42 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
         .verify(&projection_bytes, &mut None)?;
     let projection_wire: serde_json::Value = serde_json::from_slice(&projection_bytes)
         .map_err(|error| Error::Invalid(error.to_string()))?;
-    let prepared: Context = serde_json::from_value(
+    let prepared_metadata: BTreeMap<String, FileRef> = serde_json::from_value(
         projection_wire
             .get("context")
+            .and_then(|context| context.get("metadata"))
             .cloned()
-            .ok_or_else(|| Error::Invalid("prepared projection has no context".into()))?,
+            .ok_or_else(|| Error::Invalid("prepared projection has no metadata".into()))?,
     )
     .map_err(|error| Error::Invalid(error.to_string()))?;
-    assert_eq!(prepared, composed);
+    assert_eq!(prepared_metadata, composed.metadata);
+    assert_eq!(
+        projection_wire
+            .get("context")
+            .and_then(|context| context.get("current_input_index"))
+            .and_then(serde_json::Value::as_u64),
+        composed.current_input_index.map(u64::from)
+    );
+    let dispatched = records
+        .iter()
+        .find_map(|record| match &record.event {
+            acyclic_harness::executor::ExecutionEvent::ModelStarted {
+                step: 0, request, ..
+            } => Some(request),
+            _ => None,
+        })
+        .ok_or_else(|| Error::Invalid("prepared snapshot was never dispatched".into()))?;
+    let prepared_request =
+        acyclic_harness::executor::load_model_request(journal.as_ref(), dispatched, limits, None)
+            .await?;
+    assert_eq!(
+        projection_wire
+            .get("context")
+            .and_then(|context| context.get("messages"))
+            .ok_or_else(|| Error::Invalid("prepared projection has no messages".into()))?,
+        &serde_json::to_value(&prepared_request.request().messages)
+            .map_err(|error| Error::Invalid(error.to_string()))?
+    );
     {
         let requests = model.requests();
         assert_eq!(requests.len(), 1);

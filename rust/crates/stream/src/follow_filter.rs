@@ -253,7 +253,7 @@ impl Clause {
         self.filter.attributes.iter().all(|clause| {
             headers
                 .attributes()
-                .binary_search_by(|attribute| attribute.name.cmp(&clause.name))
+                .binary_search_by(|attribute| attribute.name.cmp(clause.name.as_str()))
                 .ok()
                 .and_then(|index| headers.attributes().get(index))
                 .is_some_and(|attribute| {

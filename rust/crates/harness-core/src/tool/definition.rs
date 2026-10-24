@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "filesystem")]
+mod projection;
 
 /// Model-visible tool definition with immutable schemas.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -182,12 +184,11 @@ impl ToolDefinition {
         limits: crate::conversation::Limits,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Result<crate::model::ToolResultContent>> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(io) = io
-            && let Some(work) = io.original_native_work()
+        #[cfg(feature = "filesystem")]
+        return self.check_scoped_projection(value, limits, io);
+        #[cfg(not(feature = "filesystem"))]
         {
-            let decode = crate::filesystem::PreparationIo::from_native_work(work)?;
-            if let Err(violation) = crate::executor::with_history_io(Some(&decode), |work| {
+            if let Err(violation) = crate::executor::with_history_io(io, |work| {
                 crate::executor::check_json_schema_value(
                     &self.projection_schema,
                     value,
@@ -197,32 +198,13 @@ impl ToolDefinition {
             })? {
                 return Ok(Err(violation));
             }
-            let content: crate::model::ToolResultContent =
-                decode.value_decode(value, crate::wire::ErrorCode::Invalid)?;
-            crate::executor::with_history_io(Some(&decode), |work| {
-                content.validate_limits(limits, work)
+            let content = crate::model::ToolResultContent::deserialize(value).map_err(|error| {
+                Error::Invalid(format!("tool projection envelope is invalid: {error}"))
             })?;
-            let retained = content.logical_owned_bytes()?;
-            io.absorb_native_custody(decode.into_native_custody(retained)?)?;
-            return Ok(Ok(content));
+            crate::executor::with_history_io(io, |work| content.validate_limits(limits, work))?;
+            Ok(Ok(content))
         }
-        if let Err(violation) = crate::executor::with_history_io(io, |work| {
-            crate::executor::check_json_schema_value(
-                &self.projection_schema,
-                value,
-                "tool projection",
-                work,
-            )
-        })? {
-            return Ok(Err(violation));
-        }
-        let content = crate::model::ToolResultContent::deserialize(value).map_err(|error| {
-            Error::Invalid(format!("tool projection envelope is invalid: {error}"))
-        })?;
-        crate::executor::with_history_io(io, |work| content.validate_limits(limits, work))?;
-        Ok(Ok(content))
     }
-
     /// Immutable approval identity for the exact model-visible definition.
     pub fn digest(&self) -> Result<[u8; 32]> {
         self.validate(&mut None)?;
@@ -266,7 +248,7 @@ impl crate::filesystem::UploadRecord for ToolDefinition {
             &self.projection_schema,
         ] {
             bytes = bytes
-                .checked_add(crate::executor::json::json_value_logical_owned_bytes(
+                .checked_add(crate::executor::json::json_value_retained_owned_bytes(
                     value,
                 )?)
                 .ok_or(Error::NativeBoundary {

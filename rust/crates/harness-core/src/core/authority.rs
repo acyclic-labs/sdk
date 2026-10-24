@@ -815,6 +815,90 @@ impl AuthorityVerifier {
         )
     }
 
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn execution_checkpoint_proof(
+        &self,
+        digest: [u8; 32],
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<[u8; 64]> {
+        self.canonical_proof(
+            b"harness/v2/execution-index-checkpoint\0",
+            &(&self.id, &self.audience, digest),
+            work,
+        )
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn verify_execution_checkpoint(
+        &self,
+        digest: [u8; 32],
+        proof: &[u8; 64],
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        self.verify_canonical_proof(
+            b"harness/v2/execution-index-checkpoint\0",
+            &(&self.id, &self.audience, digest),
+            proof,
+            work,
+        )
+    }
+
+    pub(crate) fn working_checkpoint_proof(
+        &self,
+        digest: [u8; 32],
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<[u8; 64]> {
+        self.canonical_proof(
+            b"harness/v2/working-context-checkpoint\0",
+            &(&self.id, &self.audience, digest),
+            work,
+        )
+    }
+
+    pub(crate) fn verify_working_checkpoint(
+        &self,
+        digest: [u8; 32],
+        proof: &[u8; 64],
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        self.verify_canonical_proof(
+            b"harness/v2/working-context-checkpoint\0",
+            &(&self.id, &self.audience, digest),
+            proof,
+            work,
+        )
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn model_request_proof(
+        &self,
+        digest: [u8; 32],
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<[u8; 64]> {
+        self.canonical_proof(
+            b"harness/v2/model-request-checkpoint\0",
+            &(&self.id, &self.audience, digest),
+            work,
+        )
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn authenticates_model_request(
+        &self,
+        digest: [u8; 32],
+        proof: &[u8; 64],
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<bool> {
+        let digest = self.canonical_digest(
+            b"harness/v2/model-request-checkpoint\0",
+            &(&self.id, &self.audience, digest),
+            work,
+        )?;
+        // Invalid signatures fall back to reconstructing the request. Admission
+        // and cancellation failures above must still propagate to the caller.
+        Ok(self.verify_metadata(&digest, proof).is_ok())
+    }
+
     pub(crate) fn verify_event(
         &self,
         event: &Event,

@@ -26,7 +26,7 @@ pub(super) struct Probe {
 impl ModelProvider for Probe {
     fn generate<'a>(
         &'a self,
-        _: PreparedModelRequest,
+        _: &'a PreparedModelRequest,
         _: ModelDispatch,
     ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
         panic!("stock execution must use the native callback")

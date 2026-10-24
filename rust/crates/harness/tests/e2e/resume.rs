@@ -11,7 +11,7 @@ use acyclic_harness::{
     context::{ContextPipeline, ModelContextCapacity, ModelTokenCount},
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry},
-    executor::{ExecutionEvent, ExecutionJournal, Executor, StockExecutor, TurnInput},
+    executor::{ExecutionJournal, Executor, StockExecutor, TurnInput},
     filesystem::{
         FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
         FilesystemJournalBinding,
@@ -96,6 +96,17 @@ impl Identity {
     }
 }
 
+struct Journal {
+    inner: Arc<dyn ExecutionJournal>,
+    _issuer: AuthorityIssuer,
+}
+
+impl AsRef<dyn ExecutionJournal> for Journal {
+    fn as_ref(&self) -> &(dyn ExecutionJournal + 'static) {
+        self.inner.as_ref()
+    }
+}
+
 /// Opens the journal of `identity` on `stream`, with its files under `files`.
 /// Only the first opening binds the conversation.
 async fn journal<P: StreamProvider + 'static>(
@@ -103,7 +114,7 @@ async fn journal<P: StreamProvider + 'static>(
     files: &Path,
     identity: &Identity,
     first: bool,
-) -> TestResult<Arc<dyn ExecutionJournal>> {
+) -> TestResult<Journal> {
     let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(files)).await?;
     let provider = ProviderRef::new("resume".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = FilesystemHost::new(filesystem, &provider, None)?;
@@ -177,7 +188,10 @@ async fn journal<P: StreamProvider + 'static>(
         },
     )?
     .with_input_verifier(input);
-    Ok(Arc::new(journal))
+    Ok(Journal {
+        inner: Arc::new(journal),
+        _issuer: issuer,
+    })
 }
 
 fn executor(provider: Arc<dyn ModelProvider>) -> TestResult<StockExecutor> {
@@ -209,18 +223,12 @@ async fn observed(
         }
         for record in records {
             after = record.sequence;
-            events.push(match &record.event {
-                ExecutionEvent::Model {
-                    step,
-                    purpose,
-                    event,
-                } => json!({
-                    "kind": "model",
-                    "step": step,
-                    "purpose": purpose,
-                    "event": serde_json::from_slice::<Value>(&journal.load(event, None)?.await?)?,
-                }),
-                event => json!({"kind": serde_json::to_value(event)?["kind"]}),
+            let value = super::execution::normalized_observation(journal, &record.event).await?;
+            let kind = value.get("kind").ok_or("missing observation kind")?;
+            events.push(if kind == "model" {
+                value
+            } else {
+                json!({"kind": kind})
             });
         }
     }
@@ -282,7 +290,7 @@ impl ModelProvider for PausedPrefix {
 
     fn generate<'a>(
         &'a self,
-        _: PreparedModelRequest,
+        _: &'a PreparedModelRequest,
         _: ModelDispatch,
     ) -> acyclic_stream::BoxProviderStream<'a, acyclic_harness::Result<ModelEvent>> {
         Box::pin(futures::stream::unfold(false, move |sent| async move {
@@ -328,7 +336,7 @@ async fn child() -> TestResult {
         let stream = config.remote.connect().await?;
         let journal = journal(stream, &config.files, &identity, true).await?;
         executor(Arc::new(PausedPrefix {
-            journal: journal.clone(),
+            journal: journal.inner.clone(),
             operation: identity.operation,
             accounting: ScriptedModelProvider::new([]),
         }))?
@@ -472,6 +480,7 @@ async fn journaled(reader: impl tokio::io::AsyncRead + Unpin) -> std::io::Result
         if line == JOURNALED {
             return Ok(true);
         }
+        eprintln!("resume child: {line}");
     }
     Ok(false)
 }

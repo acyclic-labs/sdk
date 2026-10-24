@@ -211,6 +211,21 @@ impl<'a, 'b> Quota<'a, 'b> {
             .ok_or_else(|| boundary(self.work, Storage, "custody overflow"))?;
         Ok(())
     }
+    /// Funds the heap slot separately from the value's already retained children.
+    pub(crate) fn boxed<T>(&mut self, value: T) -> Result<Box<T>> {
+        let bytes = std::mem::size_of::<T>() as u64;
+        let retained = self
+            .bytes
+            .checked_add(bytes)
+            .ok_or_else(|| boundary(self.work, Storage, "boxed custody overflow"))?;
+        self.replace(retained)?;
+        if bytes != 0
+            && let Some(work) = self.work.as_deref_mut()
+        {
+            work.allocation_attempt(bytes)?;
+        }
+        Ok(Box::new(value))
+    }
     pub(crate) fn relinquish(&mut self, bytes: u64) -> Result<()> {
         let remaining = self
             .bytes

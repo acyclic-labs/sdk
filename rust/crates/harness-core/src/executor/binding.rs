@@ -113,6 +113,18 @@ impl StockExecution<'_> {
             #[serde(skip_serializing_if = "Option::is_none")]
             task_context: Option<IssuedContext<'a>>,
         }
+        // Contracts and tool definitions are temporary digest inputs. Keep
+        // their native custody on the original work, with a scope that also
+        // releases partial preparation when a stage or encoder rejects.
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let temporary_io = self
+            .io
+            .and_then(PreparationIo::original_native_work)
+            .map(PreparationIo::from_native_work)
+            .transpose()?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let io = temporary_io.as_ref().or(self.io);
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let io = self.io;
         let contracts = self.context_pipeline().contracts(io)?;
         let tools = stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, io)?;
@@ -158,7 +170,7 @@ impl StockExecution<'_> {
         )
     }
 
-    /// Replays the bound turn journal and starts it when empty.
+    /// Checks the bound turn journal and starts it when empty.
     pub(super) async fn ensure_started(
         &self,
         journal: &dyn ExecutionJournal,
@@ -166,15 +178,37 @@ impl StockExecution<'_> {
     ) -> Result<()> {
         self.verify_task_context_binding(input.operation_id)?;
 
-        let (tail, records, hold) = replay_execution(
-            journal,
-            input.operation_id,
-            1,
-            |event| matches!(event, ExecutionEvent::Started { .. }),
-            self.io,
-        )
-        .await?;
-        let _records_hold = hold;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let _records_hold;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let records_before = self
+            .io
+            .map(PreparationIo::owned_bytes)
+            .transpose()?
+            .unwrap_or(0);
+        let (tail, records) = self
+            .step_records(journal, input.operation_id, 0, true, 1, |event| {
+                matches!(event, ExecutionEvent::Started { .. })
+            })
+            .await?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        {
+            _records_hold = if let Some(io) = self.io.filter(|_| stock_is_native(self.io)) {
+                let bytes = io
+                    .owned_bytes()?
+                    .checked_sub(records_before)
+                    .ok_or_else(|| {
+                        stock_boundary(
+                            Some(io),
+                            crate::wire::ErrorCode::Storage,
+                            "binding record ownership underflows",
+                        )
+                    })?;
+                Some(io.guard_owned(bytes)?)
+            } else {
+                None
+            };
+        }
         if tail != 0 && records.first().is_none_or(|record| record.sequence != 1) {
             return Err(stock_boundary(
                 self.io,

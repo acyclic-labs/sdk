@@ -29,5 +29,18 @@ fuzz_target!(|input: &[u8]| {
         }
         drop(decoded);
         assert_eq!(work.live_allocation_bytes(), baseline);
+        if let Ok(mut journal) = serde_json::from_slice::<acyclic_fs::MaterializationJournal>(input)
+        {
+            let encoded = serde_json::to_vec(&journal_encoding::Canonical(&journal)).unwrap();
+            let capacity = journal_encoding::completion_capacity(&journal, encoded.len());
+            if let Some(revision) = journal.revision.checked_add(1) {
+                journal.revision = revision;
+                journal.work = acyclic_fs::WorkCounters::UNBOUNDED;
+                let completed = serde_json::to_vec(&journal_encoding::Canonical(&journal)).unwrap();
+                assert_eq!(capacity, Some(completed.len()));
+            } else {
+                assert!(capacity.is_none());
+            }
+        }
     }
 });

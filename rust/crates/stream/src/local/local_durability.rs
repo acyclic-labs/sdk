@@ -18,6 +18,12 @@ pub async fn deferring_durability<F: Future>(future: F) -> F::Output {
     DEFERRED.scope(true, future).await
 }
 
+/// Requires each mutation in `future` to admit and flush its own durable
+/// publication, including when its caller is deferring unrelated writes.
+pub async fn requiring_durability<F: Future>(future: F) -> F::Output {
+    DEFERRED.scope(false, future).await
+}
+
 fn deferred() -> bool {
     DEFERRED.try_with(|deferred| *deferred).unwrap_or(false)
 }

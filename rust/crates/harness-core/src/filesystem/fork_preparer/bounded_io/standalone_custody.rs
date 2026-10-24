@@ -15,6 +15,34 @@ pub struct StandaloneCustody {
 }
 
 impl StandaloneCustody {
+    // Claims and transfers use the same ledger lock. The ledger's live total
+    // stays unchanged while its ownership moves between distinct scopes.
+    pub(super) fn transfer_to(
+        &self,
+        target: &Self,
+    ) -> std::result::Result<(), acyclic_fs::FsError> {
+        if !Arc::ptr_eq(&self.work, &target.work) {
+            return Err(acyclic_fs::WorkError::Overflow.into());
+        }
+        let state = self
+            .work
+            .lock()
+            .map_err(|_| acyclic_fs::FsError::PendingMutationAllocationFailed)?;
+        state
+            .1
+            .as_ref()
+            .map_err(|error| acyclic_fs::FsError::from(*error))?;
+        let bytes = self.bytes.load(Ordering::Relaxed);
+        let retained = target
+            .bytes
+            .load(Ordering::Relaxed)
+            .checked_add(bytes)
+            .ok_or(acyclic_fs::WorkError::Overflow)?;
+        target.bytes.store(retained, Ordering::Relaxed);
+        self.bytes.store(0, Ordering::Relaxed);
+        Ok(())
+    }
+
     pub(super) fn new(work: StandaloneLedger) -> Self {
         Self {
             work,

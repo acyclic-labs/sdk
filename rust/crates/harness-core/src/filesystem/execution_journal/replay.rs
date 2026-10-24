@@ -93,6 +93,9 @@ where
             let mut work = history
                 .as_mut()
                 .map(|io| io as &mut dyn crate::store::HistoryIo);
+            #[cfg(feature = "test-support")]
+            tracing::trace!(target: "acyclic_harness::journal_work",
+                journal_reads = 1_u64, "execution journal page requested");
             let mut entries = match crate::store::operations::read_records(
                 &self.stream,
                 stream.path(),
@@ -122,6 +125,7 @@ where
                     .try_reserve_exact(entries.size_hint().1.unwrap_or(capacity).min(capacity))
                     .map_err(Error::Allocation)?;
             }
+            let mut page_root = None;
             loop {
                 let _record_hold;
                 if let Some(io) = io {
@@ -133,6 +137,10 @@ where
                     }
                     break;
                 };
+                #[cfg(feature = "test-support")]
+                tracing::trace!(target: "acyclic_harness::journal_work",
+                    journal_records = 1_u64, journal_read_bytes = record.value.len() as u64,
+                    "execution journal record returned");
                 _record_hold = if let Some(io) = io.filter(|io| io.original_native_work().is_none())
                 {
                     io.charge(acyclic_fs::WorkCounters {
@@ -164,6 +172,8 @@ where
                         "execution journal sequence or bound is invalid",
                     ));
                 }
+                #[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
+                acyclic_differential::record(("execution-record-decoded", 1u64));
                 let observation: Observation = crate::filesystem::decode_record(&record.value, io)?;
                 if observation.version != OBSERVATION_VERSION {
                     return Err(canonical_boundary(
@@ -198,9 +208,43 @@ where
                 }
                 let before_model = io.map(PreparationIo::owned_bytes).transpose()?;
                 let (_model_hold, model) = {
-                    let model = self
-                        .verify_event_refs_with_io(&observation.event, io)
-                        .await?;
+                    // Refreshing the summary already holds its lock and needs decoded
+                    // model admissions. Ordinary replay only needs authenticated refs.
+                    let authenticated = !retain_models
+                        && self
+                            .authenticated_metadata(
+                                operation_id,
+                                record.sequence.checked_add(1).ok_or_else(|| {
+                                    stock_boundary(
+                                        io,
+                                        crate::wire::ErrorCode::Invalid,
+                                        "execution replay sequence overflow",
+                                    )
+                                })?,
+                                &observation.retry_digest,
+                                &observation.event,
+                                io,
+                                &mut page_root,
+                            )
+                            .await?;
+                    let model = if authenticated {
+                        crate::executor::with_history_io(io, |work| {
+                            ContentGrant::authorize_volume(
+                                &self.verifier,
+                                &self.scope,
+                                &self.volume,
+                                VolumeOperation::Read,
+                                io.map(|io| io.remaining().map(|budget| budget.bytes_encoded))
+                                    .transpose()?
+                                    .unwrap_or(u64::MAX),
+                                work,
+                            )
+                        })?;
+                        None
+                    } else {
+                        self.verify_event_refs_with_io(&observation.event, io)
+                            .await?
+                    };
                     let _model_hold = if retain_models {
                         None
                     } else {
@@ -274,7 +318,7 @@ where
     ) -> Result<Vec<ExecutionRecord>> {
         let (page_slots, page) = {
             let page = self
-                .replay_page(operation, after, maximum, io.is_none(), io)
+                .replay_page(operation, after, maximum, false, io)
                 .await?;
             let page_bytes = page
                 .capacity()

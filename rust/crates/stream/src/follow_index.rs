@@ -90,7 +90,7 @@ impl FollowIndex {
             for attribute in record.headers.attributes() {
                 if let Some(ids) = self
                     .attributes
-                    .get(&attribute.name)
+                    .get(attribute.name)
                     .and_then(|values| values.get(attribute.value.as_ref()))
                 {
                     for &id in ids {

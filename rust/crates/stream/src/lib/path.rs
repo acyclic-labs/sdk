@@ -116,7 +116,7 @@ impl StreamPath {
         meter.record_codec(0, path.len() as u64, 0)?;
         let metadata = acyclic_native_runtime::ReadAllocation::new(
             meter,
-            std::mem::size_of::<NativePathText>(),
+            acyclic_native_runtime::arc_allocation_bytes::<NativePathText>(),
         )?;
         Ok(Ok(Self {
             text: PathText::Native(Arc::new(NativePathText {

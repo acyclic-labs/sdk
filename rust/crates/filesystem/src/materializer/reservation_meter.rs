@@ -15,6 +15,19 @@ macro_rules! reservation_counters {
     )*};
 }
 impl NativeReadMeter for NativeWorkReservation {
+    fn reserve_codec(&self, maximum: acyclic_native_runtime::NativeCodecWork) -> io::Result<()> {
+        self.reserve(super::runtime_meter::codec_counters(maximum))
+    }
+    fn cancel_reserved_codec(&self, unused: acyclic_native_runtime::NativeCodecWork) {
+        self.cancel(super::runtime_meter::codec_counters(unused));
+    }
+    fn record_reserved_codec(
+        &self,
+        actual: acyclic_native_runtime::NativeCodecWork,
+    ) -> io::Result<()> {
+        let actual = super::runtime_meter::codec_counters(actual);
+        self.complete(Some(actual), actual)
+    }
     reservation_counters! {
         admit_codec, record_codec(encoded: u64, copied: u64, hashed: u64) { bytes_encoded: encoded, bytes_copied: copied, bytes_hashed: hashed };
         admit_examination, record_examination(items: u64, copied: u64) { items_examined: items, bytes_copied: copied };

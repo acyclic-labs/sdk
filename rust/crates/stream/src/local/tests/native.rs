@@ -1,5 +1,86 @@
 use super::*;
 
+mod headers;
+
+#[tokio::test]
+async fn prepared_memory_and_local_commits_fund_settlement_and_recovery_codec_work()
+-> Result<(), Box<dyn std::error::Error>> {
+    for local in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let provider: Arc<dyn StreamProvider> = if local {
+            Arc::new(LocalStream::open(directory.path(), LocalStreamLimits::default()).await?)
+        } else {
+            Arc::new(MemoryStream::new(MemoryLimits::default()))
+        };
+        let request = prepared_fixture(provider.as_ref()).await?;
+        let maximum_hash = crate::request::commit_hash_bytes(&request)
+            + 64
+            + 8 * crate::MAX_RECORD_KEYS as u64
+            + 16 * crate::MAX_RECORD_ATTRIBUTES as u64;
+        let meter = Arc::new(Meter::default());
+        let packet = provider
+            .native_prepare_commit(request, 64, meter.original())
+            .await??;
+        let (mut packet, guard) = packet.into_parts();
+        assert!(
+            meter.withheld_codec().hashed >= 2 * maximum_hash,
+            "prepared settlement and recovery did not both retain codec credit"
+        );
+        meter.deny_codec.store(true, Ordering::SeqCst);
+        assert!(
+            acyclic_native_runtime::NativeReadMeter::admit_codec(meter.as_ref(), 0, 0, 1).is_err()
+        );
+        let recovery = packet.take_recovery_future().ok_or("missing recovery")?;
+        let result = packet
+            .finish(OwnedBytes::from_static(b"completed").into())
+            .await??;
+        assert!(matches!(result.value(), CommitOutcome::Committed(_)));
+        assert_eq!(
+            meter.withheld_codec().hashed,
+            maximum_hash,
+            "settlement consumed or leaked the independent recovery codec credit"
+        );
+        drop(result);
+        let observed = recovery.await??;
+        assert!(observed.value().is_some());
+        drop(observed);
+        drop(guard);
+        drop(provider);
+        meter.assert_refunded();
+    }
+    Ok(())
+}
+
+#[test]
+fn prepared_frames_withhold_and_refund_codec_allowance() -> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_native_runtime::{NativeCodecWork, NativeReadMeter};
+    let meter = Arc::new(Meter {
+        codec_limit: NativeCodecWork {
+            encoded: 128,
+            copied: 128,
+            hashed: 128 + b"acyclic-stream-local-frame-v1\0".len() as u64,
+        },
+        ..Meter::default()
+    });
+    let work = crate::memory::Work::new(meter.original())?;
+    let frame = PreparedFrame::reserve(128, Some(Arc::clone(&work)))?;
+    for request in [(1, 0, 0), (0, 1, 0), (0, 0, 1)] {
+        assert!(
+            meter.admit_codec(request.0, request.1, request.2).is_err(),
+            "prepared frame did not withhold codec credit"
+        );
+    }
+    assert_eq!(meter.encoded.load(Ordering::SeqCst), 0);
+    assert_eq!(meter.copied.load(Ordering::SeqCst), 0);
+    assert_eq!(meter.hashed.load(Ordering::SeqCst), 0);
+    drop(frame);
+    meter.admit_codec(128, 128, meter.codec_limit.hashed)?;
+    drop(work);
+    meter.assert_refunded();
+    assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
 #[tokio::test]
 async fn native_denial_precedes_read_capture() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;

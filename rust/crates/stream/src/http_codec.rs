@@ -80,7 +80,7 @@ fn append_record_json(record: &crate::AppendRecord) -> Value {
         "keys": record.headers.keys().iter().map(|key| STANDARD.encode(key)).collect::<Vec<_>>(),
         "attributes": record.headers.attributes().iter().map(|attribute| json!({
             "name": attribute.name,
-            "value": STANDARD.encode(&attribute.value),
+            "value": STANDARD.encode(attribute.value),
         })).collect::<Vec<_>>(),
     })
 }

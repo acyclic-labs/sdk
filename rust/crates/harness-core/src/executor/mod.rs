@@ -30,14 +30,18 @@ mod native_stock;
 pub(crate) use native_stock::NativeStockExecutor;
 use native_stock::*;
 pub(crate) use native_stock::{
-    stage_json, stock_boundary, stock_string_copy, stock_string_push, stock_vec_push,
+    stage_json, stock_boundary, stock_into_iter, stock_string_copy, stock_string_push,
+    stock_vec_push, stock_vec_reserve,
 };
 
 pub(crate) mod execution_claim;
 mod journal;
 pub use execution_claim::{ExecutionClaim, ExecutionClaims};
-pub use journal::ExecutionJournal;
 use journal::validate_journal;
+pub use journal::{
+    ExecutionJournal, ExecutionJournalCacheId, ExecutionRecordQuery, IndexedExecutionFuture,
+    IndexedExecutionRecords,
+};
 mod replay;
 pub(crate) use replay::replay_execution;
 mod accounting;
@@ -47,10 +51,22 @@ mod compaction;
 mod composition;
 mod content;
 mod dispatch;
+mod model_observation;
+pub(crate) mod phase;
+#[cfg(test)]
+pub(crate) use model_observation::append as append_model_event;
+#[cfg(feature = "filesystem")]
+pub(crate) use model_observation::load as load_model_event;
 mod prefix;
+mod record_index;
 mod records;
 mod request;
 mod response;
+mod retained_request;
+pub(crate) mod transcript;
+mod working_context;
+mod working_tail;
+pub(crate) use transcript::load_projection as load_response_projection;
 mod summary;
 mod summary_file;
 #[cfg(any(test, feature = "filesystem"))]
@@ -91,13 +107,14 @@ pub(crate) use content::verify_model_contents_scoped;
 #[cfg(all(any(test, feature = "test-support"), feature = "filesystem"))]
 #[doc(hidden)]
 pub use content::verify_model_contents_with_summary_authorization;
-mod phase;
 mod retained;
 mod turn;
 pub(crate) use phase::DispatchPhase;
 pub use phase::PreDispatchFailure;
 pub(crate) use retained::{completed_tool_projection, retained_model_step};
 mod checkpoint_selection;
+#[cfg(feature = "filesystem")]
+pub(crate) use checkpoint_selection::selected_step_records;
 use checkpoint_selection::*;
 pub use checkpoint_selection::{canonical_checkpoint_for_operation, load_canonical_checkpoint_at};
 mod checkpoint_projection;
@@ -106,9 +123,10 @@ mod payload;
 #[cfg(any(test, feature = "filesystem", feature = "wasm"))]
 #[doc(hidden)]
 pub use payload::decode_json;
+pub use payload::load_model_request;
 #[doc(hidden)]
 pub use payload::preparation_digest;
-pub(crate) use payload::{load_json, load_model_request, retain_preparation};
+pub(crate) use payload::{load_json, retain_preparation};
 mod admission;
 
 /// Internal replay batch size; callers may request any positive page allowance.
@@ -288,6 +306,15 @@ pub enum ExecutionEvent {
         /// Pinned, private JSON file containing one observed model event.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         event: FileRef,
+    },
+    /// One small canonical model event stored directly in the journal frame.
+    ModelInline {
+        /// Zero-based executor step.
+        step: u32,
+        /// Must match the corresponding admitted request.
+        purpose: ModelPurpose,
+        /// Exact canonical model-event JSON, bounded by the journal provider.
+        event: String,
     },
     /// The local model producer stopped after invocation cancellation.
     ModelStopped {
@@ -542,6 +569,8 @@ pub(crate) struct ResponseProjection {
     pub(crate) context: crate::context::Context,
     pub(crate) canonical: Option<FileRef>,
     pub(crate) checkpoint: Option<FileRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) working: Option<FileRef>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -584,7 +613,7 @@ pub(crate) trait PreparationRecord: serde::de::DeserializeOwned + Serialize {}
 #[cfg(not(feature = "filesystem"))]
 impl<T: serde::de::DeserializeOwned + Serialize> PreparationRecord for T {}
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 #[doc(hidden)]
 pub struct ModelEventAdmission {
     #[doc(hidden)]

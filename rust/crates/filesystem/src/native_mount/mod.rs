@@ -73,7 +73,7 @@ pub use crate::{
 
 mod materialize;
 pub use materialize::materialize_checkout_with_work;
-#[cfg(fuzzing)]
+#[cfg(any(fuzzing, feature = "test-support"))]
 pub use materialize::verify_native_staging_selection;
 pub use materialize::{
     HostPathReplacement, HostPathRestore, MaterializationReceipt, MaterializeError,

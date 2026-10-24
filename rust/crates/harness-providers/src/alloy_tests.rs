@@ -350,7 +350,7 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
             request_digest: prepared.request_digest(),
         };
         let events = provider
-            .generate(prepared, dispatch)
+            .generate(&prepared, dispatch)
             .try_collect::<Vec<_>>()
             .await?;
         {

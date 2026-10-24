@@ -129,6 +129,23 @@ pub(super) fn check_cuts(recorded: usize, cuts: impl IntoIterator<Item = usize>)
     Ok(())
 }
 
+/// Partition exhaustive work without dropping a cut. Every registered test owns
+/// one residue; all tests additionally exercise the admission crash window.
+pub(super) fn partition_indices(
+    total: usize,
+    partitions: &[usize],
+    selected: usize,
+    witness: impl Fn(usize) -> bool,
+) -> Result<Vec<usize>> {
+    check_cuts(partitions.len(), partitions.iter().map(|index| index + 1))?;
+    if !partitions.contains(&selected) {
+        return Err(Error::Storage("unregistered replay partition".into()));
+    }
+    Ok((0..total)
+        .filter(|index| index % partitions.len() == selected || witness(*index))
+        .collect())
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
     #[test]
@@ -154,6 +171,28 @@ proptest::proptest! {
         proptest::prop_assert_eq!(&first, &replay);
         first.sort_unstable_by_key(|(scenario, cut)| (*scenario as u8, *cut));
         proptest::prop_assert_eq!(first, expected);
+    }
+
+    #[test]
+    fn replay_partitions_cover_every_cut_and_reject_missing_or_duplicate_tests(
+        total in 1usize..4096, count in 2usize..9, witness in 0usize..4096,
+    ) {
+        let partitions: Vec<_> = (0..count).collect();
+        let witness = witness % total;
+        let mut owned = Vec::new();
+        for selected in &partitions {
+            let cuts = partition_indices(total, &partitions, *selected, |_| false).unwrap();
+            owned.extend(cuts.into_iter().map(|index| index + 1));
+            let with_witness = partition_indices(total, &partitions, *selected, |index| index == witness).unwrap();
+            proptest::prop_assert!(with_witness.contains(&witness));
+            proptest::prop_assert_eq!(with_witness.iter().copied().collect::<BTreeSet<_>>().len(), with_witness.len());
+        }
+        proptest::prop_assert!(check_cuts(total, owned).is_ok());
+        // Removing or duplicating a registered test must fail before any replay.
+        proptest::prop_assert!(partition_indices(total, &partitions[1..], 1, |_| false).is_err());
+        let mut duplicated = partitions;
+        duplicated[count - 1] = 0;
+        proptest::prop_assert!(partition_indices(total, &duplicated, 0, |_| false).is_err());
     }
 }
 

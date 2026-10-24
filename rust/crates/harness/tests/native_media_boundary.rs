@@ -413,7 +413,7 @@ impl ModelProvider for MockAdapter {
 
     fn generate<'a>(
         &'a self,
-        request: PreparedModelRequest,
+        request: &'a PreparedModelRequest,
         dispatch: ModelDispatch,
     ) -> BoxProviderStream<'a, Result<ModelEvent>> {
         self.generates.fetch_add(1, Ordering::SeqCst);
