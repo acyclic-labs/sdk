@@ -2,11 +2,11 @@
 #[cfg(all(feature = "memory", feature = "distributed"))]
 mod tests {
     use super::*;
-    use acyclic_fs_wire::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer;
     use crate::{
         EmbeddedCapabilities, FilesystemSourceProvider, FilesystemWireLimits,
         FilesystemWireService, HostedSourceOperation, HostedSourceScope,
     };
+    use acyclic_fs_wire::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer;
     use rcgen::generate_simple_self_signed;
     use tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::{Identity, Server, ServerTlsConfig};

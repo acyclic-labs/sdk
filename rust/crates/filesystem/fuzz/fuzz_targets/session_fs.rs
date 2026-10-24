@@ -22,7 +22,8 @@ fuzz_target!(|data: &[u8]| {
     if let Some((head, tail)) = data.split_at_checked(16) {
         let id: [u8; 16] = head.try_into().unwrap();
         if let Ok(path) = std::str::from_utf8(tail)
-            && let Ok(resource) = acyclic_fs::session::resource(acyclic_fs::VolumeId::from_bytes(id), path)
+            && let Ok(resource) =
+                acyclic_fs::session::resource(acyclic_fs::VolumeId::from_bytes(id), path)
         {
             assert!(acyclic_auth::valid_resource(&resource));
         }

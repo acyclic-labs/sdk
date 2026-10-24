@@ -86,18 +86,23 @@ async fn policy(workspace: &Space) -> Result {
 }
 fn credential(name: &str) -> Vec<u8> {
     signed::root(|block| {
-        for certificate in block.certificates.iter_mut().flat_map(|chain| chain.keys.iter_mut()).take(1) {
+        for certificate in block
+            .certificates
+            .iter_mut()
+            .flat_map(|chain| chain.keys.iter_mut())
+            .take(1)
+        {
             certificate.key.grants = GrantSet {
-            grants: vec![Grant {
-                kind: GrantKind::Resource(ResourceGrant {
-                    resource: ResourcePattern {
-                        name: name.into(),
-                        prefix: true,
-                    },
-                    actions: vec!["fs/list".into()],
-                }),
-            }],
-        };
+                grants: vec![Grant {
+                    kind: GrantKind::Resource(ResourceGrant {
+                        resource: ResourcePattern {
+                            name: name.into(),
+                            prefix: true,
+                        },
+                        actions: vec!["fs/list".into()],
+                    }),
+                }],
+            };
         }
     })
 }
@@ -356,7 +361,14 @@ async fn resume_exactly_once_through_ordinary_session() -> Result {
     first.grant(1)?;
     let (created, cursor) = first.data().await?;
     assert_eq!(created.sequence, 0);
-    assert_eq!(changes(&created)?.entries.first().ok_or("missing change entry")?.operation, "create");
+    assert_eq!(
+        changes(&created)?
+            .entries
+            .first()
+            .ok_or("missing change entry")?
+            .operation,
+        "create"
+    );
     drop(first);
     workspace.write_text("/entry", "one").await?;
     workspace.write_text("/entry", "two").await?;
@@ -375,7 +387,15 @@ async fn resume_exactly_once_through_ordinary_session() -> Result {
     let (one, _) = resumed.data().await?;
     let (two, _) = resumed.data().await?;
     assert_eq!((one.sequence, two.sequence), (1, 2));
-    assert_eq!(changes(&one)?.entries.first().ok_or("missing change entry")?.key.as_ref(), b"entry");
+    assert_eq!(
+        changes(&one)?
+            .entries
+            .first()
+            .ok_or("missing change entry")?
+            .key
+            .as_ref(),
+        b"entry"
+    );
     assert!(resumed.output.next().now_or_never().is_none());
     Ok(())
 }
@@ -535,7 +555,15 @@ async fn filtered_resume_uses_the_consumed_cut_and_never_reveals_skipped_paths()
     let (record, after) = resumed.data().await?;
     assert_eq!(record.sequence, 3);
     assert_eq!(after.next, 4);
-    assert_eq!(changes(&record)?.entries.first().ok_or("missing change entry")?.key.as_ref(), b"public");
+    assert_eq!(
+        changes(&record)?
+            .entries
+            .first()
+            .ok_or("missing change entry")?
+            .key
+            .as_ref(),
+        b"public"
+    );
     assert!(resumed.output.next().now_or_never().is_none());
     Ok(())
 }
@@ -588,7 +616,15 @@ async fn semantic_path_widening_and_latest_delivery_cannot_open_filesystem_recor
     assert!(matches!(exact.next().await?.body, Some(Body::Opened(_))));
     exact.grant(1)?;
     let (record, _) = exact.data().await?;
-    assert_eq!(changes(&record)?.entries.first().ok_or("missing change entry")?.key.as_ref(), b"private");
+    assert_eq!(
+        changes(&record)?
+            .entries
+            .first()
+            .ok_or("missing change entry")?
+            .key
+            .as_ref(),
+        b"private"
+    );
     Ok(())
 }
 
@@ -619,13 +655,29 @@ async fn wide_discovery_under_a_narrow_capability_projects_every_full_path() -> 
     let (record, after) = narrow.data().await?;
     assert_eq!(record.sequence, 2);
     assert_eq!(after.next, 3);
-    assert_eq!(changes(&record)?.entries.first().ok_or("missing change entry")?.key.as_ref(), b"private");
+    assert_eq!(
+        changes(&record)?
+            .entries
+            .first()
+            .ok_or("missing change entry")?
+            .key
+            .as_ref(),
+        b"private"
+    );
     assert!(narrow.output.next().now_or_never().is_none());
     // Removing only the capability restriction makes the public path visible.
     let mut broad = Connection::open(fs, streams, volume, 1, Bytes::new(), true, false).await?;
     assert!(matches!(broad.next().await?.body, Some(Body::Opened(_))));
     broad.grant(1)?;
     let (record, _) = broad.data().await?;
-    assert_eq!(changes(&record)?.entries.first().ok_or("missing change entry")?.key.as_ref(), b"public");
+    assert_eq!(
+        changes(&record)?
+            .entries
+            .first()
+            .ok_or("missing change entry")?
+            .key
+            .as_ref(),
+        b"public"
+    );
     Ok(())
 }

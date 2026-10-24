@@ -1,8 +1,8 @@
 //! Shared Ed25519 capability contract for hosted and in-process runtimes.
 #[cfg(any(test, feature = "test-support"))]
 extern crate self as acyclic_auth;
-pub mod admission;
 pub mod addressing;
+pub mod admission;
 pub mod authority;
 pub mod contract;
 pub mod credential;

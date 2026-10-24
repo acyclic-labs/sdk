@@ -307,16 +307,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             idempotency_key.operation_id(),
             accounting,
         )?;
-        creation.publication = Some(crate::PublicationChanges::initial(
-            &self.inner.objects,
-            VolumeCreated {
-                volume_id,
-                config: source_volume.config,
-                initial_generation_root: fork_root.generation_root,
-            },
-            accounting,
-            cancellation,
-        ).await?);
+        creation.publication = Some(
+            crate::PublicationChanges::initial(
+                &self.inner.objects,
+                VolumeCreated {
+                    volume_id,
+                    config: source_volume.config,
+                    initial_generation_root: fork_root.generation_root,
+                },
+                accounting,
+                cancellation,
+            )
+            .await?,
+        );
         let changes = creation.publication.clone();
         let fork = crate::WorkspaceForkCommit {
             lineage,

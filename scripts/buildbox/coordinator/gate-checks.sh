@@ -128,6 +128,7 @@ export GATE_TEST_RUNNER_SCRIPT=.gate-test-runner.sh
 if [ -f scripts/main-gate-checks.sh ] && [ -f scripts/gate-feature-matrix.sh ] && grep -q '^# Main baseline completion v2$' scripts/main-gate-checks.sh && grep -q '^# Fuzz executable identity v2$' scripts/main-gate-checks.sh; then
   exec bash scripts/main-gate-checks.sh "$@"
 fi
+bash scripts/gate-rust-format.sh || exit $?
 cat > .gate-feature-matrix.mjs <<'GATE_MATRIX_BOOTSTRAP'
 #!/usr/bin/env node
 // Type-checks every published crate's library in each feature set a consumer

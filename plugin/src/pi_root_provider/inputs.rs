@@ -271,7 +271,11 @@ pub(super) fn publish_pi_input_with_native_coordinates<'a, T: Serialize + Sync>(
                 &coordinates.display_name.0,
                 maximum(owner),
                 &coordinates.key.0,
-                None, acyclic_harness::conversation::ContentAccess { ceiling: None, io: Some(&io) },
+                None,
+                acyclic_harness::conversation::ContentAccess {
+                    ceiling: None,
+                    io: Some(&io),
+                },
             )
             .await;
         drop(encoded);

@@ -1,5 +1,5 @@
-use super::*;
 use super::publication::publication_step;
+use super::*;
 
 pub(super) async fn generation_plan<A: crate::AsyncAuthorityStore, O: crate::AsyncObjectStore>(
     from: &crate::Generation<A, O>,
@@ -7,12 +7,14 @@ pub(super) async fn generation_plan<A: crate::AsyncAuthorityStore, O: crate::Asy
     request: &NativeWorkspacePublication<'_>,
     work: &NativeMaterializationWork,
 ) -> Result<(MaterializationPlan, NativeAllocation), NativeWorkspacePublicationError> {
-    let (changes, changes_allocation) = publication_step(work, || from
-        .diff_to(to, u32::MAX, work, work.cancellation()))
-        .await?;
-    let (changed, changed_allocation) = publication_step(work, || changes
-        .changed_paths(u32::MAX, work, work.cancellation()))
-        .await?;
+    let (changes, changes_allocation) = publication_step(work, || {
+        from.diff_to(to, u32::MAX, work, work.cancellation())
+    })
+    .await?;
+    let (changed, changed_allocation) = publication_step(work, || {
+        changes.changed_paths(u32::MAX, work, work.cancellation())
+    })
+    .await?;
     let mut changed_allocation =
         changed_allocation.ok_or(NativeTreeMaterializationError::MissingCustody)?;
     drop(changes);
@@ -75,13 +77,17 @@ pub(super) async fn generation_plan<A: crate::AsyncAuthorityStore, O: crate::Asy
         if before_directory
             && !present
             && physical.as_ref().is_some_and(|stat| stat.is_dir())
-            && publication_step(work, || host_directory_holds_unknown_entries(&root, &path, from, work)).await?
+            && publication_step(work, || {
+                host_directory_holds_unknown_entries(&root, &path, from, work)
+            })
+            .await?
         {
             continue;
         }
         let (edit, structural) = if (before_directory || promoted) && after_directory {
             let (absolute, _absolute_allocation) = work.display(&format_args!("/{path}"))?;
-            let stat = publication_step(work, || to.stat(&absolute, work, work.cancellation())).await?;
+            let stat =
+                publication_step(work, || to.stat(&absolute, work, work.cancellation())).await?;
             let (image, mut image_allocation) = encode_native_metadata(&stat.metadata, work)?;
             allocation.absorb(&mut image_allocation)?;
             (MaterializationEdit::SetMetadata { path, image }, false)
@@ -89,7 +95,8 @@ pub(super) async fn generation_plan<A: crate::AsyncAuthorityStore, O: crate::Asy
             if fresh
                 && regular
                 && physical.is_some()
-                && publication_step(work, || host_holds_generation_file(&root, &path, to, work)).await?
+                && publication_step(work, || host_holds_generation_file(&root, &path, to, work))
+                    .await?
             {
                 continue;
             }

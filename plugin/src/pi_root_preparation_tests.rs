@@ -137,7 +137,8 @@ impl Fixture {
                 &format!("{name}.json"),
                 self.owner.policy.maximum_payload_bytes,
                 &IdempotencyKey::new(format!("fixture-replacement-{name}")).unwrap(),
-                None, acyclic_harness::conversation::ContentAccess::default(),
+                None,
+                acyclic_harness::conversation::ContentAccess::default(),
             )
             .await
             .unwrap()

@@ -95,19 +95,19 @@ async fn malformed_discovery_closes_only_its_node_and_keeps_later_opens_live() -
 }
 
 fn malformed_child(id: u64) -> wire::SessionFrame {
-frame(
-            id,
-            2,
-            Body::Data(wire::SessionData {
-                after: Some(wire::SessionCursor {
-                    next: 2,
-                    opaque: Bytes::from_static(b"other/child"),
-                }),
-                accepted: 2,
-                durable: 0,
-                item: Some(Item::Child(wire::Child {
-                    path: "other/child".into(),
-                })),
+    frame(
+        id,
+        2,
+        Body::Data(wire::SessionData {
+            after: Some(wire::SessionCursor {
+                next: 2,
+                opaque: Bytes::from_static(b"other/child"),
             }),
-        )
+            accepted: 2,
+            durable: 0,
+            item: Some(Item::Child(wire::Child {
+                path: "other/child".into(),
+            })),
+        }),
+    )
 }

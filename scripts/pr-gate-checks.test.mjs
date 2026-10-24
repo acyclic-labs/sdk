@@ -11,6 +11,9 @@ test('affected PR checks every target and docs, including test=false fuzz binari
   const cwd=mkdtempSync(join(tmpdir(),'pr-gate-targets-'));
   try{
     mkdirSync(join(cwd,'bin'));mkdirSync(join(cwd,'scripts'));
+    writeFileSync(join(cwd,'scripts/gate-rust-format.sh'),readFileSync(join(scripts,'gate-rust-format.sh')));
+    writeFileSync(join(cwd,'bin/bun'),'#!/bin/bash\necho "format $*" >> calls\nexit "${FORMAT_RC:-0}"\n');
+    chmodSync(join(cwd,'bin/bun'),0o755);
     writeFileSync(join(cwd,'scripts/gate-test-runner.sh'),readFileSync(join(scripts,'gate-test-runner.sh')));
     writeFileSync(join(cwd,'scripts/gate-windows-features.sh'),'#!/bin/bash\necho "windows-features $*" >> calls\nexit "${WINDOWS_FEATURE_RC:-0}"\n');
     const cargo=join(cwd,'bin/cargo');
@@ -67,7 +70,9 @@ esac
     writeFileSync(join(cwd,'calls'),'');
     const failed=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,BROKEN_METADATA:'1'}});
     assert.equal(failed.status,2);assert.match(failed.stdout+failed.stderr,/metadata control/);
-    assert.ok(readFileSync(join(cwd,'calls'),'utf8').split('\n').filter(Boolean).every(c=>c.startsWith('metadata ')));
+    const preparationCalls=readFileSync(join(cwd,'calls'),'utf8').split('\n').filter(Boolean);
+    assert.equal(preparationCalls.shift(),'format scripts/qualify-rustfmt.mjs');
+    assert.ok(preparationCalls.every(c=>c.startsWith('metadata ')));
     // A failed consumer-codegen phase must reach the PR's final verdict even
     // when every test, document and clippy invocation succeeds.
     writeFileSync(join(cwd,'scripts/check-feature-matrix.mjs'),'');
@@ -85,6 +90,25 @@ esac
       assert.equal(result.status,negative?0:1,result.stdout+result.stderr);
       assert.match(result.stdout,/GATE_FEATURES rc=1/);
       assert.match(result.stdout,new RegExp('GATE_DONE rc='+(negative?0:1)));
+    }
+    const formatHook='bash scripts/gate-rust-format.sh || exit $?';
+    assert.ok(source.includes(formatHook));
+    writeFileSync(join(cwd,'scripts/gate-feature-matrix.sh'),'#!/bin/bash\nexit 0\n');
+    for(const mode of ['affected','full'])for(const negative of [false,true]){
+      writeFileSync(join(cwd,'.gate-scope-mode'),mode+'\n');
+      writeFileSync(join(cwd,'runner.sh'),negative?source.replace(formatHook,':'):source);
+      writeFileSync(join(cwd,'calls'),'');
+      const result=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{
+        ...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,
+        CARGO_TARGET_DIR:join(cwd,'target'),GATE_FEATURE_TARGET_DIR:join(cwd,'features'),
+        FORMAT_RC:'101',BROKEN_FUZZ:'0',WINDOWS_FEATURE_RC:'0',BROKEN_METADATA:'0',
+      }});
+      assert.equal(result.status,negative?0:101,result.stdout+result.stderr);
+      if(!negative){
+        const expected='format scripts/qualify-rustfmt.mjs';
+        assert.deepEqual(readFileSync(join(cwd,'calls'),'utf8').trim().split('\n'),[expected]);
+        assert.match(result.stdout,/GATE_RUSTFMT rc=101/);
+      }
     }
   }finally{rmSync(cwd,{recursive:true,force:true});}
 });

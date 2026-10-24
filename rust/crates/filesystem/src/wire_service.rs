@@ -5,7 +5,6 @@ use crate::kernel::{
     FileKind as EngineFileKind, FileMetadata, FilePayload, LogicalName, MetadataField, TreeEntry,
 };
 use crate::model::{FilesystemProfile as EngineProfile, Lifecycle, VolumeConfig};
-use acyclic_fs_wire::wire::{filesystem::v2 as wire, protocol::v1 as protocol};
 use crate::{
     ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken,
     DependencyRegion, DependencyState, Digest, DurableCommit, ForkOptions, Fs, Generation,
@@ -13,6 +12,7 @@ use crate::{
     RebaseConflict, Sequence, Transaction, TransactionCommit, TransactionRebase, WorkBudget,
     Workspace, WorkspaceDelete, WorkspaceError, WorkspaceMetadata, WorkspaceRebase,
 };
+use acyclic_fs_wire::wire::{filesystem::v2 as wire, protocol::v1 as protocol};
 use bytes::Bytes;
 use futures::stream;
 use prost::Message;

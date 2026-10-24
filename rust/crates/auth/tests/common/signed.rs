@@ -32,18 +32,18 @@ pub fn root(mut change: impl FnMut(&mut Block)) -> Vec<u8> {
     block.next_public_key = key(4).verifying_key().to_bytes().to_vec();
     change(&mut block);
     if let Some(certificates) = block.certificates.as_mut() {
-    certificates.birth.signature = sign_claims(
-        BIRTH_DOMAIN,
-        &BirthProto::from(certificates.birth.birth.clone()),
-        &key(1),
-    );
-    for certificate in &mut certificates.keys {
-        certificate.signature = sign_claims(
-            KEY_DOMAIN,
-            &CertifiedKeyProto::from(certificate.key.clone()),
-            &key(2),
+        certificates.birth.signature = sign_claims(
+            BIRTH_DOMAIN,
+            &BirthProto::from(certificates.birth.birth.clone()),
+            &key(1),
         );
-    }
+        for certificate in &mut certificates.keys {
+            certificate.signature = sign_claims(
+                KEY_DOMAIN,
+                &CertifiedKeyProto::from(certificate.key.clone()),
+                &key(2),
+            );
+        }
     }
     let payload = BlockProto::from(block).encode_to_vec();
     let signature = key(3)

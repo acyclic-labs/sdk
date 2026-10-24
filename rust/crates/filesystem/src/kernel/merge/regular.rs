@@ -75,9 +75,13 @@ fn merge_regular_record_async<'a, 'accounting, S: AsyncObjectStore>(
             limits,
             budget: WorkBudget::UNBOUNDED,
         };
-        let (base_plan, allocation) =
-            plan_extent_range_with_accounting(store, request(base_root, base_bytes), accounting, cancellation)
-                .await?;
+        let (base_plan, allocation) = plan_extent_range_with_accounting(
+            store,
+            request(base_root, base_bytes),
+            accounting,
+            cancellation,
+        )
+        .await?;
         let bytes = base_plan.retained_allocation_bytes;
         let base_plan = Owned::new(base_plan, allocation, bytes);
         let result = {
@@ -236,7 +240,10 @@ impl MergeWalk {
             })?;
             let mut spans = [None; 3];
             for (side, slot) in spans.iter_mut().enumerate() {
-                let present = self.lengths.get(side).is_some_and(|length| offset < *length);
+                let present = self
+                    .lengths
+                    .get(side)
+                    .is_some_and(|length| offset < *length);
                 if present {
                     let plan = plans.get(side).ok_or(FsError::InvalidDiff)?;
                     let index = *indices.get(side).ok_or(FsError::InvalidDiff)?;
@@ -254,7 +261,9 @@ impl MergeWalk {
             }
             let mut kinds = [None, None, None];
             for (kind, span) in kinds.iter_mut().zip(spans) {
-                *kind = span.map(|span| sliced_extent_kind(span, offset)).transpose()?;
+                *kind = span
+                    .map(|span| sliced_extent_kind(span, offset))
+                    .transpose()?;
             }
             let interval = ContentSpan {
                 kinds,
@@ -264,7 +273,14 @@ impl MergeWalk {
                 merged_bytes: self.merged_bytes,
             };
             if !self
-                .merge_interval(store, &interval, mutations, limits, accounting, cancellation)
+                .merge_interval(
+                    store,
+                    &interval,
+                    mutations,
+                    limits,
+                    accounting,
+                    cancellation,
+                )
                 .await?
             {
                 return Ok(false);
@@ -375,7 +391,10 @@ impl ContentSpan {
         else {
             return None;
         };
-        Some((object, object_offset.checked_add(position.checked_sub(self.offset)?)?))
+        Some((
+            object,
+            object_offset.checked_add(position.checked_sub(self.offset)?)?,
+        ))
     }
 
     /// Whether side `side` has bytes in this interval.
@@ -472,10 +491,13 @@ impl SpanWindow {
     }
 
     fn release(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
-        self.0.into_iter().flatten().try_for_each(|(bytes, retained)| {
-            drop(bytes);
-            super::file_read::release_standalone_read_bytes(retained, accounting)
-        })
+        self.0
+            .into_iter()
+            .flatten()
+            .try_for_each(|(bytes, retained)| {
+                drop(bytes);
+                super::file_read::release_standalone_read_bytes(retained, accounting)
+            })
     }
 }
 
@@ -523,7 +545,8 @@ async fn merge_span_bytes<S: AsyncObjectStore>(
                 ..WorkCounters::UNCHARGED
             })?;
             for (at, index) in (position..position + length).zip(0_usize..) {
-                let [base, ours, theirs] = sides.map(|side| side.and_then(|bytes| bytes.get(index)));
+                let [base, ours, theirs] =
+                    sides.map(|side| side.and_then(|bytes| bytes.get(index)));
                 let Some(takes_theirs) = byte_takes_theirs(base, ours, theirs) else {
                     return Ok(false);
                 };
@@ -595,7 +618,11 @@ async fn merge_inline_record_async<S: AsyncObjectStore>(
     else {
         return Ok(None);
     };
-    let sides = [base_data.as_bytes(), ours_data.as_bytes(), theirs_data.as_bytes()];
+    let sides = [
+        base_data.as_bytes(),
+        ours_data.as_bytes(),
+        theirs_data.as_bytes(),
+    ];
     let [base_length, ours_length, theirs_length] = sides.map(<[u8]>::len);
     let Some(length) = resolve_three(&base_length, &ours_length, &theirs_length) else {
         return Ok(None);
@@ -635,7 +662,9 @@ async fn merge_inline_record_async<S: AsyncObjectStore>(
     let merged = merged
         .get(..length)
         .ok_or(FsError::InvalidDiff)
-        .and_then(|bytes| super::file_table::InlineFileData::new(bytes).map_err(|_| FsError::InvalidDiff))?;
+        .and_then(|bytes| {
+            super::file_table::InlineFileData::new(bytes).map_err(|_| FsError::InvalidDiff)
+        })?;
     Ok(Some(FileRecord {
         file_id: ours.file_id,
         kind,

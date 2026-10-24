@@ -541,7 +541,8 @@ fn sync_rebase_conflict_limit_and_truncation_are_exact() -> Result<(), Box<dyn s
 /// copied under the caller's budget (a denied budget leaves nothing behind),
 /// and each settlement lands on its region or its replacement's.
 #[test]
-fn followed_ledger_is_a_charged_copy_of_the_live_ledger() -> Result<(), Box<dyn std::error::Error>> {
+fn followed_ledger_is_a_charged_copy_of_the_live_ledger() -> Result<(), Box<dyn std::error::Error>>
+{
     let replacement = FileId::from_bytes([82; 16]);
     let file = DependencyRegion::FileLength(FileId::from_bytes([81; 16]));
     let name = DependencyRegion::DirectoryName {
@@ -579,7 +580,11 @@ fn followed_ledger_is_a_charged_copy_of_the_live_ledger() -> Result<(), Box<dyn 
         },
         &cancellation,
     );
-    assert!(ledger.followed_with_accounting(&settled, Some(&owner), &mut denied).is_err());
+    assert!(
+        ledger
+            .followed_with_accounting(&settled, Some(&owner), &mut denied)
+            .is_err()
+    );
     assert_eq!(owner.retained_bytes(), 0);
     let mut accounting =
         super::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
@@ -587,12 +592,20 @@ fn followed_ledger_is_a_charged_copy_of_the_live_ledger() -> Result<(), Box<dyn 
         .followed_with_accounting(&settled, Some(&owner), &mut accounting)?
         .ok_or("two settlements expect one state")?;
     assert_ne!(accounting.spent().bytes_copied, 0, "name data is copied");
-    assert_ne!(owner.retained_bytes(), 0, "the copy is charged to its owner");
+    assert_ne!(
+        owner.retained_bytes(),
+        0,
+        "the copy is charged to its owner"
+    );
     assert!(!Arc::ptr_eq(&followed.captured, &held.captured));
     assert_ne!(followed.data_generation, held.data_generation);
     assert_eq!(ledger, held, "the borrowed snapshot is untouched");
     let expected = |region: &DependencyRegion| {
-        followed.captured.entries.get(region).map(|state| state.expected)
+        followed
+            .captured
+            .entries
+            .get(region)
+            .map(|state| state.expected)
     };
     assert_eq!(expected(&file), None);
     assert_eq!(expected(&file.of_file(replacement)), Some(new));

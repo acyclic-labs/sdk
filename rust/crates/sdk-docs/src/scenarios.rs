@@ -624,41 +624,27 @@ mod tests {
     #[test]
     fn registry_contains_requested_consumer_families() {
         assert_eq!(SCENARIOS.len(), 17);
-        assert!(
-            SCENARIOS
-                .iter()
-                .any(|scenario| scenario.id == "actors/typescript-consumer")
-        );
-        assert!(
-            SCENARIOS
-                .iter()
-                .any(|scenario| scenario.id == "stream/typescript-consumer")
-        );
-        assert!(
-            SCENARIOS
-                .iter()
-                .any(|scenario| scenario.id == "machines/typescript-consumer")
-        );
-        assert!(
-            SCENARIOS
-                .iter()
-                .any(|scenario| scenario.id == "objects/typescript-consumer")
-        );
-        assert!(
-            SCENARIOS
-                .iter()
-                .any(|scenario| scenario.id == "inference/typescript-consumer")
-        );
-        assert!(
-            SCENARIOS
-                .iter()
-                .any(|scenario| scenario.id == "plugin/cli-help")
-        );
-        assert!(
-            SCENARIOS
-                .iter()
-                .any(|scenario| scenario.id == "native-runtime/positional-io")
-        );
+        assert!(SCENARIOS
+            .iter()
+            .any(|scenario| scenario.id == "actors/typescript-consumer"));
+        assert!(SCENARIOS
+            .iter()
+            .any(|scenario| scenario.id == "stream/typescript-consumer"));
+        assert!(SCENARIOS
+            .iter()
+            .any(|scenario| scenario.id == "machines/typescript-consumer"));
+        assert!(SCENARIOS
+            .iter()
+            .any(|scenario| scenario.id == "objects/typescript-consumer"));
+        assert!(SCENARIOS
+            .iter()
+            .any(|scenario| scenario.id == "inference/typescript-consumer"));
+        assert!(SCENARIOS
+            .iter()
+            .any(|scenario| scenario.id == "plugin/cli-help"));
+        assert!(SCENARIOS
+            .iter()
+            .any(|scenario| scenario.id == "native-runtime/positional-io"));
         assert_eq!(
             SCENARIOS
                 .iter()
@@ -673,18 +659,14 @@ mod tests {
                 .count(),
             2
         );
-        assert!(
-            SCENARIOS
-                .iter()
-                .filter(|scenario| scenario.mode == ScenarioMode::ExecuteWithEndpoint)
-                .all(|scenario| scenario.fixture_script.is_some())
-        );
-        assert!(
-            SCENARIOS
-                .iter()
-                .filter(|scenario| scenario.mode == ScenarioMode::ExecuteLocal)
-                .all(|scenario| scenario.fixture_script.is_none())
-        );
+        assert!(SCENARIOS
+            .iter()
+            .filter(|scenario| scenario.mode == ScenarioMode::ExecuteWithEndpoint)
+            .all(|scenario| scenario.fixture_script.is_some()));
+        assert!(SCENARIOS
+            .iter()
+            .filter(|scenario| scenario.mode == ScenarioMode::ExecuteLocal)
+            .all(|scenario| scenario.fixture_script.is_none()));
     }
 
     #[test]

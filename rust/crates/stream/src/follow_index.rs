@@ -291,7 +291,7 @@ mod tests {
         let mut followed = FollowIndex::subscribe(
             &index,
             FollowFilter::new(wire::SessionFilter {
-                    all_of: vec![],
+                all_of: vec![],
                 keys: vec![wire::KeyRange {
                     start: b"a".as_slice().into(),
                     end: b"c".as_slice().into(),

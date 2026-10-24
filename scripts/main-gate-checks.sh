@@ -19,6 +19,7 @@ while (($#)); do
     *) cargo_args+=("$1"); shift;;
   esac
 done
+bash scripts/gate-rust-format.sh || exit $?
 cache=${GATE_MAIN_TARGET_DIR:-/mnt/bb/targets/sdk/gate-main}
 if [[ "$cache" == /mnt/bb/targets/*/* ]]; then
   unit=${cache#/mnt/bb/targets/}; unit=${unit//\//%}

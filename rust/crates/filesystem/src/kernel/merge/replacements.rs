@@ -177,8 +177,13 @@ async fn replacement_index<S: AsyncObjectStore>(
                 }
                 state.consume(diff.value.changes.len())?;
                 for entry in &diff.value.changes {
-                    let Some((replaced, record)) =
-                        rebound_record(entry, changes, side, &state.replacements.value, accounting)?
+                    let Some((replaced, record)) = rebound_record(
+                        entry,
+                        changes,
+                        side,
+                        &state.replacements.value,
+                        accounting,
+                    )?
                     else {
                         continue;
                     };
@@ -261,8 +266,13 @@ fn push_replacement(
     maximum_name_bytes: u32,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
-    let (name, mut allocation) =
-        super::persistent_io::clone_key::<TreeFormat>(key, maximum_name_bytes, accounting, None, 0)?;
+    let (name, mut allocation) = super::persistent_io::clone_key::<TreeFormat>(
+        key,
+        maximum_name_bytes,
+        accounting,
+        None,
+        0,
+    )?;
     let bytes = TreeFormat::key_owned_bytes(&name);
     if let Err(error) = index.ensure_for_push(usize::MAX, accounting) {
         Owned::new(name, allocation, bytes).retire(accounting)?;

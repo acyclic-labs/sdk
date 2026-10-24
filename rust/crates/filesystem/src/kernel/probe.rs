@@ -1427,7 +1427,9 @@ fn range_past_end(record: Option<FileRecord>, region: &DependencyRegion) -> bool
         Some(FilePayload::Regular { logical_bytes, .. }) => logical_bytes,
         _ => return false,
     };
-    offset.checked_add(*length).is_none_or(|end| end > file_bytes)
+    offset
+        .checked_add(*length)
+        .is_none_or(|end| end > file_bytes)
 }
 
 fn region_owned_bytes(region: &DependencyRegion) -> u64 {

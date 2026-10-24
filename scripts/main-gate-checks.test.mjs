@@ -7,11 +7,38 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const runner = join(dirname(fileURLToPath(import.meta.url)), "main-gate-checks.sh");
+test("legacy coordinator requires the shared formatter before fallback phases", { skip: process.platform === "win32" }, () => {
+  const cwd = mkdtempSync(join(tmpdir(), "main-gate-format-fallback-"));
+  try {
+    mkdirSync(join(cwd, "bin"));
+    mkdirSync(join(cwd, "scripts"));
+    writeFileSync(join(cwd, "scripts/gate-rust-format.sh"), readFileSync(join(dirname(runner), "gate-rust-format.sh")));
+    writeFileSync(join(cwd, "bin/bun"), '#!/bin/bash\nexit 101\n');
+    chmodSync(join(cwd, "bin/bun"), 0o755);
+    const source = readFileSync(join(dirname(runner), "buildbox/coordinator/gate-checks.sh"), "utf8");
+    const marker = "cat > .gate-feature-matrix.mjs <<'GATE_MATRIX_BOOTSTRAP'";
+    assert.ok(source.includes(marker));
+    const prefix = source.slice(0, source.indexOf(marker));
+    const hook = 'bash scripts/gate-rust-format.sh || exit $?';
+    assert.ok(prefix.includes(hook));
+    // End after the real fallback's prerequisite; all later phases succeed.
+    for (const negative of [false, true]) {
+      const selected = join(cwd, "runner.sh");
+      writeFileSync(selected, (negative ? prefix.replace(hook, ":") : prefix) + '\n)\ngate_main_existing "$@"\n');
+      const result = spawnSync("bash", [selected], { cwd, encoding: "utf8", env: { ...process.env, PATH: `${join(cwd, "bin")}:${process.env.PATH}` } });
+      assert.equal(result.status, negative ? 0 : 101, result.stdout + result.stderr);
+    }
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
+});
+
 test("main covers targets and docs, retains errors and never retries failures", { skip: process.platform === "win32" }, () => {
   const cwd = mkdtempSync(join(tmpdir(), "main-gate-"));
   try {
     mkdirSync(join(cwd, "bin"));
     mkdirSync(join(cwd, "scripts"));
+    writeFileSync(join(cwd, "scripts/gate-rust-format.sh"), readFileSync(join(dirname(runner), "gate-rust-format.sh")));
+    writeFileSync(join(cwd, "bin/bun"), '#!/bin/bash\necho "format $*" >> calls\nexit "${FORMAT_RC:-0}"\n');
+    chmodSync(join(cwd, "bin/bun"), 0o755);
     writeFileSync(join(cwd, "scripts/gate-test-runner.sh"), readFileSync(join(dirname(runner), "gate-test-runner.sh")));
     const cargo = join(cwd, "bin", "cargo");
     writeFileSync(cargo, `#!/bin/bash
@@ -70,6 +97,23 @@ esac
     });
     assert.equal(windowsFailure.status, 101, windowsFailure.stdout + windowsFailure.stderr);
     assert.match(windowsFailure.stdout, /GATE_DONE rc=101/u);
+    const formatHook = 'bash scripts/gate-rust-format.sh || exit $?';
+    const source = readFileSync(runner, "utf8");
+    assert.ok(source.includes(formatHook));
+    for (const negative of [false, true]) {
+      const selected = join(cwd, "format-runner.sh");
+      writeFileSync(selected, negative ? source.replace(formatHook, ":") : source);
+      writeFileSync(join(cwd, "calls"), "");
+      const result = spawnSync("bash", [selected], {
+        cwd, encoding: "utf8", env: { ...process.env, PATH: `${join(cwd, "bin")}:${process.env.PATH}`, GATE_MAIN_TARGET_DIR: join(cwd, "cache"), FORMAT_RC: "101", TARGET_RC: "0", DOC_RC: "0", FEATURE_RC: "0", BROWSER_RC: "0", WINDOWS_FEATURE_RC: "0", EARLY_FAIL: "0", BUILD_FAIL: "0" },
+      });
+      assert.equal(result.status, negative ? 0 : 101, result.stdout + result.stderr);
+      const calls = readFileSync(join(cwd, "calls"), "utf8").trim().split("\n");
+      if (!negative) {
+        assert.deepEqual(calls, ["format scripts/qualify-rustfmt.mjs"], "format drift stops qualification before any compiler phase");
+        assert.match(result.stdout, /GATE_RUSTFMT rc=101/u);
+      }
+    }
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
