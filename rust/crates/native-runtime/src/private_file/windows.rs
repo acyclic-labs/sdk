@@ -274,6 +274,91 @@ mod tests {
         GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo,
     };
 
+    fn install_untrusted_acl(file: &File, kind: &str) -> io::Result<()> {
+        let mut acl = [0usize; 32];
+        let acl_pointer = acl.as_mut_ptr().cast::<ACL>();
+        let mut world = [0usize; 16];
+        let mut world_length =
+            u32::try_from(std::mem::size_of_val(&world)).map_err(io::Error::other)?;
+        let mut descriptor = PSECURITY_DESCRIPTOR::default();
+        // SAFETY: aligned fixture buffers and the held file outlive every
+        // security call. The returned descriptor is released below.
+        unsafe {
+            InitializeAcl(
+                acl_pointer,
+                u32::try_from(std::mem::size_of_val(&acl)).map_err(io::Error::other)?,
+                ACL_REVISION,
+            )?;
+            if kind.ends_with("public") {
+                let sid = PSID(world.as_mut_ptr().cast());
+                CreateWellKnownSid(WinWorldSid, None, Some(sid), &mut world_length)?;
+                AddAccessAllowedAceEx(
+                    acl_pointer,
+                    ACL_REVISION,
+                    if kind == "inherited-public" {
+                        INHERITED_ACE
+                    } else {
+                        ACE_FLAGS(0)
+                    },
+                    FILE_ALL_ACCESS.0,
+                    sid,
+                )?;
+            }
+            SetSecurityInfo(
+                HANDLE(file.as_raw_handle()),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                Some(if kind == "missing" {
+                    std::ptr::null_mut()
+                } else {
+                    acl_pointer
+                }),
+                None,
+            )
+            .ok()
+            .map_err(|cause| io::Error::other(format!("{kind}: fixture ACL: {cause}")))?;
+            let mut actual_acl = std::ptr::null_mut();
+            GetSecurityInfo(
+                HANDLE(file.as_raw_handle()),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                Some(&mut actual_acl),
+                None,
+                Some(&mut descriptor),
+            )
+            .ok()
+            .map_err(|cause| io::Error::other(format!("{kind}: fixture inspection: {cause}")))?;
+            let mut control = 0;
+            let mut revision = 0;
+            let result = GetSecurityDescriptorControl(descriptor, &mut control, &mut revision);
+            if kind == "inherited-public" {
+                assert!(!actual_acl.is_null());
+                let mut ace = std::ptr::null_mut();
+                GetAce(actual_acl, 0, &mut ace)?;
+                assert_ne!(
+                    u32::from((*ace.cast::<ACE_HEADER>()).AceFlags) & INHERITED_ACE.0,
+                    0
+                );
+            }
+            let _ = LocalFree(Some(HLOCAL(descriptor.0)));
+            result?;
+            if kind == "missing" {
+                // Windows protects a null DACL when installing it. Its
+                // absent grant list must still fail the strict reader.
+                assert!(actual_acl.is_null());
+            } else {
+                // Negative control: the former upgrade guard accepted
+                // unprotected public and empty ACLs without checking grants.
+                assert_eq!(control & SE_DACL_PROTECTED.0, 0, "{kind}");
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn owner_upgrade_rejects_explicit_shared_empty_and_missing_access_lists_before_decode()
     -> io::Result<()> {
@@ -284,81 +369,10 @@ mod tests {
                 .write(true)
                 .create_new(true)
                 .access_mode(GENERIC_READ.0 | GENERIC_WRITE.0 | READ_CONTROL.0 | WRITE_DAC.0)
-                .open(&path)?;
+                .open(&path)
+                .map_err(|cause| io::Error::other(format!("{kind}: fixture creation: {cause}")))?;
             file.write_all(b"untrusted owner")?;
-            let mut acl = [0usize; 32];
-            let acl_pointer = acl.as_mut_ptr().cast::<ACL>();
-            let mut world = [0usize; 16];
-            let mut world_length =
-                u32::try_from(std::mem::size_of_val(&world)).map_err(io::Error::other)?;
-            let mut descriptor = PSECURITY_DESCRIPTOR::default();
-            // SAFETY: aligned fixture buffers and the held file outlive every
-            // security call. The returned descriptor is released below.
-            unsafe {
-                InitializeAcl(
-                    acl_pointer,
-                    u32::try_from(std::mem::size_of_val(&acl)).map_err(io::Error::other)?,
-                    ACL_REVISION,
-                )?;
-                if kind.ends_with("public") {
-                    let sid = PSID(world.as_mut_ptr().cast());
-                    CreateWellKnownSid(WinWorldSid, None, Some(sid), &mut world_length)?;
-                    AddAccessAllowedAceEx(
-                        acl_pointer,
-                        ACL_REVISION,
-                        if kind == "inherited-public" {
-                            INHERITED_ACE
-                        } else {
-                            ACE_FLAGS(0)
-                        },
-                        FILE_ALL_ACCESS.0,
-                        sid,
-                    )?;
-                }
-                SetSecurityInfo(
-                    HANDLE(file.as_raw_handle()),
-                    SE_FILE_OBJECT,
-                    DACL_SECURITY_INFORMATION,
-                    None,
-                    None,
-                    Some(if kind == "missing" {
-                        std::ptr::null_mut()
-                    } else {
-                        acl_pointer
-                    }),
-                    None,
-                )
-                .ok()?;
-                let mut actual_acl = std::ptr::null_mut();
-                GetSecurityInfo(
-                    HANDLE(file.as_raw_handle()),
-                    SE_FILE_OBJECT,
-                    DACL_SECURITY_INFORMATION,
-                    None,
-                    None,
-                    Some(&mut actual_acl),
-                    None,
-                    Some(&mut descriptor),
-                )
-                .ok()?;
-                let mut control = 0;
-                let mut revision = 0;
-                let result = GetSecurityDescriptorControl(descriptor, &mut control, &mut revision);
-                if kind == "inherited-public" {
-                    assert!(!actual_acl.is_null());
-                    let mut ace = std::ptr::null_mut();
-                    GetAce(actual_acl, 0, &mut ace)?;
-                    assert_ne!(
-                        u32::from((*ace.cast::<ACE_HEADER>()).AceFlags) & INHERITED_ACE.0,
-                        0
-                    );
-                }
-                let _ = LocalFree(Some(HLOCAL(descriptor.0)));
-                result?;
-                // Negative control: the former upgrade guard accepted every
-                // fixture because inheritance was enabled, including null ACLs.
-                assert_eq!(control & SE_DACL_PROTECTED.0, 0, "{kind}");
-            }
+            install_untrusted_acl(&file, kind)?;
             drop(file);
             assert!(
                 crate::private_file::read_for_upgrade_with::<(), io::Error>(
@@ -373,9 +387,11 @@ mod tests {
             // fixture through the same ACL setter before temporary cleanup.
             let restore = std::fs::OpenOptions::new()
                 .read(true)
-                .access_mode(WRITE_DAC.0)
-                .open(&path)?;
-            tighten(&restore)?;
+                .access_mode(READ_CONTROL.0 | WRITE_DAC.0)
+                .open(&path)
+                .map_err(|cause| io::Error::other(format!("{kind}: cleanup handle: {cause}")))?;
+            tighten(&restore)
+                .map_err(|cause| io::Error::other(format!("{kind}: cleanup ACL: {cause}")))?;
         }
         Ok(())
     }
