@@ -232,7 +232,9 @@ async fn advanced_view_reveals_a_path_absent_before() -> Result<(), Box<dyn std:
     let workspace = local_workspace(root.path(), "advance-projfs", &work).await?;
     let path = root.path().join("mount");
     std::fs::create_dir(&path)?;
-    let mount = workspace.mount(&path, manual_mount_options()).await?;
+    let mount = workspace
+        .mount(&path, manual_mount_options(&workspace).await?)
+        .await?;
     let added = path.join("added.txt");
     assert_eq!(
         std::fs::metadata(&added).err().map(|error| error.kind()),
@@ -284,7 +286,9 @@ async fn a_lazy_workspace_lists_through_the_projection() -> Result<(), Box<dyn s
     .await?;
     let destination = root.path().join("mount");
     std::fs::create_dir(&destination)?;
-    let mount = lazy.mount(&destination, manual_mount_options()).await?;
+    let mount = lazy
+        .mount(&destination, manual_mount_options(lazy.workspace()).await?)
+        .await?;
     assert_eq!(sorted_names(&destination)?, ["a.txt", "b.rs"]);
     mount.unmount().await?;
     Ok(())
@@ -335,7 +339,9 @@ async fn rustc_links_object_files_created_inside_projection()
         .await?;
     let path = root.path().join("mount");
     std::fs::create_dir(&path)?;
-    let mount = workspace.mount(&path, manual_mount_options()).await?;
+    let mount = workspace
+        .mount(&path, manual_mount_options(&workspace).await?)
+        .await?;
     let compiler_path = path.clone();
     let output = tokio::task::spawn_blocking(move || {
         acyclic_native_runtime::process_output(

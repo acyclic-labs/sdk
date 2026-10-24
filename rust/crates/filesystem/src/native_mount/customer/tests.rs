@@ -909,9 +909,12 @@ async fn published_lazy_unmount_reuses_the_same_windows_destination()
         let mount = lazy
             .mount(
                 destination.path(),
-                MountOptions::read_write()
-                    .publication(MountPublication::Manual)
-                    .native_context(&work, None, None),
+                fixture_options(
+                    lazy.workspace(),
+                    MountOptions::read_write().publication(MountPublication::Manual),
+                )
+                .await?
+                .native_context(&work, None, None),
             )
             .await
             .map_err(|error| format!("published unmount left a stale projection: {error}"))?;
@@ -950,9 +953,12 @@ async fn published_lazy_unmount_captures_authored_changes_before_detach()
         let mount = lazy
             .mount(
                 destination.path(),
-                MountOptions::read_write()
-                    .publication(MountPublication::Manual)
-                    .native_context(&work, None, None),
+                fixture_options(
+                    lazy.workspace(),
+                    MountOptions::read_write().publication(MountPublication::Manual),
+                )
+                .await?
+                .native_context(&work, None, None),
             )
             .await
             .map_err(|error| format!("published unmount left a stale projection: {error}"))?;
@@ -995,13 +1001,7 @@ async fn published_lazy_unmount_captures_authored_changes_before_detach()
     Ok(())
 }
 
-mod fixture_access {
-    use crate as acyclic_fs;
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/support/native_access.rs"
-    ));
-}
+use crate::native_mount::fixture_access;
 pub(super) use fixture_access::options as fixture_options;
 
 async fn admitted_source(

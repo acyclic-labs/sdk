@@ -40,10 +40,17 @@ pub fn verify_native_staging_selection(input: &str) {
         if let Ok((selected, _custody)) = selected {
             assert_eq!(selected, legacy.unwrap().0);
             assert!(!selected.is_root());
-            let mut spelling = PathBuf::new();
-            for component in selected.components() {
-                spelling.push(std::str::from_utf8(component.as_bytes()).unwrap());
-            }
+            // Use the production encoder. PathBuf::push reparses each name:
+            // on Windows, a later `a:` would replace the preceding directory.
+            let spelling =
+                materialize_host_path(None, selected.components(), &mut receipt).unwrap();
+            #[cfg(unix)]
+            let spelling = host_path(&spelling.0);
+            #[cfg(windows)]
+            let spelling = {
+                use std::os::windows::ffi::OsStringExt as _;
+                std::ffi::OsString::from_wide(&spelling.0)
+            };
             let (round_trip, _custody) = generation_namespace_from_selection(
                 spelling.to_str().unwrap(),
                 config,
@@ -59,6 +66,11 @@ pub fn verify_native_staging_selection(input: &str) {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn drive_like_child_keeps_its_parent_during_staging_round_trip() {
+        verify_native_staging_selection("a/a:");
+    }
 
     proptest! {
         // Property: only the explicit empty selection adds a root; every other

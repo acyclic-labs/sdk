@@ -92,9 +92,28 @@ static EXECUTABLE: std::sync::OnceLock<std::result::Result<std::path::PathBuf, S
 
 pub(in crate::local) fn executable() -> Result<&'static std::path::Path> {
     EXECUTABLE
-        .get_or_init(|| resolve(|name| which::which(name).ok()))
+        .get_or_init(|| resolve(lookup))
         .as_deref()
         .map_err(|cause| Error::Invalid(cause.clone()))
+}
+
+#[cfg(not(windows))]
+fn lookup(name: &str) -> Option<std::path::PathBuf> {
+    which::which(name).ok()
+}
+
+#[cfg(windows)]
+fn lookup(name: &str) -> Option<std::path::PathBuf> {
+    direct_candidate(which::which_all(name).ok()?)
+}
+
+#[cfg(windows)]
+fn direct_candidate(
+    candidates: impl IntoIterator<Item = std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    candidates
+        .into_iter()
+        .find_map(|candidate| acyclic_native_runtime::resolve_native_executable(&candidate).ok())
 }
 
 fn resolve(
@@ -115,6 +134,54 @@ fn resolve(
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selection_requires_a_direct_image_and_considers_later_path_candidates() {
+        let root = tempfile::tempdir().expect("shell candidates");
+        let alias = root.path().join("activation.exe");
+        std::fs::write(&alias, []).expect("activation placeholder");
+        let native = std::env::current_exe().expect("direct test image");
+        let candidates = [alias.clone(), native.clone()];
+        // The old first-existing selection admits the non-image placeholder.
+        assert_eq!(candidates.first(), Some(&alias));
+        assert_eq!(
+            direct_candidate(candidates),
+            Some(native.canonicalize().unwrap())
+        );
+        assert_eq!(direct_candidate([alias]), None);
+    }
+
+    #[test]
+    fn shell_fallback_requires_an_admitted_image_for_each_shell_name() {
+        let root = tempfile::tempdir().expect("shell candidates");
+        let invalid = root.path().join("activation.exe");
+        std::fs::write(&invalid, []).expect("activation placeholder");
+        let native = std::env::current_exe().expect("direct image");
+        let canonical = native.canonicalize().expect("physical image");
+        let choices = [vec![], vec![invalid.clone()], vec![invalid, native]];
+        for first in 0..choices.len() {
+            for second in 0..choices.len() {
+                let mut calls = Vec::new();
+                let result = resolve(|name| {
+                    calls.push(name.to_owned());
+                    let index = if name == "pwsh.exe" { first } else { second };
+                    direct_candidate(choices[index].clone())
+                });
+                assert_eq!(
+                    result.ok(),
+                    (first == 2 || second == 2).then(|| canonical.clone())
+                );
+                assert_eq!(
+                    calls,
+                    if first == 2 {
+                        vec!["pwsh.exe"]
+                    } else {
+                        vec!["pwsh.exe", "powershell.exe"]
+                    }
+                );
+            }
+        }
+    }
 
     #[test]
     fn selection_prefers_pwsh_then_windows_powershell_and_never_bash() {

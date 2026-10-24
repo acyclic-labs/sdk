@@ -68,6 +68,8 @@ impl NativeSourceWatch {
                 }),
                 buffer_owned: AtomicBool::new(true),
                 reading_changed: Condvar::new(),
+                reader_ready: Mutex::new(ReaderStartup::Pending),
+                startup_changed: Condvar::new(),
                 stopping: AtomicBool::new(false),
                 stop_completed: AtomicBool::new(false),
                 ownership,
@@ -118,6 +120,15 @@ impl NativeSourceWatch {
             }
             drop(reads);
             state.reading_changed.notify_all();
+            // Wait outside the read lock: a completion may already own it.
+            // Publishing the watch requires its reader's startup handoff.
+            let ready = state
+                .reader_ready
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if *state.await_reader_startup(ready) == ReaderStartup::Failed {
+                return Err(DemandError::OriginalWorkPoisoned);
+            }
             Ok(Self {
                 shared: shared.take().ok_or(DemandError::NativeWorkUnavailable)?,
             })

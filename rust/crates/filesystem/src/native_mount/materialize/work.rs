@@ -21,6 +21,77 @@ where
     Ok(())
 }
 
+// One accounted ordered index serves file identities and clone candidates on
+// every host. A linear scan paid one original-ledger admission per prior file.
+pub(super) struct GenerationIndex<K, V> {
+    values: Vec<(K, V)>,
+}
+
+impl<K, V> Default for GenerationIndex<K, V> {
+    fn default() -> Self {
+        Self { values: Vec::new() }
+    }
+}
+
+impl<K: Ord, V> GenerationIndex<K, V> {
+    fn search(
+        &self,
+        key: &K,
+        receipt: &GenerationReceipt,
+    ) -> Result<Result<usize, usize>, MaterializeError> {
+        let work = receipt.custody.work();
+        let mut accounting = crate::kernel::KernelAccounting::native(work, work.cancellation());
+        accounting.check()?;
+        Ok(crate::kernel::binary_search_with_accounting(
+            &self.values,
+            &mut accounting,
+            |entry| entry.0.cmp(key),
+        )?)
+    }
+
+    pub(super) fn get(
+        &self,
+        key: &K,
+        receipt: &GenerationReceipt,
+    ) -> Result<Option<&V>, MaterializeError> {
+        let Ok(index) = self.search(key, receipt)? else {
+            return Ok(None);
+        };
+        let (_, value) = self
+            .values
+            .get(index)
+            .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
+        Ok(Some(value))
+    }
+
+    pub(super) fn insert(
+        &mut self,
+        key: K,
+        value: V,
+        receipt: &mut GenerationReceipt,
+    ) -> Result<bool, MaterializeError> {
+        let Err(index) = self.search(&key, receipt)? else {
+            return Ok(false);
+        };
+        let moved = self
+            .values
+            .len()
+            .checked_sub(index)
+            .and_then(|count| count.checked_add(1))
+            .and_then(|count| count.checked_mul(std::mem::size_of::<(K, V)>()))
+            .ok_or(WorkError::Overflow)?;
+        let copied = WorkCounters {
+            bytes_copied: crate::foundation::usize_to_u64(moved),
+            ..WorkCounters::UNCHARGED
+        };
+        let copying = receipt.custody.work().reserve_work(copied)?;
+        receipt.reserve(&mut self.values, 1)?;
+        self.values.insert(index, (key, value));
+        copying.record_completed(copied)?;
+        Ok(true)
+    }
+}
+
 /// Native traversal and host work share the original ledger; standalone SDK reads contribute their measured prefixes.
 pub(super) struct GenerationReceipt {
     pub(super) value: MaterializationReceipt,

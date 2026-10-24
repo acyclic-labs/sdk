@@ -117,6 +117,10 @@ fn component_opens_reject_real_junctions_at_every_depth_and_disposition()
         for name in ["alias", r"alias\child", r"alias\new-child"] {
             let path = test_path(name);
             assert!(directory_path(&root.directory, &path, create, &mut ordinary_work()).is_err());
+            assert!(
+                root.create_directories(Path::new(name), &mut ordinary_work())
+                    .is_err()
+            );
         }
     }
     assert!(!outside.join("new-child").exists());
@@ -156,6 +160,7 @@ fn component_opens_keep_each_ancestors_original_access_check()
             &mut ordinary_work(),
         )
     });
+    let held_creation = root.create_directories(Path::new(r"parent\child"), &mut ordinary_work());
     acl(&["/reset"])?;
     assert!(
         unchecked.is_ok(),
@@ -164,6 +169,66 @@ fn component_opens_keep_each_ancestors_original_access_check()
     for result in results {
         assert!(matches!(result, Err(DemandError::Io(error))
             if error.kind() == io::ErrorKind::PermissionDenied));
+    }
+    assert!(matches!(held_creation, Err(DemandError::Io(error))
+        if error.kind() == io::ErrorKind::PermissionDenied));
+    Ok(())
+}
+
+#[test]
+fn held_creation_queries_only_the_returned_identity_without_dropping_barriers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temporary = tempfile::tempdir()?;
+    let root = test_root(temporary.path())?;
+    for depth in 1..=4 {
+        let relative: std::path::PathBuf = (0..depth).map(|_| "nested").collect();
+        // Exercise both creation and reopening concurrently publishable names.
+        for _ in 0..2 {
+            let mut work = ordinary_work();
+            let (created, events) = acyclic_test_support::differential::observe::<_, _, &'static str>(
+                || stat_probe::Probe::rescan(false),
+                |probe| {
+                    let created = root.create_directories(&relative, &mut work);
+                    probe.publish();
+                    created
+                },
+            );
+            let created = created?;
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| **event == "GetFileInformationByHandle")
+                    .count(),
+                1
+            );
+            let receipt = work.receipt();
+            assert_eq!(receipt.durability_operations, depth);
+            assert_eq!(receipt.backend_write_operations, depth);
+            // One writable parent open per barrier and one final identity query.
+            assert_eq!(receipt.backend_read_operations, depth + 1);
+            assert_eq!(
+                created.identity(),
+                test_root(&temporary.path().join(&relative))?.identity()
+            );
+
+            // The former shape queries, then discards, every parent's identity.
+            let mut old = ordinary_work();
+            let mut held: Option<Dir> = None;
+            for component in relative.components() {
+                let directory = held.as_ref().unwrap_or(&root.directory);
+                let (child, _) =
+                    with_wide_path(Path::new(component.as_os_str()), &mut old, |name, work| {
+                        open_windows_directory(directory, name, true, work)
+                    })?;
+                sync_directory_held(directory, &mut old)?;
+                held = Some(child);
+            }
+            assert_eq!(old.receipt().durability_operations, depth);
+            assert_eq!(old.receipt().backend_read_operations, 2 * depth);
+            if depth > 1 {
+                assert!(old.receipt().backend_read_operations > receipt.backend_read_operations);
+            }
+        }
     }
     Ok(())
 }

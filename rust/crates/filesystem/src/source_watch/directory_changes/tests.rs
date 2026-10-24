@@ -128,6 +128,48 @@ fn startup_denies_cleanup_before_native_io() -> TestResult {
     Ok(())
 }
 #[test]
+fn reader_startup_publication_waits_for_acknowledgement() -> TestResult {
+    let (_root, held) = held()?;
+    let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
+    let watch = driver(&held, &mut work)?;
+    assert_eq!(
+        *watch
+            .shared
+            .reader_ready
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner),
+        ReaderStartup::Ready,
+    );
+    for outcome in [ReaderStartup::Ready, ReaderStartup::Failed] {
+        *watch
+            .shared
+            .reader_ready
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = ReaderStartup::Pending;
+        let acknowledged = std::thread::scope(|scope| {
+            let (entered, observed) = std::sync::mpsc::channel();
+            let shared = &watch.shared;
+            let waiter = scope.spawn(move || {
+                let ready = shared
+                    .reader_ready
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                entered.send(()).unwrap();
+                // Without the production wait, Pending is captured while
+                // this lock still excludes the acknowledgement below.
+                *shared.await_reader_startup(ready)
+            });
+            observed.recv().unwrap();
+            shared.finish_reader_startup(outcome);
+            waiter.join().unwrap()
+        });
+        assert_eq!(acknowledged, outcome);
+    }
+    watch.stop_with_work(&mut work)?;
+    assert_retired(&watch.shared);
+    Ok(())
+}
+#[test]
 fn stop_denial_and_cancellation_retain_the_same_native_owner() -> TestResult {
     let (_root, held) = held()?;
     let mut startup = DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
@@ -360,10 +402,8 @@ mod original {
             .native_wait_cancellation
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(wait.clone());
-        assert!(matches!(
-            watch.stop_with_cleanup_wait(&wait),
-            Err(DemandError::Cancelled)
-        ));
+        let result = watch.stop_with_cleanup_wait(&wait);
+        assert!(matches!(result, Err(DemandError::Cancelled)), "{result:?}");
         assert!(wait.is_cancelled());
         assert!(watch.is_stopped());
         assert_retired(&watch.shared);
@@ -473,12 +513,21 @@ mod original {
         let protection = Protection(Arc::clone(&completion));
         let before = birth.with_original_leaf(|work| work.work);
         cancellation.cancel();
+        // A cancellable caller cannot enter while a reader holds this lock.
+        // Prove that admission is distinct from the native close failure below.
+        let denied = watch.stop_with_cleanup_wait(&CancellationToken::new());
         drop(reads);
+        assert!(matches!(denied, Err(DemandError::WorkerUnavailable)));
+        // Accepted cleanup owns the reserved suffix and waits for the reader;
+        // its close result cannot be replaced by transient lock admission.
         let failure = watch
-            .stop_with_cleanup_wait(&CancellationToken::new())
+            .stop_accepted_cleanup()
             .err()
             .ok_or("protected close succeeded")?;
-        assert!(matches!(failure, DemandError::Io(error) if error.raw_os_error().is_some()));
+        assert!(
+            matches!(&failure, DemandError::Io(error) if error.raw_os_error().is_some()),
+            "protected native close must preserve its OS error: {failure:?}"
+        );
         assert!(!watch.is_stopped());
         assert!(owner.upgrade().is_some());
         assert_eq!(completion.directory.load(Ordering::Acquire), directory);

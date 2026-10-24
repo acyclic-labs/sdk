@@ -211,12 +211,12 @@ pub(super) async fn live_lazy_mount_of(
     .await?
     .0;
     std::fs::create_dir_all(destination)?;
-    Ok(lazy
-        .mount(
-            destination,
-            MountOptions::read_write().publication(MountPublication::Manual),
-        )
-        .await?)
+    let options = crate::native_mount::fixture_access::options(
+        lazy.workspace(),
+        MountOptions::read_write().publication(MountPublication::Manual),
+    )
+    .await?;
+    Ok(lazy.mount(destination, options).await?)
 }
 
 pub(super) fn sorted_names(directory: &Path) -> std::io::Result<Vec<std::ffi::OsString>> {

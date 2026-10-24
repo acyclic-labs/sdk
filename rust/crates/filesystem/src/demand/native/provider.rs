@@ -27,30 +27,36 @@ impl DemandSource for NativeDemandSource {
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<Option<SourceNode>, DemandError> {
-        self.request(path, work, cancellation, move |provider, path, context| {
-            context.check()?;
-            if source != provider.reference() {
-                return Err(DemandError::StaleSource);
-            }
-            if provider.excluded.excludes(path) {
-                return Ok(None);
-            }
-            // Every non-root host path needs an encoded-name buffer.
-            context.admit(WorkCounters {
-                allocation_operations: u64::from(path.depth() != 0),
-                ..WorkCounters::UNCHARGED
-            })?;
-            provider.check(source, context)?;
-            provider.observe_parent(path, context)?;
-            let mut node = provider.metadata(path, context)?.as_ref().map(Self::node);
-            if node.is_some_and(|node| node.kind == SourceNodeKind::Directory)
-                && provider.admit_to_watches(path, context)?
-            {
-                node = provider.metadata(path, context)?.as_ref().map(Self::node);
-            }
-            provider.check(source, context)?;
-            Ok(node)
-        })
+        self.request(
+            path,
+            work,
+            cancellation,
+            Ok(WorkCounters::UNCHARGED),
+            move |provider, path, context| {
+                context.check()?;
+                if source != provider.reference() {
+                    return Err(DemandError::StaleSource);
+                }
+                if provider.excluded.excludes(path) {
+                    return Ok(None);
+                }
+                // Every non-root host path needs an encoded-name buffer.
+                context.admit(WorkCounters {
+                    allocation_operations: u64::from(path.depth() != 0),
+                    ..WorkCounters::UNCHARGED
+                })?;
+                provider.check(source, context)?;
+                provider.observe_parent(path, context)?;
+                let mut node = provider.metadata(path, context)?.as_ref().map(Self::node);
+                if node.is_some_and(|node| node.kind == SourceNodeKind::Directory)
+                    && provider.admit_to_watches(path, context)?
+                {
+                    node = provider.metadata(path, context)?.as_ref().map(Self::node);
+                }
+                provider.check(source, context)?;
+                Ok(node)
+            },
+        )
         .await
     }
     async fn list_page<W: FsWork + Send>(
@@ -66,6 +72,7 @@ impl DemandSource for NativeDemandSource {
             directory,
             work,
             cancellation,
+            self.directory_page_work(maximum_entries),
             move |provider, directory, context| {
                 provider.directory_page(source, directory, cursor, maximum_entries, context)
             },
@@ -82,13 +89,19 @@ impl DemandSource for NativeDemandSource {
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<crate::kernel::OwnedSourceChunk, DemandError> {
-        self.request(path, work, cancellation, move |provider, path, context| {
-            if provider.excluded.excludes(path) {
-                return Err(DemandError::Absent);
-            }
-            NativeDemandFile::open(provider, source, path, expected, context)?
-                .read(offset, length, context)
-        })
+        self.request(
+            path,
+            work,
+            cancellation,
+            Ok(WorkCounters::UNCHARGED),
+            move |provider, path, context| {
+                if provider.excluded.excludes(path) {
+                    return Err(DemandError::Absent);
+                }
+                NativeDemandFile::open(provider, source, path, expected, context)?
+                    .read(offset, length, context)
+            },
+        )
         .await
     }
     async fn open_file<W: FsWork + Send>(
@@ -99,14 +112,20 @@ impl DemandSource for NativeDemandSource {
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<Box<dyn DemandFile>, DemandError> {
-        self.request(path, work, cancellation, move |provider, path, context| {
-            if provider.excluded.excludes(path) {
-                return Err(DemandError::Absent);
-            }
-            Ok(Box::new(NativeDemandFile::open(
-                provider, source, path, expected, context,
-            )?) as Box<dyn DemandFile>)
-        })
+        self.request(
+            path,
+            work,
+            cancellation,
+            Ok(WorkCounters::UNCHARGED),
+            move |provider, path, context| {
+                if provider.excluded.excludes(path) {
+                    return Err(DemandError::Absent);
+                }
+                Ok(Box::new(NativeDemandFile::open(
+                    provider, source, path, expected, context,
+                )?) as Box<dyn DemandFile>)
+            },
+        )
         .await
     }
     async fn read_link<W: FsWork + Send>(
@@ -118,32 +137,38 @@ impl DemandSource for NativeDemandSource {
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<crate::kernel::OwnedSourceChunk, DemandError> {
-        self.request(path, work, cancellation, move |provider, path, context| {
-            provider.check(source, context)?;
-            if provider.excluded.excludes(path) {
-                return Err(DemandError::Absent);
-            }
-            provider.observe_parent(path, context)?;
-            let before = provider
-                .metadata(path, context)?
-                .ok_or(DemandError::Absent)?;
-            if before.file_type() != crate::demand::SourceNodeKind::SymbolicLink {
-                return Err(DemandError::InvalidRequest);
-            }
-            if version(&before) != expected {
-                return Err(DemandError::StaleVersion);
-            }
-            let (relative, allocation) = provider.relative(path, context)?;
-            let answer = provider.link_bytes(&relative, maximum_bytes, context);
-            drop(relative);
-            context.release(allocation)?;
-            let bytes = answer?;
-            if provider.metadata(path, context)?.as_ref().map(version) != Some(expected) {
-                return Err(DemandError::StaleVersion);
-            }
-            provider.check(source, context)?;
-            Ok(bytes)
-        })
+        self.request(
+            path,
+            work,
+            cancellation,
+            Ok(WorkCounters::UNCHARGED),
+            move |provider, path, context| {
+                provider.check(source, context)?;
+                if provider.excluded.excludes(path) {
+                    return Err(DemandError::Absent);
+                }
+                provider.observe_parent(path, context)?;
+                let before = provider
+                    .metadata(path, context)?
+                    .ok_or(DemandError::Absent)?;
+                if before.file_type() != crate::demand::SourceNodeKind::SymbolicLink {
+                    return Err(DemandError::InvalidRequest);
+                }
+                if version(&before) != expected {
+                    return Err(DemandError::StaleVersion);
+                }
+                let (relative, allocation) = provider.relative(path, context)?;
+                let answer = provider.link_bytes(&relative, maximum_bytes, context);
+                drop(relative);
+                context.release(allocation)?;
+                let bytes = answer?;
+                if provider.metadata(path, context)?.as_ref().map(version) != Some(expected) {
+                    return Err(DemandError::StaleVersion);
+                }
+                provider.check(source, context)?;
+                Ok(bytes)
+            },
+        )
         .await
     }
 }

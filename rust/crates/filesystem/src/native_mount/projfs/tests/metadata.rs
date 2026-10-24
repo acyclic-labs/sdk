@@ -75,7 +75,9 @@ async fn external_metadata_only_change_survives_remount() -> Result<(), Box<dyn 
 
     let first = root.path().join("first-mount");
     std::fs::create_dir(&first)?;
-    let mount = workspace.mount(&first, manual_mount_options()).await?;
+    let mount = workspace
+        .mount(&first, manual_mount_options(&workspace).await?)
+        .await?;
     // Nested paths retain the handle-opening validator and its callback guard.
     std::fs::create_dir(first.join("nested"))?;
     std::fs::write(first.join("nested/metadata.txt"), b"unchanged contents")?;
@@ -92,7 +94,9 @@ async fn external_metadata_only_change_survives_remount() -> Result<(), Box<dyn 
 
     let second = root.path().join("second-mount");
     std::fs::create_dir(&second)?;
-    let remount = workspace.mount(&second, manual_mount_options()).await?;
+    let remount = workspace
+        .mount(&second, manual_mount_options(&workspace).await?)
+        .await?;
     for relative in ["metadata.txt", "nested/metadata.txt"] {
         assert!(
             std::fs::metadata(second.join(relative))?

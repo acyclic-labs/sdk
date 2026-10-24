@@ -240,9 +240,9 @@ where
     let selection_bytes = vec_bytes(&selected_paths);
     let destination = validate_options(options, &mut receipt)?;
     let host_root = receipt.owned_arc(destination, 0)?;
-    let mut known_files = Vec::<(FileId, HeldHostPath)>::new();
+    let mut known_files = GenerationIndex::<FileId, HeldHostPath>::default();
     #[cfg(any(target_os = "macos", windows))]
-    let mut known_payloads = Vec::<((u64, ObjectId, ObjectId), HeldHostPath)>::new();
+    let mut known_payloads = GenerationIndex::<(u64, ObjectId, ObjectId), HeldHostPath>::default();
     let mut pending = Vec::new();
     let mut deferred_directory_metadata = Vec::new();
     let limits = reader.volume_config().limits;

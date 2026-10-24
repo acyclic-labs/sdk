@@ -252,6 +252,12 @@ fn start_in_job(
         Ok(())
     })?;
     let child = tree.child.as_ref().ok_or(io::ErrorKind::NotFound)?;
+    // Packaged applications can use desktop-app breakaway even when their
+    // assigned Job disallows ordinary breakaway. Check the actual suspended
+    // process, so aliases and a replaced executable cannot bypass admission.
+    super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
+        crate::executable::require_unpackaged(child.as_raw_handle().cast())
+    })?;
     super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
         // SAFETY: both handles are owned and the child is still suspended.
         if unsafe { AssignProcessToJobObject(tree.guard.job, child.as_raw_handle().cast()) } == 0 {

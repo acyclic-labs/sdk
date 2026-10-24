@@ -13,7 +13,9 @@ mod custody;
 mod namespace;
 mod positional;
 mod range;
+mod source;
 mod spare;
+use source::SourceFixture;
 mod write_validation;
 
 /// Waits for a state another thread publishes. No wall-clock bound: under

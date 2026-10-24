@@ -38,23 +38,29 @@ fn attached(workspace: &std::path::Path, users: &std::path::Path) -> Result<Owne
 /// Over `steps` (true: delete and re-create the checkout; false: reopen it)
 /// on a filesystem that reissues the same object id, every re-created
 /// checkout attaches a new owner and every reopen keeps its owner.
-fn recreations_attach_new_state(steps: &[bool]) -> std::result::Result<(), String> {
-    let parent = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let users = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let workspace = parent.path().join("checkout");
-    std::fs::create_dir(&workspace).map_err(|error| error.to_string())?;
+fn recreations_attach_new_state(
+    workspace: &std::path::Path,
+    users: &std::path::Path,
+    steps: &[bool],
+) -> std::result::Result<(), String> {
+    match std::fs::remove_dir_all(workspace) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    std::fs::create_dir(workspace).map_err(|error| error.to_string())?;
     let _reset = Reset;
     INJECTED.set(Some((REUSED, StableObjectId)));
     let attach = || {
-        attached(&workspace, users.path())
+        attached(workspace, users)
             .map(|owner| owner.agent)
             .map_err(|error| error.to_string())
     };
     let mut owners = vec![attach()?];
     for (index, recreate) in steps.iter().enumerate() {
         if *recreate {
-            std::fs::remove_dir_all(&workspace).map_err(|error| error.to_string())?;
-            std::fs::create_dir(&workspace).map_err(|error| error.to_string())?;
+            std::fs::remove_dir_all(workspace).map_err(|error| error.to_string())?;
+            std::fs::create_dir(workspace).map_err(|error| error.to_string())?;
         }
         let owner = attach()?;
         if *recreate && owners.contains(&owner) {
@@ -106,24 +112,45 @@ async fn a_checkout_without_stable_ids_reopens_its_state_after_renumbering() -> 
     Ok(())
 }
 
-proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
-    /// Any sequence of reopening, deleting and re-creating a checkout on a
-    /// reused object id attaches new state to each re-creation only.
-    #[test]
-    fn every_recreation_on_a_reused_object_id_attaches_new_state(
-        steps in proptest::collection::vec(proptest::prelude::any::<bool>(), 1..8),
-    ) {
-        proptest::prop_assert_eq!(recreations_attach_new_state(&steps), Ok(()));
-    }
+/// Reuse the two outer fixture directories across generated inputs and
+/// shrinking. Every input still starts with a real deleted/re-created
+/// checkout, and every generated recreation still deletes its native root.
+#[test]
+fn every_recreation_on_a_reused_object_id_attaches_new_state() {
+    let parent = tempfile::tempdir().unwrap();
+    let users = tempfile::tempdir().unwrap();
+    let workspace = parent.path().join("checkout");
+    let mut runner = proptest::test_runner::TestRunner::new(proptest::test_runner::Config {
+        source_file: Some(file!()),
+        test_name: Some(concat!(
+            module_path!(),
+            "::every_recreation_on_a_reused_object_id_attaches_new_state"
+        )),
+        ..proptest::test_runner::Config::with_cases(32)
+    });
+    runner
+        .run(
+            &proptest::collection::vec(proptest::prelude::any::<bool>(), 1..8),
+            |steps| {
+                proptest::prop_assert_eq!(
+                    recreations_attach_new_state(&workspace, users.path(), &steps),
+                    Ok(())
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
 }
 
 /// Negative control: without the token, a checkout re-created on a reused
 /// object id attaches its predecessor's state.
 #[test]
 fn negative_control_an_untokened_incarnation_attaches_stale_state() {
+    let parent = tempfile::tempdir().unwrap();
+    let users = tempfile::tempdir().unwrap();
     UNTOKENED.set(true);
-    let attached = recreations_attach_new_state(&[true]);
+    let attached =
+        recreations_attach_new_state(&parent.path().join("checkout"), users.path(), &[true]);
     UNTOKENED.set(false);
     assert!(
         attached.is_err_and(|error| error.contains("attached stale state")),

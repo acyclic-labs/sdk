@@ -88,6 +88,8 @@ pub(crate) use reader::*;
 mod root;
 pub(crate) use root::*;
 mod held_files;
+#[cfg(any(test, feature = "native-mount"))]
+pub use held_files::PublishedPair;
 #[cfg(feature = "native-watch")]
 mod search;
 #[cfg(test)]

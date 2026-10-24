@@ -379,3 +379,126 @@ async fn native_late_publication_cancellation_and_cleanup_denial_preserve_retry(
     committed.work.checked_add(accepted.work)?.verify(budget)?;
     Ok(())
 }
+
+#[cfg(feature = "native-mount")]
+#[tokio::test]
+async fn native_filter_admission_precedes_request_transport_custody() -> TestResult {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let directory = tempfile::tempdir()?;
+    let source = open_source(directory.path())
+        .await?
+        .exclude(
+            vec![requested("private")?, requested("excluded")?],
+            &FINITE_BUDGET,
+            &CancellationToken::new(),
+        )?
+        .value;
+    let root = requested("")?;
+    for maximum in [0, 4097, 8] {
+        let token = CancellationToken::new();
+        let budget = WorkBudget {
+            items_examined: 2,
+            ..FINITE_BUDGET
+        };
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &token)
+            .map_err(|(error, _)| error)?;
+        let before = work.receipt();
+        let live = work.live_allocation_bytes();
+        let failure = source
+            .list_page(source.reference(), &root, None, maximum, &work, &token)
+            .await
+            .err()
+            .ok_or("unadmitted directory request reached transport")?;
+        if maximum == 8 {
+            assert!(matches!(failure, DemandError::Work(_)));
+        } else {
+            assert!(matches!(failure, DemandError::InvalidRequest));
+        }
+        assert_eq!(work.receipt(), before);
+        assert_eq!(work.live_allocation_bytes(), live);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "native-mount")]
+#[tokio::test]
+async fn request_transport_copy_denial_retires_and_reports_its_completed_prefix() -> TestResult {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let directory = tempfile::tempdir()?;
+    let source = open_source(directory.path()).await?;
+    let path = requested("child")?;
+    let token = CancellationToken::new();
+    let budget = WorkBudget {
+        bytes_copied: 0,
+        ..FINITE_BUDGET
+    };
+    let failure = source
+        .list_page(source.reference(), &path, None, 1, budget, &token)
+        .await
+        .err()
+        .ok_or("path copy was not denied")?;
+    assert!(matches!(failure.error, DemandError::Work(_)));
+    assert_eq!(failure.work.allocation_operations, 1);
+    assert_eq!(
+        failure.work.peak_allocation_bytes,
+        std::mem::size_of::<crate::source_watch::CallbackWork>() as u64
+    );
+    assert_eq!(failure.work.bytes_copied, 0);
+    assert_eq!(failure.work.backend_read_operations, 0);
+    assert_eq!(failure.work.backend_write_operations, 0);
+    failure.work.verify(budget)?;
+    let work =
+        acyclic_fs::NativeMaterializationWork::new(budget, &token).map_err(|(error, _)| error)?;
+    let before = work.receipt();
+    let live = work.live_allocation_bytes();
+    let failure = source
+        .list_page(source.reference(), &path, None, 1, &work, &token)
+        .await
+        .err()
+        .ok_or("native path copy was not denied")?;
+    assert!(matches!(failure, DemandError::Work(_)));
+    assert_eq!(work.live_allocation_bytes(), live);
+    assert_eq!(
+        work.receipt().allocation_operations - before.allocation_operations,
+        1
+    );
+    assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
+    assert_eq!(
+        work.receipt().backend_read_operations,
+        before.backend_read_operations
+    );
+    assert_eq!(
+        work.receipt().backend_write_operations,
+        before.backend_write_operations
+    );
+    Ok(())
+}
+
+#[cfg(feature = "native-mount")]
+#[tokio::test]
+async fn request_semantic_denial_preserves_an_existing_original_ledger_failure() -> TestResult {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let directory = tempfile::tempdir()?;
+    let source = open_source(directory.path()).await?;
+    let root = requested("")?;
+    for maximum in [0, 1] {
+        for cancelled in [false, true] {
+            let token = CancellationToken::new();
+            let work = acyclic_fs::NativeMaterializationWork::new(FINITE_BUDGET, &token)
+                .map_err(|(error, _)| error)?;
+            work.with_original_leaf(|leaf| leaf.poison_native_original_work());
+            let before = work.receipt();
+            if cancelled {
+                token.cancel();
+            }
+            let failure = source
+                .list_page(source.reference(), &root, None, maximum, &work, &token)
+                .await
+                .err()
+                .ok_or("poisoned request was admitted")?;
+            assert!(matches!(failure, DemandError::OriginalWorkPoisoned));
+            assert_eq!(work.receipt(), before);
+        }
+    }
+    Ok(())
+}

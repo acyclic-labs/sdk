@@ -8,19 +8,18 @@ pub(in crate::native_mount) fn with_native_callback_carrier<T>(
         crate::native_mount::adapter::PreparedCallbackWait,
     ) -> Result<T, MountSourceError>,
 ) -> Result<T, MountSourceError> {
-    let prepared = carrier.with_work(|work| runtime.prepare_wait(work))?;
-    let bytes = prepared.logical_owned_bytes();
+    let work = carrier
+        .original_native_work()
+        .ok_or(MountSourceError::OriginalSnapshotUnavailable)?;
+    let prepared = runtime.prepare_native_wait(&work)?;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(carrier, prepared)));
-    let release = carrier
-        .with_work(|work| work.release(bytes))
-        .map_err(MountSourceError::from);
     let reconciled = carrier
         .with_work(|work| work.record(crate::WorkCounters::default()))
         .map_err(MountSourceError::from);
     match result {
         Err(panic) => std::panic::resume_unwind(panic),
         Ok(Err(error)) => Err(error),
-        Ok(Ok(value)) => release.and(reconciled).map(|()| value),
+        Ok(Ok(value)) => reconciled.map(|()| value),
     }
 }
 

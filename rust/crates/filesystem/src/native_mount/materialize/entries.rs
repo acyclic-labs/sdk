@@ -1,9 +1,9 @@
 use super::*;
 
-type KnownFileLinks = Vec<(FileId, HeldHostPath)>;
+type KnownFileLinks = GenerationIndex<FileId, HeldHostPath>;
 type PendingDirectoryMetadata = Vec<(HeldNamespacePath, HeldHostPath)>;
 #[cfg(any(target_os = "macos", windows))]
-type KnownPayload = ((u64, ObjectId, ObjectId), HeldHostPath);
+type KnownPayloads = GenerationIndex<(u64, ObjectId, ObjectId), HeldHostPath>;
 
 #[allow(
     clippy::too_many_arguments,
@@ -20,7 +20,7 @@ pub(super) async fn materialize_entry<A, O, E, F, Fut>(
     options: &MaterializeOptions,
     cancellation: &CancellationToken,
     known_files: &mut KnownFileLinks,
-    #[cfg(any(target_os = "macos", windows))] known_payloads: &mut Vec<KnownPayload>,
+    #[cfg(any(target_os = "macos", windows))] known_payloads: &mut KnownPayloads,
     pending: &mut PendingDirectoryMetadata,
     receipt: &mut GenerationReceipt,
     mode: MaterializeMode,
@@ -56,45 +56,38 @@ where
             Ok::<_, DemandError>(())
         })
         .map_err(MaterializeError::from)?;
-    for (identity, existing) in known_files.iter() {
+    if let Some(existing) = known_files.get(&file_id, receipt)? {
+        generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
+        host_root
+            .0
+            .hard_link(
+                #[cfg(unix)]
+                super::work::host_path(&existing.0),
+                #[cfg(windows)]
+                &existing.0,
+                #[cfg(unix)]
+                super::work::host_path(&host_path.0),
+                #[cfg(windows)]
+                &host_path.0,
+                #[cfg(unix)]
+                &mut &work,
+                #[cfg(windows)]
+                &mut work,
+            )
+            .map_err(MaterializeError::from)?;
+        generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
+        receipt.value.files = receipt
+            .value
+            .files
+            .checked_add(1)
+            .ok_or(MaterializeError::Work(WorkError::Overflow))?;
+        account_materialization(receipt, 0)?;
         receipt
             .custody
             .work()
-            .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
+            .admit(WorkCounters::UNCHARGED)
             .map_err(MaterializeError::from)?;
-        if *identity == file_id {
-            generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
-            host_root
-                .0
-                .hard_link(
-                    #[cfg(unix)]
-                    super::work::host_path(&existing.0),
-                    #[cfg(windows)]
-                    &existing.0,
-                    #[cfg(unix)]
-                    super::work::host_path(&host_path.0),
-                    #[cfg(windows)]
-                    &host_path.0,
-                    #[cfg(unix)]
-                    &mut &work,
-                    #[cfg(windows)]
-                    &mut work,
-                )
-                .map_err(MaterializeError::from)?;
-            generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
-            receipt.value.files = receipt
-                .value
-                .files
-                .checked_add(1)
-                .ok_or(MaterializeError::Work(WorkError::Overflow))?;
-            account_materialization(receipt, 0)?;
-            receipt
-                .custody
-                .work()
-                .admit(WorkCounters::UNCHARGED)
-                .map_err(MaterializeError::from)?;
-            return Ok(());
-        }
+        return Ok(());
     }
     let mut authenticated_metadata = None;
     match (kind, payload) {
@@ -121,7 +114,7 @@ where
                 .checked_add(1)
                 .ok_or(MaterializeError::Work(WorkError::Overflow))?;
             account_materialization(receipt, 0)?;
-            receipt.push(known_files, (file_id, host_path.clone()))?;
+            known_files.insert(file_id, host_path.clone(), receipt)?;
             receipt.push(pending, (directory, host_path.clone()))?;
             receipt
                 .custody
@@ -160,7 +153,7 @@ where
             }
             drop(file);
             account_file(receipt, length as u64, written)?;
-            receipt.push(known_files, (file_id, host_path.clone()))?;
+            known_files.insert(file_id, host_path.clone(), receipt)?;
         }
         (
             FileKind::Regular,
@@ -262,12 +255,13 @@ where
             account_file(receipt, logical_bytes, 0)?;
             #[cfg(any(target_os = "macos", windows))]
             if !payload_known {
-                receipt.push(
-                    known_payloads,
-                    ((logical_bytes, extents, _metadata_id), host_path.clone()),
+                known_payloads.insert(
+                    (logical_bytes, extents, _metadata_id),
+                    host_path.clone(),
+                    receipt,
                 )?;
             }
-            receipt.push(known_files, (file_id, host_path.clone()))?;
+            known_files.insert(file_id, host_path.clone(), receipt)?;
         }
         (FileKind::SymbolicLink, FilePayload::SymbolicLink { target_bytes, .. }) => {
             materialize_symlink(
@@ -280,7 +274,7 @@ where
                 before_effect,
             )
             .await?;
-            receipt.push(known_files, (file_id, host_path.clone()))?;
+            known_files.insert(file_id, host_path.clone(), receipt)?;
         }
         (
             kind @ (FileKind::Fifo
@@ -298,7 +292,7 @@ where
                 before_effect,
             )
             .await?;
-            receipt.push(known_files, (file_id, host_path.clone()))?;
+            known_files.insert(file_id, host_path.clone(), receipt)?;
         }
         (unsupported, _) => return Err(MaterializeError::UnsupportedKind(unsupported).into()),
     }
@@ -325,7 +319,7 @@ async fn clone_known_payload<E, F, Fut>(
     host_root: &HostRoot,
     host_path: &[HostPathUnit],
     payload: (u64, ObjectId, ObjectId),
-    known_payloads: &[KnownPayload],
+    known_payloads: &KnownPayloads,
     receipt: &mut GenerationReceipt,
     before_effect: &mut Option<&mut F>,
 ) -> Result<(bool, bool), E>
@@ -337,34 +331,26 @@ where
     let mut work = receipt.custody.work().clone();
     let mut cloned = false;
     let mut payload_known = false;
-    for (key, source) in known_payloads {
-        receipt
-            .custody
-            .work()
-            .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
-            .map_err(MaterializeError::from)?;
-        if *key == payload {
-            payload_known = true;
-            generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
-            cloned = {
-                #[cfg(target_os = "macos")]
-                {
-                    host_root.clone_file_from(
-                        host_root,
-                        super::work::host_path(&source.0),
-                        super::work::host_path(host_path),
-                        &mut work,
-                    )
-                }
-                #[cfg(windows)]
-                {
-                    host_root.clone_file_from(host_root, &source.0, host_path, &mut work)
-                }
+    if let Some(source) = known_payloads.get(&payload, receipt)? {
+        payload_known = true;
+        generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
+        cloned = {
+            #[cfg(target_os = "macos")]
+            {
+                host_root.clone_file_from(
+                    host_root,
+                    super::work::host_path(&source.0),
+                    super::work::host_path(host_path),
+                    &mut work,
+                )
             }
-            .map_err(MaterializeError::from)?;
-            generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
-            break;
+            #[cfg(windows)]
+            {
+                host_root.clone_file_from(host_root, &source.0, host_path, &mut work)
+            }
         }
+        .map_err(MaterializeError::from)?;
+        generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
     }
     Ok((cloned, payload_known))
 }

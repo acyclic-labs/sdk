@@ -333,7 +333,7 @@ async fn a_spill_past_its_bound_drains_without_charging_or_failing_admissions()
     }
     assert!(store.index().spilled_objects > 0);
     // Stand in for a spill file that has grown past its bound.
-    store.index_mut().spill_end += MAXIMUM_SPILL_BYTES;
+    advance_spill_past_bound(&store).await?;
 
     // An admission may spend exactly its own spill: one backend write.
     let mut admission = WorkBudget::UNBOUNDED;

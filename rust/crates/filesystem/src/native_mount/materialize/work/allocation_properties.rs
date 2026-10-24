@@ -38,3 +38,82 @@ proptest! {
         prop_assert!(original.remaining().is_ok());
     }
 }
+
+#[test]
+fn generation_index_finds_last_key_with_logarithmic_item_credit() {
+    let work =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .unwrap();
+    let mut receipt = GenerationReceipt::from_work(&work).unwrap();
+    let mut index = GenerationIndex::<u16, u16>::default();
+    for key in (0..128).rev() {
+        assert!(index.insert(key, key * 3, &mut receipt).unwrap());
+    }
+    for key in [127, 128] {
+        let bounded = work
+            .native_volume_work(WorkBudget {
+                items_examined: 8,
+                ..WorkBudget::UNBOUNDED
+            })
+            .unwrap();
+        let bounded_receipt = GenerationReceipt::from_work(&bounded).unwrap();
+        let before = work.receipt().items_examined;
+        assert_eq!(
+            index.get(&key, &bounded_receipt).unwrap().copied(),
+            (key < 128).then_some(key * 3)
+        );
+        assert!(work.receipt().items_examined - before <= 8);
+    }
+}
+
+#[test]
+fn generation_index_move_denial_preserves_entries_and_live_custody() {
+    let work =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .unwrap();
+    let baseline = work.live_allocation_bytes();
+    let mut receipt = GenerationReceipt::from_work(&work).unwrap();
+    let mut index = GenerationIndex::<u16, u16>::default();
+    assert!(index.insert(2, 6, &mut receipt).unwrap());
+    {
+        let bounded = work
+            .native_volume_work(WorkBudget {
+                bytes_copied: 0,
+                ..WorkBudget::UNBOUNDED
+            })
+            .unwrap();
+        let mut bounded_receipt = GenerationReceipt::from_work(&bounded).unwrap();
+        let before = work.receipt();
+        let live = work.live_allocation_bytes();
+        assert!(index.insert(1, 3, &mut bounded_receipt).is_err());
+        assert_eq!(index.values, [(2, 6)]);
+        assert_eq!(work.live_allocation_bytes(), live);
+        assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
+        assert_eq!(
+            work.receipt().allocation_operations,
+            before.allocation_operations
+        );
+    }
+    drop(index);
+    drop(receipt);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+}
+
+proptest! {
+    #[test]
+    fn generation_index_preserves_first_representatives_and_sorted_unique_keys(
+        entries in prop::collection::vec((0..64_u16, any::<u16>()), 0..128),
+    ) {
+        let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).unwrap();
+        let mut receipt = GenerationReceipt::from_work(&work).unwrap();
+        let mut index = GenerationIndex::<u16, u16>::default();
+        let mut expected = std::collections::BTreeMap::new();
+        for (key, value) in entries {
+            let vacant = !expected.contains_key(&key);
+            expected.entry(key).or_insert(value);
+            prop_assert_eq!(index.insert(key, value, &mut receipt).unwrap(), vacant);
+            prop_assert_eq!(index.get(&key, &receipt).unwrap().copied(), expected.get(&key).copied());
+        }
+        prop_assert_eq!(&index.values, &expected.into_iter().collect::<Vec<_>>());
+    }
+}

@@ -196,6 +196,20 @@ fn incarnation_token(root: &acyclic_fs::HeldRoot) -> Result<[u8; 16]> {
         root,
         Path::new(super::workspace::volumes::INCARNATION_PATH),
     )?;
+    // Reopening observes two immutable records in the same held directory.
+    // Settle their names together; no record escapes before that barrier.
+    // First publication still persists the ignore rule before exposing a token.
+    if let Some((ignored, token)) = incarnation
+        .read_published_pair::<2, 16>(Path::new(".gitignore"), Path::new("token"))
+        .map_err(storage)?
+    {
+        if &ignored != INCARNATION_IGNORE {
+            return Err(Error::Invalid(
+                "checkout incarnation .gitignore no longer ignores its token".into(),
+            ));
+        }
+        return Ok(token);
+    }
     // Git applies a directory's own .gitignore over every outer rule for the
     // entries in it, so no negation in the checkout's .gitignore files, which
     // outrank info/exclude, can bring the token back. Published before the

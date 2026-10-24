@@ -301,4 +301,6 @@ pub use lifecycle::*;
 mod fence;
 use fence::*;
 #[cfg(test)]
+pub(crate) mod fixture_access;
+#[cfg(test)]
 mod tests;

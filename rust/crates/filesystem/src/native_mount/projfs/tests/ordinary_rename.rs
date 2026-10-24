@@ -14,20 +14,25 @@ fn a_read_only_replacement_keeps_the_identity_guard_and_existing_reader()
 }
 
 struct ReplacementDirectories {
-    _root: tempfile::TempDir,
+    staging_root: HostRoot,
+    target_root: HostRoot,
     staging: std::path::PathBuf,
     target: std::path::PathBuf,
     next: std::sync::atomic::AtomicUsize,
+    // Close the held parents before the fixture directory is removed.
+    _root: tempfile::TempDir,
 }
 
 impl ReplacementDirectories {
-    fn new() -> std::io::Result<Self> {
+    fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let staging = root.path().join("staging");
         let target = root.path().join("target");
         std::fs::create_dir(&staging)?;
         std::fs::create_dir(&target)?;
         Ok(Self {
+            staging_root: HostRoot::open(&staging, &mut crate::native_host::ordinary_work())?,
+            target_root: HostRoot::open(&target, &mut crate::native_host::ordinary_work())?,
             _root: root,
             staging,
             target,
@@ -70,8 +75,7 @@ fn replace_with_reader_in(
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let leaf = format!("leaf-{ordinal}");
     let new = format!("new-{ordinal}");
-    let from = HostRoot::open(staging, &mut &work)?;
-    let to = HostRoot::open(target, &mut &work)?;
+    let (from, to) = (&directories.staging_root, &directories.target_root);
     std::fs::write(target.join(&leaf), old_contents)?;
     let set_read_only = |path: &std::path::Path, value: bool| -> std::io::Result<()> {
         let mut permissions = std::fs::metadata(path)?.permissions();
@@ -120,7 +124,8 @@ fn replace_with_reader_in(
 }
 
 // Directory setup and teardown dominate repeated NTFS replacements. Retain
-// only the parents for this worker; every example owns new leaves and handles.
+// the held parents for this worker; every example owns new leaves, readers,
+// replacement handles and identity guards. Parent paths never change.
 fn with_replacement_directories<T>(run: impl FnOnce(&ReplacementDirectories) -> T) -> T {
     thread_local! {
         static DIRECTORIES: std::cell::OnceCell<ReplacementDirectories> = const { std::cell::OnceCell::new() };
@@ -162,6 +167,67 @@ fn replacement_examples_reuse_parents_without_retaining_files()
             Ok(())
         })?;
     }
+    Ok(())
+}
+
+#[test]
+fn replacement_examples_do_not_reopen_their_held_parent_roots()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::native_host::stat_probe::Probe;
+    let directories = ReplacementDirectories::new()?;
+    for destination_read_only in [false, true] {
+        for replacement_read_only in [false, true] {
+            let (result, events) = acyclic_test_support::differential::observe::<_, _, &'static str>(
+                || Probe::rescan(false),
+                |probe| {
+                    let result = replace_with_reader_in(
+                        &directories,
+                        destination_read_only,
+                        replacement_read_only,
+                        b"before",
+                        b"after",
+                    );
+                    probe.publish();
+                    result
+                },
+            );
+            result?;
+            assert!(!events.contains(&"CreateFileW"));
+            for parent in [&directories.staging, &directories.target] {
+                assert_eq!(std::fs::read_dir(parent)?.count(), 0);
+            }
+        }
+    }
+    // The former per-example shape reacquires the same two already held roots.
+    let (reopened, events) = acyclic_test_support::differential::observe::<_, _, &'static str>(
+        || Probe::rescan(false),
+        |probe| {
+            let reopened = (|| -> Result<_, Box<dyn std::error::Error>> {
+                Ok((
+                    HostRoot::open(
+                        &directories.staging,
+                        &mut crate::native_host::ordinary_work(),
+                    )?,
+                    HostRoot::open(
+                        &directories.target,
+                        &mut crate::native_host::ordinary_work(),
+                    )?,
+                ))
+            })();
+            probe.publish();
+            reopened
+        },
+    );
+    let (from, to) = reopened?;
+    assert_eq!(from.identity(), directories.staging_root.identity());
+    assert_eq!(to.identity(), directories.target_root.identity());
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| **event == "CreateFileW")
+            .count(),
+        2
+    );
     Ok(())
 }
 

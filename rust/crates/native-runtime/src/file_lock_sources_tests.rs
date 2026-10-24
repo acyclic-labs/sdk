@@ -8,6 +8,39 @@
 //! entries in each `clippy.toml`.
 use std::collections::BTreeMap;
 
+#[derive(Clone, Copy)]
+enum EnumeratedKind {
+    Plain { directory: bool },
+    FollowPath,
+}
+
+impl EnumeratedKind {
+    fn is_directory(self, follow: impl FnOnce() -> bool) -> bool {
+        match self {
+            Self::Plain { directory } => directory,
+            Self::FollowPath => follow(),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn source_directory(entry: &std::fs::DirEntry) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+    // Windows enumeration owns this metadata without another system call.
+    // Every reparse tag (including junctions) keeps the original path lookup;
+    // missing enumeration metadata keeps its original behavior as well.
+    let kind = match entry.metadata() {
+        Ok(metadata) if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 => {
+            EnumeratedKind::Plain {
+                directory: metadata.is_dir(),
+            }
+        }
+        _ => EnumeratedKind::FollowPath,
+    };
+    kind.is_directory(|| entry.path().is_dir())
+}
+
 /// Source trees scanned from the repository root.
 const ROOTS: [&str; 7] = [
     "rust/crates",
@@ -98,8 +131,13 @@ fn sources() -> &'static [(String, String)] {
         let mut pending = ROOTS.map(|name| root.join(name)).to_vec();
         while let Some(directory) = pending.pop() {
             for entry in std::fs::read_dir(&directory).expect("source directory") {
-                let path = entry.expect("source entry").path();
-                if path.is_dir() {
+                let entry = entry.expect("source entry");
+                let path = entry.path();
+                #[cfg(windows)]
+                let directory = source_directory(&entry);
+                #[cfg(not(windows))]
+                let directory = path.is_dir();
+                if directory {
                     let name = path.file_name().and_then(|name| name.to_str());
                     if !matches!(name, Some("target" | "node_modules" | "vendor" | ".git")) {
                         pending.push(path);
@@ -124,6 +162,36 @@ fn sources() -> &'static [(String, String)] {
         }
         files
     })
+}
+
+#[test]
+fn enumerated_source_kinds_preserve_resolution_without_reopening_plain_entries() {
+    use std::cell::Cell;
+    let mut old_shape_detected = false;
+    for kind in [
+        EnumeratedKind::Plain { directory: false },
+        EnumeratedKind::Plain { directory: true },
+        EnumeratedKind::FollowPath,
+    ] {
+        for followed in [false, true] {
+            let calls = Cell::new(0);
+            let follow = || {
+                calls.set(calls.get() + 1);
+                followed
+            };
+            let result = kind.is_directory(follow);
+            let (expected, lookups) = match kind {
+                EnumeratedKind::Plain { directory } => (directory, 0),
+                EnumeratedKind::FollowPath => (followed, 1),
+            };
+            assert_eq!((result, calls.get()), (expected, lookups));
+            calls.set(0);
+            // The former path.is_dir route reopens every ordinary entry.
+            let old = follow();
+            old_shape_detected |= (old, calls.get()) != (expected, lookups);
+        }
+    }
+    assert!(old_shape_detected);
 }
 
 #[test]

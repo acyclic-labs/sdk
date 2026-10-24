@@ -158,7 +158,9 @@ pub(super) async fn writes_only_promised_content(
     .await?;
     let destination = root.path().join("mount");
     std::fs::create_dir(&destination)?;
-    let mount = lazy.mount(&destination, manual_mount_options()).await?;
+    let mount = lazy
+        .mount(&destination, manual_mount_options(lazy.workspace()).await?)
+        .await?;
     if listed_first {
         assert_eq!(std::fs::read_dir(&destination)?.count(), 2);
     }
@@ -244,6 +246,15 @@ pub(super) async fn local_workspace(
         .value)
 }
 
-pub(super) fn manual_mount_options() -> MountOptions {
-    MountOptions::read_write().publication(MountPublication::Manual)
+pub(super) async fn manual_mount_options<
+    A: crate::AsyncAuthorityStore + Send + Sync + 'static,
+    O: crate::AsyncObjectStore + Send + Sync + 'static,
+>(
+    workspace: &crate::Workspace<A, O>,
+) -> Result<MountOptions, Box<dyn std::error::Error>> {
+    crate::native_mount::fixture_access::options(
+        workspace,
+        MountOptions::read_write().publication(MountPublication::Manual),
+    )
+    .await
 }

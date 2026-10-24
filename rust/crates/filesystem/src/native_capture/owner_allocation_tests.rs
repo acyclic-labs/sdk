@@ -55,8 +55,15 @@ impl Drop for OldOwner {
     }
 }
 
-// Warm one-byte staging with live shared health: these counts exclude fixture setup.
-const OWNER_FREE_ALLOCATIONS: u64 = if cfg!(windows) { 43 } else { 46 };
+// Warm one-byte staging with live shared health, excluding fixture setup.
+// The optimized Windows path eliminates one allocation that its debug build
+// retains. Keep exact counts for both profiles: accepting the debug count in
+// release would admit the very outer-owner allocation this test rejects.
+const OWNER_FREE_ALLOCATIONS: u64 = if cfg!(windows) {
+    if cfg!(debug_assertions) { 43 } else { 42 }
+} else {
+    46
+};
 
 fn no_owner_allocation(measured: AllocationInfo) -> Result<(), String> {
     let ceiling = OWNER_FREE_ALLOCATIONS;

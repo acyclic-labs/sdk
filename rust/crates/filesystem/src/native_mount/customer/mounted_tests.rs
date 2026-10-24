@@ -9,6 +9,13 @@ use std::future::{Ready, ready};
 #[ignore = "mounts a live native session; requires the host's native mount capability"]
 async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
 -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(windows)]
+    if let Some(path) = std::env::var_os("ACYCLIC_CUSTOMER_HOST_WRITE") {
+        let parent: u32 = std::env::var("ACYCLIC_CUSTOMER_PROVIDER_PID")?.parse()?;
+        assert_ne!(std::process::id(), parent, "host writer must be external");
+        std::fs::write(path, b"native edit")?;
+        return Ok(());
+    }
     crate::initialize_native_mount_services()?;
     let cancellation = CancellationToken::new();
     let new_work = |budget| test_work(budget, &cancellation);
@@ -16,7 +23,9 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     let setup = new_work(WorkBudget::UNBOUNDED)?;
     let physical = tempfile::tempdir()?;
     std::fs::write(physical.path().join("source.txt"), b"source")?;
-    let destination = tempfile::tempdir()?;
+    let destination = tempfile::Builder::new()
+        .prefix("native-customer-&%literal-")
+        .tempdir()?;
     let lazy =
         native_lazy_source(physical.path(), "measured-native-customer", &cancellation).await?;
     lazy.workspace()
@@ -24,10 +33,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
         .await?;
     let read = async |path: &str, expected: &[u8]| {
         assert_eq!(
-            lazy.read_range(path, 0, 32, &mut accounting())
-                .await?
-                .bytes
-                .as_ref(),
+            lazy.read(path, 32, &mut accounting()).await?.bytes.as_ref(),
             expected
         );
         Ok::<_, LazyWorkspaceError>(())
@@ -102,9 +108,20 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     let nested_scope = mount.begin_original_work(&io_work)?;
     let io_scope = nested_scope.try_clone_for_io()?;
     assert_eq!(mount.native_root_identity(), Some(identity));
+    // MountPath is a kernel-edge native path, including UTF-16LE on Windows.
+    // The former UTF-8 fixture addresses a different filename on that host.
+    #[cfg(windows)]
+    assert!(matches!(
+        mount
+            .source
+            .open_file(&MountPath::root().child(b"source.txt".to_vec())),
+        Err(MountSourceError::NotFound)
+    ));
     let bytes = mount
         .source
-        .open_file(&MountPath::root().child(b"source.txt".to_vec()))?
+        .open_file(&crate::native_mount::adapter::tests::native_test_path(
+            "source.txt",
+        ))?
         .read_up_to_with_meter(0, 32, &io_work)?
         .bytes;
     drop(io_scope);
@@ -116,7 +133,40 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
         std::fs::read(destination.path().join("authored.txt"))?,
         b"authored"
     );
+    #[cfg(not(windows))]
     std::fs::write(destination.path().join("authored.txt"), b"native edit")?;
+    #[cfg(windows)]
+    {
+        // ProjFS excludes its provider process's own I/O from notifications.
+        // Run the original write in another process, with the path passed
+        // literally through the environment rather than a command shell.
+        let module = module_path!()
+            .split_once("::")
+            .ok_or("missing test module")?
+            .1;
+        let output = acyclic_native_runtime::process_output(
+            std::process::Command::new(std::env::current_exe()?)
+                .arg(format!(
+                    "{module}::lazy_mount_preserves_guarded_publication_import_and_retirement"
+                ))
+                .args(["--exact", "--ignored", "--test-threads=1"])
+                .env(
+                    "ACYCLIC_CUSTOMER_HOST_WRITE",
+                    destination.path().join("authored.txt"),
+                )
+                .env(
+                    "ACYCLIC_CUSTOMER_PROVIDER_PID",
+                    std::process::id().to_string(),
+                ),
+            std::time::Duration::from_secs(5),
+            8 * 1024,
+        )?;
+        assert!(
+            output.status.success(),
+            "external host write failed: {output:?}"
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed;"));
+    }
     let publication_work = new_work(WorkBudget::UNBOUNDED)?;
     let denied = mount
         .sync_with_permit(PublicationPermit::Unrestricted, &publication_work, |_| {
@@ -146,6 +196,15 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     assert!(published.operation().is_some());
     assert!(published.is_lazy());
     assert_eq!(published.workspace_id(), lazy.workspace().id());
+    // The original fixture requested an exact 32-byte range from a ten-byte
+    // file. A bounded whole-file read preserves the intended EOF semantics.
+    assert!(matches!(
+        lazy.read_range("/authored.txt", 0, 32, &mut accounting())
+            .await,
+        Err(LazyWorkspaceError::Filesystem(crate::FsError::FileRead(
+            crate::kernel::FileRangeReadError::InvalidRange
+        )))
+    ));
     read("/authored.txt", b"native edit").await?;
 
     let snapshot_work = new_work(WorkBudget::UNBOUNDED)?;

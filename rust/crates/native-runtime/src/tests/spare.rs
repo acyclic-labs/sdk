@@ -36,6 +36,7 @@ fn owned_read_matches_source_prefix_and_retires_custody() -> Result<(), Box<dyn 
     let _inline = InlineBlocking::enter();
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("owned-prefix");
+    let source = SourceFixture::new(&path)?;
     let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
         cases: 128,
         source_file: Some(file!()),
@@ -52,7 +53,7 @@ fn owned_read_matches_source_prefix_and_retires_custody() -> Result<(), Box<dyn 
             any::<bool>(),
         ),
         |(body, offset, maximum, exact, post_cancel)| {
-            std::fs::write(&path, &body).unwrap();
+            source.reset(&body).unwrap();
             let file = NativeFile::from_file(open_source(&path).unwrap(), None)
                 .map_err(|(error, _)| error)
                 .unwrap();
@@ -104,6 +105,7 @@ fn spare_read_prefix_matches_source_and_rejects_overpublication()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("spare-prefix");
+    let source = SourceFixture::new(&path)?;
     let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
         cases: 128,
         source_file: Some(file!()),
@@ -122,7 +124,7 @@ fn spare_read_prefix_matches_source_and_rejects_overpublication()
             any::<bool>(),
         ),
         |(body, offset, maximum, excess, exact, pre_cancel, post_cancel)| {
-            std::fs::write(&path, &body).unwrap();
+            source.reset(&body).unwrap();
             let file = open_source(&path).unwrap();
             let mut data = Vec::with_capacity(maximum + excess);
             let mut meter = ReadBudgetMeter::new(8, 256);
