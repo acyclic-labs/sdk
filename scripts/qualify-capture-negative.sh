@@ -68,7 +68,12 @@ elapsed=time.monotonic()-start; (root/'shipping.log').write_text(result.stdout)
 print(result.stdout,flush=True)
 assert result.returncode!=0 and '"status": "fail"' in result.stdout
 assert elapsed<10,elapsed
-requests=json.loads((root/'shipping/pty-diff-root-metadata/requests.json').read_text())
+report=json.loads((root/'shipping/matrix.json').read_text())
+assert report['selected']==['pty-diff-root-metadata']
+assert len(report['results'])==1,report['results']
+case=report['results'][0]
+assert case['case']=='pty-diff-root-metadata' and case['status']=='fail',case
+requests=case['evidence']['requests']
 assert any('checkout root was replaced' in item.get('output','') for row in requests
  for item in row.get('body',{}).get('input',[]) if item.get('type')=='function_call_output')
 print('CAPTURE_NEGATIVE_PASS shipping-root-metadata seconds',elapsed,flush=True)
