@@ -39,7 +39,12 @@ const server = createServer(async (request, response) => {
       response.end(JSON.stringify({ results: [{ url: source, title, highlights: ["EXACT_E2E_EXCERPT"] }] })); return;
     }
     assert.equal(request.url, "/responses"); assert.equal(request.method, "POST");
-    const outputs = body.input.filter(item => item.type === "function_call_output").map(item => JSON.parse(item.output));
+    const outputs = body.input.filter(item => item.type === "function_call_output").map(item => {
+      let output;
+      assert.doesNotThrow(() => { output = JSON.parse(item.output); },
+        "actual configured search result and fetched source must be structured JSON");
+      return output;
+    });
     const step = generations++;
     response.setHeader("content-type", "text/event-stream");
     let call;
