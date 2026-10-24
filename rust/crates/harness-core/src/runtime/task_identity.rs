@@ -57,26 +57,6 @@ pub fn task_definition_digest(
     )
 }
 
-pub(crate) fn scope_metadata_boundary(
-    work: &Option<&mut dyn crate::store::history::HistoryIo>,
-    code: crate::wire::ErrorCode,
-    reason: &'static str,
-) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work
-        .as_deref()
-        .is_some_and(|io| io.original_native_work().is_some())
-    {
-        return Error::NativeBoundary { code, reason };
-    }
-    let _ = work;
-    match code {
-        crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
-        crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
-        _ => Error::Invalid(reason.into()),
-    }
-}
-
 /// Builds the two identities that durable hosts retain for one resumable task.
 pub fn task_admission_identities(
     name: &str,

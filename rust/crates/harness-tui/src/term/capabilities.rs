@@ -170,13 +170,6 @@ impl Capabilities {
     pub fn mode(&self, mode: u16) -> ModeState {
         self.modes.get(&mode).copied().unwrap_or_default()
     }
-
-    /// Choose a light theme from background luminance (sRGB approximation).
-    pub fn light_theme(&self) -> bool {
-        self.background.is_some_and(|[r, g, b]| {
-            u32::from(r) * 299 + u32::from(g) * 587 + u32::from(b) * 114 > 128_000
-        })
-    }
 }
 
 /// Captured once, and injectable without mutating process-global environment.

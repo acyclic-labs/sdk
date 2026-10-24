@@ -74,22 +74,6 @@ impl Reducer {
         self.set_resident_terminal_effect_limit(self.resident_terminal_effect_limit)
     }
 
-    /// Number of resident active and cached terminal effect projections.
-    #[must_use]
-    pub fn resident_effect_count(&self) -> usize {
-        self.projection.effects.len()
-    }
-
-    /// Cached known successes/failures; indeterminate effects remain active.
-    #[must_use]
-    pub fn resident_terminal_effect_count(&self) -> usize {
-        self.projection
-            .effects
-            .values()
-            .filter(|effect| settled_effect(&effect.status))
-            .count()
-    }
-
     /// Reconstructs one read-only effect from authenticated history events.
     pub(crate) fn project_effect_with_retained_quota(
         authority: Authority,

@@ -25,14 +25,10 @@ async fn original_corpus(root: PathBuf) -> Result<usize, Box<dyn std::error::Err
     scenario_data::discover(&root, &mut paths)?;
     let count = paths.len();
     let root = Arc::new(root);
-    let mut tasks = tokio::task::JoinSet::new();
-    let mut paths = paths.into_iter();
-    let concurrency = std::thread::available_parallelism()?.get();
-    loop {
-        while tasks.len() < concurrency {
-            let Some(path) = paths.next() else { break };
-            let root = root.clone();
-            tasks.spawn(async move {
+    let results = runner::run_cases(
+        paths.into_iter().map(|path| {
+            let root = Arc::clone(&root);
+            async move {
                 let mut value = scenario_data::load_value(&root, &path)?;
                 let requirements = runner::requirements(&value)?;
                 if requirements == ["executor"] || requirements == ["composer"] {
@@ -48,12 +44,13 @@ async fn original_corpus(root: PathBuf) -> Result<usize, Box<dyn std::error::Err
                     result.map_err(|e| format!("{}: {e}", path.display()))?;
                 }
                 Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
-            });
-        }
-        let Some(result) = tasks.join_next().await else {
-            break;
-        };
-        result??;
+            }
+        }),
+        std::thread::available_parallelism()?,
+    )
+    .await?;
+    for result in results {
+        result?;
     }
     Ok(count)
 }
@@ -119,6 +116,40 @@ async fn corpus_matches_original_driver_and_reports_every_case()
         count, report.passed, report.skipped
     );
     assert_eq!(serde_json::to_value(local)?, serde_json::to_value(report)?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn admitted_cases_have_independent_task_ownership()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    for concurrency in 1usize..=4 {
+        for count in 0..=8 {
+            let parent = tokio::task::try_id();
+            let active = Arc::new(AtomicUsize::new(0));
+            let peak = AtomicUsize::new(0);
+            let tasks = runner::run_cases(
+                (0..count).map(|_| {
+                    let active = Arc::clone(&active);
+                    peak.fetch_max(active.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+                    async move {
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        tokio::task::try_id()
+                    }
+                }),
+                concurrency.try_into()?,
+            )
+            .await?;
+            assert_eq!(tasks.len(), count);
+            assert_eq!(active.load(Ordering::SeqCst), 0);
+            assert!(peak.load(Ordering::SeqCst) <= concurrency);
+            assert!(tasks.iter().all(|task| task.is_some() && *task != parent));
+            assert_eq!(
+                tasks.iter().collect::<std::collections::HashSet<_>>().len(),
+                count
+            );
+        }
+    }
     Ok(())
 }
 

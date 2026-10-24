@@ -129,7 +129,7 @@ impl ExtensionRuntime {
         if let Some(admission) = admission {
             admission.validate(work)?;
             if admission.selected().len() != self.retained.len() {
-                return Err(crate::runtime::scope_metadata_boundary(
+                return Err(crate::store::guarded_boundary(
                     work,
                     crate::wire::ErrorCode::Conflict,
                     "extension admission differs from linked composition",
@@ -150,7 +150,7 @@ impl ExtensionRuntime {
                     }
                 }
                 if !found {
-                    return Err(crate::runtime::scope_metadata_boundary(
+                    return Err(crate::store::guarded_boundary(
                         work,
                         crate::wire::ErrorCode::Conflict,
                         "extension admission differs from linked composition",

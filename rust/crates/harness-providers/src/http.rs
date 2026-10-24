@@ -29,15 +29,6 @@ pub struct HttpResponse {
     pub retry_after: Option<std::time::Duration>,
 }
 
-impl HttpResponse {
-    /// Records the response's `Retry-After` delay.
-    #[must_use]
-    pub const fn with_retry_after(mut self, retry_after: Option<std::time::Duration>) -> Self {
-        self.retry_after = retry_after;
-        self
-    }
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 impl HttpResponse {
     /// Admits the concrete body stream before boxing it on the issued ledger.

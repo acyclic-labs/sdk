@@ -115,48 +115,28 @@ impl ReadAllocation {
     }
 
     /// Records real capacity discovered after a controlled allocation.
+    ///
+    /// # Panics
+    /// Panics if the meter retains more than the actual excess, or reports
+    /// success without retaining all of that excess.
     pub fn reconcile_capacity(&mut self, actual: usize) -> io::Result<()> {
-        Self::reconcile_capacity_recorded(&mut self.bytes, &self.meter, actual, self.meter.as_ref())
-    }
-
-    /// Reconciles an already allocated buffer through its accepted completion meter.
-    pub fn reconcile_capacity_with_meter(
-        &mut self,
-        actual: usize,
-        completion: &dyn NativeReadMeter,
-    ) -> io::Result<()> {
-        let owner = completion
-            .allocation_owner()
-            .ok_or(io::ErrorKind::InvalidInput)?;
-        if !Arc::ptr_eq(&owner, &self.meter) {
-            return Err(io::ErrorKind::InvalidInput.into());
-        }
-        Self::reconcile_capacity_recorded(&mut self.bytes, &self.meter, actual, completion)
-    }
-
-    fn reconcile_capacity_recorded(
-        bytes: &mut u64,
-        original: &Arc<dyn NativeReadMeter>,
-        actual: usize,
-        completion: &dyn NativeReadMeter,
-    ) -> io::Result<()> {
         let actual = actual as u64;
-        if actual > *bytes {
-            let additional = actual - *bytes;
-            let (retained, result) = completion.record_completed_adoption(additional);
+        if actual > self.bytes {
+            let additional = actual - self.bytes;
+            let (retained, result) = self.meter.record_completed_adoption(additional);
             assert!(
                 retained <= additional,
                 "completed adoption retains only actual excess"
             );
-            *bytes += retained;
+            self.bytes += retained;
             result?;
             assert_eq!(
                 retained, additional,
                 "successful adoption retains all actual excess"
             );
-        } else if actual < *bytes {
-            original.release(*bytes - actual);
-            *bytes = actual;
+        } else if actual < self.bytes {
+            self.meter.release(self.bytes - actual);
+            self.bytes = actual;
         }
         Ok(())
     }

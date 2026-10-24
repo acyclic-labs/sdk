@@ -6,6 +6,8 @@ use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    future::Future,
+    num::NonZeroUsize,
     panic::AssertUnwindSafe,
     path::{Path, PathBuf},
     sync::Arc,
@@ -87,6 +89,31 @@ pub fn requirements(value: &Value) -> TestResult<Vec<String>> {
     }
 }
 
+/// Drives independent cases on runtime tasks with one bounded admission queue.
+///
+/// # Errors
+/// Returns an error if an admitted task panics or is cancelled.
+pub async fn run_cases<I, F>(cases: I, concurrency: NonZeroUsize) -> TestResult<Vec<F::Output>>
+where
+    I: IntoIterator<Item = F>,
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let mut cases = cases.into_iter();
+    let mut active = tokio::task::JoinSet::new();
+    for case in cases.by_ref().take(concurrency.get()) {
+        active.spawn(case);
+    }
+    let mut results = Vec::new();
+    while let Some(result) = active.join_next().await {
+        results.push(result?);
+        if let Some(case) = cases.next() {
+            active.spawn(case);
+        }
+    }
+    Ok(results)
+}
+
 /// Runs every discovered case with bounded admission and client-side oracles.
 pub async fn run(
     root: &Path,
@@ -94,48 +121,40 @@ pub async fn run(
     filter: Option<&str>,
     concurrency: usize,
 ) -> TestResult<Report> {
-    if concurrency == 0 {
-        return Err("scenario concurrency must be positive".into());
-    }
+    let concurrency =
+        NonZeroUsize::new(concurrency).ok_or("scenario concurrency must be positive")?;
     let mut paths = Vec::new();
     scenario_data::discover(root, &mut paths)?;
     paths.sort();
     let capabilities = substrate.capabilities();
+    let inputs = Arc::new((
+        root.to_owned(),
+        substrate,
+        filter.map(str::to_owned),
+        capabilities,
+    ));
     // One corpus deadline, including queued cases. A stalled host still produces
     // a failing record for every case instead of hanging or truncating JSON.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(55);
-    let root = Arc::new(root.to_path_buf());
-    let filter = filter.map(str::to_owned);
-    let capabilities = Arc::new(capabilities);
-    let mut paths = paths.into_iter();
-    // Admitted cases own runnable tasks instead of sharing one CPU-bound
-    // poller. The set owns cancellation; admission never exceeds concurrency.
-    let mut tasks = tokio::task::JoinSet::new();
-    let mut records = Vec::new();
-    loop {
-        while tasks.len() < concurrency {
-            let Some(path) = paths.next() else { break };
-            let root = root.clone();
-            let substrate = substrate.clone();
-            let filter = filter.clone();
-            let capabilities = capabilities.clone();
-            tasks.spawn(async move {
+    let mut records = run_cases(
+        paths.into_iter().map(|path| {
+            let inputs = Arc::clone(&inputs);
+            async move {
+                let (root, substrate, filter, capabilities) = inputs.as_ref();
                 run_case(
-                    &root,
+                    root,
                     path,
                     substrate.as_ref(),
                     filter.as_deref(),
-                    &capabilities,
+                    capabilities,
                     deadline,
                 )
                 .await
-            });
-        }
-        let Some(result) = tasks.join_next().await else {
-            break;
-        };
-        records.push(result?);
-    }
+            }
+        }),
+        concurrency,
+    )
+    .await?;
     records.sort_by(|a, b| a.case.cmp(&b.case));
     if records.is_empty() {
         return Err("no scenarios discovered".into());

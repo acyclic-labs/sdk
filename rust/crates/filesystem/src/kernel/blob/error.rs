@@ -22,18 +22,6 @@ impl BlobDemandFailure {
             .as_ref()
             .expect("published source failure is initialized")
     }
-
-    /// Visits owned cause fields without cloning or replacing the prepaid holder.
-    #[allow(
-        clippy::expect_used,
-        reason = "Only initialized, prepaid source failures are exposed by this type."
-    )]
-    pub fn error_mut(&mut self) -> &mut crate::DemandError {
-        self.error
-            .as_mut()
-            .as_mut()
-            .expect("published source failure is initialized")
-    }
 }
 
 impl std::fmt::Debug for BlobDemandFailure {
