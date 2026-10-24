@@ -119,7 +119,9 @@ fn negative_control_an_owner_reader_can_outrun_the_publishers_flush() {
 #[test]
 fn private_legacy_owner_migrates_once_without_changing_its_original_identity() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("owner.json");
+    let private = directory.path().join("private");
+    acyclic_native_runtime::private_file::create_directory_all(&private).unwrap();
+    let path = private.join("owner.json");
     let key = vec![71_u8; 32];
     let owner: Owner = serde_json::from_value(serde_json::json!({
         "key": key, "agent": AgentId::from_bytes([72; 16]),

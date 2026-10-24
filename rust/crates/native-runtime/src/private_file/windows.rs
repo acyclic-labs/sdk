@@ -134,7 +134,7 @@ pub(super) fn is_private(file: &File) -> io::Result<bool> {
     check_security(file, false)
 }
 
-/// Tighten an inherited legacy descriptor only while exclusively holding the
+/// Tighten a trusted legacy descriptor only while exclusively holding the
 /// original, unaliased inode owned by this process user. No bytes are read first.
 pub(super) fn open_for_upgrade(path: &Path) -> io::Result<File> {
     use std::os::windows::fs::OpenOptionsExt as _;
@@ -150,7 +150,7 @@ pub(super) fn open_for_upgrade(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-fn check_security(file: &File, upgrade_inherited: bool) -> io::Result<bool> {
+fn check_security(file: &File, upgrade_legacy: bool) -> io::Result<bool> {
     use windows::Win32::Security::Authorization::{
         GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo,
     };
@@ -189,9 +189,31 @@ fn check_security(file: &File, upgrade_inherited: bool) -> io::Result<bool> {
             if !EqualSid(owner, current).is_ok() {
                 return Ok(false);
             }
-            if control & SE_DACL_PROTECTED.0 == 0 && upgrade_inherited {
+            if control & SE_DACL_PROTECTED.0 == 0 && upgrade_legacy {
+                // Neither inherited nor explicit grants establish trust. The
+                // legacy bytes must already exclude other users: the current
+                // owner, SYSTEM and local administrators are the only trusted
+                // readers. A missing/empty ACL or an unknown ACE fails closed.
+                if acl.is_null() || (*acl).AceCount == 0 {
+                    return Ok(false);
+                }
+                for index in 0..u32::from((*acl).AceCount) {
+                    let mut ace = std::ptr::null_mut();
+                    GetAce(acl, index, &mut ace)?;
+                    if (*ace.cast::<ACE_HEADER>()).AceType != 0 {
+                        return Ok(false);
+                    }
+                    let allowed = &*ace.cast::<ACCESS_ALLOWED_ACE>();
+                    let sid = PSID((&allowed.SidStart as *const u32).cast_mut().cast());
+                    if !(EqualSid(sid, current).is_ok()
+                        || IsWellKnownSid(sid, WinLocalSystemSid).as_bool()
+                        || IsWellKnownSid(sid, WinBuiltinAdministratorsSid).as_bool())
+                    {
+                        return Ok(false);
+                    }
+                }
                 // The existing owner is authenticated before permissions change.
-                // Explicit nonprivate descriptors are never silently adopted.
+                // No publicly readable legacy bytes are silently adopted.
                 with_security(|attributes| {
                     let mut present = BOOL::default();
                     let mut defaulted = BOOL::default();
@@ -235,5 +257,109 @@ fn check_security(file: &File, upgrade_inherited: bool) -> io::Result<bool> {
         })();
         let _ = LocalFree(Some(HLOCAL(descriptor.0)));
         check
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write as _;
+    use windows::Win32::Security::Authorization::{
+        GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo,
+    };
+
+    #[test]
+    fn owner_upgrade_rejects_explicit_shared_empty_and_missing_access_lists_before_decode()
+    -> io::Result<()> {
+        for kind in ["explicit-public", "inherited-public", "empty", "missing"] {
+            let root = tempfile::tempdir()?;
+            let path = root.path().join("owner");
+            let mut file = File::create(&path)?;
+            file.write_all(b"untrusted owner")?;
+            let mut acl = [0usize; 32];
+            let acl_pointer = acl.as_mut_ptr().cast::<ACL>();
+            let mut world = [0usize; 16];
+            let mut world_length =
+                u32::try_from(std::mem::size_of_val(&world)).map_err(io::Error::other)?;
+            let mut descriptor = PSECURITY_DESCRIPTOR::default();
+            // SAFETY: aligned fixture buffers and the held file outlive every
+            // security call. The returned descriptor is released below.
+            unsafe {
+                InitializeAcl(
+                    acl_pointer,
+                    u32::try_from(std::mem::size_of_val(&acl)).map_err(io::Error::other)?,
+                    ACL_REVISION,
+                )?;
+                if kind.ends_with("public") {
+                    let sid = PSID(world.as_mut_ptr().cast());
+                    CreateWellKnownSid(WinWorldSid, None, Some(sid), &mut world_length)?;
+                    AddAccessAllowedAceEx(
+                        acl_pointer,
+                        ACL_REVISION,
+                        if kind == "inherited-public" {
+                            INHERITED_ACE
+                        } else {
+                            ACE_FLAGS(0)
+                        },
+                        FILE_ALL_ACCESS.0,
+                        sid,
+                    )?;
+                }
+                SetSecurityInfo(
+                    HANDLE(file.as_raw_handle()),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION,
+                    None,
+                    None,
+                    Some(if kind == "missing" {
+                        std::ptr::null_mut()
+                    } else {
+                        acl_pointer
+                    }),
+                    None,
+                )
+                .ok()?;
+                let mut actual_acl = std::ptr::null_mut();
+                GetSecurityInfo(
+                    HANDLE(file.as_raw_handle()),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION,
+                    None,
+                    None,
+                    Some(&mut actual_acl),
+                    None,
+                    Some(&mut descriptor),
+                )
+                .ok()?;
+                let mut control = 0;
+                let mut revision = 0;
+                let result = GetSecurityDescriptorControl(descriptor, &mut control, &mut revision);
+                if kind == "inherited-public" {
+                    assert!(!actual_acl.is_null());
+                    let mut ace = std::ptr::null_mut();
+                    GetAce(actual_acl, 0, &mut ace)?;
+                    assert_ne!(
+                        u32::from((*ace.cast::<ACE_HEADER>()).AceFlags) & INHERITED_ACE.0,
+                        0
+                    );
+                }
+                let _ = LocalFree(Some(HLOCAL(descriptor.0)));
+                result?;
+                // Negative control: the former upgrade guard accepted every
+                // fixture because inheritance was enabled, including null ACLs.
+                assert_eq!(control & SE_DACL_PROTECTED.0, 0, "{kind}");
+            }
+            drop(file);
+            assert!(
+                crate::private_file::read_for_upgrade_with::<(), io::Error>(
+                    &path,
+                    100,
+                    |_, _| panic!("untrusted {kind} ACL reached owner decoding"),
+                )
+                .is_err(),
+                "{kind}"
+            );
+        }
+        Ok(())
     }
 }

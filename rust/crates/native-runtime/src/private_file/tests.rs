@@ -258,7 +258,9 @@ fn a_staging_collision_cannot_claim_that_an_original_owner_was_published() -> io
 fn inherited_owner_upgrade_tightens_before_read_and_rejects_live_or_aliased_files() -> io::Result<()>
 {
     let directory = tempfile::tempdir()?;
-    let path = directory.path().join("legacy-owner");
+    let private = directory.path().join("private");
+    create_directory_all(&private)?;
+    let path = private.join("legacy-owner");
     let mut writer = File::create(&path)?;
     writer.write_all(b"original identity")?;
     // The old strict path cannot open inherited legacy records. A live writer

@@ -337,11 +337,12 @@ pub fn read_with<T, E: From<io::Error>>(
     read_held_with(path, file, maximum, read)
 }
 
-/// Read an existing owner for a format upgrade. On Windows, an inherited owner
+/// Read an existing owner for a format upgrade. On Windows, a legacy owner
 /// descriptor is tightened before any read. Protected records and other OSes
 /// take the strict path. Tightening requires an exclusive, unaliased regular
-/// file owned by the current user; explicit public
-/// DACLs and foreign ownership are refused. This does not generate credentials.
+/// file owned by the current user, whose nonempty ACL grants access only to that
+/// user, SYSTEM or local administrators. Other ACLs and foreign ownership are
+/// refused. This does not generate credentials.
 pub fn read_for_upgrade_with<T, E: From<io::Error>>(
     path: &Path,
     maximum: u64,
