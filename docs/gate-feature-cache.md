@@ -1,8 +1,8 @@
 # Gate feature-matrix artifacts
 
 `gate-feature-matrix.sh` runs the shared `gate-feature-payload.sh` on every
-invocation. That payload runs the reviewed feature matrix and the isolated
-consumer code-generation checks, preserving the first failure. Both phases
+invocation. On native jobs that payload runs the reviewed feature matrix and the isolated
+consumer code-generation checks, preserving the first failure. The Windows payload owns its cross-target matrix; host consumer generation runs once in the native phase. Both phases
 share one target lifetime and completed snapshot boundary; type-check success
 cannot publish a snapshot when consumer code generation fails. Inside
 a proven private buildbox mount, `gate-target-cache.py` seeds the worker targets
