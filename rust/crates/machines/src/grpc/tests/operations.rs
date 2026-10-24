@@ -107,8 +107,6 @@ async fn rpcs_emit_spans_with_status_codes_and_no_credentials()
         watch: WatchReply::Items(Vec::new()),
     };
     let (machines, shutdown, server) = serve_operation_service(service).await?;
-    // Two dispatchers make concurrent callsites recheck this subscriber.
-    let _second = tracing::Dispatch::new(tracing_subscriber::registry());
     let seen = Capture::default();
     let default =
         tracing::subscriber::set_default(tracing_subscriber::registry().with(seen.clone()));

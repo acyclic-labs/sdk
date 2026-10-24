@@ -247,8 +247,6 @@ mod tests {
         use tracing_subscriber::layer::SubscriberExt as _;
 
         use acyclic_grpc_observability::tests::Capture;
-        // A second live dispatcher keeps callsites consulting this test's subscriber.
-        let _second = tracing::Dispatch::new(tracing_subscriber::registry());
         let seen = Capture::default();
         let _guard =
             tracing::subscriber::set_default(tracing_subscriber::registry().with(seen.clone()));

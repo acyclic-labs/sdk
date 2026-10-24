@@ -672,8 +672,6 @@ proptest::proptest! {
 #[tokio::test]
 async fn store_spans_omit_customer_names() -> Result<(), Box<dyn std::error::Error>> {
     use tracing_subscriber::layer::SubscriberExt as _;
-    // Two dispatchers prevent concurrent callsite interest from being cached away.
-    let _second = tracing::Dispatch::new(tracing_subscriber::registry());
     let seen = acyclic_grpc_observability::tests::Capture::default();
     let _default =
         tracing::subscriber::set_default(tracing_subscriber::registry().with(seen.clone()));

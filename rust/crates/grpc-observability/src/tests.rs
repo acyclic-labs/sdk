@@ -34,7 +34,6 @@ pub struct CapturedSpan {
 }
 
 /// Collected span history, field updates, events and closes.
-#[derive(Default)]
 pub struct Evidence {
     /// Span history in creation order.
     pub spans: Vec<CapturedSpan>,
@@ -45,6 +44,24 @@ pub struct Evidence {
     pub closes: Vec<String>,
     /// Event parents and debug fields.
     pub events: Vec<(Option<String>, Vec<(String, String, String)>)>,
+    // Keep callsite registration independent of whichever thread first emits.
+    // tracing-core's single-dispatcher path consults that thread's default,
+    // which can be empty even while this observer is registered elsewhere.
+    // This separate, non-recording subscriber cannot retain our capture.
+    _registration: tracing::Dispatch,
+}
+
+impl Default for Evidence {
+    fn default() -> Self {
+        Self {
+            spans: Vec::new(),
+            live: HashMap::new(),
+            records: Vec::new(),
+            closes: Vec::new(),
+            events: Vec::new(),
+            _registration: tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default()),
+        }
+    }
 }
 
 /// A cloneable capture layer and asynchronous change notification.
@@ -204,6 +221,9 @@ impl Capture {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod interest_tests;
 
 /// A gRPC body that emits one unavailable trailer after 50 ms.
 pub fn delayed_unavailable_body() -> tonic::body::Body {

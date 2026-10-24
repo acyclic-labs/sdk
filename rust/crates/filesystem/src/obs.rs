@@ -336,7 +336,6 @@ mod worker_context_tests {
     pub(crate) fn assert_filtered_callback_isolation(
         body: impl Fn(&tracing::span::EnteredSpan) -> i32,
     ) {
-        let _second = tracing::Dispatch::new(tracing_subscriber::registry());
         for visible in [false, true] {
             let evidence = Arc::new(Mutex::new(Evidence::default()));
 

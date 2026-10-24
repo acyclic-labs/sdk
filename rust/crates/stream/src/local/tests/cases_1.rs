@@ -47,8 +47,6 @@ async fn cancelled_local_read_records_error_and_closes_origin_parent()
 #[tokio::test]
 async fn local_append_emits_its_span() -> Result<(), Box<dyn std::error::Error>> {
     use tracing_subscriber::layer::SubscriberExt as _;
-    // With one live dispatcher, a callsite that a concurrent test reaches
-    let _second = tracing::Dispatch::new(tracing_subscriber::Registry::default());
     let captured = acyclic_grpc_observability::tests::Capture::default();
     let capture = captured.clone();
     let _default =
