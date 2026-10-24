@@ -61,8 +61,9 @@ pub fn console_size(output: usize) -> io::Result<(u16, u16)> {
     use windows_sys::Win32::System::Console::{
         CONSOLE_SCREEN_BUFFER_INFO, GetConsoleScreenBufferInfo,
     };
-    // SAFETY: the OS validates the caller-owned handle; info is a writable ABI structure.
+    // SAFETY: all fields of this Win32 output structure admit the zero value.
     let mut info: CONSOLE_SCREEN_BUFFER_INFO = unsafe { zeroed() };
+    // SAFETY: info is a live writable output structure; the OS validates the caller-owned handle.
     if unsafe { GetConsoleScreenBufferInfo(output as HANDLE, &mut info) } == 0 {
         return Err(io::Error::last_os_error());
     }
