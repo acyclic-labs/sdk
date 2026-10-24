@@ -41,6 +41,15 @@ pub struct Binding {
     capability: String,
     #[wire(tag = 3)]
     resource: String,
+    #[wire(tag = 4, bytes)]
+    #[ts(type = r#"import("../../readonly.js").ReadonlyBytes"#)]
+    target_account: Vec<u8>,
+    #[wire(tag = 5)]
+    #[ts(optional)]
+    actor_namespace: Option<String>,
+    #[wire(tag = 6)]
+    #[ts(optional)]
+    worker_service: Option<String>,
 }
 
 impl Binding {
@@ -50,6 +59,9 @@ impl Binding {
             name,
             capability,
             resource,
+            target_account: Vec::new(),
+            actor_namespace: None,
+            worker_service: None,
         };
         binding.validate_admission()?;
         Ok(binding)
@@ -58,6 +70,42 @@ impl Binding {
     fn validate_admission(&self) -> Result<(), DomainError> {
         if self.name.is_empty() || self.capability.is_empty() || self.resource.is_empty() {
             return Err(DomainError::InvalidBinding);
+        }
+        match (&self.actor_namespace, &self.worker_service) {
+            (None, None) => {
+                if !self.target_account.is_empty()
+                    || self.resource.starts_with("actors:/")
+                    || self.resource.starts_with("workers:/")
+                {
+                    return Err(DomainError::InvalidBinding);
+                }
+            }
+            (Some(namespace), None) => {
+                crate::addressing::AccountId::new(&self.target_account)?;
+                crate::addressing::NamespaceId::new(namespace.as_bytes())?;
+                if self.resource
+                    != format!(
+                        "actors:/{}",
+                        acyclic_auth::encode_component(namespace.as_bytes())
+                    )
+                {
+                    return Err(DomainError::InvalidBinding);
+                }
+            }
+            (None, Some(worker)) => {
+                crate::addressing::AccountId::new(&self.target_account)?;
+                crate::addressing::validate_dns_label(worker.as_bytes())
+                    .map_err(|_| DomainError::InvalidBinding)?;
+                if self.resource
+                    != format!(
+                        "workers:/{}",
+                        acyclic_auth::encode_component(worker.as_bytes())
+                    )
+                {
+                    return Err(DomainError::InvalidBinding);
+                }
+            }
+            (Some(_), Some(_)) => return Err(DomainError::InvalidBinding),
         }
         Ok(())
     }
@@ -80,6 +128,63 @@ impl Binding {
     /// Returns the bound resource name.
     pub fn resource(&self) -> &str {
         &self.resource
+    }
+}
+
+impl Binding {
+    /// Declare a namespace binding with explicit target account and named grant.
+    pub fn actor_namespace(
+        name: String,
+        capability: String,
+        account: &[u8],
+        namespace: &str,
+    ) -> Result<Self, DomainError> {
+        let value = Self {
+            name,
+            capability,
+            resource: format!(
+                "actors:/{}",
+                acyclic_auth::encode_component(namespace.as_bytes())
+            ),
+            target_account: account.to_vec(),
+            actor_namespace: Some(namespace.to_owned()),
+            worker_service: None,
+        };
+        value.validate_admission()?;
+        Ok(value)
+    }
+    /// Declare a private Worker service binding; target HTTP credentials are never used.
+    pub fn worker_service(
+        name: String,
+        capability: String,
+        account: &[u8],
+        worker: &str,
+    ) -> Result<Self, DomainError> {
+        let value = Self {
+            name,
+            capability,
+            resource: format!(
+                "workers:/{}",
+                acyclic_auth::encode_component(worker.as_bytes())
+            ),
+            target_account: account.to_vec(),
+            actor_namespace: None,
+            worker_service: Some(worker.to_owned()),
+        };
+        value.validate_admission()?;
+        Ok(value)
+    }
+    /// Exact namespace target, if this is an actor namespace binding.
+    pub fn namespace_target(&self) -> Option<(&[u8], &str)> {
+        self.actor_namespace
+            .as_deref()
+            .map(|ns| (self.target_account.as_slice(), ns))
+    }
+    /// Exact Worker target, if this is a private service binding.
+    pub fn service_target(&self) -> Option<(&[u8], &str)> {
+        self.worker_service
+            .as_deref()
+            .map(|name| (self.target_account.as_slice(), name))
     }
 }
 
@@ -236,7 +341,7 @@ impl SubscriptionStart {
     }
 }
 
-/// A subscription admitted by `validate_create` or `validate_add_subscription`.
+/// A subscription admitted by `validate_deployment` or `validate_add_subscription`.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = SubscriptionSpec::validate_from_proto)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionSpec.ts")]
@@ -393,5 +498,52 @@ impl ServiceError {
     /// Returns the service error message.
     pub fn message(&self) -> &str {
         &self.message
+    }
+}
+
+/// Positive per-request limits on a named Worker deployment, without actor storage.
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = WorkerLimits::validate_from_proto)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/WorkerLimits.ts", rename_all = "camelCase")]
+pub struct WorkerLimits {
+    #[wire(tag = 1)]
+    cpu_millis: u32,
+    #[wire(tag = 2)]
+    memory_bytes: u32,
+    #[wire(tag = 3)]
+    timeout_millis: u32,
+}
+impl WorkerLimits {
+    /// Admit all three positive request ceilings through one constructor.
+    pub fn new(
+        cpu_millis: u32,
+        memory_bytes: u32,
+        timeout_millis: u32,
+    ) -> Result<Self, DomainError> {
+        let value = Self {
+            cpu_millis,
+            memory_bytes,
+            timeout_millis,
+        };
+        value.validate_from_proto()?;
+        Ok(value)
+    }
+    fn validate_from_proto(&self) -> Result<(), DomainError> {
+        if self.cpu_millis == 0 || self.memory_bytes == 0 || self.timeout_millis == 0 {
+            return Err(DomainError::Contract(crate::ContractError::InvalidArgument));
+        }
+        Ok(())
+    }
+    /// Positive CPU budget in milliseconds.
+    pub const fn cpu_millis(self) -> u32 {
+        self.cpu_millis
+    }
+    /// Positive memory budget in bytes.
+    pub const fn memory_bytes(self) -> u32 {
+        self.memory_bytes
+    }
+    /// Positive wall-clock budget in milliseconds.
+    pub const fn timeout_millis(self) -> u32 {
+        self.timeout_millis
     }
 }

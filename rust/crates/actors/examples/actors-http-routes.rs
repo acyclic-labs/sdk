@@ -69,6 +69,7 @@ import type * as Semantic from "./semantic/actors/index.js";
 import type { ReadonlyBytes } from "./readonly.js";
 
 export interface ActorsNominalBinding {
+  readonly ActorNamespace: (value: string) => Semantic.ActorNamespace;
   readonly ActorId: (value: string) => Semantic.ActorId;
   readonly CodeSha256: (value: ReadonlyBytes | Uint8Array) => Semantic.CodeSha256;
   readonly PositiveU64: (value: bigint) => Semantic.PositiveU64;
@@ -85,6 +86,10 @@ export function configureActorsNominalBinding(resolve: () => Promise<ActorsNomin
 async function binding(): Promise<ActorsNominalBinding> {
   if (resolveBinding === undefined) throw new Error("Actors nominal binding is not configured");
   return resolveBinding();
+}
+
+export async function ActorNamespace(value: string): Promise<Semantic.ActorNamespace> {
+  return (await binding()).ActorNamespace(value);
 }
 
 export async function ActorId(value: string): Promise<Semantic.ActorId> {

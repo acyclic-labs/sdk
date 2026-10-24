@@ -83,7 +83,7 @@ message HttpRoute {
   repeated Authorization auth = 3;
 }
 
-option (products) = { name: "actors" resource_encoding: "percent-components" canonicalize_at_owner: false actions: "actors/checkpoint" actions: "actors/connect" actions: "actors/create" actions: "actors/delete" actions: "actors/invoke" actions: "actors/read" actions: "actors/resume" actions: "actors/subscribe" actions: "actors/unsubscribe" actions: "actors/update" };
+option (products) = { name: "actors" resource_encoding: "percent-components" canonicalize_at_owner: false actions: "actors/checkpoint" actions: "actors/connect" actions: "actors/deploy-namespace" actions: "actors/delete-all" actions: "actors/invoke" actions: "actors/read" actions: "actors/resume" actions: "actors/subscribe" actions: "actors/unsubscribe" actions: "actors/update-namespace" };
 option (products) = { name: "billing" resource_encoding: "percent-components" canonicalize_at_owner: false  };
 option (products) = { name: "execution" resource_encoding: "percent-components" canonicalize_at_owner: false  };
 option (products) = { name: "fs" resource_encoding: "percent-components" canonicalize_at_owner: true actions: "fs/admin" actions: "fs/append" actions: "fs/create" actions: "fs/delete" actions: "fs/fork" actions: "fs/list" actions: "fs/lock" actions: "fs/merge-into" actions: "fs/read" actions: "fs/read-history" actions: "fs/rename" actions: "fs/write" };
@@ -92,16 +92,16 @@ option (products) = { name: "infer" resource_encoding: "percent-components" cano
 option (products) = { name: "machines" resource_encoding: "percent-components" canonicalize_at_owner: false actions: "machines/cancel" actions: "machines/checkpoint" actions: "machines/create" actions: "machines/delete" actions: "machines/delete-checkpoint" actions: "machines/exec" actions: "machines/follow" actions: "machines/list" actions: "machines/qualify" actions: "machines/read" actions: "machines/read-checkpoint" actions: "machines/read-output" actions: "machines/read-usage" actions: "machines/recover" actions: "machines/update" };
 option (products) = { name: "objects" resource_encoding: "objects-bucket-key" canonicalize_at_owner: false actions: "objects/create-bucket" actions: "objects/delete" actions: "objects/delete-bucket" actions: "objects/get" actions: "objects/head" actions: "objects/head-bucket" actions: "objects/list" actions: "objects/list-parts" actions: "objects/put" actions: "objects/restore" };
 option (products) = { name: "streams" resource_encoding: "percent-components" canonicalize_at_owner: false actions: "streams/append" actions: "streams/commit" actions: "streams/create" actions: "streams/follow" actions: "streams/fork" actions: "streams/list" actions: "streams/read" };
-option (products) = { name: "workers" resource_encoding: "percent-components" canonicalize_at_owner: false  };
+option (products) = { name: "workers" resource_encoding: "percent-components" canonicalize_at_owner: false actions: "workers/deploy" actions: "workers/delete" actions: "workers/invoke" };
 option (extractors) = { name: "actors.checkpoint" resources_only: true possible_actions: "actors/checkpoint" };
-option (extractors) = { name: "actors.create-with-bindings" resources_only: true possible_actions: "actors/create" };
-option (extractors) = { name: "actors.delete" resources_only: true possible_actions: "actors/delete" };
+option (extractors) = { name: "actors.deploy-with-bindings" resources_only: true possible_actions: "actors/deploy-namespace" };
+option (extractors) = { name: "actors.delete" resources_only: true possible_actions: "actors/delete-all" };
 option (extractors) = { name: "actors.invoke" resources_only: true possible_actions: "actors/invoke" };
 option (extractors) = { name: "actors.read" resources_only: true possible_actions: "actors/read" };
 option (extractors) = { name: "actors.resume" resources_only: true possible_actions: "actors/resume" };
 option (extractors) = { name: "actors.subscribe" resources_only: true possible_actions: "actors/subscribe" };
 option (extractors) = { name: "actors.unsubscribe" resources_only: true possible_actions: "actors/unsubscribe" };
-option (extractors) = { name: "actors.update-with-bindings" resources_only: true possible_actions: "actors/update" };
+option (extractors) = { name: "actors.update-namespace-with-bindings" resources_only: true possible_actions: "actors/update-namespace" };
 option (extractors) = { name: "fs.admin-source" resources_only: true possible_actions: "fs/admin" };
 option (extractors) = { name: "fs.cancel-operation" resources_only: false possible_actions: "fs/list" possible_actions: "fs/read" possible_actions: "fs/create" possible_actions: "fs/write" possible_actions: "fs/append" possible_actions: "fs/delete" possible_actions: "fs/rename" possible_actions: "fs/fork" possible_actions: "fs/merge-into" possible_actions: "fs/read-history" possible_actions: "fs/lock" possible_actions: "fs/admin" };
 option (extractors) = { name: "fs.create-volume" resources_only: true possible_actions: "fs/create" };
@@ -163,3 +163,7 @@ option (extractors) = { name: "streams.idempotency-resources" resources_only: tr
 option (extractors) = { name: "streams.list-visible-children" resources_only: true possible_actions: "streams/list" };
 option (extractors) = { name: "streams.session-channels" resources_only: false possible_actions: "streams/follow" possible_actions: "streams/list" possible_actions: "fs/list" possible_actions: "fs/read" possible_actions: "fs/read-history" possible_actions: "objects/list" possible_actions: "objects/get" possible_actions: "actors/read" possible_actions: "actors/invoke" possible_actions: "actors/connect" };
 option (extractors) = { name: "streams.transaction" resources_only: false possible_actions: "streams/read" possible_actions: "streams/commit" possible_actions: "streams/append" possible_actions: "streams/fork" possible_actions: "streams/create" };
+
+option (extractors) = { name: "workers.deploy-with-bindings" resources_only: true possible_actions: "workers/deploy" };
+option (extractors) = { name: "workers.delete" resources_only: true possible_actions: "workers/delete" };
+option (extractors) = { name: "workers.invoke" resources_only: true possible_actions: "workers/invoke" };

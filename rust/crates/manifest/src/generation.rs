@@ -51,7 +51,8 @@ pub fn typescript() -> Result<String, String> {
         CronSpec,
         AssetSpec,
         AssetCache,
-        RouteSpec
+        RouteSpec,
+        WorkerPatternRoute
     );
     Ok(output
         .lines()
@@ -105,6 +106,13 @@ pub fn environment_typescript(
             Some("billing") => "Billing",
             Some("identity") => "Identity",
             _ => return Err(ManifestError::invalid("resource", "unknown-product")),
+        };
+        let parameter = if binding.namespace_target().is_some() {
+            "import(\"@acyclic-labs/actors\").ActorNamespaceBinding"
+        } else if binding.service_target().is_some() {
+            "import(\"@acyclic-labs/workers\").WorkerServiceBinding"
+        } else {
+            parameter
         };
         output.push_str(&format!("  readonly {name}: {parameter};\n"));
     }

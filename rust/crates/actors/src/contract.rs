@@ -11,6 +11,17 @@ fn valid_idempotency_key(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256
 }
 
+fn valid_actor_scope(account: &[u8], namespace: Option<&str>, id: &str) -> bool {
+    (account.is_empty() || crate::addressing::AccountId::new(account).is_ok())
+        && crate::addressing::NamespaceId::new(
+            namespace
+                .unwrap_or(crate::addressing::DEFAULT_ACTOR_NAMESPACE)
+                .as_bytes(),
+        )
+        .is_ok()
+        && crate::addressing::validate_actor_id(id.as_bytes()).is_ok()
+}
+
 /// Invalid customer-authored Actors request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ContractError {
@@ -52,16 +63,29 @@ fn subscription(value: &wire::SubscriptionSpec) -> bool {
         )
 }
 
-/// Validates a customer-authored Actor creation request before admission.
-pub fn validate_create(request: &wire::CreateActorRequest) -> Result<(), ContractError> {
-    if !domain::valid_code_sha256(&request.code_sha256)
-        || request.home_region.is_empty()
+/// Validates an explicit namespace or named script deployment before admission.
+pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), ContractError> {
+    if (!request.account_id.is_empty()
+        && crate::addressing::AccountId::new(&request.account_id).is_err())
+        || crate::addressing::NamespaceId::for_deployment(request.name.as_bytes()).is_err()
+        || !matches!(request.jurisdiction.as_str(), "" | "eu" | "us" | "fedramp")
+        || !domain::valid_code_sha256(&request.code_sha256)
         || !valid_idempotency_key(&request.idempotency_key)
-        || !request.limits.as_ref().is_some_and(|limits| {
-            limits.handler_timeout_millis > 0
-                && limits.memory_bytes > 0
-                && limits.checkpoint_bytes > 0
-        })
+        || !match (&request.limits, &request.worker_limits) {
+            (Some(limits), None) => {
+                limits.handler_timeout_millis > 0
+                    && limits.memory_bytes > 0
+                    && limits.checkpoint_bytes > 0
+            }
+            (None, Some(limits)) => {
+                limits.cpu_millis > 0
+                    && limits.memory_bytes > 0
+                    && limits.timeout_millis > 0
+                    && request.subscriptions.is_empty()
+                    && request.jurisdiction.is_empty()
+            }
+            _ => false,
+        }
     {
         return Err(ContractError::InvalidArgument);
     }
@@ -84,7 +108,7 @@ pub fn validate_create(request: &wire::CreateActorRequest) -> Result<(), Contrac
     }
     names.clear();
     for item in &request.bindings {
-        if item.name.is_empty() || item.capability.is_empty() || item.resource.is_empty() {
+        if domain::Binding::try_from(item.clone()).is_err() {
             return Err(ContractError::InvalidArgument);
         }
         if !names.insert(&item.name) {
@@ -95,8 +119,10 @@ pub fn validate_create(request: &wire::CreateActorRequest) -> Result<(), Contrac
 }
 
 /// Validates a full compare-and-replace Actor configuration mutation.
-pub fn validate_update(request: &wire::UpdateActorRequest) -> Result<(), ContractError> {
-    if request.actor_id.is_empty()
+pub fn validate_update(request: &wire::UpdateNamespaceRequest) -> Result<(), ContractError> {
+    if (!request.account_id.is_empty()
+        && crate::addressing::AccountId::new(&request.account_id).is_err())
+        || crate::addressing::NamespaceId::for_deployment(request.namespace_id.as_bytes()).is_err()
         || !domain::valid_code_sha256(&request.code_sha256)
         || !valid_idempotency_key(&request.idempotency_key)
         || !request.limits.as_ref().is_some_and(|limits| {
@@ -112,7 +138,7 @@ pub fn validate_update(request: &wire::UpdateActorRequest) -> Result<(), Contrac
     }
     let mut names = HashSet::new();
     for item in &request.bindings {
-        if item.name.is_empty() || item.capability.is_empty() || item.resource.is_empty() {
+        if domain::Binding::try_from(item.clone()).is_err() {
             return Err(ContractError::InvalidArgument);
         }
         if !names.insert(&item.name) {
@@ -122,9 +148,14 @@ pub fn validate_update(request: &wire::UpdateActorRequest) -> Result<(), Contrac
     Ok(())
 }
 
-/// Validates a terminal Actor deletion. Identity and idempotency rules match
-pub fn validate_delete(request: &wire::DeleteActorRequest) -> Result<(), ContractError> {
-    if request.actor_id.is_empty() || !valid_idempotency_key(&request.idempotency_key) {
+/// Validates a Actor storage deletion, leaving the address reusable. Identity and idempotency rules match
+pub fn validate_delete(request: &wire::DeleteAllRequest) -> Result<(), ContractError> {
+    if !valid_actor_scope(
+        &request.account_id,
+        request.namespace.as_deref(),
+        &request.actor_id,
+    ) || !valid_idempotency_key(&request.idempotency_key)
+    {
         return Err(ContractError::InvalidArgument);
     }
     Ok(())
@@ -134,8 +165,11 @@ pub fn validate_delete(request: &wire::DeleteActorRequest) -> Result<(), Contrac
 pub fn validate_add_subscription(
     request: &wire::AddSubscriptionRequest,
 ) -> Result<(), ContractError> {
-    if request.actor_id.is_empty()
-        || !valid_idempotency_key(&request.idempotency_key)
+    if !valid_actor_scope(
+        &request.account_id,
+        request.namespace.as_deref(),
+        &request.actor_id,
+    ) || !valid_idempotency_key(&request.idempotency_key)
         || !request.subscription.as_ref().is_some_and(subscription)
     {
         return Err(ContractError::InvalidArgument);
@@ -196,13 +230,14 @@ pub fn render_proto_files(root: impl AsRef<std::path::Path>) -> std::io::Result<
 pub use generated::{
     ActorLimitsProto, ActorObservationProto, ActorState, AddSubscriptionRequestProto,
     AddSubscriptionResponseProto, BindingProto, CheckpointActorRequestProto,
-    CheckpointActorResponseProto, CreateActorRequestProto, CreateActorResponseProto,
-    DeleteActorRequestProto, DeleteActorResponseProto, ErrorCode, HeaderProto,
-    InspectActorRequestProto, InspectActorResponseProto, InvokeActorRequestProto,
-    InvokeActorResponseProto, RemoveSubscriptionRequestProto, RemoveSubscriptionResponseProto,
-    ResumeSubscriptionRequestProto, ResumeSubscriptionResponseProto, ServiceErrorProto,
-    SubscriptionObservationProto, SubscriptionSpecProto, SubscriptionStartProto, SubscriptionState,
-    UpdateActorRequestProto, UpdateActorResponseProto, subscription_start,
+    CheckpointActorResponseProto, DeleteAllRequestProto, DeleteAllResponseProto,
+    DeploymentObservationProto, DeploymentRequestProto, DeploymentResponseProto, ErrorCode,
+    HeaderProto, InspectActorRequestProto, InspectActorResponseProto, InvokeActorRequestProto,
+    InvokeActorResponseProto, InvokeWorkerRequestProto, RemoveSubscriptionRequestProto,
+    RemoveSubscriptionResponseProto, ResumeSubscriptionRequestProto,
+    ResumeSubscriptionResponseProto, ServiceErrorProto, SubscriptionObservationProto,
+    SubscriptionSpecProto, SubscriptionStartProto, SubscriptionState, UpdateNamespaceRequestProto,
+    UpdateNamespaceResponseProto, WorkerLimitsProto, subscription_start,
 };
 
 /// Actors service operations generated from the protobuf contract.
@@ -260,3 +295,5 @@ mod tests {
         fs::remove_dir_all(root).expect("remove deterministic-render fixture");
     }
 }
+
+pub use generated::{DeleteWorkerRequestProto, DeleteWorkerResponseProto};

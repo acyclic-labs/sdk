@@ -1,3 +1,3 @@
 <?php
 require $argv[1];
-(new Acyclic\Actors\V1\CreateActorRequest())->setCodeSha256([]);
+(new Acyclic\Actors\V1\DeploymentRequest())->setCodeSha256([]);

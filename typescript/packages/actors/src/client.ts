@@ -23,7 +23,7 @@ import {
 import type { ErrorMetadata } from "./generated/ErrorMetadata.js";
 import type { ReadonlyBytes, ReadonlySemantic } from "./generated/readonly.js";
 export type { ReadonlyBytes, ReadonlySemantic } from "./generated/readonly.js";
-export { ActorId, CodeSha256, PositiveU64, CurrentHeadMarker } from "./generated/nominal.js";
+export { ActorId, ActorNamespace, CodeSha256, PositiveU64, CurrentHeadMarker } from "./generated/nominal.js";
 
 export type { ActorsOperation as Operation } from "./generated/actors-service.js";
 
@@ -278,9 +278,26 @@ function wasmBinding(): ActorsRustBinding {
 }
 
 interface WasmActorsModule extends ActorsNominalBinding {
+  readonly validateDeploymentBinding: (name: string, capability: string, resource: string, account: Uint8Array, namespace: string | undefined, worker: string | undefined) => void;
   readonly timerRecord: (task: string, operation: string, deadline: bigint) => Uint8Array;
   readonly default: (input?: unknown) => Promise<unknown>;
   readonly ActorsClient: { connect(endpoint: string, token: string, signal?: unknown): Promise<unknown> };
+}
+
+/** Validate an env declaration through the same Rust admission as deployment RPCs. */
+export async function validateDeploymentBinding(binding: import("./generated/semantic/actors/readonly.js").Binding): Promise<void> {
+  for (const value of [binding.name, binding.capability, binding.resource]) {
+    if (typeof value !== "string") throw new TypeError("binding fields must be text");
+  }
+  for (const value of [binding.actorNamespace, binding.workerService]) {
+    if (value !== undefined && typeof value !== "string") throw new TypeError("binding targets must be text");
+  }
+  if (!(binding.targetAccount instanceof Uint8Array) && !Array.isArray(binding.targetAccount)) throw new TypeError("binding account must contain bytes");
+  if (!Array.from(binding.targetAccount).every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)) throw new TypeError("binding account must contain bytes");
+  const account = Uint8Array.from(binding.targetAccount);
+  const {name, capability, resource, actorNamespace, workerService} = binding;
+  const wasm = await loadWasmModule();
+  wasm.validateDeploymentBinding(name, capability, resource, account, actorNamespace, workerService);
 }
 
 let wasmModulePromise: Promise<WasmActorsModule> | undefined;
@@ -330,6 +347,7 @@ function nativeNominalBinding(module: NativeActorsModule): ActorsNominalBinding 
   const candidate = typeof module.default?.ActorId === "function" ? module.default : module;
   if (
     typeof candidate.ActorId === "function"
+    && typeof candidate.ActorNamespace === "function"
     && typeof candidate.CodeSha256 === "function"
     && typeof candidate.PositiveU64 === "function"
     && typeof candidate.CurrentHeadMarker === "function"

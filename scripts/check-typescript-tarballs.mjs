@@ -107,7 +107,7 @@ for (const [name, exportName] of Object.entries(expected)) {
 }
 const checks = {
   "@acyclic-labs/actors": (m) => {
-    if (typeof m.ActorsClient !== "function" || typeof m.CreateActorRequestSchema !== "object") return false;
+    if (typeof m.ActorsClient !== "function" || typeof m.DeploymentRequestSchema !== "object") return false;
     new m.ActorsClient({ endpoint: "https://actors.example.test", token: "tarball-smoke" });
     return true;
   },

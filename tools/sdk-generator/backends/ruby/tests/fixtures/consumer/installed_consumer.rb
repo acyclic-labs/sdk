@@ -51,7 +51,7 @@ check(features.size == 4, 'missing or duplicate generated source')
 features.each { |file| check(File.realpath(file).start_with?(installed + '/'), 'SDK source did not load from installed gem') }
 
 families = [
-  [Acyclic::Actors::V1::CreateActorRequest, Acyclic::Actors::V1::ActorsService::Service],
+  [Acyclic::Actors::V1::DeploymentRequest, Acyclic::Actors::V1::ActorsService::Service],
   [Acyclic::Stream::V1::AppendRequest, Acyclic::Stream::V1::StreamService::Service]
 ]
 check(ARGV.length == 2, 'pass two verified Rust descriptors')
@@ -75,7 +75,7 @@ families.zip(ARGV).each do |(message, service), path|
 end
 
 bytes = "\x00\xff".b
-actor = Acyclic::Actors::V1::CreateActorRequest.new(code_sha256: bytes, home_region: 'test', idempotency_key: 'test')
+actor = Acyclic::Actors::V1::DeploymentRequest.new(code_sha256: bytes, name: 'test', idempotency_key: 'test')
 append = Acyclic::Stream::V1::AppendRequest.new(path: 'test/path', records: [bytes, ''.b], if_tail: 2**64 - 1, idempotency_key: bytes)
 read = Acyclic::Stream::V1::ReadRequest.new(path: 'test/path', from: 2**64 - 1, limit: 2**32 - 1)
 check(actor.code_sha256 == bytes, 'actor bytes changed during construction')

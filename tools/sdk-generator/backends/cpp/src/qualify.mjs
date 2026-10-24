@@ -11,8 +11,9 @@ const read = name => readFileSync(join(directory, name));
 const pinned = JSON.parse(read("../toolchains/qualification.json"));
 const negatives = { InvalidActorBytes: ["C2665", "set_code_sha256"], InvalidOptionalInteger: ["C2664", "set_if_tail"] };
 const controls = ["CMakeLists.txt", "message_consumer.cc", "rpc_consumer.cc", "PositiveTypes.cc", ...Object.keys(negatives).map(name => name + ".cc")];
-const markers = ["PASS C++ complete file descriptors, 20 RPC message pairs, bytes, unsigned bounds, optional zero and oneof controls",
-  "PASS C++ 20 generated client/server loopback calls, Rust file descriptors, populated payloads and actual method paths/stream types"];
+const methodCount = Number(read("../tests/fixtures/consumer/rpc_consumer.cc").toString().match(/calls == (\d+)/)[1]);
+const markers = [`PASS C++ complete file descriptors, ${methodCount} RPC message pairs, bytes, unsigned bounds, optional zero and oneof controls`,
+  `PASS C++ ${methodCount} generated client/server loopback calls, Rust file descriptors, populated payloads and actual method paths/stream types`];
 
 // Native command and pin injection is limited to offline runner controls.
 export function qualify(args, { command = spawnSync, toolchain = pinned, onProgress = () => {} } = {}) {
@@ -93,7 +94,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned, onProgr
     compiled_sdk_inventory_sha256: sha256(readFileSync(join(sdkBuild, "compile_commands.json"))), compiled_consumer_inventory_sha256: sha256(readFileSync(join(build, "compile_commands.json"))),
     installed_library_sha256: sha256(readFileSync(join(installed, "lib/acyclic_sdk_transport.lib"))), consumer_executable_sha256: sha256(readFileSync(join(build, "RpcConsumer.exe"))),
     log_sha256: Object.fromEntries(logs.map(name => [name, sha256(readFileSync(join(output, name)))])),
-    populated_rpc_message_pairs: 20, native_rpc_method_calls: 20, independent_negative_compiles: 2,
+    populated_rpc_message_pairs: methodCount, native_rpc_method_calls: methodCount, independent_negative_compiles: 2,
     rust_backed_rpc_qualified: false, embedded_runtime_qualified: false };
   put("qualification.json", JSON.stringify(receipt, null, 2) + "\n"); return receipt;
 }

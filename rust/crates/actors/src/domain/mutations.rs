@@ -1,38 +1,54 @@
 use super::*;
 
-/// Create request after the canonical admission validator has run.
-#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = CreateActorRequest::validate_from_proto)]
+/// Deployment request after the canonical admission validator has run.
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = DeploymentRequest::validate_from_proto)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
-#[ts(export_to = "actors/CreateActorRequest.ts")]
+#[ts(export_to = "actors/DeploymentRequest.ts")]
 #[ts(rename_all = "camelCase")]
-pub struct CreateActorRequest {
+pub struct DeploymentRequest {
     #[wire(tag = 1, bytes)]
     code_sha256: CodeSha256,
-    #[wire(tag = 2)]
-    home_region: String,
     #[wire(tag = 3, message)]
     bindings: Vec<Binding>,
     #[wire(tag = 4, message)]
-    limits: ActorLimits,
+    #[ts(optional)]
+    limits: Option<ActorLimits>,
     #[wire(tag = 5, message)]
     subscriptions: Vec<SubscriptionSpec>,
     #[wire(tag = 6)]
     idempotency_key: String,
+    #[wire(tag = 7, string)]
+    name: ActorNamespace,
+    #[wire(tag = 8, bytes)]
+    #[ts(type = r#"import("../../readonly.js").ReadonlyBytes"#)]
+    pub(super) account_id: Vec<u8>,
+    #[wire(tag = 9)]
+    jurisdiction: String,
+    #[wire(tag = 10)]
+    #[ts(type = "bigint")]
+    expected_revision: u64,
+    #[wire(tag = 11, message)]
+    #[ts(optional)]
+    worker_limits: Option<WorkerLimits>,
 }
 
-impl CreateActorRequest {
-    /// Builds and validates a create request through the canonical admission path.
+impl DeploymentRequest {
+    /// Builds and validates a namespace deployment through the canonical admission path.
     pub fn new(
+        name: ActorNamespace,
         code_sha256: CodeSha256,
-        home_region: String,
         bindings: Vec<Binding>,
         limits: ActorLimits,
         subscriptions: Vec<SubscriptionSpec>,
         idempotency_key: String,
     ) -> Result<Self, DomainError> {
-        let wire = wire::CreateActorRequest {
+        let wire = wire::DeploymentRequest {
+            worker_limits: None,
+            name: name.as_str().to_owned(),
+            account_id: Vec::new(),
+            jurisdiction: String::new(),
+            expected_revision: 0,
             code_sha256: code_sha256.as_bytes().to_vec(),
-            home_region,
             bindings: bindings.into_iter().map(Into::into).collect(),
             limits: Some(limits.into()),
             subscriptions: subscriptions.into_iter().map(Into::into).collect(),
@@ -41,27 +57,85 @@ impl CreateActorRequest {
         Self::try_from(wire)
     }
 
+    /// Build a named Worker deployment with request ceilings and no actor configuration.
+    pub fn worker(
+        name: ActorNamespace,
+        code_sha256: CodeSha256,
+        bindings: Vec<Binding>,
+        limits: WorkerLimits,
+        idempotency_key: String,
+    ) -> Result<Self, DomainError> {
+        crate::addressing::validate_dns_label(name.as_str().as_bytes())
+            .map_err(|_| DomainError::Contract(crate::ContractError::InvalidArgument))?;
+        Self::try_from(wire::DeploymentRequest {
+            code_sha256: code_sha256.as_bytes().to_vec(),
+            bindings: bindings.into_iter().map(Into::into).collect(),
+            limits: None,
+            worker_limits: Some(limits.into()),
+            subscriptions: vec![],
+            idempotency_key,
+            name: name.as_str().to_owned(),
+            account_id: vec![],
+            jurisdiction: String::new(),
+            expected_revision: 0,
+        })
+    }
+
+    /// Exact deployment name; never an actor instance ID.
+    pub fn name(&self) -> &ActorNamespace {
+        &self.name
+    }
+    /// Namespace placement restriction; empty permits any jurisdiction.
+    pub fn jurisdiction(&self) -> &str {
+        &self.jurisdiction
+    }
+    /// Set a namespace restriction while retaining the authenticated account.
+    pub fn with_jurisdiction(mut self, jurisdiction: String) -> Result<Self, DomainError> {
+        if !matches!(jurisdiction.as_str(), "" | "eu" | "us" | "fedramp") {
+            return Err(DomainError::Contract(crate::ContractError::InvalidArgument));
+        }
+        self.jurisdiction = jurisdiction;
+        self.validate_from_proto()?;
+        Ok(self)
+    }
+    /// Set the account, jurisdiction and compare-and-replace deployment revision.
+    pub fn with_placement(
+        mut self,
+        account: Vec<u8>,
+        jurisdiction: String,
+        expected_revision: u64,
+    ) -> Result<Self, DomainError> {
+        crate::addressing::AccountId::new(&account)?;
+        if !matches!(jurisdiction.as_str(), "" | "eu" | "us" | "fedramp") {
+            return Err(DomainError::Contract(crate::ContractError::InvalidArgument));
+        }
+        self.account_id = account;
+        self.jurisdiction = jurisdiction;
+        self.expected_revision = expected_revision;
+        self.validate_from_proto()?;
+        Ok(self)
+    }
     /// Re-runs the canonical request validator after converting untrusted wire
     fn validate_from_proto(&self) -> Result<(), DomainError> {
-        let wire: wire::CreateActorRequest = self.clone().into();
-        crate::validate_create(&wire).map_err(DomainError::Contract)
+        let wire: wire::DeploymentRequest = self.clone().into();
+        crate::validate_deployment(&wire).map_err(DomainError::Contract)
     }
 
     /// Returns the code digest.
     pub fn code_sha256(&self) -> &CodeSha256 {
         &self.code_sha256
     }
-    /// Returns the home region.
-    pub fn home_region(&self) -> &str {
-        &self.home_region
-    }
     /// Returns bindings in their request order.
     pub fn bindings(&self) -> &[Binding] {
         &self.bindings
     }
     /// Returns the validated resource limits.
-    pub fn limits(&self) -> &ActorLimits {
-        &self.limits
+    pub fn limits(&self) -> Option<&ActorLimits> {
+        self.limits.as_ref()
+    }
+    /// Stateless request limits, present only for Worker deployments.
+    pub fn worker_limits(&self) -> Option<&WorkerLimits> {
+        self.worker_limits.as_ref()
     }
     /// Returns subscriptions in their request order.
     pub fn subscriptions(&self) -> &[SubscriptionSpec] {
@@ -74,13 +148,13 @@ impl CreateActorRequest {
 }
 
 /// Update request after the canonical admission validator has run.
-#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = UpdateActorRequest::validate_from_proto)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = UpdateNamespaceRequest::validate_from_proto)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
-#[ts(export_to = "actors/UpdateActorRequest.ts")]
+#[ts(export_to = "actors/UpdateNamespaceRequest.ts")]
 #[ts(rename_all = "camelCase")]
-pub struct UpdateActorRequest {
+pub struct UpdateNamespaceRequest {
     #[wire(tag = 1, string)]
-    actor_id: ActorId,
+    namespace_id: ActorNamespace,
     #[wire(tag = 2, bytes)]
     code_sha256: CodeSha256,
     #[wire(tag = 3, message)]
@@ -92,20 +166,25 @@ pub struct UpdateActorRequest {
     expected_configuration_revision: u64,
     #[wire(tag = 6)]
     idempotency_key: String,
+
+    #[wire(tag = 91, bytes)]
+    #[ts(type = r#"import("../../readonly.js").ReadonlyBytes"#)]
+    pub(super) account_id: Vec<u8>,
 }
 
-impl UpdateActorRequest {
+impl UpdateNamespaceRequest {
     /// Builds and validates an update request through the canonical admission path.
     pub fn new(
-        actor_id: ActorId,
+        namespace_id: ActorNamespace,
         code_sha256: CodeSha256,
         bindings: Vec<Binding>,
         limits: ActorLimits,
         expected_configuration_revision: u64,
         idempotency_key: String,
     ) -> Result<Self, DomainError> {
-        let wire = wire::UpdateActorRequest {
-            actor_id: actor_id.as_str().to_owned(),
+        let wire = wire::UpdateNamespaceRequest {
+            account_id: Vec::new(),
+            namespace_id: namespace_id.as_str().to_owned(),
             code_sha256: code_sha256.as_bytes().to_vec(),
             bindings: bindings.into_iter().map(Into::into).collect(),
             limits: Some(limits.into()),
@@ -117,13 +196,13 @@ impl UpdateActorRequest {
 
     /// Re-runs the canonical request validator without recursively invoking
     fn validate_from_proto(&self) -> Result<(), DomainError> {
-        let wire: wire::UpdateActorRequest = self.clone().into();
+        let wire: wire::UpdateNamespaceRequest = self.clone().into();
         crate::validate_update(&wire).map_err(DomainError::Contract)
     }
 
     /// Returns the Actor identity.
-    pub fn actor_id(&self) -> &ActorId {
-        &self.actor_id
+    pub fn namespace_id(&self) -> &ActorNamespace {
+        &self.namespace_id
     }
     /// Returns the code digest.
     pub fn code_sha256(&self) -> &CodeSha256 {
@@ -154,13 +233,24 @@ impl UpdateActorRequest {
 #[ts(rename_all = "camelCase")]
 pub struct InspectActorRequest {
     #[wire(tag = 1, string)]
-    actor_id: ActorId,
+    pub(super) actor_id: ActorId,
+
+    #[wire(tag = 90, string)]
+    #[ts(optional)]
+    pub(super) namespace: Option<ActorNamespace>,
+    #[wire(tag = 91, bytes)]
+    #[ts(type = r#"import("../../readonly.js").ReadonlyBytes"#)]
+    pub(super) account_id: Vec<u8>,
 }
 
 impl InspectActorRequest {
     /// Creates an inspect request for a validated Actor identity.
     pub fn new(actor_id: ActorId) -> Self {
-        Self { actor_id }
+        Self {
+            actor_id,
+            namespace: None,
+            account_id: Vec::new(),
+        }
     }
     /// Returns the Actor identity.
     pub fn actor_id(&self) -> &ActorId {
@@ -175,11 +265,18 @@ impl InspectActorRequest {
 #[ts(rename_all = "camelCase")]
 pub struct AddSubscriptionRequest {
     #[wire(tag = 1, string)]
-    actor_id: ActorId,
+    pub(super) actor_id: ActorId,
     #[wire(tag = 2, message)]
     subscription: SubscriptionSpec,
     #[wire(tag = 3)]
     idempotency_key: String,
+
+    #[wire(tag = 90, string)]
+    #[ts(optional)]
+    pub(super) namespace: Option<ActorNamespace>,
+    #[wire(tag = 91, bytes)]
+    #[ts(type = r#"import("../../readonly.js").ReadonlyBytes"#)]
+    pub(super) account_id: Vec<u8>,
 }
 
 impl AddSubscriptionRequest {
@@ -190,6 +287,8 @@ impl AddSubscriptionRequest {
         idempotency_key: String,
     ) -> Result<Self, DomainError> {
         let wire = wire::AddSubscriptionRequest {
+            namespace: None,
+            account_id: Vec::new(),
             actor_id: actor_id.as_str().to_owned(),
             subscription: Some(subscription.into()),
             idempotency_key,
@@ -224,17 +323,26 @@ impl AddSubscriptionRequest {
 #[ts(rename_all = "camelCase")]
 pub struct RemoveSubscriptionRequest {
     #[wire(tag = 1, string)]
-    actor_id: ActorId,
+    pub(super) actor_id: ActorId,
     #[wire(tag = 2)]
     subscription_id: String,
     #[wire(tag = 3)]
     idempotency_key: String,
+
+    #[wire(tag = 90, string)]
+    #[ts(optional)]
+    pub(super) namespace: Option<ActorNamespace>,
+    #[wire(tag = 91, bytes)]
+    #[ts(type = r#"import("../../readonly.js").ReadonlyBytes"#)]
+    pub(super) account_id: Vec<u8>,
 }
 
 impl RemoveSubscriptionRequest {
     /// Creates a removal request; no additional canonical validator exists yet.
     pub fn new(actor_id: ActorId, subscription_id: String, idempotency_key: String) -> Self {
         Self {
+            namespace: None,
+            account_id: Vec::new(),
             actor_id,
             subscription_id,
             idempotency_key,
@@ -261,17 +369,26 @@ impl RemoveSubscriptionRequest {
 #[ts(rename_all = "camelCase")]
 pub struct ResumeSubscriptionRequest {
     #[wire(tag = 1, string)]
-    actor_id: ActorId,
+    pub(super) actor_id: ActorId,
     #[wire(tag = 2)]
     subscription_id: String,
     #[wire(tag = 3)]
     idempotency_key: String,
+
+    #[wire(tag = 90, string)]
+    #[ts(optional)]
+    pub(super) namespace: Option<ActorNamespace>,
+    #[wire(tag = 91, bytes)]
+    #[ts(type = r#"import("../../readonly.js").ReadonlyBytes"#)]
+    pub(super) account_id: Vec<u8>,
 }
 
 impl ResumeSubscriptionRequest {
     /// Creates a resume request; no additional canonical validator exists yet.
     pub fn new(actor_id: ActorId, subscription_id: String, idempotency_key: String) -> Self {
         Self {
+            namespace: None,
+            account_id: Vec::new(),
             actor_id,
             subscription_id,
             idempotency_key,
@@ -298,15 +415,24 @@ impl ResumeSubscriptionRequest {
 #[ts(rename_all = "camelCase")]
 pub struct CheckpointActorRequest {
     #[wire(tag = 1, string)]
-    actor_id: ActorId,
+    pub(super) actor_id: ActorId,
     #[wire(tag = 2)]
     idempotency_key: String,
+
+    #[wire(tag = 90, string)]
+    #[ts(optional)]
+    pub(super) namespace: Option<ActorNamespace>,
+    #[wire(tag = 91, bytes)]
+    #[ts(type = r#"import("../../readonly.js").ReadonlyBytes"#)]
+    pub(super) account_id: Vec<u8>,
 }
 
 impl CheckpointActorRequest {
     /// Creates a checkpoint request for a validated Actor identity.
     pub fn new(actor_id: ActorId, idempotency_key: String) -> Self {
         Self {
+            namespace: None,
+            account_id: Vec::new(),
             actor_id,
             idempotency_key,
         }
@@ -322,21 +448,30 @@ impl CheckpointActorRequest {
 }
 
 /// Deletion request. The canonical validator requires an Actor identity and a
-#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = DeleteActorRequest::validate_from_proto)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = DeleteAllRequest::validate_from_proto)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
-#[ts(export_to = "actors/DeleteActorRequest.ts")]
+#[ts(export_to = "actors/DeleteAllRequest.ts")]
 #[ts(rename_all = "camelCase")]
-pub struct DeleteActorRequest {
+pub struct DeleteAllRequest {
     #[wire(tag = 1, string)]
-    actor_id: ActorId,
+    pub(super) actor_id: ActorId,
     #[wire(tag = 2)]
     idempotency_key: String,
+
+    #[wire(tag = 90, string)]
+    #[ts(optional)]
+    pub(super) namespace: Option<ActorNamespace>,
+    #[wire(tag = 91, bytes)]
+    #[ts(type = r#"import("../../readonly.js").ReadonlyBytes"#)]
+    pub(super) account_id: Vec<u8>,
 }
 
-impl DeleteActorRequest {
+impl DeleteAllRequest {
     /// Builds and validates a deletion request through the canonical admission path.
     pub fn new(actor_id: ActorId, idempotency_key: String) -> Result<Self, DomainError> {
-        Self::try_from(wire::DeleteActorRequest {
+        Self::try_from(wire::DeleteAllRequest {
+            namespace: None,
+            account_id: Vec::new(),
             actor_id: actor_id.as_str().to_owned(),
             idempotency_key,
         })
@@ -344,7 +479,7 @@ impl DeleteActorRequest {
 
     /// Re-runs the canonical request validator without recursively invoking
     fn validate_from_proto(&self) -> Result<(), DomainError> {
-        let wire: wire::DeleteActorRequest = self.clone().into();
+        let wire: wire::DeleteAllRequest = self.clone().into();
         crate::validate_delete(&wire).map_err(DomainError::Contract)
     }
 
@@ -361,6 +496,6 @@ impl DeleteActorRequest {
 /// Empty deletion acknowledgement. After it, every operation on the deleted
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 #[derive(Clone, Debug, Default, Eq, PartialEq, TS)]
-#[ts(export_to = "actors/DeleteActorResponse.ts")]
+#[ts(export_to = "actors/DeleteAllResponse.ts")]
 #[ts(type = "Record<never, never>")]
-pub struct DeleteActorResponse {}
+pub struct DeleteAllResponse {}

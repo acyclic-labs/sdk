@@ -72,6 +72,8 @@ pub struct AdmittedCaller {
     credential_id: String,
     /// Actor audience admitted by the authority.
     actor_id: String,
+    /// Namespace of the admitted actor audience.
+    namespace: String,
     /// Decimal u64 expiry in Unix milliseconds.
     expires_at_ms: String,
     /// Opaque caller capability, absent until S1 admission supplies it.
@@ -123,11 +125,32 @@ impl AdmittedCaller {
             principal,
             credential_id,
             actor_id,
+            namespace: default_namespace(),
             expires_at_ms: expires_at_ms.to_string(),
             capability: None,
         })
     }
 
+    /// Set the exact admitted namespace; omitted legacy fields map to the reserved namespace.
+    pub fn with_namespace(mut self, namespace: String) -> Result<Self, GuestMetadataError> {
+        crate::addressing::NamespaceId::new(namespace.as_bytes())
+            .map_err(|_| GuestMetadataError("namespace"))?;
+        self.namespace = namespace;
+        Ok(self)
+    }
+    /// Exact namespace admitted by the host.
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+    /// Full address for audience comparison; carries no authority.
+    pub fn reference(&self) -> Result<crate::addressing::ActorReference, GuestMetadataError> {
+        crate::addressing::ActorReference::new(
+            self.account_id.as_bytes(),
+            self.namespace.as_bytes(),
+            self.actor_id.as_bytes(),
+        )
+        .map_err(|_| GuestMetadataError("audience"))
+    }
     /// Attach an S1 handle after checking its representation.
     pub fn with_capability(
         mut self,
@@ -203,6 +226,8 @@ struct RawCaller {
     credential_id: String,
     #[serde(deserialize_with = "metadata_string")]
     actor_id: String,
+    #[serde(default = "default_namespace", deserialize_with = "metadata_string")]
+    namespace: String,
     #[serde(deserialize_with = "expiry_string")]
     expires_at_ms: String,
     capability: Option<CallerCapability>,
@@ -219,6 +244,12 @@ impl TryFrom<RawCaller> for AdmittedCaller {
         ] {
             identity(value, field)?;
         }
+        crate::addressing::ActorReference::new(
+            raw.account_id.as_bytes(),
+            raw.namespace.as_bytes(),
+            raw.actor_id.as_bytes(),
+        )
+        .map_err(|_| GuestMetadataError("audience"))?;
         let expiry = raw
             .expires_at_ms
             .parse::<u64>()
@@ -232,10 +263,15 @@ impl TryFrom<RawCaller> for AdmittedCaller {
             principal: raw.principal,
             credential_id: raw.credential_id,
             actor_id: raw.actor_id,
+            namespace: raw.namespace,
             expires_at_ms: raw.expires_at_ms,
             capability: raw.capability,
         })
     }
+}
+
+fn default_namespace() -> String {
+    crate::addressing::DEFAULT_ACTOR_NAMESPACE.into()
 }
 
 fn canonical_expiry(value: &str) -> bool {
@@ -281,6 +317,12 @@ fn bounded_string<'de, D: serde::Deserializer<'de>>(
 pub struct ActorRuntime {
     /// Actor identity; absent for a stateless Worker.
     pub id: Option<String>,
+    /// Account supplied by the host, separate from the existing local ID.
+    #[ts(optional)]
+    pub account: Option<String>,
+    /// Exact namespace; absence maps to the reserved default namespace.
+    #[ts(optional)]
+    pub namespace: Option<String>,
     /// Actor class identity for actor-address and fork operations.
     pub class: Option<String>,
     /// Optional socket Send/Close/Broadcast/SetTags/SetAttachment/Connect authority.
@@ -298,4 +340,26 @@ pub struct ActorRuntime {
     /// Optional host-managed lifetime extension authority.
     #[ts(optional)]
     pub wait_until: Option<RuntimeHandle>,
+}
+
+impl ActorRuntime {
+    /// Compose the existing local fields into a globally unique address.
+    pub fn reference(
+        &self,
+    ) -> Result<Option<crate::addressing::ActorReference>, GuestMetadataError> {
+        match (&self.account, &self.id) {
+            (None, None) if self.namespace.is_none() => Ok(None),
+            (Some(account), Some(id)) => crate::addressing::ActorReference::new(
+                account.as_bytes(),
+                self.namespace
+                    .as_deref()
+                    .unwrap_or(crate::addressing::DEFAULT_ACTOR_NAMESPACE)
+                    .as_bytes(),
+                id.as_bytes(),
+            )
+            .map(Some)
+            .map_err(|_| GuestMetadataError("runtimeIdentity")),
+            _ => Err(GuestMetadataError("runtimeIdentity")),
+        }
+    }
 }

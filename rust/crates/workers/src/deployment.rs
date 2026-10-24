@@ -1,4 +1,4 @@
-//! Cloud Workers deploy as stateless Actors, with module bytes retained in Objects.
+//! Named Worker script deployments; module bytes are retained in Objects.
 pub use acyclic_actors::client::CredentialProvider;
 use acyclic_actors::{http, wire};
 use acyclic_objects::{ObjectsProvider, wire as objects};
@@ -85,15 +85,15 @@ impl<P: ObjectsProvider> Client<P> {
         Ok(digest)
     }
 
-    /// Create a module exporting default.fetch without an actor export.
+    /// Deploy a named module exporting default.fetch without an actor export.
     ///
     /// # Errors
     /// Returns the canonical Actors failure.
-    pub async fn create(
+    pub async fn deploy(
         &self,
-        request: &wire::CreateActorRequest,
-    ) -> Result<wire::CreateActorResponse, Error> {
-        Ok(self.actors.create_actor(request).await?)
+        request: &wire::DeploymentRequest,
+    ) -> Result<wire::DeploymentResponse, Error> {
+        Ok(self.actors.deploy_worker(request).await?)
     }
 
     /// Invoke the deployment using the canonical HTTP request envelope.
@@ -102,9 +102,9 @@ impl<P: ObjectsProvider> Client<P> {
     /// Returns the canonical Actors failure.
     pub async fn invoke(
         &self,
-        request: &wire::InvokeActorRequest,
+        request: &wire::InvokeWorkerRequest,
     ) -> Result<wire::InvokeActorResponse, Error> {
-        Ok(self.actors.invoke_actor(request).await?)
+        Ok(self.actors.invoke_worker(request).await?)
     }
 
     /// Delete the deployment using the caller's idempotency key.
@@ -113,8 +113,8 @@ impl<P: ObjectsProvider> Client<P> {
     /// Returns the canonical Actors failure.
     pub async fn delete(
         &self,
-        request: &wire::DeleteActorRequest,
-    ) -> Result<wire::DeleteActorResponse, Error> {
-        Ok(self.actors.delete_actor(request).await?)
+        request: &wire::DeleteWorkerRequest,
+    ) -> Result<wire::DeleteWorkerResponse, Error> {
+        Ok(self.actors.delete_worker(request).await?)
     }
 }

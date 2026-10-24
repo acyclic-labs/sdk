@@ -12,25 +12,36 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 mod paused;
 use crate::stall;
 
-fn observation_path(actor: &str) -> TestResult<StreamPath> {
-    let scope = serde_json::to_vec(&["staging", "00000000-0000-4000-8000-0000000000e1", actor])?;
-    let hash: String = Sha256::digest(scope)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    Ok(StreamPath::new(format!(
-        ".acyclic/actors-observation/{hash}"
-    ))?)
+async fn observation_path(
+    actors: &mut grpc::Client,
+    namespace: &str,
+    actor: &str,
+) -> TestResult<StreamPath> {
+    let observed = actors
+        .inspect_actor(wire::InspectActorRequest {
+            actor_id: actor.into(),
+            namespace: Some(namespace.into()),
+            account_id: Vec::new(),
+        })
+        .await?
+        .into_inner()
+        .actor
+        .ok_or("missing actor observation")?;
+    Ok(StreamPath::new(observed.observation_stream_path.ok_or(
+        "Cloud must return the namespace-scoped observation stream",
+    )?)?)
 }
 
 async fn followed_observation(
     streams: &acyclic_stream::grpc::Client,
+    actors: &mut grpc::Client,
+    namespace: &str,
     actor_id: &str,
     from: u64,
     accept: impl Fn(&wire::ActorObservation) -> bool,
 ) -> TestResult<(wire::ActorObservation, u64)> {
     let session = streams.session_client()?;
-    let path = observation_path(actor_id)?;
+    let path = observation_path(actors, namespace, actor_id).await?;
     let followed = async {
         let mut follow = session
             .follow(path, from, acyclic_stream::FollowFilter::default())
@@ -56,6 +67,7 @@ async fn followed_observation(
         .await
         .map_err(|stalled| format!("observation follow: {stalled}"))?
 }
+const NAMESPACE: &str = "Counter";
 const ACTOR: &str = "e2e-actor";
 const EVENTS: &str = "e2e-root/actor-events";
 // Exact code/configuration admitted by the cloud gate's locally minted bearer.
@@ -123,6 +135,8 @@ fn subscription(cursor: u64) -> wire::SubscriptionObservation {
 
 fn add_subscription(key: &str) -> wire::AddSubscriptionRequest {
     wire::AddSubscriptionRequest {
+        namespace: Some(NAMESPACE.into()),
+        account_id: Vec::new(),
         actor_id: ACTOR.into(),
         idempotency_key: key.into(),
         subscription: Some(wire::SubscriptionSpec {
@@ -157,10 +171,14 @@ async fn append_events(
     }
 }
 
-fn create() -> wire::CreateActorRequest {
-    wire::CreateActorRequest {
+fn create() -> wire::DeploymentRequest {
+    wire::DeploymentRequest {
+        name: NAMESPACE.into(),
+        account_id: Vec::new(),
+        jurisdiction: String::new(),
+        expected_revision: 0,
         code_sha256: digest(CODE),
-        home_region: "la".into(),
+
         limits: Some(wire::ActorLimits {
             handler_timeout_millis: 1000,
             memory_bytes: 1 << 20,
@@ -191,13 +209,13 @@ fn observation_with_code(
 fn actor_configuration(
     actor: Option<wire::ActorObservation>,
     id: &str,
-    expected: &wire::CreateActorRequest,
+    expected: &wire::DeploymentRequest,
     revision: u64,
 ) -> TestResult<wire::ActorObservation> {
     let actor = actor.ok_or("response omitted the actor")?;
     if actor.actor_id != id
         || actor.code_sha256 != expected.code_sha256
-        || actor.home_region != expected.home_region
+        || actor.namespace.as_deref() != Some(expected.name.as_str())
         || actor.configuration_revision != revision
     {
         return Err(format!("unexpected actor identity/configuration: {actor:?}").into());
@@ -257,6 +275,11 @@ async fn invoke_response(
 ) -> TestResult<wire::InvokeActorResponse> {
     Ok(client
         .invoke_actor(wire::InvokeActorRequest {
+            namespace: Some(NAMESPACE.into()),
+            account_id: Vec::new(),
+            location_hint: None,
+            binding_name: None,
+            rpc_method: None,
             actor_id: ACTOR.into(),
             method: if add.is_some() { "POST" } else { "GET" }.into(),
             url: "https://actor.e2e/state".into(),
@@ -275,6 +298,8 @@ async fn invoke_response(
 #[test]
 fn actor_observation_rejects_other_identities_and_revisions() -> TestResult {
     let valid = wire::ActorObservation {
+        namespace: Some(NAMESPACE.into()),
+        account_id: Vec::new(),
         actor_id: ACTOR.into(),
         code_sha256: create().code_sha256,
         home_region: "la".into(),
@@ -302,6 +327,7 @@ proptest::proptest! {
         let mut expected = vec![subscription(cursor), subscription(cursor)];
         expected[1].subscription_id = "other".into();
         let valid = wire::ActorObservation {
+            namespace: Some(NAMESPACE.into()), account_id: Vec::new(),
             subscriptions: expected.clone(),
             ..Default::default()
         };
@@ -481,6 +507,8 @@ async fn subscription_controls(
     let removed = observation(
         actors
             .remove_subscription(wire::RemoveSubscriptionRequest {
+                namespace: Some(NAMESPACE.into()),
+                account_id: Vec::new(),
                 actor_id: ACTOR.into(),
                 subscription_id: "events".into(),
                 idempotency_key: "sdk-remove".into(),
@@ -498,16 +526,20 @@ async fn subscription_controls(
     Ok(expected_subscriptions)
 }
 
-async fn delete_actor_and_check_absence(actors: &mut grpc::Client) -> TestResult {
+async fn delete_all_and_check_absence(actors: &mut grpc::Client) -> TestResult {
     let mut retrier = actors.clone();
-    let deleted = wire::DeleteActorRequest {
+    let deleted = wire::DeleteAllRequest {
+        namespace: Some(NAMESPACE.into()),
+        account_id: Vec::new(),
         actor_id: ACTOR.into(),
         idempotency_key: "sdk-delete".into(),
     };
-    actors.delete_actor(deleted.clone()).await?;
+    actors.delete_all(deleted.clone()).await?;
     let (retry, missing) = futures::join!(
-        retrier.delete_actor(deleted),
+        retrier.delete_all(deleted),
         actors.inspect_actor(wire::InspectActorRequest {
+            namespace: Some(NAMESPACE.into()),
+            account_id: Vec::new(),
             actor_id: ACTOR.into()
         })
     );
@@ -530,23 +562,43 @@ async fn supported_actor_lifecycle_matches_the_counter_oracle() -> TestResult {
     let (_streams, start) = events?;
     println!("Actors setup: {:.3}s", phase.elapsed().as_secs_f64());
     let phase = std::time::Instant::now();
-    let created = observation(actors.create_actor(create()).await?.into_inner().actor, 1)?;
-    assert_eq!(created.state, wire::ActorState::Paused as i32);
-    assert!(created.subscriptions.is_empty());
+    let deployed = actors
+        .deploy_namespace(create())
+        .await?
+        .into_inner()
+        .deployment
+        .ok_or("missing deployment")?;
+    assert_eq!(deployed.name, NAMESPACE);
+    assert_eq!(deployed.revision, 1);
     let mut retrier = actors.clone();
-    let (retry, inspected) = futures::join!(
-        retrier.create_actor(create()),
-        actors.inspect_actor(wire::InspectActorRequest {
-            actor_id: ACTOR.into()
-        })
-    );
-    assert_eq!(observation(retry?.into_inner().actor, 1)?, created);
-    assert_eq!(observation(inspected?.into_inner().actor, 1)?, created);
+    let repeated = retrier
+        .deploy_namespace(create())
+        .await?
+        .into_inner()
+        .deployment
+        .ok_or("missing deployment")?;
+    assert_eq!(repeated, deployed);
+    // Deploying code never creates an instance; first access activates it.
     invoke(&mut actors, None, 0).await?;
+    let activated = observation(
+        actors
+            .inspect_actor(wire::InspectActorRequest {
+                namespace: Some(NAMESPACE.into()),
+                account_id: Vec::new(),
+                actor_id: ACTOR.into(),
+            })
+            .await?
+            .into_inner()
+            .actor,
+        1,
+    )?;
+    assert_eq!(activated.state, wire::ActorState::Active as i32);
     for (add, counter) in [(2, 2), (-1, 1), (4, 5)] {
         invoke(&mut actors, Some(add), counter).await?;
     }
     let checkpoint = wire::CheckpointActorRequest {
+        namespace: Some(NAMESPACE.into()),
+        account_id: Vec::new(),
         actor_id: ACTOR.into(),
         idempotency_key: "sdk-checkpoint".into(),
     };
@@ -581,40 +633,51 @@ async fn supported_actor_lifecycle_matches_the_counter_oracle() -> TestResult {
         Some(&actor_ca),
     )
     .await?;
-    let update = wire::UpdateActorRequest {
-        actor_id: ACTOR.into(),
+    let update = wire::UpdateNamespaceRequest {
+        account_id: Vec::new(),
+        namespace_id: NAMESPACE.into(),
         code_sha256: digest(CODE_V2),
         limits: create().limits,
         bindings: vec![],
-        expected_configuration_revision: 4,
+        expected_configuration_revision: 1,
         idempotency_key: "sdk-migrate-v2".into(),
     };
-    let updated = observation_with_code(
-        actors
-            .update_actor(update.clone())
-            .await?
-            .into_inner()
-            .actor,
-        5,
-        CODE_V2,
-    )?;
-    subscriptions(&updated, &expected_subscriptions)?;
+    let updated = actors
+        .update_namespace(update.clone())
+        .await?
+        .into_inner()
+        .deployment
+        .ok_or("missing deployment")?;
+    assert_eq!(updated.name, NAMESPACE);
+    assert_eq!(updated.revision, 2);
+    assert_eq!(updated.code_sha256, digest(CODE_V2));
     let mut retrier = actors.clone();
-    let (retry, invoked) = futures::join!(retrier.update_actor(update), async {
+    let (retry, invoked) = futures::join!(retrier.update_namespace(update), async {
         invoke_version(&mut actors, None, 5, 2).await?;
         invoke_version(&mut actors, Some(3), 8, 2).await
     });
     assert_eq!(
-        observation_with_code(retry?.into_inner().actor, 5, CODE_V2)?,
+        retry?.into_inner().deployment.ok_or("missing deployment")?,
         updated
     );
+    let observed = actors
+        .inspect_actor(wire::InspectActorRequest {
+            namespace: Some(NAMESPACE.into()),
+            account_id: Vec::new(),
+            actor_id: ACTOR.into(),
+        })
+        .await?
+        .into_inner()
+        .actor
+        .ok_or("missing actor")?;
+    subscriptions(&observed, &expected_subscriptions)?;
     invoked?;
     println!(
         "Actors subscriptions/migration: {:.3}s",
         phase.elapsed().as_secs_f64()
     );
     let phase = std::time::Instant::now();
-    delete_actor_and_check_absence(&mut actors).await?;
+    delete_all_and_check_absence(&mut actors).await?;
     println!("Actors deletion: {:.3}s", phase.elapsed().as_secs_f64());
     Ok(())
 }
@@ -624,7 +687,12 @@ async fn supported_actor_lifecycle_matches_the_counter_oracle() -> TestResult {
 async fn subscription_delivery_advances_cursors_and_preserves_event_order() -> TestResult {
     let endpoints = endpoints()?;
     let mut actors = published_actor(&endpoints).await?;
-    observation(actors.create_actor(create()).await?.into_inner().actor, 1)?;
+    actors
+        .deploy_namespace(create())
+        .await?
+        .into_inner()
+        .deployment
+        .ok_or("missing deployment")?;
     invoke(&mut actors, None, 0).await?;
     let streams = acyclic_stream::grpc::Client::connect_eager_with_ca_certificate(
         &endpoints.streams.endpoint,
@@ -649,7 +717,9 @@ async fn subscription_delivery_advances_cursors_and_preserves_event_order() -> T
         2,
     )?;
     subscriptions(&added, &[subscription(start)])?;
-    let boundary = streams.tail(observation_path(ACTOR)?).await?;
+    let boundary = streams
+        .tail(observation_path(&mut actors, NAMESPACE, ACTOR).await?)
+        .await?;
     let receipt = append_events(
         &streams,
         vec![
@@ -660,13 +730,14 @@ async fn subscription_delivery_advances_cursors_and_preserves_event_order() -> T
     .await?;
     assert_eq!(receipt.start, start);
     assert_eq!(receipt.end.checked_sub(receipt.start), Some(2));
-    let (delivered, next) = followed_observation(&streams, ACTOR, boundary, |actor| {
-        actor
-            .subscriptions
-            .iter()
-            .any(|sub| sub.subscription_id == "events" && sub.completed_cursor >= receipt.end)
-    })
-    .await?;
+    let (delivered, next) =
+        followed_observation(&streams, &mut actors, NAMESPACE, ACTOR, boundary, |actor| {
+            actor
+                .subscriptions
+                .iter()
+                .any(|sub| sub.subscription_id == "events" && sub.completed_cursor >= receipt.end)
+        })
+        .await?;
     let delivered = observation(Some(delivered), 2)?;
     let mut expected = subscription(receipt.end);
     expected.recoverable_cursor = start;
@@ -679,6 +750,8 @@ async fn subscription_delivery_advances_cursors_and_preserves_event_order() -> T
     let saved = observation(
         actors
             .checkpoint_actor(wire::CheckpointActorRequest {
+                namespace: Some(NAMESPACE.into()),
+                account_id: Vec::new(),
                 actor_id: ACTOR.into(),
                 idempotency_key: "sdk-delivery-checkpoint".into(),
             })
@@ -689,7 +762,10 @@ async fn subscription_delivery_advances_cursors_and_preserves_event_order() -> T
     )?;
     subscriptions(&saved, &[subscription(receipt.end)])?;
     let (followed, _) =
-        followed_observation(&streams, ACTOR, next, |actor| actor == &saved).await?;
+        followed_observation(&streams, &mut actors, NAMESPACE, ACTOR, next, |actor| {
+            actor == &saved
+        })
+        .await?;
     assert_eq!(
         followed, saved,
         "checkpoint reply differs from the retained observation"

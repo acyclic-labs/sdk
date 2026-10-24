@@ -7,5 +7,5 @@ import (
 	stream "github.com/acyclic-labs/sdk/go/gen/stream/v1"
 )
 
-var badActor = actors.CreateActorRequest{CodeSha256: "not bytes"}
+var badActor = actors.DeploymentRequest{CodeSha256: "not bytes"}
 var badStream = stream.AppendRequest{IfTail: uint64(0)}

@@ -199,6 +199,7 @@ pub fn validate_work(manifest: &DeploymentManifest) -> Result<usize, ManifestErr
     let mut work = bound_json(&serde_json::to_value(manifest).map_err(ManifestError::json)?)?;
     let mut environments = HashSet::new();
     let mut routes = HashSet::new();
+    let mut patterns = HashSet::new();
     for (ei, environment) in manifest.environments.iter().enumerate() {
         let p = format!("$.environments[{ei}]");
         require(
@@ -206,7 +207,7 @@ pub fn validate_work(manifest: &DeploymentManifest) -> Result<usize, ManifestErr
             &p,
             "environment-name",
         )?;
-        work += validate_environment(environment, &p, &mut routes)?;
+        work += validate_environment(environment, &p, &mut routes, &mut patterns)?;
     }
     Ok(work)
 }
@@ -218,6 +219,7 @@ fn validate_environment<'a>(
     environment: &'a Environment,
     p: &str,
     routes: &mut HashSet<(&'a String, &'a String)>,
+    patterns: &mut HashSet<&'a String>,
 ) -> Result<usize, ManifestError> {
     let mut work = 0;
     let entries = index(&environment.entries, |e| &e.name, p)?;
@@ -286,7 +288,9 @@ fn validate_environment<'a>(
     }
     for route in &environment.routes {
         require(
-            entries.contains_key(route.entry.as_str())
+            entries
+                .get(route.entry.as_str())
+                .is_some_and(|entry| matches!(entry.runtime, EntryRuntime::Worker { .. }))
                 && hostname(&route.host)
                 && path(&route.path_prefix)
                 && route.host != "run.acyclic.dev"
@@ -299,6 +303,25 @@ fn validate_environment<'a>(
             p,
             "duplicate-route-across-environments",
         )?;
+        work += 2;
+    }
+    for route in &environment.worker_routes {
+        let parsed = acyclic_auth::addressing::RoutePattern::parse(&route.pattern)
+            .map_err(|_| ManifestError::invalid(p, "worker-route-pattern"))?;
+        require(
+            parsed.as_str() == route.pattern && patterns.insert(&route.pattern),
+            p,
+            "canonical-unique-worker-route",
+        )?;
+        if let Some(entry) = &route.entry {
+            require(
+                entries
+                    .get(entry.as_str())
+                    .is_some_and(|e| matches!(e.runtime, EntryRuntime::Worker { .. })),
+                p,
+                "worker-route-target",
+            )?;
+        }
         work += 2;
     }
     Ok(work)
@@ -416,7 +439,7 @@ fn validate_entries<'a>(
             }
         }
         match &entry.runtime {
-            EntryRuntime::Actor { subscriptions, .. } => {
+            EntryRuntime::ActorNamespace { subscriptions, .. } => {
                 let mut streams = HashSet::new();
                 for sub in subscriptions {
                     acyclic_stream::StreamPath::new(sub.stream_path())
@@ -432,11 +455,9 @@ fn validate_entries<'a>(
                 lower_actor_unchecked(bindings, entry, "manifest-admission")?;
                 subscribed.insert(entry.name.as_str(), streams);
             }
-            EntryRuntime::Worker { limits } => require(
-                limits.cpu_millis > 0 && limits.memory_bytes > 0 && limits.timeout_millis > 0,
-                &ep,
-                "worker-limits",
-            )?,
+            EntryRuntime::Worker { .. } => {
+                lower_worker_unchecked(bindings, entry, "manifest-admission")?;
+            }
         }
         selected.insert(entry.name.as_str(), selection);
     }
@@ -475,7 +496,7 @@ fn validate_inboxes(
             .iter()
             .enumerate()
             .filter_map(|(ii, entry)| match &entry.runtime {
-                EntryRuntime::Actor {
+                EntryRuntime::ActorNamespace {
                     timer_inbox: Some(inbox),
                     ..
                 } => Some((
@@ -527,7 +548,7 @@ pub fn lower_actor(
     environment: &Environment,
     entry: &Entry,
     idempotency_key: &str,
-) -> Result<acyclic_actors::domain::CreateActorRequest, ManifestError> {
+) -> Result<acyclic_actors::domain::DeploymentRequest, ManifestError> {
     validate(&DeploymentManifest {
         schema_version: 1,
         environments: vec![environment.clone()],
@@ -547,10 +568,10 @@ fn lower_actor_unchecked(
     bindings: &HashMap<&str, &Contract<Binding>>,
     entry: &Entry,
     idempotency_key: &str,
-) -> Result<acyclic_actors::domain::CreateActorRequest, ManifestError> {
-    use acyclic_actors::domain::{CodeSha256, CreateActorRequest};
-    let EntryRuntime::Actor {
-        home_region,
+) -> Result<acyclic_actors::domain::DeploymentRequest, ManifestError> {
+    use acyclic_actors::domain::DeploymentRequest;
+    let EntryRuntime::ActorNamespace {
+        jurisdiction,
         limits,
         subscriptions,
         ..
@@ -558,37 +579,17 @@ fn lower_actor_unchecked(
     else {
         return Err(ManifestError::invalid("entry", "actor-required"));
     };
-    let bytes = entry
-        .artifact_sha256
-        .as_bytes()
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|pair| {
-            let text = std::str::from_utf8(pair)
-                .map_err(|_| ManifestError::invalid("artifactSha256", "digest"))?;
-            u8::from_str_radix(text, 16)
-                .map_err(|_| ManifestError::invalid("artifactSha256", "digest"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let selected = entry
-        .bindings
-        .iter()
-        .map(|name| {
-            bindings
-                .get(name.as_str())
-                .map(|b| b.0.clone())
-                .ok_or_else(|| ManifestError::invalid("bindings", "unknown-binding"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    CreateActorRequest::new(
-        CodeSha256::new(bytes).map_err(|_| ManifestError::invalid("artifactSha256", "digest"))?,
-        home_region.clone(),
+    let (digest, selected) = deployment_parts(bindings, entry)?;
+    DeploymentRequest::new(
+        acyclic_actors::domain::ActorNamespace::new(entry.name.clone())
+            .map_err(|_| ManifestError::invalid("entry.name", "namespace"))?,
+        digest,
         selected,
         limits.0,
         subscriptions.iter().map(|s| s.0.clone()).collect(),
         idempotency_key.into(),
     )
+    .and_then(|request| request.with_jurisdiction(jurisdiction.clone()))
     .map_err(|_| ManifestError::invalid("entry.runtime", "actors-admission"))
 }
 
@@ -659,6 +660,7 @@ fn native_bounds(manifest: &DeploymentManifest) -> Result<(), ManifestError> {
         budget.list(&env.crons)?;
         budget.list(&env.assets)?;
         budget.list(&env.routes)?;
+        budget.list(&env.worker_routes)?;
         for binding in &env.bindings {
             budget.text(binding.name())?;
             budget.text(binding.capability())?;
@@ -677,7 +679,7 @@ fn native_bounds(manifest: &DeploymentManifest) -> Result<(), ManifestError> {
             budget.text(secret.reference.as_str())?;
         }
         for entry in &env.entries {
-            if let EntryRuntime::Actor {
+            if let EntryRuntime::ActorNamespace {
                 timer_inbox: Some(inbox),
                 ..
             } = &entry.runtime
@@ -700,13 +702,13 @@ fn native_bounds(manifest: &DeploymentManifest) -> Result<(), ManifestError> {
                     budget.text(&rule.host)?;
                 }
             }
-            if let EntryRuntime::Actor {
-                home_region,
+            if let EntryRuntime::ActorNamespace {
+                jurisdiction,
                 subscriptions,
                 ..
             } = &entry.runtime
             {
-                budget.text(home_region)?;
+                budget.text(jurisdiction)?;
                 budget.list(subscriptions)?;
                 for sub in subscriptions {
                     budget.text(sub.subscription_id())?;
@@ -731,6 +733,92 @@ fn native_bounds(manifest: &DeploymentManifest) -> Result<(), ManifestError> {
             budget.text(&route.path_prefix)?;
             budget.text(&route.entry)?;
         }
+        for route in &env.worker_routes {
+            budget.text(&route.pattern)?;
+            if let Some(entry) = &route.entry {
+                budget.text(entry)?;
+            }
+        }
     }
     Ok(())
+}
+
+/// Lower one named Worker script, preserving its CPU, memory and duration limits.
+pub fn lower_worker(
+    environment: &Environment,
+    entry: &Entry,
+    idempotency_key: &str,
+) -> Result<acyclic_actors::domain::DeploymentRequest, ManifestError> {
+    validate(&DeploymentManifest {
+        schema_version: 1,
+        environments: vec![environment.clone()],
+    })?;
+    require(
+        environment.entries.contains(entry),
+        "entry",
+        "undeclared-entry",
+    )?;
+    let bindings = environment.bindings.iter().map(|b| (b.name(), b)).collect();
+    lower_worker_unchecked(&bindings, entry, idempotency_key)
+}
+fn lower_worker_unchecked(
+    bindings: &HashMap<&str, &Contract<Binding>>,
+    entry: &Entry,
+    idempotency_key: &str,
+) -> Result<acyclic_actors::domain::DeploymentRequest, ManifestError> {
+    use acyclic_actors::domain::{ActorNamespace, DeploymentRequest, WorkerLimits};
+    let EntryRuntime::Worker { limits } = &entry.runtime else {
+        return Err(ManifestError::invalid("entry", "worker-required"));
+    };
+    acyclic_auth::addressing::validate_dns_label(entry.name.as_bytes())
+        .map_err(|_| ManifestError::invalid("entry.name", "worker-label"))?;
+    let (digest, selected) = deployment_parts(bindings, entry)?;
+    let limits = WorkerLimits::new(
+        limits.cpu_millis,
+        limits.memory_bytes,
+        limits.timeout_millis,
+    )
+    .map_err(|_| ManifestError::invalid("entry.runtime", "worker-limits"))?;
+    DeploymentRequest::worker(
+        ActorNamespace::new(entry.name.clone())
+            .map_err(|_| ManifestError::invalid("entry.name", "worker-label"))?,
+        digest,
+        selected,
+        limits,
+        idempotency_key.into(),
+    )
+    .map_err(|_| ManifestError::invalid("entry.runtime", "workers-admission"))
+}
+fn deployment_parts(
+    bindings: &HashMap<&str, &Contract<Binding>>,
+    entry: &Entry,
+) -> Result<(acyclic_actors::domain::CodeSha256, Vec<Binding>), ManifestError> {
+    let bytes = entry
+        .artifact_sha256
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| {
+            let text = std::str::from_utf8(pair)
+                .map_err(|_| ManifestError::invalid("artifactSha256", "digest"))?;
+            u8::from_str_radix(text, 16)
+                .map_err(|_| ManifestError::invalid("artifactSha256", "digest"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let selected = entry
+        .bindings
+        .iter()
+        .map(|name| {
+            bindings
+                .get(name.as_str())
+                .map(|b| b.0.clone())
+                .ok_or_else(|| ManifestError::invalid("bindings", "unknown-binding"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((
+        acyclic_actors::domain::CodeSha256::new(bytes)
+            .map_err(|_| ManifestError::invalid("artifactSha256", "digest"))?,
+        selected,
+    ))
 }

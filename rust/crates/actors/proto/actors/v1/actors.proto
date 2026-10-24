@@ -48,12 +48,17 @@ message ActorObservation {
   optional uint64 checkpoint_unix_millis = 6;
   uint64 checkpoint_epoch = 7;
   uint64 configuration_revision = 8;
+  optional string namespace = 90;
+  bytes account_id = 91;
+  optional string observation_stream_path = 92;
 }
 
 message AddSubscriptionRequest {
   string actor_id = 1;
   SubscriptionSpec subscription = 2;
   string idempotency_key = 3;
+  optional string namespace = 90;
+  bytes account_id = 91;
 }
 
 message AddSubscriptionResponse {
@@ -64,36 +69,65 @@ message Binding {
   string name = 1;
   string capability = 2;
   string resource = 3;
+  bytes target_account = 4;
+  optional string actor_namespace = 5;
+  optional string worker_service = 6;
 }
 
 message CheckpointActorRequest {
   string actor_id = 1;
   string idempotency_key = 2;
+  optional string namespace = 90;
+  bytes account_id = 91;
 }
 
 message CheckpointActorResponse {
   ActorObservation actor = 1;
 }
 
-message CreateActorRequest {
+message DeleteAllRequest {
+  string actor_id = 1;
+  string idempotency_key = 2;
+  optional string namespace = 90;
+  bytes account_id = 91;
+}
+
+message DeleteAllResponse {
+}
+
+message DeleteWorkerRequest {
+  string worker_name = 1;
+  string idempotency_key = 2;
+  bytes account_id = 3;
+}
+
+message DeleteWorkerResponse {
+}
+
+message DeploymentObservation {
+  string name = 1;
+  bytes code_sha256 = 2;
+  uint64 revision = 3;
+  string jurisdiction = 4;
+  bytes account_id = 5;
+}
+
+message DeploymentRequest {
   bytes code_sha256 = 1;
-  string home_region = 2;
   repeated Binding bindings = 3;
   ActorLimits limits = 4;
   repeated SubscriptionSpec subscriptions = 5;
   string idempotency_key = 6;
+  string name = 7;
+  bytes account_id = 8;
+  string jurisdiction = 9;
+  uint64 expected_revision = 10;
+  WorkerLimits worker_limits = 11;
 }
 
-message CreateActorResponse {
-  ActorObservation actor = 1;
+message DeploymentResponse {
+  DeploymentObservation deployment = 1;
 }
-
-message DeleteActorRequest {
-  string actor_id = 1;
-  string idempotency_key = 2;
-}
-
-message DeleteActorResponse {}
 
 message Error {
   ErrorCode code = 1;
@@ -107,6 +141,8 @@ message Header {
 
 message InspectActorRequest {
   string actor_id = 1;
+  optional string namespace = 90;
+  bytes account_id = 91;
 }
 
 message InspectActorResponse {
@@ -119,6 +155,11 @@ message InvokeActorRequest {
   string url = 3;
   bytes body = 4;
   repeated Header headers = 5;
+  optional string namespace = 90;
+  bytes account_id = 91;
+  optional string location_hint = 92;
+  optional string binding_name = 93;
+  optional string rpc_method = 94;
 }
 
 message InvokeActorResponse {
@@ -127,10 +168,23 @@ message InvokeActorResponse {
   repeated Header headers = 3;
 }
 
+message InvokeWorkerRequest {
+  string worker_name = 1;
+  string method = 2;
+  string url = 3;
+  bytes body = 4;
+  repeated Header headers = 5;
+  bytes account_id = 91;
+  optional string binding_name = 92;
+  optional string rpc_method = 94;
+}
+
 message RemoveSubscriptionRequest {
   string actor_id = 1;
   string subscription_id = 2;
   string idempotency_key = 3;
+  optional string namespace = 90;
+  bytes account_id = 91;
 }
 
 message RemoveSubscriptionResponse {
@@ -141,6 +195,8 @@ message ResumeSubscriptionRequest {
   string actor_id = 1;
   string subscription_id = 2;
   string idempotency_key = 3;
+  optional string namespace = 90;
+  bytes account_id = 91;
 }
 
 message ResumeSubscriptionResponse {
@@ -174,72 +230,62 @@ message SubscriptionStart {
   }
 }
 
-message UpdateActorRequest {
-  string actor_id = 1;
+message UpdateNamespaceRequest {
+  string namespace_id = 1;
   bytes code_sha256 = 2;
   repeated Binding bindings = 3;
   ActorLimits limits = 4;
   uint64 expected_configuration_revision = 5;
   string idempotency_key = 6;
+  bytes account_id = 91;
 }
 
-message UpdateActorResponse {
-  ActorObservation actor = 1;
+message UpdateNamespaceResponse {
+  DeploymentObservation deployment = 1;
+}
+
+message WorkerLimits {
+  uint32 cpu_millis = 1;
+  uint32 memory_bytes = 2;
+  uint32 timeout_millis = 3;
 }
 
 service ActorsService {
-  rpc CreateActor(CreateActorRequest) returns (CreateActorResponse) {
-    option (acyclic.validation.v1.auth) = {
-      action: "actors/create"
-      extractor: "actors.create-with-bindings"
-    };
+  rpc DeleteWorker(DeleteWorkerRequest) returns (DeleteWorkerResponse) {
+    option (acyclic.validation.v1.auth) = { action: "workers/delete" extractor: "workers.delete" };
   }
-  rpc UpdateActor(UpdateActorRequest) returns (UpdateActorResponse) {
-    option (acyclic.validation.v1.auth) = {
-      action: "actors/update"
-      extractor: "actors.update-with-bindings"
-    };
+  rpc InvokeWorker(InvokeWorkerRequest) returns (InvokeActorResponse) {
+    option (acyclic.validation.v1.auth) = { action: "workers/invoke" extractor: "workers.invoke" };
+  }
+  rpc DeployNamespace(DeploymentRequest) returns (DeploymentResponse) {
+    option (acyclic.validation.v1.auth) = { action: "actors/deploy-namespace" extractor: "actors.deploy-with-bindings" };
+  }
+  rpc DeployWorker(DeploymentRequest) returns (DeploymentResponse) {
+    option (acyclic.validation.v1.auth) = { action: "workers/deploy" extractor: "workers.deploy-with-bindings" };
+  }
+  rpc UpdateNamespace(UpdateNamespaceRequest) returns (UpdateNamespaceResponse) {
+    option (acyclic.validation.v1.auth) = { action: "actors/update-namespace" extractor: "actors.update-namespace-with-bindings" };
   }
   rpc InspectActor(InspectActorRequest) returns (InspectActorResponse) {
-    option (acyclic.validation.v1.auth) = {
-      action: "actors/read"
-      extractor: "actors.read"
-    };
+    option (acyclic.validation.v1.auth) = { action: "actors/read" extractor: "actors.read" };
   }
   rpc AddSubscription(AddSubscriptionRequest) returns (AddSubscriptionResponse) {
-    option (acyclic.validation.v1.auth) = {
-      action: "actors/subscribe"
-      extractor: "actors.subscribe"
-    };
+    option (acyclic.validation.v1.auth) = { action: "actors/subscribe" extractor: "actors.subscribe" };
   }
   rpc RemoveSubscription(RemoveSubscriptionRequest) returns (RemoveSubscriptionResponse) {
-    option (acyclic.validation.v1.auth) = {
-      action: "actors/unsubscribe"
-      extractor: "actors.unsubscribe"
-    };
+    option (acyclic.validation.v1.auth) = { action: "actors/unsubscribe" extractor: "actors.unsubscribe" };
   }
   rpc ResumeSubscription(ResumeSubscriptionRequest) returns (ResumeSubscriptionResponse) {
-    option (acyclic.validation.v1.auth) = {
-      action: "actors/resume"
-      extractor: "actors.resume"
-    };
+    option (acyclic.validation.v1.auth) = { action: "actors/resume" extractor: "actors.resume" };
   }
   rpc CheckpointActor(CheckpointActorRequest) returns (CheckpointActorResponse) {
-    option (acyclic.validation.v1.auth) = {
-      action: "actors/checkpoint"
-      extractor: "actors.checkpoint"
-    };
+    option (acyclic.validation.v1.auth) = { action: "actors/checkpoint" extractor: "actors.checkpoint" };
   }
   rpc InvokeActor(InvokeActorRequest) returns (InvokeActorResponse) {
-    option (acyclic.validation.v1.auth) = {
-      action: "actors/invoke"
-      extractor: "actors.invoke"
-    };
+    option (acyclic.validation.v1.auth) = { action: "actors/invoke" extractor: "actors.invoke" };
   }
-  rpc DeleteActor(DeleteActorRequest) returns (DeleteActorResponse) {
-    option (acyclic.validation.v1.auth) = {
-      action: "actors/delete"
-      extractor: "actors.delete"
-    };
+  rpc DeleteAll(DeleteAllRequest) returns (DeleteAllResponse) {
+    option (acyclic.validation.v1.auth) = { action: "actors/delete-all" extractor: "actors.delete" };
   }
 }
+

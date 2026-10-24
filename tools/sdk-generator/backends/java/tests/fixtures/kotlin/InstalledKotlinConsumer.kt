@@ -6,8 +6,8 @@ object InstalledKotlinConsumer {
   @JvmStatic fun main(args: Array<String>) {
     InstalledConsumer.main(args)
     val bytes = ByteString.copyFrom(byteArrayOf(0, -1))
-    val actor = Actors.CreateActorRequest.newBuilder().setCodeSha256(bytes).setHomeRegion("test").setIdempotencyKey("test").build()
-    check(Actors.CreateActorRequest.parseFrom(actor.toByteArray()) == actor)
+    val actor = Actors.DeploymentRequest.newBuilder().setCodeSha256(bytes).setName("test").setIdempotencyKey("test").build()
+    check(Actors.DeploymentRequest.parseFrom(actor.toByteArray()) == actor)
     val append = Stream.AppendRequest.newBuilder().setPath("test/path").setIfTail(-1L).addRecords(bytes).setIdempotencyKey(bytes).build()
     check(Stream.AppendRequest.parseFrom(append.toByteArray()) == append)
     val read = Stream.ReadRequest.newBuilder().setPath("test/path").setFrom(-1L).setLimit(-1).build()

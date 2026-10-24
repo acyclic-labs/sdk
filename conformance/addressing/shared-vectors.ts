@@ -3,11 +3,60 @@ import { readFile } from "node:fs/promises";
 import type * as Binding from "@acyclic-labs/auth/addressing";
 
 export async function resourceIdentityConformance(binding: typeof Binding, name: string): Promise<void> {
-  const { ResourceIdentity, canonicalResourceHost } = binding;
+  const { ActorReference, ResourceIdentity, canonicalResourceHost, WorkerRoutePattern, selectWorkerRoute } = binding;
   const vectors = JSON.parse(await readFile(new URL("../../rust/crates/auth/tests/fixtures/resource-identity-v1.json", import.meta.url), "utf8"));
   describe(name, () => {
     const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString("hex");
     const unhex = (text: string) => Uint8Array.from(Buffer.from(text, "hex"));
+
+    test("Worker route grammar, query matching, specificity and exclusions share vectors", () => {
+      for (const row of vectors.routes) {
+        const route = new WorkerRoutePattern(row.pattern);
+        expect(route.toString()).toBe(row.canonical);
+        expect(route.matches(row.url)).toBe(row.matches);
+      }
+      for (const row of vectors.invalid_routes) expect(() => new WorkerRoutePattern(row)).toThrow();
+      for (const row of vectors.route_selection) {
+        const routes = row.patterns.map((pattern: string, index: number) => ({ pattern: new WorkerRoutePattern(pattern), target: row.targets[index] ?? undefined }));
+        expect(selectWorkerRoute(routes, row.url)).toBe(row.target);
+        expect(selectWorkerRoute(routes.reverse(), row.url)).toBe(row.target);
+      }
+      for (const target of ["", "Upper", "bad_name", "-leading"]) {
+        expect(() => selectWorkerRoute([{pattern: new WorkerRoutePattern("example.com/*"), target}], "https://example.com/")).toThrow();
+      }
+    });
+
+    test("shared actor triples are disjoint and preserve the legacy default", () => {
+      for (const row of vectors.actors) {
+        const value = new ActorReference(unhex(row.account_hex), unhex(row.namespace_hex), unhex(row.id_hex));
+        expect(hex(value.encode())).toBe(row.encoded_hex);
+        expect(ActorReference.decode(unhex(row.encoded_hex)).equals(value)).toBe(true);
+        expect(hex(value.toFields().namespace)).toBe(row.namespace_hex);
+        expect(() => ResourceIdentity.decode(value.encode())).toThrow();
+        if (row.legacy) {
+          expect(ActorReference.fromLegacyFields(unhex(row.account_hex), undefined, new TextDecoder().decode(unhex(row.id_hex))).equals(value)).toBe(true);
+        }
+        value.account.fill(0); value.namespace.fill(0); value.id.fill(0); value.encode().fill(0);
+        expect(hex(value.encode())).toBe(row.encoded_hex);
+        expect(() => ActorReference.decode(new Uint8Array([...value.encode(), 0]))).toThrow();
+      }
+      for (const row of vectors.invalid_actors) {
+        try {
+          new ActorReference(unhex(row.account_hex), unhex(row.namespace_hex), unhex(row.id_hex));
+          throw new Error("invalid actor accepted");
+        } catch (error) { expect((error as { code: string }).code).toBe(row.error); }
+      }
+      for (const row of vectors.pairs) expect(() => ActorReference.decode(unhex(row.encoded_hex))).toThrow();
+    });
+
+    test("Host parsing uses an exact multi-label suffix and exactly two labels", () => {
+      for (const row of vectors.host_parsing) {
+        if (row.valid) {
+          const value = ResourceIdentity.fromHostname(row.host, row.domain);
+          expect(value.hostname(row.domain)).toBe(row.host);
+        } else expect(() => ResourceIdentity.fromHostname(row.host, row.domain)).toThrow();
+      }
+    });
 
     test("shared golden pairs use the literal Rust WASM encoding", () => {
       for (const row of vectors.pairs) {

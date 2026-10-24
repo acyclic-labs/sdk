@@ -8,7 +8,7 @@ import { canonicalRPCs } from "../../../shared/tests/proto-rpcs.mjs";
 
 test("fresh archive-installed qualifier verifies compiler, runtime, native controls and receipt", t => {
   const f = fixture(t), result = qualify(f.args, f.options);
-  assert.equal(result.native_rpc_method_calls, 20); assert.equal(result.independent_negative_compiles, 2);
+  assert.equal(result.native_rpc_method_calls, canonicalRPCs().length); assert.equal(result.independent_negative_compiles, 2);
   assert.equal(result.host_sdk_files, 9); assert.equal(result.runtime_files, 1); assert.equal(result.rust_backed_rpc_qualified, false);
   assert.equal(f.calls.length, 11);
   for (const [name, bytes] of f.pkg.payload) assert.deepEqual(readFileSync(join(f.args.output, "sdk-source", name)), bytes);
@@ -73,6 +73,6 @@ test("qualifier accepts the maintained consumer's source-derived completion mark
 
 test("qualifier rejects the retired 25-pair completion marker", t => {
   const f = fixture(t);
-  f.hooks.consumer = result => { result.stdout = result.stdout.replace("20 RPC message pairs", "25 RPC message pairs"); };
+  f.hooks.consumer = result => { result.stdout = result.stdout.replace("23 RPC message pairs", "25 RPC message pairs"); };
   assert.throws(() => qualify(f.args, f.options), /completion marker missing/);
 });

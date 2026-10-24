@@ -64,7 +64,7 @@ func TestRustDescriptors(t *testing.T) {
 func TestInstalledWireRoundTrips(t *testing.T) {
 	tail := uint64(math.MaxUint64)
 	cases := []proto.Message{
-		&actors.CreateActorRequest{CodeSha256: make([]byte, 32), HomeRegion: "test", IdempotencyKey: "test"},
+		&actors.DeploymentRequest{CodeSha256: make([]byte, 32), Name: "test", IdempotencyKey: "test"},
 		&stream.AppendRequest{Path: "test/path", Records: [][]byte{{0, 255}, {}}, IfTail: &tail, IdempotencyKey: []byte{0, 255}},
 		&stream.ReadRequest{Path: "test/path", From: math.MaxUint64, Limit: math.MaxUint32},
 	}

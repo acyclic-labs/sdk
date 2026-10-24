@@ -1,12 +1,20 @@
 #![allow(missing_docs, reason = "executable documentation scenario")]
 
-use acyclic_actors::{validate_create, wire};
+use acyclic_actors::{validate_deployment, wire};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let request = wire::CreateActorRequest {
+    let request = wire::DeploymentRequest {
+        worker_limits: None,
+        name: "example".into(),
+        account_id: Vec::new(),
+        jurisdiction: String::new(),
+        expected_revision: 0,
         code_sha256: vec![0x11; 32],
-        home_region: "eu".into(),
+
         bindings: vec![wire::Binding {
+            target_account: Vec::new(),
+            actor_namespace: None,
+            worker_service: None,
             name: "database".into(),
             capability: "read".into(),
             resource: "tenant-db".into(),
@@ -26,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }],
         idempotency_key: "create-typescript-consumer".into(),
     };
-    validate_create(&request)?;
+    validate_deployment(&request)?;
     let limits = request
         .limits
         .as_ref()
@@ -37,7 +45,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "validated": true,
             "request": {
                 "code_sha256": request.code_sha256.as_slice(),
-                "home_region": request.home_region,
+                "name": request.name,
+                "jurisdiction": request.jurisdiction,
+                "account_id": request.account_id,
+                "expected_revision": request.expected_revision.to_string(),
                 "bindings": request.bindings.iter().map(|binding| serde_json::json!({
                     "name": binding.name,
                     "capability": binding.capability,

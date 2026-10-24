@@ -87,7 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let workers = Client::new(http::Client::new(&endpoint, &token, 1024 * 1024)?,
         HttpObjects::new(&endpoint, &token, 1024 * 1024, None)?, "actors-code".into());
     let digest = workers.publish(std::fs::read("worker.mjs")?.into(), "publish-worker".into()).await?;
-    let actor = workers.create(&wire::CreateActorRequest {
+    let actor = workers.create(&wire::DeploymentRequest {
         code_sha256: digest.to_vec(), home_region: "la".into(),
         limits: Some(wire::ActorLimits { handler_timeout_millis: 30000, memory_bytes: 268435456, checkpoint_bytes: 1048576 }),
         idempotency_key: "create-worker".into(), ..Default::default()
@@ -95,7 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("{:?}", workers.invoke(&wire::InvokeActorRequest {
         actor_id: actor.actor_id.clone(), method: "GET".into(), url: "/".into(), ..Default::default()
     }).await?);
-    workers.delete(&wire::DeleteActorRequest { actor_id: actor.actor_id, idempotency_key: "delete-worker".into() }).await?;
+    workers.delete(&wire::DeleteAllRequest { actor_id: actor.actor_id, idempotency_key: "delete-worker".into() }).await?;
     Ok(())
 }
 ```

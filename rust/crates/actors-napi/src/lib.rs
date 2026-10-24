@@ -106,6 +106,14 @@ pub fn actor_id(value: String) -> Result<String> {
         .map_err(|error| napi_error(nominal_error(error)))
 }
 
+/// Rust-backed exact namespace label constructor.
+#[napi(js_name = "ActorNamespace")]
+pub fn actor_namespace(value: String) -> Result<String> {
+    domain::ActorNamespace::new(value)
+        .map(|v| v.as_str().to_owned())
+        .map_err(|error| napi_error(nominal_error(error)))
+}
+
 /// Validate and return a nominal SHA-256 digest.
 #[napi(js_name = "CodeSha256")]
 #[allow(
@@ -236,21 +244,21 @@ mod tests {
 
     #[test]
     fn malformed_wire_returns_structured_invalid_argument() {
-        let error = decode::<wire::CreateActorRequest>(&Buffer::from(vec![255]), "create_actor")
+        let error = decode::<wire::DeploymentRequest>(&Buffer::from(vec![255]), "deploy_namespace")
             .expect_err("malformed protobuf must fail before dispatch");
         assert_eq!(error.code, "invalid_argument");
-        assert!(error.message.starts_with("create_actor: "));
+        assert!(error.message.starts_with("deploy_namespace: "));
     }
 
     #[test]
     fn invalid_semantics_returns_structured_invalid_argument() {
-        let error = decode_semantic::<wire::CreateActorRequest, domain::CreateActorRequest>(
+        let error = decode_semantic::<wire::DeploymentRequest, domain::DeploymentRequest>(
             &Buffer::from(Vec::<u8>::new()),
-            "create_actor",
+            "deploy_namespace",
         )
         .expect_err("empty request must fail Rust semantic validation before dispatch");
         assert_eq!(error.code, "invalid_argument");
-        assert!(error.message.starts_with("create_actor: "));
+        assert!(error.message.starts_with("deploy_namespace: "));
     }
 }
 
@@ -452,29 +460,29 @@ impl NativeActorsClient {
         })
     }
 
-    #[napi(js_name = "createActorResult")]
-    /// Execute `CreateActor` and return encoded bytes or structured error.
-    pub async fn create_actor_result(
+    #[napi(js_name = "deployNamespaceResult")]
+    /// Execute `DeployNamespace` and return encoded bytes or structured error.
+    pub async fn deploy_namespace_result(
         &self,
         request: Buffer,
         cancellation: Option<&NativeActorsCancellation>,
     ) -> Result<NativeActorsOperationResult> {
-        let decoded = match decode_semantic::<wire::CreateActorRequest, domain::CreateActorRequest>(
+        let decoded = match decode_semantic::<wire::DeploymentRequest, domain::DeploymentRequest>(
             &request,
-            "create_actor",
+            "deploy_namespace",
         ) {
             Ok(value) => value,
             Err(error) => return Ok(NativeActorsOperationResult::failure(error)),
         };
         let value = cancellable(
-            self.inner.create_actor(&decoded),
+            self.inner.deploy_namespace(&decoded),
             cancellation.map(|value| value.state.clone()),
         )
         .await;
         Ok(match value {
             Ok(value) => NativeActorsOperationResult {
                 value: Some(
-                    encode(&wire::CreateActorResponse::from(value), "create_actor")
+                    encode(&wire::DeploymentResponse::from(value), "deploy_namespace")
                         .map_err(napi_error)?,
                 ),
                 error: None,
@@ -482,30 +490,124 @@ impl NativeActorsClient {
             Err(error) => NativeActorsOperationResult::failure(error),
         })
     }
-    #[napi(js_name = "updateActorResult")]
-    /// Execute `UpdateActor` and return encoded bytes or structured error.
-    pub async fn update_actor_result(
+    #[napi(js_name = "deployWorkerResult")]
+    /// Execute `DeployWorker` and return encoded bytes or structured error.
+    pub async fn deploy_worker_result(
         &self,
         request: Buffer,
         cancellation: Option<&NativeActorsCancellation>,
     ) -> Result<NativeActorsOperationResult> {
-        let decoded = match decode_semantic::<wire::UpdateActorRequest, domain::UpdateActorRequest>(
+        let decoded = match decode_semantic::<wire::DeploymentRequest, domain::DeploymentRequest>(
             &request,
-            "update_actor",
+            "deploy_worker",
         ) {
             Ok(value) => value,
             Err(error) => return Ok(NativeActorsOperationResult::failure(error)),
         };
         let value = cancellable(
-            self.inner.update_actor(&decoded),
+            self.inner.deploy_worker(&decoded),
             cancellation.map(|value| value.state.clone()),
         )
         .await;
         Ok(match value {
             Ok(value) => NativeActorsOperationResult {
                 value: Some(
-                    encode(&wire::UpdateActorResponse::from(value), "update_actor")
+                    encode(&wire::DeploymentResponse::from(value), "deploy_worker")
                         .map_err(napi_error)?,
+                ),
+                error: None,
+            },
+            Err(error) => NativeActorsOperationResult::failure(error),
+        })
+    }
+    #[napi(js_name = "invokeWorkerResult")]
+    /// Execute `InvokeWorker` and return encoded bytes or structured error.
+    pub async fn invoke_worker_result(
+        &self,
+        request: Buffer,
+        cancellation: Option<&NativeActorsCancellation>,
+    ) -> Result<NativeActorsOperationResult> {
+        let decoded = match decode_semantic::<wire::InvokeWorkerRequest, domain::InvokeWorkerRequest>(
+            &request,
+            "invoke_worker",
+        ) {
+            Ok(value) => value,
+            Err(error) => return Ok(NativeActorsOperationResult::failure(error)),
+        };
+        let value = cancellable(
+            self.inner.invoke_worker(&decoded),
+            cancellation.map(|value| value.state.clone()),
+        )
+        .await;
+        Ok(match value {
+            Ok(value) => NativeActorsOperationResult {
+                value: Some(
+                    encode(&wire::InvokeActorResponse::from(value), "invoke_worker")
+                        .map_err(napi_error)?,
+                ),
+                error: None,
+            },
+            Err(error) => NativeActorsOperationResult::failure(error),
+        })
+    }
+    #[napi(js_name = "deleteWorkerResult")]
+    /// Execute `DeleteWorker` and return encoded bytes or structured error.
+    pub async fn delete_worker_result(
+        &self,
+        request: Buffer,
+        cancellation: Option<&NativeActorsCancellation>,
+    ) -> Result<NativeActorsOperationResult> {
+        let decoded = match decode_semantic::<wire::DeleteWorkerRequest, domain::DeleteWorkerRequest>(
+            &request,
+            "delete_worker",
+        ) {
+            Ok(value) => value,
+            Err(error) => return Ok(NativeActorsOperationResult::failure(error)),
+        };
+        let value = cancellable(
+            self.inner.delete_worker(&decoded),
+            cancellation.map(|value| value.state.clone()),
+        )
+        .await;
+        Ok(match value {
+            Ok(value) => NativeActorsOperationResult {
+                value: Some(
+                    encode(&wire::DeleteWorkerResponse::from(value), "delete_worker")
+                        .map_err(napi_error)?,
+                ),
+                error: None,
+            },
+            Err(error) => NativeActorsOperationResult::failure(error),
+        })
+    }
+    #[napi(js_name = "updateNamespaceResult")]
+    /// Execute `UpdateNamespace` and return encoded bytes or structured error.
+    pub async fn update_namespace_result(
+        &self,
+        request: Buffer,
+        cancellation: Option<&NativeActorsCancellation>,
+    ) -> Result<NativeActorsOperationResult> {
+        let decoded = match decode_semantic::<
+            wire::UpdateNamespaceRequest,
+            domain::UpdateNamespaceRequest,
+        >(&request, "update_namespace")
+        {
+            Ok(value) => value,
+            Err(error) => return Ok(NativeActorsOperationResult::failure(error)),
+        };
+        let value = cancellable(
+            self.inner.update_namespace(&decoded),
+            cancellation.map(|value| value.state.clone()),
+        )
+        .await;
+        Ok(match value {
+            Ok(value) => NativeActorsOperationResult {
+                value: Some(
+                    encode(
+                        &wire::UpdateNamespaceResponse::from(value),
+                        "update_namespace",
+                    )
+                    .map_err(napi_error)?,
                 ),
                 error: None,
             },
@@ -678,29 +780,29 @@ impl NativeActorsClient {
             Err(error) => NativeActorsOperationResult::failure(error),
         })
     }
-    #[napi(js_name = "deleteActorResult")]
-    /// Execute `DeleteActor` and return encoded bytes or structured error.
-    pub async fn delete_actor_result(
+    #[napi(js_name = "deleteAllResult")]
+    /// Execute `DeleteAll` and return encoded bytes or structured error.
+    pub async fn delete_all_result(
         &self,
         request: Buffer,
         cancellation: Option<&NativeActorsCancellation>,
     ) -> Result<NativeActorsOperationResult> {
-        let decoded = match decode_semantic::<wire::DeleteActorRequest, domain::DeleteActorRequest>(
+        let decoded = match decode_semantic::<wire::DeleteAllRequest, domain::DeleteAllRequest>(
             &request,
-            "delete_actor",
+            "delete_all",
         ) {
             Ok(value) => value,
             Err(error) => return Ok(NativeActorsOperationResult::failure(error)),
         };
         let value = cancellable(
-            self.inner.delete_actor(&decoded),
+            self.inner.delete_all(&decoded),
             cancellation.map(|value| value.state.clone()),
         )
         .await;
         Ok(match value {
             Ok(value) => NativeActorsOperationResult {
                 value: Some(
-                    encode(&wire::DeleteActorResponse::from(value), "delete_actor")
+                    encode(&wire::DeleteAllResponse::from(value), "delete_all")
                         .map_err(napi_error)?,
                 ),
                 error: None,

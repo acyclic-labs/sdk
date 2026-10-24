@@ -33,7 +33,7 @@ public final class InstalledConsumer {
   public static void main(String[] args) throws Exception {
     require(args.length == 2, "pass verified Actors/Stream descriptor paths");
     Path installedJar = Path.of(System.getProperty("sdk.qualified.jar"));
-    for (Class<?> type : List.of(Actors.class, ActorsServiceGrpc.class, Actors.CreateActorRequest.class,
+    for (Class<?> type : List.of(Actors.class, ActorsServiceGrpc.class, Actors.DeploymentRequest.class,
       Stream.class, StreamServiceGrpc.class, Stream.AppendRequest.class, Stream.ReadRequest.class)) {
       Path origin = Path.of(type.getProtectionDomain().getCodeSource().getLocation().toURI());
       require(Files.isSameFile(installedJar, origin), "class did not load from installed JAR: " + type.getName());
@@ -41,9 +41,9 @@ public final class InstalledConsumer {
     descriptor(Actors.getDescriptor(), args[0]);
     descriptor(Stream.getDescriptor(), args[1]);
     ByteString bytes = ByteString.copyFrom(new byte[] {0, (byte) 255});
-    var actor = Actors.CreateActorRequest.newBuilder().setCodeSha256(bytes)
-      .setHomeRegion("test").setIdempotencyKey("test").build();
-    require(actor.equals(Actors.CreateActorRequest.parseFrom(actor.toByteArray())), "Actors wire");
+    var actor = Actors.DeploymentRequest.newBuilder().setCodeSha256(bytes)
+      .setName("test").setIdempotencyKey("test").build();
+    require(actor.equals(Actors.DeploymentRequest.parseFrom(actor.toByteArray())), "Actors wire");
     var append = Stream.AppendRequest.newBuilder().setPath("test/path").addRecords(bytes)
       .addRecords(ByteString.EMPTY).setIfTail(-1L).setIdempotencyKey(bytes).build();
     require(append.equals(Stream.AppendRequest.parseFrom(append.toByteArray())), "Stream wire uint64 max");

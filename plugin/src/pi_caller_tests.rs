@@ -46,7 +46,7 @@ fn fixture() -> (pi_owner::PiOwnerConfig, AdapterState) {
 #[test]
 fn native_caller_preserves_claims_and_environment_and_rejects_substitution() {
     let (owner, mut state) = fixture();
-    state.root_session_id = "native-root-\"\\\n-🙂".to_owned();
+    state.root_session_id = "native-root-\"\\\n-ðŸ™‚".to_owned();
     let PluginTaskBinding::Pi(binding) = &mut state.task_binding else {
         unreachable!()
     };

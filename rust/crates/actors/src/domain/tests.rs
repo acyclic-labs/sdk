@@ -1,31 +1,28 @@
 use super::*;
 
 #[test]
-fn actor_id_matches_existing_presence_rule() {
+fn actor_ids_follow_the_live_ascii_grammar_without_normalization()
+-> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(ActorId::new(String::new()), Err(DomainError::EmptyActorId));
-    assert_eq!(
-        ActorId::new("  ".into()).map(|value| value.as_str().to_owned()),
-        Ok(String::from("  "))
-    );
-}
-
-#[test]
-fn addressing_wraps_actor_wire_id_without_normalization() -> Result<(), Box<dyn std::error::Error>>
-{
     for raw in ["  ", "cafe\u{301}", "caf\u{e9}", "parent/actor:1"] {
-        let id = ActorId::new(raw.to_owned())?;
-        let view = id.identity(b"account")?;
-        let (account, retained) =
-            crate::addressing::ResourceIdentity::decode(&view.encode())?.into_parts();
-        let restored = ActorId::new(String::from_utf8(retained.into_bytes())?)?;
-        assert_eq!(account.into_bytes(), b"account");
-        assert_eq!(restored, id);
-        assert_eq!(restored.as_str(), raw);
+        assert!(ActorId::new(raw.into()).is_err());
     }
-    assert_ne!(
-        ActorId::new("cafe\u{301}".into())?.identity(b"account")?,
-        ActorId::new("caf\u{e9}".into())?.identity(b"account")?
-    );
+    for raw in ["Actor_1", "actor-1", "dot.name"] {
+        let id = ActorId::new(raw.into())?;
+        let view = id.identity(
+            b"account",
+            &crate::addressing::NamespaceId::new(
+                crate::addressing::DEFAULT_ACTOR_NAMESPACE.as_bytes(),
+            )?,
+        )?;
+        let retained = crate::addressing::ActorReference::decode(&view.encode())?;
+        assert_eq!(retained.id(), raw);
+        assert_eq!(
+            retained.namespace().as_str(),
+            crate::addressing::DEFAULT_ACTOR_NAMESPACE
+        );
+    }
+    assert_ne!(ActorId::new("Actor".into())?, ActorId::new("actor".into())?);
     Ok(())
 }
 
@@ -117,6 +114,11 @@ fn positive_u64_is_the_single_limits_admission_predicate() {
 #[test]
 fn invoke_round_trips_without_rewriting_wire_fields() {
     let wire = wire::InvokeActorRequest {
+        namespace: None,
+        account_id: Vec::new(),
+        location_hint: None,
+        binding_name: None,
+        rpc_method: None,
         actor_id: "actor-1".into(),
         method: String::new(),
         url: String::new(),
@@ -138,6 +140,11 @@ fn invoke_round_trips_without_rewriting_wire_fields() {
 #[test]
 fn invoke_rejects_only_the_existing_actor_id_presence_violation() {
     let wire = wire::InvokeActorRequest {
+        namespace: None,
+        account_id: Vec::new(),
+        location_hint: None,
+        binding_name: None,
+        rpc_method: None,
         actor_id: String::new(),
         method: String::new(),
         url: String::new(),
@@ -153,6 +160,9 @@ fn invoke_rejects_only_the_existing_actor_id_presence_violation() {
 #[test]
 fn response_enum_unknown_values_are_not_normalized() {
     let observation = wire::ActorObservation {
+        observation_stream_path: None,
+        namespace: None,
+        account_id: Vec::new(),
         actor_id: "actor-1".into(),
         code_sha256: vec![1; 32],
         home_region: "eu".into(),
@@ -179,6 +189,9 @@ fn response_enum_unknown_values_are_not_normalized() {
 #[test]
 fn response_digest_keeps_the_nonzero_admission_rule() {
     let observation = wire::ActorObservation {
+        observation_stream_path: None,
+        namespace: None,
+        account_id: Vec::new(),
         actor_id: "actor-1".into(),
         code_sha256: vec![0; 32],
         home_region: "eu".into(),
@@ -221,6 +234,9 @@ fn subscription_projection_keeps_canonical_current_head_rule() {
 #[test]
 fn wire_ingress_rechecks_container_constructor_predicates() {
     let invalid_binding = wire::Binding {
+        target_account: Vec::new(),
+        actor_namespace: None,
+        worker_service: None,
         name: String::new(),
         capability: "read".into(),
         resource: "bucket/a".into(),
@@ -255,13 +271,21 @@ fn wire_ingress_rechecks_request_admission_predicates() {
         placement_anchor: false,
     };
     let binding = wire::Binding {
+        target_account: Vec::new(),
+        actor_namespace: None,
+        worker_service: None,
         name: "storage".into(),
         capability: "read".into(),
         resource: "bucket/a".into(),
     };
-    let create = wire::CreateActorRequest {
+    let create = wire::DeploymentRequest {
+        worker_limits: None,
+        name: "example".into(),
+        account_id: Vec::new(),
+        jurisdiction: String::new(),
+        expected_revision: 0,
         code_sha256: vec![1; 32],
-        home_region: "eu".into(),
+
         bindings: vec![binding.clone()],
         limits: Some(wire::ActorLimits {
             handler_timeout_millis: 1,
@@ -275,7 +299,7 @@ fn wire_ingress_rechecks_request_admission_predicates() {
     let mut duplicate = create.clone();
     duplicate.subscriptions.push(subscription.clone());
     assert_eq!(
-        CreateActorRequest::try_from(duplicate),
+        DeploymentRequest::try_from(duplicate),
         Err(DomainError::Contract(crate::ContractError::DuplicateName))
     );
 
@@ -286,14 +310,14 @@ fn wire_ingress_rechecks_request_admission_predicates() {
     second_anchor.placement_anchor = true;
     multiple_anchors.subscriptions.push(second_anchor);
     assert_eq!(
-        CreateActorRequest::try_from(multiple_anchors),
+        DeploymentRequest::try_from(multiple_anchors),
         Err(DomainError::Contract(crate::ContractError::InvalidArgument))
     );
 
     let mut invalid_idempotency = create.clone();
     invalid_idempotency.idempotency_key.clear();
     assert_eq!(
-        CreateActorRequest::try_from(invalid_idempotency),
+        DeploymentRequest::try_from(invalid_idempotency),
         Err(DomainError::Contract(crate::ContractError::InvalidArgument))
     );
 
@@ -301,17 +325,21 @@ fn wire_ingress_rechecks_request_admission_predicates() {
     over_limit
         .bindings
         .extend((0..=crate::MAX_BINDINGS).map(|index| wire::Binding {
+            target_account: Vec::new(),
+            actor_namespace: None,
+            worker_service: None,
             name: format!("binding-{index}"),
             capability: "read".into(),
             resource: "bucket/a".into(),
         }));
     assert_eq!(
-        CreateActorRequest::try_from(over_limit),
+        DeploymentRequest::try_from(over_limit),
         Err(DomainError::Contract(crate::ContractError::LimitExceeded))
     );
 
-    let update = wire::UpdateActorRequest {
-        actor_id: "actor-1".into(),
+    let update = wire::UpdateNamespaceRequest {
+        account_id: Vec::new(),
+        namespace_id: "actor-1".into(),
         code_sha256: vec![1; 32],
         bindings: vec![binding.clone()],
         limits: Some(wire::ActorLimits {
@@ -325,18 +353,20 @@ fn wire_ingress_rechecks_request_admission_predicates() {
     let mut duplicate_bindings = update.clone();
     duplicate_bindings.bindings.push(binding);
     assert_eq!(
-        UpdateActorRequest::try_from(duplicate_bindings),
+        UpdateNamespaceRequest::try_from(duplicate_bindings),
         Err(DomainError::Contract(crate::ContractError::DuplicateName))
     );
 
     let mut invalid_update_idempotency = update;
     invalid_update_idempotency.idempotency_key.clear();
     assert_eq!(
-        UpdateActorRequest::try_from(invalid_update_idempotency),
+        UpdateNamespaceRequest::try_from(invalid_update_idempotency),
         Err(DomainError::Contract(crate::ContractError::InvalidArgument))
     );
 
     let add = wire::AddSubscriptionRequest {
+        namespace: None,
+        account_id: Vec::new(),
         actor_id: "actor-1".into(),
         subscription: Some(wire::SubscriptionSpec {
             subscription_id: "events".into(),
@@ -369,25 +399,25 @@ fn public_create_constructor_round_trips_and_uses_canonical_validation() {
         false,
     )
     .expect("valid subscription");
-    let request = CreateActorRequest::new(
+    let request = DeploymentRequest::new(
+        ActorNamespace::new("ClassOne".into()).expect("namespace"),
         digest.clone(),
-        "eu".into(),
         vec![binding.clone()],
         limits,
         vec![subscription.clone()],
         "create-1".into(),
     )
     .expect("valid create request");
-    let wire: wire::CreateActorRequest = request.clone().into();
-    let decoded = CreateActorRequest::try_from(wire).expect("canonical decode");
+    let wire: wire::DeploymentRequest = request.clone().into();
+    let decoded = DeploymentRequest::try_from(wire).expect("canonical decode");
     assert_eq!(decoded, request);
     assert_eq!(decoded.code_sha256(), &digest);
     assert_eq!(decoded.bindings(), &[binding]);
     assert_eq!(decoded.subscriptions(), std::slice::from_ref(&subscription));
 
-    let duplicate = CreateActorRequest::new(
+    let duplicate = DeploymentRequest::new(
+        ActorNamespace::new("ClassOne".into()).expect("namespace"),
         digest,
-        "eu".into(),
         Vec::new(),
         ActorLimits::new(1, 1, 1).expect("positive limits"),
         vec![subscription.clone(), subscription],
@@ -404,8 +434,8 @@ fn public_update_and_add_constructors_preserve_wire_inverse() {
     let actor_id = ActorId::new("actor-1".into()).expect("valid actor id");
     let digest = CodeSha256::new(vec![2; 32]).expect("valid digest");
     let limits = ActorLimits::new(1, 2, 3).expect("positive limits");
-    let update = UpdateActorRequest::new(
-        actor_id.clone(),
+    let update = UpdateNamespaceRequest::new(
+        ActorNamespace::new("ClassOne".into()).expect("namespace"),
         digest,
         Vec::new(),
         limits,
@@ -413,8 +443,8 @@ fn public_update_and_add_constructors_preserve_wire_inverse() {
         "update-1".into(),
     )
     .expect("valid update request");
-    let update_wire: wire::UpdateActorRequest = update.clone().into();
-    assert_eq!(UpdateActorRequest::try_from(update_wire), Ok(update));
+    let update_wire: wire::UpdateNamespaceRequest = update.clone().into();
+    assert_eq!(UpdateNamespaceRequest::try_from(update_wire), Ok(update));
 
     let subscription = SubscriptionSpec::new(
         "events".into(),
@@ -434,4 +464,100 @@ fn public_update_and_add_constructors_preserve_wire_inverse() {
         }),
         Err(DomainError::InvalidSubscription)
     );
+}
+
+#[test]
+fn typed_bindings_reject_opaque_or_inconsistent_targets_at_every_admission()
+-> Result<(), Box<dyn std::error::Error>> {
+    let namespace =
+        Binding::actor_namespace("OBJECTS".into(), "grant".into(), b"account", "ClassOne")?;
+    let service = Binding::worker_service("SERVICE".into(), "grant".into(), b"other", "worker")?;
+    for binding in [namespace, service] {
+        let wire = wire::Binding::from(binding.clone());
+        assert_eq!(Binding::try_from(wire.clone())?, binding);
+        for mutation in 0..5 {
+            let mut invalid = wire.clone();
+            match mutation {
+                0 => invalid.target_account.clear(),
+                1 => invalid.resource.push_str("-other"),
+                2 => {
+                    invalid.actor_namespace = Some("ClassOne".into());
+                    invalid.worker_service = Some("worker".into());
+                }
+                3 => invalid.capability.clear(),
+                _ => invalid.name.clear(),
+            }
+            // Negative control: the raw protobuf admits the inconsistent shape.
+            assert!(Binding::try_from(invalid).is_err());
+        }
+    }
+    assert!(Binding::new("OBJECTS".into(), "grant".into(), "actors:/ClassOne".into()).is_err());
+    assert!(Binding::new("SERVICE".into(), "grant".into(), "workers:/worker".into()).is_err());
+    assert!(
+        Binding::worker_service("SERVICE".into(), "grant".into(), b"account", "Upper").is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn wire_scope_validates_namespaces_and_preserves_opaque_accounts()
+-> Result<(), Box<dyn std::error::Error>> {
+    let legacy = wire::InspectActorRequest {
+        actor_id: "same".into(),
+        namespace: None,
+        account_id: vec![],
+    };
+    assert_eq!(
+        InspectActorRequest::try_from(legacy.clone())?.namespace(),
+        crate::addressing::DEFAULT_ACTOR_NAMESPACE
+    );
+    let mut invalid = legacy.clone();
+    invalid.namespace = Some(String::new());
+    assert!(InspectActorRequest::try_from(invalid).is_err());
+    let mut opaque_account = legacy;
+    opaque_account.account_id = vec![1; 65536];
+    let reference = InspectActorRequest::try_from(opaque_account)?.reference(b"fallback")?;
+    assert_eq!(reference.account().as_bytes(), vec![1; 65536]);
+    for (namespace, id) in [
+        (Some("".into()), "same"),
+        (None, "not valid"),
+        (Some("ClassOne".into()), "a/b"),
+    ] {
+        let raw = wire::DeleteAllRequest {
+            actor_id: id.into(),
+            namespace,
+            account_id: vec![],
+            idempotency_key: "clear".into(),
+        };
+        assert!(crate::validate_delete(&raw).is_err());
+        assert!(DeleteAllRequest::try_from(raw).is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn deployment_limit_alternatives_are_exclusive_and_operation_scoped()
+-> Result<(), Box<dyn std::error::Error>> {
+    let worker = DeploymentRequest::worker(
+        ActorNamespace::new("worker".into())?,
+        CodeSha256::new(vec![1; 32])?,
+        vec![],
+        WorkerLimits::new(2, 3, 4)?,
+        "deploy".into(),
+    )?;
+    let raw: wire::DeploymentRequest = worker.into();
+    assert!(crate::client::validate_operation("DeployWorker", &raw).is_ok());
+    assert!(crate::client::validate_operation("DeployNamespace", &raw).is_err());
+    let mut neither = raw.clone();
+    neither.worker_limits = None;
+    assert!(DeploymentRequest::try_from(neither).is_err());
+    let mut both = raw.clone();
+    both.limits = Some(ActorLimits::new(1, 2, 3)?.into());
+    assert!(DeploymentRequest::try_from(both).is_err());
+    let mut namespace = raw;
+    namespace.worker_limits = None;
+    namespace.limits = Some(ActorLimits::new(1, 2, 3)?.into());
+    assert!(crate::client::validate_operation("DeployNamespace", &namespace).is_ok());
+    assert!(crate::client::validate_operation("DeployWorker", &namespace).is_err());
+    Ok(())
 }

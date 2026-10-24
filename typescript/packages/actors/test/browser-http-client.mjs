@@ -37,12 +37,16 @@ try {
   for (const [service, client] of [[ActorsService, actors]]) {
     for (const method of service.methods) {
       const init = {};
-      if (method.name === "CreateActor") Object.assign(init, {
-        codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu",
+      if (["DeployNamespace", "DeployWorker"].includes(method.name)) Object.assign(init, {
+        name: "example", codeSha256: new Uint8Array(32).fill(1),
         limits: { handlerTimeoutMillis: 1000n, memoryBytes: 1024n, checkpointBytes: 1024n }, idempotencyKey: "create-browser",
       });
-      if (method.name === "UpdateActor") Object.assign(init, {
-        actorId: "browser-actor", codeSha256: new Uint8Array(32).fill(1),
+      if (method.name === "DeployWorker") {
+        delete init.limits;
+        init.workerLimits = { cpuMillis: 1, memoryBytes: 1024, timeoutMillis: 1000 };
+      }
+      if (method.name === "UpdateNamespace") Object.assign(init, {
+        namespaceId: "example", codeSha256: new Uint8Array(32).fill(1),
         limits: { handlerTimeoutMillis: 1000n, memoryBytes: 1024n, checkpointBytes: 1024n }, expectedConfigurationRevision: 1n, idempotencyKey: "update-browser",
       });
       if (["InspectActor", "RemoveSubscription", "ResumeSubscription"].includes(method.name)) Object.assign(init, {
@@ -50,7 +54,9 @@ try {
       });
       if (method.name === "AddSubscription") Object.assign(init, { actorId: "browser-actor", subscription: { subscriptionId: "input", streamPath: "events/input", start: { start: { case: "cursor", value: 9007199254740993n } } }, idempotencyKey: "subscribe-browser" });
       if (method.name === "CheckpointActor") Object.assign(init, { actorId: "browser-actor", idempotencyKey: "checkpoint-browser" });
-      if (method.name === "DeleteActor") Object.assign(init, { actorId: "browser-actor", idempotencyKey: "delete-browser" });
+      if (method.name === "InvokeWorker") Object.assign(init, { workerName: "example", method: "POST", url: "/invoke", headers: [{name:"content-type",value:"application/json"}], body: new Uint8Array([1]) });
+      if (method.name === "DeleteWorker") Object.assign(init, { workerName: "example", idempotencyKey: "delete-worker" });
+      if (method.name === "DeleteAll") Object.assign(init, { actorId: "browser-actor", idempotencyKey: "delete-browser" });
       if (method.name === "InvokeActor") Object.assign(init, { actorId: "browser-actor", method: "POST", url: "/invoke", body: new Uint8Array([1]) });
 
       const result = await client[method.localName](create(method.input, init));
@@ -61,7 +67,7 @@ try {
       methods++;
     }
   }
-  assert.equal(methods, 9);
+  assert.equal(methods, 12);
   const inspectActor = ActorsService.methods.find(method => method.name === "InspectActor");
   await assert.rejects(new ActorsClient({ ...options, token: "wrong" }).inspectActor(create(inspectActor.input, { actorId: "browser-actor" })), error => error.code === "unauthenticated");
   const cancellation = new AbortController();
@@ -100,7 +106,7 @@ try {
   await assert.rejects(new HttpStreamProvider({ ...options, token: "wrong" }).tail(path), error => error.code === "access_denied");
   await assert.rejects(new HttpStreamProvider({ ...options, maximumResponseBytes: 8 }).readCommit(committed.commitId), error => error.code === "response_too_large");
   assert.equal((await stream.createToken({ expiresIn: "1m", allow: [{ path: "browser", subtree: true, operations: ["read"] }] })).token, "fixture-issued-token");
-  globalThis.sdkHttpResult = { status: "passed", detail: "Objects lifecycle/framing, 9 Actor operations, Stream follow/atomic Commit/replay, auth/errors/bounds" };
+  globalThis.sdkHttpResult = { status: "passed", detail: "Objects lifecycle/framing, 12 Actor/Worker operations, Stream follow/atomic Commit/replay, auth/errors/bounds" };
 } catch (error) {
   globalThis.sdkHttpResult = { status: "failed", detail: error.stack ?? String(error) };
 }

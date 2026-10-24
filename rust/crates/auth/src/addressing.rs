@@ -6,6 +6,10 @@
 
 mod dns;
 pub use dns::{CanonicalHost, DnsError, validate_dns_label};
+mod actor;
+pub use actor::{
+    ActorReference, DEFAULT_ACTOR_NAMESPACE, NamespaceId, validate_actor_id, validate_location_hint,
+};
 
 /// Invalid identity component or canonical encoding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -19,6 +23,18 @@ pub enum IdentityError {
     /// Truncation, invalid lengths or trailing bytes.
     #[error("malformed identity encoding")]
     Malformed,
+    /// Actor and namespace names use the live service's exact ASCII grammar.
+    #[error("actor id must be 1–128 ASCII letters, digits, hyphens, underscores or dots")]
+    InvalidActorId,
+    /// Namespace names use the same grammar as actor ids.
+    #[error("namespace must be 1–128 ASCII letters, digits, hyphens, underscores or dots")]
+    InvalidNamespace,
+    /// Existing actors alone occupy this namespace; it cannot be deployed anew.
+    #[error("the default actor namespace is reserved")]
+    ReservedNamespace,
+    /// Unsupported advisory placement region.
+    #[error("invalid actor location hint")]
+    InvalidLocationHint,
 }
 
 impl IdentityError {
@@ -28,6 +44,10 @@ impl IdentityError {
             Self::EmptyAccount => "empty_account",
             Self::EmptyId => "empty_id",
             Self::Malformed => "malformed_identity",
+            Self::InvalidActorId => "invalid_actor_id",
+            Self::InvalidNamespace => "invalid_namespace",
+            Self::ReservedNamespace => "reserved_namespace",
+            Self::InvalidLocationHint => "invalid_location_hint",
         }
     }
 }
@@ -143,6 +163,26 @@ impl ResourceIdentity {
             std::str::from_utf8(self.account.as_bytes()).map_err(|_| DnsError::InvalidCharacter)?;
         CanonicalHost::parse(&format!("{id}.{account}.{domain}"))
     }
+
+    /// Recover a pair from an exact product suffix and exactly two labels.
+    /// Re-rendering prevents Host aliases from reaching routing or signing.
+    pub fn from_hostname(host: &str, domain: &str) -> Result<Self, DnsError> {
+        CanonicalHost::parse(host)?;
+        CanonicalHost::parse(domain)?;
+        let prefix = host
+            .strip_suffix(domain)
+            .and_then(|prefix| prefix.strip_suffix('.'))
+            .ok_or(DnsError::InvalidCharacter)?;
+        let (id, account) = prefix.split_once('.').ok_or(DnsError::InvalidCharacter)?;
+        validate_dns_label(id.as_bytes())?;
+        validate_dns_label(account.as_bytes())?;
+        let value =
+            Self::new(account.as_bytes(), id.as_bytes()).map_err(|_| DnsError::InvalidCharacter)?;
+        if value.hostname(domain)?.as_str() != host {
+            return Err(DnsError::InvalidCharacter);
+        }
+        Ok(value)
+    }
 }
 
 fn validate_account(bytes: &[u8]) -> Result<(), IdentityError> {
@@ -170,3 +210,6 @@ fn field<'a>(bytes: &mut &'a [u8]) -> Result<&'a [u8], IdentityError> {
 
 #[cfg(test)]
 mod tests;
+
+mod routes;
+pub use routes::{RouteError, RoutePattern, WorkerRoute, select_route};

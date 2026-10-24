@@ -69,11 +69,12 @@ function actorResponse(method, input) {
     assert.equal(input.subscription.streamPath, "events/input");
     assert.equal(input.subscription.start.start.value, 9007199254740993n);
   }
+  if (["DeployNamespace", "DeployWorker", "UpdateNamespace"].includes(method.name)) return { deployment: {name: "example", codeSha256: new Uint8Array(32).fill(1), revision: 1n} };
   if (method.name === "CheckpointActor") { assert.equal(input.actorId, "browser-actor"); assert.equal(input.idempotencyKey, "checkpoint-browser"); return { actor: { actorId: input.actorId, codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu", state: 1, checkpointEpoch: 9n, configurationRevision: 1n } }; }
-  if (method.name === "DeleteActor") { assert.equal(input.actorId, "browser-actor"); assert.equal(input.idempotencyKey, "delete-browser"); return {}; }
-  if (method.name === "InvokeActor") return { status: 201, body: new Uint8Array([5]) };
+  if (method.name === "DeleteAll") { assert.equal(input.actorId, "browser-actor"); assert.equal(input.idempotencyKey, "delete-browser"); return {}; }
+  if (["InvokeActor", "InvokeWorker"].includes(method.name)) return { status: 201, body: new Uint8Array([5]) };
 
-  if (["CreateActor", "UpdateActor", "InspectActor", "AddSubscription", "RemoveSubscription", "ResumeSubscription"].includes(method.name)) return { actor: { actorId: input.actorId ?? "browser-actor", codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu", state: 1, checkpointEpoch: 9n, configurationRevision: 1n } };
+  if (["InspectActor", "AddSubscription", "RemoveSubscription", "ResumeSubscription"].includes(method.name)) return { actor: { actorId: input.actorId ?? "browser-actor", codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu", state: 1, checkpointEpoch: 9n, configurationRevision: 1n } };
   return {};
 }
 function grpcWebFrame(flags, payload) {

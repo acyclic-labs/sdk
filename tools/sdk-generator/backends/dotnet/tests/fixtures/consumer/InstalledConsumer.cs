@@ -62,7 +62,7 @@ static class Program {
     Descriptor(Actors.ActorsReflection.Descriptor, args[0]);
     Descriptor(Stream.StreamReflection.Descriptor, args[1]);
     var bytes = ByteString.CopyFrom(new byte[] {0, 255});
-    Roundtrip(new Actors.CreateActorRequest { CodeSha256 = bytes, HomeRegion = "test", IdempotencyKey = "test" });
+    Roundtrip(new Actors.DeploymentRequest { CodeSha256 = bytes, Name = "test", IdempotencyKey = "test" });
     var append = new Stream.AppendRequest { Path = "test/path", IfTail = ulong.MaxValue, IdempotencyKey = bytes };
     append.Records.Add(bytes); append.Records.Add(ByteString.Empty);
     Roundtrip(append);

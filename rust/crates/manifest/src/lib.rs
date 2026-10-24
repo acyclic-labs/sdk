@@ -10,7 +10,7 @@ pub mod wire;
 pub use acyclic_actors::domain::{ActorLimits, Binding, SubscriptionSpec};
 pub use acyclic_auth::contract::{Limits, ResourceGrant, ResourcePattern};
 pub use generation::{environment_typescript, json_schema, typescript};
-pub use validation::{ManifestError, lower_actor, validate, validate_work};
+pub use validation::{ManifestError, lower_actor, lower_worker, validate, validate_work};
 use wire::Contract;
 
 /// Maximum untrusted JSON size, before allocation or parsing.
@@ -56,6 +56,9 @@ pub struct Environment {
     pub assets: Vec<AssetSpec>,
     /// Customer routes; host/prefix pairs are unique across all environments.
     pub routes: Vec<RouteSpec>,
+    /// CF-style Worker route patterns and explicit exclusions.
+    #[serde(default)]
+    pub worker_routes: Vec<WorkerPatternRoute>,
 }
 
 /// Named S1 grant and optional ceilings used to derive a workload capability.
@@ -86,7 +89,7 @@ pub struct Entry {
     pub bindings: Vec<String>,
     /// Credential-store references available only through explicit selection.
     pub secrets: Vec<String>,
-    /// Actor instance or stateless Worker configuration.
+    /// Actor namespace or named Worker deployment configuration.
     pub runtime: EntryRuntime,
     /// Optional scoped HTTPS handle; absence denies outbound HTTPS.
     pub fetch: Option<FetchBinding>,
@@ -96,11 +99,11 @@ pub struct Entry {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum EntryRuntime {
-    /// One actor instance per project/environment/entry deploy identity.
-    Actor {
-        /// Explicit initial placement region.
-        #[serde(rename = "homeRegion")]
-        home_region: String,
+    /// Explicit deployment of a class/namespace shared by all its actor IDs.
+    ActorNamespace {
+        /// Namespace jurisdiction restriction; empty allows any jurisdiction.
+        #[serde(rename = "jurisdiction")]
+        jurisdiction: String,
         /// Product-specific execution or capability ceilings.
         #[ts(type = "ActorLimits")]
         limits: Contract<ActorLimits>,
@@ -275,6 +278,16 @@ pub struct RouteSpec {
     pub path_prefix: String,
     /// Target entry name in this environment.
     pub entry: String,
+}
+
+/// CF-style route pattern admitted by the shared Rust routing codec.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkerPatternRoute {
+    /// Optional scheme, leading host wildcard and trailing path wildcard.
+    pub pattern: String,
+    /// Named Worker entry, or no Worker for a more-specific exclusion.
+    pub entry: Option<String>,
 }
 
 /// Version discrimination precedes strict v1 decoding; all inputs are size bounded.

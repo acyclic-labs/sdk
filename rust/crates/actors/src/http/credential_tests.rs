@@ -40,6 +40,8 @@ fn credential_callbacks_preserve_current_headers_and_fail_before_transport() {
                     prop_assert_eq!(index.load(Ordering::Relaxed), expected.len());
                     let result = client
                         .inspect_actor(&wire::InspectActorRequest {
+                            namespace: None,
+                            account_id: Vec::new(),
                             actor_id: "actor-a".into(),
                         })
                         .await;

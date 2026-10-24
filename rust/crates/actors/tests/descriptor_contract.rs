@@ -432,16 +432,16 @@ fn expected_contract_identities_cover_tags_presence_oneofs_enums_and_rpcs() {
     assert_field_value(active, "number", Value::I32(1));
 
     let service = named_declaration(file, "service", "ActorsService");
-    let create_actor = named_field(service, "method", "CreateActor");
+    let deploy_namespace = named_field(service, "method", "DeployNamespace");
     assert_field_value(
-        create_actor,
+        deploy_namespace,
         "input_type",
-        Value::String(".acyclic.actors.v1.CreateActorRequest".to_owned()),
+        Value::String(".acyclic.actors.v1.DeploymentRequest".to_owned()),
     );
     assert_field_value(
-        create_actor,
+        deploy_namespace,
         "output_type",
-        Value::String(".acyclic.actors.v1.CreateActorResponse".to_owned()),
+        Value::String(".acyclic.actors.v1.DeploymentResponse".to_owned()),
     );
 }
 
@@ -490,10 +490,10 @@ fn descriptor_comparison_rejects_rpc_identity_mutation() {
     assert_mutation_rejected(|descriptor_set| {
         let file = first_file(descriptor_set);
         let service = named_declaration(file, "service", "ActorsService");
-        let create_actor = named_field(service, "method", "CreateActor");
-        create_actor.set_field_by_name(
+        let deploy_namespace = named_field(service, "method", "DeployNamespace");
+        deploy_namespace.set_field_by_name(
             "input_type",
-            Value::String(".acyclic.actors.v1.UpdateActorRequest".to_owned()),
+            Value::String(".acyclic.actors.v1.UpdateNamespaceRequest".to_owned()),
         );
     });
 }

@@ -54,7 +54,7 @@ int main(int argc,char** argv) { try {
   }
  }
  const std::string bytes("\0\xff",2);
- acyclic::actors::v1::CreateActorRequest actor;actor.set_code_sha256(bytes);check(actor.code_sha256()==bytes,"Actor bytes changed");roundtrip(actor);
+ acyclic::actors::v1::DeploymentRequest actor;actor.set_code_sha256(bytes);check(actor.code_sha256()==bytes,"Actor bytes changed");roundtrip(actor);
  acyclic::stream::v1::AppendRequest append;append.set_path("probe");append.add_records(bytes);append.add_records("");append.set_if_tail(std::numeric_limits<uint64_t>::max());append.set_idempotency_key(bytes);check(append.has_if_tail()&&append.if_tail()==std::numeric_limits<uint64_t>::max()&&append.records(0)==bytes&&append.records(1).empty(),"Append bounds or bytes changed");roundtrip(append);
  acyclic::stream::v1::AppendRequest zero;zero.set_if_tail(0);check(zero.has_if_tail()&&zero.SerializeAsString()==std::string("\x18\0",2),"optional zero presence differs");roundtrip(zero);zero.clear_if_tail();check(!zero.has_if_tail(),"optional clear differs");
  acyclic::stream::v1::ReadRequest read;read.set_from(std::numeric_limits<uint64_t>::max());read.set_limit(std::numeric_limits<uint32_t>::max());check(read.SerializeAsString()==std::string("\x10\xff\xff\xff\xff\xff\xff\xff\xff\xff\x01\x18\xff\xff\xff\xff\x0f",17),"unsigned maximum wire bits differ");roundtrip(read);

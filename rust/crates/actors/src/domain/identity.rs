@@ -26,6 +26,9 @@ pub enum DomainError {
     /// Actor validators require an actor identity to be present.
     #[error("actor_id must not be empty")]
     EmptyActorId,
+    /// Shared namespace-scoped identity admission failed.
+    #[error(transparent)]
+    Identity(#[from] crate::addressing::IdentityError),
     /// Actor validators require exactly 32 bytes with at least one non-zero byte.
     #[error("code_sha256 must contain 32 bytes and must not be all zero")]
     InvalidCodeSha256,
@@ -58,6 +61,7 @@ impl DomainError {
     pub const fn code_name(&self) -> &'static str {
         match self {
             Self::EmptyActorId => "empty_actor_id",
+            Self::Identity(error) => error.code(),
             Self::InvalidCodeSha256 => "invalid_code_sha256",
             Self::Contract(error) => error.code_name(),
             Self::UnknownActorState(_) => "unknown_actor_state",
@@ -77,25 +81,66 @@ impl From<std::convert::Infallible> for DomainError {
 }
 
 impl ActorId {
-    /// Global identity of the exact actor id bytes in the supplied account.
+    /// Global identity requires the exact account and namespace.
     pub fn identity(
         &self,
         account: &[u8],
-    ) -> Result<crate::addressing::ResourceIdentity, crate::addressing::IdentityError> {
-        crate::addressing::ResourceIdentity::new(account, self.as_str().as_bytes())
+        namespace: &crate::addressing::NamespaceId,
+    ) -> Result<crate::addressing::ActorReference, crate::addressing::IdentityError> {
+        crate::addressing::ActorReference::new(
+            account,
+            namespace.as_str().as_bytes(),
+            self.as_str().as_bytes(),
+        )
     }
 
-    /// Constructs an Actor identity using the existing `is_empty` contract rule.
+    /// Validate the exact live actor ID grammar without normalization.
     pub fn new(value: String) -> Result<Self, DomainError> {
         if value.is_empty() {
             return Err(DomainError::EmptyActorId);
         }
+        crate::addressing::validate_actor_id(value.as_bytes())?;
         Ok(Self(value))
     }
 
     /// Returns the wire spelling without changing it.
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+/// Validated namespace spelling, shared with the canonical reference codec.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, TS)]
+#[ts(export_to = "actors/ActorNamespace.ts")]
+#[ts(type = "string & { readonly __namespace: unique symbol }")]
+pub struct ActorNamespace(String);
+
+impl ActorNamespace {
+    /// Parse an exact namespace, including the reserved legacy namespace.
+    pub fn new(value: String) -> Result<Self, DomainError> {
+        crate::addressing::NamespaceId::new(value.as_bytes())?;
+        Ok(Self(value))
+    }
+    /// Exact namespace text for logging and wire projection.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for ActorNamespace {
+    type Error = DomainError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+impl From<ActorNamespace> for String {
+    fn from(value: ActorNamespace) -> Self {
+        value.0
+    }
+}
+impl From<&ActorNamespace> for String {
+    fn from(value: &ActorNamespace) -> Self {
+        value.0.clone()
     }
 }
 
@@ -120,7 +165,7 @@ impl From<ActorId> for String {
 }
 
 impl CodeSha256 {
-    /// Constructs a digest with the exact predicate used by `crate::validate_create`.
+    /// Constructs a digest with the exact predicate used by `crate::validate_deployment`.
     pub fn new(value: Vec<u8>) -> Result<Self, DomainError> {
         if !valid_code_sha256(&value) {
             return Err(DomainError::InvalidCodeSha256);

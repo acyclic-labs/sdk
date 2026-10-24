@@ -5,7 +5,7 @@ pub use acyclic_auth::addressing;
 /// Rust-owned semantic projections for generated SDK metadata.
 pub use contract::{
     ContractError, MAX_BINDINGS, MAX_SUBSCRIPTIONS, domain, validate_add_subscription,
-    validate_create, validate_delete, validate_update,
+    validate_delete, validate_deployment, validate_update,
 };
 
 /// Authenticated operations over the platform's Rust-owned transport.
@@ -16,6 +16,8 @@ pub mod contract;
 
 /// Rust-owned guest ABI and typed authoring hooks, without an execution runtime.
 pub mod guest;
+/// Namespace-bound IDs, references and ordered stubs with implicit activation.
+pub mod namespace;
 /// Shared durable timer records, derived from the harness timer stream format.
 pub mod timers;
 
@@ -49,15 +51,18 @@ pub(crate) fn valid_token(token: &str) -> bool {
 
 /// Rust-owned route names used by the TypeScript transport generator.
 pub const HTTP_ROUTES: &[(&str, &str)] = &[
-    ("createActor", "v1/actors/create"),
-    ("updateActor", "v1/actors/update"),
+    ("deployNamespace", "v1/actors/namespaces/deploy"),
+    ("updateNamespace", "v1/actors/namespaces/update"),
     ("inspectActor", "v1/actors/inspect"),
     ("addSubscription", "v1/actors/subscriptions/add"),
     ("removeSubscription", "v1/actors/subscriptions/remove"),
     ("resumeSubscription", "v1/actors/subscriptions/resume"),
     ("checkpointActor", "v1/actors/checkpoint"),
     ("invokeActor", "v1/actors/invoke"),
-    ("deleteActor", "v1/actors/delete"),
+    ("deleteAll", "v1/actors/storage/delete-all"),
+    ("deployWorker", "v1/workers/deploy"),
+    ("invokeWorker", "v1/workers/invoke"),
+    ("deleteWorker", "v1/workers/delete"),
 ];
 
 #[cfg(test)]
@@ -66,9 +71,14 @@ mod tests {
 
     #[test]
     fn subscription_start_is_exactly_one_choice() -> Result<(), ContractError> {
-        let mut create = wire::CreateActorRequest {
+        let mut create = wire::DeploymentRequest {
+            worker_limits: None,
+            name: "example".into(),
+            account_id: Vec::new(),
+            jurisdiction: String::new(),
+            expected_revision: 0,
             code_sha256: vec![1; 32],
-            home_region: "eu".into(),
+
             bindings: vec![],
             limits: Some(wire::ActorLimits {
                 handler_timeout_millis: 1_000,
@@ -85,7 +95,7 @@ mod tests {
             }],
             idempotency_key: "create-a".into(),
         };
-        assert_eq!(validate_create(&create), Ok(()));
+        assert_eq!(validate_deployment(&create), Ok(()));
         let start = create
             .subscriptions
             .first_mut()
@@ -93,7 +103,7 @@ mod tests {
             .start
             .take();
         assert_eq!(
-            validate_create(&create),
+            validate_deployment(&create),
             Err(ContractError::InvalidArgument)
         );
         create
@@ -103,30 +113,41 @@ mod tests {
             .start = start;
         let duplicate = create.subscriptions.clone();
         create.subscriptions.extend(duplicate);
-        assert_eq!(validate_create(&create), Err(ContractError::DuplicateName));
+        assert_eq!(
+            validate_deployment(&create),
+            Err(ContractError::DuplicateName)
+        );
         Ok(())
     }
     #[test]
     fn delete_requires_actor_and_bounded_idempotency_key() {
-        let valid = wire::DeleteActorRequest {
+        let valid = wire::DeleteAllRequest {
+            namespace: None,
+            account_id: Vec::new(),
             actor_id: "actor-a".into(),
             idempotency_key: "delete-a".into(),
         };
         assert_eq!(validate_delete(&valid), Ok(()));
-        let semantic = domain::DeleteActorRequest::try_from(valid.clone()).expect("valid delete");
+        let semantic = domain::DeleteAllRequest::try_from(valid.clone()).expect("valid delete");
         assert_eq!(semantic.actor_id().as_str(), "actor-a");
         assert_eq!(semantic.idempotency_key(), "delete-a");
-        assert_eq!(wire::DeleteActorRequest::from(semantic), valid);
+        assert_eq!(wire::DeleteAllRequest::from(semantic), valid);
         for invalid in [
-            wire::DeleteActorRequest {
+            wire::DeleteAllRequest {
+                namespace: None,
+                account_id: Vec::new(),
                 actor_id: String::new(),
                 ..valid.clone()
             },
-            wire::DeleteActorRequest {
+            wire::DeleteAllRequest {
+                namespace: None,
+                account_id: Vec::new(),
                 idempotency_key: String::new(),
                 ..valid.clone()
             },
-            wire::DeleteActorRequest {
+            wire::DeleteAllRequest {
+                namespace: None,
+                account_id: Vec::new(),
                 idempotency_key: "k".repeat(257),
                 ..valid.clone()
             },
@@ -135,16 +156,18 @@ mod tests {
                 validate_delete(&invalid),
                 Err(ContractError::InvalidArgument)
             );
-            assert!(domain::DeleteActorRequest::try_from(invalid).is_err());
+            assert!(domain::DeleteAllRequest::try_from(invalid).is_err());
         }
-        let boundary = wire::DeleteActorRequest {
+        let boundary = wire::DeleteAllRequest {
+            namespace: None,
+            account_id: Vec::new(),
             idempotency_key: "k".repeat(256),
             ..valid
         };
         assert_eq!(validate_delete(&boundary), Ok(()));
         assert_eq!(
-            domain::DeleteActorResponse::try_from(wire::DeleteActorResponse {}),
-            Ok(domain::DeleteActorResponse::default())
+            domain::DeleteAllResponse::try_from(wire::DeleteAllResponse {}),
+            Ok(domain::DeleteAllResponse::default())
         );
     }
 
@@ -269,11 +292,11 @@ mod tests {
         let client = http::Client::new(&format!("http://{address}"), "secret-token", 1024)?;
         assert!(matches!(
             client
-                .create_actor(&wire::CreateActorRequest::default())
+                .deploy_namespace(&wire::DeploymentRequest::default())
                 .await,
             Err(http::Error::Service { status: 503, .. })
         ));
-        assert!(traced_call(address, "CreateActor").await.is_err());
+        assert!(traced_call(address, "DeployNamespace").await.is_err());
 
         // The span stays open while a slow body runs and records a status sent in trailers.
         let address = slow_status_server().await?;
@@ -293,10 +316,14 @@ mod tests {
             })
         };
         for expected in [
-            ("acyclic.actors.http.call", "route", "v1/actors/create"),
+            (
+                "acyclic.actors.http.call",
+                "route",
+                "v1/actors/namespaces/deploy",
+            ),
             ("acyclic.actors.http.call", "http.status", "503"),
             ("acyclic.actors.http.call", "error.kind", "service"),
-            ("acyclic.actors.grpc.transport", "rpc", "CreateActor"),
+            ("acyclic.actors.grpc.transport", "rpc", "DeployNamespace"),
             ("acyclic.actors.grpc.transport", "error.kind", "transport"),
             ("acyclic.actors.grpc.transport", "rpc.code", "14"),
             ("acyclic.actors.grpc.transport", "error.kind", "status"),

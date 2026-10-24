@@ -25,12 +25,13 @@ fn credential_failure_covers_publication_and_every_lifecycle_operation() {
                     let denied = match operation {
                         0 => matches!(client.publish(bytes::Bytes::from_static(b"module"), "publish".into()).await,
                             Err(Error::Objects(error)) if error.code == objects::ErrorCode::AccessDenied),
-                        1 => matches!(client.invoke(&wire::InvokeActorRequest {
-                            actor_id: "worker-a".into(), method: "POST".into(), url: "/".into(), ..Default::default()
+                        1 => matches!(client.invoke(&wire::InvokeWorkerRequest {
+                            worker_name: "worker-a".into(), method: "POST".into(), url: "/".into(), ..Default::default()
                         }).await, Err(Error::Actors(http::Error::Credential(_)))),
-                        2 => matches!(client.delete(&wire::DeleteActorRequest { actor_id: "worker-a".into(), ..Default::default() }).await,
+                        2 => matches!(client.delete(&wire::DeleteWorkerRequest {
+            worker_name: "worker-a".into(), idempotency_key: "delete".into(), ..Default::default() }).await,
                             Err(Error::Actors(http::Error::Credential(_)))),
-                        _ => matches!(client.create(&wire::CreateActorRequest::default()).await,
+                        _ => matches!(client.deploy(&wire::DeploymentRequest { name: "worker-a".into(), code_sha256: vec![1;32], worker_limits: Some(wire::WorkerLimits { timeout_millis: 1, memory_bytes: 1, cpu_millis: 1 }), idempotency_key: "deploy".into(), ..Default::default() }).await,
                             Err(Error::Actors(http::Error::Credential(_)))),
                     };
                     prop_assert!(denied);

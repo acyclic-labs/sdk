@@ -48,7 +48,7 @@ function installedFixture(t) {
     if (basename(exe) === "Consumer") {
       if (state.payloadDrift) write(join(args.output,"sdk/LICENSE"),"changed payload");
       return { status: 0, stdout: state.missingMarker ? "PASS only\n" :
-        "PASS Swift bytes, unsigned bounds, optional zero, populated oneofs, gRPC codecs and bounded RPC metadata\nPASS Swift 20 generated client/server calls, Rust descriptor message/field/path/stream checks, populated native payloads\n" };
+        "PASS Swift bytes, unsigned bounds, optional zero, populated oneofs, gRPC codecs and bounded RPC metadata\nPASS Swift 23 generated client/server calls, Rust descriptor message/field/path/stream checks, populated native payloads\n" };
     }
     assert.equal(basename(exe), "swiftc");
     const name = basename(argv.at(-1));
@@ -62,7 +62,7 @@ function installedFixture(t) {
 
 test("offline qualifier staging reaches native markers, exact dependencies and two specific negative diagnostics", t => {
   const f = installedFixture(t), result = qualify(f.args, f);
-  assert.equal(result.native_in_process_rpc_methods, 20);
+  assert.equal(result.native_in_process_rpc_methods, canonicalRPCs().length);
   assert.equal(Object.keys(result.dependencies).length, 4);
   assert.equal(result.negative_type_controls.length, 2);
   assert.equal(result.network_transport_qualified, false); assert.equal(result.rust_backed_rpc_qualified, false);

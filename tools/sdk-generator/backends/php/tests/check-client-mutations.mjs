@@ -24,10 +24,10 @@ mkdirSync(output);
 const baseline = qualify({ ...values, output: join(output, "baseline") });
 const file = "src/Acyclic/Actors/V1/ActorsServiceClient.php";
 const mutations = [
-  ["path", "'/acyclic.actors.v1.ActorsService/CreateActor'", "'/acyclic.actors.v1.ActorsService/WrongActor'", "client RPC path differs"],
-  ["request", "        $argument,", "        new \\Acyclic\\Actors\\V1\\CreateActorRequest(),", "client request content differs"],
-  ["in-place-request", "        return $this->_simpleRequest('/acyclic.actors.v1.ActorsService/CreateActor',", "        $argument->setHomeRegion('mutated-by-generated-client');\n        return $this->_simpleRequest('/acyclic.actors.v1.ActorsService/CreateActor',", "client request content differs"],
-  ["response", "['\\Acyclic\\Actors\\V1\\CreateActorResponse', 'decode']", "['\\Acyclic\\Actors\\V1\\InspectActorResponse', 'decode']", "client response type differs"],
+  ["path", "'/acyclic.actors.v1.ActorsService/DeployNamespace'", "'/acyclic.actors.v1.ActorsService/WrongActor'", "client RPC path differs"],
+  ["request", "        $argument,", "        new \\Acyclic\\Actors\\V1\\DeploymentRequest(),", "client request content differs"],
+  ["in-place-request", "        return $this->_simpleRequest('/acyclic.actors.v1.ActorsService/DeployNamespace',", "        $argument->setName('mutated-by-generated-client');\n        return $this->_simpleRequest('/acyclic.actors.v1.ActorsService/DeployNamespace',", "client request content differs"],
+  ["response", "['\\Acyclic\\Actors\\V1\\DeploymentResponse', 'decode']", "['\\Acyclic\\Actors\\V1\\InspectActorResponse', 'decode']", "client response type differs"],
   ["streaming", "return $this->_simpleRequest(", "return $this->_serverStreamRequest(", "client RPC streaming shape differs"],
 ];
 const results = [];

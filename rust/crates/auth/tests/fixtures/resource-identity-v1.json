@@ -259,7 +259,335 @@
       "id_hex": "626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262",
       "domain": "ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
       "error": "host_too_long"
+    },
+    {
+      "case": "worker-multi-label-product-suffix",
+      "account_hex": "6163636f756e74",
+      "id_hex": "776f726b6572",
+      "domain": "run.cell-1.example",
+      "hostname": "worker.account.run.cell-1.example"
     }
   ],
-  "component_format": "nonempty-opaque-bytes; product limits apply; DNS labels at most 63 bytes"
+  "component_format": "nonempty-opaque-bytes; product limits apply; DNS labels at most 63 bytes",
+  "actor_encoding": "zero-u64-acyclic.actor-version-1-u64be-length-account-namespace-id",
+  "actors": [
+    {
+      "case": "legacy-default",
+      "account_hex": "6163636f756e74",
+      "namespace_hex": "5f5f64656661756c74",
+      "id_hex": "6578697374696e672e4163746f725f31",
+      "encoded_hex": "0000000000000000616379636c69632e6163746f720100000000000000076163636f756e7400000000000000095f5f64656661756c7400000000000000106578697374696e672e4163746f725f31",
+      "legacy": true
+    },
+    {
+      "case": "namespace-one",
+      "account_hex": "6163636f756e74",
+      "namespace_hex": "436c6173734f6e65",
+      "id_hex": "73616d65",
+      "encoded_hex": "0000000000000000616379636c69632e6163746f720100000000000000076163636f756e740000000000000008436c6173734f6e65000000000000000473616d65",
+      "legacy": false
+    },
+    {
+      "case": "namespace-two",
+      "account_hex": "6163636f756e74",
+      "namespace_hex": "436c61737354776f",
+      "id_hex": "73616d65",
+      "encoded_hex": "0000000000000000616379636c69632e6163746f720100000000000000076163636f756e740000000000000008436c61737354776f000000000000000473616d65",
+      "legacy": false
+    },
+    {
+      "case": "other-account",
+      "account_hex": "6f74686572",
+      "namespace_hex": "436c6173734f6e65",
+      "id_hex": "73616d65",
+      "encoded_hex": "0000000000000000616379636c69632e6163746f720100000000000000056f746865720000000000000008436c6173734f6e65000000000000000473616d65",
+      "legacy": false
+    },
+    {
+      "case": "opaque-account",
+      "account_hex": "ff0080",
+      "namespace_hex": "4e732e5f2d31",
+      "id_hex": "49642e5f2d31",
+      "encoded_hex": "0000000000000000616379636c69632e6163746f72010000000000000003ff008000000000000000064e732e5f2d31000000000000000649642e5f2d31",
+      "legacy": false
+    },
+    {
+      "case": "maximum-names",
+      "account_hex": "6163636f756e74",
+      "namespace_hex": "6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e",
+      "id_hex": "6969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969",
+      "encoded_hex": "0000000000000000616379636c69632e6163746f720100000000000000076163636f756e7400000000000000806e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e00000000000000806969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969",
+      "legacy": false
+    },
+    {
+      "case": "plain-random-id",
+      "account_hex": "6163636f756e74",
+      "namespace_hex": "436c6173734f6e65",
+      "id_hex": "3031323334353637383961626364656630313233343536373839616263646566",
+      "encoded_hex": "0000000000000000616379636c69632e6163746f720100000000000000076163636f756e740000000000000008436c6173734f6e6500000000000000203031323334353637383961626364656630313233343536373839616263646566",
+      "legacy": false
+    }
+  ],
+  "invalid_actors": [
+    {
+      "case": "empty-account",
+      "account_hex": "",
+      "namespace_hex": "6e73",
+      "id_hex": "6964",
+      "error": "empty_account"
+    },
+    {
+      "case": "empty-namespace",
+      "account_hex": "61",
+      "namespace_hex": "",
+      "id_hex": "6964",
+      "error": "invalid_namespace"
+    },
+    {
+      "case": "empty-id",
+      "account_hex": "61",
+      "namespace_hex": "6e73",
+      "id_hex": "",
+      "error": "invalid_actor_id"
+    },
+    {
+      "case": "long-namespace",
+      "account_hex": "61",
+      "namespace_hex": "6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e",
+      "id_hex": "6964",
+      "error": "invalid_namespace"
+    },
+    {
+      "case": "long-id",
+      "account_hex": "61",
+      "namespace_hex": "6e73",
+      "id_hex": "696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969",
+      "error": "invalid_actor_id"
+    },
+    {
+      "case": "namespace-separator",
+      "account_hex": "61",
+      "namespace_hex": "6e2f73",
+      "id_hex": "6964",
+      "error": "invalid_namespace"
+    },
+    {
+      "case": "id-separator",
+      "account_hex": "61",
+      "namespace_hex": "6e73",
+      "id_hex": "693a64",
+      "error": "invalid_actor_id"
+    },
+    {
+      "case": "namespace-non-ascii",
+      "account_hex": "61",
+      "namespace_hex": "ff",
+      "id_hex": "6964",
+      "error": "invalid_namespace"
+    },
+    {
+      "case": "id-non-ascii",
+      "account_hex": "61",
+      "namespace_hex": "6e73",
+      "id_hex": "636166c3a9",
+      "error": "invalid_actor_id"
+    },
+    {
+      "case": "id-nul",
+      "account_hex": "61",
+      "namespace_hex": "6e73",
+      "id_hex": "690064",
+      "error": "invalid_actor_id"
+    }
+  ],
+  "host_parsing": [
+    {
+      "host": "worker.account.run.cell-1.example",
+      "domain": "run.cell-1.example",
+      "valid": true
+    },
+    {
+      "host": "worker.account.run.cell-1.example",
+      "domain": "cell-1.example",
+      "valid": false
+    },
+    {
+      "host": "worker.account.run.cell-1.example",
+      "domain": "run.other.example",
+      "valid": false
+    },
+    {
+      "host": "worker.account.evilrun.cell-1.example",
+      "domain": "run.cell-1.example",
+      "valid": false
+    },
+    {
+      "host": "extra.worker.account.run.cell-1.example",
+      "domain": "run.cell-1.example",
+      "valid": false
+    },
+    {
+      "host": "account.run.cell-1.example",
+      "domain": "run.cell-1.example",
+      "valid": false
+    },
+    {
+      "host": "Worker.account.run.cell-1.example",
+      "domain": "run.cell-1.example",
+      "valid": false
+    },
+    {
+      "host": "worker.account.run.cell-1.example.",
+      "domain": "run.cell-1.example",
+      "valid": false
+    },
+    {
+      "host": "worker.account.run.cell-1.example:443",
+      "domain": "run.cell-1.example",
+      "valid": false
+    },
+    {
+      "host": "worker.account.run.cell-1.example",
+      "domain": "Run.cell-1.example",
+      "valid": false
+    }
+  ],
+  "routes": [
+    {
+      "pattern": "example.com/*",
+      "canonical": "example.com/*",
+      "url": "https://example.com/a?x=1",
+      "matches": true
+    },
+    {
+      "pattern": "EXAMPLE.COM/a",
+      "canonical": "example.com/a",
+      "url": "https://example.com/a",
+      "matches": true
+    },
+    {
+      "pattern": "example.com/a",
+      "canonical": "example.com/a",
+      "url": "https://example.com/a?x=1",
+      "matches": false
+    },
+    {
+      "pattern": "example.com/A*",
+      "canonical": "example.com/A*",
+      "url": "https://example.com/a",
+      "matches": false
+    },
+    {
+      "pattern": "*.example.com/*",
+      "canonical": "*.example.com/*",
+      "url": "https://example.com/a",
+      "matches": false
+    },
+    {
+      "pattern": "*.example.com/*",
+      "canonical": "*.example.com/*",
+      "url": "https://a.example.com/a",
+      "matches": true
+    },
+    {
+      "pattern": "*example.com/*",
+      "canonical": "*example.com/*",
+      "url": "https://notexample.com/a",
+      "matches": true
+    },
+    {
+      "pattern": "*example.com/*",
+      "canonical": "*example.com/*",
+      "url": "https://example.com/a",
+      "matches": true
+    },
+    {
+      "pattern": "https://example.com/*",
+      "canonical": "https://example.com/*",
+      "url": "http://example.com/a",
+      "matches": false
+    },
+    {
+      "pattern": "http://example.com/*",
+      "canonical": "http://example.com/*",
+      "url": "http://example.com/a",
+      "matches": true
+    },
+    {
+      "pattern": "example.com",
+      "canonical": "example.com/",
+      "url": "https://example.com/",
+      "matches": true
+    },
+    {
+      "pattern": "worker.account.run.cell-1.example/*",
+      "canonical": "worker.account.run.cell-1.example/*",
+      "url": "https://worker.account.run.cell-1.example/x",
+      "matches": true
+    }
+  ],
+  "invalid_routes": [
+    "",
+    "ftp://example.com/*",
+    "example.*.com/*",
+    "example.com/a*b",
+    "example.com/a?x=1",
+    "example.com/#x",
+    "https://user@example.com/*",
+    "example.com:443/*",
+    "example.com/white space",
+    "example.com/\\x"
+  ],
+  "route_selection": [
+    {
+      "patterns": [
+        "example.com/*",
+        "example.com/a*",
+        "example.com/abc"
+      ],
+      "targets": [
+        "broad",
+        "prefix",
+        "exact"
+      ],
+      "url": "https://example.com/abc",
+      "target": "exact"
+    },
+    {
+      "patterns": [
+        "example.com/*",
+        "example.com/private*"
+      ],
+      "targets": [
+        "public",
+        null
+      ],
+      "url": "https://example.com/private/data",
+      "target": null
+    },
+    {
+      "patterns": [
+        "*example.com/*",
+        "example.com/*"
+      ],
+      "targets": [
+        "wild",
+        "exact"
+      ],
+      "url": "https://example.com/a",
+      "target": "exact"
+    },
+    {
+      "patterns": [
+        "example.com/*",
+        "https://example.com/*"
+      ],
+      "targets": [
+        "both",
+        "secure"
+      ],
+      "url": "https://example.com/a",
+      "target": "secure"
+    }
+  ]
 }

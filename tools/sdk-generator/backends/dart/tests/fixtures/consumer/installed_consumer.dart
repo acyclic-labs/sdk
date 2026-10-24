@@ -151,14 +151,14 @@ Future<void> main(List<String> paths) async {
     }
   }
   final bytes=<int>[0,255];
-  final actor=actors.CreateActorRequest(codeSha256:bytes,homeRegion:'test',idempotencyKey:'test');
+  final actor=actors.DeploymentRequest(codeSha256:bytes,name:'test',idempotencyKey:'test');
   final append=stream.AppendRequest(path:'test/path',records:[bytes,<int>[]],ifTail:Int64(-1),idempotencyKey:bytes);
   final read=stream.ReadRequest(path:'test/path',from:Int64(-1),limit:4294967295);
   check(sameBytes(actor.codeSha256,bytes),'actor bytes changed');
   check(append.records.length==2&&sameBytes(append.records[0],bytes)&&append.records[1].isEmpty&&sameBytes(append.idempotencyKey,bytes),'stream bytes changed');
   check(append.ifTail.toStringUnsigned()=='18446744073709551615'&&read.from.toStringUnsigned()=='18446744073709551615','uint64 maximum bits changed');
   check(read.limit==4294967295,'uint32 maximum changed');
-  check(actors.CreateActorRequest.fromBuffer(actor.writeToBuffer())==actor,'actor round trip differs');
+  check(actors.DeploymentRequest.fromBuffer(actor.writeToBuffer())==actor,'actor round trip differs');
   check(stream.AppendRequest.fromBuffer(append.writeToBuffer())==append,'append round trip differs');
   check(stream.ReadRequest.fromBuffer(read.writeToBuffer())==read,'read round trip differs');
   final absent=stream.AppendRequest(),explicit=stream.AppendRequest(ifTail:Int64.ZERO);

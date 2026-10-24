@@ -10,7 +10,7 @@
       "svc/actors/src/server/tests.rs::deleted_worker_exits_returns_its_slot_and_stays_absent_after_restart",
       "svc/edge-workers/src/tests.rs::deployment_and_custom_hosts_use_current_registry_and_preserve_http"
     ],
-    "normalization": "Canonical protobuf JSON. Code is the exact Cloud worker.mjs probe. Digest replaces the acknowledgement test digest; actor ID is the test acknowledgement ID. Create uses Cloud public_request limits. Invoke preserves the Edge test envelope and duplicate headers; delete uses the Worker lifecycle test key. Responses are test assertion values, not a live capture.",
+    "normalization": "SDK proposed deployment-level contract (2026-10-23 user ruling), not the live Cloud API. Historical Cloud commit and blobs pin only the exact probe code, publication digest and HTTP envelope. Worker deploy/invoke/delete messages are the SDK contract awaiting Cloud implementation.",
     "blobs": {
       "svc/workers/README.md": "90ac6c3344ff5022768ccbf74bcb7c50267914ad",
       "ops/prober/src/accept.rs": "6323a5a9298aacdcd5e0c1378df1ebdb62a35d20",
@@ -33,29 +33,8 @@
     },
     "sha256": "b141ab5594bdbea591aba109fd1cd68edd799fe02d79fd65c1a494454e86b0d6"
   },
-  "create": {
-    "request": {
-      "codeSha256": "sUGrVZS9vqWRq6EJ/RzWjt15n+Atef1lwaSURU6GsNY=",
-      "homeRegion": "la",
-      "limits": {
-        "handlerTimeoutMillis": "30000",
-        "memoryBytes": "268435456",
-        "checkpointBytes": "1048576"
-      },
-      "idempotencyKey": "create-once"
-    },
-    "response": {
-      "actor": {
-        "actorId": "verification-actor",
-        "codeSha256": "sUGrVZS9vqWRq6EJ/RzWjt15n+Atef1lwaSURU6GsNY=",
-        "homeRegion": "la",
-        "configurationRevision": "1"
-      }
-    }
-  },
   "invoke": {
     "request": {
-      "actorId": "verification-actor",
       "method": "POST",
       "url": "https://app.team.run.acyclic.dev/hello?q=1",
       "body": "aW5wdXQ=",
@@ -64,7 +43,8 @@
           "name": "content-type",
           "value": "text/plain"
         }
-      ]
+      ],
+      "workerName": "verification-worker"
     },
     "response": {
       "status": 201,
@@ -83,9 +63,28 @@
   },
   "delete": {
     "request": {
-      "actorId": "verification-actor",
-      "idempotencyKey": "delete"
+      "idempotencyKey": "delete",
+      "workerName": "verification-worker"
     },
     "response": {}
+  },
+  "deploy": {
+    "request": {
+      "codeSha256": "sUGrVZS9vqWRq6EJ/RzWjt15n+Atef1lwaSURU6GsNY=",
+      "idempotencyKey": "deploy-once",
+      "name": "verification-worker",
+      "workerLimits": {
+        "cpuMillis": 100,
+        "memoryBytes": 268435456,
+        "timeoutMillis": 30000
+      }
+    },
+    "response": {
+      "deployment": {
+        "name": "verification-worker",
+        "codeSha256": "sUGrVZS9vqWRq6EJ/RzWjt15n+Atef1lwaSURU6GsNY=",
+        "revision": "1"
+      }
+    }
   }
 }

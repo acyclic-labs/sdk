@@ -8,19 +8,21 @@ pub use crate::contract::{
     AddSubscriptionResponseProto as AddSubscriptionResponse, BindingProto as Binding,
     CheckpointActorRequestProto as CheckpointActorRequest,
     CheckpointActorResponseProto as CheckpointActorResponse,
-    CreateActorRequestProto as CreateActorRequest, CreateActorResponseProto as CreateActorResponse,
-    DeleteActorRequestProto as DeleteActorRequest, DeleteActorResponseProto as DeleteActorResponse,
+    DeleteAllRequestProto as DeleteAllRequest, DeleteAllResponseProto as DeleteAllResponse,
+    DeploymentObservationProto as DeploymentObservation,
+    DeploymentRequestProto as DeploymentRequest, DeploymentResponseProto as DeploymentResponse,
     ErrorCode, HeaderProto as Header, InspectActorRequestProto as InspectActorRequest,
     InspectActorResponseProto as InspectActorResponse,
     InvokeActorRequestProto as InvokeActorRequest, InvokeActorResponseProto as InvokeActorResponse,
+    InvokeWorkerRequestProto as InvokeWorkerRequest,
     RemoveSubscriptionRequestProto as RemoveSubscriptionRequest,
     RemoveSubscriptionResponseProto as RemoveSubscriptionResponse,
     ResumeSubscriptionRequestProto as ResumeSubscriptionRequest,
     ResumeSubscriptionResponseProto as ResumeSubscriptionResponse, ServiceErrorProto as Error,
     SubscriptionObservationProto as SubscriptionObservation,
     SubscriptionSpecProto as SubscriptionSpec, SubscriptionStartProto as SubscriptionStart,
-    SubscriptionState, UpdateActorRequestProto as UpdateActorRequest,
-    UpdateActorResponseProto as UpdateActorResponse,
+    SubscriptionState, UpdateNamespaceRequestProto as UpdateNamespaceRequest,
+    UpdateNamespaceResponseProto as UpdateNamespaceResponse, WorkerLimitsProto as WorkerLimits,
 };
 
 include!(concat!(env!("OUT_DIR"), "/rust/acyclic.actors.v1.rs"));
@@ -29,3 +31,8 @@ include!(concat!(env!("OUT_DIR"), "/rust/acyclic.actors.v1.rs"));
 pub mod subscription_start {
     pub use crate::contract::subscription_start::StartProto as Start;
 }
+
+pub use crate::contract::{
+    DeleteWorkerRequestProto as DeleteWorkerRequest,
+    DeleteWorkerResponseProto as DeleteWorkerResponse,
+};

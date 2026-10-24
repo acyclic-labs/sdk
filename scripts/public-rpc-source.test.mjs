@@ -21,7 +21,7 @@ function missing(label, service, rpc, path, replace, flag) {
   });
 }
 missing("missing Rust-owned Actors gRPC operation", ActorsService, ActorsService.methods[0].name, "rust/crates/actors/src/client.rs", s => s.replace(`("${ActorsService.methods[0].name}",`, '("Removed",').replace(`operation!(\n    ${ActorsService.methods[0].localName.replace(/[A-Z]/g, c => `_${c.toLowerCase()}`)},`, "operation!(\n    removed,"), "rustGrpc");
-missing("missing Actors WASM bridge", ActorsService, "CreateActor", "rust/crates/actors-wasm/src/lib.rs", s => s.replace("pub struct ActorsClient", "pub struct Removed"), "typescriptGrpcWeb");
+missing("missing Actors WASM bridge", ActorsService, "DeployNamespace", "rust/crates/actors-wasm/src/lib.rs", s => s.replace("pub struct ActorsClient", "pub struct Removed"), "typescriptGrpcWeb");
 missing("server implementation cannot substitute for Rust client", StreamService, "Read", "rust/crates/stream/src/grpc/client.rs", s => s.replace("async fn read(", "async fn removed_read("), "rustGrpc");
 missing("missing inherited Objects HTTP operation", ObjectsService, "PutObject", "typescript/packages/objects/src/v1.ts", s => s.replace("put(", "async removed_put("), "typescriptHttp");
 

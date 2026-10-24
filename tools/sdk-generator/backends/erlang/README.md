@@ -135,7 +135,7 @@ indices remain checked; mutation controls verify those comparisons. Unknown
 descriptor extensions are outside the GPB decoder's modeled comparison. The
 original Rust descriptor bytes remain preserved and hash-checked.
 
-The current control inventory also requires the terminal Actors `DeleteActor`
+The current control inventory also requires the terminal Actors `DeleteAll`
 RPC added in main revision `d86b660146738d507029403756117fa6f102a9c4`:
 26 calls, with 23 unary and three server-streaming. Fresh maintained generation,
 archive installation and native qualification passed for that revision, including

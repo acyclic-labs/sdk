@@ -1,5 +1,6 @@
 use super::*;
 
+const NS: &str = "PausedPoison";
 const ID: &str = "sdk-paused-poison";
 const SOURCE: &str = "e2e-root/sdk-paused-poison";
 const POISON: &str = include_str!("poison.mjs");
@@ -8,8 +9,9 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn configuration() -> wire::CreateActorRequest {
+fn configuration() -> wire::DeploymentRequest {
     let mut request = create();
+    request.name = NS.into();
     request.code_sha256 = digest(POISON);
     request.idempotency_key = "sdk-create-paused-poison".into();
     request.subscriptions = vec![wire::SubscriptionSpec {
@@ -37,7 +39,7 @@ fn paused() -> wire::SubscriptionObservation {
 // All boundaries use fixture inputs, never a previous remote reply as configuration.
 fn observation(
     actor: Option<wire::ActorObservation>,
-    request: &wire::CreateActorRequest,
+    request: &wire::DeploymentRequest,
     expected: &[wire::SubscriptionObservation],
 ) -> TestResult<wire::ActorObservation> {
     let actor = actor_configuration(actor, ID, request, 1)?;
@@ -59,6 +61,8 @@ struct Configure {
     actor_id: String,
     #[prost(uint32, optional, tag = "2")]
     max_attempts: Option<u32>,
+    #[prost(string, optional, tag = "90")]
+    namespace: Option<String>,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -78,6 +82,7 @@ async fn configure(remote: &Remote, bearer: &str, max_attempts: u32) -> TestResu
     client.ready().await?;
     let mut request = tonic::Request::new(Configure {
         actor_id: ID.into(),
+        namespace: Some(NS.into()),
         max_attempts: Some(max_attempts),
     });
     request
@@ -99,7 +104,7 @@ async fn configure(remote: &Remote, bearer: &str, max_attempts: u32) -> TestResu
 async fn published_poison_actor(
     endpoints: &Endpoints,
     bearer: &str,
-    request: &wire::CreateActorRequest,
+    request: &wire::DeploymentRequest,
 ) -> TestResult<grpc::Client> {
     let objects = GrpcObjects::connect(
         &endpoints.objects.endpoint,
@@ -135,26 +140,35 @@ async fn published_poison_actor(
         Some(&std::fs::read(&remote.ca_file)?),
     )
     .await?;
-    observation(
-        actors
-            .create_actor(request.clone())
-            .await?
-            .into_inner()
-            .actor,
-        request,
-        &[active()],
-    )?;
+    actors
+        .deploy_namespace(request.clone())
+        .await?
+        .into_inner()
+        .deployment
+        .ok_or("missing deployment")?;
+    actors
+        .invoke_actor(wire::InvokeActorRequest {
+            actor_id: ID.into(),
+            namespace: Some(NS.into()),
+            method: "GET".into(),
+            url: "https://actor.internal/".into(),
+            ..Default::default()
+        })
+        .await?;
+    inspect(&mut actors, request, &[active()]).await?;
     Ok(actors)
 }
 
 async fn inspect(
     actors: &mut grpc::Client,
-    request: &wire::CreateActorRequest,
+    request: &wire::DeploymentRequest,
     expected: &[wire::SubscriptionObservation],
 ) -> TestResult {
     observation(
         actors
             .inspect_actor(wire::InspectActorRequest {
+                namespace: Some(NS.into()),
+                account_id: Vec::new(),
                 actor_id: ID.into(),
             })
             .await?
@@ -201,12 +215,14 @@ pub(super) async fn qualify() -> TestResult {
     let mut actors = published_poison_actor(&endpoints, bearer, &request).await?;
     configure(remote, bearer, 1).await?;
     inspect(&mut actors, &request, &[active()]).await?;
-    let boundary = observed.tail(observation_path(ID)?).await?;
+    let boundary = observed
+        .tail(observation_path(&mut actors, NS, ID).await?)
+        .await?;
     let AppendOutcome::Committed(poison) = source.append(append(b"poison")).await? else {
         return Err("poison append did not commit".into());
     };
     assert_eq!((poison.start, poison.end), (1, 2));
-    let (before, next) = followed_observation(&observed, ID, boundary, |actor| {
+    let (before, next) = followed_observation(&observed, &mut actors, NS, ID, boundary, |actor| {
         actor
             .subscriptions
             .iter()
@@ -218,6 +234,8 @@ pub(super) async fn qualify() -> TestResult {
     // One public read after the acknowledged Configure, never an Inspect polling loop.
     let configured = actors
         .inspect_actor(wire::InspectActorRequest {
+            namespace: Some(NS.into()),
+            account_id: Vec::new(),
             actor_id: ID.into(),
         })
         .await?
@@ -231,6 +249,8 @@ pub(super) async fn qualify() -> TestResult {
     expected.failure_code.clear();
     expected.retry_count = 0;
     let resume = wire::ResumeSubscriptionRequest {
+        namespace: Some(NS.into()),
+        account_id: Vec::new(),
         actor_id: ID.into(),
         subscription_id: "events".into(),
         idempotency_key: "sdk-resume-poison".into(),
@@ -250,14 +270,16 @@ pub(super) async fn qualify() -> TestResult {
         .ok_or("resume retry omitted actor")?;
     let retried = observation(Some(retried), &request, std::slice::from_ref(&expected))?;
     assert_eq!(retried, resumed);
-    let (retained, _) = followed_observation(&observed, ID, next, |actor| {
+    let (retained, _) = followed_observation(&observed, &mut actors, NS, ID, next, |actor| {
         actor.subscriptions == [expected.clone()]
     })
     .await?;
     let retained = observation(Some(retained), &request, &[expected])?;
     assert_eq!(retained, resumed);
     actors
-        .delete_actor(wire::DeleteActorRequest {
+        .delete_all(wire::DeleteAllRequest {
+            namespace: Some(NS.into()),
+            account_id: Vec::new(),
             actor_id: ID.into(),
             idempotency_key: "sdk-delete-poison".into(),
         })
@@ -270,6 +292,8 @@ fn paused_oracle_rejects_active_and_changed_failure_boundaries() -> TestResult {
     let request = configuration();
     let expected = paused();
     let valid = wire::ActorObservation {
+        namespace: Some(NS.into()),
+        account_id: Vec::new(),
         actor_id: ID.into(),
         code_sha256: request.code_sha256.clone(),
         home_region: request.home_region.clone(),
@@ -316,6 +340,7 @@ proptest::proptest! {
         // Create, first Configure, Pause, second Configure, Resume, retry, retained follow.
         for expected in [active(), active(), paused(), paused(), active(), active(), active()] {
             let valid = wire::ActorObservation {
+            namespace: Some(NS.into()), account_id: Vec::new(),
                 actor_id: ID.into(),
                 code_sha256: request.code_sha256.clone(),
                 home_region: request.home_region.clone(),

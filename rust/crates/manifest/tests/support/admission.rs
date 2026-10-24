@@ -24,7 +24,7 @@ fn inbox_authorized(
     else {
         return false;
     };
-    let EntryRuntime::Actor { subscriptions, .. } = &entry.runtime else {
+    let EntryRuntime::ActorNamespace { subscriptions, .. } = &entry.runtime else {
         return false;
     };
     let subscribed = subscriptions.iter().any(|subscription| {
@@ -52,13 +52,36 @@ pub fn check(manifest: &DeploymentManifest) -> Result<(), &'static str> {
         return Err("json-size");
     }
     for env in &manifest.environments {
+        for route in &env.routes {
+            if !env.entries.iter().any(|entry| {
+                entry.name == route.entry && matches!(entry.runtime, EntryRuntime::Worker { .. })
+            }) {
+                return Err("worker-route-target");
+            }
+        }
+        for route in &env.worker_routes {
+            if route.entry.as_ref().is_some_and(|name| {
+                !env.entries.iter().any(|entry| {
+                    &entry.name == name && matches!(entry.runtime, EntryRuntime::Worker { .. })
+                })
+            }) {
+                return Err("worker-route-target");
+            }
+        }
+        for entry in &env.entries {
+            if let EntryRuntime::ActorNamespace { jurisdiction, .. } = &entry.runtime {
+                if !["", "eu", "us", "fedramp"].contains(&jurisdiction.as_str()) {
+                    return Err("namespace-jurisdiction");
+                }
+            }
+        }
         for cron in &env.crons {
             if !inbox_authorized(env, &cron.entry, &cron.inbox_binding, &cron.inbox) {
                 return Err("inbox-authority");
             }
         }
         for entry in &env.entries {
-            if let EntryRuntime::Actor {
+            if let EntryRuntime::ActorNamespace {
                 timer_inbox: Some(inbox),
                 ..
             } = &entry.runtime

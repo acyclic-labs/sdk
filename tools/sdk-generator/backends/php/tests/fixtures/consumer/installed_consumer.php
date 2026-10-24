@@ -1,7 +1,7 @@
 <?php
 $loader=require $argv[1];
 use Google\Protobuf\Internal\FileDescriptorSet;
-use Acyclic\Actors\V1\CreateActorRequest;
+use Acyclic\Actors\V1\DeploymentRequest;
 use Acyclic\Stream\V1\AppendRequest;
 use Acyclic\Stream\V1\ReadRequest;
 function check($value,$message) { if(!$value) throw new RuntimeException($message); }
@@ -120,7 +120,7 @@ foreach(['actors/v1/actors','stream/v1/stream'] as $family) {
  check($probe->calls===count($service->getMethod()),'client call count differs');
 }
 $bytes="\x00\xff";
-$actor=new CreateActorRequest(['code_sha256'=>$bytes,'home_region'=>'test','idempotency_key'=>'test']);
+$actor=new DeploymentRequest(['code_sha256'=>$bytes,'name'=>'test','idempotency_key'=>'test']);
 $append=new AppendRequest(['path'=>'test/path','records'=>[$bytes,''],'if_tail'=>-1,'idempotency_key'=>$bytes]);
 $read=new ReadRequest(['path'=>'test/path','from'=>-1,'limit'=>4294967295]);
 check($actor->getCodeSha256()===$bytes,'actor bytes changed during construction');

@@ -4,6 +4,10 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use ts_rs::{Config, TS};
 
+mod activation;
+pub use activation::GuestActivation;
+mod durable;
+pub use durable::*;
 mod authoring;
 pub use authoring::*;
 mod update;
@@ -102,6 +106,11 @@ pub enum GuestEvent {
         /// Portable request.
         request: GuestRequest,
     },
+    /// Actor-scoped durable alarm; the host supplies retry metadata.
+    Alarm {
+        /// The sole alarm delivery counter.
+        info: AlarmInfo,
+    },
     /// A timer fire delivered by an idempotent inbox append, never Invoke.
     Timer {
         /// Timer identity, also the inbox append idempotency key.
@@ -139,6 +148,17 @@ pub fn typescript() -> String {
     let mut output = format!(
         "// Generated from acyclic_actors::guest. Do not edit.\nexport const GUEST_ABI_VERSION = {GUEST_ABI_VERSION} as const;\n"
     );
+    for (name, value) in [
+        ("WEB_SOCKET_TAG_COUNT", WEB_SOCKET_TAG_COUNT),
+        ("WEB_SOCKET_TAG_CHARACTERS", WEB_SOCKET_TAG_CHARACTERS),
+        ("WEB_SOCKET_ATTACHMENT_BYTES", WEB_SOCKET_ATTACHMENT_BYTES),
+        (
+            "WEB_SOCKET_AUTO_RESPONSE_CHARACTERS",
+            WEB_SOCKET_AUTO_RESPONSE_CHARACTERS,
+        ),
+    ] {
+        output.push_str(&format!("export const {name} = {value} as const;\n"));
+    }
     macro_rules! declarations {
         ($($ty:ty),+ $(,)?) => {$(
             output.push_str("export ");
@@ -146,7 +166,7 @@ pub fn typescript() -> String {
             output.push('\n');
         )+};
     }
-    declarations!(GuestRequest, GuestResponse, SocketPayload, SocketCloseInitiator,
+    declarations!(AlarmInfo, WebSocketId, WebSocketAutoResponse, GuestRequest, GuestResponse, SocketPayload, SocketCloseInitiator,
         SocketTransport, GuestSocketEvent, GuestEvent, GuestEventResult,
         CodecIdentity, Checkpoint, GuestError, CheckpointCodec<()>,
         CallerCapability, AdmittedCaller, RuntimeHandle, ActorRuntime,

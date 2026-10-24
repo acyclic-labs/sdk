@@ -35,8 +35,9 @@ function rustRoutes(packageName, example) {
 const actorRoutes = rustRoutes("acyclic-actors", "actors-http-routes");
 
 function responseInitializer(method) {
-  if (method.name === "InvokeActor") return { status: 201, headers: [{ name: "location", value: "/result" }] };
-  if (["CreateActor", "UpdateActor", "InspectActor", "AddSubscription", "RemoveSubscription", "ResumeSubscription", "CheckpointActor"].includes(method.name)) return { actor: { actorId: "actor-a", codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu", state: 1, checkpointEpoch: 9n, configurationRevision: 1n } };
+  if (["DeployNamespace", "DeployWorker", "UpdateNamespace"].includes(method.name)) return { deployment: {name: "example", codeSha256: new Uint8Array(32).fill(1), revision: 1n} };
+  if (["InvokeActor", "InvokeWorker"].includes(method.name)) return { status: 201, headers: [{ name: "location", value: "/result" }] };
+  if (["InspectActor", "AddSubscription", "RemoveSubscription", "ResumeSubscription", "CheckpointActor"].includes(method.name)) return { actor: { actorId: "actor-a", homeRegion: "eu", codeSha256: new Uint8Array(32).fill(1), state: 1, checkpointEpoch: 9n, configurationRevision: 1n } };
 
   return {};
 }
@@ -53,7 +54,7 @@ function inspectActorRequest(method, request) {
     assert.equal(request.actorId, "actor-a");
     assert.equal(request.idempotencyKey, "checkpoint-a");
   }
-  if (method.name === "DeleteActor") {
+  if (method.name === "DeleteAll") {
     assert.equal(request.actorId, "actor-a");
     assert.equal(request.idempotencyKey, "delete-a");
   }
@@ -77,12 +78,16 @@ if (process.argv.includes("--client")) {
   for (const [index, service] of services.entries()) {
     for (const method of service.methods) {
       const initializer = {};
-      if (method.name === "CreateActor") Object.assign(initializer, {
-        codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu",
+      if (["DeployNamespace", "DeployWorker"].includes(method.name)) Object.assign(initializer, {
+        name: "example", codeSha256: new Uint8Array(32).fill(1),
         limits: { handlerTimeoutMillis: 1000n, memoryBytes: 1024n, checkpointBytes: 1024n }, idempotencyKey: "create-a",
       });
-      if (method.name === "UpdateActor") Object.assign(initializer, {
-        actorId: "actor-a", codeSha256: new Uint8Array(32).fill(1),
+      if (method.name === "DeployWorker") {
+        delete initializer.limits;
+        initializer.workerLimits = { cpuMillis: 1, memoryBytes: 1024, timeoutMillis: 1000 };
+      }
+      if (method.name === "UpdateNamespace") Object.assign(initializer, {
+        namespaceId: "example", codeSha256: new Uint8Array(32).fill(1),
         limits: { handlerTimeoutMillis: 1000n, memoryBytes: 1024n, checkpointBytes: 1024n }, expectedConfigurationRevision: 1n, idempotencyKey: "update-a",
       });
       if (["InspectActor", "RemoveSubscription", "ResumeSubscription"].includes(method.name)) Object.assign(initializer, {
@@ -96,7 +101,9 @@ if (process.argv.includes("--client")) {
         idempotencyKey: "subscribe-a",
       });
       if (method.name === "CheckpointActor") Object.assign(initializer, { actorId: "actor-a", idempotencyKey: "checkpoint-a" });
-      if (method.name === "DeleteActor") Object.assign(initializer, { actorId: "actor-a", idempotencyKey: "delete-a" });
+      if (method.name === "InvokeWorker") Object.assign(initializer, { workerName: "example", method: "POST", url: "/invoke", headers: [{name:"content-type",value:"application/json"}], body: new Uint8Array([1]) });
+      if (method.name === "DeleteWorker") Object.assign(initializer, { workerName: "example", idempotencyKey: "delete-worker" });
+      if (method.name === "DeleteAll") Object.assign(initializer, { actorId: "actor-a", idempotencyKey: "delete-a" });
       if (method.name === "InvokeActor") Object.assign(initializer, { actorId: "actor-a", method: "POST", url: "/invoke", body: new Uint8Array([1]) });
 
       if (method.name === "Commit") initializer.mutations = [

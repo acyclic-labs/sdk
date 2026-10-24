@@ -101,7 +101,7 @@ fn render_actors_typescript(execution: &ScenarioExecution) -> Result<TypeScriptS
         .ok_or_else(|| Error::Invalid("Actors scenario output has no request".into()))?;
     let code_sha256 = required_field(request, "code_sha256")?;
     let _code_sha256_hex = bytes_hex(code_sha256)?;
-    let home_region = string_field(request, "home_region")?;
+    let name = string_field(request, "name")?;
     let idempotency_key = string_field(request, "idempotency_key")?;
     let limits = request
         .get("limits")
@@ -119,7 +119,7 @@ fn render_actors_typescript(execution: &ScenarioExecution) -> Result<TypeScriptS
     let code_literal =
         serde_json::to_string(code_sha256).map_err(|error| Error::Invalid(error.to_string()))?;
     let region_literal =
-        serde_json::to_string(&home_region).map_err(|error| Error::Invalid(error.to_string()))?;
+        serde_json::to_string(&name).map_err(|error| Error::Invalid(error.to_string()))?;
     let idempotency_literal = serde_json::to_string(&idempotency_key)
         .map_err(|error| Error::Invalid(error.to_string()))?;
     let bindings_literal = bindings
@@ -159,7 +159,7 @@ fn render_actors_typescript(execution: &ScenarioExecution) -> Result<TypeScriptS
         .collect::<Result<Vec<_>, Error>>()?
         .join(", ");
     let source = format!(
-        "// Generated from Rust scenario {}.\n// Rust output SHA256: {}\nimport {{ ActorLimitsSchema, BindingSchema, CreateActorRequestSchema, SubscriptionSpecSchema, SubscriptionStartSchema }} from \"@acyclic-labs/actors/proto\";\nimport {{ create, toBinary }} from \"@bufbuild/protobuf\";\n\nconst request = create(CreateActorRequestSchema, {{\n  codeSha256: Uint8Array.from({code_literal}),\n  homeRegion: {region_literal},\n  bindings: [{bindings_literal}],\n  limits: create(ActorLimitsSchema, {{\n    handlerTimeoutMillis: BigInt(\"{handler_timeout_millis}\"),\n    memoryBytes: BigInt(\"{memory_bytes}\"),\n    checkpointBytes: BigInt(\"{checkpoint_bytes}\"),\n  }}),\n  subscriptions: [{subscriptions_literal}],\n  idempotencyKey: {idempotency_literal},\n}});\nconst encoded = toBinary(CreateActorRequestSchema, request);\nif (encoded.length === 0) throw new Error(\"Rust Actors request encoded to an empty payload\");\nconsole.log(JSON.stringify({{ homeRegion: request.homeRegion, encodedBytes: encoded.length }}));\n",
+        "// Generated from Rust scenario {}.\n// Rust output SHA256: {}\nimport {{ ActorLimitsSchema, BindingSchema, DeploymentRequestSchema, SubscriptionSpecSchema, SubscriptionStartSchema }} from \"@acyclic-labs/actors/proto\";\nimport {{ create, toBinary }} from \"@bufbuild/protobuf\";\n\nconst request = create(DeploymentRequestSchema, {{\n  codeSha256: Uint8Array.from({code_literal}),\n  name: {region_literal},\n  bindings: [{bindings_literal}],\n  limits: create(ActorLimitsSchema, {{\n    handlerTimeoutMillis: BigInt(\"{handler_timeout_millis}\"),\n    memoryBytes: BigInt(\"{memory_bytes}\"),\n    checkpointBytes: BigInt(\"{checkpoint_bytes}\"),\n  }}),\n  subscriptions: [{subscriptions_literal}],\n  idempotencyKey: {idempotency_literal},\n}});\nconst encoded = toBinary(DeploymentRequestSchema, request);\nif (encoded.length === 0) throw new Error(\"Rust Actors request encoded to an empty payload\");\nconsole.log(JSON.stringify({{ name: request.name, encodedBytes: encoded.length }}));\n",
         execution.scenario.id, execution.stdout_sha256,
     );
     Ok(TypeScriptSnippet {

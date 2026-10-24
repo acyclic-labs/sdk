@@ -202,6 +202,9 @@ fn observation(
     cursors: Option<CursorValues>,
 ) -> crate::wire::ActorObservation {
     crate::wire::ActorObservation {
+        observation_stream_path: None,
+        namespace: None,
+        account_id: Vec::new(),
         actor_id: "a".into(),
         code_sha256: vec![1; 32].into(),
         home_region: String::new(),
@@ -258,34 +261,28 @@ fn actor_observation_and_response_numeric_projection_is_lossless() {
     let wire: crate::wire::ActorObservation = value.into();
     assert_observation_wire_projection(&wire, millis, epoch, revision, cursors);
 
-    let create_present: bool = kani::any();
-    let create = super::CreateActorResponse::try_from(crate::wire::CreateActorResponse {
-        actor: create_present.then(|| observation(millis, epoch, revision, cursors)),
-    })
-    .unwrap();
-    assert_eq!(create.actor().is_some(), create_present);
-    if let Some(actor) = create.actor() {
-        assert_observation_projection(actor, millis, epoch, revision, cursors);
-    }
-    let wire: crate::wire::CreateActorResponse = create.into();
-    assert_eq!(wire.actor.is_some(), create_present);
-    if let Some(actor) = wire.actor {
-        assert_observation_wire_projection(&actor, millis, epoch, revision, cursors);
-    }
-
-    let update_present: bool = kani::any();
-    let update = super::UpdateActorResponse::try_from(crate::wire::UpdateActorResponse {
-        actor: update_present.then(|| observation(millis, epoch, revision, cursors)),
-    })
-    .unwrap();
-    assert_eq!(update.actor().is_some(), update_present);
-    if let Some(actor) = update.actor() {
-        assert_observation_projection(actor, millis, epoch, revision, cursors);
-    }
-    let wire: crate::wire::UpdateActorResponse = update.into();
-    assert_eq!(wire.actor.is_some(), update_present);
-    if let Some(actor) = wire.actor {
-        assert_observation_wire_projection(&actor, millis, epoch, revision, cursors);
+    for present in [false, true] {
+        let deployment = crate::wire::DeploymentObservation {
+            name: "ClassOne".into(),
+            code_sha256: vec![1; 32],
+            revision,
+            jurisdiction: String::new(),
+            account_id: Vec::new(),
+        };
+        let response = super::DeploymentResponse::try_from(crate::wire::DeploymentResponse {
+            deployment: present.then_some(deployment.clone()),
+        })
+        .unwrap();
+        assert_eq!(response.deployment().is_some(), present);
+        let wire: crate::wire::DeploymentResponse = response.into();
+        assert_eq!(wire.deployment, present.then_some(deployment.clone()));
+        let response =
+            super::UpdateNamespaceResponse::try_from(crate::wire::UpdateNamespaceResponse {
+                deployment: present.then_some(deployment.clone()),
+            })
+            .unwrap();
+        let wire: crate::wire::UpdateNamespaceResponse = response.into();
+        assert_eq!(wire.deployment, present.then_some(deployment));
     }
 }
 
@@ -293,8 +290,9 @@ fn actor_observation_and_response_numeric_projection_is_lossless() {
 #[kani::unwind(40)]
 fn update_expected_configuration_revision_is_lossless() {
     let revision: u64 = kani::any();
-    let value = super::UpdateActorRequest::try_from(crate::wire::UpdateActorRequest {
-        actor_id: "a".into(),
+    let value = super::UpdateNamespaceRequest::try_from(crate::wire::UpdateNamespaceRequest {
+        account_id: Vec::new(),
+        namespace_id: "a".into(),
         code_sha256: vec![1; 32].into(),
         bindings: Vec::new(),
         limits: Some(crate::wire::ActorLimits {
@@ -307,6 +305,6 @@ fn update_expected_configuration_revision_is_lossless() {
     })
     .unwrap();
     assert_eq!(value.expected_configuration_revision(), revision);
-    let wire: crate::wire::UpdateActorRequest = value.into();
+    let wire: crate::wire::UpdateNamespaceRequest = value.into();
     assert_eq!(wire.expected_configuration_revision, revision);
 }

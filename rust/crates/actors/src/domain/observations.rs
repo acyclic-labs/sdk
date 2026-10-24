@@ -82,7 +82,7 @@ impl SubscriptionObservation {
 #[ts(rename_all = "camelCase")]
 pub struct ActorObservation {
     #[wire(tag = 1, string)]
-    actor_id: ActorId,
+    pub(super) actor_id: ActorId,
     #[wire(tag = 2, bytes)]
     code_sha256: CodeSha256,
     #[wire(tag = 3)]
@@ -100,9 +100,23 @@ pub struct ActorObservation {
     #[ts(type = "bigint")]
     #[wire(tag = 8)]
     configuration_revision: u64,
+
+    #[wire(tag = 90, string)]
+    #[ts(optional)]
+    pub(super) namespace: Option<ActorNamespace>,
+    #[wire(tag = 91, bytes)]
+    #[ts(type = r#"import("../../readonly.js").ReadonlyBytes"#)]
+    pub(super) account_id: Vec<u8>,
+    #[wire(tag = 92)]
+    #[ts(optional)]
+    observation_stream_path: Option<String>,
 }
 
 impl ActorObservation {
+    /// Server-owned observation stream locator; callers never derive it from identity.
+    pub fn observation_stream_path(&self) -> Option<&str> {
+        self.observation_stream_path.as_deref()
+    }
     /// Returns the validated Actor identity.
     pub fn actor_id(&self) -> &ActorId {
         &self.actor_id
@@ -159,10 +173,65 @@ macro_rules! actor_response_type {
     };
 }
 
-actor_response_type!(CreateActorResponse, CreateActorResponse);
-actor_response_type!(UpdateActorResponse, UpdateActorResponse);
 actor_response_type!(InspectActorResponse, InspectActorResponse);
 actor_response_type!(AddSubscriptionResponse, AddSubscriptionResponse);
 actor_response_type!(RemoveSubscriptionResponse, RemoveSubscriptionResponse);
 actor_response_type!(ResumeSubscriptionResponse, ResumeSubscriptionResponse);
 actor_response_type!(CheckpointActorResponse, CheckpointActorResponse);
+
+/// Versioned code/config deployment observation, with no actor instance.
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
+#[derive(Clone, Debug, Eq, PartialEq, TS)]
+#[ts(
+    export_to = "actors/DeploymentObservation.ts",
+    rename_all = "camelCase"
+)]
+pub struct DeploymentObservation {
+    #[wire(tag = 1, string)]
+    name: ActorNamespace,
+    #[wire(tag = 2, bytes)]
+    code_sha256: CodeSha256,
+    #[wire(tag = 3)]
+    #[ts(type = "bigint")]
+    revision: u64,
+    #[wire(tag = 4)]
+    jurisdiction: String,
+    #[wire(tag = 5, bytes)]
+    #[ts(type = r#"import("../../readonly.js").ReadonlyBytes"#)]
+    pub(super) account_id: Vec<u8>,
+}
+impl DeploymentObservation {
+    /// Stable namespace or worker deployment name.
+    pub fn name(&self) -> &ActorNamespace {
+        &self.name
+    }
+    /// Monotonic deployment version used for compare-and-replace.
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+    /// Module content digest; this is not the deployment's identity.
+    pub const fn code_sha256(&self) -> &CodeSha256 {
+        &self.code_sha256
+    }
+}
+macro_rules! deployment_response_type {
+    ($name:ident) => {
+        #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
+        #[derive(Clone, Debug, Eq, PartialEq, TS)]
+        #[ts(export_to = concat!("actors/", stringify!($name), ".ts"), rename_all = "camelCase")]
+        #[doc = "A versioned deployment result; does not create an actor instance."]
+        pub struct $name {
+            #[wire(tag = 1, message)]
+            #[ts(optional)]
+            deployment: Option<DeploymentObservation>,
+        }
+        impl $name {
+            /// Observed deployment version.
+            pub fn deployment(&self) -> Option<&DeploymentObservation> {
+                self.deployment.as_ref()
+            }
+        }
+    };
+}
+deployment_response_type!(DeploymentResponse);
+deployment_response_type!(UpdateNamespaceResponse);

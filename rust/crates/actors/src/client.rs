@@ -387,15 +387,18 @@ where
 
 macro_rules! operations {
     ($apply:ident) => { $apply! {
-        ("CreateActor", create_actor, CreateActorRequest, CreateActorResponse),
-        ("UpdateActor", update_actor, UpdateActorRequest, UpdateActorResponse),
+        ("DeployNamespace", deploy_namespace, DeploymentRequest, DeploymentResponse),
+        ("InvokeWorker", invoke_worker, InvokeWorkerRequest, InvokeActorResponse),
+        ("DeleteWorker", delete_worker, DeleteWorkerRequest, DeleteWorkerResponse),
+        ("DeployWorker", deploy_worker, DeploymentRequest, DeploymentResponse),
+        ("UpdateNamespace", update_namespace, UpdateNamespaceRequest, UpdateNamespaceResponse),
         ("InspectActor", inspect_actor, InspectActorRequest, InspectActorResponse),
         ("AddSubscription", add_subscription, AddSubscriptionRequest, AddSubscriptionResponse),
         ("RemoveSubscription", remove_subscription, RemoveSubscriptionRequest, RemoveSubscriptionResponse),
         ("ResumeSubscription", resume_subscription, ResumeSubscriptionRequest, ResumeSubscriptionResponse),
         ("CheckpointActor", checkpoint_actor, CheckpointActorRequest, CheckpointActorResponse),
         ("InvokeActor", invoke_actor, InvokeActorRequest, InvokeActorResponse),
-        ("DeleteActor", delete_actor, DeleteActorRequest, DeleteActorResponse)
+        ("DeleteAll", delete_all, DeleteAllRequest, DeleteAllResponse)
     } };
 }
 
@@ -406,6 +409,7 @@ macro_rules! client_operations {
             #[doc = concat!("Executes the semantic ", $name, " operation.")]
             pub async fn $method(&self, request: &domain::$input) -> Result<domain::$output, Error> {
                 let input = wire::$input::from(request.clone());
+                validate_operation($name, &input)?;
                 let input = self.request(input, None).await?;
                 let response = self.inner.clone().$method(input).await
                     .map(tonic::Response::into_inner).map_err(service_error)?;
@@ -433,7 +437,9 @@ macro_rules! client_operations {
                             .map_err(|error| Error::Configuration(error.to_string()))?;
                         let input = domain::$input::try_from(input)
                             .map_err(|error| Error::Configuration(error.to_string()))?;
-                        let input = self.request(wire::$input::from(input), authorization).await?;
+                        let input = wire::$input::from(input);
+                        validate_operation($name, &input)?;
+                        let input = self.request(input, authorization).await?;
                         let response = self.inner.clone().$method(input).await
                             .map(tonic::Response::into_inner).map_err(service_error)?;
                         let output = domain::$output::try_from(response)?;
@@ -648,3 +654,31 @@ mod request_path_tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod credential_tests;
+
+/// Apply operation-specific constraints on shared deployment envelopes before I/O.
+pub(crate) fn validate_operation(request_name: &str, request: &impl Message) -> Result<(), Error> {
+    if matches!(request_name, "DeployWorker" | "DeployNamespace") {
+        let deployment = wire::DeploymentRequest::decode(request.encode_to_vec().as_slice())
+            .map_err(|e| Error::Configuration(e.to_string()))?;
+        if request_name == "DeployNamespace" {
+            if deployment.limits.is_none() || deployment.worker_limits.is_some() {
+                return Err(Error::Configuration(
+                    "namespace deploy requires actor limits".into(),
+                ));
+            }
+            return Ok(());
+        }
+        crate::addressing::validate_dns_label(deployment.name.as_bytes())
+            .map_err(|e| Error::Configuration(e.to_string()))?;
+        if deployment.worker_limits.is_none()
+            || deployment.limits.is_some()
+            || !deployment.subscriptions.is_empty()
+            || !deployment.jurisdiction.is_empty()
+        {
+            return Err(Error::Configuration(
+                "Worker deploy cannot carry actor subscriptions or jurisdiction".into(),
+            ));
+        }
+    }
+    Ok(())
+}

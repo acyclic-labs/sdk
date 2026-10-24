@@ -167,6 +167,9 @@ macro_rules! operations {
         $(/// Executes the canonical HTTP operation.
         pub async fn $method(&self, request: &wire::$input) -> Result<wire::$output, Error> {
             let route = HTTP_ROUTES.get($index).ok_or(Error::InvalidArgument)?.1;
+            crate::domain::$input::try_from(request.clone()).map_err(|_| Error::InvalidArgument)?;
+            let method = if stringify!($method) == "deploy_worker" { "DeployWorker" } else { "" };
+            crate::client::validate_operation(method, request).map_err(|_| Error::InvalidArgument)?;
             self.call(
                 route,
                 concat!("acyclic.actors.v1.", stringify!($input)),
@@ -285,14 +288,17 @@ impl Client {
     }
 
     operations! {
-        (create_actor, 0, CreateActorRequest, CreateActorResponse),
-        (update_actor, 1, UpdateActorRequest, UpdateActorResponse),
+        (deploy_namespace, 0, DeploymentRequest, DeploymentResponse),
+        (invoke_worker, 10, InvokeWorkerRequest, InvokeActorResponse),
+        (delete_worker, 11, DeleteWorkerRequest, DeleteWorkerResponse),
+        (deploy_worker, 9, DeploymentRequest, DeploymentResponse),
+        (update_namespace, 1, UpdateNamespaceRequest, UpdateNamespaceResponse),
         (inspect_actor, 2, InspectActorRequest, InspectActorResponse),
         (add_subscription, 3, AddSubscriptionRequest, AddSubscriptionResponse),
         (remove_subscription, 4, RemoveSubscriptionRequest, RemoveSubscriptionResponse),
         (resume_subscription, 5, ResumeSubscriptionRequest, ResumeSubscriptionResponse),
         (checkpoint_actor, 6, CheckpointActorRequest, CheckpointActorResponse),
         (invoke_actor, 7, InvokeActorRequest, InvokeActorResponse),
-        (delete_actor, 8, DeleteActorRequest, DeleteActorResponse),
+        (delete_all, 8, DeleteAllRequest, DeleteAllResponse),
     }
 }

@@ -32,6 +32,28 @@ fn nominal_error(error: domain::DomainError) -> JsValue {
     js_error(code, error)
 }
 
+/// Admit a deployment declaration through Rust before materializing a JS env handle.
+#[wasm_bindgen(js_name = validateDeploymentBinding)]
+pub fn validate_deployment_binding(
+    name: String,
+    capability: String,
+    resource: String,
+    account: &[u8],
+    namespace: Option<String>,
+    worker: Option<String>,
+) -> Result<(), JsValue> {
+    domain::Binding::try_from(acyclic_actors::wire::Binding {
+        name,
+        capability,
+        resource,
+        target_account: account.to_vec(),
+        actor_namespace: namespace,
+        worker_service: worker,
+    })
+    .map(|_| ())
+    .map_err(nominal_error)
+}
+
 /// Encode a validated source timer, retaining exact u64 milliseconds from JS bigint.
 #[wasm_bindgen(js_name = "timerRecord")]
 pub fn timer_record(task: String, operation: String, deadline: BigInt) -> Result<Vec<u8>, JsValue> {
@@ -60,6 +82,16 @@ pub fn actor_id(
     let value = nominal_string(value, "actor_id")?;
     domain::ActorId::new(value)
         .map(|value| value.as_str().to_owned())
+        .map_err(nominal_error)
+}
+
+/// Rust-backed exact namespace label constructor.
+#[wasm_bindgen(js_name = "ActorNamespace")]
+pub fn actor_namespace(
+    #[wasm_bindgen(unchecked_param_type = "string")] value: &JsValue,
+) -> Result<String, JsValue> {
+    domain::ActorNamespace::new(nominal_string(value, "namespace")?)
+        .map(|v| v.as_str().to_owned())
         .map_err(nominal_error)
 }
 
@@ -211,23 +243,53 @@ impl ActorsClient {
         .await
     }
 
-    /// Execute `CreateActor` with an encoded protobuf request.
-    pub async fn create_actor(
+    /// Execute `DeployNamespace` with an encoded protobuf request.
+    pub async fn deploy_namespace(
         &self,
         request: &[u8],
         signal: Option<JsValue>,
     ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("CreateActor", request))
+        self.run(signal, self.inner.call("DeployNamespace", request))
             .await
     }
 
-    /// Execute `UpdateActor` with an encoded protobuf request.
-    pub async fn update_actor(
+    /// Execute `DeployWorker` with an encoded protobuf request.
+    pub async fn deploy_worker(
         &self,
         request: &[u8],
         signal: Option<JsValue>,
     ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("UpdateActor", request))
+        self.run(signal, self.inner.call("DeployWorker", request))
+            .await
+    }
+
+    /// Execute `InvokeWorker` with an encoded protobuf request.
+    pub async fn invoke_worker(
+        &self,
+        request: &[u8],
+        signal: Option<JsValue>,
+    ) -> Result<Vec<u8>, JsValue> {
+        self.run(signal, self.inner.call("InvokeWorker", request))
+            .await
+    }
+
+    /// Execute `DeleteWorker` with an encoded protobuf request.
+    pub async fn delete_worker(
+        &self,
+        request: &[u8],
+        signal: Option<JsValue>,
+    ) -> Result<Vec<u8>, JsValue> {
+        self.run(signal, self.inner.call("DeleteWorker", request))
+            .await
+    }
+
+    /// Execute `UpdateNamespace` with an encoded protobuf request.
+    pub async fn update_namespace(
+        &self,
+        request: &[u8],
+        signal: Option<JsValue>,
+    ) -> Result<Vec<u8>, JsValue> {
+        self.run(signal, self.inner.call("UpdateNamespace", request))
             .await
     }
 
@@ -291,13 +353,13 @@ impl ActorsClient {
             .await
     }
 
-    /// Execute `DeleteActor` with an encoded protobuf request.
-    pub async fn delete_actor(
+    /// Execute `DeleteAll` with an encoded protobuf request.
+    pub async fn delete_all(
         &self,
         request: &[u8],
         signal: Option<JsValue>,
     ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("DeleteActor", request))
+        self.run(signal, self.inner.call("DeleteAll", request))
             .await
     }
 }

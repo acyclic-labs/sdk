@@ -1,1 +1,1 @@
-new Acyclic.Actors.V1.CreateActorRequest { CodeSha256 = "invalid" };
+new Acyclic.Actors.V1.DeploymentRequest { CodeSha256 = "invalid" };

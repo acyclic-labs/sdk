@@ -16,8 +16,8 @@ func roundtrip<M: SwiftProtobuf.Message & Equatable>(_ message: M) throws {
   try require(try ProtobufDeserializer<M>().deserialize(grpcBytes) == message, "gRPC decoder differs")
 }
 let bytes = Data([0, 255])
-var actor = Acyclic_Actors_V1_CreateActorRequest()
-actor.codeSha256 = bytes; actor.homeRegion = "test"; actor.idempotencyKey = "probe"
+var actor = Acyclic_Actors_V1_DeploymentRequest()
+actor.codeSha256 = bytes; actor.name = "test"; actor.idempotencyKey = "probe"
 try require(actor.codeSha256 == bytes, "Actor bytes changed"); try roundtrip(actor)
 var append = Acyclic_Stream_V1_AppendRequest()
 append.path = "test/path"; append.records = [bytes, Data()]; append.ifTail = UInt64.max; append.idempotencyKey = bytes
@@ -35,6 +35,6 @@ var mutation = Acyclic_Stream_V1_CommitMutation(); mutation.append.path = "test/
 mutation.fork.source = "source"; mutation.fork.destination = "destination"; mutation.fork.atTail = UInt64.max; mutation.fork.records = [bytes]
 try require(mutation.append.path.isEmpty && mutation.fork.source == "source", "fork oneof switch differs"); try roundtrip(mutation)
 mutation.mutation = nil; try require(mutation.mutation == nil, "fork oneof clear differs")
-try require(Acyclic_Actors_V1_ActorsService.Method.CreateActor.descriptor.fullyQualifiedMethod == "acyclic.actors.v1.ActorsService/CreateActor" && Acyclic_Actors_V1_ActorsService.Method.CreateActor.descriptor.type == .unary, "Actor RPC metadata differs")
+try require(Acyclic_Actors_V1_ActorsService.Method.DeployNamespace.descriptor.fullyQualifiedMethod == "acyclic.actors.v1.ActorsService/DeployNamespace" && Acyclic_Actors_V1_ActorsService.Method.DeployNamespace.descriptor.type == .unary, "Actor RPC metadata differs")
 try require(Acyclic_Stream_V1_StreamService.Method.Read.descriptor.fullyQualifiedMethod == "acyclic.stream.v1.StreamService/Read" && Acyclic_Stream_V1_StreamService.Method.Read.descriptor.type == .serverStreaming, "Stream RPC metadata differs")
 print("PASS Swift bytes, unsigned bounds, optional zero, populated oneofs, gRPC codecs and bounded RPC metadata")

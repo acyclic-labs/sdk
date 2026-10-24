@@ -8,3 +8,7 @@ pub mod deployment;
 
 /// Rust-owned deployment manifest, validation and language generation.
 pub use acyclic_manifest as manifest;
+pub mod service;
+pub use service::{WorkerInvoker, WorkerServiceBinding};
+pub mod bindings;
+pub use bindings::{DeploymentBinding, materialize_bindings};

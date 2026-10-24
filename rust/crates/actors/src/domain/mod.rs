@@ -14,6 +14,7 @@ mod invocation;
 pub use invocation::*;
 /// TypeScript declaration exports.
 pub mod export;
+mod scope;
 
 #[cfg(kani)]
 mod formal_proofs;
@@ -25,3 +26,6 @@ mod formal_proofs;
     reason = "grouped boundary cases"
 )]
 mod tests;
+
+mod worker;
+pub use worker::*;

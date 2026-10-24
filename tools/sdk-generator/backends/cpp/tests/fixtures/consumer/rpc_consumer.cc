@@ -48,12 +48,27 @@ template<class Request> bool request_matches(const Request& request) {
 }
 class ActorsServiceProbe final : public acyclic::actors::v1::ActorsService::Service {
  public:
- grpc::Status CreateActor(grpc::ServerContext*, const acyclic::actors::v1::CreateActorRequest* request, acyclic::actors::v1::CreateActorResponse* response) override {
+ grpc::Status DeleteWorker(grpc::ServerContext*, const acyclic::actors::v1::DeleteWorkerRequest* request, acyclic::actors::v1::DeleteWorkerResponse* response) override {
   if (!request_matches(*request)) return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "populated request differs");
   sample(*response, 2);
   return grpc::Status::OK;
  }
- grpc::Status UpdateActor(grpc::ServerContext*, const acyclic::actors::v1::UpdateActorRequest* request, acyclic::actors::v1::UpdateActorResponse* response) override {
+ grpc::Status InvokeWorker(grpc::ServerContext*, const acyclic::actors::v1::InvokeWorkerRequest* request, acyclic::actors::v1::InvokeActorResponse* response) override {
+  if (!request_matches(*request)) return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "populated request differs");
+  sample(*response, 2);
+  return grpc::Status::OK;
+ }
+ grpc::Status DeployNamespace(grpc::ServerContext*, const acyclic::actors::v1::DeploymentRequest* request, acyclic::actors::v1::DeploymentResponse* response) override {
+  if (!request_matches(*request)) return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "populated request differs");
+  sample(*response, 2);
+  return grpc::Status::OK;
+ }
+ grpc::Status DeployWorker(grpc::ServerContext*, const acyclic::actors::v1::DeploymentRequest* request, acyclic::actors::v1::DeploymentResponse* response) override {
+  if (!request_matches(*request)) return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "populated request differs");
+  sample(*response, 2);
+  return grpc::Status::OK;
+ }
+ grpc::Status UpdateNamespace(grpc::ServerContext*, const acyclic::actors::v1::UpdateNamespaceRequest* request, acyclic::actors::v1::UpdateNamespaceResponse* response) override {
   if (!request_matches(*request)) return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "populated request differs");
   sample(*response, 2);
   return grpc::Status::OK;
@@ -88,7 +103,7 @@ class ActorsServiceProbe final : public acyclic::actors::v1::ActorsService::Serv
   sample(*response, 2);
   return grpc::Status::OK;
  }
- grpc::Status DeleteActor(grpc::ServerContext*, const acyclic::actors::v1::DeleteActorRequest* request, acyclic::actors::v1::DeleteActorResponse* response) override {
+ grpc::Status DeleteAll(grpc::ServerContext*, const acyclic::actors::v1::DeleteAllRequest* request, acyclic::actors::v1::DeleteAllResponse* response) override {
   if (!request_matches(*request)) return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "populated request differs");
   sample(*response, 2);
   return grpc::Status::OK;
@@ -167,29 +182,59 @@ int main(int argc, char** argv) { try {
  auto StreamService_client = acyclic::stream::v1::StreamService::NewStub(channel);
  int calls = 0;
  {
-  acyclic::actors::v1::CreateActorRequest request; sample(request, 1);
-  acyclic::actors::v1::CreateActorResponse expected; sample(expected, 2);
-  grpc::ClientContext context; context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(15));
-  acyclic::actors::v1::CreateActorResponse response;
-  auto status = ActorsService_client->CreateActor(&context, request, &response);
-  check(status.ok(), "/acyclic.actors.v1.ActorsService/CreateActor failed: " + status.error_message());
-  check(google::protobuf::util::MessageDifferencer::Equals(expected, response), "/acyclic.actors.v1.ActorsService/CreateActor response payload differs");
+  acyclic::actors::v1::DeleteWorkerRequest request; sample(request, 1);
+  acyclic::actors::v1::DeleteWorkerResponse expected; sample(expected, 2);
+  grpc::ClientContext context;
+  acyclic::actors::v1::DeleteWorkerResponse response;
+  auto status = ActorsService_client->DeleteWorker(&context, request, &response);
+  check(status.ok(), "/acyclic.actors.v1.ActorsService/DeleteWorker failed: " + status.error_message());
+  check(google::protobuf::util::MessageDifferencer::Equals(expected, response), "/acyclic.actors.v1.ActorsService/DeleteWorker response payload differs");
   ++calls;
  }
  {
-  acyclic::actors::v1::UpdateActorRequest request; sample(request, 1);
-  acyclic::actors::v1::UpdateActorResponse expected; sample(expected, 2);
-  grpc::ClientContext context; context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(15));
-  acyclic::actors::v1::UpdateActorResponse response;
-  auto status = ActorsService_client->UpdateActor(&context, request, &response);
-  check(status.ok(), "/acyclic.actors.v1.ActorsService/UpdateActor failed: " + status.error_message());
-  check(google::protobuf::util::MessageDifferencer::Equals(expected, response), "/acyclic.actors.v1.ActorsService/UpdateActor response payload differs");
+  acyclic::actors::v1::InvokeWorkerRequest request; sample(request, 1);
+  acyclic::actors::v1::InvokeActorResponse expected; sample(expected, 2);
+  grpc::ClientContext context;
+  acyclic::actors::v1::InvokeActorResponse response;
+  auto status = ActorsService_client->InvokeWorker(&context, request, &response);
+  check(status.ok(), "/acyclic.actors.v1.ActorsService/InvokeWorker failed: " + status.error_message());
+  check(google::protobuf::util::MessageDifferencer::Equals(expected, response), "/acyclic.actors.v1.ActorsService/InvokeWorker response payload differs");
+  ++calls;
+ }
+ {
+  acyclic::actors::v1::DeploymentRequest request; sample(request, 1);
+  acyclic::actors::v1::DeploymentResponse expected; sample(expected, 2);
+  grpc::ClientContext context;
+  acyclic::actors::v1::DeploymentResponse response;
+  auto status = ActorsService_client->DeployNamespace(&context, request, &response);
+  check(status.ok(), "/acyclic.actors.v1.ActorsService/DeployNamespace failed: " + status.error_message());
+  check(google::protobuf::util::MessageDifferencer::Equals(expected, response), "/acyclic.actors.v1.ActorsService/DeployNamespace response payload differs");
+  ++calls;
+ }
+ {
+  acyclic::actors::v1::DeploymentRequest request; sample(request, 1);
+  acyclic::actors::v1::DeploymentResponse expected; sample(expected, 2);
+  grpc::ClientContext context;
+  acyclic::actors::v1::DeploymentResponse response;
+  auto status = ActorsService_client->DeployWorker(&context, request, &response);
+  check(status.ok(), "/acyclic.actors.v1.ActorsService/DeployWorker failed: " + status.error_message());
+  check(google::protobuf::util::MessageDifferencer::Equals(expected, response), "/acyclic.actors.v1.ActorsService/DeployWorker response payload differs");
+  ++calls;
+ }
+ {
+  acyclic::actors::v1::UpdateNamespaceRequest request; sample(request, 1);
+  acyclic::actors::v1::UpdateNamespaceResponse expected; sample(expected, 2);
+  grpc::ClientContext context;
+  acyclic::actors::v1::UpdateNamespaceResponse response;
+  auto status = ActorsService_client->UpdateNamespace(&context, request, &response);
+  check(status.ok(), "/acyclic.actors.v1.ActorsService/UpdateNamespace failed: " + status.error_message());
+  check(google::protobuf::util::MessageDifferencer::Equals(expected, response), "/acyclic.actors.v1.ActorsService/UpdateNamespace response payload differs");
   ++calls;
  }
  {
   acyclic::actors::v1::InspectActorRequest request; sample(request, 1);
   acyclic::actors::v1::InspectActorResponse expected; sample(expected, 2);
-  grpc::ClientContext context; context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(15));
+  grpc::ClientContext context;
   acyclic::actors::v1::InspectActorResponse response;
   auto status = ActorsService_client->InspectActor(&context, request, &response);
   check(status.ok(), "/acyclic.actors.v1.ActorsService/InspectActor failed: " + status.error_message());
@@ -199,7 +244,7 @@ int main(int argc, char** argv) { try {
  {
   acyclic::actors::v1::AddSubscriptionRequest request; sample(request, 1);
   acyclic::actors::v1::AddSubscriptionResponse expected; sample(expected, 2);
-  grpc::ClientContext context; context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(15));
+  grpc::ClientContext context;
   acyclic::actors::v1::AddSubscriptionResponse response;
   auto status = ActorsService_client->AddSubscription(&context, request, &response);
   check(status.ok(), "/acyclic.actors.v1.ActorsService/AddSubscription failed: " + status.error_message());
@@ -209,7 +254,7 @@ int main(int argc, char** argv) { try {
  {
   acyclic::actors::v1::RemoveSubscriptionRequest request; sample(request, 1);
   acyclic::actors::v1::RemoveSubscriptionResponse expected; sample(expected, 2);
-  grpc::ClientContext context; context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(15));
+  grpc::ClientContext context;
   acyclic::actors::v1::RemoveSubscriptionResponse response;
   auto status = ActorsService_client->RemoveSubscription(&context, request, &response);
   check(status.ok(), "/acyclic.actors.v1.ActorsService/RemoveSubscription failed: " + status.error_message());
@@ -219,7 +264,7 @@ int main(int argc, char** argv) { try {
  {
   acyclic::actors::v1::ResumeSubscriptionRequest request; sample(request, 1);
   acyclic::actors::v1::ResumeSubscriptionResponse expected; sample(expected, 2);
-  grpc::ClientContext context; context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(15));
+  grpc::ClientContext context;
   acyclic::actors::v1::ResumeSubscriptionResponse response;
   auto status = ActorsService_client->ResumeSubscription(&context, request, &response);
   check(status.ok(), "/acyclic.actors.v1.ActorsService/ResumeSubscription failed: " + status.error_message());
@@ -229,7 +274,7 @@ int main(int argc, char** argv) { try {
  {
   acyclic::actors::v1::CheckpointActorRequest request; sample(request, 1);
   acyclic::actors::v1::CheckpointActorResponse expected; sample(expected, 2);
-  grpc::ClientContext context; context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(15));
+  grpc::ClientContext context;
   acyclic::actors::v1::CheckpointActorResponse response;
   auto status = ActorsService_client->CheckpointActor(&context, request, &response);
   check(status.ok(), "/acyclic.actors.v1.ActorsService/CheckpointActor failed: " + status.error_message());
@@ -239,22 +284,21 @@ int main(int argc, char** argv) { try {
  {
   acyclic::actors::v1::InvokeActorRequest request; sample(request, 1);
   acyclic::actors::v1::InvokeActorResponse expected; sample(expected, 2);
-  grpc::ClientContext context; context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(15));
+  grpc::ClientContext context;
   acyclic::actors::v1::InvokeActorResponse response;
   auto status = ActorsService_client->InvokeActor(&context, request, &response);
   check(status.ok(), "/acyclic.actors.v1.ActorsService/InvokeActor failed: " + status.error_message());
   check(google::protobuf::util::MessageDifferencer::Equals(expected, response), "/acyclic.actors.v1.ActorsService/InvokeActor response payload differs");
   ++calls;
  }
-
  {
-  acyclic::actors::v1::DeleteActorRequest request; sample(request, 1);
-  acyclic::actors::v1::DeleteActorResponse expected; sample(expected, 2);
-  grpc::ClientContext context; context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(15));
-  acyclic::actors::v1::DeleteActorResponse response;
-  auto status = ActorsService_client->DeleteActor(&context, request, &response);
-  check(status.ok(), "DeleteActor failed: " + status.error_message());
-  check(google::protobuf::util::MessageDifferencer::Equals(expected, response), "DeleteActor response payload differs");
+  acyclic::actors::v1::DeleteAllRequest request; sample(request, 1);
+  acyclic::actors::v1::DeleteAllResponse expected; sample(expected, 2);
+  grpc::ClientContext context;
+  acyclic::actors::v1::DeleteAllResponse response;
+  auto status = ActorsService_client->DeleteAll(&context, request, &response);
+  check(status.ok(), "/acyclic.actors.v1.ActorsService/DeleteAll failed: " + status.error_message());
+  check(google::protobuf::util::MessageDifferencer::Equals(expected, response), "/acyclic.actors.v1.ActorsService/DeleteAll response payload differs");
   ++calls;
  }
  {
@@ -368,18 +412,21 @@ int main(int argc, char** argv) { try {
   ++calls;
  }
  server->Shutdown(); server->Wait();
- check(calls == 20, "incomplete client call inventory");
+ check(calls == 23, "incomplete client call inventory");
  std::lock_guard<std::mutex> lock(audit_mutex);
- check(observed.size()==20, "actual server method path inventory differs");
- check(observed.count("/acyclic.actors.v1.ActorsService/CreateActor")==1 && observed.at("/acyclic.actors.v1.ActorsService/CreateActor")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/CreateActor");
- check(observed.count("/acyclic.actors.v1.ActorsService/UpdateActor")==1 && observed.at("/acyclic.actors.v1.ActorsService/UpdateActor")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/UpdateActor");
- check(observed.count("/acyclic.actors.v1.ActorsService/InspectActor")==1 && observed.at("/acyclic.actors.v1.ActorsService/InspectActor")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/InspectActor");
- check(observed.count("/acyclic.actors.v1.ActorsService/AddSubscription")==1 && observed.at("/acyclic.actors.v1.ActorsService/AddSubscription")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/AddSubscription");
- check(observed.count("/acyclic.actors.v1.ActorsService/RemoveSubscription")==1 && observed.at("/acyclic.actors.v1.ActorsService/RemoveSubscription")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/RemoveSubscription");
- check(observed.count("/acyclic.actors.v1.ActorsService/ResumeSubscription")==1 && observed.at("/acyclic.actors.v1.ActorsService/ResumeSubscription")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/ResumeSubscription");
- check(observed.count("/acyclic.actors.v1.ActorsService/CheckpointActor")==1 && observed.at("/acyclic.actors.v1.ActorsService/CheckpointActor")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/CheckpointActor");
- check(observed.count("/acyclic.actors.v1.ActorsService/InvokeActor")==1 && observed.at("/acyclic.actors.v1.ActorsService/InvokeActor")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/InvokeActor");
- check(observed.at("/acyclic.actors.v1.ActorsService/DeleteActor")==std::make_pair(RpcType::UNARY, 1), "DeleteActor path/count differs");
+ check(observed.size()==23, "actual server method path inventory differs");
+ check(observed.at("/acyclic.actors.v1.ActorsService/DeleteWorker")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/DeleteWorker");
+ check(observed.at("/acyclic.actors.v1.ActorsService/InvokeWorker")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/InvokeWorker");
+ check(observed.at("/acyclic.actors.v1.ActorsService/DeployNamespace")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/DeployNamespace");
+ check(observed.at("/acyclic.actors.v1.ActorsService/DeployWorker")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/DeployWorker");
+ check(observed.at("/acyclic.actors.v1.ActorsService/UpdateNamespace")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/UpdateNamespace");
+ check(observed.at("/acyclic.actors.v1.ActorsService/InspectActor")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/InspectActor");
+ check(observed.at("/acyclic.actors.v1.ActorsService/AddSubscription")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/AddSubscription");
+ check(observed.at("/acyclic.actors.v1.ActorsService/RemoveSubscription")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/RemoveSubscription");
+ check(observed.at("/acyclic.actors.v1.ActorsService/ResumeSubscription")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/ResumeSubscription");
+ check(observed.at("/acyclic.actors.v1.ActorsService/CheckpointActor")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/CheckpointActor");
+ check(observed.at("/acyclic.actors.v1.ActorsService/InvokeActor")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/InvokeActor");
+ check(observed.at("/acyclic.actors.v1.ActorsService/DeleteAll")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/DeleteAll");
  check(observed.count("/acyclic.stream.v1.StreamService/InspectIdempotency")==1 && observed.at("/acyclic.stream.v1.StreamService/InspectIdempotency")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/InspectIdempotency");
  check(observed.count("/acyclic.stream.v1.StreamService/Append")==1 && observed.at("/acyclic.stream.v1.StreamService/Append")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/Append");
  check(observed.count("/acyclic.stream.v1.StreamService/Tail")==1 && observed.at("/acyclic.stream.v1.StreamService/Tail")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/Tail");
@@ -391,7 +438,7 @@ int main(int argc, char** argv) { try {
  check(observed.count("/acyclic.stream.v1.StreamService/ChildrenPage")==1 && observed.at("/acyclic.stream.v1.StreamService/ChildrenPage")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/ChildrenPage");
  check(observed.count("/acyclic.stream.v1.StreamService/Commit")==1 && observed.at("/acyclic.stream.v1.StreamService/Commit")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/Commit");
  check(observed.count("/acyclic.stream.v1.StreamService/ReadCommit")==1 && observed.at("/acyclic.stream.v1.StreamService/ReadCommit")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/ReadCommit");
- std::cout << "PASS C++ 20 generated client/server loopback calls, Rust file descriptors, populated payloads and actual method paths/stream types\n";
+ std::cout << "PASS C++ 23 generated client/server loopback calls, Rust file descriptors, populated payloads and actual method paths/stream types\n";
  return 0;
  } catch (const std::exception& error) { std::cerr << error.what() << "\n"; return 1; }
 }

@@ -40,7 +40,7 @@ try {
   await invalidArgument(() => new ActorsClient({ ...options, token: "bad\nheader" }).transport);
   const client = new ActorsClient(options);
   assert.equal(await client.transport, mode === "native" ? "grpc" : "grpc-web");
-  for (const operation of ["createActor", "updateActor", "inspectActor", "addSubscription", "removeSubscription", "resumeSubscription", "checkpointActor", "invokeActor", "deleteActor"]) {
+  for (const operation of ["deployNamespace", "updateNamespace", "inspectActor", "addSubscription", "removeSubscription", "resumeSubscription", "checkpointActor", "invokeActor", "deleteAll"]) {
     await invalidArgument(() => client[operation]({}));
   }
   if (mode === "native") {
@@ -48,12 +48,12 @@ try {
     const Native = binding.NativeActorsClient ?? binding.default.NativeActorsClient;
     const result = await Native.connectWithCaResult(endpoint, "conformance", Buffer.from(identity.certificate));
     assert.ok(result.client);
-    const malformed = await result.client.createActorResult(Buffer.from([255]));
+    const malformed = await result.client.deployNamespaceResult(Buffer.from([255]));
     assert.equal(malformed.error.code, "invalid_argument");
   } else {
     const binding = await import(pathToFileURL(join(actorsRoot, "generated/wasm/acyclic_actors_wasm.js")).href);
     const inner = await binding.ActorsClient.connect(endpoint, "conformance");
-    await invalidArgument(() => inner.create_actor(Uint8Array.of(255)));
+    await invalidArgument(() => inner.deploy_namespace(Uint8Array.of(255)));
     inner.free();
   }
   assert.equal(requests, 0, "invalid requests must be rejected before RPC dispatch");

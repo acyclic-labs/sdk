@@ -13,6 +13,52 @@ fn missing() -> ManifestError {
     ManifestError::invalid("fixture", "missing-element")
 }
 
+fn add_worker(environment: &mut Environment) -> Result<(), ManifestError> {
+    let mut worker = environment.entries.first().ok_or_else(missing)?.clone();
+    worker.name = "web".into();
+    worker.bindings.clear();
+    worker.secrets.clear();
+    worker.fetch = None;
+    worker.runtime = EntryRuntime::Worker {
+        limits: WorkerLimits {
+            cpu_millis: 1,
+            memory_bytes: 1024,
+            timeout_millis: 10,
+        },
+    };
+    environment.entries.push(worker);
+    Ok(())
+}
+
+#[test]
+fn hosts_and_route_patterns_target_workers_instead_of_actor_instances()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut manifest = fixture()?;
+    let environment = manifest.environments.first_mut().ok_or_else(missing)?;
+    add_worker(environment)?;
+    environment.routes.push(RouteSpec {
+        host: "app.example.com".into(),
+        path_prefix: "/".into(),
+        entry: "web".into(),
+    });
+    environment.worker_routes.push(WorkerPatternRoute {
+        pattern: "*.example.com/api/*".into(),
+        entry: Some("web".into()),
+    });
+    validate(&manifest)?;
+    admission::check(&manifest)?;
+    // Negative controls bypass admission: the independent oracle still rejects actor targets.
+    let mut invalid = manifest.clone();
+    invalid.environments[0].routes[0].entry = "agent".into();
+    assert!(validate(&invalid).is_err());
+    assert_eq!(admission::check(&invalid), Err("worker-route-target"));
+    let mut invalid = manifest;
+    invalid.environments[0].worker_routes[0].entry = Some("agent".into());
+    assert!(validate(&invalid).is_err());
+    assert_eq!(admission::check(&invalid), Err("worker-route-target"));
+    Ok(())
+}
+
 #[test]
 #[should_panic(expected = "inbox-authority")]
 fn bypassed_inbox_authority_is_detected_by_independent_oracle() {
@@ -54,7 +100,8 @@ fn native_oversize_is_rejected_before_json_materialization()
 }
 #[test]
 fn native_json_admission_agrees_at_exact_byte_boundary() -> Result<(), Box<dyn std::error::Error>> {
-    let base = fixture()?.environments.remove(0);
+    let mut base = fixture()?.environments.remove(0);
+    add_worker(&mut base)?;
     let mut manifest = DeploymentManifest {
         schema_version: 1,
         environments: (0..8)
@@ -65,7 +112,7 @@ fn native_json_admission_agrees_at_exact_byte_boundary() -> Result<(), Box<dyn s
                     .map(|route| RouteSpec {
                         host: format!("e{index}.example.com"),
                         path_prefix: format!("/p{route}/a"),
-                        entry: "agent".into(),
+                        entry: "web".into(),
                     })
                     .collect();
                 environment
@@ -109,7 +156,7 @@ fn scaled(count: usize) -> Result<DeploymentManifest, Box<dyn std::error::Error>
     let mut manifest = fixture()?;
     let env = manifest.environments.first_mut().ok_or_else(missing)?;
     env.crons.clear();
-    if let EntryRuntime::Actor {
+    if let EntryRuntime::ActorNamespace {
         subscriptions,
         timer_inbox,
         ..
@@ -257,7 +304,10 @@ fn review_regressions_fail_before_publication() -> Result<(), Box<dyn std::error
             "/environments/0/entries/0/runtime/limits/memoryBytes",
             json!("0"),
         ),
-        ("/environments/0/entries/0/runtime/homeRegion", json!("")),
+        (
+            "/environments/0/entries/0/runtime/jurisdiction",
+            json!("invalid"),
+        ),
         (
             "/environments/0/entries/0/runtime/subscriptions/0/start",
             json!({"currentHead":false}),
@@ -343,6 +393,7 @@ fn review_regressions_fail_before_publication() -> Result<(), Box<dyn std::error
         );
     }
     let mut routes = fixture()?;
+    add_worker(routes.environments.first_mut().ok_or_else(missing)?)?;
     routes
         .environments
         .first_mut()
@@ -351,7 +402,7 @@ fn review_regressions_fail_before_publication() -> Result<(), Box<dyn std::error
         .push(RouteSpec {
             host: "app.example.com".into(),
             path_prefix: "/api".into(),
-            entry: "agent".into(),
+            entry: "web".into(),
         });
     let mut staging = routes.environments.first_mut().ok_or_else(missing)?.clone();
     staging.name = "staging".into();
@@ -379,8 +430,16 @@ fn all_binding_products_and_fetch_are_scoped_to_selected_entry()
     ] {
         let name = product.to_ascii_uppercase();
         let resource = format!("{product}:/sandbox");
-        env.bindings
-            .push(Binding::new(name.clone(), name.clone(), resource.clone())?.into());
+        let binding = match product {
+            "actors" => {
+                Binding::actor_namespace(name.clone(), name.clone(), b"account", "sandbox")?
+            }
+            "workers" => {
+                Binding::worker_service(name.clone(), name.clone(), b"account", "sandbox")?
+            }
+            _ => Binding::new(name.clone(), name.clone(), resource.clone())?,
+        };
+        env.bindings.push(binding.into());
         env.grants.push(BindingGrant {
             name: name.clone(),
             grant: ResourceGrant {
@@ -445,8 +504,14 @@ async fn cron_inbox_append_reaches_lowered_actor_wake_subscription()
         env.entries.first().ok_or_else(missing)?,
         "project-production-agent",
     )?;
-    assert_eq!(request.home_region(), "eu");
-    assert_eq!(request.limits().handler_timeout_millis(), 1000);
+    assert_eq!(request.jurisdiction(), "eu");
+    assert_eq!(
+        request
+            .limits()
+            .ok_or("namespace limits")?
+            .handler_timeout_millis(),
+        1000
+    );
     assert_eq!(
         request.bindings().first().ok_or_else(missing)?.resource(),
         "streams:/agents/a/inbox"
@@ -664,7 +729,7 @@ proptest! {
         let mut manifest = fixture()?;
         let env = manifest.environments.first_mut().ok_or_else(missing)?;
         env.crons.clear();
-        if let EntryRuntime::Actor { timer_inbox, .. } = &mut env.entries.first_mut().ok_or_else(missing)?.runtime { *timer_inbox = None; }
+        if let EntryRuntime::ActorNamespace { timer_inbox, .. } = &mut env.entries.first_mut().ok_or_else(missing)?.runtime { *timer_inbox = None; }
         let digest = "ab".repeat(32);
         let name = if directory_only {
             acyclic_auth::objects_resource(b"static", format!("assets/{digest}/").as_bytes())
@@ -694,7 +759,7 @@ proptest! {
             let env = manifest.environments.first_mut().ok_or_else(missing)?;
             let resource = format!("streams:/{path}");
             env.crons.first_mut().ok_or_else(missing)?.inbox.0.name = resource.clone();
-            if let EntryRuntime::Actor { subscriptions, timer_inbox, .. } = &mut env.entries.first_mut().ok_or_else(missing)?.runtime {
+            if let EntryRuntime::ActorNamespace { subscriptions, timer_inbox, .. } = &mut env.entries.first_mut().ok_or_else(missing)?.runtime {
                 *subscriptions.first_mut().ok_or_else(missing)? = SubscriptionSpec::new("inbox".into(), path, acyclic_actors::domain::SubscriptionStart::cursor(0), true)?.into();
                 if let Some(inbox) = timer_inbox { inbox.stream.0.name = resource; }
             }
@@ -734,6 +799,36 @@ fn generated_artifacts_preserve_the_admitted_manifest_surface()
     assert_eq!(
         environment,
         environment_typescript(&fixture()?, "production", "agent")?
+    );
+    Ok(())
+}
+
+#[test]
+fn worker_lowering_preserves_request_limits_and_rejects_namespace_entries()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut manifest = fixture()?;
+    let environment = manifest.environments.first_mut().ok_or_else(missing)?;
+    add_worker(environment)?;
+    let worker = environment.entries.last().ok_or_else(missing)?;
+    let request = lower_worker(environment, worker, "deploy")?;
+    assert!(request.limits().is_none());
+    let limits = request.worker_limits().ok_or("worker limits")?;
+    assert_eq!(
+        (
+            limits.cpu_millis(),
+            limits.memory_bytes(),
+            limits.timeout_millis()
+        ),
+        (1, 1024, 10)
+    );
+    assert!(lower_actor(environment, worker, "deploy").is_err());
+    assert!(
+        lower_worker(
+            environment,
+            environment.entries.first().ok_or_else(missing)?,
+            "deploy"
+        )
+        .is_err()
     );
     Ok(())
 }

@@ -3,14 +3,19 @@
     messages(
         BindingProto,
         ActorLimitsProto,
+        WorkerLimitsProto,
         SubscriptionStartProto,
         SubscriptionSpecProto,
         SubscriptionObservationProto,
         ActorObservationProto,
-        CreateActorRequestProto,
-        CreateActorResponseProto,
-        UpdateActorRequestProto,
-        UpdateActorResponseProto,
+        DeploymentObservationProto,
+        DeleteWorkerRequestProto,
+        DeleteWorkerResponseProto,
+        InvokeWorkerRequestProto,
+        DeploymentRequestProto,
+        DeploymentResponseProto,
+        UpdateNamespaceRequestProto,
+        UpdateNamespaceResponseProto,
         InspectActorRequestProto,
         InspectActorResponseProto,
         AddSubscriptionRequestProto,
@@ -21,8 +26,8 @@
         ResumeSubscriptionResponseProto,
         CheckpointActorRequestProto,
         CheckpointActorResponseProto,
-        DeleteActorRequestProto,
-        DeleteActorResponseProto,
+        DeleteAllRequestProto,
+        DeleteAllResponseProto,
         HeaderProto,
         InvokeActorRequestProto,
         InvokeActorResponseProto,
@@ -35,15 +40,36 @@ pub struct ActorsFile;
 
 #[acyclic_contract_derive::service(file = ActorsFile)]
 pub enum ActorsService {
-    #[wire(auth(action = "actors/create", extractor = "actors.create-with-bindings"))]
-    CreateActor {
-        request: CreateActorRequestProto,
-        response: CreateActorResponseProto,
+    #[wire(auth(action = "workers/delete", extractor = "workers.delete"))]
+    DeleteWorker {
+        request: DeleteWorkerRequestProto,
+        response: DeleteWorkerResponseProto,
     },
-    #[wire(auth(action = "actors/update", extractor = "actors.update-with-bindings"))]
-    UpdateActor {
-        request: UpdateActorRequestProto,
-        response: UpdateActorResponseProto,
+    #[wire(auth(action = "workers/invoke", extractor = "workers.invoke"))]
+    InvokeWorker {
+        request: InvokeWorkerRequestProto,
+        response: InvokeActorResponseProto,
+    },
+    #[wire(auth(
+        action = "actors/deploy-namespace",
+        extractor = "actors.deploy-with-bindings"
+    ))]
+    DeployNamespace {
+        request: DeploymentRequestProto,
+        response: DeploymentResponseProto,
+    },
+    #[wire(auth(action = "workers/deploy", extractor = "workers.deploy-with-bindings"))]
+    DeployWorker {
+        request: DeploymentRequestProto,
+        response: DeploymentResponseProto,
+    },
+    #[wire(auth(
+        action = "actors/update-namespace",
+        extractor = "actors.update-namespace-with-bindings"
+    ))]
+    UpdateNamespace {
+        request: UpdateNamespaceRequestProto,
+        response: UpdateNamespaceResponseProto,
     },
     #[wire(auth(action = "actors/read", extractor = "actors.read"))]
     InspectActor {
@@ -75,9 +101,9 @@ pub enum ActorsService {
         request: InvokeActorRequestProto,
         response: InvokeActorResponseProto,
     },
-    #[wire(auth(action = "actors/delete", extractor = "actors.delete"))]
-    DeleteActor {
-        request: DeleteActorRequestProto,
-        response: DeleteActorResponseProto,
+    #[wire(auth(action = "actors/delete-all", extractor = "actors.delete"))]
+    DeleteAll {
+        request: DeleteAllRequestProto,
+        response: DeleteAllResponseProto,
     },
 }

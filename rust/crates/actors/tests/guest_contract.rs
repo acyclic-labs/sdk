@@ -35,7 +35,7 @@ proptest! {
             prop_assert_eq!(capability.version(), version);
         }
         let caller = AdmittedCaller::new(value.clone(), value.clone(), value.clone(), value.clone(), value.clone(), expiry);
-        prop_assert_eq!(caller.is_ok(), valid && expiry != 0);
+        prop_assert_eq!(caller.is_ok(), valid && acyclic_actors::addressing::validate_actor_id(value.as_bytes()).is_ok() && expiry != 0);
         if let Ok(caller) = caller {
             prop_assert_eq!(caller.principal(), &value);
             prop_assert_eq!(caller.expires_at_ms(), &expiry.to_string());
@@ -360,9 +360,35 @@ fn every_event_round_trips_with_a_single_discriminant() -> Result<(), Box<dyn st
 
 #[test]
 fn generated_authoring_contract_has_no_drift() -> Result<(), Box<dyn std::error::Error>> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/authoring/guest.ts");
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/authoring/guest.ts");
     let generated = typescript();
     assert_eq!(std::fs::read_to_string(path)?, generated);
+    Ok(())
+}
+
+#[test]
+fn admitted_actor_audiences_include_namespace_and_legacy_default()
+-> Result<(), Box<dyn std::error::Error>> {
+    let caller = AdmittedCaller::new(
+        "account".into(),
+        "org".into(),
+        "principal".into(),
+        "credential".into(),
+        "same".into(),
+        1,
+    )?;
+    assert_eq!(
+        caller.namespace(),
+        acyclic_actors::addressing::DEFAULT_ACTOR_NAMESPACE
+    );
+    let a = caller.clone().with_namespace("ClassOne".into())?;
+    let b = caller.with_namespace("ClassTwo".into())?;
+    assert_eq!(a.actor_id(), b.actor_id()); // Negative control: the old local audience aliases.
+    assert_ne!(a.reference()?, b.reference()?);
+    assert!(a.clone().with_namespace(String::new()).is_err());
+    let mut raw = serde_json::to_value(a)?;
+    raw["namespace"] = serde_json::json!("");
+    assert!(serde_json::from_value::<AdmittedCaller>(raw).is_err());
     Ok(())
 }

@@ -1,4 +1,4 @@
-//! Worker lifecycle contracts copied from pinned Cloud test assertions.
+//! Proposed SDK Worker deployment contract; historical Cloud provenance pins the code only.
 #![cfg(not(target_arch = "wasm32"))]
 #![allow(
     clippy::expect_used,
@@ -61,12 +61,12 @@ async fn reply(state: Fixture, headers: HeaderMap, request: Value, operation: &s
     Json(field(&state.golden, &format!("/{operation}/response")).clone())
 }
 
-async fn create(
+async fn deploy(
     State(state): State<Fixture>,
     headers: HeaderMap,
     Json(request): Json<Value>,
 ) -> Json<Value> {
-    reply(state, headers, request, "create").await
+    reply(state, headers, request, "deploy").await
 }
 async fn invoke(
     State(state): State<Fixture>,
@@ -88,16 +88,16 @@ async fn delete(
     clippy::too_many_lines,
     reason = "replays the complete Cloud Worker lifecycle"
 )]
-async fn cloud_worker_publication_and_lifecycle_use_existing_contracts() {
+async fn worker_publication_and_named_deployment_contract() {
     let golden = golden();
     let state = Fixture {
         golden: golden.clone(),
         seen: Arc::default(),
     };
     let router = Router::new()
-        .route("/v1/actors/create", post(create))
-        .route("/v1/actors/invoke", post(invoke))
-        .route("/v1/actors/delete", post(delete))
+        .route("/v1/workers/deploy", post(deploy))
+        .route("/v1/workers/invoke", post(invoke))
+        .route("/v1/workers/delete", post(delete))
         .with_state(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -156,22 +156,22 @@ async fn cloud_worker_publication_and_lifecycle_use_existing_contracts() {
         .expect("valid Cloud fixture");
     assert_eq!(published.body().as_ref(), code.as_ref());
     let created = client
-        .create(&decode::<wire::CreateActorRequest>(
-            "CreateActorRequest",
-            field(&golden, "/create/request"),
+        .deploy(&decode::<wire::DeploymentRequest>(
+            "DeploymentRequest",
+            field(&golden, "/deploy/request"),
         ))
         .await
         .expect("valid Cloud fixture");
     assert_eq!(
         created,
-        decode::<wire::CreateActorResponse>(
-            "CreateActorResponse",
-            field(&golden, "/create/response")
+        decode::<wire::DeploymentResponse>(
+            "DeploymentResponse",
+            field(&golden, "/deploy/response")
         )
     );
     let invoked = client
-        .invoke(&decode::<wire::InvokeActorRequest>(
-            "InvokeActorRequest",
+        .invoke(&decode::<wire::InvokeWorkerRequest>(
+            "InvokeWorkerRequest",
             field(&golden, "/invoke/request"),
         ))
         .await
@@ -184,22 +184,22 @@ async fn cloud_worker_publication_and_lifecycle_use_existing_contracts() {
         )
     );
     let deleted = client
-        .delete(&decode::<wire::DeleteActorRequest>(
-            "DeleteActorRequest",
+        .delete(&decode::<wire::DeleteWorkerRequest>(
+            "DeleteWorkerRequest",
             field(&golden, "/delete/request"),
         ))
         .await
         .expect("valid Cloud fixture");
     assert_eq!(
         deleted,
-        decode::<wire::DeleteActorResponse>(
-            "DeleteActorResponse",
+        decode::<wire::DeleteWorkerResponse>(
+            "DeleteWorkerResponse",
             field(&golden, "/delete/response")
         )
     );
     assert_eq!(
         *state.seen.lock().expect("valid Cloud fixture"),
-        ["create", "invoke", "delete"]
+        ["deploy", "invoke", "delete"]
     );
     server.abort();
 }
