@@ -42,10 +42,17 @@ class RuntimeTests(unittest.TestCase):
         if negative:source=source.replace("file=sys.stderr,flush=True", "flush=True")
         if cleanup_failure:source=source.replace('try:remove_home(job)','try:raise OSError("cleanup control")')
         p=self.d/('negative.py' if negative else 'worker.py');p.write_text(source);return p
+    def worker_env(self,extra=None):
+        env=dict(os.environ)
+        # This worker owns a new receipt and target tree. An enclosing job's
+        # export specification refers to that job's outputs, never this one's.
+        for key in ['BB_JOB_ACTIVE','BB_ADMITTED','BB_JOB_EXPORT_SPEC','BB_JOB_PRIVATE_MOUNT','BB_JOB_GIT_SOURCE','BUILD_SLOT_RECEIPT_META','BUILD_SLOT_RECEIPT_WRAPPED','BUILD_SLOT_EXEC_IN_PAYLOAD','BUILD_SLOT_DEFER_EXEC']:
+            env.pop(key,None)
+        env.update(extra or {})
+        return env
     def run_job(self,argv,negative=False,extra=None,cleanup_failure=False,gate=False,cwd=None):
         meta=self.d/'fixture.receipt-meta.v2.json';meta.write_text(json.dumps({'gate_log':'fixture.log'} if gate else {}))
-        env={**os.environ,'PATH':'/home/var/.cargo/bin:'+os.environ['PATH'], 'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
-        env.pop('BB_JOB_ACTIVE',None);env.pop('BB_ADMITTED',None)
+        env=self.worker_env({'PATH':'/home/var/.cargo/bin:'+os.environ['PATH'], 'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'})
         env.update(extra or {})
         result=subprocess.run([sys.executable,str(self.worker(negative,cleanup_failure)),*argv],cwd=cwd or self.d,env=env,capture_output=True)
         return result,json.loads(Path(str(meta)+'.runtime').read_text()) if Path(str(meta)+'.runtime').exists() else {}
@@ -58,8 +65,7 @@ class RuntimeTests(unittest.TestCase):
         meta=self.d/'fixture.receipt-meta.v2.json';meta.write_text('{}')
         # Metadata does not compile. Endpoint ownership/startup have separate
         # controls; do not start two real servers for this stdout-only fixture.
-        env={**os.environ,'BUILD_SLOT_RECEIPT_WRAPPED':'1','BB_ADMITTED':'1','BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
-        env.pop('BB_JOB_ACTIVE',None)
+        env=self.worker_env({'BUILD_SLOT_RECEIPT_WRAPPED':'1','BB_ADMITTED':'1','BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'})
         args=['bash',str(script),'cargo','metadata','--format-version','1','--no-deps']
         result=subprocess.run(args,cwd=self.d,env=env,capture_output=True)
         self.assertEqual(result.returncode,0,result.stderr.decode());self.assertEqual(json.loads(result.stdout)['packages'][0]['name'],'gate-stdout-fixture')
@@ -72,8 +78,8 @@ class RuntimeTests(unittest.TestCase):
         script=self.d/'cold-build-slot'
         script.write_text((HERE/'build-slot').read_text().replace('/home/var/bin/bb-job.py',str(self.worker())))
         meta=self.d/'cold.receipt-meta.v2.json';meta.write_text('{}')
-        env={**os.environ,'BUILD_SLOT_RECEIPT_WRAPPED':'1','BB_ADMITTED':'1','BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1'}
-        env.pop('BB_JOB_ACTIVE',None);env.pop('BB_CACHE_DISABLED',None)
+        env=self.worker_env({'BUILD_SLOT_RECEIPT_WRAPPED':'1','BB_ADMITTED':'1','BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1'})
+        env.pop('BB_CACHE_DISABLED',None)
         result=subprocess.run(['bash',str(script),'--cold',sys.executable,'-c','import os;print(os.environ["BB_CACHE_DISABLED"])'],cwd=self.d,env=env,capture_output=True)
         self.assertEqual(result.returncode,0,result.stderr.decode())
         self.assertEqual(result.stdout,b'1\n')
@@ -85,8 +91,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stderr.decode())
         worker=self.worker();worker.write_text(worker.read_text().replace("os.environ['PATH']=user_path","pass # former sudo secure_path leak"))
         meta=self.d/'path-negative.meta';meta.write_text('{}')
-        env={**os.environ,'PATH':wanted,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
-        env.pop('BB_JOB_ACTIVE',None)
+        env=self.worker_env({'PATH':wanted,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'})
         result=subprocess.run([sys.executable,str(worker),sys.executable,'-c',f'import os;assert os.environ["PATH"]=={wanted!r}'],env=env,capture_output=True)
         self.assertNotEqual(result.returncode,0);self.assertIn(b'AssertionError',result.stderr)
 
@@ -135,11 +140,10 @@ print('FIVE_WRITES_DENIED')
         self.assertEqual((home/'.cache/existing').read_text(),'keep');self.assertFalse(runtime['home_guard']['writable'])
         worker=self.worker();worker.write_text(worker.read_text().replace('if not namespace_ready:','if False:').replace("runtime['home_guard']=protect_home(real_home)","runtime['home_guard']={'mechanism':'negative-control'}"))
         meta=self.d/'negative.meta';meta.write_text('{}')
-        env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        env=self.worker_env({'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'})
         # This mutant bypasses the constructor that normally captures limits.
         from admission_policy import capture_limits, LIMIT_ENV
         env[LIMIT_ENV]=json.dumps(capture_limits())
-        env.pop('BB_JOB_ACTIVE',None)
         result=subprocess.run([sys.executable,str(worker),sys.executable,'-c',child],env=env,capture_output=True)
         self.assertEqual(result.returncode,0,result.stderr.decode());self.assertTrue((home/'.cache/child').exists())
 
@@ -154,8 +158,7 @@ print('FIVE_WRITES_DENIED')
         source=worker.read_text().replace("'--pid','--fork','--kill-child','--mount-proc',",'').replace('    require_private_proc()','    pass # old mount-only guard')
         worker.write_text(source)
         meta=self.d/'proc-negative.meta';meta.write_text('{}')
-        env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
-        env.pop('BB_JOB_ACTIVE',None)
+        env=self.worker_env({'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'})
         bad=subprocess.run([sys.executable,str(worker),sys.executable,'-c',code],env=env,capture_output=True)
         self.assertEqual(bad.returncode,0,bad.stderr.decode());self.assertTrue(target.exists())
         namespace=os.readlink('/proc/self/ns/pid').removeprefix('pid:[').removesuffix(']')
@@ -169,16 +172,14 @@ print('FIVE_WRITES_DENIED')
         self.assertFalse((self.real_home/'relative-write').exists())
         worker=self.worker();worker.write_text(worker.read_text().replace('    os.chdir(os.getcwd())','    pass # old inherited cwd mount'))
         meta=self.d/'cwd-negative.meta';meta.write_text('{}')
-        env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
-        env.pop('BB_JOB_ACTIVE',None)
+        env=self.worker_env({'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'})
         bad=subprocess.run([sys.executable,str(worker),sys.executable,'-c',code],cwd=self.real_home,env=env,capture_output=True)
         self.assertEqual(bad.returncode,0,bad.stderr.decode());self.assertTrue((self.real_home/'relative-write').exists())
 
     def test_concurrent_other_tenant_writer_does_not_fail_job(self):
         home=self.real_home;cache=home/'.cache/cloud/bb2-tools';cache.mkdir(parents=True)
         meta=self.d/'concurrent.meta';meta.write_text('{}')
-        env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
-        env.pop('BB_JOB_ACTIVE',None)
+        env=self.worker_env({'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'})
         process=subprocess.Popen([sys.executable,str(self.worker()),sys.executable,'-c','import sys;print("ready",flush=True);sys.stdin.readline();print("done")'],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         try:
             self.assertEqual(process.stdout.readline(),b'ready\n')
@@ -193,8 +194,7 @@ print('FIVE_WRITES_DENIED')
     def test_missing_guard_or_inherited_home_output_is_infra(self):
         worker=self.worker();worker.write_text(worker.read_text().replace('real_home=real_home.resolve(strict=True)','raise OSError("unavailable control")'))
         meta=self.d/'unavailable.meta';meta.write_text('{}')
-        env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
-        env.pop('BB_JOB_ACTIVE',None)
+        env=self.worker_env({'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'})
         args=[sys.executable,str(worker),sys.executable,'-c','print("must not execute")']
         result=subprocess.run(args,env=env,capture_output=True)
         self.assertEqual(result.returncode,224);self.assertEqual(result.stdout,b'');self.assertIn(b'HOME guard INFRA',result.stderr)
@@ -207,7 +207,7 @@ print('FIVE_WRITES_DENIED')
     def test_read_only_inherited_home_input_cannot_reopen_the_old_mount(self):
         target=self.real_home/'input';target.write_text('original')
         worker=self.worker();meta=self.d/'readfd.meta';meta.write_text('{}')
-        env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        env=self.worker_env({'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'})
         env.pop('BB_JOB_ACTIVE',None)
         args=[sys.executable,str(worker),sys.executable,'-c','from pathlib import Path;Path("/proc/self/fd/0").write_text("changed")']
         with target.open('r') as stream:
@@ -460,7 +460,7 @@ finally:a.close();b.close()
         for negative in [False,True]:
             worker=self.d/f'admit-{negative}.py';worker.write_text(source.replace("t['fds'][2]","t['fds'][1]") if negative else source)
             root=self.d/f'admit-{negative}';root.mkdir()
-            env={**os.environ,'BB_ADMIT_ROOT':str(root),'BB_ADMIT_WRAPPED_COMMAND':'1'}
+            env=self.worker_env({'BB_ADMIT_ROOT':str(root),'BB_ADMIT_WRAPPED_COMMAND':'1'})
             result=subprocess.run([sys.executable,str(worker),'lane','cloud','--',sys.executable,'-c','print("must not run")'],env=env,capture_output=True)
             self.assertEqual(result.returncode,224)
             self.assertIn(b'BB_DISK_LOW',result.stdout if negative else result.stderr)
@@ -470,7 +470,7 @@ finally:a.close();b.close()
     def test_upgrade_barrier_drains_existing_jobs_without_admitting_new_tickets(self):
         root=self.d/'admit';root.mkdir()
         (root/'lease-stale.json').write_text(json.dumps({'pid':999999999,'identity':None}))
-        env={**os.environ,'BB_ADMIT_ROOT':str(root),'BB_ADMIT_WRAPPED_COMMAND':'1'}
+        env=self.worker_env({'BB_ADMIT_ROOT':str(root),'BB_ADMIT_WRAPPED_COMMAND':'1'})
         first=subprocess.Popen([sys.executable,str(HERE/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c','import time;time.sleep(.3)'],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         until=time.monotonic()+2
         while not any(p.name!='lease-stale.json' for p in root.glob('lease-*')) and time.monotonic()<until:time.sleep(.01)
@@ -507,8 +507,7 @@ finally:a.close();b.close()
         # assertion waits for the actual terminal receipt, never a timed PASS.
         source=(HERE/'buildbox-receipt.mjs').read_text().replace('/home/var/bin/bb-job.py',str(worker)).replace('/mnt/bb/jobs/',str(receipts)+'/').replace("const dir = '/mnt/bb/jobs'",f'const dir = {str(receipts)!r}').replace('interval = 1000','interval = 20')
         receipt.write_text(source);(self.d/'buildbox-receipt.mjs').write_text(source)
-        env={**os.environ,'BUILD_SLOT_DEFER_EXEC':'1','BUILD_SLOT_LABEL':'gate-speed-r19-kill-control'}
-        env.pop('BB_JOB_ACTIVE',None);env.pop('BUILD_SLOT_EXEC_IN_PAYLOAD',None)
+        env=self.worker_env({'BUILD_SLOT_DEFER_EXEC':'1','BUILD_SLOT_LABEL':'gate-speed-r19-kill-control'})
         marker=self.d/'target-path'
         code=f'from pathlib import Path;import os,time;p=Path(os.environ["CARGO_TARGET_DIR"]);(p/"object").write_text("compiled");Path({str(marker)!r}).write_text(str(p));time.sleep(60)'
         process=subprocess.Popen([job.NODE,str(receipt),'run-bb',sys.executable,str(worker),sys.executable,'-c',code],cwd=self.d,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
@@ -564,7 +563,7 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
             import shlex
             with Path(str(prefix)+'.wrap').open('a') as wrapper:
                 wrapper.write(f'\nmkdir -p "$J.targets" "$J.tmp"\nprintf scratch > "$J.targets/object"\nprintf scratch > "$J.tmp/object"\nexport BUILD_SLOT_RECEIPT_META={shlex.quote(str(meta))}\nsetsid {shlex.join([sys.executable,str(worker),sys.executable,"-c",code])} &\npayload=$!\nnode "$J.receipt-tool.mjs" job {shlex.quote(str(meta))} "$payload"\nwait "$payload"\n')
-            process=subprocess.Popen(['bash',str(prefix)+'.wrap'],env={**os.environ,'PATH':str(Path(job.NODE).parent)+':'+os.environ['PATH']},stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+            process=subprocess.Popen(['bash',str(prefix)+'.wrap'],env=self.worker_env({'PATH':str(Path(job.NODE).parent)+':'+os.environ['PATH']}),stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
             try:
                 until=time.monotonic()+4
                 while not marker.exists() and time.monotonic()<until:time.sleep(.01)
@@ -604,7 +603,7 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
 
     def test_daemon_killed_client_holds_until_command_exits_and_releases(self):
         root=self.d/'admit';root.mkdir();(root/'admit.conf').write_text('compile=1 tenant.graphcoder=1 tenant.cloud=1\n')
-        env={**os.environ,'BB_ADMIT_ROOT':str(root),'BB_ADMIT_WRAPPED_COMMAND':'1'}
+        env=self.worker_env({'BB_ADMIT_ROOT':str(root),'BB_ADMIT_WRAPPED_COMMAND':'1'})
         args=[sys.executable,str(HERE/'bb-admit.py'),'lane','graphcoder','--',sys.executable,'-c',f'from pathlib import Path; import time,os;Path({str(self.d/"pid")!r}).write_text(str(os.getpid()));time.sleep(60)']
         first=subprocess.Popen(args,env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         try:
@@ -704,7 +703,7 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
 
     def test_fixed_shared_port_negative_control(self):
         c=socket.socket();c.bind(('127.0.0.1',0));port=c.getsockname()[1];c.close()
-        env={**os.environ,'SCCACHE_SERVER_PORT':str(port),'SCCACHE_DIR':'/mnt/bb/sccache','SCCACHE_IDLE_TIMEOUT':'30'}
+        env=self.worker_env({'SCCACHE_SERVER_PORT':str(port),'SCCACHE_DIR':'/mnt/bb/sccache','SCCACHE_IDLE_TIMEOUT':'30'})
         env.pop('SCCACHE_SERVER_UDS',None)
         r=subprocess.run([job.SCCACHE,'--start-server'],env=env,capture_output=True)
         self.assertEqual(r.returncode,0,r.stderr)
