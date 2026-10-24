@@ -116,7 +116,7 @@ export async function exerciseDiscovery(engine, label, reopen) {
           const projected = await projectModelFile(part, {
             resolveFile: verifiedContentResolver(content, DEFAULT_LIMITS), maxResolvedBytes: 512,
           });
-          assert(projected.kind === "text" && projected.text === expected, "model file projection changed pinned instruction bytes");
+          assert(projected === expected, "model file projection changed pinned instruction bytes");
         }
         assert(admitted.includes("Inspect old files") && !admitted.includes("SECRET BODY"), "model metadata/body selection changed");
         yield { kind: "completed", metadata: {} };
@@ -155,4 +155,21 @@ export async function exerciseDiscovery(engine, label, reopen) {
         entries: [], hasMore: true }; },
     }), "nonadvancing page accepted");
   } finally { core.free(); }
+}
+
+/** The same retained discovery consumer through the browser's OPFS host. */
+export async function exerciseBrowserDiscovery() {
+  const { openBrowserFs, DEFAULT_OBJECT_CACHE_OPTIONS } = await import("/dist/browser.js");
+  const options = {
+    databaseName: `harness-discovery-${crypto.randomUUID()}`,
+    maximumObjectBytes: 1024 * 1024, objectAcceleration: "opfs",
+    objectCache: DEFAULT_OBJECT_CACHE_OPTIONS,
+  };
+  let engine = await openBrowserFs(options);
+  try { await exerciseDiscovery(engine, "browser", async previous => {
+    previous.close();
+    engine = await openBrowserFs(options);
+    return engine;
+  }); }
+  finally { engine.close(); }
 }

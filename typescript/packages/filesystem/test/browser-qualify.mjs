@@ -24,6 +24,7 @@ const PAGES = [
   "browser-publication.html?profile=opfs",
   "browser-stream.html",
   "../harness/test/browser-wire.html",
+  "../harness/test/browser-context.html",
   "../harness/test/browser-wasm-init-failure.html",
   "../harness/test/browser-task.html",
   "../harness/test/browser-task-multitab.html",

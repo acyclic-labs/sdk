@@ -62,20 +62,8 @@ try {
     { messages: [], metadata: {} }, "prepend", DEFAULT_LIMITS); }
   catch { invalidSkillRejected = true; }
   if (!invalidSkillRejected) throw new Error("forged skill snapshot accepted");
-  const { exerciseDiscovery } = await import("./discovery-consumer.mjs");
-  const { openBrowserFs, DEFAULT_OBJECT_CACHE_OPTIONS } = await import("/dist/browser.js");
-  const discoveryOptions = {
-    databaseName: `harness-discovery-${crypto.randomUUID()}`,
-    maximumObjectBytes: 1024 * 1024, objectAcceleration: "opfs",
-    objectCache: DEFAULT_OBJECT_CACHE_OPTIONS,
-  };
-  let discoveryEngine = await openBrowserFs(discoveryOptions);
-  try { await exerciseDiscovery(discoveryEngine, "browser", async previous => {
-    previous.close();
-    discoveryEngine = await openBrowserFs(discoveryOptions);
-    return discoveryEngine;
-  }); }
-  finally { discoveryEngine.close(); }
+  const { exerciseBrowserDiscovery } = await import("./discovery-consumer.mjs");
+  await exerciseBrowserDiscovery();
   const role = new URL(location.href).searchParams.get("role") ?? "browser";
   const selection = { source: { kind: "attribute", attribute: {
     type_name: "example.role", type_revision: "1", state_revision: "2",
