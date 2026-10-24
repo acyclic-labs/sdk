@@ -13,7 +13,7 @@ pub enum PolicyOwner {
     AtomicPublication,
 }
 
-#[cfg(all(test, feature = "distributed"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
@@ -43,13 +43,13 @@ mod tests {
 /// An authenticated backend cut. Only the backend can construct its evidence.
 #[derive(Clone, Copy, Debug)]
 pub struct PolicyCut {
-    #[cfg(feature = "distributed")]
+    #[cfg(any(test, feature = "distributed"))]
     pub(crate) owner: [u8; 16],
-    #[cfg(feature = "distributed")]
+    #[cfg(any(test, feature = "distributed"))]
     pub(crate) authority: AuthorityId,
-    #[cfg(feature = "distributed")]
+    #[cfg(any(test, feature = "distributed"))]
     pub(crate) head: Head,
-    #[cfg(feature = "distributed")]
+    #[cfg(any(test, feature = "distributed"))]
     pub(crate) epoch_tail: u64,
 }
 
@@ -60,7 +60,7 @@ thread_local! {
 }
 
 impl PolicyCut {
-    #[cfg(feature = "distributed")]
+    #[cfg(any(test, feature = "distributed"))]
     pub(crate) fn new(
         owner: [u8; 16],
         authority: AuthorityId,

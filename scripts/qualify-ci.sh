@@ -386,7 +386,7 @@ case "$lane" in
     node --test scripts/buildbox/main_green_receipt_namespace.test.mjs
     python3 scripts/buildbox/msvc-compiler.test.py
     python3 scripts/with-xwin-cache.test.py
-    node --test scripts/check-harness-package.test.mjs scripts/check-machines-package.test.mjs scripts/ci-background-log.test.mjs
+    node --test scripts/check-harness-package.test.mjs scripts/check-machines-package.test.mjs scripts/ci-background-log.test.mjs scripts/pr-gate-payload.test.mjs
     node --test plugin/tests/hosts/login-link.test.mjs
     install_tool actionlint_1.7.7_linux_amd64.tar.gz \
       https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz \

@@ -45,7 +45,12 @@ if ! python Q:/lanes/gate-affected.py "$W" "$base" --output "$W/.gate-selection.
   exit 1
 fi
 cp "$W/.gate-selection.json" "$log.scope.json"
-cp Q:/lanes/pr-gate-checks.sh "$W/.gate-checks.sh"
+# The payload belongs to the reviewed candidate. An independently installed
+# runner can silently omit newly required phases, even with a green footer.
+cp "$W/scripts/pr-gate-checks.sh" "$W/.gate-checks.sh" || {
+  echo 'error: GATE_RUNNER_INFRA reviewed PR payload is unavailable' >> "$log"
+  exit 6
+}
 cp Q:/lanes/gate-test-runner.sh "$W/.gate-test-runner.sh"
 # The coordinator helper also protects PRs based on an older source runner.
 printf '\nexport GATE_TEST_RUNNER_SCRIPT=.gate-test-runner.sh\n' > "$W/.gate-runner-env"
