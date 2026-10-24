@@ -1,0 +1,20 @@
+{
+  "id": "pty-search-cancel-resume",
+  "workspace": {"kind": "plain"},
+  "model": {"steps": [
+    {"tools": [{"id": "held-search", "name": "web_search", "arguments": {"query": "held fixture query"}}]},
+    {"when": {"path": "search"}, "json": {}, "hold": true}
+  ]},
+  "inputs": [
+    {"mode": "pty", "actions": [
+      {"when": {"contains": ["GraphCoder"], "cursor": true}, "prompt": "cancel this configured search"},
+      {"after_request": {"path": "search", "step": 1}, "when": {"contains": ["GraphCoder"]}, "send": "\u001b"},
+      {"when": {"task_failure": "cancelled", "contains": ["cancelled", "○"]}, "send": "\u0004"}
+    ], "exit": 2, "settled_contains": ["cancel this configured search", "cancelled", "○"]},
+    {"mode": "pty", "resume": true, "actions": [
+      {"when": {"contains": ["GraphCoder", "cancel this configured search", "○"], "cursor": true}, "send": "\u0004"}
+    ], "exit": 2, "settled_contains": ["cancel this configured search", "○"]}
+  ],
+  "assert": {"requests": 1, "http": [{"path": "search", "body": {"query": "held fixture query", "numResults": 5}}]},
+  "settings": {".codex/search.json": "{\"provider\":\"exa\",\"api_keys\":{\"exa\":\"fixture-unused\"},\"endpoint\":\"{{url}}/search\"}"}
+}

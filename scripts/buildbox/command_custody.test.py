@@ -1,5 +1,6 @@
 """Command retirement and export ownership inside the enclosing job namespace."""
 import importlib.util
+import ast
 import json
 import os
 from pathlib import Path
@@ -148,6 +149,30 @@ finally:
         for interrupted in [None, signal.SIGTERM, signal.SIGKILL]:
             with self.subTest(signal=interrupted):
                 self.custody_case(interrupted, negative=True)
+
+    def test_command_supervision_has_no_unchecked_cli_entry(self):
+        source = (HERE / 'bb-job.py').read_text()
+        def probe(text):
+            entry = ast.parse(text).body[-1]
+            self.assertIsInstance(entry, ast.If)
+            code = compile(ast.Module(body=[entry], type_ignores=[]), '<production entry>', 'exec')
+            for arguments in [['supervise', '17', '19', 'fixture'], ['unknown-command']]:
+                run = unittest.mock.Mock(return_value=0)
+                unchecked = unittest.mock.Mock(return_value=0)
+                namespace = {'__name__': '__main__', 'sys': type('Args', (), {'argv': ['bb-job.py', *arguments]}),
+                             'run': run, 'supervise': unchecked}
+                with self.assertRaises(SystemExit):
+                    exec(code, namespace)
+                run.assert_called_once_with(arguments)
+                unchecked.assert_not_called()
+        probe(source)
+        boundary = "    if sys.argv[1:2]==['home-namespace']:"
+        self.assertEqual(source.count(boundary), 1)
+        former = source.replace(boundary,
+            "    if sys.argv[1:2]==['supervise']: raise SystemExit(supervise(17,19,sys.argv[4:]))\n"
+            "    elif sys.argv[1:2]==['home-namespace']:")
+        with self.assertRaises(AssertionError):
+            probe(former)
 
     def test_foreign_namespace_never_observes_or_signals_numeric_command_pid(self):
         def probe(module):

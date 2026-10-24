@@ -3,12 +3,18 @@ import { existsSync, mkdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { generateTypeDef } from "@napi-rs/cli";
 
+// Every binding family shares the enclosing job's target custody and device.
+// A sibling of a private bind mount is outside that ownership boundary.
+export function declarationTarget(root, environment = process.env) {
+  return join(resolve(root, environment.CARGO_TARGET_DIR ?? "target"), "napi");
+}
+
 export async function renderTypes(root, family, crates) {
   // Typechecking runs napi-derive without linking native libraries. Keep its
   // Cargo state beside the native binding build. Both the binding and its
   // filesystem dependency emit declarations; force either crate whose output
   // is missing.
-  const target = `${resolve(root, process.env.CARGO_TARGET_DIR ?? "target")}-napi`;
+  const target = declarationTarget(root);
   const typeDefDir = join(target, "napi-type-def", family);
   mkdirSync(typeDefDir, { recursive: true });
   const hasDeclarations = name => existsSync(join(typeDefDir, name)) && statSync(join(typeDefDir, name)).size > 0;

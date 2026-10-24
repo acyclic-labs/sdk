@@ -235,8 +235,17 @@ class OwnedCommand:
         self.command = None
         self.status = None
         try:
+            # A library bootstrap enters the already-owned command domain.
+            # There is no CLI subcommand that bypasses run's HOME constructor.
+            bootstrap = '''import importlib.util,sys
+from pathlib import Path
+sys.path.insert(0,str(Path(sys.argv[1]).resolve().parent))
+spec=importlib.util.spec_from_file_location('command_owner',sys.argv[1])
+owner=importlib.util.module_from_spec(spec);spec.loader.exec_module(owner)
+raise SystemExit(owner.supervise(int(sys.argv[2]),int(sys.argv[3]),sys.argv[4:]))
+'''
             self.child = subprocess.Popen(
-                [sys.executable, str(Path(__file__).resolve()), 'supervise',
+                [sys.executable, '-c', bootstrap, str(Path(__file__).resolve()),
                  str(control_read), str(status_write), *argv],
                 env=env, pass_fds=(control_read, status_write), start_new_session=True)
             self.status = os.fdopen(status_read, 'rb')
@@ -578,8 +587,7 @@ def stop_job(file):
 
 
 if __name__=='__main__':
-    if sys.argv[1:2]==['supervise']: raise SystemExit(supervise(int(sys.argv[2]),int(sys.argv[3]),sys.argv[4:]))
-    elif sys.argv[1:2]==['home-namespace']:
+    if sys.argv[1:2]==['home-namespace']:
         try:mount_home_namespace();result=run(sys.argv[2:],namespace_ready=True)
         except (OSError,RuntimeError,subprocess.SubprocessError) as error:
             print('[buildbox] HOME guard INFRA: '+str(error),file=sys.stderr,flush=True);result=224

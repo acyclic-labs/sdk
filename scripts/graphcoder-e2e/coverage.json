@@ -141,7 +141,8 @@
       "owner": "sessions (#1445)",
       "cases": [
         "web-search",
-        "web-search-refusal"
+        "web-search-refusal",
+        "pty-search-cancel-resume"
       ]
     },
     "A15": {
