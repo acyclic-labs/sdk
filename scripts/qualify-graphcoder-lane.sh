@@ -24,5 +24,6 @@ source .bb-sessions-binaries.env
 node scripts/qualify-web-lifecycle.mjs "$SESSIONS_GRAPHCODER_BINARY"
 node scripts/qualify-fetch-cancellation.mjs "$SESSIONS_GRAPHCODER_BINARY"
 python3 scripts/qualify-graphcoder-run.test.py
+python3 scripts/qualify-remote-command.test.py
 E2E_OUTPUT=e2e-consolidated-results python3 scripts/qualify-graphcoder-run.py .bb-sessions-shipping.jsonl
 cargo check --locked -p graphcoder --target x86_64-pc-windows-gnu --features "$binary_features"
