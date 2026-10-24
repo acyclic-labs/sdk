@@ -13,6 +13,7 @@ export const gateQualifications = [
   { args: ["--e2e-progress"] }, { args: ["--native-progress"] },
   { args: ["--timer"] }, { args: ["--guest"] },
   { args: ["--fs-binding", "--all-features"] },
+  { args: ["--fs-policy"] },
   { args: ["--memory-accounting"], rustflags: "-Dwarnings" },
   { args: ["--session-fs"] }, { args: ["--ownership"] },
   { args: ["--skill-materializer"] },
@@ -167,6 +168,16 @@ export function qualifyFsBindingLoom(features = [], run = spawnSync) {
   });
 }
 
+export function qualifyFsPolicyLoom(run = spawnSync) {
+  return qualifyLoom("acyclic-fs", "acyclic_fs", [
+    "--no-default-features", "--features", "memory,model-checking",
+  ], run, {
+    kind: "--lib", targetCfg: [],
+    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_fs_loom --cfg acyclic_loom` },
+    suites: [["facade::policy_cache::loom_tests::", 2], ["distributed::head_payload_loom_tests::", 8]],
+  });
+}
+
 export function qualifyMemoryAccountingLoom(run = spawnSync) {
   return qualifyLoom("acyclic-harness-core", "memory-accounting-model", [
     "--features", "filesystem,acyclic-fs/model-checking",
@@ -311,6 +322,7 @@ const fixedModels = {
   "--session-fs": qualifySessionFsLoom, "--ownership": qualifyOwnershipLoom,
   "--native-registry": qualifyNativeRegistryLoom,
   "--skill-materializer": qualifySkillMaterializerLoom,
+  "--fs-policy": qualifyFsPolicyLoom,
 };
 const selectableModels = {
   "--e2e-progress": qualifyE2eProgressLoom, "--hook-effects": qualifyHookEffectsLoom, "--hook-lifecycle": qualifyHookLifecycleLoom,
