@@ -379,7 +379,7 @@ fn owner_only_permissions(path: &Path) -> bool {
     let file = File::open(path).unwrap();
     // This checks a protected DACL with exactly one full-access ACE for the
     // current owner: equality to true denotes the same permission semantics.
-    let private = acyclic_fs::has_owner_only_permissions(&file).unwrap();
+    let private = acyclic_native_runtime::private_file::is_private(&file).unwrap();
     assert!(private, "credentials must remain owner-only");
     private
 }
@@ -398,8 +398,10 @@ fn oversized_merge_preserves_original(
     prop_assert!(original.len() as u64 <= MAX_AUTH_BYTES);
     prop_assert!(serde_json::to_vec(&transport.response).unwrap().len() as u64 <= MAX_AUTH_BYTES);
     let mut private = crate::credential_file::create(root.path()).unwrap();
-    private.write_all(&original).unwrap();
-    private.persist(&path).unwrap();
+    private.as_file_mut().write_all(&original).unwrap();
+    private
+        .publish(&path, acyclic_native_runtime::RenameMode::Replace)
+        .unwrap();
     let permissions = owner_only_permissions(&path);
     let outcome = if remove_size_bound {
         // Mutation of stage: use its real writer and atomic publication but
@@ -415,7 +417,9 @@ fn oversized_merge_preserves_original(
             &mut CredentialIo::new(None).unwrap(),
         )
         .unwrap();
-        staged.persist(&path).unwrap();
+        staged
+            .publish(&path, acyclic_native_runtime::RenameMode::Replace)
+            .unwrap();
         Ok(())
     } else {
         futures::executor::block_on(login.bearer(&transport, None, None)).map(|_| ())

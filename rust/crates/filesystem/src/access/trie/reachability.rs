@@ -5,10 +5,10 @@ impl PathTrie {
         let Ok(path) = self.prepare(prefix) else {
             return 0;
         };
-        let Some(initial) = self.state_at(path.state, now) else {
+        if !self.valid_at(now) {
             return 0;
-        };
-        let mut actions = initial.actions;
+        }
+        let mut actions = self.action_mask(path.state, now);
         let start = if prefix.is_empty() {
             path.state
         } else {
@@ -17,15 +17,45 @@ impl PathTrie {
             };
             state
         };
-        let mut seen = vec![false; self.states.len()];
+        let mut seen = vec![false; self.state_count()];
         let mut pending = vec![start];
-        seen[start] = true;
+        let symbols: Vec<_> = self
+            .alphabet
+            .symbols
+            .iter()
+            .copied()
+            .chain(
+                self.shared
+                    .iter()
+                    .flat_map(|binding| binding.policy.alphabet.symbols.iter().copied()),
+            )
+            .chain(std::iter::once('/'))
+            .collect();
+        let Some(other) = (1..=0x10ffff)
+            .filter_map(char::from_u32)
+            .find(|ch| !symbols.contains(ch))
+        else {
+            return actions;
+        };
+        let Some(initial) = self
+            .state_index(start)
+            .and_then(|index| seen.get_mut(index))
+        else {
+            return 0;
+        };
+        *initial = true;
         while let Some(state) = pending.pop() {
-            let node = &self.states[state];
-            actions |= node.actions;
-            for &next in &node.transitions {
-                if !seen[next] {
-                    seen[next] = true;
+            actions |= self.action_mask(state, now);
+            for ch in symbols.iter().copied().chain(std::iter::once(other)) {
+                let Ok(next) = self.step(state, ch) else {
+                    continue;
+                };
+                let Some(visited) = self.state_index(next).and_then(|index| seen.get_mut(index))
+                else {
+                    return 0;
+                };
+                if !*visited {
+                    *visited = true;
                     pending.push(next);
                 }
             }

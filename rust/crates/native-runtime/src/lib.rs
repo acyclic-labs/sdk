@@ -19,10 +19,10 @@ use sync::Mutex as CompletionMutex;
 
 #[cfg(target_vendor = "apple")]
 mod apple;
-#[cfg(target_os = "linux")]
-mod linux;
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 mod held_sync;
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 pub use held_sync::sync_descriptor_once;
 pub mod obs;
@@ -48,6 +48,8 @@ pub use process_tree::{
 };
 
 mod file;
+pub mod owner_record;
+pub mod private_file;
 #[cfg(windows)]
 pub use file::device_control_in_place;
 #[cfg(unix)]

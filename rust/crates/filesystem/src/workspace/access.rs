@@ -1,5 +1,5 @@
 use super::*;
-use crate::access::{Action, Capability, Context, PathTrie, Policy, Principal, Resource};
+use crate::access::{Action, Capability, Context, PathTrie, Principal};
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     /// Authorize and publish under one backend-owned policy cut. The operation
@@ -77,20 +77,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             tags: BTreeSet::new(),
             attributes: BTreeMap::new(),
         };
-        let capability = Capability {
-            layers: vec![vec![crate::access::Grant {
-                actions: actions.iter().copied().collect(),
-                resource: crate::access::ResourcePattern {
-                    lineage_root: None,
-                    volume: Some(
-                        uuid::Uuid::from_bytes(self.id.volume_id().into_bytes()).to_string(),
-                    ),
-                    generations: crate::access::Generations::All,
-                    path: "**".into(),
-                },
-            }]],
-            expires_at: None,
-        };
+        let capability = Capability::whole_volume(
+            Some(uuid::Uuid::from_bytes(self.id.volume_id().into_bytes()).to_string()),
+            actions,
+        );
         self.unrestricted_access(&principal, &capability, actions, cancellation)
             .await
     }
@@ -114,48 +104,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             .await
             .map_err(|failure| WorkspaceError::from(failure.error))?
             .value;
-        let (bytes, revision) = checkout
-            .read_access_policy(WorkBudget::UNBOUNDED, cancellation)
+        checkout
+            .compile_access(
+                crate::access::AccessBinding {
+                    principal,
+                    capability,
+                    facts: crate::access::AuthenticatedFacts::Coarse,
+                    generation: None,
+                    context: Context {
+                        now: access_time()?,
+                        approvals: 0,
+                    },
+                },
+                WorkBudget::UNBOUNDED,
+                cancellation,
+            )
             .await
-            .map_err(|failure| WorkspaceError::from(failure.error))?
-            .value;
-        let bytes = bytes.ok_or(WorkspaceError::AccessDenied)?;
-        let policy: Policy =
-            serde_json::from_slice(&bytes.bytes).map_err(|_| WorkspaceError::AccessDenied)?;
-        // These coarse adapters have no ordinal or authenticated task ancestry.
-        // Never filter a conditional deny using invented facts.
-        if policy.layers.iter().flatten().any(|rule| {
-            rule.principal != crate::access::PrincipalPattern::default()
-                || rule.resource.lineage_root.is_some()
-                || rule.resource.generations != crate::access::Generations::All
-                || rule.conditions.generations.is_some()
-                || rule.conditions.relation.is_some()
-                || rule.conditions.role.is_some()
-                || rule.conditions.tag.is_some()
-                || rule.conditions.approvals.is_some()
-        }) {
-            return Err(WorkspaceError::AccessDenied);
-        }
-        let volume = uuid::Uuid::from_bytes(self.id.volume_id().into_bytes()).to_string();
-        PathTrie::compile(
-            &policy,
-            principal,
-            Resource {
-                config: self.volume.config,
-                lineage: &[],
-                volume: &volume,
-                generation: 0,
-                head: 0,
-                path: "",
-            },
-            Context {
-                now: access_time()?,
-                approvals: 0,
-            },
-            capability,
-        )
-        .map(|view| view.with_policy_revision(checkout.generation_id(), revision))
-        .map_err(|_| WorkspaceError::AccessDenied)
+            .map(|receipt| receipt.value)
+            .map_err(|failure| WorkspaceError::from(failure.error))
     }
 
     /// Bind a coarse adapter only when its entire exposed operation set is
@@ -264,9 +230,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
 
 pub(crate) fn access_time() -> Result<u64, WorkspaceError> {
     use acyclic_stream::UnixMillisClock as _;
-    let millis = acyclic_stream::SystemUnixMillisClock.now_unix_millis();
-    if millis == 0 {
-        return Err(WorkspaceError::AccessDenied);
-    }
-    Ok(millis / 1000)
+    crate::access::unix_seconds(acyclic_stream::SystemUnixMillisClock.now_unix_millis())
+        .map_err(|_| WorkspaceError::AccessDenied)
 }

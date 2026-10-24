@@ -38,16 +38,16 @@ pub(crate) fn write_json_with_backup(path: &Path, value: &Value) -> Result<(), S
         fs::copy(path, &backup).map_err(display)?;
     }
     let temporary = path.with_extension("acyclic-next");
-    fs::write(
-        &temporary,
-        serde_json::to_vec_pretty(value).map_err(display)?,
-    )
-    .map_err(display)?;
-    acyclic_native_runtime::durable_rename(
-        &temporary,
+    let bytes = serde_json::to_vec_pretty(value).map_err(display)?;
+    acyclic_native_runtime::private_file::publish(
         path,
+        &temporary,
         acyclic_native_runtime::RenameMode::Replace,
-        None,
+        |file| {
+            use std::io::Write as _;
+            file.write_all(&bytes)
+        },
+        |_| Ok(()),
     )
     .map_err(display)
 }
@@ -66,12 +66,15 @@ pub(crate) fn write_text_with_backup(path: &Path, value: &str) -> Result<(), Str
         fs::copy(path, &backup).map_err(display)?;
     }
     let temporary = path.with_extension("acyclic-next");
-    fs::write(&temporary, value.as_bytes()).map_err(display)?;
-    acyclic_native_runtime::durable_rename(
-        &temporary,
+    acyclic_native_runtime::private_file::publish(
         path,
+        &temporary,
         acyclic_native_runtime::RenameMode::Replace,
-        None,
+        |file| {
+            use std::io::Write as _;
+            file.write_all(value.as_bytes())
+        },
+        |_| Ok(()),
     )
     .map_err(display)
 }

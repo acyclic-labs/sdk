@@ -82,14 +82,7 @@ pub fn edit_external(text: &str, path: &Path, command: Option<&str>) -> io::Resu
             io::Error::new(io::ErrorKind::NotFound, "set $EDITOR to edit this prompt")
         })?;
     let (program, arguments) = editor_command(&configured)?;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path)?;
+    let mut file = acyclic_native_runtime::private_file::create(path)?;
     let result = (|| {
         file.write_all(text.as_bytes())?;
         file.sync_all()?;

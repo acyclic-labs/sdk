@@ -16,20 +16,50 @@ use acyclic_harness::{
 use acyclic_stream::StreamProvider;
 use serde::{Deserialize, Serialize};
 use std::{
-    fs,
     io::{self, Read, Write},
     path::Path,
     sync::Arc,
 };
 
-#[path = "pi_owner_protection.rs"]
-mod protection;
+use acyclic_native_runtime::{owner_record, private_file};
+
+// Keep native denial custody intact while the shared codec supplies I/O failures.
+enum OwnerIo {
+    Native(Error),
+    Io(io::Error),
+}
+
+impl From<Error> for OwnerIo {
+    fn from(error: Error) -> Self {
+        Self::Native(error)
+    }
+}
+
+impl From<acyclic_fs::NativeTreeMaterializationError> for OwnerIo {
+    fn from(error: acyclic_fs::NativeTreeMaterializationError) -> Self {
+        Self::Native(Error::from(error))
+    }
+}
+
+impl From<io::Error> for OwnerIo {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl OwnerIo {
+    fn into_native(self, work: &NativeMaterializationWork) -> Error {
+        match self {
+            Self::Native(error) => error,
+            Self::Io(error) => Error::from(work.runtime_error(error)),
+        }
+    }
+}
 
 const OWNER_FILE: &str = "pi-owner.v1";
 
 const OWNER_DIAGNOSTIC_LABEL_BYTES: u64 =
     733 + acyclic_harness::preparation_serde_diagnostic_label_bytes();
-const OWNER_MAGIC: &[u8; 8] = b"ACYPIOW1";
 const MAXIMUM_OWNER_BYTES: u64 = super::MAXIMUM_ADAPTER_STATE_BYTES;
 const ISSUER: &str = "acyclic.pi";
 
@@ -104,7 +134,7 @@ impl Eq for PiOwnerConfig {}
 
 impl Drop for PiOwnerConfig {
     fn drop(&mut self) {
-        self.key.fill(0);
+        acyclic_native_runtime::owner_record::clear_secret(&mut self.key);
     }
 }
 
@@ -128,7 +158,7 @@ impl PiOwnerConfig {
         let runtime = runtime
             .map(|runtime| runtime.clone_with_native_work(work))
             .transpose()?;
-        let mut key = protection::new_key().map_err(native_owner_io)?;
+        let mut key = owner_record::new_key().map_err(native_owner_io)?;
         let (runtime, runtime_custody) = match runtime {
             Some((runtime, custody)) => (Some(runtime), Some(custody)),
             None => (None, None),
@@ -140,7 +170,7 @@ impl PiOwnerConfig {
             native_runtime: runtime,
             _native_custody: None,
         };
-        key.fill(0);
+        acyclic_native_runtime::owner_record::clear_secret(&mut key);
         // Data drops before its original custody on a failed transfer.
         let mut owned = (owner, custody, policy.1, runtime_custody);
         owned.1.absorb(&mut owned.2)?;
@@ -388,62 +418,57 @@ impl PiOwnerConfig {
         root: &Path,
         session: &Path,
         work: &NativeMaterializationWork,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let session = work.path(root, Some(session))?;
         let plain = super::pi_root_provider::guarded_pi_bytes(self, MAXIMUM_OWNER_BYTES, work)?;
         let plain = NativeOwnerPlaintext {
             bytes: plain.0,
             _custody: plain.1,
         };
-        let protected = protection::protect_with_copy(&plain.bytes, |bytes| work.copy_bytes(bytes));
+        let meter = work.runtime_meter();
+        let protected =
+            owner_record::encode_with(&plain.bytes, MAXIMUM_OWNER_BYTES, Some(&meter), |parts| {
+                let length = parts.iter().map(|part| part.len() as u64).sum::<u64>();
+                let custody = work.claim(
+                    length,
+                    1,
+                    acyclic_fs::WorkCounters {
+                        bytes_copied: length,
+                        ..acyclic_fs::WorkCounters::UNCHARGED
+                    },
+                )?;
+                let mut bytes =
+                    Vec::with_capacity(usize::try_from(length).map_err(io::Error::other)?);
+                for part in parts {
+                    bytes.extend_from_slice(part);
+                }
+                Ok::<_, OwnerIo>((bytes, custody))
+            })
+            .map_err(|error| error.into_native(work))?;
         drop(plain);
-        let protected = protected?;
         let protected = NativeOwnerPlaintext {
             bytes: protected.0,
             _custody: protected.1,
         };
-        if protected.bytes.len() as u64 > MAXIMUM_OWNER_BYTES.saturating_sub(40) {
-            return Err(native_invalid(
-                "protected Pi owner configuration exceeds its byte bound",
-            ));
-        }
-        work.charge(acyclic_fs::WorkCounters {
-            bytes_hashed: protected.bytes.len() as u64,
-            ..acyclic_fs::WorkCounters::UNCHARGED
-        })?;
-        let digest = blake3::hash(&protected.bytes);
-        let leaf = work.display(&format_args!(".pi-owner-{}.next", uuid::Uuid::new_v4()))?;
+        let leaf = work.display(&format_args!(
+            ".pi-owner-{}.next",
+            uuid::Builder::from_random_bytes({
+                let mut bytes = [0; 16];
+                owner_record::fill_random(&mut bytes)
+                    .map_err(|error| Error::from(work.runtime_error(io::Error::other(error))))?;
+                bytes
+            })
+            .into_uuid()
+        ))?;
         let temporary = work.path(&session.0, Some(Path::new(&leaf.0)))?;
         let destination = work.path(&session.0, Some(Path::new(OWNER_FILE)))?;
-        let mut options = fs::OpenOptions::new();
-        options.create_new(true).write(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let result = (|| -> io::Result<()> {
-            let mut file = options.open(&temporary.0)?;
-            for bytes in [
-                OWNER_MAGIC.as_slice(),
-                digest.as_bytes().as_slice(),
-                protected.bytes.as_slice(),
-            ] {
-                file.write_all(bytes)?;
-            }
-            crate::sync_file(&file, acyclic_native_runtime::Durability::Full, None)?;
-            drop(file);
-            crate::durable_rename(
-                &temporary.0,
-                &destination.0,
-                acyclic_native_runtime::RenameMode::NoReplace,
-                None,
-            )
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary.0);
-        }
-        result.map_err(|error| Error::from(work.runtime_error(error)))
+        private_file::publish_new(
+            &destination.0,
+            &temporary.0,
+            |file| file.write_all(&protected.bytes),
+            |_| Ok(()),
+        )
+        .map_err(|error| Error::from(work.runtime_error(error)))
     }
 
     /// Reads the original protected credential record.
@@ -455,76 +480,24 @@ impl PiOwnerConfig {
         work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
         let session = work.path(root, Some(session))?;
         let path = work.path(&session.0, Some(Path::new(OWNER_FILE)))?;
-        if !fs::symlink_metadata(&path.0)
-            .map_err(|error| Error::from(work.runtime_error(error)))?
-            .is_file()
-        {
-            return Err(native_invalid(
-                "Pi owner configuration is not a regular file",
-            ));
-        }
-        let mut options = fs::OpenOptions::new();
-        options.read(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-        }
-        let file = options
-            .open(&path.0)
-            .map_err(|error| Error::from(work.runtime_error(error)))?;
-        let metadata = file
-            .metadata()
-            .map_err(|error| Error::from(work.runtime_error(error)))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            if metadata.mode() & 0o077 != 0 || metadata.nlink() != 1 {
-                return Err(native_invalid(
-                    "Pi owner configuration has public permissions",
-                ));
-            }
-        }
-        let length = metadata.len();
-        if !metadata.is_file() || length > MAXIMUM_OWNER_BYTES {
-            return Err(native_invalid(
-                "Pi owner configuration exceeds its byte bound",
-            ));
-        }
-        let custody = work.claim(length + 1, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
-        let mut bytes = Vec::with_capacity(
-            usize::try_from(length).map_err(|_| {
-                acyclic_fs::NativeTreeMaterializationError::from(acyclic_fs::WorkError::Overflow)
-            })? + 1,
-        );
-        file.take(length + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|error| Error::from(work.runtime_error(error)))?;
-        if bytes.len() as u64 != length {
-            return Err(native_invalid("Pi owner configuration changed during read"));
-        }
-        let bytes = NativeOwnerPlaintext {
-            bytes,
-            _custody: custody,
-        };
-        let (magic, rest) = bytes
-            .bytes
-            .split_first_chunk::<8>()
-            .ok_or_else(|| native_invalid("Pi owner configuration is truncated"))?;
-        let (digest, protected) = rest
-            .split_first_chunk::<32>()
-            .ok_or_else(|| native_invalid("Pi owner configuration is truncated"))?;
-        if magic != OWNER_MAGIC {
-            return Err(native_invalid("Pi owner configuration digest differs"));
-        }
-        work.charge(acyclic_fs::WorkCounters {
-            bytes_hashed: protected.len() as u64,
-            ..acyclic_fs::WorkCounters::UNCHARGED
-        })?;
-        if digest != blake3::hash(protected).as_bytes() {
-            return Err(native_invalid("Pi owner configuration digest differs"));
-        }
-        let plain = protection::unprotect_with_copy(protected, |bytes| work.copy_bytes(bytes))?;
+        let bytes = private_file::read_with(&path.0, MAXIMUM_OWNER_BYTES, |file, length| {
+            let custody = work.claim(length + 1, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
+            let mut bytes =
+                Vec::with_capacity(usize::try_from(length + 1).map_err(io::Error::other)?);
+            file.read_to_end(&mut bytes)
+                .map_err(|error| Error::from(work.runtime_error(error)))?;
+            Ok::<_, OwnerIo>(NativeOwnerPlaintext {
+                bytes,
+                _custody: custody,
+            })
+        })
+        .map_err(|error| error.into_native(work))?;
+        let meter = work.runtime_meter();
+        let plain =
+            owner_record::decode_with(&bytes.bytes, MAXIMUM_OWNER_BYTES, Some(&meter), |plain| {
+                work.copy_bytes(plain).map_err(OwnerIo::from)
+            })
+            .map_err(|error| error.into_native(work))?;
         let plain = NativeOwnerPlaintext {
             bytes: plain.0,
             _custody: plain.1,
@@ -613,7 +586,7 @@ struct NativeOwnerPlaintext {
 }
 impl Drop for NativeOwnerPlaintext {
     fn drop(&mut self) {
-        self.bytes.fill(0);
+        acyclic_native_runtime::owner_record::clear_secret(&mut self.bytes);
     }
 }
 

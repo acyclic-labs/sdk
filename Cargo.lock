@@ -507,6 +507,7 @@ version = "0.0.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-harness",
+ "acyclic-native-runtime",
  "acyclic-harness-core",
  "acyclic-stream",
  "acyclic-test-support",
@@ -783,6 +784,7 @@ dependencies = [
  "compio-buf",
  "compio-driver",
  "futures-core",
+ "getrandom 0.3.4",
  "libc",
  "loom",
  "pin-project-lite",
@@ -792,7 +794,9 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "windows 0.62.2",
  "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]

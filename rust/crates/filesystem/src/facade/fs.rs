@@ -20,6 +20,7 @@ pub(super) struct FsInner<A, O> {
     pub(super) path_index: crate::path_index::MemoryGenerationPathIndex,
     pub(super) generation_positions: super::generation_cache::GenerationPositions,
     pub(super) publication_proof: Mutex<crate::kernel::closure::CachedProofs>,
+    pub(super) policy_cache: super::policy_cache::PolicyCache,
     // This field must remain last: Rust drops fields in declaration order, so every durable
     #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
     pub(super) _local_root_lifecycle: Option<OwnershipAnchor>,
@@ -202,6 +203,7 @@ impl<A, O> Fs<A, O> {
                 path_index: crate::path_index::MemoryGenerationPathIndex::default(),
                 generation_positions: super::generation_cache::GenerationPositions::default(),
                 publication_proof: Mutex::default(),
+                policy_cache: super::policy_cache::PolicyCache::default(),
                 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
                 _local_root_lifecycle: None,
             }),

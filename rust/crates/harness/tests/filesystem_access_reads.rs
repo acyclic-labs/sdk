@@ -692,12 +692,9 @@ proptest! {
         malformed in prop::collection::vec(any::<u8>(), 0..4096),
         generation_key in any::<[u8; 32]>(),
     ) {
-        for legacy in [
-            include_bytes!("../../harness-core/src/filesystem/access/legacy-read.json").as_slice(),
-            include_bytes!("../../harness-core/src/filesystem/access/legacy-write.json").as_slice(),
-            include_bytes!("../../harness-core/src/filesystem/access/legacy-native.json").as_slice(),
-        ] {
-            acyclic_harness::filesystem::check_access_record(legacy)
+        for actions in [acyclic_fs::access::ActionSet::SourceRead, acyclic_fs::access::ActionSet::DestinationWrite, acyclic_fs::access::ActionSet::MountWrite] {
+            let encoded = serde_json::to_vec(&Capability::whole_volume(None, actions.actions()))?;
+            acyclic_harness::filesystem::check_access_record(&encoded)
                 .map_err(|error| TestCaseError::fail(error.to_string()))?;
         }
         let mut policy: Policy = serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)?;

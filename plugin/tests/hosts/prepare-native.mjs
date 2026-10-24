@@ -23,6 +23,9 @@ run("bun", ["install", "--frozen-lockfile", "--ignore-scripts"]);
 // The filesystem package's generation closure: protobuf and Rust-owned
 // contracts for it and the actors package it builds on.
 run("node", ["scripts/generate.mjs", "filesystem"]);
+// Actors imports auth's WASM-backed addressing and holder APIs. Generation
+// supplies their wire contracts; build the executable declarations before tsc.
+run("node", ["scripts/build-wasm.mjs", "auth"]);
 run("node", ["node_modules/typescript/bin/tsc", "-b", "typescript/packages/actors", "--pretty", "false"]);
 run("cargo", ["build", "-p", "acyclic-fs-napi", "--locked"]);
 

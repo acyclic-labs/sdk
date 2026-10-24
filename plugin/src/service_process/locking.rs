@@ -212,17 +212,17 @@ pub(crate) fn write_service_drain_completion(
         "ok": matches!(result, Ok(SessionCloseState::Closed)),
         "error": error,
     });
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&next)
-        .map_err(display)?;
-    serde_json::to_writer_pretty(&mut file, &value).map_err(display)?;
-    file.write_all(b"\n").map_err(display)?;
-    file.sync_all().map_err(display)?;
-    drop(file);
-    durable_rename(&next, &path, RenameMode::Replace, None).map_err(display)
+    acyclic_native_runtime::private_file::publish(
+        &path,
+        &next,
+        RenameMode::Replace,
+        |file| {
+            serde_json::to_writer_pretty(&mut *file, &value).map_err(io::Error::other)?;
+            file.write_all(b"\n")
+        },
+        |_| Ok(()),
+    )
+    .map_err(display)
 }
 
 pub(crate) fn verify_service_drain_completion(data: &Path, identity: &str) -> Result<(), String> {

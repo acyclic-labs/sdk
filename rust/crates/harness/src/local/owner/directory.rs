@@ -49,15 +49,7 @@ pub(super) fn planned_directory(path: &Path) -> Option<PathBuf> {
 }
 
 fn directory(path: &Path) -> Result<PathBuf> {
-    let mut builder = fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder
-        .create(path)
+    acyclic_native_runtime::private_file::create_directory_all(path)
         .map_err(|error| Error::Storage(error.to_string()))?;
     fs::canonicalize(path).map_err(|error| Error::Storage(error.to_string()))
 }

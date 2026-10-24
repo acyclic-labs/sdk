@@ -2,6 +2,8 @@ use super::*;
 use crate::access::{MAXIMUM_POLICY_RECORD_BYTES, POLICY_METADATA_KEY};
 use crate::kernel::{AttributeClass, OwnedSourceChunk};
 
+mod binding;
+
 fn policy_name(
     maximum_bytes: u32,
     accounting: &mut KernelAccounting<'_>,
@@ -57,6 +59,64 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+    /// Selects the shared policy program using this checkout's authenticated
+    /// metadata revision. A head movement alone never invalidates its paths.
+    /// The first caller pays compilation work; subsequent callers pay only the
+    /// revision lookup and their own principal/capability binding.
+    pub async fn compiled_access_policy<W: FsWork>(
+        &mut self,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<Arc<crate::access::CompiledPolicy>, FsError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = self
+            .compiled_access_policy_accounted(&mut accounting, cancellation)
+            .await;
+        work.finish(result, &accounting)
+    }
+
+    async fn compiled_access_policy_accounted(
+        &mut self,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Arc<crate::access::CompiledPolicy>, FsError> {
+        let metadata = self
+            .read_metadata_with_accounting(self.root.root_file_id, accounting, cancellation)
+            .await?;
+        let fs = self.volume.fs.clone();
+        let cache = &fs.inner.policy_cache;
+        let revision = metadata.named_attributes;
+        accounting.charge_items(1)?;
+        if let Some(view) = cache.get(self.volume.id, revision) {
+            return Ok(view);
+        }
+        let name = policy_name(
+            self.volume.config.limits.maximum_component_bytes,
+            accounting,
+        )?;
+        let bytes = attributes::read_attribute(
+            &self.volume,
+            metadata,
+            &name.value,
+            MAXIMUM_POLICY_RECORD_BYTES,
+            accounting,
+            cancellation,
+        )
+        .await;
+        name.retire(accounting)?;
+        let bytes = bytes?.ok_or(FsError::InvalidAccessPolicy)?;
+        // No provider I/O is performed under this single-flight lock. A
+        // concurrent miss may read the same record, but compiles it once.
+        let _compilation = cache
+            .compilation
+            .lock()
+            .map_err(|_| FsError::InvalidAccessPolicy)?;
+        if let Some(view) = cache.get(self.volume.id, revision) {
+            return Ok(view);
+        }
+        compile_cached_policy(&self.volume, revision, &bytes.bytes, accounting)
+    }
+
     /// Reads the policy record from this checkout's pinned volume metadata.
     pub async fn read_access_policy<W: FsWork>(
         &mut self,
@@ -274,4 +334,81 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
 
 pub(crate) fn policy_head_is_current(observed: Head, current: Head) -> bool {
     observed == current
+}
+
+fn compile_cached_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    volume: &Volume<A, O>,
+    revision: MetadataField<ObjectId>,
+    bytes: &[u8],
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<Arc<crate::access::CompiledPolicy>, FsError> {
+    let cache = &volume.fs.inner.policy_cache;
+    // Serde's externally tagged records retain Content while decoding.
+    // Admit that bounded temporary before decoding, then retire it with
+    // the NFA/DFA preparation storage after the shared entry is funded.
+    let decode_bytes = (bytes.len() as u64)
+        .checked_mul((size_of::<crate::access::Rule>() + 128) as u64)
+        .ok_or(crate::WorkError::Overflow)?;
+    let mut decode = accounting.claim_owned(decode_bytes, 1)?;
+    let mut stages = [None, None];
+    let mut stage = 0;
+    let mut admission_error = None;
+    let compiled = (|| {
+        accounting.charge(WorkCounters {
+            items_examined: bytes.len() as u64,
+            source_bytes_read: bytes.len() as u64,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let policy = serde_json::from_slice(bytes).map_err(|_| FsError::InvalidAccessPolicy)?;
+        let mut remaining =
+            usize::try_from(accounting.remaining()?.items_examined).unwrap_or(usize::MAX);
+        let before = remaining;
+        let compiled = crate::access::CompiledPolicy::compile_with_work(
+            &policy,
+            volume.config,
+            &mut remaining,
+            |bytes| match accounting.claim_owned(bytes as u64, 1) {
+                Ok(allocation) => {
+                    *stages.get_mut(stage).ok_or(crate::access::InvalidPolicy(
+                        "invalid policy compilation stage",
+                    ))? = Some((allocation, bytes as u64));
+                    stage += 1;
+                    Ok(())
+                }
+                Err(error) => {
+                    admission_error = Some(error);
+                    Err(crate::access::InvalidPolicy(
+                        "policy storage was not admitted",
+                    ))
+                }
+            },
+        );
+        accounting.charge_items((before - remaining) as u64)?;
+        if let Some(error) = admission_error {
+            return Err(error);
+        }
+        let mut compiled = compiled.map_err(|_| FsError::InvalidAccessPolicy)?;
+        let bytes = compiled.logical_owned_bytes();
+        // The capacity is fixed on this Fs's first policy use, derived
+        // from its host memory ceiling, never from head generations or
+        // principal count. A standalone embedding supplies its budget.
+        #[cfg(not(target_arch = "wasm32"))]
+        let capacity = accounting
+            .native_work()
+            .map_or(accounting.remaining()?.peak_allocation_bytes / 4, |work| {
+                work.shared_cache_capacity()
+            });
+        #[cfg(target_arch = "wasm32")]
+        let capacity = accounting.remaining()?.peak_allocation_bytes / 4;
+        cache.initialize(capacity)?;
+        compiled.cache_charge = Some(cache.charge(bytes)?);
+        let compiled = Arc::new(compiled);
+        cache.insert(volume.id, revision, Arc::clone(&compiled))?;
+        Ok(compiled)
+    })();
+    for (mut allocation, bytes) in stages.into_iter().flatten() {
+        accounting.release_owned(&mut allocation, bytes)?;
+    }
+    accounting.release_owned(&mut decode, decode_bytes)?;
+    compiled
 }

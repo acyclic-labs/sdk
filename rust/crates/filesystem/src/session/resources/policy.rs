@@ -1,9 +1,6 @@
 use super::*;
 use crate::Volume;
-use crate::access::{
-    Capability, Context, Generations, Grant, Policy, Principal, PrincipalKind, Resource,
-    ResourcePattern,
-};
+use crate::access::{Capability, Context, Principal, PrincipalKind};
 use crate::model::{CheckoutMode, GenerationSelector};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -22,27 +19,6 @@ pub(super) async fn compile<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .await
         .map_err(|_| StreamError::AccessDenied)?
         .value;
-    let (bytes, revision) = checkout
-        .read_access_policy(WorkBudget::UNBOUNDED, cancellation)
-        .await
-        .map_err(|_| StreamError::AccessDenied)?
-        .value;
-    let bytes = bytes.ok_or(StreamError::AccessDenied)?;
-    let policy: Policy =
-        serde_json::from_slice(&bytes.bytes).map_err(|_| StreamError::AccessDenied)?;
-    // This stream has no authenticated resource-task ancestry or approvals.
-    // Generation-sensitive views need a provider-owned moving head fence;
-    // refuse those policies instead of ignoring conditional denials.
-    if policy.layers.iter().flatten().any(|rule| {
-        rule.resource.lineage_root.is_some()
-            || rule.resource.generations != Generations::All
-            || rule.conditions.generations.is_some()
-            || rule.conditions.relation.is_some()
-            || rule.conditions.tag.is_some()
-            || rule.conditions.approvals.is_some()
-    }) {
-        return Err(StreamError::AccessDenied);
-    }
     let subject = authorization.principal()?;
     let kind = match subject.kind {
         acyclic_auth::contract::PrincipalKind::User => PrincipalKind::User,
@@ -75,41 +51,26 @@ pub(super) async fn compile<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let volume_name = uuid::Uuid::from_bytes(volume.id.into_bytes()).to_string();
     // This layer only selects the semantic metadata action. The actual prefix
     // grants, pins and filters remain enforced by the verified chain per entry.
-    let ceiling = Capability {
-        layers: vec![vec![Grant {
-            actions: BTreeSet::from([Action::List]),
-            resource: ResourcePattern {
-                lineage_root: None,
-                volume: Some(volume_name.clone()),
-                generations: Generations::All,
-                path: "**".into(),
+    let ceiling = Capability::whole_volume(
+        Some(volume_name),
+        crate::access::ActionSet::Metadata.actions(),
+    );
+    checkout
+        .compile_access(
+            crate::access::AccessBinding {
+                principal: &principal,
+                capability: &ceiling,
+                facts: crate::access::AuthenticatedFacts::MetadataStream,
+                generation: None,
+                context: Context {
+                    now: authorization.now_unix_seconds()?,
+                    approvals: 0,
+                },
             },
-        }]],
-        expires_at: None,
-    };
-    let generation = checkout.generation_id();
-    let (position, head) = checkout
-        .generation_position(generation, WorkBudget::UNBOUNDED, cancellation)
+            WorkBudget::UNBOUNDED,
+            cancellation,
+        )
         .await
-        .map_err(|_| StreamError::AccessDenied)?
-        .value;
-    PathTrie::compile(
-        &policy,
-        &principal,
-        Resource {
-            config: volume.config,
-            lineage: &[],
-            volume: &volume_name,
-            generation: position.get(),
-            head: head.get(),
-            path: "",
-        },
-        Context {
-            now: authorization.now_unix_seconds()?,
-            approvals: 0,
-        },
-        &ceiling,
-    )
-    .map(|trie| trie.with_policy_revision(generation, revision))
-    .map_err(|_| StreamError::AccessDenied)
+        .map(|receipt| receipt.value)
+        .map_err(|_| StreamError::AccessDenied)
 }

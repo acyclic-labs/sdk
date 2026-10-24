@@ -290,8 +290,17 @@ pub(crate) async fn register(
             ));
         }
         let owner = PiOwnerConfig::new(&policy.0, native_runtime.as_ref(), work)?;
-        owner.save_new(&resources.data, relative_directory, work)?;
-        owner
+        if owner.save_new(&resources.data, relative_directory, work)? {
+            owner
+        } else {
+            let original = PiOwnerConfig::load(&resources.data, relative_directory, work)?;
+            if original.policy() != owner.policy() {
+                return Err(acyclic_harness::Error::Unauthorized(
+                    "Pi concurrent original root policy differs".into(),
+                ));
+            }
+            original
+        }
     };
     let filesystem = acyclic_harness::filesystem::FilesystemHost::new(
         resources.fs.clone(),

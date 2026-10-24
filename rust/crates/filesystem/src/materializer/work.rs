@@ -322,6 +322,9 @@ impl NativeMaterializationWork {
         work.capture_origin = None;
         work.claim(bytes, 1, WorkCounters::UNCHARGED)
     }
+    pub(crate) fn shared_cache_capacity(&self) -> u64 {
+        self.state(|state| state.original_budget().peak_allocation_bytes) / 4
+    }
     /// Withholds completion work on the same ledger.
     pub fn reserve_work(
         &self,

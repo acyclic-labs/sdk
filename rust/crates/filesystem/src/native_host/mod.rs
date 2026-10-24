@@ -192,9 +192,6 @@ mod test_support;
 #[cfg(test)]
 use test_support::{test_path, test_root};
 
-#[cfg(windows)]
-pub(crate) mod private_file;
-
 #[cfg(test)]
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 #[path = "tests_flat_parent.rs"]

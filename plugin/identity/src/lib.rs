@@ -4,13 +4,15 @@
 mod agent;
 mod mcp;
 
+use acyclic_native_runtime::private_file;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use reqwest::{Client, StatusCode, Url};
-use ring::rand::{SecureRandom as _, SystemRandom};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
-use std::fs::{self, File, OpenOptions};
+use std::fs;
+#[cfg(all(test, target_os = "linux"))]
+use std::fs::File;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -130,12 +132,12 @@ impl Store {
             .ok_or_else(|| {
                 Error::new("configuration_error", "credentials need a parent directory")
             })?;
-        fs::create_dir_all(parent)?;
+        private_file::create_directory_all(parent)?;
         let path = fs::canonicalize(parent)?.join(
             path.file_name()
                 .ok_or_else(|| Error::new("configuration_error", "credentials need a filename"))?,
         );
-        reject_alias(&path)?;
+        private_file::validate_destination(&path)?;
         let path = match fs::canonicalize(&path) {
             Ok(path) => path,
             Err(error) if error.kind() == io::ErrorKind::NotFound => path,
@@ -162,7 +164,7 @@ impl Store {
             ));
         }
         let lock = acyclic_native_runtime::FileLock::try_acquire(
-            private_file(&sidecar(&path, ".lock"), false)?,
+            private_file::open_or_create(&sidecar(&path, ".lock"))?,
             acyclic_native_runtime::FileLockMode::Exclusive,
         )
         .map_err(|_| {
@@ -171,19 +173,22 @@ impl Store {
                 "another identity operation holds the credential lock; retry after it completes",
             )
         })?;
+        // All writers retain this lock. Its acquisition proves any unpublished
+        // fixed sidecar belongs to an interrupted former writer.
+        private_file::discard_unpublished(&sidecar(&path, ".next"))?;
         Ok(Self { path, _lock: lock })
     }
 
     fn credentials(&self, endpoint: &str) -> Result<Credentials, Error> {
-        reject_alias(&self.path)?;
-        let bytes = fs::read(&self.path).map_err(|error| {
+        private_file::validate_destination(&self.path)?;
+        let bytes = private_file::read(&self.path, u64::MAX - 1).map_err(|error| {
             if error.kind() == io::ErrorKind::NotFound {
                 Error::new("login_required", "run acyclic-plugin login first")
             } else {
                 error.into()
             }
         })?;
-        let credentials: Credentials = serde_json::from_slice(&bytes)
+        let credentials: Credentials = serde_json::from_slice(&bytes.0)
             .map_err(|_| Error::new("credential_error", "invalid credentials file"))?;
         if credentials.endpoint != endpoint {
             return Err(Error::new(
@@ -198,13 +203,14 @@ impl Store {
         if !self.path.exists() {
             return Ok(None);
         }
-        reject_alias(&self.path)?;
-        let value: Value = serde_json::from_slice(&fs::read(&self.path)?).map_err(|_| {
-            Error::new(
-                "credential_error",
-                "invalid credentials file; use a new --credentials path to preserve its keys",
-            )
-        })?;
+        private_file::validate_destination(&self.path)?;
+        let value: Value = serde_json::from_slice(&private_file::read(&self.path, u64::MAX - 1)?.0)
+            .map_err(|_| {
+                Error::new(
+                    "credential_error",
+                    "invalid credentials file; use a new --credentials path to preserve its keys",
+                )
+            })?;
         let object = value
             .as_object()
             .ok_or_else(|| Error::new("credential_error", "invalid credentials file"))?;
@@ -298,28 +304,26 @@ impl Store {
     }
 
     fn save(&self, credentials: &Credentials) -> Result<(), Error> {
-        reject_alias(&self.path)?;
+        private_file::validate_destination(&self.path)?;
         let bytes = serde_json::to_vec(credentials)
             .map_err(|_| Error::new("credential_error", "cannot serialize credentials"))?;
         let temporary = sidecar(&self.path, ".next");
-        let mut file = private_file(&temporary, true)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        drop(file);
-        acyclic_native_runtime::durable_rename(
-            &temporary,
+        private_file::publish(
             &self.path,
+            &temporary,
             acyclic_native_runtime::RenameMode::Replace,
-            None,
+            |file| file.write_all(&bytes),
+            |_| Ok(()),
         )?;
         Ok(())
     }
 
     fn clear(&self) -> Result<(), Error> {
-        reject_alias(&self.path)?;
+        private_file::validate_destination(&self.path)?;
         if self.path.exists() {
-            let mut credentials: Credentials = serde_json::from_slice(&fs::read(&self.path)?)
-                .map_err(|_| Error::new("credential_error", "invalid credentials file"))?;
+            let mut credentials: Credentials =
+                serde_json::from_slice(&private_file::read(&self.path, u64::MAX - 1)?.0)
+                    .map_err(|_| Error::new("credential_error", "invalid credentials file"))?;
             if credentials.agent.is_some() {
                 credentials.session = None;
                 return self.save(&credentials);
@@ -343,69 +347,6 @@ fn sidecar(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
     name.push(suffix);
     PathBuf::from(name)
-}
-
-fn private_file(path: &Path, truncate: bool) -> io::Result<File> {
-    reject_alias(path)?;
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(truncate);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    let file = options.open(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(file)
-}
-
-fn reject_alias(path: &Path) -> io::Result<()> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "credentials and sidecars must be regular files, not aliases",
-        ));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt as _;
-        if metadata.nlink() != 1 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "credential hard links are not supported",
-            ));
-        }
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt as _;
-        let file = fs::OpenOptions::new()
-            .access_mode(0)
-            .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path)?;
-        let links = link_count(&file)?;
-        if links != 1 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "credential hard links are not supported",
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn now() -> Result<u64, Error> {
@@ -438,8 +379,7 @@ struct DeviceCode {
 
 fn random_secret() -> Result<String, Error> {
     let mut bytes = [0; 32];
-    SystemRandom::new()
-        .fill(&mut bytes)
+    acyclic_native_runtime::owner_record::fill_random(&mut bytes)
         .map_err(|_| Error::new("key_error", "secure randomness unavailable"))?;
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
@@ -813,16 +753,9 @@ impl Identity {
         url.path_segments_mut()
             .map_err(|()| Error::new("configuration_error", "invalid API endpoint"))?
             .extend(["v1", "identity", "orgs", org, "bearer"]);
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            options.mode(0o600);
-        }
         // Reserve a usable destination before spending a rotating session token.
         let mut cleanup = BearerOutputCleanup(None);
-        let mut file = options.open(output)?;
+        let mut file = private_file::create(output)?;
         cleanup.0 = Some(output);
         let result = async {
             let value = self
@@ -1079,33 +1012,3 @@ async fn execute(arguments: &[String]) -> Result<Value, Error> {
 
 #[cfg(test)]
 mod tests;
-
-/// Query the link count from the open handle, including alias rejection on Windows.
-#[cfg(windows)]
-#[allow(
-    unsafe_code,
-    reason = "GetFileInformationByHandleEx initializes its matching fixed-size structure for a live handle"
-)]
-fn link_count(file: &File) -> io::Result<u32> {
-    use std::os::windows::io::AsRawHandle as _;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_STANDARD_INFO, FileStandardInfo, GetFileInformationByHandleEx,
-    };
-    let mut information = std::mem::MaybeUninit::<FILE_STANDARD_INFO>::zeroed();
-    let size =
-        u32::try_from(std::mem::size_of::<FILE_STANDARD_INFO>()).map_err(io::Error::other)?;
-    // SAFETY: the live handle, class, writable buffer and buffer size match FILE_STANDARD_INFO.
-    if unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle(),
-            FileStandardInfo,
-            information.as_mut_ptr().cast(),
-            size,
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: the successful call initialized the structure.
-    Ok(unsafe { information.assume_init() }.NumberOfLinks)
-}

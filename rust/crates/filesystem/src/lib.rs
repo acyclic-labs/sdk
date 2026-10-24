@@ -413,6 +413,3 @@ pub use workspace_context::{
 
 #[cfg(feature = "browser")]
 pub mod browser;
-
-#[cfg(windows)]
-pub use native_host::private_file::{create_owner_only_file, has_owner_only_permissions};

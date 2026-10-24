@@ -247,7 +247,7 @@ impl Source {
         )
         .await?;
         let mut effective: Capability =
-            serde_json::from_slice(include_bytes!("../../../access/legacy-read.json"))?;
+            Capability::whole_volume(None, acyclic_fs::access::ActionSet::SourceRead.actions());
         effective.layers.extend(ceiling.layers);
         effective.expires_at = ceiling.expires_at;
         Ok((reader, effective))

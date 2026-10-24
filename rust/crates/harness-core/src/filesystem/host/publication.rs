@@ -178,7 +178,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .decide(
                     acyclic_fs::access::Action::Create,
                     file.path(),
-                    super::super::access::access_now(),
+                    super::super::access::access_now()?,
                 )
                 .allowed
             {

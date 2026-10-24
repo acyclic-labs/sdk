@@ -126,8 +126,9 @@ pub(in crate::filesystem) async fn require_current<A: AsyncAuthorityStore, O: As
                 break current;
             }
         };
+        let now = access_now()?;
         if !view.matches_policy_revision(generation, revision)
-            || view.valid_until().is_some_and(|end| access_now() >= end)
+            || view.valid_until().is_some_and(|end| now >= end)
         {
             return Err(stock_boundary(
                 Some(io),
