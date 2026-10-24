@@ -5,14 +5,14 @@ use acyclic_auth::addressing::{
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    if let Ok(text) = std::str::from_utf8(data) {
-        if let Ok(route) = acyclic_auth::addressing::RoutePattern::parse(text) {
-            assert_eq!(
-                acyclic_auth::addressing::RoutePattern::parse(route.as_str()),
-                Ok(route.clone())
-            );
-            let _ = route.matches(text);
-        }
+    if let Ok(text) = std::str::from_utf8(data)
+        && let Ok(route) = acyclic_auth::addressing::RoutePattern::parse(text)
+    {
+        assert_eq!(
+            acyclic_auth::addressing::RoutePattern::parse(route.as_str()),
+            Ok(route.clone())
+        );
+        let _ = route.matches(text);
     }
     if let Ok(reference) = ActorReference::decode(data) {
         assert_eq!(reference.encode(), data);
