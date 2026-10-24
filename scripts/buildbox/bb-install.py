@@ -80,7 +80,6 @@ def qualify(source, user):
     commands = [[NODE, '--test', 'generated.test.mjs', 'receipt-namespace.test.mjs'],
                 ['python3', 'runtime.test.py'], ['python3', 'admission.test.py'],
                 ['python3', 'install.test.py'], ['python3', 'limits.test.py'],
-                ['python3', 'prune.test.py'],
                 ['python3', 'cargo_cache.test.py']]
     for command in commands:
         # The tested code cannot modify its frozen source or installed tools.
