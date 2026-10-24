@@ -13,6 +13,30 @@ export function atomic(file, value) {
   const parent = fs.openSync(path.dirname(file), 'r');
   try { fs.fsyncSync(parent); } finally { fs.closeSync(parent); }
 }
+// A PID is meaningful only in the namespace in which it was recorded.
+export function pidNamespace() {
+  try { return fs.readlinkSync('/proc/self/ns/pid'); } catch { return null; }
+}
+export function canObserveOwner(owner) {
+  const namespace = pidNamespace();
+  return namespace !== null && owner?.pid_namespace === namespace;
+}
+function namespaceRecord() {
+  const ns = pidNamespace();
+  if (!ns) return null;
+  const record = read(`/mnt/bb/jobs/${ns.replaceAll(/[^0-9]/g, '')}.pid-namespace.json`);
+  return record?.namespace === ns && record.init_identity === processIdentity(1) ? record : null;
+}
+function endedNamespace(m) {
+  // An outer wrapper waits for namespace init. Only a registered namespace and
+  // its completed owner can prove that invisible child PIDs have exited.
+  const scope = m.namespace_scope;
+  if (!scope || scope.namespace !== m.owner?.pid_namespace || !scope.parent_receipt_meta) return false;
+  const parent = read(scope.parent_receipt_meta), registered = read(scope.registration_file);
+  const terminal = parent?.receipt_file && read(parent.receipt_file);
+  return registered?.epoch === scope.epoch && registered.parent_receipt_meta === scope.parent_receipt_meta &&
+    terminal?.receipt_file === parent.receipt_file && terminal.namespace_custody === 'pidns-v1';
+}
 export function processIdentity(pid) {
   try {
     const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ').pop().split(' ');
@@ -22,8 +46,11 @@ export function processIdentity(pid) {
 }
 const read = f => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } };
 export function arm(file, meta, pid = process.pid) {
+  const scope = namespaceRecord();
   atomic(file, { exec_start: null, toolchain: null, ...meta,
-    owner: { pid: Number(pid), identity: processIdentity(pid) } });
+    namespace_custody: 'pidns-v1', namespace_scope: scope,
+    owner: { pid: Number(pid), identity: processIdentity(pid), pid_namespace: pidNamespace() } });
+  if (scope) fs.appendFileSync(scope.registration_file + '.children', JSON.stringify(file) + '\n', {mode:0o600});
   const p = spawn(process.execPath, [new URL(import.meta.url).pathname, 'watch', file], {
     detached: true, stdio: 'ignore'
   });
@@ -54,6 +81,8 @@ export function finish(metaFile, rc, category, extra = {}) {
   if (!m) throw new Error(`missing receipt metadata: ${metaFile}`);
   const file = m.receipt_file;
   if (fs.existsSync(file)) return read(file);
+  const foreignEnded = !canObserveOwner(m.owner) && category === 'interrupted' && endedNamespace(m);
+  if (!canObserveOwner(m.owner) && !foreignEnded) return null;
   // mkdir serializes the wrapper, independent watcher and reboot recovery.
   // If a writer dies while holding it, the next observer recovers the lock.
   const lock = file + '.lock';
@@ -61,7 +90,8 @@ export function finish(metaFile, rc, category, extra = {}) {
   catch (e) {
     if (e.code !== 'EEXIST') throw e;
     const owner = read(lock + '/owner');
-    if (!owner || processIdentity(owner.pid) !== owner.identity) {
+    if (!owner || canObserveOwner(owner) && processIdentity(owner.pid) !== owner.identity ||
+        foreignEnded && owner.pid_namespace === m.owner.pid_namespace) {
       try {
         if (Date.now() - fs.statSync(lock).mtimeMs < 1000) return null;
         fs.rmSync(lock, { recursive: true, force: true });
@@ -69,30 +99,34 @@ export function finish(metaFile, rc, category, extra = {}) {
     }
     return null;
   }
-  atomic(lock + '/owner', { pid: process.pid, identity: processIdentity(process.pid) });
+  atomic(lock + '/owner', { pid: process.pid, identity: processIdentity(process.pid), pid_namespace: pidNamespace() });
   try {
     if (fs.existsSync(file)) return read(file);
     const runtimeFile = metaFile + '.runtime';
-    let runtime;
-    if (m.side === 'bb2' && category !== 'command' && read(metaFile + '.job')) {
-      spawnSync('python3', ['/home/var/bin/bb-job.py', 'stop-job', metaFile + '.job'], { encoding: 'utf8', timeout: 15000 });
+    let runtime, cleanupAllowed = true;
+    if (!foreignEnded && m.side === 'bb2' && category !== 'command' && read(metaFile + '.job')) {
+      const stopped = spawnSync('python3', ['/home/var/bin/bb-job.py', 'stop-job', metaFile + '.job'], { encoding: 'utf8', timeout: 15000 });
+      if (stopped.status !== 0) {
+        cleanupAllowed = false;
+        extra = {...extra, namespace_custody:'unproven', cleanup_deferred:String(stopped.stderr || stopped.error)};
+      }
     }
     runtime = read(runtimeFile);
-    if (runtime && m.side === 'bb2') {
+    if (cleanupAllowed && runtime && m.side === 'bb2') {
       const clean = spawnSync('python3', ['/home/var/bin/bb-job.py', 'cleanup', runtimeFile], { encoding: 'utf8', timeout: 30000 });
       runtime = read(runtimeFile);
       if (clean.status !== 0) {
         runtime.cleanup_error = String(clean.stderr || clean.error);
-        if (Number(rc) === 0) { rc = 224; category = 'infra'; }
+        rc = 224; category = 'infra';
       }
     }
-    if (m.side === 'bb2' && m.job_prefix) {
+    if (cleanupAllowed && m.side === 'bb2' && m.job_prefix) {
       const clean = spawnSync('python3', ['/home/var/bin/bb-job.py', 'cleanup-outer', m.job_prefix], { encoding: 'utf8', timeout: 30000 });
       runtime ||= {};
       if (clean.status === 0) Object.assign(runtime, JSON.parse(clean.stdout));
       else {
         runtime.outer_cleanup_error = String(clean.stderr || clean.error);
-        if (Number(rc) === 0) { rc = 224; category = 'infra'; }
+        rc = 224; category = 'infra';
       }
     }
     const exec = read(metaFile + '.exec');
@@ -106,6 +140,18 @@ export function finish(metaFile, rc, category, extra = {}) {
     delete out.owner; delete out.ledger;
     atomic(file, out);
     if (m.ledger) ledgerRecord(m.ledger, out);
+    // Constructor-owned indexes visit only this job's descendants. Finish
+    // their interrupted receipts now, without rescanning unrelated jobs.
+    let registrations = '';
+    try { registrations = fs.readFileSync(metaFile + '.pid-namespaces','utf8'); } catch {}
+    for (const entry of registrations.split('\n').filter(Boolean)) {
+      let children = '';
+      try { children = fs.readFileSync(JSON.parse(entry) + '.children','utf8'); } catch {}
+      for (const child of children.split('\n').filter(Boolean)) {
+        const childFile = JSON.parse(child), metadata = read(childFile);
+        if (metadata && endedNamespace(metadata)) finish(childFile,137,'interrupted',{reason:'enclosing PID namespace ended'});
+      }
+    }
     return out;
   } finally { fs.rmSync(lock, { recursive: true, force: true }); }
 }
@@ -117,13 +163,13 @@ function ledgerRecord(ledger, out) {
       if (e.code !== 'EEXIST') throw e;
       const owner = read(lock + '/owner');
       try {
-        if ((!owner || processIdentity(owner.pid) !== owner.identity) && Date.now() - fs.statSync(lock).mtimeMs > 1000)
+        if ((!owner || canObserveOwner(owner) && processIdentity(owner.pid) !== owner.identity) && Date.now() - fs.statSync(lock).mtimeMs > 1000)
           fs.rmSync(lock, { recursive: true, force: true });
       } catch (err) { if (err.code !== 'ENOENT') throw err; }
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
     }
   }
-  atomic(lock + '/owner', { pid: process.pid, identity: processIdentity(process.pid) });
+  atomic(lock + '/owner', { pid: process.pid, identity: processIdentity(process.pid), pid_namespace: pidNamespace() });
   try {
     let lines = [], previous = '';
     try { previous = fs.readFileSync(ledger, 'utf8'); lines = previous.split('\n'); } catch {}
@@ -137,6 +183,7 @@ function ledgerRecord(ledger, out) {
 }
 export async function watch(metaFile, interval = 1000) {
   const m = read(metaFile);
+  if (!canObserveOwner(m?.owner)) return;
   for (;;) {
     if (fs.existsSync(m.receipt_file)) {
       if (m.ledger) ledgerRecord(m.ledger, read(m.receipt_file));
@@ -144,7 +191,7 @@ export async function watch(metaFile, interval = 1000) {
     }
     if (processIdentity(m.owner.pid) !== m.owner.identity) {
       const job = read(metaFile + '.job');
-      if (job && processIdentity(job.pid) === job.identity) {
+      if (canObserveOwner(job) && processIdentity(job.pid) === job.identity) {
         try { process.kill(-job.pid, 'SIGTERM'); } catch {}
         await new Promise(r => setTimeout(r, 1000));
         if (processIdentity(job.pid) === job.identity) try { process.kill(-job.pid, 'SIGKILL'); } catch {}
@@ -165,7 +212,7 @@ export function recover(dir) {
     if (!name.endsWith('.receipt-meta.v2.json') && !name.endsWith('.receipt-meta.json')) continue;
     const file = path.join(dir, name), m = read(file);
     const terminal = m?.receipt_file && read(m.receipt_file);
-    if (terminal && m.ledger) {
+    if (terminal && m.ledger && canObserveOwner(m.owner)) {
       if (!seen.has(m.ledger)) {
         let records = [];
         try { records = fs.readFileSync(m.ledger, 'utf8').split('\n'); } catch {}
@@ -175,9 +222,10 @@ export function recover(dir) {
         ledgerRecord(m.ledger, terminal); seen.get(m.ledger).add(terminal.receipt_file);
       }
     }
-    if (m?.owner && !fs.existsSync(m.receipt_file) && processIdentity(m.owner.pid) !== m.owner.identity) {
+    if (m?.owner && !fs.existsSync(m.receipt_file) &&
+        (canObserveOwner(m.owner) && processIdentity(m.owner.pid) !== m.owner.identity || endedNamespace(m))) {
       const job = read(file + '.job');
-      if (job && processIdentity(job.pid) === job.identity) {
+      if (canObserveOwner(job) && processIdentity(job.pid) === job.identity) {
         const p = spawn(process.execPath, [new URL(import.meta.url).pathname, 'watch', file], { detached: true, stdio: 'ignore' });
         p.unref(); continue;
       }
@@ -195,7 +243,8 @@ export async function runBb(script, args) {
   const dir = '/mnt/bb/jobs'; fs.mkdirSync(dir, { recursive: true }); recover(dir);
   const stamp = Date.now() + '-' + process.pid + '-' + crypto.randomUUID().slice(0, 8);
   const prefix = `${dir}/native-${stamp}`, file = prefix + '.receipt-meta.v2.json';
-  const parent = process.env.BUILD_SLOT_RECEIPT_META && read(process.env.BUILD_SLOT_RECEIPT_META);
+  const parentFile = process.env.BUILD_SLOT_RECEIPT_META || namespaceRecord()?.parent_receipt_meta;
+  const parent = parentFile && read(parentFile);
   const prs = (process.env.BUILD_SLOT_PR || '').split(/[+,\s]+/).filter(x => /^\d+$/.test(x)).map(Number);
   const argv = process.env.BUILD_SLOT_RECEIPT_ARGV ? JSON.parse(process.env.BUILD_SLOT_RECEIPT_ARGV) : [...args]; while (/^--(remote|local|cold)$/.test(argv[0] || '')) argv.shift();
   let source = parent?.source || null, repo = parent?.repo || 'unknown';
@@ -207,7 +256,7 @@ export async function runBb(script, args) {
     worktree: process.cwd(), phase: process.env.BUILD_SLOT_PHASE || parent?.phase || 'native', gate_log: process.env.BUILD_SLOT_GATE_LOG || parent?.gate_log || null, local_preparation_seconds: Number(process.env.BUILD_SLOT_GATE_PREPARATION_SECONDS || 0), pr_number: parent?.pr_number || (prs.length === 1 ? prs[0] : null), pr_numbers: parent?.pr_numbers || prs,
     source, argv, log_id: stamp, log_file: prefix + '.log', receipt_file: prefix + '.receipt.json',
     admission_start: process.env.BUILD_SLOT_ADMISSION_START || new Date().toISOString(), side: 'bb2', parent_log_id: parent?.log_id || null,
-    accounting_scope: parent ? 'child' : 'job' };
+    parent_receipt_meta: parent ? parentFile : null, accounting_scope: parent ? 'child' : 'job' };
   arm(file, meta);
   let child, termination, rc = 224;
   const signal = sig => {
@@ -237,7 +286,7 @@ export async function runBb(script, args) {
       detached: true, stdio: ['inherit', 'pipe', 'pipe'] });
     child.on('error', () => {});
     await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
-    atomic(file + '.job', { pid: child.pid, identity: processIdentity(child.pid) });
+    atomic(file + '.job', { pid: child.pid, identity: processIdentity(child.pid), pid_namespace: pidNamespace() });
     child.stdout.on('data', b => { process.stdout.write(b); log.write(b); });
     child.stderr.on('data', b => { process.stderr.write(b); log.write(b); });
     const end = await new Promise(resolve => child.once('close', (code, sig) => resolve({ code, sig })));
@@ -248,6 +297,7 @@ export async function runBb(script, args) {
   } finally {
     for (const [sig, handler] of handlers) process.removeListener(sig, handler);
     const terminal = finish(file, rc, termination || 'infra');
+    if (!terminal) { process.stderr.write('[buildbox] receipt INFRA: terminal ownership is unproven\n'); return 224; }
     if (terminal && terminal.exit_status !== rc) return terminal.exit_status;
   }
 }
@@ -255,10 +305,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const [op, file, rc, category] = process.argv.slice(2);
   if (op === 'run-bb') process.exitCode = await runBb(file, process.argv.slice(4));
   else if (op === 'arm') arm(file, read(file), rc);
-  else if (op === 'job') atomic(file + '.job', { pid: Number(rc), identity: processIdentity(rc) });
+  else if (op === 'job') atomic(file + '.job', { pid: Number(rc), identity: processIdentity(rc), pid_namespace: pidNamespace() });
   else if (op === 'exec') process.stderr.write('BUILD_SLOT_EXEC=' + JSON.stringify(execution(file)) + '\n');
   else if (op === 'finish') {
     const terminal = finish(file, rc, category);
+    if (!terminal) { process.stderr.write('[buildbox] receipt INFRA: terminal ownership is unproven\n'); process.exitCode = 224; }
     if (terminal && terminal.exit_status !== Number(rc)) process.exitCode = terminal.exit_status;
   }
   else if (op === 'watch') await watch(file);

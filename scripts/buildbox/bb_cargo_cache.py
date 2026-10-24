@@ -114,12 +114,12 @@ def run(argv):
             # Cargo is authoritative for existing private files. Do not merge a
             # stored snapshot into a target already used by this job.
             occupied = bool(store.children(target))
-            if occupied:
+            if occupied or not store.source_unchanged(meta, env):
                 # Still single-flight compilation, but keep the existing tree.
                 (store.ROOT / 'locks').mkdir(parents=True, exist_ok=True)
                 session.lock = (store.ROOT / 'locks' / key).open('a')
                 start = time.monotonic(); fcntl.flock(session.lock, fcntl.LOCK_EX)
-                session.receipt.update(status='private-target', wait_seconds=time.monotonic()-start)
+                session.receipt.update(status='private-target' if occupied else 'changed-input', wait_seconds=time.monotonic()-start)
             else:
                 try:
                     session.open()
@@ -141,10 +141,13 @@ def run(argv):
             session.receipt['compile_seconds'] = time.monotonic() - start
             session.receipt['compile_rc'] = result.returncode
             if result.returncode == 0 and not occupied and session.lock:
-                try:
-                    session.publish()
-                except Exception as error:
-                    session.receipt['publish_error'] = type(error).__name__
+                if not store.source_unchanged(meta, env):
+                    session.receipt['publish'] = 'source-mutated'
+                else:
+                    try:
+                        session.publish()
+                    except Exception as error:
+                        session.receipt['publish_error'] = type(error).__name__
             record(file, session.receipt)
         finally:
             session.close()

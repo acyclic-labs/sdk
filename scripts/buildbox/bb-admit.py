@@ -144,7 +144,7 @@ def serve():
         if fd is None:t['journal'].unlink();continue
         t['pidfd']=fd;jobs[fd]=t;sel.register(fd,selectors.EVENT_READ,'done')
         sched.running['compile']+=1;sched.shares[('compile',tenant)]+=1
-    atomic(ROOT/'daemon.json',{'pid':os.getpid(),'identity':identity(os.getpid()),'limits':limits,'caps':caps,'source_sha256':SOURCE_SHA256})
+    atomic(ROOT/'daemon.json',{'pid':os.getpid(),'identity':identity(os.getpid()),'pid_namespace':os.readlink('/proc/self/ns/pid'),'limits':limits,'caps':caps,'source_sha256':SOURCE_SHA256})
     ready=os.environ.get('BB_ADMIT_READY_FD')
     if ready:
         os.write(int(ready),b'ready'); os.close(int(ready))
@@ -200,7 +200,7 @@ def serve():
             fd=os.pidfd_open(child.pid); t['pidfd']=fd; jobs[fd]=t
             sel.register(fd,selectors.EVENT_READ,'done')
             meta=env.get('BUILD_SLOT_RECEIPT_META')
-            if meta: atomic(meta+'.job',{'pid':child.pid,'identity':t['identity']})
+            if meta: atomic(meta+'.job',{'pid':child.pid,'identity':t['identity'],'pid_namespace':os.readlink('/proc/self/ns/pid')})
         except Exception as e:
             child=t.get('child')
             if child and child.poll() is None:

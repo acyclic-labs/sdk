@@ -65,6 +65,12 @@ tests; `no_new_privs` would disable that privilege transition and is refused.
 Each remote source copy includes the unique job identity, so a WSL restart and
 released client claim cannot reset another detached job's checkout.
 
+Receipt and signaling ownership includes the PID namespace as well as PID birth
+identity. An invisible foreign PID is held, never presumed dead. The constructor
+registers each namespace with its outer receipt; after that owner has terminated
+the namespace, its terminal callback finalizes interrupted descendant receipts.
+Unproven termination defers cleanup instead of deleting another live job's files.
+
 The remote wrapper archives declared `BUILD_SLOT_REMOTE_FETCH` outputs before
 target cleanup. The client extracts those archives and removes them after
 copy-back. A failed export is INFRA. No target cache is retained to support
@@ -82,6 +88,7 @@ Run tooling tests **on bb2**; their Rust fixtures compile there too:
 python3 scripts/buildbox/runtime.test.py
 python3 scripts/buildbox/baseline.test.py
 node --test scripts/buildbox/generated.test.mjs scripts/pr-gate-checks.test.mjs scripts/gate-test-runner.test.mjs
+node --test scripts/buildbox/receipt-namespace.test.mjs
 ```
 
 They cover JSON metadata stdout with a deliberate stdout-contamination mutant,
@@ -96,3 +103,10 @@ the previous missing outer cleanup as a negative control. PR dispatch tests prov
 for all selected/reverse-dependent packages, preserve failure status and logs,
 and demonstrate the old target selection's false pass. The existing main runner
 owns bounded fuzz execution through `../gate-test-runner.sh`.
+
+SDK artifact snapshots use exact uploaded inputs and private targets. Blob-derived
+source mtimes survive fresh source copies so Cargo fingerprints can remain fresh;
+all inputs are rehashed before restore and publication. Changed files, including
+changes that restore the old mtime, prevent publication under the original key.
+External source symlinks bypass snapshots. This policy never applies to mutable
+targets shared across source trees, and it does not cache gate verdicts.

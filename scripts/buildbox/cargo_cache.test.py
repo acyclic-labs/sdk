@@ -15,9 +15,9 @@ import bb_cargo_cache as cache
 
 class LocalTargetLease(unittest.TestCase):
     def test_gate_markers_do_not_suppress_snapshot_restore_or_publication(self):
-        for former in [False,True]:
+        for former,mutated in [(False,False),(True,False),(False,True)]:
             # Exercise real reflinks on the target store's production filesystem.
-            with self.subTest(former=former), tempfile.TemporaryDirectory(dir=cache.store.ROOT.parent) as temporary:
+            with self.subTest(former=former,mutated=mutated), tempfile.TemporaryDirectory(dir=cache.store.ROOT.parent) as temporary:
                 root=Path(temporary);target=root/'target';target.mkdir()
                 for name in ['.gate-cache-boot','.gate-cache-inflight']:(target/name).write_text('current-job')
                 metadata=root/'meta.json';metadata.write_text(json.dumps({'repo':'sdk'}))
@@ -33,11 +33,12 @@ class LocalTargetLease(unittest.TestCase):
                 with patch.dict(os.environ,env,clear=True), patch.object(cache.store,'ROOT',root/'store'), \
                      patch.object(cache.store,'SCAFFOLD',scaffold), patch.object(cache.store,'private_target',return_value=True), \
                      patch.object(cache.store,'request_key',return_value='fixture'), patch.object(cache,'target_path',return_value=target) as selected, \
+                     patch.object(cache.store,'source_unchanged',return_value=not mutated), \
                      patch.object(cache,'local_target_leases',return_value=nullcontext([])), \
                      patch.object(cache.subprocess,'run',side_effect=compile_or_copy), \
                      patch.object(cache,'record',side_effect=lambda _,row:records.append(dict(row))):
                     self.assertEqual(cache.run(['check']),0)
-                    if not former:
+                    if not former and not mutated:
                         restored=root/'restored';restored.mkdir()
                         for name in ['.gate-cache-boot','.gate-cache-inflight']:(restored/name).write_text('next-job')
                         selected.return_value=restored
@@ -45,23 +46,45 @@ class LocalTargetLease(unittest.TestCase):
                         self.assertEqual(records[-1]['status'],'hit')
                         self.assertEqual(builds,[False,True],'second Cargo invocation must see the restored artifact')
                 completed=root/'store/entries/fixture/complete.json'
-                self.assertEqual(completed.exists(),not former)
-                self.assertEqual(records[0]['status'],'private-target' if former else 'miss')
+                self.assertEqual(completed.exists(),not former and not mutated)
+                if mutated:self.assertEqual(records[0]['publish'],'source-mutated')
+                self.assertEqual(records[0]['status'],'private-target' if former else ('changed-input' if mutated else 'miss'))
                 for name in ['.gate-cache-boot','.gate-cache-inflight']:
                     self.assertEqual((target/name).read_text(),'current-job')
                     self.assertFalse((root/'store/entries/fixture/target'/name).exists())
 
+    def test_source_clock_rejects_changed_content_even_when_mtime_is_restored(self):
+        store=cache.store
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);file=root/'lib.rs';file.write_text('original')
+            s=file.stat();clock=root/'clock.json'
+            clock.write_text(json.dumps({'root':str(root),'content_sha256':'fixture','cacheable':True,
+                                         'files':[['lib.rs',*map(str,[s.st_mode,s.st_size,s.st_mtime_ns,s.st_ctime_ns]),store.hashlib.sha256(file.read_bytes()).hexdigest()]]}))
+            meta={'source':{'content_sha256':'fixture'}};env={'BB_SOURCE_TIMES_FILE':str(clock)}
+            self.assertTrue(store.source_unchanged(meta,env,root))
+            file.write_text('mutated!');os.utime(file,ns=(s.st_atime_ns,s.st_mtime_ns))
+            self.assertFalse(store.source_unchanged(meta,env,root))
+            source=Path(store.__file__).read_text().replace(
+                'expected != list(map(str, [s.st_mode, s.st_size, s.st_mtime_ns, s.st_ctime_ns]))',
+                'expected[:-1] != list(map(str, [s.st_mode, s.st_size, s.st_mtime_ns]))').replace(
+                    'hashlib.sha256(file.read_bytes()).hexdigest() != content','False')
+            old={};exec(compile(source,'missing-ctime-control','exec'),old)
+            self.assertTrue(old['source_unchanged'](meta,env,root))
+            self.assertFalse(store.source_unchanged({'source':{'content_sha256':'other'}},env,root))
+
     def test_request_diagnostics_preserve_key_and_hash_every_component(self):
         store=cache.store
         meta={'repo':'sdk','source':{'content_sha256':'tree'},'argv':['cargo','check']}
-        env={'BB_TARGET_REQUEST_SHA256':'payload','SECRET_FIXTURE':'private-value'}
-        with patch.object(store,'tool_identity',return_value=['tool-fixture']):
+        env={'BB_TARGET_REQUEST_SHA256':'payload','SECRET_FIXTURE':'private-value','BB_SOURCE_TIMES_POLICY':'blob-past-private-v1'}
+        with patch.object(store,'tool_identity',return_value=['tool-fixture']),patch.object(store,'source_unchanged',return_value=True):
             components={}
             key=store.request_key(meta,env,Path('/job'),components=components)
             self.assertEqual(key,store.request_key(meta,env,Path('/job')))
             self.assertEqual(set(components),{'version','source','argv','cwd','environment','tools','target'})
             self.assertTrue(all(len(value)==64 for value in components.values()))
             self.assertNotIn('private-value',repr(components))
+            self.assertIsNone(store.request_key(meta,{**env,'BB_SOURCE_TIMES_POLICY':''},Path('/job')))
+            self.assertNotEqual(key,store.request_key({**meta,'source':{'content_sha256':'different-tree'}},env,Path('/job')))
 
     def test_catalog_lease_reaps_other_key_stages_and_excludes_live_publication(self):
         with tempfile.TemporaryDirectory() as temporary:

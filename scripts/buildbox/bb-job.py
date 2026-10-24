@@ -31,6 +31,9 @@ def identity(pid):
         return Path('/proc/sys/kernel/random/boot_id').read_text().strip()+':'+fields[19] if fields[0]!='Z' else None
     except OSError: return None
 
+def pid_namespace():
+    return os.readlink('/proc/self/ns/pid')
+
 def atomic(file,value):
     tmp=Path(str(file)+'.'+str(os.getpid())+'.tmp')
     with tmp.open('w') as f: json.dump(value,f); f.flush(); os.fsync(f.fileno())
@@ -42,6 +45,24 @@ def disk():
         s=os.statvfs(path); pct=100*s.f_bavail/max(1,s.f_blocks)
         readings.append({'path':path,'free_percent':pct,'free_bytes':s.f_bavail*s.f_frsize})
     return readings
+
+def require_data_path(path):
+    """Check the effective filesystem, including bind mounts and symlinks."""
+    path=Path(path).resolve()
+    ancestor=path
+    while not ancestor.exists():ancestor=ancestor.parent
+    device=ancestor.stat().st_dev
+    if device!=Path('/mnt/bb').stat().st_dev or device==Path('/').stat().st_dev:
+        raise RuntimeError('target/tmp must reside on /mnt/bb filesystem: '+str(path))
+    return {'path':str(path),'device':device}
+
+def home_lease(job,exclusive=False):
+    directory=Path('/mnt/bb/locks/job-home');directory.mkdir(parents=True,exist_ok=True)
+    lease=open(directory/(job.name+'.lock'),'a')
+    try:fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB if exclusive else fcntl.LOCK_SH)
+    except BlockingIOError:
+        lease.close();raise RuntimeError('refusing cleanup of leased live job '+str(job))
+    return lease
 
 def require_private_proc():
     # The launcher becomes PID 1 only in its new PID namespace, and a fresh
@@ -101,6 +122,14 @@ def mount_home_namespace():
     # sudo's secure_path applies during privileged setup; restore the caller's
     # toolchain PATH only after dropping privileges, before payload/receipt probes.
     os.environ['PATH']=user_path
+    # A host receipt can recover descendants only after this namespace's init
+    # has exited. Register the actual constructor, not a caller-supplied marker.
+    ns=pid_namespace();registration=JOBS/(ns.removeprefix('pid:[').removesuffix(']')+'.pid-namespace.json')
+    record={'namespace':ns,'init_identity':identity(1),'parent_receipt_meta':os.environ['BUILD_SLOT_RECEIPT_META'],
+            'registration_file':str(registration),'epoch':uuid.uuid4().hex}
+    atomic(registration,record)
+    with open(os.environ['BUILD_SLOT_RECEIPT_META']+'.pid-namespaces','a') as index:
+        index.write(json.dumps(str(registration))+'\n');index.flush();os.fsync(index.fileno())
 
 def git_base(source):
     for ref in ['refs/remotes/origin/main','refs/heads/main']:
@@ -150,10 +179,11 @@ def server_identity(endpoint):
         c.connect(str(endpoint))
         import struct
         pid,uid,gid=struct.unpack('3i',c.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))
-        return {'pid':pid,'identity':identity(pid),'endpoint':str(endpoint)}
+        return {'pid':pid,'identity':identity(pid),'endpoint':str(endpoint),'pid_namespace':pid_namespace()}
     finally: c.close()
 
 def stop_server(server):
+    if server and server.get('pid_namespace')!=pid_namespace():return
     if not server or identity(server['pid'])!=server['identity']: return
     try: env=Path(f'/proc/{server["pid"]}/environ').read_bytes().split(b'\0')
     except FileNotFoundError: return
@@ -268,6 +298,7 @@ def run(argv,namespace_ready=False):
         os.execvpe(argv[0],argv,os.environ)
     JOBS.mkdir(parents=True,exist_ok=True)
     job=Path(tempfile.mkdtemp(prefix='job-',dir=JOBS)); job.chmod(0o700)
+    custody=home_lease(job)
     env=dict(os.environ); real_home=Path('/home/var')
     compiler_policy(env)
     # sudo/runuser may strip admission env across the mount-namespace boundary.
@@ -309,6 +340,8 @@ def run(argv,namespace_ready=False):
                        GATE_WINDOWS_RUNTIME_TARGET_DIR='/work/target/.gate-windows')
             runtime['target_root']='/work/target'
         for key in ['HOME','XDG_DATA_HOME','XDG_STATE_HOME','XDG_CACHE_HOME','XDG_CONFIG_HOME','XDG_RUNTIME_DIR','TMPDIR']: Path(env[key]).mkdir(mode=0o700)
+        runtime['storage_paths']=[require_data_path(env[key]) for key in
+                ['CARGO_TARGET_DIR','GATE_MAIN_TARGET_DIR','GATE_FEATURE_TARGET_DIR','GATE_WINDOWS_RUNTIME_TARGET_DIR','TMPDIR']]
         # Targets are job-owned scratch; only the content-addressed compiler
         # cache and installed toolchains persist. Export requested artifacts
         # before deleting the job tree.
@@ -377,17 +410,20 @@ def run(argv,namespace_ready=False):
             print('[buildbox] cleanup INFRA: '+str(error),file=sys.stderr,flush=True)
             return 224
         runtime['home_removed']=True; runtime['targets_removed']=True; atomic(runtimefile,runtime)
+        custody.close()
         for unit in units:unit.close()
 
 
 def cleanup_runtime(file):
     runtime=json.loads(Path(file).read_text())
-    stop_server(runtime.get('sccache_server'))
-    if not runtime.get('hermetic_home'):return
+    if not runtime.get('hermetic_home'):
+        stop_server(runtime.get('sccache_server'));return
     job=Path(runtime['hermetic_home'])
     if job.parent.resolve()!=JOBS.resolve() or not job.name.startswith('job-'):
         raise RuntimeError('refusing cleanup outside /mnt/bb/jobs/job-*')
-    if job.exists(): remove_home(job)
+    with home_lease(job,exclusive=True):
+        stop_server(runtime.get('sccache_server'))
+        if job.exists(): remove_home(job)
     runtime['home_removed']=True
     if runtime.get('targets_policy')=='job-owned':runtime['targets_removed']=True
     atomic(file,runtime)
@@ -396,14 +432,20 @@ def cleanup_outer(prefix):
     prefix=Path(prefix)
     if prefix.parent.resolve()!=JOBS.resolve() or prefix.name in ['', '.', '..']:
         raise ValueError('refusing outer cleanup outside /mnt/bb/jobs')
-    for suffix in ['.targets','.tmp']:
-        path=Path(str(prefix)+suffix)
-        if path.is_symlink():path.unlink()
-        elif path.exists():remove_home(path)
+    import contextlib
+    runtime=Path(str(prefix)+'.receipt-meta.v2.json.runtime')
+    metadata=json.loads(runtime.read_text()) if runtime.exists() else {}
+    home=metadata.get('hermetic_home')
+    with home_lease(Path(home),exclusive=True) if home else contextlib.nullcontext():
+        for suffix in ['.targets','.tmp']:
+            path=Path(str(prefix)+suffix)
+            if path.is_symlink():path.unlink()
+            elif path.exists():remove_home(path)
     return {'outer_targets_removed':True,'outer_tmp_removed':True}
 
 def stop_job(file):
     item=json.loads(Path(file).read_text()); pid=item['pid']
+    if item.get('pid_namespace')!=pid_namespace():raise RuntimeError('cannot stop a job recorded in another or unknown PID namespace')
     if identity(pid)!=item['identity']: return
     try: fd=os.pidfd_open(pid)
     except ProcessLookupError: return
@@ -412,7 +454,7 @@ def stop_job(file):
             try: os.killpg(pid,signal.SIGKILL)
             except ProcessLookupError: signal.pidfd_send_signal(fd,signal.SIGKILL)
         import select
-        select.select([fd],[],[],10)
+        if not select.select([fd],[],[],10)[0]:raise RuntimeError('job still alive after termination; cleanup is unsafe')
     finally:os.close(fd)
 
 

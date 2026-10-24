@@ -18,7 +18,7 @@ import time
 
 # Earlier snapshots did not exclude writers in nested target directories.
 # A new key generation prevents any such snapshot from being reused.
-VERSION = 'sdk-target-reflink-v2-hierarchy'
+VERSION = 'sdk-target-reflink-v3-source-clock'
 ROOT = Path('/mnt/bb/sdk-target-store-v1')
 BUDGET = 64 * 1024**3  # Logical upper bound, including shared extents.
 SCAFFOLD = {'.host-targets', '.host-src', '.gate.lock', '.cargo-lock',
@@ -72,11 +72,39 @@ def tool_identity():
     return result
 
 
+def source_unchanged(meta, env, root=Path('/work/src')):
+    """A completed compile must still describe the initially uploaded inputs.
+
+    Restored past timestamps are safe only for that exact immutable source.
+    Build scripts that alter inputs cannot publish under the original key.
+    ctime catches a write that restores its old mtime; external links bypass.
+    """
+    try:
+        clock = json.loads(Path(env['BB_SOURCE_TIMES_FILE']).read_text())
+        if (not clock['cacheable'] or clock['root'] != str(root) or not clock['files']
+                or clock['content_sha256'] != meta['source']['content_sha256']):
+            return False
+        for name, *record in clock['files']:
+            expected, content = record[:-1], record[-1]
+            file = Path(clock['root']) / name
+            if not file.resolve().is_relative_to(root):
+                return False
+            s = file.stat()
+            if expected != list(map(str, [s.st_mode, s.st_size, s.st_mtime_ns, s.st_ctime_ns])):
+                return False
+            if hashlib.sha256(file.read_bytes()).hexdigest() != content:
+                return False
+        return True
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
 def request_key(meta, env, job, components=None):
     source = meta.get('source') or {}
     tree = source.get('content_sha256')
     payload = env.get('BB_TARGET_REQUEST_SHA256')
-    if meta.get('repo') != 'sdk' or not tree or not meta.get('argv') or not payload:
+    if (meta.get('repo') != 'sdk' or not tree or not meta.get('argv') or not payload
+            or env.get('BB_SOURCE_TIMES_POLICY') != 'blob-past-private-v1'):
         return None
     # Operational identities vary for every dispatch. Build flags, PATH, custom
     # variables and compiler selection remain in the key; only digests persist.

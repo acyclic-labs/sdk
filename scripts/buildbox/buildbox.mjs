@@ -553,6 +553,32 @@ for (const r of fs.readFileSync(recsF, 'utf8').split('\\0')) { if (!r) continue;
   try { fs.lutimesSync(root + '/' + p, m, m); next[p] = [blob, m]; } catch (e) { if (e.code !== 'ENOENT') throw e; } }
 fs.writeFileSync(mapF + '.tmp', JSON.stringify(next)); fs.renameSync(mapF + '.tmp', mapF);
 console.error('[buildbox] shared target ' + mapF.replace(/\\/[^/]*$/, '') + ': ' + kept + ' files keep their times, ' + fresh + ' changed or new');`;
+// A private target is seeded only by the exact uploaded content key. Give that
+// immutable input stable, past times before any compiler runs, so a new source
+// checkout does not invalidate its completed target snapshot. This must never
+// apply to a mutable target shared across source trees: hash-derived times are
+// not monotonic. Later writes in this job retain their actual fresh mtimes.
+const SOURCE_TIMES = `const fs=require('fs'),crypto=require('crypto');const [records,root,clock,content]=process.argv.slice(1);
+const files=[],names=[];let cacheable=true;
+for(const record of fs.readFileSync(records,'utf8').split('\\0')){
+ if(!record)continue;
+ const blob=record.slice(0,record.indexOf(' ')),name=record.slice(record.indexOf('\\t')+1);
+ if(!/^[a-f0-9]{40,64}$/.test(blob)||!name||name.startsWith('/')||name.split('/').includes('..'))throw Error('invalid uploaded source record');
+ const seconds=946684800+parseInt(blob.slice(0,8),16)%(20*365*86400);
+ fs.lutimesSync(root+'/'+name,seconds,seconds);
+ names.push(name);
+}
+// Normalize every target before inspecting symlink aliases to those targets.
+for(const name of names){
+ try{
+  const real=fs.realpathSync(root+'/'+name);
+  if(!real.startsWith(root+'/')){cacheable=false;continue;}
+  const s=fs.statSync(root+'/'+name,{bigint:true});
+  files.push([name,...[s.mode,s.size,s.mtimeNs,s.ctimeNs].map(String),crypto.createHash('sha256').update(fs.readFileSync(real)).digest('hex')]);
+ }catch{cacheable=false;}
+}
+fs.writeFileSync(clock+'.tmp',JSON.stringify({root,content_sha256:content,cacheable,files}));fs.renameSync(clock+'.tmp',clock);
+console.error('[buildbox] source clock: exact-content private targets');`;
 // node_modules for every job that is not cargo (2026-10-18 crit-bslot): remote trees often had none and JS gates died
 // rc 127 ("./node_modules/.bin/tsc: No such file or directory", #5338, #5341) when the lane forgot `npm ci`. Every tracked
 // package-lock.json (managed-agents excluded) gets `npm ci` through the bbnpm shim before the command: a no-op when the
@@ -636,6 +662,11 @@ if [ "\${bbid:-}" != ${id.content} ] || { [ -f .git ] && [ ${id.commit} != none 
   echo >&2 "[build-slot] remote failed: tree-mismatch (client commit ${id.commit} content ${id.content}; VM checkout HEAD \${bbpre:-none} content \${bbid:-unknown})"
   [ ! -s "$bbI.recs" ] || node -e ${q(IDENT_DIFF)} "$bbI.recs" ${id.groups} || true; rm -f "$bbI.recs"; exit 224; fi
 # Shared target slot (see sharedFlavor): source times from the slot's content map before cargo looks at them.
+if [ ${repo} = sdk ] && [ "$BB_HOST_TARGET" = ${TD} ]; then
+  if ! node -e ${q(SOURCE_TIMES)} "$bbI.recs" /work/src ${J}.source-clock.json ${id.content}; then
+    echo >&2 '[build-slot] remote failed: private-source-times'; rm -f "$bbI.recs"; exit 224; fi
+  export BB_SOURCE_TIMES_POLICY=blob-past-private-v1 BB_SOURCE_TIMES_FILE=${J}.source-clock.json
+fi
 if [ "$BB_HOST_TARGET" != ${TD} ] && ! node -e ${q(MTIME_MAP)} "$bbI.recs" "$BB_HOST_TARGET/.bb-mtimes.json" /work/src; then
   echo >&2 "[build-slot] remote failed: shared-target-mtimes (could not set source times for $BB_HOST_TARGET; BUILD_SLOT_SHARED_TARGET=0 uses a per-copy dir)"; rm -f "$bbI.recs"; exit 224; fi
 rm -f "$bbI.recs"

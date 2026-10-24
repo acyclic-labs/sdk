@@ -548,7 +548,7 @@ const meta=script.match(/echo ([A-Za-z0-9+/=]+) \\| base64 -d > \\$J\\.receipt-m
 fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
 ''')
             subprocess.run([job.NODE,str(probe),str(prefix),str(self.d),str(meta)],check=True,capture_output=True)
-            source=receipt_source.replace("if (m.side === 'bb2' && m.job_prefix) {",'if (false) {') if negative else receipt_source
+            source=receipt_source.replace("if (cleanupAllowed && m.side === 'bb2' && m.job_prefix) {",'if (false) {') if negative else receipt_source
             Path(str(prefix)+'.receipt-tool.mjs').write_text(source)
             code=f'from pathlib import Path;import time;Path({str(marker)!r}).touch();time.sleep(60)'
             import shlex
@@ -628,7 +628,7 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
         finally:job.stop_server(first);job.stop_server(second)
 
     def test_cache_exit_during_pidfd_cleanup_is_already_stopped(self):
-        server={'pid':123,'identity':'fixture','endpoint':'/mnt/bb/jobs/fixture.sock'}
+        server={'pid':123,'identity':'fixture','endpoint':'/mnt/bb/jobs/fixture.sock','pid_namespace':job.pid_namespace()}
         with patch.object(job,'identity',return_value='fixture'),patch.object(Path,'read_bytes',return_value=b'SCCACHE_SERVER_UDS=/mnt/bb/jobs/fixture.sock\0'):
             with patch.object(job.os,'pidfd_open',side_effect=ProcessLookupError):
                 job.stop_server(server) # former unguarded open raised and prevented home cleanup
@@ -636,6 +636,31 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
                 job.stop_server(server);close.assert_called_once_with(42)
             with patch.object(job.os,'pidfd_open',side_effect=PermissionError):
                 with self.assertRaises(PermissionError):job.stop_server(server) # unrelated failures stay visible
+
+    def test_foreign_namespace_ids_never_signal_local_processes(self):
+        item={'pid':os.getpid(),'identity':job.identity(os.getpid()),'pid_namespace':'pid:[foreign]','endpoint':'fixture'}
+        file=self.d/'foreign.job';file.write_text(json.dumps(item))
+        with patch.object(job.os,'pidfd_open') as opened,patch.object(job.os,'killpg') as killed:
+            job.stop_server(item)
+            with self.assertRaisesRegex(RuntimeError,'PID namespace'):job.stop_job(file)
+            opened.assert_not_called();killed.assert_not_called()
+        # The same numeric PID and birth identity would otherwise signal us.
+        self.assertEqual(item['identity'],job.identity(item['pid']))
+
+    def test_storage_device_rejects_root_and_live_cleanup_requires_custody(self):
+        self.assertEqual(job.require_data_path(self.d/'not-created/target')['device'],Path('/mnt/bb').stat().st_dev)
+        with self.assertRaisesRegex(RuntimeError,'/mnt/bb filesystem'):job.require_data_path('/work/root-target-negative-control')
+        directory=Path(tempfile.mkdtemp(prefix='job-custody-control-',dir=job.JOBS))
+        file=self.d/'runtime.json';file.write_text(json.dumps({'hermetic_home':str(directory)}))
+        try:
+            (directory/'keep').write_text('live')
+            with job.home_lease(directory):
+                with self.assertRaisesRegex(RuntimeError,'leased live job'):job.cleanup_runtime(file)
+                self.assertEqual((directory/'keep').read_text(),'live')
+            # Without the lease, cleanup can and must remove this same tree.
+            job.cleanup_runtime(file);self.assertFalse(directory.exists())
+        finally:
+            if directory.exists():job.remove_home(directory)
 
     def test_fixed_shared_port_negative_control(self):
         c=socket.socket();c.bind(('127.0.0.1',0));port=c.getsockname()[1];c.close()
@@ -654,4 +679,16 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
             server,status=job.start_cache(d,env)
         self.assertIsNone(server);self.assertEqual(status,'startup-failed:forced bind failure')
 
-if __name__=='__main__':unittest.main(verbosity=2)
+if __name__=='__main__':
+    # Keep the kernel-boundary and lifecycle suites independently measurable.
+    # Every discovered control runs exactly once; neither group filters failures.
+    names=unittest.defaultTestLoader.getTestCaseNames(RuntimeTests)
+    home_tokens=('home','proc_','namespace_','fuse_','inherited_','no_new_privs')
+    groups={label:[name for name in names if any(token in name for token in home_tokens)==is_home]
+            for label,is_home in [('HOME boundary',True),('admission, cache and lifecycle',False)]}
+    assert sorted(sum(groups.values(),[]))==names
+    results=[]
+    for label,selected in groups.items():
+        print('SUITE '+label,file=sys.stderr,flush=True)
+        results.append(unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(RuntimeTests(name) for name in selected)))
+    raise SystemExit(0 if all(result.wasSuccessful() for result in results) else 1)

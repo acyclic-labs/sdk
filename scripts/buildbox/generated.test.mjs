@@ -5,6 +5,45 @@ import path from 'node:path';
 import {tmpdir} from 'node:os';
 import test from 'node:test';
 const here=path.dirname(new URL(import.meta.url).pathname);
+
+test('exact private inputs preserve source times across fresh checkouts',async()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'source-clock-'));
+ try{
+  const generator=path.join(cwd,'generator.mjs');
+  fs.writeFileSync(generator,fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8')+'\nexport { SOURCE_TIMES };\n');
+  fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  const {SOURCE_TIMES}=await import(generator);
+  const input=path.join(cwd,'lib.rs'),records=path.join(cwd,'records');
+  fs.writeFileSync(input,'exact content');fs.writeFileSync(records,'a'.repeat(40)+' 0\tlib.rs\0');
+  function normalize(program=SOURCE_TIMES){
+   const result=spawnSync(process.execPath,['-e',program,records,cwd,path.join(cwd,'clock.json'),'c'.repeat(64)],{encoding:'utf8'});
+   assert.equal(result.status,0,result.stderr);
+   return fs.statSync(input).mtimeMs;
+  }
+  const first=normalize();
+  fs.utimesSync(input,new Date(),new Date());
+  assert.notEqual(normalize(''),first,'former fresh checkout invalidates a restored Cargo fingerprint');
+  assert.equal(normalize(),first);
+  const clock=JSON.parse(fs.readFileSync(path.join(cwd,'clock.json')));
+  assert.equal(clock.content_sha256,'c'.repeat(64));assert.equal(clock.cacheable,true);
+  assert.equal(clock.files.length,1);assert.equal(clock.files[0][0],'lib.rs');
+  fs.writeFileSync(input,'changed content');fs.writeFileSync(records,'b'.repeat(40)+' 0\tlib.rs\0');
+  assert.notEqual(normalize(),first);
+  fs.symlinkSync('lib.rs',path.join(cwd,'alias'));
+  fs.utimesSync(input,new Date(),new Date());
+  fs.writeFileSync(records,'e'.repeat(40)+' 0\talias\0'+'b'.repeat(40)+' 0\tlib.rs\0');normalize();
+  const aliases=JSON.parse(fs.readFileSync(path.join(cwd,'clock.json'))).files;
+  assert.equal(aliases[0][3],String(fs.statSync(input,{bigint:true}).mtimeNs));
+  assert.equal(aliases[0][4],String(fs.statSync(input,{bigint:true}).ctimeNs));
+  fs.symlinkSync('/etc/hostname',path.join(cwd,'external'));
+  fs.writeFileSync(records,'d'.repeat(40)+' 0\texternal\0');normalize();
+  assert.equal(JSON.parse(fs.readFileSync(path.join(cwd,'clock.json'))).cacheable,false);
+  const source=fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8');
+  const privateBlock=source.slice(source.indexOf('if [ ${repo} = sdk ] && [ "$BB_HOST_TARGET" = ${TD} ]; then'),source.indexOf('rm -f "$bbI.recs"\nexport BUILD_SLOT_TREE'));
+  assert.match(privateBlock,/BB_SOURCE_TIMES_POLICY=blob-past-private-v1/);
+  assert.ok(source.indexOf('remote failed: tree-mismatch')<source.indexOf(privateBlock));
+ }finally{fs.rmSync(cwd,{recursive:true,force:true});}
+});
 test('remote wrappers parse, retain isolation and archive outputs before cleanup',()=>{
  const cwd=fs.mkdtempSync(path.join(tmpdir(),'job-shell-'));
  try{
@@ -165,9 +204,9 @@ test('outer cleanup failure is INFRA and the former status handling is a negativ
   const helper=path.join(cwd,'refuse.py');fs.writeFileSync(helper,'import sys\nprint("forced outer cleanup refusal",file=sys.stderr)\nsys.exit(1)\n');
   const source=fs.readFileSync(path.join(here,'buildbox-receipt.mjs'),'utf8').replaceAll('/home/var/bin/bb-job.py',helper);
   for(const [negative,expected] of [[false,224],[true,0]]){
-   const module=path.join(cwd,`receipt-${negative}.mjs`);fs.writeFileSync(module,negative?source.replaceAll("if (Number(rc) === 0) { rc = 224; category = 'infra'; }",''):source);
+   const module=path.join(cwd,`receipt-${negative}.mjs`);fs.writeFileSync(module,negative?source.replaceAll("rc = 224; category = 'infra';",''):source);
    const meta=path.join(cwd,`meta-${negative}.json`);const receipt=path.join(cwd,`done-${negative}.json`);
-   fs.writeFileSync(meta,JSON.stringify({side:'bb2',job_prefix:'/mnt/bb/jobs/cleanup-control',receipt_file:receipt,argv:[],worktree:cwd,admission_start:new Date().toISOString()}));
+   fs.writeFileSync(meta,JSON.stringify({owner:{pid:process.pid,pid_namespace:fs.readlinkSync('/proc/self/ns/pid')},side:'bb2',job_prefix:'/mnt/bb/jobs/cleanup-control',receipt_file:receipt,argv:[],worktree:cwd,admission_start:new Date().toISOString()}));
    const result=spawnSync(process.execPath,[module,'finish',meta,'0','command'],{encoding:'utf8'});
    assert.equal(result.status,expected,result.stderr);
    const terminal=JSON.parse(fs.readFileSync(receipt));assert.equal(terminal.exit_status,expected);
