@@ -141,12 +141,13 @@ const ATTEMPTS: usize = 1 + crate::RetrySpec::DEFAULT.attempts as usize;
 
 #[tokio::test]
 async fn unreachable_host_is_a_typed_connect_failure_after_bounded_redelivery() -> Result<()> {
-    let port = {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|_| invalid("bind"))?;
-        listener.local_addr().map_err(|_| invalid("addr"))?.port()
-    };
-    let (provider, transport) = model(&format!("http://127.0.0.1:{port}/v1"))?;
-    let error = generate(&provider).await.expect_err("closed port");
+    // Port zero cannot name a listener. Releasing an ephemeral port races a
+    // different binder and triggers Windows' delayed connection refusal.
+    // The live-server cases below are the control for a reachable destination.
+    let (provider, transport) = model("http://127.0.0.1:0/v1")?;
+    let error = generate(&provider)
+        .await
+        .expect_err("impossible destination port");
     assert_eq!(
         failure(&error),
         Some(ModelTransportFailure::Connect),
@@ -164,7 +165,7 @@ async fn unreachable_host_is_a_typed_connect_failure_after_bounded_redelivery() 
     let error = provider
         .count_tokens(&prepared)
         .await
-        .expect_err("closed port");
+        .expect_err("impossible destination port");
     assert_eq!(
         failure(&error),
         Some(ModelTransportFailure::Connect),
