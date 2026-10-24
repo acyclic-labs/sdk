@@ -520,48 +520,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         Ok(operation)
     }
 
-    fn fold(&mut self, file: files::FileValue) -> Result<bool> {
-        if matches!(&file.key, files::FileKey::Task { .. })
-            && !files::command_query::matches(&component(self.session.to_string())?, &file.key)
-        {
-            return Ok(false);
-        }
-        if matches!(&file.key, files::FileKey::Session { session, .. } if session.as_str() != self.session.to_string())
-        {
-            return Ok(false);
-        }
-        if let files::FileKey::Ui { directory, .. } = &file.key {
-            if directory.as_str().starts_with("task-")
-                && self
-                    .selected_task()?
-                    .is_none_or(|task| directory.as_str() != format!("task-{task}"))
-            {
-                return Ok(false);
-            }
-        }
-        if file.bytes.len() as u64 > self.maximum_bytes {
-            return Err(Error::Invalid("command file exceeds byte bound".into()));
-        }
-        let previous = match &file.key {
-            files::FileKey::Ui { directory, name }
-                if name.as_str() == "layout.json"
-                    && directory.as_str() == format!("session-{}", self.session) =>
-            {
-                Some(self.selected_task()?)
-            }
-            _ => None,
-        };
-        self.make_room(usize::from(!self.files.contains_key(&file.key)))?;
-        self.fold_activity_file(&file)?;
-        if file.key == ui("config", "commands.json")? {
-            let mut catalog = CommandCatalog::from_bytes(&file.bytes, self.maximum_bytes)?;
-            catalog.set_themes(self.catalog.themes.clone())?;
-            self.catalog = catalog;
-        }
-        if file.key == ui("config", "themes.json")? {
-            self.catalog
-                .set_themes(serde_json::from_slice::<Vec<String>>(&file.bytes).map_err(codec)?)?;
-        }
+    fn fold_outcome(&mut self, file: &files::FileValue) -> Result<()> {
         if matches!(
             file.key,
             files::FileKey::Task {
@@ -648,6 +607,52 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn fold(&mut self, file: files::FileValue) -> Result<bool> {
+        if matches!(&file.key, files::FileKey::Task { .. })
+            && !files::command_query::matches(&component(self.session.to_string())?, &file.key)
+        {
+            return Ok(false);
+        }
+        if matches!(&file.key, files::FileKey::Session { session, .. } if session.as_str() != self.session.to_string())
+        {
+            return Ok(false);
+        }
+        if let files::FileKey::Ui { directory, .. } = &file.key {
+            if directory.as_str().starts_with("task-")
+                && self
+                    .selected_task()?
+                    .is_none_or(|task| directory.as_str() != format!("task-{task}"))
+            {
+                return Ok(false);
+            }
+        }
+        if file.bytes.len() as u64 > self.maximum_bytes {
+            return Err(Error::Invalid("command file exceeds byte bound".into()));
+        }
+        let previous = match &file.key {
+            files::FileKey::Ui { directory, name }
+                if name.as_str() == "layout.json"
+                    && directory.as_str() == format!("session-{}", self.session) =>
+            {
+                Some(self.selected_task()?)
+            }
+            _ => None,
+        };
+        self.make_room(usize::from(!self.files.contains_key(&file.key)))?;
+        self.fold_activity_file(&file)?;
+        if file.key == ui("config", "commands.json")? {
+            let mut catalog = CommandCatalog::from_bytes(&file.bytes, self.maximum_bytes)?;
+            catalog.set_themes(self.catalog.themes.clone())?;
+            self.catalog = catalog;
+        }
+        if file.key == ui("config", "themes.json")? {
+            self.catalog
+                .set_themes(serde_json::from_slice::<Vec<String>>(&file.bytes).map_err(codec)?)?;
+        }
+        self.fold_outcome(&file)?;
         if matches!(
             file.key,
             files::FileKey::Task {

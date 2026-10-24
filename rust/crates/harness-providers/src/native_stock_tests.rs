@@ -86,18 +86,29 @@ impl ResumableMachine for OneCommand {
         let mut history = HistoryWork::new(PreparationIo::from_native_work(work)?);
         history.retain_owned(std::mem::size_of::<MachineTransition>() as u64)?;
         let transition = if state == &serde_json::Value::Bool(true) {
-            let commands = input["commands"]
-                .as_array()
+            let commands = input
+                .get("commands")
+                .and_then(serde_json::Value::as_array)
                 .filter(|commands| commands.len() == 1)
                 .ok_or_else(|| invalid("stock fixture requires its one command result"))?;
-            let operation: OperationId =
-                serde::Deserialize::deserialize(&commands[0]["operation_id"])
-                    .map_err(|_| invalid("stock fixture result has no operation identity"))?;
+            let command = commands
+                .first()
+                .ok_or_else(|| invalid("stock fixture command result is missing"))?;
+            let identity = command
+                .get("operation_id")
+                .ok_or_else(|| invalid("stock fixture result has no operation identity"))?;
+            let operation: OperationId = serde::Deserialize::deserialize(identity)
+                .map_err(|_| invalid("stock fixture result has no operation identity"))?;
             if operation != self.command.operation_id {
                 return Err(invalid("stock fixture result belongs to another command"));
             }
-            let outcome = &commands[0]["value"];
-            let status = if let Some(message) = outcome["Failed"]["message"].as_str() {
+            let outcome = command
+                .get("value")
+                .ok_or_else(|| invalid("stock fixture command outcome is missing"))?;
+            let status = if let Some(message) = outcome
+                .pointer("/Failed/message")
+                .and_then(serde_json::Value::as_str)
+            {
                 history.retain_owned(message.len() as u64)?;
                 history.allocation_attempt(message.len() as u64)?;
                 work.charge(acyclic_fs::WorkCounters {
