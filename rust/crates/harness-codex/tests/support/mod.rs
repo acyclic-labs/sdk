@@ -378,6 +378,7 @@ impl ToolExecutor for Echo {
                 return Err(Error::Invalid("echo was asked to fail".into()));
             }
             Ok(ToolResult {
+                images: Vec::new(),
                 value: json!({"echo": invocation.arguments["text"]}),
             })
         }

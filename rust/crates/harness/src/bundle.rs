@@ -28,6 +28,10 @@ use std::sync::Arc;
 
 const CODING_TOOLS: &[(&str, &str)] = &[
     (
+        "acyclic.view_image",
+        "View a workspace PNG or JPEG image using native model vision.",
+    ),
+    (
         "acyclic.filesystem",
         "Read and mutate the durable workspace filesystem.",
     ),
@@ -995,6 +999,7 @@ mod tests {
         ) -> BoxFuture<'a, Result<ToolResult>> {
             async move {
                 Ok(ToolResult {
+                    images: Vec::new(),
                     value: json!({"tool": tool}),
                 })
             }

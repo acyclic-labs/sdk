@@ -49,7 +49,7 @@ impl Model {
 pub struct ModelMessage {
     /// Semantic role (`system`, `user`, `assistant`, or `tool`).
     pub role: ModelRole,
-    /// Typed, provider-neutral content; file bytes are never part of this value.
+    /// Typed provider-neutral content, including bounded transient inline images.
     pub content: ModelContent,
 }
 
@@ -119,6 +119,19 @@ impl ModelContent {
         }
         for part in parts {
             match part {
+                ModelContentPart::Image { image } => {
+                    image.validate()?;
+                    let padding = image
+                        .data_base64
+                        .bytes()
+                        .rev()
+                        .take_while(|byte| *byte == b'=')
+                        .count();
+                    let byte_length = image.data_base64.len() / 4 * 3 - padding;
+                    if byte_length as u64 > limits.file_bytes {
+                        return Err(Error::Invalid("model image exceeds file limit".into()));
+                    }
+                }
                 ModelContentPart::Text { text } if text.len() as u64 > limits.render_bytes => {
                     return Err(Error::Invalid("model text exceeds render limit".into()));
                 }
@@ -176,6 +189,7 @@ impl ModelContent {
             match part {
                 ModelContentPart::Text { text } if !text.is_empty() => {}
                 ModelContentPart::File { file, .. } => file.validate()?,
+                ModelContentPart::Image { image } => image.validate()?,
                 _ => {
                     return Err(Error::Invalid(
                         "user input contains an unsupported part".into(),
@@ -207,6 +221,11 @@ impl ModelContent {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ModelContentPart {
+    /// Verified inline PNG or JPEG bytes for provider-native vision.
+    Image {
+        /// Bounded encoded image.
+        image: ModelImage,
+    },
     /// Plain text.
     Text {
         /// Model-visible text.
@@ -239,6 +258,53 @@ pub enum ModelContentPart {
         /// Model-visible result projection.
         value: Value,
     },
+}
+
+/// Bounded provider-neutral inline image, kept out of text/JSON projections.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelImage {
+    /// Exact media type: image/png or image/jpeg.
+    pub media_type: String,
+    /// Standard padded base64 encoding of the original image bytes.
+    pub data_base64: String,
+}
+
+impl std::fmt::Debug for ModelImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModelImage")
+            .field("media_type", &self.media_type)
+            .field("encoded_bytes", &self.data_base64.len())
+            .field("data_base64", &"[redacted]")
+            .finish()
+    }
+}
+
+impl ModelImage {
+    /// Maximum decoded bytes in one image.
+    pub const MAX_BYTES: usize = 10 * 1024 * 1024;
+
+    /// Rejects invalid encoding, unsupported media, oversized or mismatched bytes.
+    pub fn validate(&self) -> Result<()> {
+        use base64::Engine as _;
+        if self.data_base64.len() > Self::MAX_BYTES.div_ceil(3) * 4 {
+            return Err(Error::Invalid("image exceeds byte limit".into()));
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&self.data_base64)
+            .map_err(|_| Error::Invalid("image is not valid base64".into()))?;
+        let signature_matches = match self.media_type.as_str() {
+            "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+            "image/jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+            _ => false,
+        };
+        if bytes.len() > Self::MAX_BYTES || !signature_matches {
+            return Err(Error::Invalid(
+                "image bytes do not match supported PNG/JPEG media".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// File handling policy selected before provider dispatch.
@@ -320,4 +386,46 @@ pub trait ModelProvider: Send + Sync {
         &'a self,
         attempt: ModelAttempt,
     ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>>;
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+    #[test]
+    fn inline_images_reject_invalid_encoding_media_and_limits() {
+        for (media_type, data_base64) in [
+            ("image/png", "%%%"),
+            ("image/gif", "iVBORw0KGgo="),
+            ("image/jpeg", "iVBORw0KGgo="),
+        ] {
+            assert!(
+                ModelImage {
+                    media_type: media_type.into(),
+                    data_base64: data_base64.into()
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        let image = ModelImage {
+            media_type: "image/png".into(),
+            data_base64: "iVBORw0KGgo=".into(),
+        };
+        assert!(image.validate().is_ok());
+        assert!(!format!("{image:?}").contains(&image.data_base64));
+        let content = ModelContent::Part(ModelContentPart::Image { image });
+        assert!(
+            content
+                .validate_limits(crate::conversation::Limits {
+                    file_bytes: 1,
+                    ..Default::default()
+                })
+                .is_err()
+        );
+        let image = ModelImage {
+            media_type: "image/png".into(),
+            data_base64: "A".repeat(ModelImage::MAX_BYTES.div_ceil(3) * 4 + 1),
+        };
+        assert!(image.validate().is_err());
+    }
 }

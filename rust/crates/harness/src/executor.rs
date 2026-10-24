@@ -839,6 +839,14 @@ impl StockExecutor {
                 }
             };
             if validate_value(&tool.definition.output_schema, &result.value, "tool output").is_err()
+                || result.images.len() > self.limits.attachments
+                || result.images.iter().any(|image| {
+                    ModelContent::Part(ModelContentPart::Image {
+                        image: image.clone(),
+                    })
+                    .validate_limits(self.limits)
+                    .is_err()
+                })
             {
                 self.record_tool_failure(
                     journal,
@@ -966,7 +974,7 @@ impl StockExecutor {
             (result, projection)
         };
         validate_value(&tool.definition.output_schema, &result.value, "tool output")?;
-        let message = ModelMessage {
+        let mut message = ModelMessage {
             role: ModelRole::Tool,
             content: ModelContent::Part(ModelContentPart::ToolResult {
                 call_id: invocation.call_id.clone(),
@@ -974,6 +982,17 @@ impl StockExecutor {
                 value: projection,
             }),
         };
+        if !result.images.is_empty() {
+            let ModelContent::Part(part) = message.content else {
+                return Err(Error::Invalid("tool result has invalid content".into()));
+            };
+            let mut parts = vec![part];
+            for image in result.images {
+                image.validate()?;
+                parts.push(ModelContentPart::Image { image });
+            }
+            message.content = ModelContent::Parts(parts);
+        }
         message.content.validate_limits(self.limits)?;
         prior_messages.push(message);
         Ok(())
@@ -1413,6 +1432,7 @@ mod tests {
             self.0.fetch_add(1, Ordering::SeqCst);
             async move {
                 Ok(ToolResult {
+                    images: Vec::new(),
                     value: invocation.arguments,
                 })
             }
@@ -1425,6 +1445,89 @@ mod tests {
     }
 
     struct Projection;
+
+    #[tokio::test]
+    async fn inline_tool_images_reach_model_context_and_replay_without_execution() -> Result<()> {
+        struct ImageTool(AtomicUsize);
+        impl crate::tool::ToolExecutor for ImageTool {
+            fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async {
+                    Ok(ToolResult {
+                        value: json!({"width":1}),
+                        images: vec![crate::model::ModelImage {
+                            media_type: "image/png".into(),
+                            data_base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8Z0AAAAASUVORK5CYII=".into(),
+                        }],
+                    })
+                })
+            }
+            fn reconcile<'a>(
+                &'a self,
+                _: ToolInvocation,
+            ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+                Box::pin(async { Ok(None) })
+            }
+        }
+        let tool = Arc::new(ImageTool(AtomicUsize::new(0)));
+        let mut tools = ToolRegistry::new();
+        tools.register(crate::tool::Tool {
+            definition: crate::tool::ToolDefinition {
+                name: "example.image".into(),
+                revision: "1".into(),
+                description: "Image".into(),
+                input_schema: json!({"type":"object"}),
+                output_schema: json!({"type":"object"}),
+            },
+            executor: tool.clone(),
+            projection: Arc::new(Projection),
+        })?;
+        let executor = StockExecutor::new(
+            Model::new("example", "model", "1", Value::Null)?,
+            Arc::new(FakeModel {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            }),
+            ContextPipeline::default(),
+            tools,
+        )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["tool:call:example.image"]),
+                Limits::default(),
+            )?,
+            None,
+        )?;
+        let journal = Journal::default();
+        let operation = OperationId::new();
+        let invocation = ToolInvocation::for_model_call(
+            operation,
+            0,
+            "image-call".into(),
+            "example.image".into(),
+            json!({}),
+        );
+        let mut first = Vec::new();
+        executor
+            .resolve_tool_call(&journal, operation, 0, invocation.clone(), &mut first)
+            .await?;
+        let ModelContent::Parts(parts) = &first[0].content else {
+            return Err(Error::Invalid("missing image parts".into()));
+        };
+        assert!(
+            matches!(&parts[0],ModelContentPart::ToolResult { call_id,.. } if call_id == "image-call")
+        );
+        assert!(
+            matches!(&parts[1],ModelContentPart::Image { image } if image.data_base64 == "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8Z0AAAAASUVORK5CYII=")
+        );
+        let mut replay = Vec::new();
+        executor
+            .resolve_tool_call(&journal, operation, 0, invocation, &mut replay)
+            .await?;
+        assert_eq!(first, replay);
+        assert_eq!(tool.0.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
 
     impl crate::tool::ToolProjection for Projection {
         fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {

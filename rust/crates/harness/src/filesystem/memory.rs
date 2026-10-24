@@ -317,7 +317,10 @@ impl ToolExecutor for LocalListFilesTool {
             {
                 return Err(Error::Invalid("directory page exceeds render limit".into()));
             }
-            let result = ToolResult { value };
+            let result = ToolResult {
+                images: Vec::new(),
+                value,
+            };
             observed.insert(invocation.operation_id, (invocation, result.clone()));
             Ok(result)
         })
@@ -380,6 +383,7 @@ impl ToolExecutor for LocalStageFileTool {
                 .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
                 .stage_reference(&file, input.text.as_bytes(), true)?;
             Ok(ToolResult {
+                images: Vec::new(),
                 value: json!({"file": file}),
             })
         })
@@ -422,6 +426,7 @@ impl ToolExecutor for LocalReadFileTool {
             let text = String::from_utf8(bytes)
                 .map_err(|_| Error::Unsupported("read_file requires UTF-8 content".into()))?;
             Ok(ToolResult {
+                images: Vec::new(),
                 value: json!({"file": input.file, "text": text}),
             })
         })

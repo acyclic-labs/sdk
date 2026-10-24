@@ -85,7 +85,12 @@ struct CountingNoopTool {
 impl ToolExecutor for CountingNoopTool {
     fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
         self.executions.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async { Ok(ToolResult { value: Value::Null }) })
+        Box::pin(async {
+            Ok(ToolResult {
+                images: Vec::new(),
+                value: Value::Null,
+            })
+        })
     }
 
     fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
@@ -193,7 +198,12 @@ impl TaskStateProvider for TestTaskState {
 
 impl ToolExecutor for NoopTool {
     fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
-        Box::pin(async { Ok(ToolResult { value: Value::Null }) })
+        Box::pin(async {
+            Ok(ToolResult {
+                images: Vec::new(),
+                value: Value::Null,
+            })
+        })
     }
     fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async { Ok(None) })

@@ -266,6 +266,9 @@ enum WasmFileProjectionPolicy {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[tsify(from_wasm_abi, into_wasm_abi)]
 enum WasmModelContentPart {
+    Image {
+        image: WasmModelImage,
+    },
     Text {
         text: String,
     },
@@ -288,6 +291,22 @@ enum WasmModelContentPart {
         #[tsify(type = "WasmModelJsonValue")]
         value: serde_json::Value,
     },
+}
+
+#[derive(Clone, Deserialize, Serialize, Tsify)]
+#[tsify(from_wasm_abi, into_wasm_abi)]
+struct WasmModelImage {
+    media_type: String,
+    data_base64: String,
+}
+
+impl std::fmt::Debug for WasmModelImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasmModelImage")
+            .field("media_type", &self.media_type)
+            .field("encoded_bytes", &self.data_base64.len())
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Tsify)]

@@ -24,6 +24,7 @@ machines = ["dep:acyclic-machines"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
 
 [dependencies]
+base64 = "0.22.1"
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, optional = true }
 acyclic-machines = { version = "=0.2.0", path = "../machines", optional = true }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, optional = true }

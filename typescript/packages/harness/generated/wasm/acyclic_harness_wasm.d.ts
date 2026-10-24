@@ -313,6 +313,11 @@ export interface WasmModelEventAdmissionState {
     text_bytes: number;
 }
 
+export interface WasmModelImage {
+    media_type: string;
+    data_base64: string;
+}
+
 export interface WasmModelMessageWire {
     role: WasmModelRole;
     content: WasmModelContent;
@@ -403,7 +408,7 @@ export type WasmFileProjectionPolicy = "reference" | "bounded_full" | "native";
 
 export type WasmModelContent = string | WasmModelContentPart | WasmModelContentPart[];
 
-export type WasmModelContentPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: WasmFileProjectionPolicy } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "tool_result"; call_id: string; name: string; value: WasmModelJsonValue };
+export type WasmModelContentPart = { kind: "image"; image: WasmModelImage } | { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: WasmFileProjectionPolicy } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "tool_result"; call_id: string; name: string; value: WasmModelJsonValue };
 
 export type WasmModelEvent = { kind: "content"; delta: string } | { kind: "reasoning"; delta: string } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "completed"; metadata: WasmModelJsonValue };
 

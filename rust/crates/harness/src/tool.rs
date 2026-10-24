@@ -127,6 +127,9 @@ fn validate_tool_name(name: &str) -> Result<()> {
 pub struct ToolResult {
     /// Schema-validated structured value.
     pub value: Value,
+    /// Verified inline images retained independently of the JSON projection.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<crate::model::ModelImage>,
 }
 
 /// Replaceable execution behavior for a tool.
@@ -331,7 +334,13 @@ mod tests {
     struct Executor;
     impl ToolExecutor for Executor {
         fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
-            async { Ok(ToolResult { value: Value::Null }) }.boxed()
+            async {
+                Ok(ToolResult {
+                    images: Vec::new(),
+                    value: Value::Null,
+                })
+            }
+            .boxed()
         }
         fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
             async { Ok(None) }.boxed()
