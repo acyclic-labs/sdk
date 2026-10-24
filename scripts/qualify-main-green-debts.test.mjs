@@ -106,6 +106,65 @@ test('a completed executable preserves its output and failure status', async () 
   assert.equal(result.output.trim(), 'fixture output');
 });
 
+test('a passing executable terminates its live background child with closed output pipes', async () => {
+  let group;
+  let descendant;
+  let observed = '';
+  let stopped = 0;
+  const source = `
+    const {spawn} = require('node:child_process');
+    const child = spawn(process.execPath, ['-e',
+      'process.send(process.pid);setInterval(()=>{},1000)'],
+      {stdio: ['ignore', 'ignore', 'ignore', 'ipc']});
+    child.once('message', pid => {
+      child.disconnect();
+      child.unref();
+      console.log(pid);
+    });
+  `;
+  try {
+    const result = await executeTest(process.execPath, ['-e', source], {
+      launch(executable, args, options) {
+        const child = spawn(executable, args, options);
+        group = child.pid;
+        child.stdout.on('data', data => { observed += data; descendant = Number(observed.trim()); });
+        return child;
+      },
+      terminate(child) {
+        assert.equal(child.pid, group);
+        assert.ok(Number.isSafeInteger(descendant) && descendant > 0);
+        assert.notEqual(descendant, group);
+        process.kill(descendant, 0); // The parent passed while this child lives.
+        process.kill(-child.pid, 'SIGKILL');
+        stopped += 1;
+      },
+    });
+    assert.equal(result.status, 0);
+    assert.equal(Number(result.output.trim()), descendant);
+    assert.equal(stopped, 1, 'completion must end the owned group before qualifying');
+  } finally {
+    if (group !== undefined) {
+      try { process.kill(-group, 'SIGKILL'); } catch (error) {
+        if (error.code !== 'ESRCH') throw error;
+      }
+    }
+  }
+});
+
+test('failed spawn and process-group cleanup failure cannot qualify', async () => {
+  await assert.rejects(executeTest('/definitely-absent-main-green-executable', []), { code: 'ENOENT' });
+  const child = Object.assign(new EventEmitter(), {
+    stdout: new PassThrough(), stderr: new PassThrough(), pid: 123,
+  });
+  const execution = executeTest('/fixture/test', [], {
+    launch: () => child,
+    terminate() { throw Object.assign(new Error('group cleanup refused'), { code: 'EPERM' }); },
+  });
+  child.emit('close', 0);
+  await assert.rejects(execution, /group cleanup refused/);
+  assert.ok(child.stdout.destroyed && child.stderr.destroyed);
+});
+
 test('the execution budget fails the debt without waiting for inherited pipes to close', async () => {
   const child = Object.assign(new EventEmitter(), {
     stdout: new PassThrough(), stderr: new PassThrough(), pid: 123,

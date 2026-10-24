@@ -66,24 +66,31 @@ export function executeTest(executable, args, {
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', chunk => { output += chunk; process.stdout.write(chunk); });
     child.stderr.pipe(process.stderr);
-    const timer = arm(() => {
-      // Reject independently of close: an inherited pipe cannot stall the
-      // debt queue after its owning test has exceeded the execution budget.
+    let settled = false;
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      disarm(timer);
       try {
-        terminate(child);
-      } catch (error) {
-        if (error.code !== 'ESRCH') {
-          reject(error);
-          return;
-        }
+        // The group belongs to this execution even after its leader exits
+        // and descendants close their output pipes. A failed spawn has no PID.
+        if (child.pid !== undefined) terminate(child);
+      } catch (cleanupError) {
+        if (cleanupError.code !== 'ESRCH') error = cleanupError;
       } finally {
         child.stdout.destroy();
         child.stderr.destroy();
       }
-      reject(new Error('test execution exceeded the fixed 10-second budget; debt remains unqualified'));
+      if (error) reject(error);
+      else accept(result);
+    };
+    const timer = arm(() => {
+      // Finish independently of close: an inherited pipe cannot stall the
+      // debt queue after its owning test has exceeded the execution budget.
+      finish(new Error('test execution exceeded the fixed 10-second budget; debt remains unqualified'));
     }, 10_000);
-    child.on('error', error => { disarm(timer); reject(error); });
-    child.on('close', status => { disarm(timer); accept({ status, output }); });
+    child.on('error', error => finish(error));
+    child.on('close', status => finish(null, { status, output }));
   });
 }
 
