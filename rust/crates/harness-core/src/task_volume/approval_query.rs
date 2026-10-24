@@ -1,50 +1,20 @@
 //! Disposable open-request index, folded under the existing file-index lock.
 use super::*;
-#[derive(Default)]
-#[cfg_attr(acyclic_harness_loom, derive(Clone))]
-pub(super) struct Pending {
-    keys: std::collections::BTreeSet<FileKey>,
-}
-impl Pending {
-    pub(super) fn prepare(key: &FileKey) -> Option<(FileKey, bool)> {
-        let FileKey::Task { task, file } = key else {
-            return None;
-        };
-        match file {
-            TaskFile::ApprovalRequest(_) => Some((key.clone(), true)),
-            TaskFile::ApprovalDecision { request, .. } => Some((
-                FileKey::Task {
-                    task: task.clone(),
-                    file: TaskFile::ApprovalRequest(request.clone()),
-                },
-                false,
-            )),
-            _ => None,
-        }
-    }
-    pub(super) fn record(&mut self, change: Option<(FileKey, bool)>, existed: bool) {
-        match change {
-            Some((key, true)) if !existed => {
-                self.keys.insert(key);
-            }
-            Some((key, false)) => {
-                self.keys.remove(&key);
-            }
-            _ => {}
-        }
-    }
-    pub(super) fn keys(&self, task: &Component, maximum: usize) -> Result<Vec<FileKey>> {
-        let mut keys = Vec::new();
-        for key in self
-            .keys
-            .range(Query::Approvals(task.clone()).ranges().remove(0))
-        {
-            if keys.len() == maximum {
-                return Err(Error::LimitExceeded);
-            }
-            keys.push(key.clone());
-        }
-        Ok(keys)
+// Selection changes use the shared approval index; there is no second fold.
+pub(super) fn prepare(key: &FileKey) -> Option<(FileKey, bool)> {
+    let FileKey::Task { task, file } = key else {
+        return None;
+    };
+    match file {
+        TaskFile::ApprovalRequest(_) => Some((key.clone(), true)),
+        TaskFile::ApprovalDecision { request, .. } => Some((
+            FileKey::Task {
+                task: task.clone(),
+                file: TaskFile::ApprovalRequest(request.clone()),
+            },
+            false,
+        )),
+        _ => None,
     }
 }
 pub(super) fn snapshot(index: &Index, task: &Component, maximum: usize) -> Result<Vec<FileValue>> {

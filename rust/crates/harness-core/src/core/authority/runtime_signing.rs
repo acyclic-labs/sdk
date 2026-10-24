@@ -30,6 +30,8 @@ impl RuntimeSigner {
         let public = Arc::new(PublicAuthority {
             trust: std::sync::RwLock::new(workload::trust(id, &workload)),
             metadata_key: metadata.verifying_key().to_bytes(),
+            workload: Default::default(),
+            historical: Default::default(),
         });
         Self {
             metadata,
@@ -42,6 +44,10 @@ impl RuntimeSigner {
 pub(super) struct PublicAuthority {
     pub(super) trust: std::sync::RwLock<acyclic_auth::trust::Snapshot>,
     pub(super) metadata_key: [u8; 32],
+    // One retained immutable authentication, owned by this authority. Replacing
+    // it drops the previous chain; admission decisions are never retained.
+    pub(super) workload: std::sync::Mutex<Option<Arc<workload::AuthenticatedWorkload>>>,
+    pub(super) historical: std::sync::Mutex<workload::HistoricalOwner>,
 }
 
 /// The port neither owns a root nor exports one. Runtime teardown disables all

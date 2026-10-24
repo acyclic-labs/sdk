@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 mod command_machine;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-mod subscription;
+pub(crate) mod subscription;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod subscription_claim;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]

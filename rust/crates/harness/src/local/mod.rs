@@ -26,6 +26,7 @@ use std::{
 // Unit fixtures exercise the native owner even for portable feature checks.
 // Its providers are ordinary dev-dependencies; the library never depends on itself.
 mod admission;
+pub(crate) mod approvals;
 mod bind;
 #[cfg(any(test, feature = "native-execution"))]
 mod checkout_tools;
@@ -75,6 +76,8 @@ pub struct LocalHarness {
     journal: VolumeRef,
     verifier: AuthorityVerifier,
     signed: Scope,
+    approval_policy: crate::approvals::ApprovalPolicy,
+    approval_models: std::collections::BTreeMap<String, (Model, Arc<dyn ModelProvider>)>,
     model: Model,
     /// Unbound: each model command binds it to its executing task's reader.
     provider: Arc<dyn ModelProvider>,
@@ -111,6 +114,13 @@ pub struct LocalHarness {
 }
 
 impl LocalHarness {
+    #[cfg(all(test, not(acyclic_loom)))]
+    pub(crate) fn test_coordinator(
+        &self,
+    ) -> &Arc<crate::durable_host::CoordinatorTaskHost<LocalStream>> {
+        self.runtime.task_host()
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn task_stream(&self) -> Arc<LocalStream> {
         self.runtime.task_host().workflow_stream()

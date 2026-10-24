@@ -119,6 +119,12 @@ pub(super) fn encode(write: &Write, work: NativeWork<'_>) -> Result<(OwnedBytes,
 }
 
 pub(super) fn decode(bytes: &OwnedBytes) -> Result<FileValue> {
+    let (metadata, offset) = parts(bytes)?;
+    let entry: Entry = serde_json::from_slice(metadata).map_err(|_| Error::InvalidSegment)?;
+    decoded(entry, bytes, offset)
+}
+
+fn parts(bytes: &OwnedBytes) -> Result<(&[u8], usize)> {
     if bytes.get(..8) != Some(MAGIC.as_slice()) {
         return Err(Error::InvalidSegment);
     }
@@ -128,8 +134,13 @@ pub(super) fn decode(bytes: &OwnedBytes) -> Result<FileValue> {
         .map(u32::from_le_bytes)
         .ok_or(Error::InvalidSegment)? as usize;
     let offset = PREFIX.checked_add(length).ok_or(Error::InvalidSegment)?;
-    let metadata = bytes.get(PREFIX..offset).ok_or(Error::InvalidSegment)?;
-    let entry: Entry = serde_json::from_slice(metadata).map_err(|_| Error::InvalidSegment)?;
+    Ok((
+        bytes.get(PREFIX..offset).ok_or(Error::InvalidSegment)?,
+        offset,
+    ))
+}
+
+fn decoded(entry: Entry, bytes: &OwnedBytes, offset: usize) -> Result<FileValue> {
     let file = FileValue {
         key: entry.key,
         channel: entry.channel,
@@ -139,4 +150,30 @@ pub(super) fn decode(bytes: &OwnedBytes) -> Result<FileValue> {
     };
     file.validate()?;
     Ok(file)
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl crate::filesystem::PreparationRecord for Entry {}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(super) fn decode_native(
+    bytes: &OwnedBytes,
+    io: &crate::filesystem::PreparationIo,
+) -> crate::Result<(FileValue, acyclic_fs::NativeAllocation)> {
+    let (metadata, offset) = parts(bytes)?;
+    let (entry, mut hold) = io.decode::<Entry>(
+        std::marker::PhantomData,
+        metadata,
+        crate::wire::ErrorCode::Storage,
+    )?;
+    // Closed metadata owns only strings/Arc strings. Four source lengths cover
+    // their retained bytes and Arc counters without retaining decoder scratch.
+    let retained = (metadata.len() as u64)
+        .checked_mul(4)
+        .and_then(|n| n.checked_add(std::mem::size_of::<Entry>() as u64))
+        .ok_or(Error::LimitExceeded)?;
+    hold.substitute(retained)?;
+    let file = decoded(entry, bytes, offset)?;
+    hold.into_retained()?;
+    Ok((file, io.take_native_custody(retained)?))
 }

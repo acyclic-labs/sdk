@@ -4,7 +4,26 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {tmpdir} from 'node:os';
 import test from 'node:test';
+import {copyBackDestination} from './buildbox.mjs';
+import {processOwner} from './buildbox-receipt.mjs';
 const here=path.dirname(new URL(import.meta.url).pathname);
+
+test('declared output stays outside the source snapshot during cleanup',()=>{
+ const root=fs.mkdtempSync(path.join(tmpdir(),'source-output-custody-'));
+ try{
+  const source=path.join(root,'source'),records=path.join(root,'records');
+  fs.mkdirSync(source);
+  const env={BUILD_SLOT_REMOTE_FETCH_DIR:records};
+  const destination=copyBackDestination({target:false},source,'.',env);
+  fs.mkdirSync(destination,{recursive:true});
+  const artifact=path.join(destination,'windows-artifacts.tar.gz');
+  fs.writeFileSync(artifact,'owned output');fs.unlinkSync(artifact);
+  assert.deepEqual(fs.readdirSync(source),[],'output lifetime cannot mutate source inputs');
+  assert.equal(copyBackDestination({target:false},source,'.',{}),source,'negative control: former output destination was the source tree');
+  assert.equal(copyBackDestination({target:true},source,'.',env),path.join(source,'target'));
+  assert.throws(()=>copyBackDestination({target:false},source,'.',{BUILD_SLOT_REMOTE_FETCH_DIR:'relative'}),/must be absolute/);
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
 
 test('gate execution never replays a historical PASS verdict',async()=>{
  const cwd=fs.mkdtempSync(path.join(tmpdir(),'gate-no-verdict-replay-'));
@@ -102,7 +121,8 @@ let rejected=false;try{captureBeforeNode(broken);}catch{rejected=true;}if(!rejec
 if(!inner.includes('CARGO_TARGET_DIR="$BB_JOB_TARGET"'))throw Error('target escaped job lifetime');
 if(!inner.includes('BB_JOB_EXPORT_SPEC='))throw Error('outputs not archived');
 if(input[1]==='build' && !inner.includes('"targetMapping":{"triple":"x86_64-unknown-linux-gnu","profiles":["debug","release"]}'))throw Error('glibc-pinned output mapping lost');
-if(!bodies[2].includes('rm -rf -- /mnt/bb/jobs/fixture.targets'))throw Error('outer targets not cleaned');
+if(bodies.slice(1).some(body=>body.includes('rm -rf -- /mnt/bb/jobs/fixture.targets') || body.includes('rm -rf $J.tmp')))throw Error('unjoined outer deletion');
+if(!bodies.slice(1).some(body=>body.includes('receipt-tool.mjs finish')))throw Error('missing custody-owned cleanup');
 if(script.includes('/mnt/bb/targets/sdk/fixture'))throw Error('persistent target survived');
 }
 `;
@@ -234,13 +254,11 @@ test('outer cleanup failure is INFRA and the former status handling is a negativ
   for(const [negative,expected] of [[false,224],[true,0]]){
    const module=path.join(cwd,`receipt-${negative}.mjs`);fs.writeFileSync(module,negative?source.replaceAll("rc = 224; category = 'infra';",''):source);
    const meta=path.join(cwd,`meta-${negative}.json`);const receipt=path.join(cwd,`done-${negative}.json`);
-   const stat=fs.readFileSync(`/proc/${process.pid}/stat`,'utf8').split(') ').pop().split(' ');
-   const identity=fs.readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim()+':'+stat[19];
-   fs.writeFileSync(meta,JSON.stringify({owner:{pid:process.pid,identity,pid_namespace:fs.readlinkSync('/proc/self/ns/pid')},side:'bb2',job_prefix:'/mnt/bb/jobs/cleanup-control',receipt_file:receipt,argv:[],worktree:cwd,admission_start:new Date().toISOString()}));
+   fs.writeFileSync(meta,JSON.stringify({owner:processOwner(),side:'bb2',job_prefix:'/mnt/bb/jobs/cleanup-control',receipt_file:receipt,argv:[],worktree:cwd,admission_start:new Date().toISOString()}));
    const result=spawnSync(process.execPath,[module,'finish',meta,'0','command'],{encoding:'utf8'});
    assert.equal(result.status,expected,result.stderr);
    const terminal=JSON.parse(fs.readFileSync(receipt));assert.equal(terminal.exit_status,expected);
-   assert.equal(terminal.termination,negative?'command':'infra');assert.match(terminal.outer_cleanup_error,/forced outer cleanup refusal/);
+   assert.equal(terminal.termination,negative?'command':'infra');assert.match(terminal.cleanup_error,/forced outer cleanup refusal/);
   }
  }finally{fs.rmSync(cwd,{recursive:true,force:true});}
 });

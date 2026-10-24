@@ -37,6 +37,8 @@ mod client;
 mod credential_tests;
 #[cfg(test)]
 mod latency_tests;
+#[cfg(test)]
+mod receipt_tests;
 mod server;
 #[cfg(test)]
 pub(crate) mod tests;

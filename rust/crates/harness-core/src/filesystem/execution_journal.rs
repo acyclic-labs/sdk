@@ -16,7 +16,7 @@ use crate::{
         EXECUTION_REPLAY_PAGE_RECORDS, ExecutionEvent, ExecutionJournal, ExecutionRecord,
         ModelEventAdmission, decode_json,
     },
-    interaction::{Interaction, InteractionOutcome, InteractionResolution, InteractionResponse},
+    interaction::{Interaction, InteractionOutcome, InteractionResponse},
     model::{ModelContent, ModelEvent},
     projection::{SelectedModelContext, select_model_context},
     store::StreamAggregate,
@@ -31,7 +31,10 @@ use std::{collections::BTreeMap, sync::Arc};
 
 mod conversation;
 
-mod approval_files;
+mod approvals;
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod approvals_tests;
 mod cancellation;
 mod canonical;
 mod chunks;
@@ -71,6 +74,8 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     interactions: Option<FilesystemInteractionHost<P, A, O>>,
     owner: Option<(TaskJournalOwner<P>, OperationId)>,
     execution: Option<(OperationId, OperationId)>,
+    /// Passive approver projection; never grants execution or a lease.
+    approval_task: Option<crate::TaskId>,
     verified: tokio::sync::Mutex<ExecutionSummary>,
     conversation_projection: tokio::sync::Mutex<Option<StreamAggregate<P>>>,
     history_read_limits: Option<crate::store::HistoryReadLimits>,

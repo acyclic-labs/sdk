@@ -14,6 +14,19 @@ use std::{
     task::{Context, Poll},
 };
 
+tokio::task_local! {
+    // This signal is scoped to the runtime-owned command, never to a task's
+    // durable cancellation. Only a passive approval wait can consume it.
+    static APPROVAL_ATTACHMENT: acyclic_fs::CancellationToken;
+}
+
+pub(crate) async fn approval_attachment_closed() {
+    match APPROVAL_ATTACHMENT.try_with(Clone::clone) {
+        Ok(attachment) => attachment.cancelled().await,
+        Err(_) => std::future::pending().await,
+    }
+}
+
 /// An attachment observes execution; releasing it only stops admission of new
 /// requests. Work already admitted by its subscription remains runtime-owned.
 pub struct CommandSubscription {
@@ -113,7 +126,24 @@ async fn run_requests(
         if only_session && !matches!(request.key, crate::task_volume::FileKey::Session { .. }) {
             continue;
         }
-        if let Err(error) = execute_request(&mut commands, local, &request).await {
+        let result = {
+            let attachment = acyclic_fs::CancellationToken::new();
+            let execution = APPROVAL_ATTACHMENT.scope(
+                attachment.clone(),
+                execute_request(&mut commands, local, &request),
+            );
+            futures::pin_mut!(execution);
+            match futures::future::select(&mut detached, execution).await {
+                Either::Left((_, execution)) => {
+                    attachment.cancel();
+                    // Admitted effects remain owned and are joined. The signal
+                    // only releases a subsequently reached passive approval wait.
+                    execution.await
+                }
+                Either::Right((result, _)) => result,
+            }
+        };
+        if let Err(error) = result {
             if commands.failure_is_saved(&request, &error).await? {
                 if only_session {
                     return Ok(());

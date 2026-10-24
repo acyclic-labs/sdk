@@ -298,7 +298,7 @@ impl Pool {
         // The authenticated discovery endpoint may now host a replacement
         // node. Rediscover there without retaining the previous destination;
         // moved-node endpoints must still prove their exact node identity.
-        let destination = if Arc::ptr_eq(&link.channel, &self.home_channel) {
+        let destination = if std::sync::Arc::ptr_eq(&link.channel, &self.home_channel) {
             ""
         } else {
             node

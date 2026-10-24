@@ -1,6 +1,8 @@
 use super::*;
 use acyclic_stream::{MemoryStream, StreamPath};
 use proptest::prelude::*;
+#[path = "tests/passive.rs"]
+mod passive;
 
 #[tokio::test]
 async fn clear_outcome_hides_itself_and_prior_output_after_reopen() {

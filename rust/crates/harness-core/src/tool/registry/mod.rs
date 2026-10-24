@@ -25,6 +25,16 @@ enum ModelSelection {
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
     data: Arc<RegistryData>,
+    requires_approval: bool,
+}
+
+impl ToolRegistry {
+    pub(crate) fn require_approval_policy(&mut self) {
+        self.requires_approval = true;
+    }
+    pub(crate) fn requires_approval_policy(&self) -> bool {
+        self.requires_approval
+    }
 }
 
 #[derive(Clone, Default)]

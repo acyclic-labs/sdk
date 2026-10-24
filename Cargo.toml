@@ -212,6 +212,11 @@ opt-level = 3
 [profile.dev.package.blake3]
 opt-level = 3
 
+# Capability admission verifies Ed25519 chains throughout retained history. Keep
+# the scalar arithmetic optimized on native targets without x86 SIMD backends.
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+
 [profile.release]
 incremental = true
 

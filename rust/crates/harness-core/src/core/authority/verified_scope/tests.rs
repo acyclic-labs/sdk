@@ -197,14 +197,19 @@ fn compact_evidence_funds_every_allocation_before_conversion() -> Result<()> {
     let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
     let io = crate::executor::PreparationIo::from_budget(budget, &cancellation)?;
     let before = io.remaining()?.allocation_operations;
+    let expected_allocations = capability
+        .trust_evidence_storage()
+        .map_err(workload::unauthorized)?
+        .allocation_bytes()
+        .count() as u64;
     {
         let mut observer = io.history_io();
         let mut work = Some(&mut observer as &mut dyn HistoryIo);
         let mut quota = CodecQuota::new(&mut work, 0)?;
-        let evidence = compact_evidence(capability, &mut quota)?;
+        let evidence = compact_evidence(&capability, &mut quota)?;
         assert_eq!(
             before - io.remaining()?.allocation_operations,
-            3,
+            expected_allocations,
             "evidence allocation operations were undercounted"
         );
         assert_eq!(

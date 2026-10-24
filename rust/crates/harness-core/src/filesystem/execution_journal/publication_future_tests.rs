@@ -435,7 +435,7 @@ fn journal_unmetered_task_files_publish_canonical_chunks() {
                     65_536,
                 )
                 .await?;
-                Ok::<_, Error>((journal.with_task_files(Some(Arc::new(files))), fixture.host))
+                Ok::<_, Error>((journal.with_task_files(Arc::new(files))?, fixture.host))
             })
             .unwrap()
     };
@@ -603,7 +603,7 @@ async fn journal_chunks_distinguish_restarted_steps_in_later_task_inputs() -> Re
             )
             .await?,
         );
-        let first = first.with_task_files(Some(files.clone()));
+        let first = first.with_task_files(files.clone())?;
         turn(
             &first,
             false,
@@ -616,7 +616,7 @@ async fn journal_chunks_distinguish_restarted_steps_in_later_task_inputs() -> Re
         .await?;
         let second = fixture
             .execution(fixture.owner(80).await?, OperationId::from_bytes([5; 16]))?
-            .with_task_files(Some(files.clone()));
+            .with_task_files(files.clone())?;
         turn(
             &second,
             false,
@@ -659,7 +659,7 @@ async fn journal_chunks_distinguish_restarted_steps_in_later_task_inputs() -> Re
         );
         let replay = fixture
             .execution(fixture.owner(80).await?, OperationId::from_bytes([4; 16]))?
-            .with_task_files(Some(reopened.clone()));
+            .with_task_files(reopened.clone())?;
         let records = first
             .records(OperationId::from_bytes([4; 16]), 0, 64, None)
             .await?;

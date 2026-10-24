@@ -198,31 +198,32 @@ impl PiNativeCommandHost {
             )
             .await?;
         let io = PreparationIo::from_native_work(work)?;
-        Journal::for_task(
-            journal_owner,
-            command,
-            context.id(),
-            self.filesystem.clone(),
-            acyclic_harness::filesystem::FilesystemJournalBinding {
-                volume: &self.protected.policy().journal,
-                verifier: &storage.verifier,
-                scope: &storage.signed,
-                maximum_bytes: self
-                    .protected
-                    .policy()
-                    .maximum_payload_bytes
-                    .min(context.scope().limits().file_bytes),
-                io: Some(&io),
-            },
-        )?
-        .with_interaction_owner(
-            &interaction_verifier.0,
-            &SchemaRegistry::new(),
-            &conversation.0.2,
-            &result.volume,
-            Some(&io),
-        )?
-        .into_native_shared(work)
+        self.runtime
+            .execution_journal(
+                journal_owner,
+                command,
+                context.id(),
+                self.filesystem.clone(),
+                acyclic_harness::filesystem::FilesystemJournalBinding {
+                    volume: &self.protected.policy().journal,
+                    verifier: &storage.verifier,
+                    scope: &storage.signed,
+                    maximum_bytes: self
+                        .protected
+                        .policy()
+                        .maximum_payload_bytes
+                        .min(context.scope().limits().file_bytes),
+                    io: Some(&io),
+                },
+            )?
+            .with_interaction_owner(
+                &interaction_verifier.0,
+                &SchemaRegistry::new(),
+                &conversation.0.2,
+                &result.volume,
+                Some(&io),
+            )?
+            .into_native_shared(work)
     }
 
     pub(super) async fn original_effect(

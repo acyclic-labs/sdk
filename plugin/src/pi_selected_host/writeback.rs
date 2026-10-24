@@ -170,7 +170,7 @@ impl PiControlHost<'_> {
         }
         let journal =
             prepare_writeback(&root, &generations, &self.resources.store, &options, work).await?;
-        let digest_value = writeback_digest_value(&root, &generations, &journal);
+        let digest_value = writeback_digest_value(&root, &generations, &journal)?;
         let digest = crate::pi_root_provider::digest_pi_value(
             &digest_value,
             work.budget().bytes_encoded,

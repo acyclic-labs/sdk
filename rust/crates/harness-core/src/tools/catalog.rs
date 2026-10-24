@@ -22,7 +22,7 @@ pub enum ToolBinding {
 }
 
 /// Immutable builtin data. Bindings allocate implementations only when selected.
-/// Defaults require no approval; configured policies and hooks still apply.
+/// Default bindings require an admitted approval policy; hooks also apply.
 pub struct ToolSpec {
     /// Stable identifier used by model calls, grants and policy routing.
     pub name: &'static str,

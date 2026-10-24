@@ -41,6 +41,8 @@ pub fn verify_abandoned_reconnect(broken: bool) {
                 (
                     cursor,
                     Command::Open(Box::new(OpenCommand {
+                        filter: None,
+                        credential: 0,
                         raw: false,
                         id,
                         attempt_epoch: client.attempt_epoch.load(Ordering::Acquire),
@@ -146,6 +148,8 @@ pub fn verify_pool_lifetime(fault: u8) {
             let cursor = client.cursor(id, Arc::clone(&progress), receiver).unwrap();
             let (ready, opened) = oneshot::channel();
             let command = Command::Open(Box::new(OpenCommand {
+                filter: None,
+                credential: 0,
                 raw: false,
                 id,
                 attempt_epoch: 0,
@@ -321,6 +325,8 @@ pub fn verify_link_isolation(broken: bool) {
                                 value: Bytes::from_static(b"healthy"),
                                 commit_id: vec![7; 32].into(),
                                 committed_at_micros: 0,
+                                keys: Vec::new(),
+                                attributes: Vec::new(),
                             })),
                         }),
                     ),
@@ -377,6 +383,8 @@ pub fn verify_link_isolation(broken: bool) {
         let (records, _receiver) = mpsc::channel(2);
         let (ready, mut opened) = oneshot::channel();
         pool.command(Command::Open(Box::new(OpenCommand {
+            filter: None,
+            credential: 0,
             raw: false,
             id: 5,
             attempt_epoch: 0,

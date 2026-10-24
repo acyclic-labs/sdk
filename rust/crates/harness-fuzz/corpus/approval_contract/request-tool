@@ -1,0 +1,1 @@
+{"type":"approval","prompt":"Run?","operation_id":"01010101-0101-0101-0101-010101010101","action_digest":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],"subject":{"kind":"tool","tool":"bash","call_id":"call-1","arguments":{"command":"echo λ","nested":[true,null,2],"$serde_json::private::RawValue":"literal"}}}

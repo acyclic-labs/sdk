@@ -219,29 +219,26 @@ impl PiControlHost<'_> {
             if !wake_pending {
                 return Ok(None);
             }
-            let wake = pi_root_provider::stage_pi_input(
-                &self.protected,
-                &self.filesystem,
-                operation,
-                "command-wake",
-                &(),
-                &self.work,
-            )
-            .await?;
-            let key = self.work.display(&format_args!(
-                "task-command-wake:{task}:{revision}:{waiting}"
-            ))?;
-            host.resume_workflow(
+            let slot = host
+                .workflow_suspension(
+                    task,
+                    &mut Some(&mut &PreparationIo::from_native_work(&self.work)?),
+                )
+                .await?
+                .ok_or_else(|| {
+                    acyclic_harness::Error::Conflict("Pi command wait is absent".into())
+                })?;
+            if slot.revision != revision || slot.waiting_command != Some(waiting) {
+                return Err(acyclic_harness::Error::Conflict(
+                    "Pi command wait changed".into(),
+                ));
+            }
+            host.wake_command(
                 task,
-                revision,
-                wake.0,
-                acyclic_harness::IdempotencyKey::new(key.0)?,
-                Some(waiting),
+                &slot,
                 &mut Some(&mut &PreparationIo::from_native_work(&self.work)?),
             )
             .await?;
-            drop(wake.1);
-            drop(key.1);
         } else {
             let key = self
                 .work

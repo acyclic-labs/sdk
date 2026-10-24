@@ -34,8 +34,8 @@ use acyclic_stream::{StreamProvider, UnixMillisClock};
 use serde_json::Value;
 use std::sync::Arc;
 
-mod deadline;
 mod authority_custodian;
+mod deadline;
 mod inspection;
 mod reconciliation;
 pub use inspection::TaskSourceInspection;
@@ -278,6 +278,7 @@ pub struct FilesystemTaskRuntime<P, A, O> {
 }
 
 struct TaskInteractionOwner {
+    approval_authority: Option<crate::core::AuthorityIssuer>,
     verifier: AuthorityVerifier,
     schemas: SchemaRegistry,
     scope: Scope,

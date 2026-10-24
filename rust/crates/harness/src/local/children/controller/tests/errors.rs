@@ -52,7 +52,13 @@ impl TaskCommandHost for Parent<'_> {
         command: WorkflowCommand,
         payload: Value,
     ) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
-        self.inner.reconcile(context, fence, command, payload)
+        if command.kind == crate::filesystem::MODEL_TASK_COMMAND_KIND {
+            // Recovery retains this test host's model effect, rather than
+            // consuming a scripted turn reserved for an actual child.
+            self.execute(context, fence, command, payload)
+        } else {
+            self.inner.reconcile(context, fence, command, payload)
+        }
     }
 }
 

@@ -6,8 +6,7 @@ use crate::{
 };
 
 /// Immutable request published by the executing task owner.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FileApproval {
     /// Original task whose tool is suspended.
     pub task: TaskId,
@@ -15,15 +14,7 @@ pub struct FileApproval {
     pub id: InteractionId,
     /// Prompt and exact operation/action binding.
     pub request: Interaction,
-}
-/// An approver's immutable decision; display text cannot substitute an intent.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FileApprovalDecision {
-    /// Exact operation and action accepted or refused.
-    pub binding: ApprovalBinding,
-    /// Whether the action may execute.
-    pub approved: bool,
+    request_sha256: [u8; 32],
 }
 impl FileApproval {
     /// Canonical request path beneath the original task.
@@ -59,11 +50,45 @@ impl FileApproval {
         binding.validate()?;
         Ok(binding)
     }
-    /// Decode a decision only if both its path and its intent belong to this request.
+    /// Decode the canonical request bytes, deriving identities only from its path.
+    pub fn decode(file: &FileValue) -> crate::Result<Self> {
+        let FileKey::Task {
+            task,
+            file: TaskFile::ApprovalRequest(id),
+        } = &file.key
+        else {
+            return Err(crate::Error::Invalid("not an approval request file".into()));
+        };
+        let descriptor = crate::conversation::FileDescriptor::from_bytes(
+            &file.bytes,
+            "application/json",
+            &mut None,
+        )?;
+        let value = Self {
+            request_sha256: *descriptor.sha256(),
+            task: TaskId::parse(task.as_str())?,
+            id: InteractionId::from_bytes(
+                uuid::Uuid::parse_str(id.as_str())
+                    .map_err(|e| crate::Error::Invalid(e.to_string()))?
+                    .into_bytes(),
+            ),
+            request: crate::contract::json_from_slice(&file.bytes)
+                .map_err(|e| crate::Error::Invalid(e.to_string()))?,
+        };
+        value.binding()?;
+        if value.key()? != file.key {
+            return Err(crate::Error::Invalid(
+                "noncanonical approval request path".into(),
+            ));
+        }
+        Ok(value)
+    }
+    /// Check a display projection against the shared exact-request decision codec.
+    /// Execution still requires its owner's authenticated durable resolution.
     pub fn decision(&self, key: &FileKey, bytes: &[u8]) -> crate::Result<Option<bool>> {
         let FileKey::Task {
             task,
-            file: TaskFile::ApprovalDecision { request, .. },
+            file: TaskFile::ApprovalDecision { request, principal },
         } = key
         else {
             return Ok(None);
@@ -71,70 +96,15 @@ impl FileApproval {
         if task.as_str() != self.task.to_string() || request.as_str() != self.id.to_string() {
             return Ok(None);
         }
-        let decision: FileApprovalDecision = serde_json::from_slice(bytes)
-            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
-        if decision.binding != self.binding()? {
+        let decision = crate::interaction::ApprovalDecisionFile::decode(bytes, bytes.len() as u64)?;
+        if !decision.binds(&self.request_sha256, 1)
+            || principal.as_str()
+                != crate::interaction::ApprovalDecisionFile::principal_file(&decision.principal)
+        {
             return Err(crate::Error::Unauthorized(
-                "approval decision names another action".into(),
+                "approval decision names another request or principal".into(),
             ));
         }
-        Ok(Some(decision.approved))
-    }
-}
-impl<P: StreamProvider + ?Sized> TaskVolume<P> {
-    /// Publish through an already-authorized approver's private-volume handle.
-    /// Ordinary agent writers (`TaskFiles::write`) cannot write these records.
-    pub async fn decide_approval(
-        &self,
-        request: &FileApproval,
-        principal: Component,
-        approved: bool,
-    ) -> crate::Result<()> {
-        let key = FileKey::Task {
-            task: Component::new(request.task.to_string())?,
-            file: TaskFile::ApprovalDecision {
-                request: Component::new(request.id.to_string())?,
-                principal,
-            },
-        };
-        let bytes = serde_json::to_vec(&FileApprovalDecision {
-            binding: request.binding()?,
-            approved,
-        })
-        .map_err(|error| crate::Error::Invalid(error.to_string()))?;
-        let request_key = request.key()?;
-        let request_bytes = serde_json::to_vec(request)
-            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
-        loop {
-            let snapshot = self.snapshot(&request.query()?, 2).await?;
-            let original = snapshot.files.iter().find(|file| file.key == request_key);
-            if original.map(|file| file.bytes.as_ref()) != Some(request_bytes.as_slice()) {
-                return Err(crate::Error::Conflict(
-                    "approval request changed or is missing".into(),
-                ));
-            }
-            for prior in &snapshot.files {
-                if let Some(decided) = request.decision(&prior.key, &prior.bytes)? {
-                    return if decided == approved {
-                        Ok(())
-                    } else {
-                        Err(crate::Error::Conflict(
-                            "approval decision is immutable".into(),
-                        ))
-                    };
-                }
-            }
-            match self
-                .append(
-                    snapshot.generation,
-                    &FileValue::new(key.clone(), bytes.clone()),
-                )
-                .await
-            {
-                Ok(_) => return Ok(()),
-                Err(Error::Conflict(_)) => continue,
-                Err(error) => return Err(error.into()),
-            }
-        }
+        Ok(Some(decision.approved()))
     }
 }

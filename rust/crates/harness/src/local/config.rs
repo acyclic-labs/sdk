@@ -45,6 +45,9 @@ pub struct LocalHarnessConfig {
     pub(super) context_manifest: Option<crate::conversation::FileRef>,
     pub(super) tools: Vec<Tool>,
     pub(super) default_tools: bool,
+    pub(super) approval_policy: crate::approvals::ApprovalPolicy,
+    pub(super) approval_issuer: Option<AuthorityIssuer>,
+    pub(super) approval_models: std::collections::BTreeMap<String, (Model, Arc<dyn ModelProvider>)>,
     #[cfg(feature = "search-http")]
     pub(super) search_provider: Option<Arc<dyn crate::search::SearchProvider>>,
     #[cfg(feature = "search-http")]
@@ -87,6 +90,9 @@ impl LocalHarnessConfig {
             context_manifest: None,
             tools: Vec::new(),
             default_tools: true,
+            approval_policy: Default::default(),
+            approval_issuer: None,
+            approval_models: Default::default(),
             #[cfg(feature = "search-http")]
             search_provider: None,
             #[cfg(feature = "search-http")]
@@ -190,6 +196,29 @@ impl LocalHarnessConfig {
     #[must_use]
     pub fn context_manifest(mut self, reference: crate::conversation::FileRef) -> Self {
         self.context_manifest = Some(reference);
+        self
+    }
+    /// Binds ordered approval policy data to every enabled tool, including defaults.
+    #[must_use]
+    pub fn approval_policy(mut self, policy: crate::approvals::ApprovalPolicy) -> Self {
+        self.approval_policy = policy;
+        self
+    }
+    /// Supplies the existing runtime's authority for embedded automatic and human
+    /// approvers. Its scopes are verified by that runtime's interaction owner.
+    #[must_use]
+    pub fn approval_authority(mut self, issuer: AuthorityIssuer) -> Self {
+        self.approval_issuer = Some(issuer);
+        self
+    }
+    /// Binds an independent approver model; it receives its own prompt and no tools.
+    #[must_use]
+    pub fn approval_model(
+        mut self,
+        selection: impl Into<String>,
+        model: (Model, Arc<dyn ModelProvider>),
+    ) -> Self {
+        self.approval_models.insert(selection.into(), model);
         self
     }
     /// Disables the default set, retaining every custom tool.

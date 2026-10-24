@@ -2,8 +2,7 @@
 use super::*;
 
 pub(in crate::filesystem) struct CreatedProvenance {
-    pub(super) request: ResourcePreparationRequest,
-    pub(super) proof: ResourceCreationProofRef,
+    pub(super) request: CreationRequest<'static>,
     pub(super) origin: ResourceCreationOrigin,
     pub(super) volume: VolumeRef,
     pub(super) generation: GenerationRef,
@@ -38,7 +37,7 @@ impl CreatedProvenance {
                     "created content handle names another volume".into(),
                 ));
             }
-            let current = authenticate(host, owner, &self.request, &self.proof, io).await?;
+            let current = self.request.authenticate(host, owner, io).await?;
             if current.origin != self.origin
                 || current.volume != self.volume
                 || current.generation != self.generation

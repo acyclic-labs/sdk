@@ -52,8 +52,8 @@ impl TaskContext {
                 reason: "interaction request belongs to another original ledger",
             });
         }
-        if let Interaction::Approval { prompt, .. } = &paid.0
-            && paid.1.bytes() < prompt.capacity() as u64
+        if paid.0.kind() == crate::interaction::InteractionKind::Approval
+            && paid.1.bytes() < paid.0.owned_bytes()?
         {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Conflict,

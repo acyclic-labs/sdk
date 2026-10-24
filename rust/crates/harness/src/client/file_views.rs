@@ -43,7 +43,8 @@ fn admit(limits: QueryViewLimits, files: usize, segments: usize, bytes: u64) -> 
 
 fn disposable(key: &FileKey) -> bool {
     matches!(key, FileKey::Task { file, .. }
-        if !matches!(file, TaskFile::ExecutionResult(_) | TaskFile::ExecutionClaim(_)))
+        if !matches!(file, TaskFile::ExecutionResult(_) | TaskFile::ExecutionClaim(_)
+            | TaskFile::ApprovalRequest(_) | TaskFile::ApprovalReview { .. }))
 }
 
 impl FileViews {
@@ -190,7 +191,20 @@ impl FileViews {
     ) -> Result<impl FnOnce(&mut Self) -> Result<()> + use<'a>> {
         // TaskVolume appends one immutable event. A different source's atomic
         // file replacements/removals must not be silently reduced as that event.
-        if !change.files.is_empty() || !change.removed.is_empty() {
+        if !change.files.is_empty()
+            || (!change.removed.is_empty()
+                && (!self.window
+                    || change.removed.iter().any(|key| {
+                        !matches!(
+                            key,
+                            FileKey::Task {
+                                file: TaskFile::ApprovalRequest(_)
+                                    | TaskFile::ApprovalReview { .. },
+                                ..
+                            }
+                        )
+                    })))
+        {
             return Err(Error::InvalidSegment);
         }
         let next = &change.cursor;
@@ -240,6 +254,13 @@ impl FileViews {
         let mut bytes = self.bytes;
         let mut segments = self.segments;
         let mut next_count = count;
+        for key in &change.removed {
+            if let Some(head) = files.get(key) {
+                bytes -= head.length;
+                segments -= head.segments.len();
+                next_count -= 1;
+            }
+        }
         let mut length = 0;
         if let Some(file) = change.file.as_ref() {
             let sequence = logical.as_ref().and_then(|(_, sequence)| *sequence);
@@ -379,6 +400,9 @@ impl FileViews {
                 if head.segments.is_empty() {
                     entry.remove();
                 }
+            }
+            for key in &change.removed {
+                view.files.remove(key);
             }
             view.bytes = bytes;
             view.segments = segments;

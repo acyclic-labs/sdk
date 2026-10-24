@@ -10,14 +10,54 @@ pub enum LocalDurability {
 
 tokio::task_local! {
     /// Whether mutations made on this task leave their frames unflushed; see
-    static DEFERRED: bool;
+    static DEFERRED: Deferral;
 }
 
-/// Runs `future` with every local-stream mutation it makes durable against a
+#[derive(Clone, Copy)]
+enum Deferral {
+    Eager,
+    All,
+    Provider([u8; 16]),
+}
+
+fn current_deferral() -> Deferral {
+    DEFERRED.try_with(|value| *value).unwrap_or(Deferral::Eager)
+}
+
+// Every publication worker inherits the caller's exact provider scope. Native
+// guarded and prepared commits must use the same boundary as ordinary writes.
+fn publication_scope<F>(future: F) -> impl Future<Output = F::Output> + Send
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    DEFERRED.scope(current_deferral(), future)
+}
+
+/// Leaves local-stream mutations accepted until an explicit durability barrier.
 pub async fn deferring_durability<F: Future>(future: F) -> F::Output {
-    DEFERRED.scope(true, future).await
+    DEFERRED.scope(Deferral::All, future).await
 }
 
-fn deferred() -> bool {
-    DEFERRED.try_with(|deferred| *deferred).unwrap_or(false)
+/// Groups only mutations of this provider owner. Unrelated local journals keep
+/// their normal durability, including filesystem authorities used by `future`.
+/// The caller must obtain an explicit receipt before certifying publication.
+pub async fn deferring_provider_durability<P: StreamProvider + ?Sized, F: Future>(
+    provider: &P,
+    future: F,
+) -> F::Output {
+    DEFERRED
+        .scope(
+            Deferral::Provider(provider.operation_claims().owner_identity()),
+            future,
+        )
+        .await
+}
+
+fn deferred(provider: &LocalStream) -> bool {
+    match current_deferral() {
+        Deferral::Eager => false,
+        Deferral::All => true,
+        Deferral::Provider(owner) => provider.operation_claims().owner_identity() == owner,
+    }
 }

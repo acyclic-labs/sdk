@@ -126,3 +126,65 @@ fn startup_reclaims_crashed_sdk_mounts_and_preserves_live_and_foreign_mounts() -
     live.stop()?;
     Ok(())
 }
+
+#[test]
+fn startup_recovery_preserves_the_locked_fence_through_denied_work() -> TestResult {
+    use crate::native_mount::fence::{
+        MountDestinationGuard, acquire_existing_mount_lock, acquire_mount_lock,
+    };
+    use std::os::unix::fs::MetadataExt as _;
+
+    let root = tempfile::tempdir()?;
+    let destination = root.path().canonicalize()?.join("destination");
+    std::fs::create_dir(&destination)?;
+    let (fence, _) = MountDestinationGuard::paths_for_canonical(&destination)?;
+    let file = acquire_mount_lock(&fence, false)?;
+    let inode = file.metadata()?.ino();
+    let cancellation = crate::CancellationToken::new();
+    let original = work(crate::performance::BOUNDARY_BUDGET, &cancellation)?;
+    let guard = MountDestinationGuard::from_locked_existing(file, fence.clone());
+    let mut owner = crate::native_mount::NativeMountRecoveryOwner::from_locked_existing(
+        &destination,
+        guard,
+        &original,
+    )?;
+    assert!(matches!(
+        acquire_existing_mount_lock(&fence),
+        Err(NativeMountError::DestinationBusy)
+    ));
+    let denied = work(
+        crate::WorkBudget {
+            backend_read_operations: 0,
+            ..crate::performance::BOUNDARY_BUDGET
+        },
+        &cancellation,
+    )?;
+    assert!(owner.detach(&denied).is_err());
+    assert!(owner.cleanup_state()?.destination_fence_retained);
+    assert!(matches!(
+        acquire_existing_mount_lock(&fence),
+        Err(NativeMountError::DestinationBusy)
+    ));
+    owner.detach(&original)?;
+    let state = owner.cleanup_state()?;
+    assert!(state.namespace_detach_confirmed);
+    assert!(!state.controls_pending);
+    assert!(!state.destination_fence_retained);
+    // Negative control: ordinary fence release unlinks this inode. Startup's
+    // adopted fence must remain, since another process can already have it open.
+    assert_eq!(std::fs::metadata(&fence)?.ino(), inode);
+    assert_eq!(
+        acquire_existing_mount_lock(&fence)?.metadata()?.ino(),
+        inode
+    );
+    assert!(destination.is_dir());
+    // Exercise the old ordinary-release shape as the negative control: it
+    // removes the shared inode even though startup must preserve that entry.
+    let mut ordinary = MountDestinationGuard::acquire_canonical(&destination)?;
+    ordinary.release(&mut &original)?;
+    assert!(
+        !fence.exists(),
+        "ordinary fence release must fail the startup inode-preservation oracle"
+    );
+    Ok(())
+}

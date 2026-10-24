@@ -691,7 +691,6 @@ receipt_done() {
   case $rc in 222|224) category=infra;; esac
   [ ! -f $J.interrupted ] || category=interrupted
   [ ! -f $J.cancelled ] || category=cancelled
-  rm -rf -- ${TD}
   node $J.receipt-tool.mjs finish $J.receipt-meta.v2.json $rc $category >> $J.out 2>> $J.err
   finished=$?; [ $finished = 0 ] || rc=$finished
   echo $rc > $J.rc.tmp && mv $J.rc.tmp $J.rc
@@ -771,8 +770,6 @@ wait $p; rc=$?; [ -e $J.ceiling ] && rc=124; [ -e $J.idle ] && rc=124
 # .host-targets/ never change, so an inner-loop target used minutes ago was evicted as the oldest (solo-hib, lane-loop).
 touch ${TD} $T 2>/dev/null || true
 rm -f $J.sh
-rm -rf -- ${TD}
-rm -rf $J.tmp 2>/dev/null || sudo -n rm -rf $J.tmp
 exit $rc`;
   const boundary = wrapper.indexOf('while [ "$(awk');
   if (boundary < 0) throw new Error('missing remote admission boundary');
@@ -832,6 +829,13 @@ async function remoteRc(J) {
   }
 }
 
+export function copyBackDestination(group, top, rel, env = process.env) {
+  if (group.target) return env.CARGO_TARGET_DIR || path.join(top, 'target');
+  const destination = env.BUILD_SLOT_REMOTE_FETCH_DIR || path.join(top, rel);
+  if (!path.isAbsolute(destination)) throw new Error('copy-back destination must be absolute');
+  return destination;
+}
+
 async function copyBack(J, top, src, tkey, rel) {
   if (!(process.env.BUILD_SLOT_REMOTE_FETCH || '').trim()) return;
   const m = await sshRun(`cat ${J}.exports/manifest.json`, { timeout: 45000 });
@@ -839,7 +843,7 @@ async function copyBack(J, top, src, tkey, rel) {
   for (const group of JSON.parse(m.stdout.toString())) {
     const result = await sshRun(`cat ${q(group.archive)}`, { timeout: 600000 });
     if (result.status !== 0) throw new Error('missing declared-output archive');
-    const dest = group.target ? (process.env.CARGO_TARGET_DIR || path.join(top, 'target')) : path.join(top, rel);
+    const dest = copyBackDestination(group, top, rel);
     fs.mkdirSync(dest, { recursive: true });
     const extract = spawnSync('tar', ['-xzf', '-', '-C', dest, '--no-same-owner'], { input: result.stdout });
     if (extract.status !== 0) throw new Error(`copy-back extract rc ${extract.status}`);

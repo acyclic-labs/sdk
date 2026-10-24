@@ -1,5 +1,4 @@
 //! Native checkout publication shared by facade and multi-root merges.
-use super::NativeDirectory;
 use crate::{Error, Result};
 use acyclic_fs::{
     CancellationToken, Generation, GenerationId, LocalAuthorityBackend, LocalCoreStateStore,
@@ -47,7 +46,7 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend>
             .physical_roots
             .get(&root)
             .ok_or_else(|| Error::Unauthorized("publication root is not configured".into()))?;
-        if workspace.id() != physical.workspace_id || from == to {
+        if workspace.id() != physical.workspace_id {
             return Ok(());
         }
         let cancellation = CancellationToken::new();
@@ -84,17 +83,8 @@ pub(crate) async fn publish_checkout(
     to: &LocalGeneration,
     work: acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
-    if from.id() == to.id() {
-        return Ok(());
-    }
     let publication = super::CheckoutPublication::new(root, identity, operation, &work)?;
-    let options = MaterializeOptions {
-        destination: publication.directory().join("target"),
-        expected_root_identity: None,
-        maximum_directory_entries: 4096,
-        maximum_extent_spans: 65536,
-        transfer_bytes: 8 * 1024 * 1024,
-    };
+    let options = MaterializeOptions::native(publication.directory().join("target"));
     publication
         .publish(from, to, state, &options, &work, || {
             std::future::ready(Ok(()))
@@ -108,21 +98,7 @@ pub(crate) async fn finish_checkout(
     root: &std::path::Path,
     operation: OperationId,
 ) -> Result<()> {
-    state.remove_materialization_async(operation).await?;
-    let directory = NativeDirectory(root).publication_directory(operation)?;
-    if !directory
-        .try_exists()
-        .map_err(|cause| Error::from(acyclic_fs::NativeTreeMaterializationError::Io(cause)))?
-    {
-        return Ok(());
-    }
-    acyclic_native_runtime::remove_child_directory(
-        directory
-            .parent()
-            .ok_or_else(|| Error::Invalid("native staging directory has no parent".into()))?,
-        &directory,
-    )
-    .map_err(|cause| Error::from(acyclic_fs::NativeTreeMaterializationError::Io(cause)))
+    super::CheckoutPublication::finish(state, root, operation).await
 }
 
 /// Local SDK multi-root publisher with native checkout materialization.

@@ -219,25 +219,38 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.stream.clone()
     }
 
-    /// Wakes the exact command wait with its stable null input.
+    /// Wakes the exact released reservation's command wait with a stable null input.
     #[cfg(feature = "filesystem")]
     #[doc(hidden)]
     pub async fn wake_command(
         &self,
         task: TaskId,
-        revision: u64,
-        waiting: OperationId,
+        slot: &crate::scheduler::WorkflowSuspension,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
         let operation = OperationId::from_bytes(task.into_bytes());
-        let text = crate::executor::preparation_format(
-            format_args!("task-command-wake:{task}:{revision}:{waiting}"),
-            work,
-        )?;
+        let waiting = slot.waiting_command.ok_or_else(|| {
+            crate::scheduler::diagnostic(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "wake has no command",
+            )
+        })?;
+        let released = slot.released.as_ref().ok_or_else(|| {
+            crate::scheduler::diagnostic(
+                work,
+                crate::wire::ErrorCode::Unauthorized,
+                "wake has no released reservation",
+            )
+        })?;
+        // One model command can suspend at several approval stages without
+        // advancing its workflow revision. Each released lease is a distinct
+        // wait; retries within that lease retain the same publication identity.
+        let key = worker_key("command-wake", operation, released, slot.revision, work)?;
         let io = operation_io(work)?;
         let input = self
             .payloads
-            .stage(operation, &text, b"null", io.as_ref())?
+            .stage(operation, key.as_str(), b"null", io.as_ref())?
             .await?;
         let admission = self.admission(operation, work).await?;
         admission.limits.validate_file(&input, work)?;
@@ -256,10 +269,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 &self.owner_scope,
                 &self.verifier,
                 operation,
-                revision,
+                slot.revision,
                 input,
-                IdempotencyKey::new(text)?,
-                Some(waiting),
+                key,
+                Some((waiting, released)),
                 work,
             )
             .await?;
@@ -273,7 +286,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         revision: u64,
         input: FileRef,
         key: IdempotencyKey,
-        waiting: Option<OperationId>,
+        waiting: Option<(OperationId, &crate::scheduler::LeaseFence)>,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
         let operation = OperationId::from_bytes(task.into_bytes());

@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 
 def remove_tree(path):
     # Test fixtures and tools can leave unreadable directories. Make each
@@ -55,8 +56,10 @@ def prune(root,mirror,locks,max_age=43200,max_count=128,active=None,now=None):
             rows.append((max(stamps),name,paths))
         count=len(rows)
         for used,name,paths in sorted(rows):
-            if now-used<=max_age and count<=max_count:continue
-            with (locks/(name+'.lock')).open('a') as lease:
+            retiring=name.startswith('.prune-')
+            if not retiring and now-used<=max_age and count<=max_count:continue
+            lease_name=('retired-'+uuid.uuid5(uuid.NAMESPACE_URL,name).hex) if retiring else name
+            with (locks/(lease_name+'.lock')).open('a') as lease:
                 try:fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
                 except BlockingIOError:held.append(name);continue
                 if any(source==str(p) or source.startswith(str(p)+'/') for source in active for p in paths):
@@ -64,9 +67,12 @@ def prune(root,mirror,locks,max_age=43200,max_count=128,active=None,now=None):
                 for p in paths:
                     # Only immediate, resolved children can be renamed/deleted.
                     if p.parent!=root or p.resolve().parent!=root:raise ValueError('unsafe source path')
-                    tomb=root/('.prune-'+p.name+'-'+str(os.getpid()))
-                    try:p.rename(tomb)
-                    except FileNotFoundError:continue
+                    # Retirement owns one bounded name. An interrupted deletion
+                    # resumes at that name instead of growing a rename chain.
+                    tomb=p if retiring else root/('.prune-'+uuid.uuid4().hex)
+                    if tomb!=p:
+                        try:p.rename(tomb)
+                        except FileNotFoundError:continue
                     remove_tree(tomb)
                 count-=1;removed.append(name)
         return {'removed':removed,'remaining':count,'held':held,'over_cap':count>max_count}

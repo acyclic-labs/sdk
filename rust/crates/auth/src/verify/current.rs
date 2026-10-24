@@ -1,15 +1,29 @@
 //! Immutable authentication evidence with a single current-trust check.
 use super::*;
 
-/// Heap storage needed when consuming a token into compact trust evidence.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TrustEvidenceStorage {
-    /// New vector storage allocated by the conversion.
-    pub allocation_bytes: [u64; 3],
+/// Heap storage needed to copy compact public evidence from an authenticated owner.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TrustEvidenceStorage<'a> {
+    allocation_bytes: [u64; 6],
+    keys: &'a [KeyCertificate],
     /// Fixed-size identities copied into the compact representation.
     pub copied_bytes: u64,
     /// Total retained heap storage, including buffers moved from the token.
     pub owned_bytes: u64,
+}
+
+impl TrustEvidenceStorage<'_> {
+    /// Each nonempty allocation, in advance of copying any public evidence.
+    pub fn allocation_bytes(&self) -> impl Iterator<Item = u64> + '_ {
+        self.allocation_bytes
+            .into_iter()
+            .chain(
+                self.keys
+                    .iter()
+                    .map(|certificate| certificate.key.key_id.len() as u64),
+            )
+            .filter(|bytes| *bytes != 0)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -21,7 +35,7 @@ struct Key {
 /// Authenticated facts needed to recheck current trust and time.
 ///
 /// This value has no append key, signatures, grants or authorization methods.
-/// Its private fields can only be obtained by consuming a verified capability.
+/// Its private fields can only be obtained from a verified capability.
 #[derive(Clone, Debug)]
 pub struct TrustEvidence {
     environment: String,
@@ -168,64 +182,49 @@ impl VerifiedCapability {
             })
     }
 
-    /// Preflights new allocations, copied identities and retained buffers.
+    /// Preflights every allocation and byte copied into public trust evidence.
     ///
     /// # Errors
     /// Fails if the checked storage sizes overflow.
-    pub fn trust_evidence_storage(&self) -> Result<TrustEvidenceStorage, VerifyError> {
+    pub fn trust_evidence_storage(&self) -> Result<TrustEvidenceStorage<'_>, VerifyError> {
         let certificates = self.certificates()?;
         let allocation_bytes = [
             bytes(slots::<Key>(certificates.keys.len()))?,
             bytes(self.evidence_id_count().and_then(slots::<BlockId>))?,
             bytes(slots::<BlockId>(self.blocks.len()))?,
+            bytes(slots::<BlockId>(self.issuers.len()))?,
+            bytes(Some(certificates.birth.birth.environment.len()))?,
+            bytes(Some(certificates.birth.birth.account_id.len()))?,
         ];
-        let copied_bytes = allocation_bytes[1]
-            .checked_add(allocation_bytes[2])
-            .ok_or(VerifyError::Malformed)?;
-        let allocated = allocation_bytes
-            .into_iter()
+        let mut storage = TrustEvidenceStorage {
+            allocation_bytes,
+            keys: &certificates.keys,
+            copied_bytes: 0,
+            owned_bytes: 0,
+        };
+        let owned_bytes = storage
+            .allocation_bytes()
             .try_fold(0u64, u64::checked_add)
             .ok_or(VerifyError::Malformed)?;
-        let base = usize::try_from(allocated)
-            .ok()
-            .and_then(|size| size.checked_add(certificates.birth.birth.environment.capacity()))
-            .and_then(|size| size.checked_add(certificates.birth.birth.account_id.capacity()))
-            .and_then(|size| size.checked_add(slots::<BlockId>(self.issuers.capacity())?));
-        let owned = base.and_then(|base| {
-            certificates
-                .keys
-                .iter()
-                .try_fold(base, |size, certificate| {
-                    size.checked_add(certificate.key.key_id.capacity())
-                })
-        });
-        Ok(TrustEvidenceStorage {
-            allocation_bytes,
-            copied_bytes,
-            owned_bytes: bytes(owned)?,
-        })
+        storage.owned_bytes = owned_bytes;
+        storage.copied_bytes = owned_bytes;
+        Ok(storage)
     }
 
-    /// Discards append authority and immutable policy material. Fixed-size
-    /// revocation and next-key identities occupy flat vectors; certificate
-    /// parents do not retain a second graph of individually allocated buffers.
-    /// Budgeted callers admit `trust_evidence_storage` before conversion and
-    /// account for the resulting actual `owned_bytes` before transfer.
+    /// Copies only public trust facts from an immutable authenticated owner.
+    /// No append key, policy graph or signature is retained by the result.
+    /// Budgeted callers admit every `trust_evidence_storage` allocation first.
     ///
     /// # Errors
     /// Fails if the authenticated certificate chain or an identity is malformed.
-    pub fn into_trust_evidence(mut self) -> Result<TrustEvidence, VerifyError> {
+    pub fn trust_evidence(&self) -> Result<TrustEvidence, VerifyError> {
         let count = self.evidence_id_count().ok_or(VerifyError::Malformed)?;
-        let certificates = self
-            .blocks
-            .first_mut()
-            .and_then(|block| block.certificates.take())
-            .ok_or(VerifyError::Malformed)?;
+        let certificates = self.certificates()?;
         let mut ids = Vec::with_capacity(count);
-        ids.extend(self.ids);
+        ids.extend_from_slice(&self.ids);
         let mut keys = Vec::with_capacity(certificates.keys.len());
-        for certificate in certificates.keys {
-            for parent in certificate.key.parent_revocation_ids {
+        for certificate in &certificates.keys {
+            for parent in &certificate.key.parent_revocation_ids {
                 ids.push(
                     parent
                         .as_slice()
@@ -234,12 +233,12 @@ impl VerifiedCapability {
                 );
             }
             keys.push(Key {
-                id: certificate.key.key_id,
+                id: certificate.key.key_id.clone(),
                 epoch: certificate.key.key_epoch,
             });
         }
         let mut next_keys = Vec::with_capacity(self.blocks.len());
-        for block in self.blocks {
+        for block in &self.blocks {
             next_keys.push(
                 block
                     .next_public_key
@@ -249,10 +248,10 @@ impl VerifiedCapability {
             );
         }
         Ok(TrustEvidence {
-            environment: certificates.birth.birth.environment,
-            account: certificates.birth.birth.account_id,
+            environment: certificates.birth.birth.environment.clone(),
+            account: certificates.birth.birth.account_id.clone(),
             environment_issuer: self.environment_issuer,
-            issuers: self.issuers,
+            issuers: self.issuers.clone(),
             ids,
             keys,
             next_keys,

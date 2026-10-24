@@ -160,6 +160,8 @@ async fn approve(owner: (&TaskContext, OperationId), endpoint: &str, url: &str) 
         prompt: "Authorize access to the explicitly selected MCP server using the host's private browser interaction".into(),
         operation_id: operation,
         action_digest: crate::executor::json::canonical_json_digest(&("harness/mcp-oauth/v1", endpoint, url), u64::MAX, &mut None)?,
+        // The authorization URL carries private state; only its digest is public.
+        subject: crate::interaction::ApprovalSubject::Opaque {},
     }).await? {
         InteractionOutcome::Approved {} => Ok(()),
         InteractionOutcome::Indeterminate { .. } => Err(Error::Indeterminate(operation)),

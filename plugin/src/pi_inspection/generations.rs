@@ -6,7 +6,6 @@ pub(crate) struct PiWritebackGenerations<'a> {
     pub(super) candidate: crate::LocalGeneration,
     pub(crate) original_snapshot: acyclic_fs::LazySnapshotRef,
     pub(crate) imported: acyclic_fs::GenerationId,
-    pub(super) operation: acyclic_harness::OperationId,
     pub(super) paths: &'a [String],
 }
 
@@ -192,7 +191,6 @@ pub(crate) async fn build_writeback_generations<'a>(
         candidate,
         original_snapshot: original,
         imported: imported.id(),
-        operation,
         paths,
     })
 }

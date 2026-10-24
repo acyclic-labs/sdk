@@ -19,7 +19,7 @@ BIN = Path('/home/var/bin')
 NODE = '/home/var/tools/node24/node-v24.3.0-linux-x64/bin/node'
 # Dependencies precede consumers. Every replacement remains a complete file;
 # in-flight interpreters retain their old inode and loaded module generation.
-TOOLS = ['sccache-rustc', 'admission_policy.py', 'job_exports.py', 'bb_target_store.py', 'bb_cargo_cache.py',
+TOOLS = ['sccache-rustc', 'admission_policy.py', 'job_exports.py', 'job_custody.py', 'bb_target_store.py', 'bb_cargo_cache.py',
          'prune-wt-sdk.py', 'buildbox-receipt.mjs', 'bb-job.py', 'bb-admit.py', 'bb-admit', 'build-slot', 'bb-install.py']
 
 
@@ -77,9 +77,10 @@ def publish(destination, data, mode=0o555):
 
 
 def qualify(source, user):
-    commands = [[NODE, '--test', 'generated.test.mjs', 'receipt-namespace.test.mjs'],
+    commands = [[NODE, '--test', 'generated.test.mjs', 'receipt-namespace.test.mjs', 'namespace.test.mjs'],
                 ['python3', 'runtime.test.py'], ['python3', 'admission.test.py'],
-                ['python3', 'install.test.py'], ['python3', 'limits.test.py']]
+                ['python3', 'install.test.py'], ['python3', 'limits.test.py'],
+                ['python3', 'custody.test.py'], ['python3', 'command_custody.test.py'], ['python3', 'windows-input.test.py']]
     for command in commands:
         # The tested code cannot modify its frozen source or installed tools.
         subprocess.run(['runuser', '-u', user, '--', *command], cwd=source, check=True, stdout=sys.stderr)

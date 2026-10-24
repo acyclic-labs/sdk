@@ -3,6 +3,19 @@ use acyclic_stream::BoxProviderStream;
 use futures::stream;
 
 impl<P: StreamProvider> DistributedCoordinator<P> {
+    pub(crate) async fn change_notifications(
+        &self,
+    ) -> Result<BoxProviderStream<'static, Result<()>>> {
+        use futures::StreamExt as _;
+        Ok(self
+            .stream
+            .0
+            .follow(self.revision, acyclic_stream::FollowFilter::default())
+            .await?
+            .map(|record| record.map(|_| ()).map_err(Error::from))
+            .boxed())
+    }
+
     /// Snapshots an operation and follows scheduler changes without a replay/subscription gap.
     pub async fn operation_changes(
         self,

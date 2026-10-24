@@ -16,116 +16,26 @@ where
         let span = obs_span!(INFO, "acyclic.harness.journal.resolve_interaction");
         traced(span, async {
             let host = self.interactions()?;
-            host.verify_responder_scope(id, responder, None)?;
-            if let Some((owner, _)) = &self.owner {
+            let owner = self.owner.as_ref().map(|(owner, _)| owner);
+            if let Some(owner) = owner {
                 owner.require_interaction_grant(&mut None)?;
                 owner.verify(true, &mut None).await?;
             }
-            let (ticket, prior) = host
-                .read(id, None)
-                .await?
-                .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
-            let request = host
-                .read_request(id, None)
-                .await?
-                .ok_or_else(|| Error::Storage("admitted interaction has no request".into()))?;
-            request.validate_response(&response, &mut None)?;
-            if let Some(previous) = &prior
-                && previous.outcome.is_terminal()
-            {
-                let stored = match (&previous.outcome, &response) {
-                    (
-                        InteractionOutcome::Approved {},
-                        InteractionResponse::Approval { approved: true, .. },
-                    )
-                    | (
-                        InteractionOutcome::Declined {},
-                        InteractionResponse::Approval {
-                            approved: false, ..
-                        },
-                    ) => Some(
-                        host.read_resolution_file(id, true, None)
-                            .await?
-                            .ok_or_else(|| {
-                                Error::Storage("admitted approval detail is missing".into())
-                            })?,
-                    ),
-                    (InteractionOutcome::Answered { .. }, _) => Some(
-                        host.read_resolution_file(id, false, None)
-                            .await?
-                            .ok_or_else(|| Error::Storage("admitted answer is missing".into()))?,
-                    ),
-                    _ => None,
-                };
-                let same = match stored {
-                    Some(bytes) => {
-                        crate::contract::json_from_slice::<InteractionResponse>(&bytes)
-                            .map_err(|error| Error::Storage(error.to_string()))?
-                            == response
-                    }
-                    None => false,
-                };
-                if let Some((owner, _)) = &self.owner {
-                    owner.verify(true, &mut None).await?;
-                }
-                return if same {
-                    Ok(())
-                } else {
-                    Err(Error::Conflict("interaction was already resolved".into()))
-                };
+            let approval = matches!(response, InteractionResponse::Approval { .. });
+            let resolution = host.resolve_latest(id, response, responder, owner);
+            if approval {
+                // Only the complete approval publication can certify a
+                // verdict. Its explicit receipts still flush every staged
+                // write before any caller receives the decision.
+                #[cfg(feature = "filesystem-local")]
+                let resolution =
+                    acyclic_stream::deferring_provider_durability(&*self.stream, resolution);
+                resolution.await?;
+                self.published_decision(id, None).await?;
+            } else {
+                resolution.await?;
             }
-            let expected_version = prior.as_ref().map_or(Ok(1_u64), |value| {
-                value
-                    .expected_version
-                    .checked_add(1)
-                    .ok_or_else(|| Error::Invalid("interaction version exhausted".into()))
-            })?;
-            let digest = blake3::hash(
-                format!(
-                    "interaction:{}:resolve-{expected_version}",
-                    uuid::Uuid::from_bytes(id.into_bytes()).hyphenated()
-                )
-                .as_bytes(),
-            );
-            let mut bytes = [0_u8; 16];
-            bytes.copy_from_slice(&digest.as_bytes()[..16]);
-            let operation = OperationId::from_bytes(bytes);
-            if let Some((owner, _)) = &self.owner {
-                owner.verify(true, &mut None).await?;
-            }
-            let staged = host
-                .stage_answer(id, expected_version, operation, &response, None)
-                .await?;
-            let (outcome, detail) = match response {
-                InteractionResponse::Approval { approved: true, .. } => {
-                    (InteractionOutcome::Approved {}, Some(staged))
-                }
-                InteractionResponse::Approval {
-                    approved: false, ..
-                } => (InteractionOutcome::Declined {}, Some(staged)),
-                _ => (
-                    InteractionOutcome::Answered {
-                        answer: Box::new(staged),
-                    },
-                    None,
-                ),
-            };
-            host.execute(
-                operation,
-                responder,
-                crate::core::Action::ResolveInteraction {
-                    resolution: Box::new(InteractionResolution {
-                        id: ticket.id,
-                        expected_version,
-                        outcome,
-                        detail,
-                    }),
-                },
-                None,
-                None,
-            )
-            .await?;
-            if let Some((owner, _)) = &self.owner {
+            if let Some(owner) = owner {
                 owner.verify(true, &mut None).await?;
             }
             Ok(())
@@ -151,31 +61,40 @@ where
             owner.require_interaction_grant(&mut work)?;
             owner.verify(false, &mut work).await?;
         }
-        if io.is_none()
-            && self.interactions.is_none()
-            && self.task_files.is_some()
-            && matches!(interaction, Interaction::Approval { .. })
-        {
-            return self.open_file_approval(id, interaction).await;
-        }
         let host = self.interactions.as_ref().ok_or_else(|| {
             reject(
                 crate::wire::ErrorCode::Unsupported,
                 "task execution has no conversation interaction owner",
             )
         })?;
-        if let Some(same) = Self::existing_interaction(host, id, interaction, io).await? {
-            if let Some((owner, _)) = &self.owner {
-                owner.verify(false, &mut work).await?;
-            }
-            return if same {
-                Ok(())
-            } else {
-                Err(reject(
-                    crate::wire::ErrorCode::Conflict,
-                    "interaction identity reused",
-                ))
+        let mut transaction = host.transaction(io).await?;
+        {
+            let (request_hold, original) = {
+                let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+                let original = host
+                    .read_request_at(&transaction.aggregate.0, id, io)
+                    .await?;
+                let request_hold = io
+                    .map(|io| io.guard_owned(io.owned_since(before)?))
+                    .transpose()?;
+                (request_hold, original)
             };
+            if let Some(original) = &original {
+                if let Some((owner, _)) = &self.owner {
+                    owner.verify(false, &mut work).await?;
+                }
+                return if original == interaction {
+                    self.publish_approval_request(id, &transaction.aggregate.0, io)
+                        .await
+                } else {
+                    Err(reject(
+                        crate::wire::ErrorCode::Conflict,
+                        "interaction identity reused",
+                    ))
+                };
+            }
+            drop(original);
+            drop(request_hold);
         }
         let operation = interaction_open_operation(id, io)?;
         let (ticket_hold, ticket) = {
@@ -186,38 +105,60 @@ where
                 .transpose()?;
             (ticket_hold, ticket)
         };
-        let publication = host
-            .open(
-                operation,
-                None,
-                &ticket,
-                self.owner.as_ref().map(|(owner, _)| owner),
-                io,
-            )
-            .await;
+        let publication = host.open_at(
+            operation,
+            None,
+            &ticket,
+            self.owner.as_ref().map(|(owner, _)| owner),
+            io,
+            &mut transaction,
+        );
+        #[cfg(feature = "filesystem-local")]
+        let publication = async {
+            if self.owner.is_some() && matches!(interaction, Interaction::Approval { .. }) {
+                // The task-file publisher below proves both durable prefixes.
+                // Only this provider's canonical append may share its flush;
+                // staging on an independent filesystem authority stays eager.
+                acyclic_stream::deferring_provider_durability(&*self.stream, publication).await
+            } else {
+                publication.await
+            }
+        };
+        let publication = publication.await;
         drop(ticket);
         drop(ticket_hold);
         if let Some((owner, _)) = &self.owner {
             owner.verify(false, &mut work).await?;
         }
         let result = match publication {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                self.publish_approval_request(id, &transaction.aggregate.0, io)
+                    .await
+            }
             Err(error)
                 if matches!(
                     error.code(),
                     crate::wire::ErrorCode::Conflict | crate::wire::ErrorCode::Indeterminate
                 ) =>
             {
+                // A cross-owner conflict or lost acknowledgement needs one fresh
+                // read to confirm the exact committed request, never a resubmit.
+                transaction.aggregate = host.aggregate(io).await?;
                 let (request_hold, original) = {
                     let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-                    let original = host.read_request(id, io).await?;
+                    let original = host
+                        .read_request_at(&transaction.aggregate.0, id, io)
+                        .await?;
                     let request_hold = io
                         .map(|io| io.guard_owned(io.owned_since(before)?))
                         .transpose()?;
                     (request_hold, original)
                 };
                 let result = match &original {
-                    Some(original) if original == interaction => Ok(()),
+                    Some(original) if original == interaction => {
+                        self.publish_approval_request(id, &transaction.aggregate.0, io)
+                            .await
+                    }
                     Some(_) => Err(reject(
                         crate::wire::ErrorCode::Conflict,
                         "interaction identity reused",
@@ -236,23 +177,6 @@ where
         result
     }
 
-    async fn existing_interaction(
-        host: &FilesystemInteractionHost<P, A, O>,
-        id: InteractionId,
-        interaction: &Interaction,
-        io: Option<&PreparationIo>,
-    ) -> Result<Option<bool>> {
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let original = host.read_request(id, io).await?;
-        let request_hold = io
-            .map(|io| io.guard_owned(io.owned_since(before)?))
-            .transpose()?;
-        let same = original.as_ref().map(|original| original == interaction);
-        drop(original);
-        drop(request_hold);
-        Ok(same)
-    }
-
     pub(super) async fn interaction_outcome_with_io(
         &self,
         id: InteractionId,
@@ -266,9 +190,6 @@ where
             owner.require_interaction_grant(&mut work)?;
             owner.verify(true, &mut work).await?;
         }
-        if io.is_none() && self.interactions.is_none() && self.task_files.is_some() {
-            return self.file_approval_outcome(id).await;
-        }
         let host = self.interactions.as_ref().ok_or_else(|| {
             crate::filesystem::interaction_host::interaction_boundary(
                 io,
@@ -276,7 +197,19 @@ where
                 "task execution has no conversation interaction owner",
             )
         })?;
-        let outcome = host.read_outcome(id, io).await?;
+        let aggregate = host.aggregate(io).await?;
+        let outcome = match host.read_outcome(&aggregate.0, id, io)? {
+            // A verdict reaches execution only as a published decision.
+            Some(InteractionOutcome::Approved {} | InteractionOutcome::Declined {}) => Some(
+                self.published_decision_from(id, None, aggregate, io)
+                    .await?
+                    .outcome(),
+            ),
+            outcome => {
+                drop(aggregate);
+                outcome
+            }
+        };
         if let Some((owner, _)) = &self.owner {
             owner.verify(true, &mut work).await?;
         }

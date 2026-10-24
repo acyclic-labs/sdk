@@ -118,6 +118,13 @@ pub(super) enum Command {
     Pending(Option<Component>, FileKey),
 }
 impl Commands {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(super) fn native_index_bytes(&self, owner: &Option<Component>) -> usize {
+        self.executions.len() * std::mem::size_of::<((Option<Component>, u64), FileKey)>()
+            + self.pending.len() * std::mem::size_of::<(Option<Component>, BTreeSet<FileKey>)>()
+            + self.pending.get(owner).map_or(0, BTreeSet::len) * std::mem::size_of::<FileKey>()
+    }
+
     /// Classifies before the index insert; a pending request checks its result once.
     pub(super) fn prepare(&self, files: &FileIndex, key: &FileKey) -> Option<Command> {
         if is_result(key) {

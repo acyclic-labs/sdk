@@ -256,7 +256,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
             ));
         }
         if transient.work().is_none() {
-            self.validate_admission_content(&command.action).await?;
+            self.validate_admission_content(&command.action, command.scope.id())
+                .await?;
         } else {
             #[cfg(feature = "filesystem")]
             {
@@ -289,7 +290,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     self.validate_interaction_part_with_work(
                         &ticket.0,
                         detail,
-                        Some(&resolution.outcome),
+                        Some((resolution, command.scope.id())),
                         transient.work(),
                     )
                     .await?;

@@ -21,13 +21,16 @@ fn cut(broken: bool, check: bool) {
             assert!(*value <= 1, "torn metadata state");
         }
     });
-    let mut jobs: FuturesUnordered<BoxProviderFuture<'_, Result<(Component, u64)>>> =
+    let mut jobs: FuturesUnordered<BoxProviderFuture<'_, Result<ChildCompletion>>> =
         FuturesUnordered::new();
     jobs.push(Box::pin(async move {
         drop(held);
-        Ok((Component::new("gate-holder").unwrap(), 1))
+        Ok(ChildCompletion::Settled(
+            Component::new("gate-holder").unwrap(),
+            1,
+        ))
     }));
-    let parent = std::future::ready(Ok::<(), Error>(()));
+    let parent = std::future::ready(Ok::<DriveState, Error>(DriveState::Quiescent));
     futures::pin_mut!(parent);
     let mut parent_done = false;
     let mut pending = VecDeque::new();

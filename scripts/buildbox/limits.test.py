@@ -1,4 +1,9 @@
-"""Caller rlimit parity across the real scope, daemon and namespace boundaries."""
+"""Caller rlimit parity across privilege, daemon and namespace boundaries.
+
+The enclosing receipt owns the host systemd scope. A payload's private PID
+namespace cannot submit its local process IDs to that host manager. Exercise
+the real sudo/setuid boundary inside that existing scope instead.
+"""
 import json
 import os
 from pathlib import Path
@@ -20,7 +25,7 @@ class LimitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
             root=Path(temporary);(root/'jobs').mkdir()
             names=['build-slot','bb-admit','bb-admit.py','bb-job.py','admission_policy.py',
-                   'bb_target_store.py','job_exports.py','buildbox-receipt.mjs']
+                   'bb_target_store.py','job_exports.py','job_custody.py','buildbox-receipt.mjs']
             for name in names:
                 data=(HERE/name).read_text().replace('/home/var/bin/',str(root)+'/')
                 if name=='bb-job.py':data=data.replace("JOBS=Path('/mnt/bb/jobs')",f"JOBS=Path({str(root/'jobs')!r})")
@@ -28,7 +33,7 @@ class LimitTests(unittest.TestCase):
                 (root/name).write_text(data);(root/name).chmod(0o755)
             env={**os.environ,'BB_ADMIT_ROOT':str(root/'queue'),'BB_CACHE_DISABLED':'1','BUILD_SLOT_EXEC_IN_PAYLOAD':'1'}
             for key in [LIMIT_ENV,'BB_CALLER_RLIMITS_READY','BB_ADMITTED','BB_JOB_ACTIVE',
-                        'BB_ADMIT_WRAPPED_COMMAND','BUILD_SLOT_RECEIPT_META','BUILD_SLOT_RECEIPT_WRAPPED']:
+                        'BB_ADMIT_WRAPPED_COMMAND','BUILD_SLOT_RECEIPT_META','BUILD_SLOT_RECEIPT_WRAPPED','BB_JOB_EXPORT_SPEC']:
                 env.pop(key,None)
             limits=capture_limits();limits['RLIMIT_NOFILE']=[1536,8192]
             nested=('import resource,subprocess,json;resource.setrlimit(resource.RLIMIT_NOFILE,(2048,8192));'
@@ -57,14 +62,13 @@ class LimitTests(unittest.TestCase):
                 state=root/'queue/daemon.json'
                 if state.exists():os.kill(json.loads(state.read_text())['pid'],signal.SIGTERM)
 
-    def scoped(self, limits, restore=True):
+    def privileged(self, limits, restore=True):
         child = [sys.executable, str(HERE/'admission_policy.py'), 'exec-user', 'var', '--'] if restore else ['runuser', '-u', 'var', '--']
         # Print the exact requested shell control too, rather than comparing
         # only Python's view of the nofile limits.
         identity='import os,pwd;u=pwd.getpwuid(os.getuid());assert os.environ["USER"]==os.environ["LOGNAME"]==u.pw_name;'
         probe = 'ulimit -Sn; ulimit -Hn; exec '+sys.executable+' -c '+__import__('shlex').quote(identity+PROBE)
-        return subprocess.run(['sudo', '-n', '--preserve-env='+LIMIT_ENV, 'systemd-run', '--scope', '-q',
-                               '--slice=bbjobs.slice', '--', *child, 'bash', '-c', probe],
+        return subprocess.run(['sudo', '-n', '--preserve-env='+LIMIT_ENV, '--', *child, 'bash', '-c', probe],
                               env={**os.environ, LIMIT_ENV:json.dumps(limits)}, capture_output=True,
                               preexec_fn=lambda: [resource.setrlimit(getattr(resource,name), pair) for name,pair in limits.items()])
 
@@ -75,32 +79,32 @@ class LimitTests(unittest.TestCase):
         self.assertEqual([soft, hard], [shell(x) for x in limits['RLIMIT_NOFILE']])
         self.assertEqual(json.loads(rest), limits)
 
-    def test_real_systemd_scope_matches_caller_and_old_path_negative(self):
+    def test_receipt_owned_scope_preserves_caller_through_privilege_boundary(self):
         limits = capture_limits()
-        self.assert_parity(self.scoped(limits), limits)
-        # Scope+PAM used to replace caller limits, independent of our helper.
+        self.assert_parity(self.privileged(limits), limits)
+        # sudo and PAM replace caller limits, independent of our helper.
         changed = dict(limits)
         changed['RLIMIT_NOFILE'] = [1536, 8192]
         changed['RLIMIT_NPROC'] = [min(10000, limits['RLIMIT_NPROC'][0]), limits['RLIMIT_NPROC'][1]]
         changed['RLIMIT_MEMLOCK'] = [4096, limits['RLIMIT_MEMLOCK'][1]]
         changed['RLIMIT_STACK'] = [4*1024*1024, limits['RLIMIT_STACK'][1]]
         changed['RLIMIT_CORE'] = [0, limits['RLIMIT_CORE'][1]]
-        self.assert_parity(self.scoped(changed), changed)
-        with self.assertRaises(AssertionError): self.assert_parity(self.scoped(changed, False), changed)
+        self.assert_parity(self.privileged(changed), changed)
+        with self.assertRaises(AssertionError): self.assert_parity(self.privileged(changed, False), changed)
 
     def test_native_ticket_captures_each_caller_not_daemon(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
             root = Path(temporary)
             # Production entry/daemon/runtime, with only their fixture receipt
             # and namespace registry roots redirected outside shared JOBS.
-            for name in ['admission_policy.py','bb_target_store.py','job_exports.py']:
+            for name in ['admission_policy.py','bb_target_store.py','job_exports.py','job_custody.py']:
                 (root/name).write_bytes((HERE/name).read_bytes())
             (root/'jobs').mkdir()
             source = (HERE/'bb-job.py').read_text().replace("JOBS=Path('/mnt/bb/jobs')", f"JOBS=Path({str(root/'jobs')!r})")
             (root/'bb-job.py').write_text(source)
             (root/'bb-admit.py').write_bytes((HERE/'bb-admit.py').read_bytes())
             env = {**os.environ, 'BB_ADMIT_ROOT':str(root/'queue'), 'BB_CACHE_DISABLED':'1', 'BUILD_SLOT_EXEC_IN_PAYLOAD':'1'}
-            for name in ['BB_ADMIT_WRAPPED_COMMAND','BB_ADMITTED','BB_JOB_ACTIVE',LIMIT_ENV]: env.pop(name, None)
+            for name in ['BB_ADMIT_WRAPPED_COMMAND','BB_ADMITTED','BB_JOB_ACTIVE','BB_JOB_EXPORT_SPEC',LIMIT_ENV]: env.pop(name, None)
             try:
                 for soft in [2048, 4096]:
                     meta = root/('meta-'+str(soft)); meta.write_text('{}')

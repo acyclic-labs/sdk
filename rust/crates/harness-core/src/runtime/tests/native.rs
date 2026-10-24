@@ -326,6 +326,7 @@ fn opaque_interaction_router_rejects_native_before_ordinary_route_or_box() -> Re
         prompt,
         operation_id: OperationId::new(),
         action_digest: [1; 32],
+        subject: crate::interaction::ApprovalSubject::Opaque {},
     };
     let custody = io.into_custody()?;
     assert!(matches!(

@@ -6,6 +6,12 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    /// Used only after the runtime authenticates the task's retained admission.
+    pub(in crate::filesystem) fn for_approval_projection(mut self, task: crate::TaskId) -> Self {
+        self.approval_task = Some(task);
+        self
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn original_native_execution_work_matches(
         &self,
@@ -36,12 +42,35 @@ where
             })
     }
 
-    pub(crate) fn with_task_files(
-        mut self,
+    pub(crate) fn with_optional_task_files(
+        self,
         files: Option<Arc<crate::task_volume::TaskFiles<P>>>,
-    ) -> Self {
-        self.task_files = files;
-        self
+    ) -> Result<Self> {
+        match files {
+            Some(files) => self.with_task_files(files),
+            None => Ok(self),
+        }
+    }
+
+    /// Attaches an owner-authorized private file projection on this stream provider.
+    pub fn with_task_files(mut self, files: Arc<crate::task_volume::TaskFiles<P>>) -> Result<Self> {
+        if files.volume().provider() != &self.host.provider
+            || !files.inner.shares_provider(&self.stream)
+            || files.maximum_bytes() < self.maximum_payload_bytes
+        {
+            #[cfg(not(target_arch = "wasm32"))]
+            if self._native_metadata.is_some() {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "task files differ from the journal's provider or byte bound",
+                });
+            }
+            return Err(Error::Unauthorized(
+                "task files differ from the journal's provider or byte bound".into(),
+            ));
+        }
+        self.task_files = Some(files);
+        Ok(self)
     }
 
     /// Binds the execution to the task's exact lease and coordinator provider.
@@ -242,6 +271,7 @@ where
             input_verifier: None,
             interactions,
             owner: None,
+            approval_task: None,
             execution: None,
             verified: tokio::sync::Mutex::new(ExecutionSummary::default()),
             conversation_projection: tokio::sync::Mutex::new(None),
@@ -261,6 +291,15 @@ where
         private_volume: &VolumeRef,
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
+        // Task approvals are followed as task files: an owner-bound task journal
+        // without them could never prove a decision published.
+        if self.owner.is_some() && self.task_files.is_none() {
+            return Err(canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "task interaction owner requires private task files",
+            ));
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
             let guard = self
@@ -284,7 +323,9 @@ where
             .map(|work| work as &mut dyn crate::store::history::HistoryIo);
         if let Some((owner, _)) = &self.owner {
             owner.require_interaction_grant(&mut work)?;
-        } else if self.verifier.audience().kind == crate::core::AggregateKind::Task {
+        } else if self.approval_task.is_none()
+            && self.verifier.audience().kind == crate::core::AggregateKind::Task
+        {
             return Err(crate::filesystem::interaction_host::interaction_boundary(
                 io,
                 crate::wire::ErrorCode::Unauthorized,

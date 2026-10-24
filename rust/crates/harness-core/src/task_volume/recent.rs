@@ -27,7 +27,6 @@ pub(super) fn kind(key: &FileKey) -> Option<u8> {
         TaskFile::Tool { .. } => 4,
         TaskFile::ExecutionResult(_) => 6,
         TaskFile::Completion(_) => 7,
-        TaskFile::ApprovalRequest(_) | TaskFile::ApprovalDecision { .. } => 8,
         _ => return None,
     })
 }
@@ -60,6 +59,12 @@ pub(super) struct Display {
     key: FileKey,
 }
 impl Views {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(super) fn native_index_bytes(&self) -> usize {
+        self.order.len() * std::mem::size_of::<((Component, u8, u64), FileKey)>()
+            + self.overviews.len() * std::mem::size_of::<(Component, FileKey)>()
+    }
+
     pub(super) fn prepare(file: &FileValue, position: u64) -> Option<Display> {
         let (FileKey::Task { task, .. }, Some(kind)) = (&file.key, file_kind(file)) else {
             return None;
@@ -136,14 +141,18 @@ pub(super) fn snapshot(index: &Index, query: &Query, maximum: usize) -> Result<V
         if *recent == 0 {
             return Err(Error::LimitExceeded);
         }
+        let pending = index.approvals.files(index, task);
+        let available = maximum
+            .checked_sub(pending.len())
+            .ok_or(Error::LimitExceeded)?;
         let mut files = Vec::new();
-        for kind in 0..=8 {
+        for kind in 0..=7 {
             for ((_, _, sequence), key) in index
                 .views
                 .order
                 .range((task.clone(), kind, 0)..=(task.clone(), kind, u64::MAX))
                 .rev()
-                .take((*recent as usize).min(maximum))
+                .take((*recent as usize).min(available))
             {
                 let file = index.files.get(key).ok_or(Error::InvalidSegment)?;
                 if query.matches_file(&file.file) {
@@ -152,11 +161,12 @@ pub(super) fn snapshot(index: &Index, query: &Query, maximum: usize) -> Result<V
             }
         }
         files.sort_by_key(|(sequence, _)| *sequence);
-        let excess = files.len().saturating_sub(maximum);
+        let excess = files.len().saturating_sub(available);
         Ok(files
             .into_iter()
             .skip(excess)
             .map(|(_, file)| file)
+            .chain(pending)
             .collect())
     } else {
         Ok(index
@@ -180,14 +190,24 @@ pub(super) fn observe(
     };
     let snapshot = observation.snapshot.as_mut().ok_or(Error::ResetRequired)?;
     let window = Window::new(&mut snapshot.files, maximum, bytes, recent);
+    if !window.within_limits() {
+        return Err(Error::LimitExceeded);
+    }
+    let active_approvals = matches!(query, Query::TaskView { .. } | Query::TaskSession { .. });
     observation.changes = Box::pin(futures::stream::try_unfold(
         (observation.changes, window),
-        |(mut changes, mut window)| async move {
+        move |(mut changes, mut window)| async move {
             let Some(change) = changes.next().await else {
                 return Ok(None);
             };
             let mut change = change?;
+            if active_approvals {
+                change = change.active_approval_view(window.keys());
+            }
             window.apply(&mut change);
+            if !window.within_limits() {
+                return Err(Error::LimitExceeded);
+            }
             Ok(Some((change, (changes, window))))
         },
     ));

@@ -6,6 +6,27 @@ impl<P: StreamProvider> LostSessionAck<P> {
         &self,
         request: &acyclic_stream::CommitRequest,
     ) -> Result<(u8, u8), StreamError> {
+        let owned = request.conditions.iter().any(|condition| {
+            matches!(condition,
+            acyclic_stream::CommitCondition::Tail { path, .. } if path.as_str() == COORDINATOR_PATH)
+        });
+        let coordinator_write = request.mutations.iter().any(|mutation| matches!(mutation,
+            acyclic_stream::CommitMutation::Append { path, .. } if path.as_str() == COORDINATOR_PATH));
+        let pause = if owned && !coordinator_write {
+            self.owned_commit_pause
+                .lock()
+                .map_err(|_| StreamError::Unavailable)?
+                .take()
+        } else {
+            None
+        };
+        if let Some(pause) = pause {
+            pause
+                .entered
+                .send(())
+                .map_err(|()| StreamError::Unavailable)?;
+            pause.release.await.map_err(|_| StreamError::Unavailable)?;
+        }
         self.io.writes.fetch_add(1, Ordering::SeqCst);
         for mutation in &request.mutations {
             if let acyclic_stream::CommitMutation::Append { records, .. } = mutation {

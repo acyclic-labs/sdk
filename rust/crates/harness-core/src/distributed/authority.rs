@@ -262,7 +262,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         workflow_revision: u64,
         input: FileRef,
         idempotency_key: IdempotencyKey,
-        waiting_command: Option<OperationId>,
+        waiting_command: Option<(OperationId, &LeaseFence)>,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<bool> {
         authorize_operation_scope(owner, scope, verifier, "operation:wake", work)?;

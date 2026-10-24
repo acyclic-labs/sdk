@@ -18,7 +18,7 @@ impl AuthorityVerifier {
     ) -> Result<VerifiedScope> {
         let capability = workload::verify(self, &self.audience, scope, workload::now(), work)?;
         let mut quota = CodecQuota::new(work, 0)?;
-        let evidence = compact_evidence(capability, &mut quota)?;
+        let evidence = compact_evidence(&capability, &mut quota)?;
         let scope = scope.copy(quota.work())?;
         quota.adopt(scope.logical_owned_bytes()?)?;
         let verifier = self.copy(quota.work())?;
@@ -35,22 +35,22 @@ impl AuthorityVerifier {
 
 // The caller's guard owns the evidence through all later construction failures.
 fn compact_evidence(
-    capability: acyclic_auth::verify::VerifiedCapability,
+    capability: &acyclic_auth::verify::VerifiedCapability,
     quota: &mut CodecQuota<'_, '_>,
 ) -> Result<acyclic_auth::verify::TrustEvidence> {
     let storage = capability
         .trust_evidence_storage()
         .map_err(workload::unauthorized)?;
     if let Some(io) = quota.work().as_deref_mut() {
-        for bytes in storage.allocation_bytes {
+        for bytes in storage.allocation_bytes() {
             io.admit_allocation(bytes)?;
         }
         io.copy_bytes(storage.copied_bytes)?;
     }
-    // Fund moved buffers and each new vector before conversion allocates.
+    // Fund every copied buffer before evidence construction allocates.
     quota.replace(storage.owned_bytes)?;
     let evidence = capability
-        .into_trust_evidence()
+        .trust_evidence()
         .map_err(workload::unauthorized)?;
     quota.replace(evidence.owned_bytes().map_err(workload::unauthorized)?)?;
     Ok(evidence)

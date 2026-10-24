@@ -30,7 +30,7 @@ impl LocalStream {
                         .map(|result| result.map_err(E::from));
                 }
             };
-            let worker = async move {
+            let worker = publication_scope(async move {
                 let _input = input;
                 let result = loop {
                     let revision = *stream.inner.revision.borrow();
@@ -83,7 +83,7 @@ impl LocalStream {
                     let required = stream.inner.required();
                     drop(visibility);
                     let result = match required {
-                        Ok(required) => stream.await_durable(required).await.and(result),
+                        Ok(required) => stream.await_publication(required).await.and(result),
                         Err(error) => Err(error),
                     };
                     break result;
@@ -91,7 +91,7 @@ impl LocalStream {
                 // Keep the callback's captured lease through the physical terminal.
                 drop(before);
                 work.finish(result).map(|result| result.map_err(E::from))
-            };
+            });
             let allocation = acyclic_native_runtime::ReadAllocation::new(
                 &original,
                 std::mem::size_of_val(&worker),

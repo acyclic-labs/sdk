@@ -11,6 +11,27 @@ pub struct ChoiceOption {
     pub description: Option<String>,
 }
 
+/// The exact action an approval decides, as its approver sees it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ApprovalSubject {
+    /// One model tool call with its exact admitted arguments. The approval's
+    /// operation and digest bind this same invocation, and execution reopens the
+    /// request from the invocation it runs, so a differing request conflicts.
+    Tool {
+        /// Model-visible tool name.
+        tool: String,
+        /// Provider call identity.
+        call_id: String,
+        /// Exact admitted arguments.
+        #[serde(deserialize_with = "crate::deserialize_json_value")]
+        arguments: Value,
+    },
+    /// An action whose preimage stays private to its owner (credentials,
+    /// authorization URLs, sealed native requests). Only the digest is public.
+    Opaque {},
+}
+
 /// Typed interaction request. Executors decide how and where it is presented.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -48,6 +69,8 @@ pub enum Interaction {
         operation_id: OperationId,
         /// Digest of the exact action being approved.
         action_digest: [u8; 32],
+        /// The exact action, so approvers decide what actually runs.
+        subject: ApprovalSubject,
     },
 }
 
@@ -97,14 +120,22 @@ impl Interaction {
         prompt: String,
         operation_id: OperationId,
         action_digest: [u8; 32],
+        subject: ApprovalSubject,
     ) -> Result<Self> {
         let value = Self::Approval {
             prompt,
             operation_id,
             action_digest,
+            subject,
         };
         value.validate(&mut None)?;
         Ok(value)
+    }
+
+    /// Logical heap bytes this request retains, for native custody checks.
+    #[cfg(any(test, all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    pub(crate) fn owned_bytes(&self) -> Result<u64> {
+        interaction_request_owned_bytes(self, &None)
     }
 
     /// Validates the interaction before it is admitted.
@@ -180,11 +211,16 @@ impl Interaction {
             Self::Approval {
                 prompt,
                 action_digest,
+                subject,
                 ..
             } => {
                 nonempty(prompt, "approval prompt is empty", work)?;
                 if action_digest == &[0; 32] {
                     return Err(boundary(work, Invalid, "approval action digest is empty"));
+                }
+                if let ApprovalSubject::Tool { tool, call_id, .. } = subject {
+                    nonempty(tool, "approval tool name is empty", work)?;
+                    nonempty(call_id, "approval tool call identity is empty", work)?;
                 }
             }
         }

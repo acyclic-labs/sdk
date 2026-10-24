@@ -25,7 +25,10 @@ pub(super) fn rows(files: Option<&FileQueryView>) -> Vec<Line<'static>> {
         ) {
             continue;
         }
-        let request = match serde_json::from_slice::<FileApproval>(&bytes(file)) {
+        let request = match FileApproval::decode(&crate::task_volume::FileValue::new(
+            file.key.clone(),
+            bytes(file),
+        )) {
             Ok(request) if request.key().is_ok_and(|key| key == file.key) => request,
             _ => {
                 rows.push(Line::raw("invalid approval request"));

@@ -15,7 +15,7 @@ pub(super) async fn write<P: StreamProvider + ?Sized>(
     if matches!(
         file.key,
         FileKey::Child {
-            file: ChildFile::Request,
+            file: ChildFile::Request | ChildFile::Inbox(_),
             ..
         }
     ) {
@@ -107,9 +107,12 @@ pub(super) async fn follow<P: StreamProvider + ?Sized>(
             .map_err(storage)?;
         let result = super::super::agent_files::status_at(reference, &values, maximum, inputs)?;
         let ready = if settled {
-            result["settled"] == true
+            result.get("settled") == Some(&serde_json::Value::Bool(true))
+                || result.get("approval").is_some_and(|value| !value.is_null())
         } else {
-            !result["execution"].is_null()
+            result
+                .get("execution")
+                .is_some_and(|value| !value.is_null())
         };
         if ready {
             return Ok(Some(result));

@@ -17,38 +17,55 @@ import unittest
 from unittest.mock import patch
 
 HERE=Path(__file__).resolve().parent
+sys.path.insert(0,str(HERE))
 
 def load(name):
     spec=importlib.util.spec_from_file_location(name,HERE/(name+'.py'))
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
 admit=load('bb-admit');job=load('bb-job');pruner=load('prune-wt-sdk');exports=load('job_exports')
 
+def fixture_environment():
+    # A new receipt owns a new export contract. Nested payloads intentionally
+    # reuse their enclosing receipt; independently launched fixture workers do
+    # not inherit its writable export destination.
+    return {key:value for key,value in os.environ.items() if key!='BB_JOB_EXPORT_SPEC'}
+
 class RuntimeTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='r19-runtime-',dir='/mnt/bb/tmp')
         self.d=Path(self.temp.name)
         shutil.copyfile(HERE/'admission_policy.py',self.d/'admission_policy.py')
-        self.real_home=Path(tempfile.mkdtemp(prefix="gate-home-fixture-",dir="/home/var"))
+        self.real_home=Path(tempfile.mkdtemp(prefix="gate-home-fixture-",dir=self.d))
     def tearDown(self):
-        self.temp.cleanup();job.remove_home(self.real_home)
+        self.temp.cleanup()
     def worker(self,negative=False,cleanup_failure=False):
         shutil.copyfile(HERE/'job_exports.py',self.d/'job_exports.py')
         shutil.copyfile(HERE/'bb_target_store.py',self.d/'bb_target_store.py')
         shutil.copyfile(HERE/'admission_policy.py',self.d/'admission_policy.py')
+        shutil.copyfile(HERE/'job_custody.py',self.d/'job_custody.py')
         source=(HERE/'bb-job.py').read_text()
         (self.d/'jobs').mkdir(exist_ok=True)
         source=source.replace("JOBS=Path('/mnt/bb/jobs')",f"JOBS=Path({str(self.d/'jobs')!r})")
+        # Exercise the same constructor with an owned HOME fixture. The outer
+        # build-slot already protects the operator's actual HOME read-only.
+        source=source.replace("'/home/var'",repr(str(self.real_home)))
         source=source.replace("'disk_free':disk()", "'disk_free':[{'path':'fixture','free_percent':50}]")
         if negative:source=source.replace("file=sys.stderr,flush=True", "flush=True")
-        if cleanup_failure:source=source.replace('try:remove_home(job)','try:raise OSError("cleanup control")')
+        if cleanup_failure:source=source.replace('if job.exists(): remove_home(job)','raise OSError("cleanup control")')
         p=self.d/('negative.py' if negative else 'worker.py');p.write_text(source);return p
     def run_job(self,argv,negative=False,extra=None,cleanup_failure=False,gate=False,cwd=None):
         meta=self.d/'fixture.receipt-meta.v2.json';meta.write_text(json.dumps({'gate_log':'fixture.log'} if gate else {}))
-        env={**os.environ,'PATH':'/home/var/.cargo/bin:'+os.environ['PATH'], 'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        env={**fixture_environment(),'PATH':'/home/var/.cargo/bin:'+os.environ['PATH'], 'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
         env.pop('BB_JOB_ACTIVE',None);env.pop('BB_ADMITTED',None)
         env.update(extra or {})
         result=subprocess.run([sys.executable,str(self.worker(negative,cleanup_failure)),*argv],cwd=cwd or self.d,env=env,capture_output=True)
-        return result,json.loads(Path(str(meta)+'.runtime').read_text()) if Path(str(meta)+'.runtime').exists() else {}
+        if env.get('BB_JOB_ACTIVE')=='1':
+            self.assertFalse(Path(str(meta)+'.runtime').exists(),'nested execution must reuse its owner receipt')
+            return result,{}
+        clean=subprocess.run([sys.executable,str(self.d/'negative.py' if negative else self.d/'worker.py'),'cleanup',str(meta)+'.runtime'],cwd=self.d,env=env,capture_output=True)
+        if clean.returncode:
+            result=subprocess.CompletedProcess(result.args,224,result.stdout,result.stderr+clean.stderr)
+        return result,json.loads(Path(str(meta)+'.runtime').read_text())
     def test_cargo_metadata_stdout_through_build_slot_and_negative_control(self):
         (self.d/'Cargo.toml').write_text('[package]\nname="gate-stdout-fixture"\nversion="0.0.0"\nedition="2024"\n')
         (self.d/'src').mkdir();(self.d/'src/lib.rs').write_text('')
@@ -58,21 +75,31 @@ class RuntimeTests(unittest.TestCase):
         meta=self.d/'fixture.receipt-meta.v2.json';meta.write_text('{}')
         # Metadata does not compile. Endpoint ownership/startup have separate
         # controls; do not start two real servers for this stdout-only fixture.
-        env={**os.environ,'BUILD_SLOT_RECEIPT_WRAPPED':'1','BB_ADMITTED':'1','BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        env={**fixture_environment(),'BUILD_SLOT_RECEIPT_WRAPPED':'1','BB_ADMITTED':'1','BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
         env.pop('BB_JOB_ACTIVE',None)
         args=['bash',str(script),'cargo','metadata','--format-version','1','--no-deps']
         result=subprocess.run(args,cwd=self.d,env=env,capture_output=True)
+        # The captured worker owns JOBS as well as its runtime receipt. The
+        # imported operator worker must refuse this fixture-owned generation.
+        runtime=Path(str(meta)+'.runtime')
+        home=Path(json.loads(runtime.read_text())['hermetic_home'])
+        with self.assertRaisesRegex(RuntimeError,'refusing cleanup outside'):
+            job.cleanup_runtime(runtime)
+        self.assertTrue(home.exists(),'negative control must preserve the owned runtime')
+        self.assertEqual(subprocess.run([sys.executable,str(self.d/'worker.py'),'cleanup',str(runtime)],capture_output=True).returncode,0)
+        self.assertFalse(home.exists())
         self.assertEqual(result.returncode,0,result.stderr.decode());self.assertEqual(json.loads(result.stdout)['packages'][0]['name'],'gate-stdout-fixture')
         self.assertIn(b'BB_DISK_FREE',result.stderr);self.assertIn(b'GATE_HOME_GUARD',result.stderr)
         script.write_text(script.read_text().replace(str(self.d/'worker.py'),str(self.worker(True))))
         bad=subprocess.run(args,cwd=self.d,env=env,capture_output=True)
+        self.assertEqual(subprocess.run([sys.executable,str(self.d/'negative.py'),'cleanup',str(meta)+'.runtime'],capture_output=True).returncode,0)
         self.assertEqual(bad.returncode,0,bad.stderr.decode())
         with self.assertRaises(json.JSONDecodeError):json.loads(bad.stdout)
     def test_native_cold_entry_propagates_disabled_policy_before_execution(self):
         script=self.d/'cold-build-slot'
         script.write_text((HERE/'build-slot').read_text().replace('/home/var/bin/bb-job.py',str(self.worker())))
         meta=self.d/'cold.receipt-meta.v2.json';meta.write_text('{}')
-        env={**os.environ,'BUILD_SLOT_RECEIPT_WRAPPED':'1','BB_ADMITTED':'1','BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1'}
+        env={**fixture_environment(),'BUILD_SLOT_RECEIPT_WRAPPED':'1','BB_ADMITTED':'1','BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1'}
         env.pop('BB_JOB_ACTIVE',None);env.pop('BB_CACHE_DISABLED',None)
         result=subprocess.run(['bash',str(script),'--cold',sys.executable,'-c','import os;print(os.environ["BB_CACHE_DISABLED"])'],cwd=self.d,env=env,capture_output=True)
         self.assertEqual(result.returncode,0,result.stderr.decode())
@@ -85,7 +112,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stderr.decode())
         worker=self.worker();worker.write_text(worker.read_text().replace("os.environ['PATH']=user_path","pass # former sudo secure_path leak"))
         meta=self.d/'path-negative.meta';meta.write_text('{}')
-        env={**os.environ,'PATH':wanted,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        env={**fixture_environment(),'PATH':wanted,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
         env.pop('BB_JOB_ACTIVE',None)
         result=subprocess.run([sys.executable,str(worker),sys.executable,'-c',f'import os;assert os.environ["PATH"]=={wanted!r}'],env=env,capture_output=True)
         self.assertNotEqual(result.returncode,0);self.assertIn(b'AssertionError',result.stderr)
@@ -135,7 +162,7 @@ print('FIVE_WRITES_DENIED')
         self.assertEqual((home/'.cache/existing').read_text(),'keep');self.assertFalse(runtime['home_guard']['writable'])
         worker=self.worker();worker.write_text(worker.read_text().replace('if not namespace_ready:','if False:').replace("runtime['home_guard']=protect_home(real_home)","runtime['home_guard']={'mechanism':'negative-control'}"))
         meta=self.d/'negative.meta';meta.write_text('{}')
-        env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        env={**fixture_environment(),'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
         # This mutant bypasses the constructor that normally captures limits.
         from admission_policy import capture_limits, LIMIT_ENV
         env[LIMIT_ENV]=json.dumps(capture_limits())
@@ -154,7 +181,7 @@ print('FIVE_WRITES_DENIED')
         source=worker.read_text().replace("'--pid','--fork','--kill-child','--mount-proc',",'').replace('    require_private_proc()','    pass # old mount-only guard')
         worker.write_text(source)
         meta=self.d/'proc-negative.meta';meta.write_text('{}')
-        env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        env={**fixture_environment(),'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
         env.pop('BB_JOB_ACTIVE',None)
         bad=subprocess.run([sys.executable,str(worker),sys.executable,'-c',code],env=env,capture_output=True)
         self.assertEqual(bad.returncode,0,bad.stderr.decode());self.assertTrue(target.exists())
@@ -169,7 +196,7 @@ print('FIVE_WRITES_DENIED')
         self.assertFalse((self.real_home/'relative-write').exists())
         worker=self.worker();worker.write_text(worker.read_text().replace('    os.chdir(os.getcwd())','    pass # old inherited cwd mount'))
         meta=self.d/'cwd-negative.meta';meta.write_text('{}')
-        env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        env={**fixture_environment(),'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
         env.pop('BB_JOB_ACTIVE',None)
         bad=subprocess.run([sys.executable,str(worker),sys.executable,'-c',code],cwd=self.real_home,env=env,capture_output=True)
         self.assertEqual(bad.returncode,0,bad.stderr.decode());self.assertTrue((self.real_home/'relative-write').exists())
@@ -177,7 +204,7 @@ print('FIVE_WRITES_DENIED')
     def test_concurrent_other_tenant_writer_does_not_fail_job(self):
         home=self.real_home;cache=home/'.cache/cloud/bb2-tools';cache.mkdir(parents=True)
         meta=self.d/'concurrent.meta';meta.write_text('{}')
-        env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        env={**fixture_environment(),'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
         env.pop('BB_JOB_ACTIVE',None)
         process=subprocess.Popen([sys.executable,str(self.worker()),sys.executable,'-c','import sys;print("ready",flush=True);sys.stdin.readline();print("done")'],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         try:
@@ -193,7 +220,7 @@ print('FIVE_WRITES_DENIED')
     def test_missing_guard_or_inherited_home_output_is_infra(self):
         worker=self.worker();worker.write_text(worker.read_text().replace('real_home=real_home.resolve(strict=True)','raise OSError("unavailable control")'))
         meta=self.d/'unavailable.meta';meta.write_text('{}')
-        env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        env={**fixture_environment(),'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
         env.pop('BB_JOB_ACTIVE',None)
         args=[sys.executable,str(worker),sys.executable,'-c','print("must not execute")']
         result=subprocess.run(args,env=env,capture_output=True)
@@ -207,7 +234,7 @@ print('FIVE_WRITES_DENIED')
     def test_read_only_inherited_home_input_cannot_reopen_the_old_mount(self):
         target=self.real_home/'input';target.write_text('original')
         worker=self.worker();meta=self.d/'readfd.meta';meta.write_text('{}')
-        env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        env={**fixture_environment(),'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
         env.pop('BB_JOB_ACTIVE',None)
         args=[sys.executable,str(worker),sys.executable,'-c','from pathlib import Path;Path("/proc/self/fd/0").write_text("changed")']
         with target.open('r') as stream:
@@ -271,7 +298,7 @@ finally:a.close();b.close()
         subprocess.run(['git','init','--quiet',str(repo)],check=True)
         before=(repo/'.git/HEAD').read_bytes()
         with self.assertRaisesRegex(RuntimeError,'private buildbox worktree namespace'):
-            job.private_git(self.d,Path('/home/var'),str(repo))
+            job.private_git(self.d,self.real_home,str(repo))
         self.assertEqual((repo/'.git/HEAD').read_bytes(),before)
 
     def test_private_git_base_preserves_local_main_fallback(self):
@@ -328,7 +355,7 @@ finally:a.close();b.close()
         finally:
             if p.exists():job.remove_home(p)
     def test_outputs_are_archived_before_target_removal(self):
-        prefix=Path('/mnt/bb/jobs')/('r19-export-'+str(os.getpid()))
+        prefix=Path('/mnt/bb/jobs')/('r19-export-'+self.d.name)
         Path(str(prefix)+'.t0').touch()
         target=self.d/'target';target.mkdir();(target/'test.exe').write_bytes(b'executable')
         os.utime(target/'test.exe',(1,1)) # named Cargo outputs survive fresh builds too
@@ -384,8 +411,30 @@ finally:a.close();b.close()
         self.assertIn(b'[buildbox] export INFRA:',result.stderr)
         self.assertIn('export_error',runtime);self.assertTrue(runtime['targets_removed'])
 
+    def test_export_destination_is_owned_by_exact_receipt(self):
+        prefix=Path('/mnt/bb/jobs')/('r19-export-owner-'+self.d.name)
+        start=Path(str(prefix)+'.t0');start.touch()
+        output=Path(str(prefix)+'.exports')
+        spec={'prefix':str(prefix),'cwd':str(self.d),'paths':[],'build':False}
+        env={'BB_JOB_EXPORT_SPEC':json.dumps(spec),'CARGO_TARGET_DIR':str(self.d)}
+        meta=str(prefix)+'.receipt-meta.v2.json'
+        try:
+            job.export_job_outputs(meta,env['BB_JOB_EXPORT_SPEC'],env)
+            manifest=output/'manifest.json';manifest.write_bytes(b'owner-only')
+            with self.assertRaisesRegex(RuntimeError,'another receipt'):
+                job.export_job_outputs(str(prefix)+'.foreign.receipt-meta.v2.json',env['BB_JOB_EXPORT_SPEC'],env)
+            self.assertEqual(manifest.read_bytes(),b'owner-only')
+            # The former unbound call lets a foreign fixture overwrite it.
+            exports.prepare(spec,str(self.d))
+            self.assertEqual(json.loads(manifest.read_text()),[])
+            with patch.dict(os.environ,env):
+                self.assertNotIn('BB_JOB_EXPORT_SPEC',fixture_environment())
+                self.assertEqual(dict(os.environ)['BB_JOB_EXPORT_SPEC'],env['BB_JOB_EXPORT_SPEC'])
+        finally:
+            start.unlink();shutil.rmtree(output)
+
     def test_glibc_pinned_export_keeps_the_requested_local_path(self):
-        prefix=Path('/mnt/bb/jobs')/('r19-glibc-'+str(os.getpid()));Path(str(prefix)+'.t0').touch()
+        prefix=Path('/mnt/bb/jobs')/('r19-glibc-'+self.d.name);Path(str(prefix)+'.t0').touch()
         target=self.d/'target';p=target/'x86_64-unknown-linux-gnu/debug/tool';p.parent.mkdir(parents=True);p.write_bytes(b'linux-binary')
         spec={'prefix':str(prefix),'cwd':str(self.d),'paths':['/work/target/debug/tool'],'build':True}
         try:
@@ -398,7 +447,7 @@ finally:a.close();b.close()
         finally:Path(str(prefix)+'.t0').unlink();shutil.rmtree(str(prefix)+'.exports',ignore_errors=True)
 
     def test_glibc_pinned_whole_target_directory_export(self):
-        prefix=Path('/mnt/bb/jobs')/('r19-whole-target-'+str(os.getpid()));Path(str(prefix)+'.t0').touch()
+        prefix=Path('/mnt/bb/jobs')/('r19-whole-target-'+self.d.name);Path(str(prefix)+'.t0').touch()
         target=self.d/'target';p=target/'x86_64-unknown-linux-gnu/debug/tool';p.parent.mkdir(parents=True);p.write_bytes(b'linux-binary')
         spec={'prefix':str(prefix),'cwd':str(self.d),'paths':['/work/target/'],'build':True,'targetMapping':{'triple':'x86_64-unknown-linux-gnu','profiles':['debug','release']}}
         try:
@@ -440,6 +489,26 @@ finally:a.close();b.close()
         result=pruner.prune(root,mirror,locks,max_count=0,active={str(recent_git)},now=now)
         self.assertTrue(result['over_cap']);self.assertEqual(result['held'],['recent-git'])
         self.assertTrue(recent_git.exists()) # count pressure never evicts active work
+    def test_pruner_retirement_name_is_bounded_across_interrupted_deletion(self):
+        root=self.d/'wt-sdk';root.mkdir();locks=self.d/'locks';mirror=self.d/'mirror'
+        source=root/('source-'+('x'*240));source.mkdir();(source/'payload').write_text('owned')
+        # The old production name exceeds NAME_MAX before it can retire this copy.
+        former=root/('.prune-'+source.name+'-'+str(os.getpid()))
+        self.assertGreater(len(os.fsencode(former.name)),os.pathconf(root,'PC_NAME_MAX'))
+        with self.assertRaises(OSError) as refused:source.rename(former)
+        self.assertEqual(refused.exception.errno,36) # ENAMETOOLONG
+        with patch.object(pruner,'remove_tree',side_effect=InterruptedError('owner died')):
+            with self.assertRaises(InterruptedError):pruner.prune(root,mirror,locks,max_count=0,active=set())
+        tomb,=root.iterdir();self.assertEqual(len(tomb.name),len('.prune-')+32)
+        # Recovery completes the same retirement even under no age/count pressure.
+        with patch.object(Path,'rename',side_effect=AssertionError('retirement renamed again')):
+            result=pruner.prune(root,mirror,locks,active=set())
+        self.assertEqual(result['removed'],[tomb.name]);self.assertEqual(list(root.iterdir()),[])
+        # Existing long names from the old shape also retire in place.
+        legacy=root/('.prune-'+('x'*243));legacy.mkdir()
+        result=pruner.prune(root,mirror,locks,active=set())
+        self.assertEqual(result['removed'],[legacy.name])
+
     def test_pruner_removes_unreadable_targets_without_following_symlinks(self):
         self.assertFalse(pruner.prune(self.d/'missing',self.d/'mirror',self.d/'locks',active=set())['over_cap'])
         root=self.d/'wt-sdk';root.mkdir();p=root/'old';(p/'target/deep').mkdir(parents=True)
@@ -460,7 +529,7 @@ finally:a.close();b.close()
         for negative in [False,True]:
             worker=self.d/f'admit-{negative}.py';worker.write_text(source.replace("t['fds'][2]","t['fds'][1]") if negative else source)
             root=self.d/f'admit-{negative}';root.mkdir()
-            env={**os.environ,'BB_ADMIT_ROOT':str(root),'BB_ADMIT_WRAPPED_COMMAND':'1'}
+            env={**fixture_environment(),'BB_ADMIT_ROOT':str(root),'BB_ADMIT_WRAPPED_COMMAND':'1'}
             result=subprocess.run([sys.executable,str(worker),'lane','cloud','--',sys.executable,'-c','print("must not run")'],env=env,capture_output=True)
             self.assertEqual(result.returncode,224)
             self.assertIn(b'BB_DISK_LOW',result.stdout if negative else result.stderr)
@@ -470,7 +539,7 @@ finally:a.close();b.close()
     def test_upgrade_barrier_drains_existing_jobs_without_admitting_new_tickets(self):
         root=self.d/'admit';root.mkdir()
         (root/'lease-stale.json').write_text(json.dumps({'pid':999999999,'identity':None}))
-        env={**os.environ,'BB_ADMIT_ROOT':str(root),'BB_ADMIT_WRAPPED_COMMAND':'1'}
+        env={**fixture_environment(),'BB_ADMIT_ROOT':str(root),'BB_ADMIT_WRAPPED_COMMAND':'1'}
         first=subprocess.Popen([sys.executable,str(HERE/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c','import time;time.sleep(.3)'],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         until=time.monotonic()+2
         while not any(p.name!='lease-stale.json' for p in root.glob('lease-*')) and time.monotonic()<until:time.sleep(.01)
@@ -507,7 +576,7 @@ finally:a.close();b.close()
         # assertion waits for the actual terminal receipt, never a timed PASS.
         source=(HERE/'buildbox-receipt.mjs').read_text().replace('/home/var/bin/bb-job.py',str(worker)).replace('/mnt/bb/jobs/',str(receipts)+'/').replace("const dir = '/mnt/bb/jobs'",f'const dir = {str(receipts)!r}').replace('interval = 1000','interval = 20')
         receipt.write_text(source);(self.d/'buildbox-receipt.mjs').write_text(source)
-        env={**os.environ,'BUILD_SLOT_DEFER_EXEC':'1','BUILD_SLOT_LABEL':'gate-speed-r19-kill-control'}
+        env={**fixture_environment(),'BUILD_SLOT_DEFER_EXEC':'1','BUILD_SLOT_LABEL':'gate-speed-r19-kill-control'}
         env.pop('BB_JOB_ACTIVE',None);env.pop('BUILD_SLOT_EXEC_IN_PAYLOAD',None)
         marker=self.d/'target-path'
         code=f'from pathlib import Path;import os,time;p=Path(os.environ["CARGO_TARGET_DIR"]);(p/"object").write_text("compiled");Path({str(marker)!r}).write_text(str(p));time.sleep(60)'
@@ -541,7 +610,7 @@ finally:a.close();b.close()
         receipt_source=(HERE/'buildbox-receipt.mjs').read_text().replace('/home/var/bin/bb-job.py',str(worker)).replace('/mnt/bb/jobs/',str(self.d/'jobs')+'/').replace('interval = 1000','interval = 20')
         (self.d/'buildbox-receipt.mjs').write_text(receipt_source)
         for negative in [False,True]:
-            prefix=self.d/'jobs'/f'r19-wrapper-{os.getpid()}-{negative}'
+            prefix=self.d/'jobs'/f'r19-wrapper-{self.d.name}-{negative}'
             marker=self.d/f'wrapper-ready-{negative}'
             meta=self.d/f'wrapper-{negative}.receipt-meta.v2.json'
             probe=self.d/'generate-wrapper.mjs'
@@ -558,13 +627,15 @@ const meta=script.match(/echo ([A-Za-z0-9+/=]+) \\| base64 -d > \\$J\\.receipt-m
 fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
 ''')
             subprocess.run([job.NODE,str(probe),str(prefix),str(self.d),str(meta)],check=True,capture_output=True)
-            source=receipt_source.replace("if (cleanupAllowed && m.side === 'bb2' && m.job_prefix) {",'if (false) {') if negative else receipt_source
+            source=receipt_source.replace('...(m.job_prefix ? [m.job_prefix] : [])','...[]') if negative else receipt_source
             Path(str(prefix)+'.receipt-tool.mjs').write_text(source)
             code=f'from pathlib import Path;import time;Path({str(marker)!r}).touch();time.sleep(60)'
             import shlex
             with Path(str(prefix)+'.wrap').open('a') as wrapper:
                 wrapper.write(f'\nmkdir -p "$J.targets" "$J.tmp"\nprintf scratch > "$J.targets/object"\nprintf scratch > "$J.tmp/object"\nexport BUILD_SLOT_RECEIPT_META={shlex.quote(str(meta))}\nsetsid {shlex.join([sys.executable,str(worker),sys.executable,"-c",code])} &\npayload=$!\nnode "$J.receipt-tool.mjs" job {shlex.quote(str(meta))} "$payload"\nwait "$payload"\n')
-            process=subprocess.Popen(['bash',str(prefix)+'.wrap'],env={**os.environ,'PATH':str(Path(job.NODE).parent)+':'+os.environ['PATH']},stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+            env={**fixture_environment(),'PATH':str(Path(job.NODE).parent)+':'+os.environ['PATH']}
+            env.pop('BB_JOB_ACTIVE',None)
+            process=subprocess.Popen(['bash',str(prefix)+'.wrap'],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
             try:
                 until=time.monotonic()+4
                 while not marker.exists() and time.monotonic()<until:time.sleep(.01)
@@ -574,13 +645,13 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
                 while not receipt.exists() and time.monotonic()<until:time.sleep(.01)
                 data=json.loads(receipt.read_text())
                 self.assertEqual((data['exit_status'],data['termination']),(137,'interrupted'))
-                self.assertTrue(data['home_removed']);self.assertTrue(data['targets_removed'])
-                for suffix in ['.targets','.tmp']:self.assertEqual(Path(str(prefix)+suffix).exists(),negative)
-                self.assertEqual(bool(data.get('outer_targets_removed')),not negative)
+                self.assertTrue(data.get('home_removed'),data);self.assertTrue(data['targets_removed'])
+                for suffix in ['.targets','.tmp']:self.assertEqual(Path(str(prefix)+suffix).exists(),negative,data)
+                self.assertEqual(bool(data.get('outer_targets_removed')),not negative,data)
             finally:
                 if process.poll() is None:process.kill();process.wait()
                 process.stdout.close();process.stderr.close()
-                with patch.object(job,'JOBS',self.d/'jobs'):job.cleanup_outer(prefix)
+                with patch.object(job,'JOBS',self.d/'jobs'):job.cleanup_runtime(str(meta)+'.runtime',prefix)
                 for p in prefix.parent.glob(prefix.name+'.*'):
                     if p.is_file():p.unlink()
 
@@ -604,7 +675,7 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
 
     def test_daemon_killed_client_holds_until_command_exits_and_releases(self):
         root=self.d/'admit';root.mkdir();(root/'admit.conf').write_text('compile=1 tenant.graphcoder=1 tenant.cloud=1\n')
-        env={**os.environ,'BB_ADMIT_ROOT':str(root),'BB_ADMIT_WRAPPED_COMMAND':'1'}
+        env={**fixture_environment(),'BB_ADMIT_ROOT':str(root),'BB_ADMIT_WRAPPED_COMMAND':'1'}
         args=[sys.executable,str(HERE/'bb-admit.py'),'lane','graphcoder','--',sys.executable,'-c',f'from pathlib import Path; import time,os;Path({str(self.d/"pid")!r}).write_text(str(os.getpid()));time.sleep(60)']
         first=subprocess.Popen(args,env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         try:
@@ -625,7 +696,7 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
 
     def test_two_sccache_servers_are_isolated(self):
         a=self.d/'a';b=self.d/'b';a.mkdir();b.mkdir()
-        envA=dict(os.environ);envB=dict(os.environ)
+        envA=fixture_environment();envB=fixture_environment()
         first,status=job.start_cache(a,envA);second,status2=job.start_cache(b,envB)
         try:
             self.assertEqual((status,status2),('ready','ready'))
@@ -640,13 +711,30 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
 
     def test_cache_exit_during_pidfd_cleanup_is_already_stopped(self):
         server={'pid':123,'identity':'fixture','endpoint':'/mnt/bb/jobs/fixture.sock','pid_namespace':job.pid_namespace()}
-        with patch.object(job,'identity',return_value='fixture'),patch.object(Path,'read_bytes',return_value=b'SCCACHE_SERVER_UDS=/mnt/bb/jobs/fixture.sock\0'):
+        with patch.object(job,'identity',return_value='fixture'),patch.object(job,'server_identity',return_value=server):
             with patch.object(job.os,'pidfd_open',side_effect=ProcessLookupError):
                 job.stop_server(server) # former unguarded open raised and prevented home cleanup
             with patch.object(job.os,'pidfd_open',return_value=42),patch.object(job.signal,'pidfd_send_signal',side_effect=ProcessLookupError),patch.object(job.os,'close') as close:
                 job.stop_server(server);close.assert_called_once_with(42)
             with patch.object(job.os,'pidfd_open',side_effect=PermissionError):
                 with self.assertRaises(PermissionError):job.stop_server(server) # unrelated failures stay visible
+
+    def test_cache_cleanup_uses_endpoint_custody_without_proc_environment(self):
+        server={'pid':123,'identity':'fixture','endpoint':'/mnt/bb/jobs/fixture.sock','pid_namespace':job.pid_namespace()}
+        with patch.object(job,'identity',return_value='fixture'),patch.object(job.os,'pidfd_open',return_value=42),patch.object(job.os,'close') as close,patch.object(job.signal,'pidfd_send_signal') as sent,patch.object(Path,'read_bytes',side_effect=PermissionError('exiting process environ')) as environ:
+            # The exact old read fails during process exit; production no longer
+            # uses that second process-lifetime path.
+            with self.assertRaises(PermissionError):Path('/proc/123/environ').read_bytes()
+            environ.reset_mock()
+            with patch.object(job,'server_identity',return_value=server):job.stop_server(server)
+            sent.assert_called_once_with(42,signal.SIGTERM);environ.assert_not_called()
+            sent.reset_mock()
+            for gone in [FileNotFoundError,ConnectionRefusedError,ProcessLookupError]:
+                with patch.object(job,'server_identity',side_effect=gone):job.stop_server(server)
+            with patch.object(job,'server_identity',return_value={**server,'identity':'replacement'}):job.stop_server(server)
+            with patch.object(job,'server_identity',side_effect=PermissionError):
+                with self.assertRaises(PermissionError):job.stop_server(server)
+            sent.assert_not_called();self.assertEqual(close.call_count,6)
 
     def test_foreign_namespace_ids_never_signal_local_processes(self):
         item={'pid':os.getpid(),'identity':job.identity(os.getpid()),'pid_namespace':'pid:[foreign]','endpoint':'fixture'}
@@ -673,10 +761,11 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
     def test_storage_device_rejects_root_and_live_cleanup_requires_custody(self):
         self.assertEqual(job.require_data_path(self.d/'not-created/target')['device'],Path('/mnt/bb').stat().st_dev)
         with self.assertRaisesRegex(RuntimeError,'/mnt/bb filesystem'):job.require_data_path('/work/root-target-negative-control')
-        alias=self.d/'root-alias';alias.symlink_to('/work',target_is_directory=True)
+        alias=self.d/'root-alias';alias.symlink_to('/usr',target_is_directory=True)
         with self.assertRaisesRegex(RuntimeError,'/mnt/bb filesystem'):job.require_data_path(alias/'target')
         directory=Path(tempfile.mkdtemp(prefix='job-custody-control-',dir=job.JOBS))
-        file=self.d/'runtime.json';file.write_text(json.dumps({'hermetic_home':str(directory)}))
+        custody=job.job_custody.prepare()
+        file=self.d/'runtime.json';file.write_text(json.dumps({'hermetic_home':str(directory),'custody':custody}))
         try:
             (directory/'keep').write_text('live')
             with job.home_lease(directory),patch.object(job,'stop_server') as stopped:
@@ -691,20 +780,21 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
     def test_outer_reaper_respects_live_job_lease_and_old_reaper_negative(self):
         directory=Path(tempfile.mkdtemp(prefix='job-outer-control-',dir=job.JOBS))
         prefix=job.JOBS/('outer-custody-'+directory.name)
-        runtime=Path(str(prefix)+'.receipt-meta.v2.json.runtime');runtime.write_text(json.dumps({'hermetic_home':str(directory)}))
+        custody=job.job_custody.prepare();proof=job.job_custody.join(custody)
+        runtime=Path(str(prefix)+'.receipt-meta.v2.json.runtime');runtime.write_text(json.dumps({'hermetic_home':str(directory),'custody':custody}))
         for suffix in ['.targets','.tmp']:Path(str(prefix)+suffix).mkdir()
         try:
             with job.home_lease(directory):
-                with self.assertRaisesRegex(RuntimeError,'leased live job'):job.cleanup_outer(prefix)
+                with self.assertRaisesRegex(RuntimeError,'leased live job'):job.cleanup_outer(prefix,proof,custody)
                 for suffix in ['.targets','.tmp']:self.assertTrue(Path(str(prefix)+suffix).exists())
-                with patch.object(job,'home_lease',return_value=contextlib.nullcontext()):job.cleanup_outer(prefix)
+                with patch.object(job,'home_lease',return_value=contextlib.nullcontext()):job.cleanup_outer(prefix,proof,custody)
                 for suffix in ['.targets','.tmp']:self.assertFalse(Path(str(prefix)+suffix).exists(),'negative control: old reaper deletes live scratch')
         finally:
-            runtime.unlink();job.remove_home(directory);job.cleanup_outer(prefix)
+            runtime.unlink();job.remove_home(directory);job.cleanup_outer(prefix,proof,custody)
 
     def test_fixed_shared_port_negative_control(self):
         c=socket.socket();c.bind(('127.0.0.1',0));port=c.getsockname()[1];c.close()
-        env={**os.environ,'SCCACHE_SERVER_PORT':str(port),'SCCACHE_DIR':'/mnt/bb/sccache','SCCACHE_IDLE_TIMEOUT':'30'}
+        env={**fixture_environment(),'SCCACHE_SERVER_PORT':str(port),'SCCACHE_DIR':'/mnt/bb/sccache','SCCACHE_IDLE_TIMEOUT':'30'}
         env.pop('SCCACHE_SERVER_UDS',None)
         r=subprocess.run([job.SCCACHE,'--start-server'],env=env,capture_output=True)
         self.assertEqual(r.returncode,0,r.stderr)
@@ -714,21 +804,39 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
         finally:subprocess.run([job.SCCACHE,'--stop-server'],env=env,capture_output=True)
 
     def test_startup_failure_is_explicit_and_uncached(self):
-        d=self.d/'failed';d.mkdir();env=dict(os.environ)
+        d=self.d/'failed';d.mkdir();env=fixture_environment()
         with patch.object(job.subprocess,'run',return_value=subprocess.CompletedProcess([],2,'','forced bind failure')):
             server,status=job.start_cache(d,env)
         self.assertIsNone(server);self.assertEqual(status,'startup-failed:forced bind failure')
 
+def run_owned_case(name):
+    # Each case allocates its own directory, worker, receipt, cgroup and cache.
+    # A process owns Python patches too: concurrent cases never mutate another
+    # case's imported worker or environment.
+    output=io.StringIO()
+    result=unittest.TextTestRunner(stream=output,verbosity=2).run(RuntimeTests(name))
+    return name,result.wasSuccessful(),output.getvalue()
+
+
+def run_owned_suite(label,names):
+    from concurrent.futures import ProcessPoolExecutor
+    from multiprocessing import get_context
+    started=time.monotonic()
+    with ProcessPoolExecutor(max_workers=4,mp_context=get_context('spawn')) as cases:
+        results=list(cases.map(run_owned_case,names))
+    assert [name for name,_,_ in results]==names,'every discovered control must run exactly once'
+    for _,_,output in results:sys.stderr.write(output)
+    seconds=time.monotonic()-started
+    print(f'SUITE_RESULT {label}: {len(results)} cases, {seconds:.3f}s wall',file=sys.stderr,flush=True)
+    return all(success for _,success,_ in results) and seconds<10
+
+
 if __name__=='__main__':
-    # Keep the kernel-boundary and lifecycle suites independently measurable.
-    # Every discovered control runs exactly once; neither group filters failures.
+    # All discovered controls run exactly once in their complete domain suites.
     names=unittest.defaultTestLoader.getTestCaseNames(RuntimeTests)
     home_tokens=('home','proc_','namespace_','fuse_','inherited_','no_new_privs')
     groups={label:[name for name in names if any(token in name for token in home_tokens)==is_home]
             for label,is_home in [('HOME boundary',True),('admission, cache and lifecycle',False)]}
     assert sorted(sum(groups.values(),[]))==names
-    results=[]
-    for label,selected in groups.items():
-        print('SUITE '+label,file=sys.stderr,flush=True)
-        results.append(unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(RuntimeTests(name) for name in selected)))
-    raise SystemExit(0 if all(result.wasSuccessful() for result in results) else 1)
+    results=[run_owned_suite(label,selected) for label,selected in groups.items()]
+    raise SystemExit(0 if all(results) else 1)

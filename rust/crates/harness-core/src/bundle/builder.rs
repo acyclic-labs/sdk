@@ -285,6 +285,11 @@ impl HarnessBuilder {
                 bindings.content.is_some(),
                 bindings.workspace_tools.is_some(),
             )?;
+            if bindings.tools.requires_approval_policy() && bindings.policy.is_none() {
+                bindings.policy = Some(Arc::new(
+                    crate::approvals::ApprovalPolicy::default().bind()?,
+                ));
+            }
         }
         let capabilities = Capabilities::new(grants);
         let mut scope = if let Some(bound) = self.bound_scope {

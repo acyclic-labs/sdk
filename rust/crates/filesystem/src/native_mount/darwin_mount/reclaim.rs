@@ -44,59 +44,6 @@ fn same_mount(left: &libc::statfs, right: &libc::statfs) -> bool {
         && left.f_mntfromname == right.f_mntfromname
 }
 
-// Like ordinary mount retirement, startup recovery must use Disk Arbitration
-// when the mount owner cannot issue the privileged unmount syscall directly.
-// The caller retains the authenticated destination fence throughout this call.
-fn detach_stale_mount(mount: &libc::statfs) -> Result<(), NativeMountError> {
-    let destination = field(&mount.f_mntonname)?;
-    // SAFETY: the caller retains the terminated kernel name and exclusive fence.
-    if unsafe { libc::unmount(destination.as_ptr(), libc::MNT_FORCE) } == 0 {
-        return Ok(());
-    }
-    let error = std::io::Error::last_os_error();
-    if error.raw_os_error() != Some(libc::EPERM) {
-        return Err(error.into());
-    }
-    // A failed direct attempt is no authority to detach a replacement mount.
-    if !mount_table()?
-        .iter()
-        .any(|current| same_mount(mount, current))
-    {
-        return Ok(());
-    }
-    let mut command = std::process::Command::new("/usr/sbin/diskutil");
-    command
-        .args([
-            std::ffi::OsStr::new("unmount"),
-            std::ffi::OsStr::new("force"),
-        ])
-        .arg(std::ffi::OsStr::from_bytes(destination.to_bytes()))
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    let mut tree = acyclic_native_runtime::ProcessTree::spawn(&mut command)?;
-    let clock = crate::native_mount::clock::Clock::capture();
-    let deadline = clock.instant() + DISKUTIL_UNMOUNT_TIMEOUT;
-    let status = loop {
-        if let Some(status) = tree.try_wait(None)? {
-            break status;
-        }
-        if clock.instant() >= deadline {
-            tree.terminate(None)?;
-            return Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into());
-        }
-        std::thread::sleep(STOP_POLL_INTERVAL);
-    };
-    tree.terminate(None)?;
-    if !status.success() {
-        return Err(NativeMountError::DriverExit {
-            operation: "Darwin stale mount retirement",
-            status,
-        });
-    }
-    Ok(())
-}
-
 // Bootstrap is deliberately outside a bounded callback invocation. The fence
 // is the durable SDK ownership record and its kernel lock is the process
 // liveness witness, including after SIGKILL and across PID reuse.
@@ -138,15 +85,35 @@ pub(in crate::native_mount) fn reclaim_stale_mounts() -> Result<(), NativeMountE
         {
             continue;
         }
-        detach_stale_mount(&mount)?;
+        // Adopt the locked inode into the normal recovery owner. This is the
+        // same permission-aware detach and control retirement used by explicit
+        // recovery; direct unmount alone requires privileges on macOS.
+        acyclic_native_runtime::initialize_native_io_services()?;
+        let work = Work::new(
+            crate::performance::BOUNDARY_BUDGET,
+            &crate::CancellationToken::new(),
+        )
+        .map_err(|(error, _)| NativeMountError::from(error))?;
+        let guard = MountDestinationGuard::from_locked_existing(owner, fence);
+        let mut recovery = crate::native_mount::NativeMountRecoveryOwner::from_locked_existing(
+            path, guard, &work,
+        )?;
+        // Recheck after creating the retirement owner, still under the same
+        // fence. A different kernel mount must never inherit this authority.
         if mount_table()?
             .iter()
             .any(|current| same_mount(&mount, current))
         {
-            return Err(std::io::Error::other("stale mount remained after retirement").into());
+            recovery.detach(&work)?;
+            if mount_table()?
+                .iter()
+                .any(|current| same_mount(&mount, current))
+            {
+                return Err(std::io::Error::other("stale mount remained after retirement").into());
+            }
         }
-        // Keep the fence file: other processes may already hold its inode.
-        drop(owner);
+        // Retirement keeps the original fence until all native controls drain;
+        // it never unlinks the shared fence inode or the destination directory.
     }
     Ok(())
 }

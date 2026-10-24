@@ -182,7 +182,7 @@ impl NativeMountRecoveryOwner {
             },
             || parent.try_clone(),
         )?;
-        Self::acquire_bound(destination, original, Some(parent))
+        Self::acquire_bound(destination, original, Some(parent), None)
     }
 
     /// Preserves a crashed ProjFS root by an identity-checked, no-replace rename
@@ -230,7 +230,7 @@ impl NativeMountRecoveryOwner {
         destination: &Path,
         original: &crate::NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
-        Self::acquire_bound(destination, original, None)
+        Self::acquire_bound(destination, original, None, None)
     }
 
     #[cfg(target_os = "linux")]
@@ -246,13 +246,25 @@ impl NativeMountRecoveryOwner {
         .map_err(|(error, _)| NativeMountError::from(error))?;
         original.charge(crate::materializer::NativeResourceCredit::ReadOperations.delta(1))?;
         let directory = cap_std::fs::Dir::from_std_file(parent.try_clone()?.into());
-        Self::acquire_bound(destination, &original, Some(directory))
+        Self::acquire_bound(destination, &original, Some(directory), None)
+    }
+
+    // Startup already proved this existing fence is unlocked and SDK-owned.
+    // Transfer its exact inode without releasing and reacquiring the lock.
+    #[cfg(target_os = "macos")]
+    pub(super) fn from_locked_existing(
+        destination: &Path,
+        guard: MountDestinationGuard,
+        original: &crate::NativeMaterializationWork,
+    ) -> Result<Self, NativeMountError> {
+        Self::acquire_bound(destination, original, None, Some(guard))
     }
 
     fn acquire_bound(
         destination: &Path,
         original: &crate::NativeMaterializationWork,
         parent: Option<cap_std::fs::Dir>,
+        guard: Option<MountDestinationGuard>,
     ) -> Result<Self, NativeMountError> {
         let mut destination = crate::native_host::clone_path(destination, &mut &*original)?;
         destination
@@ -285,7 +297,7 @@ impl NativeMountRecoveryOwner {
                 destination_identity: None,
                 #[cfg(windows)]
                 preservation: None,
-                guard: None,
+                guard,
                 control,
                 driver_step_complete: false,
                 destination_removed: false,
@@ -462,23 +474,25 @@ impl NativeRecoveryState {
         parent: Option<cap_std::fs::Dir>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-        if let Some(directory) = parent {
-            MountDestinationGuard::acquire_in_directory(
-                destination,
-                directory,
-                work,
-                &mut self.guard,
-                true,
-            )?;
-        } else {
-            MountDestinationGuard::acquire_with_work(
-                destination,
-                true,
-                work,
-                &mut self.guard,
-                true,
-            )?;
+        if self.guard.is_none() {
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+            if let Some(directory) = parent {
+                MountDestinationGuard::acquire_in_directory(
+                    destination,
+                    directory,
+                    work,
+                    &mut self.guard,
+                    true,
+                )?;
+            } else {
+                MountDestinationGuard::acquire_with_work(
+                    destination,
+                    true,
+                    work,
+                    &mut self.guard,
+                    true,
+                )?;
+            }
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         return Err(NativeMountError::UnsupportedTarget);

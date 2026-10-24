@@ -15,13 +15,15 @@ fn race<const REQUIRE: bool>() {
             if_tail: Some(0),
             idempotency_key: None,
         })))?;
-        let (file, durability) = {
+        let durability = {
             let journal = stream.inner.journal.lock().unwrap();
-            (journal.file.clone(), journal.limits.durability)
+            journal.limits.durability
         };
         let flusher = loom::thread::spawn({
             let stream = stream.clone();
-            move || stream.inner.flush_through(1, &file, durability, None)
+            move || {
+                let _ = stream.inner.flush_through(durability, None);
+            }
         });
         stream.require_accepted::<REQUIRE>()?;
         assert_eq!(
@@ -30,7 +32,7 @@ fn race<const REQUIRE: bool>() {
             "replay omitted the original durability requirement"
         );
         flusher.join().map_err(|_| "flusher panicked")?;
-        block_on(stream.await_durable(stream.inner.required()?))?;
+        block_on(stream.await_publication(stream.inner.required()?))?;
         let journal = stream.inner.journal.lock().unwrap();
         assert_eq!(journal.appended, 1);
         assert_eq!(journal.synced, 1);

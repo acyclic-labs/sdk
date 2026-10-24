@@ -82,17 +82,6 @@ where
             channel: Some(channel),
             bytes: delta.into_bytes().into(),
         };
-        loop {
-            let head = files.inner.head().await?;
-            match files
-                .inner
-                .append_if(head, &value, Vec::new(), None, work)
-                .await
-            {
-                Ok(_) => return Ok(()),
-                Err(crate::task_volume::Error::Conflict(_)) => continue,
-                Err(error) => return Err(error.into()),
-            }
-        }
+        Ok(files.publish_owned(&value, work).await?)
     }
 }

@@ -27,7 +27,10 @@ impl<P: StreamProvider + ?Sized> FileQuerySource for TaskVolume<P> {
             if maximum_files == 0 || maximum_bytes == 0 {
                 return Err(Error::LimitExceeded);
             }
-            if matches!(query, Query::TaskView { .. } | Query::TaskOverviews) {
+            if matches!(
+                query,
+                Query::TaskView { .. } | Query::TaskSession { .. } | Query::TaskOverviews
+            ) {
                 let mut observation = self.observe(query.clone(), None, maximum_files).await?;
                 observation.reset = cursor.is_some();
                 return super::recent::observe(observation, &query, maximum_files, maximum_bytes);

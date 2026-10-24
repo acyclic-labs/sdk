@@ -84,6 +84,17 @@ export function processIdentity(pid) {
     return fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() + ':' + stat[19];
   } catch { return null; }
 }
+export function processOwner(pid = process.pid) {
+  return { pid: Number(pid), identity: processIdentity(pid),
+    pid_namespace: fs.readlinkSync('/proc/self/ns/pid') };
+}
+export function processState(owner) {
+  // A private /proc cannot disprove the existence of a host PID. Refuse that
+  // authority before looking up the numeric PID, including a reused alias.
+  if (!owner?.identity || !owner.pid_namespace) return 'unverifiable';
+  if (!canObserveOwner(owner)) return 'foreign';
+  return processIdentity(owner.pid) === owner.identity ? 'live' : 'dead';
+}
 const read = f => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } };
 function requireMeta(file) {
   const result = recoveryRecord(file);
@@ -100,7 +111,7 @@ export function arm(file, meta, pid = process.pid) {
   const scope = namespaceRecord();
   atomic(file, { exec_start: null, toolchain: null, ...meta,
     namespace_custody: 'pidns-v1', namespace_scope: scope,
-    owner: { pid: Number(pid), identity: processIdentity(pid), pid_namespace: pidNamespace() } });
+    owner: processOwner(pid) });
   if (scope) fs.appendFileSync(scope.registration_file + '.children', JSON.stringify(file) + '\n', {mode:0o600});
   const p = spawn(process.execPath, [new URL(import.meta.url).pathname, 'watch', file], {
     detached: true, stdio: 'ignore'
@@ -164,20 +175,15 @@ function finishLocked(metaFile, rc, category, extra = {}) {
       }
     }
     runtime = read(runtimeFile);
-    if (cleanupAllowed && runtime && m.side === 'bb2') {
-      const clean = spawnSync('python3', ['/home/var/bin/bb-job.py', 'cleanup', runtimeFile], { encoding: 'utf8', timeout: 30000 });
+    if (cleanupAllowed && m.side === 'bb2' && (runtime || m.job_prefix)) {
+      // This call joins the kernel-owned descendant set before either home or
+      // outer scratch deletion. A deadline cannot authorize partial cleanup.
+      const clean = spawnSync('python3', ['/home/var/bin/bb-job.py', 'cleanup', runtimeFile,
+        ...(m.job_prefix ? [m.job_prefix] : [])], { encoding: 'utf8' });
       runtime = read(runtimeFile);
       if (clean.status !== 0) {
+        runtime ||= {};
         runtime.cleanup_error = String(clean.stderr || clean.error);
-        rc = 224; category = 'infra';
-      }
-    }
-    if (cleanupAllowed && m.side === 'bb2' && m.job_prefix) {
-      const clean = spawnSync('python3', ['/home/var/bin/bb-job.py', 'cleanup-outer', m.job_prefix], { encoding: 'utf8', timeout: 30000 });
-      runtime ||= {};
-      if (clean.status === 0) Object.assign(runtime, JSON.parse(clean.stdout));
-      else {
-        runtime.outer_cleanup_error = String(clean.stderr || clean.error);
         rc = 224; category = 'infra';
       }
     }
@@ -232,12 +238,12 @@ export async function watch(metaFile, interval = 1000) {
       if (m.ledger) ledgerRecord(m.ledger, completedReceipt(m.receipt_file));
       return;
     }
-    if (processIdentity(m.owner.pid) !== m.owner.identity) {
+    if (processState(m.owner) === 'dead' || endedNamespace(m)) {
       const job = read(metaFile + '.job');
-      if (canObserveOwner(job) && processIdentity(job.pid) === job.identity) {
+      if (job && processState(job) === 'live') {
         try { process.kill(-job.pid, 'SIGTERM'); } catch {}
         await new Promise(r => setTimeout(r, 1000));
-        if (processIdentity(job.pid) === job.identity) try { process.kill(-job.pid, 'SIGKILL'); } catch {}
+        if (processState(job) === 'live') try { process.kill(-job.pid, 'SIGKILL'); } catch {}
       }
       const result = finish(metaFile, 137, 'interrupted', { reason: 'receipt owner disappeared' });
       if (result && m.job_prefix) {
@@ -282,9 +288,9 @@ export function recover(dir) {
       }
     }
     if (m?.owner && !fs.existsSync(m.receipt_file) &&
-        (canObserveOwner(m.owner) && processIdentity(m.owner.pid) !== m.owner.identity || endedNamespace(m))) {
+        (processState(m.owner) === 'dead' || endedNamespace(m))) {
       const job = read(file + '.job');
-      if (canObserveOwner(job) && processIdentity(job.pid) === job.identity) {
+      if (job && processState(job) === 'live') {
         const p = spawn(process.execPath, [new URL(import.meta.url).pathname, 'watch', file], { detached: true, stdio: 'ignore' });
         p.unref(); outcomes.push({file, outcome:'watching'}); continue;
       }
@@ -354,7 +360,7 @@ export async function runBb(script, args) {
       detached: true, stdio: ['inherit', 'pipe', 'pipe'] });
     child.on('error', () => {});
     await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
-    atomic(file + '.job', { pid: child.pid, identity: processIdentity(child.pid), pid_namespace: pidNamespace() });
+    atomic(file + '.job', processOwner(child.pid));
     child.stdout.on('data', b => { process.stdout.write(b); log.write(b); });
     child.stderr.on('data', b => { process.stderr.write(b); log.write(b); });
     const end = await new Promise(resolve => child.once('close', (code, sig) => resolve({ code, sig })));
@@ -373,7 +379,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const [op, file, rc, category] = process.argv.slice(2);
   if (op === 'run-bb') process.exitCode = await runBb(file, process.argv.slice(4));
   else if (op === 'arm') arm(file, read(file), rc);
-  else if (op === 'job') atomic(file + '.job', { pid: Number(rc), identity: processIdentity(rc), pid_namespace: pidNamespace() });
+  else if (op === 'job') atomic(file + '.job', processOwner(rc));
   else if (op === 'exec') process.stderr.write('BUILD_SLOT_EXEC=' + JSON.stringify(execution(file)) + '\n');
   else if (op === 'finish') {
     const terminal = finish(file, rc, category);

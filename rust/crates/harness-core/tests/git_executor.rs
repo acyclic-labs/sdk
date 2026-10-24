@@ -822,7 +822,9 @@ async fn publication_identity_change_after_guard_preserves_conflict_code() -> Re
             guards += 1;
             let changed = std::fs::rename(&root, root.with_extension("original"))
                 .and_then(|()| std::fs::create_dir(&root));
-            std::future::ready(changed.map_err(acyclic_fs::NativeWorkspacePublicationError::from))
+            std::future::ready(changed.map_err(|cause| {
+                acyclic_harness_core::Error::from(NativeTreeMaterializationError::Io(cause))
+            }))
         })
         .await
         .expect_err("the checkout identity changed after authorization");

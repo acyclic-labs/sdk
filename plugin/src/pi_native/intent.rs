@@ -290,7 +290,13 @@ pub(crate) async fn approve_command(
         "Run pinned Pi child {}",
         binding.native_session_id
     ))?;
-    let interaction = Interaction::approval(title.0, command, digest)?;
+    // The sealed native request stays private to its owner; only its digest is public.
+    let interaction = Interaction::approval(
+        title.0,
+        command,
+        digest,
+        acyclic_harness::interaction::ApprovalSubject::Opaque {},
+    )?;
     journal
         .open_interaction(approval, &interaction, Some(&io))?
         .await?;

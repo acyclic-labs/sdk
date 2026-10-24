@@ -160,6 +160,7 @@ fn classify(error: crate::task_volume::Error) -> Result<Rejected> {
         | Volume::SequenceConflict(_)
         | Volume::Conflict(_)
         | Volume::FenceConflict
+        | Volume::AwaitingDurability
         | Volume::ResetRequired => Err(storage(error)),
     }
 }
@@ -220,8 +221,15 @@ pub(super) fn status_at(
 ) -> Result<Value> {
     let mut state = ChildState::Running;
     let mut execution = None;
+    let mut approvals = Value::Null;
     for file in files {
         match &file.key {
+            FileKey::Child {
+                file: ChildFile::ApprovalAttention,
+                ..
+            } => {
+                approvals = serde_json::from_slice(&file.bytes).map_err(storage)?;
+            }
             FileKey::Child {
                 file: ChildFile::Control,
                 ..
@@ -276,6 +284,12 @@ pub(super) fn status_at(
     });
     let mut value = json!({"reference":reference,"state":state,"settled":settled,
         "execution":execution,"result":latest.map(|(_, result)| result)});
+    if !settled && state == ChildState::Running && !approvals.is_null() {
+        value
+            .as_object_mut()
+            .ok_or_else(|| Error::Storage("child status is not an object".into()))?
+            .insert("approval".into(), approvals);
+    }
     if serde_json::to_vec(&value).map_err(storage)?.len() > maximum_bytes {
         if let Some(result) = value.get_mut("result").and_then(Value::as_object_mut) {
             result.remove("outcome");

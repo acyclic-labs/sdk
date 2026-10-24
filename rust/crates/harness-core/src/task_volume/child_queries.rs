@@ -82,7 +82,12 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 reference: candidate.clone(),
                 file,
             };
-            for kind in [ChildFile::Control, ChildFile::Status, ChildFile::Delivered] {
+            for kind in [
+                ChildFile::Control,
+                ChildFile::Status,
+                ChildFile::Delivered,
+                ChildFile::ApprovalAttention,
+            ] {
                 if let Some(stored) = index.files.get(&key(kind)) {
                     files.push(stored.file.clone());
                 }

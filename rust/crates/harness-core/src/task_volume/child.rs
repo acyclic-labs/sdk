@@ -176,6 +176,10 @@ pub enum ChildFile {
     Request,
     /// Immutable message, identified by the sender's operation identity.
     Inbox(Component),
+    /// Owner-published approval request delivered to the retained parent's inbox.
+    ApprovalRequest(Component),
+    /// Current approval requiring this parent's attention; empty after settlement.
+    ApprovalAttention,
     /// Latest lifecycle intent. Publication is fenced by the task-volume cut.
     Control,
     /// Harness-owned execution status, followed by the parent and UI.
@@ -193,6 +197,10 @@ impl ChildFile {
             ["inbox", name] => Ok(Self::Inbox(Component::new(
                 name.strip_suffix(".md").ok_or(Error::InvalidPath)?,
             )?)),
+            ["approvals", "pending.json"] => Ok(Self::ApprovalAttention),
+            ["approvals", request, "request.json"] => {
+                Ok(Self::ApprovalRequest(Component::new(*request)?))
+            }
             ["control"] => Ok(Self::Control),
             ["status.json"] => Ok(Self::Status),
             ["delivered.json"] => Ok(Self::Delivered),
@@ -212,6 +220,8 @@ impl ChildFile {
         match self {
             Self::Request => "request.md".into(),
             Self::Inbox(id) => format!("inbox/{}.md", id.as_str()),
+            Self::ApprovalRequest(id) => format!("approvals/{}/request.json", id.as_str()),
+            Self::ApprovalAttention => "approvals/pending.json".into(),
             Self::Control => "control".into(),
             Self::Status => "status.json".into(),
             Self::Delivered => "delivered.json".into(),

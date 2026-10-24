@@ -22,8 +22,8 @@ proptest! {
         }
     }
 
-    // Every settled result, including bounded output omission, preserves its
-    // explicit completion class instead of trying to classify error strings.
+    // Terminal results preserve their explicit completion class even when
+    // bounded. An indeterminate delivery remains open for owner recovery.
     #[test]
     fn completion_class_survives_bounded_outcome_files(count in 0usize..4096) {
         for kind in 0u8..5 { futures::executor::block_on(async {
@@ -46,6 +46,11 @@ proptest! {
                 }
             }).await;
             assert_eq!(result.is_ok(), kind == 0);
+            if kind == 4 {
+                assert!(matches!(result, Err(ref error) if super::super::HeadlessOutcome::from_error(error) == expected));
+                assert!(commands.output_page(0).unwrap().is_none(), "passive command acquired a terminal outcome");
+                return;
+            }
             let saved = commands.output_page(0).unwrap().unwrap();
             let bytes = serde_json::to_vec(&saved).unwrap();
             assert!(bytes.len() <= 1024);
@@ -147,3 +152,127 @@ proptest! {
 }
 
 mod restoration;
+
+#[tokio::test]
+async fn approval_live_session_retires_settled_bindings_and_pins_unanswered_requests() -> Result<()>
+{
+    use crate::task_volume::TaskVolume;
+    let volume = TaskVolume::open(
+        Arc::new(acyclic_stream::MemoryStream::default()),
+        acyclic_stream::StreamPath::new("approval-live-view").unwrap(),
+    )
+    .await?;
+    let operation = OperationId::new();
+    let task = Component::new(crate::runtime::task_id_for_admission(operation).to_string())?;
+    let task_key = |file| FileKey::Task {
+        task: task.clone(),
+        file,
+    };
+    let pending = Component::new("old-unanswered")?;
+    let old_key = task_key(TaskFile::ApprovalRequest(pending));
+    let mut generation = volume
+        .snapshot(&Query::Root, MAXIMUM_FILES)
+        .await?
+        .generation;
+    generation = volume
+        .append(
+            generation,
+            &FileValue::new(old_key.clone(), b"still waiting".to_vec()),
+        )
+        .await?;
+    let limits = QueryViewLimits {
+        files: 16,
+        segments: 256,
+        bytes: OBSERVATION_BYTES,
+    };
+    let mut live = ClientQuery::open(&volume, selection(operation)?, None, limits).await?;
+    let mut old_shape = super::super::file_views::FileViews::snapshot(live.snapshot(), limits)?;
+    old_shape.window = true;
+    let mut old_rejected = false;
+    for id in 0..32 {
+        let request = Component::new(format!("settled-{id}"))?;
+        for file in [
+            TaskFile::ApprovalRequest(request.clone()),
+            TaskFile::ApprovalReview {
+                request: request.clone(),
+                principal: Component::new("human")?,
+            },
+            TaskFile::ApprovalDecision {
+                request: request.clone(),
+                principal: Component::new("human")?,
+            },
+            // A late review cannot restore a retired binding.
+            TaskFile::ApprovalReview {
+                request,
+                principal: Component::new("late")?,
+            },
+        ] {
+            generation = volume
+                .append(
+                    generation,
+                    &FileValue::new(task_key(file), b"value".to_vec()),
+                )
+                .await?;
+            live.publish_next(async |change| {
+                if !old_rejected {
+                    match old_shape.prepare(change) {
+                        Ok(apply) => apply(&mut old_shape)?,
+                        Err(crate::task_volume::Error::LimitExceeded) => old_rejected = true,
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                Ok(())
+            })
+            .await?;
+        }
+        assert!(
+            live.file(&old_key).is_some(),
+            "settled history displaced the unanswered request"
+        );
+        let fresh = volume
+            .snapshot(&selection(operation)?, MAXIMUM_FILES)
+            .await?;
+        assert_eq!(
+            live.files()
+                .map(|file| file.key.clone())
+                .collect::<Vec<_>>(),
+            fresh
+                .files
+                .into_iter()
+                .map(|file| file.key)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(live.files().count(), 1);
+    }
+    assert!(
+        old_rejected,
+        "the old unretired follow must exhaust the same file bound"
+    );
+    // Transcript recency must not evict the older unanswered approval either.
+    for sequence in 0..140 {
+        let mut file = FileValue::new(
+            task_key(TaskFile::Chunk { turn: 0, sequence }),
+            b"x".to_vec(),
+        );
+        file.channel = Some(crate::task_volume::Channel::Text);
+        generation = volume.append(generation, &file).await?;
+        live.publish_next(async |_| Ok(())).await?;
+        assert!(live.file(&old_key).is_some());
+    }
+    let canonical = volume
+        .snapshot(
+            &Query::Approval {
+                task,
+                request: Component::new("settled-0")?,
+            },
+            8,
+        )
+        .await?;
+    assert_eq!(
+        canonical.files.len(),
+        4,
+        "retirement must preserve canonical history"
+    );
+    assert_eq!(live.cursor().position, generation.position);
+    Ok(())
+}

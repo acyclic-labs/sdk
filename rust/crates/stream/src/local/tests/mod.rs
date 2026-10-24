@@ -12,4 +12,5 @@ mod ownership;
 mod wakeups;
 
 mod compaction;
+mod receipts;
 mod watermarks;

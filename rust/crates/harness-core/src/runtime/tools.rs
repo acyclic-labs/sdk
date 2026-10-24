@@ -137,14 +137,77 @@ pub fn tool_approval_request(
         return Err(Error::Invalid("approval action digest is empty".into()));
     }
 
+    let (prompt, custody) = paid;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let mut custody = custody;
+    let subject = copy_approval_subject(invocation, work)?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let mut subject = subject;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(copied) = subject.1.as_mut() {
+        custody
+            .as_mut()
+            .ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Conflict,
+                reason: "approval prompt does not retain its original ledger",
+            })?
+            .absorb(copied)?;
+    }
     Ok((
         (
             operation,
-            Interaction::approval(paid.0, invocation.operation_id, digest)?,
+            Interaction::approval(prompt, invocation.operation_id, digest, subject.0)?,
         ),
-        paid.1,
+        custody,
     ))
 }
+
+fn copy_approval_subject(
+    invocation: &ToolInvocation,
+    work: Option<&NativeWork>,
+) -> Result<(ApprovalSubject, Option<NativeCustody>)> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = work {
+        use crate::store::history::HistoryIo as _;
+        let remaining = work.remaining()?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
+        let tool = io.clone_text(&invocation.name)?;
+        let call_id = io.clone_text(&invocation.call_id)?;
+        let arguments = crate::executor::json::json_value_copy_bounded(
+            &invocation.arguments,
+            crate::executor::json::JsonBounds {
+                maximum_bytes: remaining.bytes_encoded,
+                maximum_items: remaining.items_examined,
+                maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
+            },
+            Some(crate::wire::ErrorCode::Invalid),
+            &mut |charge| io.codec_charge(charge),
+        )?;
+        return Ok((
+            ApprovalSubject::Tool {
+                tool,
+                call_id,
+                arguments,
+            },
+            Some(io.into_custody()?),
+        ));
+    }
+    let _ = work;
+    Ok((
+        ApprovalSubject::Tool {
+            tool: invocation.name.clone(),
+            call_id: invocation.call_id.clone(),
+            arguments: invocation.arguments.clone(),
+        },
+        None,
+    ))
+}
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[path = "tools/approval_tests.rs"]
+mod approval_tests;
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) type NativeWork = acyclic_fs::NativeMaterializationWork;

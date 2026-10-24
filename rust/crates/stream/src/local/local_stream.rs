@@ -129,14 +129,19 @@ impl LocalStream {
         journal._ownership_anchor = ownership_anchor;
         commit_clock.unpin();
         let (failed, _) = watch::channel(false);
+        let progress = SyncProgress {
+            ordered: journal.synced,
+            flushed: journal.flushed_sequence,
+        };
         Ok(Self {
             inner: Arc::new(LocalInner {
                 provider,
+                durability: limits.durability,
                 commit_clock,
                 journal: Arc::new(Mutex::new(journal)),
                 visibility: RwLock::new(()),
                 publication: RwLock::new(()),
-                synced: watch::channel(0_u64).0,
+                synced: watch::channel(progress).0,
                 failed,
                 revision: watch::channel(0).0,
                 #[cfg(acyclic_loom)]
@@ -224,12 +229,14 @@ impl LocalStream {
                 journal.limits.durability,
             )
         };
-        sync_file_data(&file, durability).map_err(|_| self.inner.poison())?;
+        let completion = sync_file_data(&file, durability).map_err(|_| self.inner.poison())?;
+        #[cfg(feature = "test-support")]
+        let device_flushed = matches!(completion, SyncCompletion::Flushed(_));
         let mut journal = self.inner.journal.lock().map_err(|_| self.inner.poison())?;
-        self.inner.publish_synced(&mut journal, target);
+        self.inner.publish_synced(&mut journal, target, completion);
         // A restart in between already marked its own header flushed.
         #[cfg(feature = "test-support")]
-        if journal.epoch == written.0 {
+        if device_flushed && journal.epoch == written.0 {
             journal.flushed = journal.flushed.max(written.1);
         }
         Ok(())
@@ -245,7 +252,7 @@ impl LocalStream {
         {
             return Err(self.cut_crash(cut.as_ref()).await);
         }
-        let required = !deferred();
+        let required = !deferred(self);
         let journal = self.inner.journal.clone();
         let persist = spawn_blocking(move || {
             journal
@@ -326,9 +333,9 @@ impl LocalStream {
                         let _ = release.recv();
                     }
                 }
-                journal.compact(&state, work.as_ref())?;
+                let flushed = journal.compact(&state, work.as_ref())?;
                 let appended = journal.appended;
-                inner.publish_synced(&mut journal, appended);
+                inner.publish_synced(&mut journal, appended, SyncCompletion::Flushed(flushed));
                 Ok::<_, LocalStreamError>(())
             })
         })
@@ -341,7 +348,7 @@ impl LocalStream {
     // Called under visibility before releasing an ordinary replay. A deferred
     // original must become required, without appending a duplicate frame.
     fn require_accepted<const REQUIRE: bool>(&self) -> Result<(), StreamError> {
-        if REQUIRE && !deferred() {
+        if REQUIRE && !deferred(self) {
             let mut journal = self
                 .inner
                 .journal
@@ -352,46 +359,65 @@ impl LocalStream {
         Ok(())
     }
 
-    /// Returns once every frame through `sequence` is durable: group commit.
-    async fn await_durable(&self, sequence: u64) -> Result<(), StreamError> {
+    /// Waits for the configured publication strength, sharing one group sync.
+    async fn await_publication(&self, sequence: u64) -> Result<(), StreamError> {
+        self.await_synced(sequence, self.inner.durability)
+            .await
+            .map(|_| ())
+    }
+
+    async fn await_flushed(&self, sequence: u64) -> Result<DeviceFlushed, StreamError> {
+        match self
+            .await_synced(sequence, LocalDurability::FullFlush)
+            .await?
+        {
+            SyncCompletion::Flushed(flushed) => Ok(flushed),
+            SyncCompletion::Ordered => Err(StreamError::Unavailable),
+        }
+    }
+
+    async fn await_synced(
+        &self,
+        sequence: u64,
+        durability: LocalDurability,
+    ) -> Result<SyncCompletion, StreamError> {
         let mut synced = self.inner.synced.subscribe();
         loop {
             self.check_available()?;
-            if *synced.borrow_and_update() >= sequence {
-                return Ok(());
+            if let Some(completion) = synced.borrow_and_update().completion(sequence, durability) {
+                return Ok(completion);
             }
             let lead = {
                 let mut journal = self.inner.journal.lock().map_err(|_| self.inner.poison())?;
-                if journal.synced >= sequence || journal.syncing {
+                let progress = SyncProgress {
+                    ordered: journal.synced,
+                    flushed: journal.flushed_sequence,
+                };
+                if progress.completion(sequence, durability).is_some() || journal.syncing {
                     None
                 } else {
                     journal.syncing = true;
-                    Some((
-                        journal.appended,
-                        journal.synced,
-                        journal.bytes,
-                        Arc::clone(&journal.file),
-                        journal.limits.durability,
-                    ))
+                    Some(durability)
                 }
             };
             match lead {
-                Some((target, synced_before, journal_bytes, file, durability)) => {
+                Some(durability) => {
                     let inner = Arc::clone(&self.inner);
                     let work = self.work.clone();
-                    spawn_blocking(move || {
-                        inner.flush_through(target, &file, durability, work.as_deref());
-                    })
-                    .await
-                    .map_err(|_| self.inner.poison())?;
+                    let flushed =
+                        spawn_blocking(move || inner.flush_through(durability, work.as_deref()))
+                            .await
+                            .map_err(|_| self.inner.poison())?;
                     // Group commit: one fsync covers every frame written since the last one.
-                    tracing::debug!(
-                        fsyncs = 1_u64,
-                        batch_len = target.saturating_sub(synced_before),
-                        journal_bytes,
-                        waiters = self.inner.synced.receiver_count(),
-                        "acyclic.stream.fsync"
-                    );
+                    if let Some((target, synced_before, journal_bytes)) = flushed {
+                        tracing::debug!(
+                            fsyncs = 1_u64,
+                            batch_len = target.saturating_sub(synced_before),
+                            journal_bytes,
+                            waiters = self.inner.synced.receiver_count(),
+                            "acyclic.stream.fsync"
+                        );
+                    }
                 }
                 None => {
                     if synced.changed().await.is_err() {
@@ -417,9 +443,8 @@ impl LocalStream {
         })?;
         let stream = self.clone();
         // The mutation owns completion as well as durability, even if its caller is dropped.
-        let deferred = deferred();
         let operation = span.clone();
-        spawn(DEFERRED.scope(deferred, async move {
+        spawn(publication_scope(async move {
             let result = operation
                 .scope(async {
                     let (result, required) = {
@@ -434,7 +459,7 @@ impl LocalStream {
                         }
                         (result, stream.inner.required()?)
                     };
-                    stream.await_durable(required).await?;
+                    stream.await_publication(required).await?;
                     result
                 })
                 .await;
@@ -475,7 +500,7 @@ impl LocalStream {
                 let required = self.inner.required()?;
                 (read.await, required)
             };
-            self.await_durable(required).await?;
+            self.await_publication(required).await?;
             Ok(result)
         };
         #[cfg(feature = "test-support")]

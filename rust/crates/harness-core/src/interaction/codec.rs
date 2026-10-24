@@ -6,6 +6,38 @@ pub(super) fn decode_interaction_json<'loan, 'io, T: serde::de::DeserializeOwned
     typed_slot: u64,
     work: &'loan mut Option<&'io mut dyn crate::store::history::HistoryIo>,
 ) -> Result<(T, crate::wire_codec::CodecQuota<'loan, 'io>)> {
+    #[cfg(test)]
+    {
+        let mut decoded = None;
+        let decode = move || {
+            let work = work;
+            decode_interaction_json_inner::<T>(bytes, schema, typed_slot, work)
+        };
+        let allocation = acyclic_test_support::measure(|| {
+            decoded = Some(decode());
+        });
+        if std::any::type_name::<T>() == std::any::type_name::<ApprovalDecisionFile>() {
+            acyclic_test_support::differential::record((
+                "decision-decode-allocations",
+                allocation.count_total,
+            ));
+            acyclic_test_support::differential::record((
+                "decision-decode-bytes",
+                allocation.bytes_total,
+            ));
+        }
+        decoded.expect("decoder completed")
+    }
+    #[cfg(not(test))]
+    decode_interaction_json_inner(bytes, schema, typed_slot, work)
+}
+
+fn decode_interaction_json_inner<'loan, 'io, T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
+    schema: &'static crate::executor::json::JsonValueSchema,
+    typed_slot: u64,
+    work: &'loan mut Option<&'io mut dyn crate::store::history::HistoryIo>,
+) -> Result<(T, crate::wire_codec::CodecQuota<'loan, 'io>)> {
     if work.is_none() {
         let value = crate::contract::json_from_slice(bytes)
             .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -134,6 +166,22 @@ pub(super) fn interaction_request_owned_bytes(
             }
             Ok(owned)
         }
-        Interaction::Approval { prompt, .. } => Ok(prompt.capacity() as u64),
+        Interaction::Approval {
+            prompt, subject, ..
+        } => match subject {
+            ApprovalSubject::Tool {
+                tool,
+                call_id,
+                arguments,
+            } => (prompt.capacity() as u64)
+                .checked_add(tool.capacity() as u64)
+                .and_then(|bytes| bytes.checked_add(call_id.capacity() as u64))
+                .ok_or_else(overflow)?
+                .checked_add(crate::executor::json::json_value_logical_owned_bytes(
+                    arguments,
+                )?)
+                .ok_or_else(overflow),
+            ApprovalSubject::Opaque {} => Ok(prompt.capacity() as u64),
+        },
     }
 }

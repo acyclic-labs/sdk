@@ -23,7 +23,11 @@ pub fn local_harness_config(
     #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     let settings = crate::native_settings::SettingsConfig::for_test(&workspace)?;
     // Store opening supplies temporary state only when no explicit root was selected.
-    let config = crate::LocalHarnessConfig::new(workspace, model).hermetic();
+    let policy = serde_json::from_slice(include_bytes!("../bin/graphcoder/approval-policy.json"))
+        .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+    let config = crate::LocalHarnessConfig::new(workspace, model)
+        .hermetic()
+        .approval_policy(policy);
     #[cfg(any(test, feature = "native-execution"))]
     let config = {
         let mut config = config;

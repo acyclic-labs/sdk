@@ -32,6 +32,11 @@ does not replace already loaded code.
 The current tool list is the SDK-owned runtime set. Another tool must be added
 to the installer's explicit list with its required checks before installation;
 an unreviewed filename cannot silently become a privileged tool.
+The publication list includes `job_custody.py` before its runtime consumer.
+Qualification executes a worker copied from exactly that list, including a
+missing-module negative control, as well as namespace, descendant-custody and
+immutable Windows input controls. The complete staging directory cannot hide a
+missing published dependency.
 
 Cargo's read-only metadata/tree/locate-project/pkgid/verify-project/read-manifest
 commands bypass build tickets centrally in bb-admit. They retain the same

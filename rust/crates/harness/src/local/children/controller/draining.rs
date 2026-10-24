@@ -20,16 +20,14 @@ impl<'a> Commands<'a> {
     }
 }
 
-impl TaskCommandHost for Commands<'_> {
-    fn invocation_cancellation(&self) -> Option<&acyclic_fs::CancellationToken> {
-        Some(&self.cancellation)
-    }
-    fn execute<'a>(
+impl Commands<'_> {
+    fn run<'a>(
         &'a self,
         context: TaskContext,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,
+        reconcile: bool,
     ) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
         Box::pin(async move {
             let context = if matches!(
@@ -47,7 +45,11 @@ impl TaskCommandHost for Commands<'_> {
             } else {
                 context
             };
-            let result = self.inner.execute(context, fence, command, payload).await;
+            let result = if reconcile {
+                self.inner.reconcile(context, fence, command, payload).await
+            } else {
+                self.inner.execute(context, fence, command, payload).await
+            };
             // Keep the parent's original lease until every active child has
             // finished admission, effects and publication. Siblings do not
             // inherit this error-only invocation cancellation token.
@@ -57,6 +59,21 @@ impl TaskCommandHost for Commands<'_> {
             result
         })
     }
+}
+
+impl TaskCommandHost for Commands<'_> {
+    fn invocation_cancellation(&self) -> Option<&acyclic_fs::CancellationToken> {
+        Some(&self.cancellation)
+    }
+    fn execute<'a>(
+        &'a self,
+        context: TaskContext,
+        fence: LeaseFence,
+        command: WorkflowCommand,
+        payload: Value,
+    ) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
+        self.run(context, fence, command, payload, false)
+    }
     fn reconcile<'a>(
         &'a self,
         context: TaskContext,
@@ -64,7 +81,7 @@ impl TaskCommandHost for Commands<'_> {
         command: WorkflowCommand,
         payload: Value,
     ) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
-        self.inner.reconcile(context, fence, command, payload)
+        self.run(context, fence, command, payload, true)
     }
 }
 

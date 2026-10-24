@@ -50,11 +50,11 @@ impl LocalStream {
                 let ingress = Arc::clone(&slot);
                 let writer = stream.clone();
                 let writer_work = Arc::clone(&work);
-                let worker = async move {
+                let worker = publication_scope(async move {
                     let _command_claim = command_claim;
                     let result = writer.settle_prepared(command, frame, plan, ingress).await;
                     writer_work.finish(result)
-                };
+                });
                 let allocation = work.record(acyclic_native_runtime::ReadAllocation::new(
                     &work.meter,
                     std::mem::size_of_val(&worker),
@@ -136,7 +136,7 @@ impl LocalStream {
         }
         let required = self.inner.required()?;
         drop(visibility);
-        self.await_durable(required).await?;
+        self.await_publication(required).await?;
         result
     }
 

@@ -10,29 +10,22 @@ pub(crate) async fn prepare_writeback(
     root.verify(native_work).await?;
     let from = &generations.from;
     let candidate = &generations.candidate;
-    let paths = generations.paths;
-    if paths.is_empty()
-        || paths.len() > MAX_PRIVATE_DIRECTORY_PAGE
-        || generations.original_snapshot.workspace_id != root.workspace
-        || from.workspace_id() != candidate.workspace_id()
-    {
+    if generations.original_snapshot.workspace_id != root.workspace {
         return Err(selected_unauthorized(
             "writeback candidate is not the original selected root workspace",
         ));
     }
     let journal = root
         .publication
-        .prepare(from, candidate, state, options, native_work)
+        .prepare_selected(
+            from,
+            candidate,
+            state,
+            options,
+            native_work,
+            (generations.paths, writeback_context(root, generations)),
+        )
         .await?;
-    if journal.root_identity != Some(root.identity.to_bytes())
-        || journal.phase != acyclic_fs::MaterializationPhase::Prepared
-    {
-        return Err(Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Conflict,
-            reason: "writeback preparation has another original root or is not ready for approval",
-        });
-    }
-    require_selected_edits(&journal.plan.edits, paths)?;
     root.verify(native_work).await?;
     Ok(journal)
 }
@@ -52,7 +45,7 @@ pub(crate) fn publish_writeback<'a>(
         let from = &generations.from;
         let candidate = &generations.candidate;
         let digest = crate::pi_root_provider::digest_pi_value(
-            &writeback_digest_value(root, generations, journal),
+            &writeback_digest_value(root, generations, journal)?,
             native_work.budget().bytes_encoded,
             native_work,
         )?;
@@ -63,28 +56,11 @@ pub(crate) fn publish_writeback<'a>(
                 "writeback lacks exact original-root user approval",
             ));
         }
-        let guard_work = native_work.clone();
-        let guard_cause = std::sync::Mutex::new(None);
-        let receipt = root
-            .publication
-            .publish(from, candidate, state, options, native_work, || async {
-                root.verify(&guard_work)
-                    .await
-                    .map_err(|error| native_guard_cause(error, &guard_cause))?;
-                Ok(())
+        root.publication
+            .publish(from, candidate, state, options, native_work, || {
+                root.verify(native_work)
             })
-            .await;
-        let value = match receipt {
-            Ok(journal) => journal,
-            Err(source) => {
-                return Err(guard_cause
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .take()
-                    .unwrap_or(source));
-            }
-        };
-        Ok(value)
+            .await
     }
 }
 
@@ -97,20 +73,14 @@ pub(crate) fn validate_applied_writeback(
     native_work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     if journal.phase != acyclic_fs::MaterializationPhase::Applied
-        || journal.root_identity != Some(root.identity.to_bytes())
-        || journal.plan.operation_id
-            != acyclic_fs::OperationId::from_bytes(generations.operation.into_bytes())
-        || !matches!(journal.plan.intent, acyclic_fs::MaterializationIntent::GenerationTransition { from, to }
-            if from == generations.from.id() && to == generations.candidate.id())
         || generations.original_snapshot.workspace_id != root.workspace
     {
         return Err(selected_unauthorized(
             "completed writeback differs from its original root and generations",
         ));
     }
-    require_selected_edits(&journal.plan.edits, generations.paths)?;
     let digest = crate::pi_root_provider::digest_pi_value(
-        &writeback_digest_value(root, generations, journal),
+        &writeback_digest_value(root, generations, journal)?,
         native_work.budget().bytes_encoded,
         native_work,
     )?;
@@ -122,72 +92,29 @@ pub(crate) fn validate_applied_writeback(
     Ok(())
 }
 
-fn native_guard_cause(
-    error: Error,
-    cause: &std::sync::Mutex<Option<Error>>,
-) -> acyclic_fs::NativeWorkspacePublicationError {
-    let mut retained = cause
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if retained.is_none() {
-        *retained = Some(error);
-    }
-    acyclic_fs::NativeTreeMaterializationError::Io(std::io::Error::from(
-        std::io::ErrorKind::PermissionDenied,
-    ))
-    .into()
-}
-
 pub(crate) fn writeback_digest_value<'a>(
     root: &'a PiWritebackRoot,
     generations: &'a PiWritebackGenerations<'_>,
     journal: &'a acyclic_fs::MaterializationJournal,
+) -> Result<impl Serialize + 'a> {
+    root.publication.approval_value(
+        &generations.from,
+        &generations.candidate,
+        generations.paths,
+        journal,
+        writeback_context(root, generations),
+    )
+}
+
+fn writeback_context<'a>(
+    root: &'a PiWritebackRoot,
+    generations: &'a PiWritebackGenerations<'_>,
 ) -> impl Serialize + 'a {
     (
         root.task,
         &root.volume,
         root.workspace,
-        root.identity.to_bytes(),
-        root.publication.root(),
-        root.publication.directory(),
-        acyclic_fs::OperationId::from_bytes(generations.operation.into_bytes()),
-        generations.from.id(),
-        generations.candidate.id(),
-        generations.paths,
         generations.original_snapshot,
         generations.imported,
-        &journal.plan,
-        journal.root_identity,
-        journal.preparation_identity,
-        &journal.preimages,
     )
-}
-
-fn require_selected_edits(
-    edits: &[acyclic_fs::MaterializationEdit],
-    paths: &[String],
-) -> Result<()> {
-    let selected = |path: &str| {
-        paths.iter().any(|prefix| {
-            path == prefix
-                || path
-                    .strip_prefix(prefix)
-                    .is_some_and(|suffix| suffix.starts_with('/'))
-        })
-    };
-    for edit in edits {
-        let allowed = match edit {
-            acyclic_fs::MaterializationEdit::Install { path, .. }
-            | acyclic_fs::MaterializationEdit::Remove { path }
-            | acyclic_fs::MaterializationEdit::SetMetadata { path, .. } => selected(path),
-            acyclic_fs::MaterializationEdit::Rename { from, to } => selected(from) && selected(to),
-            _ => false,
-        };
-        if !allowed {
-            return Err(selected_unauthorized(
-                "native candidate changes an unselected writeback path",
-            ));
-        }
-    }
-    Ok(())
 }

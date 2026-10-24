@@ -43,6 +43,21 @@ where
         let interaction = admission
             .grants
             .contains(crate::contract::capability::INTERACTION_ROUTE);
+        let mut task_files = self.task_files.clone();
+        if context.is_none()
+            && !admission.resource_proofs.is_empty()
+            && let Some(files) = &task_files
+        {
+            let (scope, custody) = owner.scope(work).await?;
+            if let Some(created) = files
+                .for_authenticated_scope_with_native_work(task, &scope, work)
+                .await?
+            {
+                task_files = Some(created);
+            }
+            drop(scope);
+            drop(custody);
+        }
         let journal = FilesystemExecutionJournal::for_task(
             owner,
             operation,
@@ -67,11 +82,18 @@ where
                         "journal reader differs from its original task context",
                     ));
                 }
+                if let Some(files) = &task_files
+                    && let Some(created) = files
+                        .for_created_task_with_native_work(&context, work)
+                        .await?
+                {
+                    task_files = Some(created);
+                }
                 journal.with_input_verifier(context)
             }
             None => journal,
         };
-        let journal = journal.with_task_files(self.task_files.clone());
+        let journal = journal.with_optional_task_files(task_files)?;
         let journal = if interaction {
             if let Some(owner) = &self.interaction_owner {
                 journal.with_interaction_owner(
@@ -140,7 +162,7 @@ where
                 io: None,
             },
         )?;
-        let journal = journal.with_task_files(self.task_files.clone());
+        let journal = journal.with_optional_task_files(self.task_files.clone())?;
         if admission
             .grants
             .contains(crate::contract::capability::INTERACTION_ROUTE)

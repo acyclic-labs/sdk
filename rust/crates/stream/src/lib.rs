@@ -118,6 +118,7 @@ pub use local::{CutSimulationError, PersistenceCut, fail_cut_truncation};
 #[cfg(feature = "local")]
 pub use local::{
     LocalDurability, LocalStream, LocalStreamError, LocalStreamLimits, deferring_durability,
+    deferring_provider_durability,
 };
 pub use memory::{MemoryLimits, MemoryStream};
 

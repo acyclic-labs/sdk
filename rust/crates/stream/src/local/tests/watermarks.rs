@@ -53,7 +53,10 @@ fn qualify(operations: &[u8], early_durable: bool) -> Result {
                 frames
             );
             if early_durable {
-                provider.inner.synced.send_replace(frames);
+                provider.inner.synced.send_replace(SyncProgress {
+                    ordered: frames,
+                    flushed: Some(frames),
+                });
             }
             for ((path, accepted), durable) in paths.iter().zip(accepted).zip(&mut durable) {
                 if accepted == 0 {

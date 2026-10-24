@@ -7,6 +7,7 @@ use super::*;
 pub struct CertifiedSigner {
     certificates: CertificateChain,
     key: SigningKey,
+    authentication: std::sync::Mutex<CertificateVerifier>,
 }
 
 impl CertifiedSigner {
@@ -19,7 +20,11 @@ impl CertifiedSigner {
         if leaf.key.public_key.as_slice() != key.verifying_key().as_bytes() {
             return Err(VerifyError::Signature);
         }
-        Ok(Self { certificates, key })
+        Ok(Self {
+            certificates,
+            key,
+            authentication: Default::default(),
+        })
     }
 
     /// Mints block zero within the current authenticated certificate ceilings.
@@ -50,6 +55,9 @@ impl CertifiedSigner {
         let secret = Zeroizing::new(next.to_bytes());
         drop(next);
         let encoded = wire::encode(&[signed], 18, secret.as_ref(), VERSION);
-        verify(&encoded, trust, now_unix_seconds)
+        self.authentication
+            .lock()
+            .map_err(|_| VerifyError::Trust)?
+            .verify(&encoded, trust, now_unix_seconds)
     }
 }

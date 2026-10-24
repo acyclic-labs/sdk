@@ -92,7 +92,7 @@ from pathlib import Path
 sys.path.insert(0,str(Path(sys.argv[1]).resolve().parent))
 spec=importlib.util.spec_from_file_location('owner',sys.argv[1])
 job=importlib.util.module_from_spec(spec);spec.loader.exec_module(job)
-runtime={'hermetic_home':sys.argv[2],'targets_policy':'job-owned'}
+runtime={'hermetic_home':sys.argv[2],'targets_policy':'job-owned','custody':job.job_custody.prepare()}
 def register(command):
  runtime['command']=command;job.atomic(sys.argv[3],runtime)
 def interrupted(number,frame):raise SystemExit(128+number)
@@ -308,24 +308,24 @@ print('retired',flush=True)
                         worker.communicate(timeout=2)
                         for descriptor in descriptors:os.close(descriptor)
 
-    def worker(self,negative=False,cleanup_failure=False,custody_negative=False,export_negative=False):
+    def worker(self,negative=False,export_negative=False):
         source=(HERE/'bb-job.py').read_text()
         source=source.replace("'disk_free':disk()", "'disk_free':[{'path':'fixture','free_percent':50}]")
         if negative:source=source.replace("file=sys.stderr,flush=True", "flush=True")
-        if cleanup_failure:source=source.replace('try:remove_home(job)','try:raise OSError("cleanup control")')
-        if custody_negative:source=source.replace('start_new_session=True)', 'start_new_session=False)')
         if export_negative:
             boundary="export_spec=env.pop('BB_JOB_EXPORT_SPEC',None)"
             self.assertEqual(source.count(boundary),1)
             source=source.replace(boundary,"export_spec=env.get('BB_JOB_EXPORT_SPEC')")
         p=self.d/('negative.py' if negative else 'worker.py');p.write_text(source);return p
-    def run_job(self,argv,negative=False,extra=None,cleanup_failure=False,export_negative=False):
-        meta=self.d/'fixture.receipt-meta.v2.json';meta.write_text('{}')
+    def run_job(self,argv,negative=False,extra=None,export_negative=False,meta=None):
+        meta=meta or self.d/'fixture.receipt-meta.v2.json';meta.write_text('{}')
         env={**os.environ,'PATH':'/home/var/.cargo/bin:'+os.environ['PATH'], 'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
         env.pop('BB_JOB_ACTIVE',None);env.pop('BB_ADMITTED',None)
         env.pop('BB_JOB_EXPORT_SPEC',None)
         env.update(extra or {})
-        result=subprocess.run([sys.executable,str(self.worker(negative,cleanup_failure,export_negative=export_negative)),*argv],cwd=self.d,env=env,capture_output=True)
+        result=subprocess.run([sys.executable,str(self.worker(negative,export_negative=export_negative)),*argv],cwd=self.d,env=env,capture_output=True)
+        # Production's receipt owner joins the cgroup after this process exits.
+        job.cleanup_runtime(str(meta)+'.runtime')
         return result,json.loads(Path(str(meta)+'.runtime').read_text())
 
     def test_failed_export_is_infra_and_does_not_contaminate_stdout(self):
@@ -348,6 +348,7 @@ print('retired',flush=True)
 from pathlib import Path
 env=dict(os.environ,BB_JOB_ACTIVE='0',BUILD_SLOT_RECEIPT_META=sys.argv[2])
 result=subprocess.run([sys.executable,sys.argv[1],sys.executable,'-c','print("nested output")'],env=env,capture_output=True)
+subprocess.run([sys.executable,sys.argv[1],'cleanup',sys.argv[2]+'.runtime'],check=True)
 sys.stdout.buffer.write(result.stdout);sys.stderr.buffer.write(result.stderr)
 if result.returncode:sys.exit(result.returncode)
 Path(sys.argv[3]).write_text('parent output after nested cleanup')
@@ -355,14 +356,15 @@ Path(sys.argv[3]).write_text('parent output after nested cleanup')
                 spec={'prefix':str(prefix),'cwd':str(self.d),'paths':[output.name],'build':False}
                 try:
                     result,runtime=self.run_job([sys.executable,'-c',code,str(self.d/'worker.py'),str(meta),str(output)],
-                        extra={'BB_CACHE_DISABLED':'1','BB_JOB_EXPORT_SPEC':json.dumps(spec)},export_negative=negative)
+                        extra={'BB_CACHE_DISABLED':'1','BB_JOB_EXPORT_SPEC':json.dumps(spec)},export_negative=negative,
+                        meta=Path(str(prefix)+'.receipt-meta.v2.json'))
                     self.assertEqual(result.returncode,224 if negative else 0,result.stderr.decode())
                     self.assertEqual(result.stdout,b'nested output\n')
                     self.assertTrue(runtime['home_removed'])
                     inner=json.loads(Path(str(meta)+'.runtime').read_text())
                     self.assertTrue(inner['home_removed'])
                     if negative:
-                        self.assertIn('missing declared output',inner['export_error'])
+                        self.assertIn('another receipt',inner['export_error'])
                         self.assertFalse(output.exists())
                     else:
                         self.assertNotIn('export_error',inner)

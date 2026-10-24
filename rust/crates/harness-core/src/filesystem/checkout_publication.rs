@@ -12,6 +12,8 @@ use std::{
 };
 
 type LocalGeneration = Generation<LocalAuthorityBackend, LocalObjectBackend>;
+const EXCLUDED_NAMES: &[&str] = &[".git", ".system", ".volumes"];
+mod approval;
 
 /// One native checkout and its same-filesystem operation staging directory.
 pub struct CheckoutPublication {
@@ -69,7 +71,7 @@ impl CheckoutPublication {
             operation_id: self.operation,
             from: from.id(),
             to: to.id(),
-            excluded_names: &[".git"],
+            excluded_names: EXCLUDED_NAMES,
             options,
             budget: work.budget(),
             cancellation: work.cancellation(),
@@ -93,6 +95,7 @@ impl CheckoutPublication {
         match prepared {
             Ok(receipt) => {
                 work.spent(receipt.work)?;
+                validate_plan(&receipt.value.plan)?;
                 Ok(receipt.value)
             }
             Err((source, spent)) => {
@@ -109,26 +112,174 @@ impl CheckoutPublication {
         state: &LocalCoreStateStore,
         options: &MaterializeOptions,
         work: &NativeMaterializationWork,
-        guard: F,
+        mut guard: F,
     ) -> Result<MaterializationJournal>
     where
         F: FnMut() -> Fut + Send,
-        Fut: Future<Output = std::result::Result<(), acyclic_fs::NativeWorkspacePublicationError>>
-            + Send,
+        Fut: Future<Output = Result<()>> + Send,
     {
-        acyclic_fs::publish_native_generation_transition(
+        guard().await?;
+        let actual = work.root_identity(&self.root)?;
+        if actual != self.identity {
+            return Err(
+                acyclic_fs::NativeTreeMaterializationError::AllocationChanged {
+                    expected: self.identity,
+                    actual,
+                }
+                .into(),
+            );
+        }
+        let retained = acyclic_fs::load_native_materialization_journal(
+            state,
+            self.operation,
+            work.remaining()?,
+            work.cancellation(),
+        )
+        .await;
+        let journal = match retained {
+            Ok(receipt) => {
+                work.spent(receipt.work)?;
+                receipt.value
+            }
+            Err((cause, spent)) => {
+                work.spent(spent)?;
+                return Err(cause.into());
+            }
+        };
+        if let Some(journal) = &journal {
+            validate_plan(&journal.plan)?;
+        }
+        // A logical commit can precede its native acknowledgement. Every host
+        // resumes the original transition, even when its current head is `to`.
+        let original = if let Some(journal) = &journal
+            && from.id() == to.id()
+            && let acyclic_fs::MaterializationIntent::GenerationTransition {
+                from: original,
+                to: target,
+            } = journal.plan.intent
+            && target == to.id()
+        {
+            Some(
+                from.workspace()
+                    .generation(original, work, work.cancellation())
+                    .await?,
+            )
+        } else {
+            None
+        };
+        let from = original.as_ref().unwrap_or(from);
+        if let Some(journal) = journal
+            && completed(&journal, self.identity, from.id(), to.id())?
+        {
+            // Completion belongs to the journal, so post-ack host edits cannot
+            // be overwritten by reconstructing and replaying another plan.
+            cleanup_directory(&self.directory)?;
+            return Ok(journal);
+        }
+        let guard_cause = std::sync::Mutex::new(None);
+        let result = acyclic_fs::publish_native_generation_transition(
             from,
             to,
             state,
             self.request(from, to, options, work),
             work.clone(),
-            guard,
+            || {
+                let future = guard();
+                let guard_cause = &guard_cause;
+                async move {
+                    future.await.map_err(|cause| {
+                        *guard_cause
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(cause);
+                        acyclic_fs::NativeWorkspacePublicationError::Native(
+                            acyclic_fs::NativeTreeMaterializationError::Io(
+                                std::io::ErrorKind::PermissionDenied.into(),
+                            ),
+                        )
+                    })
+                }
+            },
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|(source, _)| source.into())
+        .await;
+        let journal = result.map(|receipt| receipt.value).map_err(|(source, _)| {
+            guard_cause
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+                .unwrap_or_else(|| Error::from(source))
+        })?;
+        cleanup_directory(&self.directory)?;
+        Ok(journal)
+    }
+
+    /// Ends replay custody after the enclosing publication is acknowledged.
+    pub(crate) async fn finish(
+        state: &LocalCoreStateStore,
+        root: &Path,
+        operation: OperationId,
+    ) -> Result<()> {
+        // Remove staging before its replay evidence: a failed cleanup must
+        // leave the completed marker available to protect later host edits.
+        let directory = NativeDirectory(root).publication_directory(operation)?;
+        cleanup_directory(&directory)?;
+        state.remove_materialization_async(operation).await?;
+        Ok(())
     }
 }
+
+fn validate_plan(plan: &acyclic_fs::MaterializationPlan) -> Result<()> {
+    use acyclic_fs::MaterializationEdit;
+    let allowed = |path: &str| !EXCLUDED_NAMES.contains(&path.split('/').next().unwrap_or(""));
+    for edit in &plan.edits {
+        let valid = match edit {
+            MaterializationEdit::Install { path, .. }
+            | MaterializationEdit::Remove { path }
+            | MaterializationEdit::SetMetadata { path, .. } => allowed(path),
+            MaterializationEdit::Rename { from, to } => allowed(from) && allowed(to),
+            _ => false,
+        };
+        if !valid {
+            return Err(Error::Unauthorized(
+                "checkout journal targets a reserved host path".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn completed(
+    journal: &MaterializationJournal,
+    root: NativeRootIdentity,
+    from: acyclic_fs::GenerationId,
+    to: acyclic_fs::GenerationId,
+) -> Result<bool> {
+    if journal.root_identity != Some(root.to_bytes())
+        || journal.plan.intent
+            != (acyclic_fs::MaterializationIntent::GenerationTransition { from, to })
+    {
+        return Err(Error::Storage(
+            "checkout publication differs from its original generation transition".into(),
+        ));
+    }
+    Ok(journal.phase == acyclic_fs::MaterializationPhase::Applied)
+}
+
+fn cleanup_directory(directory: &Path) -> Result<()> {
+    if !directory
+        .try_exists()
+        .map_err(|cause| Error::from(acyclic_fs::NativeTreeMaterializationError::Io(cause)))?
+    {
+        return Ok(());
+    }
+    let parent = directory
+        .parent()
+        .ok_or_else(|| Error::Invalid("native staging directory has no parent".into()))?;
+    acyclic_native_runtime::remove_child_directory(parent, directory)
+        .map_err(|cause| Error::from(acyclic_fs::NativeTreeMaterializationError::Io(cause)))
+}
+
+#[cfg(test)]
+mod transition_tests;
 
 #[cfg(test)]
 mod tests {

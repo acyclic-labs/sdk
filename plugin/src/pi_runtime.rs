@@ -115,9 +115,30 @@ pub(crate) struct PiTaskRuntime {
         FilesystemTaskRuntime<LocalStream, crate::LocalAuthorityBackend, crate::LocalObjectBackend>,
     pub(crate) definition: Arc<TaskDefinition<PiTaskInput, FileRef>>,
     pub(crate) authority: PiRuntimeAuthority,
+    task_files: Arc<acyclic_harness::task_volume::TaskFiles<LocalStream>>,
 }
 
 impl PiTaskRuntime {
+    pub(crate) fn execution_journal(
+        &self,
+        owner: acyclic_harness::durable_host::TaskJournalOwner<LocalStream>,
+        operation: OperationId,
+        turn: OperationId,
+        filesystem: Arc<FilesystemHost<crate::LocalAuthorityBackend, crate::LocalObjectBackend>>,
+        binding: acyclic_harness::filesystem::FilesystemJournalBinding<'_>,
+    ) -> acyclic_harness::Result<
+        acyclic_harness::filesystem::FilesystemExecutionJournal<
+            LocalStream,
+            crate::LocalAuthorityBackend,
+            crate::LocalObjectBackend,
+        >,
+    > {
+        acyclic_harness::filesystem::FilesystemExecutionJournal::for_task(
+            owner, operation, turn, filesystem, binding,
+        )?
+        .with_task_files(self.task_files.clone())
+    }
+
     pub(crate) async fn reopen(
         owner: &super::pi_owner::PiOwnerConfig,
         state: &super::AdapterState,
@@ -159,6 +180,15 @@ impl PiTaskRuntime {
             journal,
             &mut Some(&mut &PreparationIo::from_native_work(work)?),
         )?;
+        let task_files = acyclic_harness::task_volume::TaskFiles::open_with_native_work(
+            stream.clone(),
+            journal,
+            &authority.verifier,
+            &authority.signed,
+            authority.maximum_payload_bytes,
+            work,
+        )
+        .await?;
         let (tools, _tools_custody) = ToolRegistry::new(work)?;
         let resumable_tools = acyclic_harness::durable_tool::ResumableToolRegistry::default();
         let mut slot = work.claim(
@@ -191,7 +221,7 @@ impl PiTaskRuntime {
             dyn acyclic_harness::resource_preparation::ResourceCreationProvider,
         >; 1] = [creation];
         let io = PreparationIo::from_native_work(work)?;
-        let runtime = FilesystemTaskRuntime::open(
+        let mut runtime = FilesystemTaskRuntime::open(
             stream,
             filesystem,
             journal,
@@ -213,10 +243,12 @@ impl PiTaskRuntime {
             Some(&io),
         )
         .await?;
+        runtime.bind_task_files(Some(task_files.clone()));
         Ok(Self {
             runtime,
             definition,
             authority,
+            task_files,
         })
     }
 

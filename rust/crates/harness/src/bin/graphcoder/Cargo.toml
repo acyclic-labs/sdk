@@ -19,6 +19,7 @@ acyclic-stream = { path = "../../../../stream", default-features = false }
 clap.workspace = true
 dirs.workspace = true
 futures.workspace = true
+serde_json.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "io-std", "io-util"] }
 
 [lints]

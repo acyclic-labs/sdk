@@ -180,9 +180,12 @@ async fn teardown(output_failure: bool, join: bool) -> bool {
     let mut client = Box::pin(LocalFileClient::open(local.clone(), operation))
         .await
         .unwrap();
-    Box::pin(client.submit(&prepare_local_prompt(operation, "active").unwrap()))
-        .await
-        .unwrap();
+    Box::pin(client.submit(
+        &prepare_local_prompt(operation, "active").unwrap(),
+        &mut Vec::new(),
+    ))
+    .await
+    .unwrap();
     let joined = std::rc::Rc::new(std::cell::Cell::new(false));
     let marker = joined.clone();
     // Model a native job whose awaiting future was already polled and parked.

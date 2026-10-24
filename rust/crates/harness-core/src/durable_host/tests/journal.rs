@@ -2,6 +2,148 @@ use super::*;
 use crate::executor::{ExecutionEvent, ExecutionJournal, ModelPurpose, ToolFailureKind};
 use crate::workflow::{DurableWorkflowHost, WorkflowJournal};
 
+fn approval_publication() -> Result<crate::store::operations::IndexedPublication> {
+    let issuer = AuthorityIssuer::new(
+        "approval-publication",
+        [19; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "approval-publication".into(),
+        },
+    );
+    let agent = AgentId::from_bytes([19; 16]);
+    let reducer = crate::core::Reducer::new(
+        issuer.audience().clone(),
+        issuer.verifier(&mut None)?,
+        crate::core::SchemaRegistry::new(),
+    );
+    let command = crate::core::Command {
+        operation_id: OperationId::from_bytes([19; 16]),
+        idempotency_key: IdempotencyKey::new("approval-publication")?,
+        expected_revision: 0,
+        scope: issuer.issue(
+            "owner",
+            &Capabilities::new(["conversation:bind"]),
+            Some(agent),
+            None,
+            &mut None,
+        )?,
+        causal_parent: None,
+        action: crate::core::Action::BindConversation { agent },
+    };
+    let (crate::core::ApplyResult::Applied { event }
+    | crate::core::ApplyResult::Replayed { event }) = reducer.plan(&command)?;
+    crate::store::operations::IndexedPublication::new(
+        issuer.audience(),
+        &event,
+        crate::wire_codec::encode_event(issuer.audience(), &event, &mut None)?,
+        None,
+        &mut None,
+    )
+}
+
+#[tokio::test]
+async fn approval_publication_retains_the_coordinator_until_commit() -> Result<()> {
+    use crate::distributed::JournalWrite;
+    use acyclic_stream::{
+        CommitCondition, CommitMutation, CommitOutcome, CommitRequest, StreamPath,
+    };
+    for aggregate in [false, true] {
+        for released_check in [false, true] {
+            let stream = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+            let f = Fixture::new(
+                stream.clone(),
+                acyclic_fs::Fs::memory(),
+                json!({"type":"integer"}),
+                None,
+                &[],
+            )
+            .await?;
+            let owner = f.running(1).await?;
+            let publication = approval_publication()?;
+            let path = StreamPath::new("approval-publication/plain")?;
+            let bytes = OwnedBytes::from_static(b"approval-publication");
+            let key = StreamKey::new("approval-publication")?;
+            if released_check {
+                // Negative control restores the old check/drop/commit shape.
+                // A different admitted task advances the shared coordinator,
+                // although this publication's original lease remains live.
+                let condition = owner.condition(JournalWrite::Settlement, &mut None).await?;
+                f.host.admit(f.admission(2, json!(0))).await?;
+                let mut request = if aggregate {
+                    publication.request(&stream, key, &mut None).await?.0
+                } else {
+                    CommitRequest {
+                        conditions: vec![CommitCondition::Absent { path: path.clone() }],
+                        mutations: vec![CommitMutation::Append {
+                            path,
+                            records: vec![bytes.into()],
+                        }],
+                        idempotency_key: key,
+                    }
+                };
+                request.conditions.push(condition);
+                assert!(matches!(
+                    stream.commit(request).await?,
+                    CommitOutcome::Conflict(_)
+                ));
+                continue;
+            }
+            let (entered, at_commit) = tokio::sync::oneshot::channel();
+            let (release, proceed) = tokio::sync::oneshot::channel();
+            *stream
+                .owned_commit_pause
+                .lock()
+                .map_err(|error| Error::Storage(error.to_string()))? =
+                Some(crate::test_stream::CommitPause {
+                    entered,
+                    release: proceed,
+                });
+            let commit = async {
+                if aggregate {
+                    owner
+                        .append_conversation(
+                            &publication,
+                            &key,
+                            JournalWrite::Settlement,
+                            &mut None,
+                            None,
+                        )
+                        .await
+                } else {
+                    owner
+                        .append(
+                            path,
+                            0,
+                            Some(&key),
+                            bytes,
+                            JournalWrite::Settlement,
+                            &mut None,
+                        )
+                        .await
+                }
+            };
+            tokio::pin!(commit);
+            tokio::select! {
+                result = &mut commit => panic!("publication bypassed the controlled commit: {result:?}"),
+                result = at_commit => result.map_err(|error| Error::Storage(error.to_string()))?,
+            }
+            let sibling = f.host.admit(f.admission(2, json!(0)));
+            tokio::pin!(sibling);
+            assert!(
+                futures::poll!(sibling.as_mut()).is_pending(),
+                "sibling advanced the checked coordinator before commit"
+            );
+            release
+                .send(())
+                .map_err(|()| Error::Storage("publication dropped its commit gate".into()))?;
+            assert!(commit.await?);
+            sibling.await?;
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn b13_model_claims_use_pinned_limits_and_fence() -> Result<()> {
     let f = Fixture::new(
