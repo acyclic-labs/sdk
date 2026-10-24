@@ -231,12 +231,13 @@ def adopted_child_reaper(command_pid):
         yield
         return
     previous=signal.getsignal(signal.SIGCHLD)
-    if previous not in (signal.SIG_DFL,signal.SIG_IGN):
+    if previous != signal.SIG_DFL:
         raise RuntimeError('namespace child reaper already owned')
     draining=False
     def drain(number=None,frame=None):
         nonlocal draining
         if draining:return
+        old_mask=signal.pthread_sigmask(signal.SIG_BLOCK,{signal.SIGCHLD})
         draining=True
         try:
             while True:
@@ -244,7 +245,11 @@ def adopted_child_reaper(command_pid):
                 except ChildProcessError:return
                 if event is None or event.si_pid==command_pid:return
                 os.waitpid(event.si_pid,0)
-        finally:draining=False
+        finally:
+            draining=False
+            # An exit between the final WNOHANG and handler return stays
+            # pending until the guard is released; no notification is lost.
+            signal.pthread_sigmask(signal.SIG_SETMASK,old_mask)
     signal.signal(signal.SIGCHLD,drain)
     try:
         drain()

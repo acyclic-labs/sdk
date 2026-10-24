@@ -20,6 +20,43 @@ def probe(source, mode, outcome, record):
     owner = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(owner)
     assert os.getpid() == 1
+    if outcome == 'signal-race':
+        real_waitid = os.waitid
+        child = []
+        def racing_waitid(*args):
+            try:event = real_waitid(*args)
+            except ChildProcessError:event = None
+            if event is None and not child:
+                mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGCHLD})
+                pid = os.fork()
+                if pid == 0:os._exit(0)
+                child.append(pid)
+                # Force an exit after the reaper's last empty observation,
+                # but before its draining guard is released.
+                real_waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
+                signal.sigwait({signal.SIGCHLD})
+                signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+                os.kill(os.getpid(), signal.SIGCHLD)
+            return event
+        owner.os.waitid = racing_waitid
+        try:
+            with owner.adopted_child_reaper(-1):
+                remaining = int(Path(f'/proc/{child[0]}').exists())
+            print(json.dumps({'remaining_during_wait': remaining}), flush=True)
+        finally:
+            owner.os.waitid = real_waitid
+        return
+    if outcome == 'ignored-handler':
+        signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+        try:
+            with owner.adopted_child_reaper(-1):
+                raise AssertionError('ignored child statuses accepted')
+        except RuntimeError as error:
+            assert 'already owned' in str(error)
+            print(json.dumps({'refused_ignored_handler': True}), flush=True)
+        finally:
+            signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+        return
     if outcome == 'supervisor-killed':
         command = owner.OwnedCommand([sys.executable, '-B', '-c', 'import signal;signal.pause()'],
                                      dict(os.environ), lambda identity: None)
@@ -86,12 +123,16 @@ class ReapingTests(unittest.TestCase):
                                '        line = self.status.readline()')
         self.assertNotEqual(original, old)
         (self.directory/'old.py').write_text(old)
+        racy = original.replace('        old_mask=signal.pthread_sigmask(signal.SIG_BLOCK,{signal.SIGCHLD})\n', '')
+        racy = racy.replace('            signal.pthread_sigmask(signal.SIG_SETMASK,old_mask)\n', '')
+        self.assertNotEqual(original, racy)
+        (self.directory/'racy.py').write_text(racy)
 
     def tearDown(self):
         self.temp.cleanup()
 
-    def run_probe(self, outcome, negative=False):
-        source = self.directory/('old.py' if negative else 'bb-job.py')
+    def run_probe(self, outcome, negative=False, racy=False):
+        source = self.directory/('racy.py' if racy else 'old.py' if negative else 'bb-job.py')
         command = ['sudo', '-n', 'unshare', '--mount', '--pid', '--fork', '--kill-child',
                    '--mount-proc', 'setpriv', '--reuid=var', '--regid=var', '--init-groups',
                    sys.executable, '-B', str(Path(__file__).resolve()), '--probe', str(source),
@@ -114,6 +155,13 @@ class ReapingTests(unittest.TestCase):
     def test_unexpected_supervisor_death_retains_managed_status_and_missing_outcome(self):
         result = self.run_probe('supervisor-killed')
         self.assertEqual(result, {'status': -signal.SIGKILL, 'missing_outcome': True})
+
+    def test_exit_during_last_empty_observation_cannot_lose_its_notification(self):
+        self.assertEqual(self.run_probe('signal-race')['remaining_during_wait'], 0)
+        self.assertEqual(self.run_probe('signal-race', racy=True)['remaining_during_wait'], 1)
+
+    def test_ignored_sigchld_cannot_silently_destroy_managed_status(self):
+        self.assertEqual(self.run_probe('ignored-handler'), {'refused_ignored_handler': True})
 
 
 if __name__ == '__main__':
