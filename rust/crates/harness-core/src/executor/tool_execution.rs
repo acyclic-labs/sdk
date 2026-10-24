@@ -998,7 +998,7 @@ mod cancellation_tests {
             } else {
                 Ok(())
             };
-            let result = futures::executor::block_on(async {
+            let result: Result<Option<u8>> = futures::executor::block_on(async {
                 match cancel_safe_call(Held(retired.clone()), futures::future::ready(cancellation))
                     .await
                 {
