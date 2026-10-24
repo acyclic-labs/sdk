@@ -3,6 +3,9 @@ use crate::access::{Conditions, Effect, Generations, PrincipalKind, ResourcePatt
 use std::cell::RefCell;
 use std::sync::Arc;
 
+#[cfg(test)]
+mod tests;
+
 // No principal or credential is retained here. The flattened records use vectors,
 // rather than allocator-private BTree nodes, so retained capacity is measurable.
 struct ProgramRule {
@@ -300,16 +303,10 @@ impl CompiledPolicy {
             remaining,
             &mut reserve,
         )?;
-        if self
-            .states
-            .len()
-            .checked_mul(view.states.len())
-            .is_none_or(|count| count > MAXIMUM_STATES)
-        {
-            return Err(InvalidPolicy("combined policy exceeds DFA state limit"));
-        }
+        let reachable = self.reachable_pairs(&view, remaining, &mut reserve)?;
         let binding = Binding {
             policy: Arc::clone(self),
+            reachable,
             principal: Caller::new(principal),
             lineage: resource.lineage.to_vec(),
             generation: resource.generation,
@@ -349,7 +346,7 @@ impl CompiledPolicy {
                 .iter()
                 .flatten()
                 .any(|grant| grant.resource.generations != Generations::All)
-            || (0..view.state_count()).any(|state| {
+            || view.state_ids().any(|state| {
                 (view.decision(state, Action::Read, context.now).allowed
                     || view.decision(state, Action::List, context.now).allowed)
                     && !view
@@ -358,10 +355,75 @@ impl CompiledPolicy {
             });
         Ok(view)
     }
+
+    // Keep product-state identifiers so path steps need no lookup or allocation.
+    // Only reachable pairs count towards the DFA bound. The common universal
+    // ceiling has one state and can use the shared program's dense identifiers.
+    fn reachable_pairs(
+        &self,
+        view: &PathTrie,
+        remaining: &mut usize,
+        reserve: &mut impl FnMut(usize) -> Result<(), InvalidPolicy>,
+    ) -> Result<Option<Vec<usize>>, InvalidPolicy> {
+        if view.states.len() == 1 {
+            return Ok(None);
+        }
+        let maximum = self
+            .states
+            .len()
+            .saturating_mul(view.states.len())
+            .min(MAXIMUM_STATES);
+        reserve(2 * maximum * size_of::<usize>())?;
+        let mut reachable = Vec::with_capacity(maximum);
+        let mut pending = Vec::with_capacity(maximum);
+        reachable.push(0);
+        pending.push(0);
+        let symbols = || {
+            self.alphabet
+                .symbols
+                .iter()
+                .chain(&view.alphabet.symbols)
+                .copied()
+        };
+        let mut other = None;
+        for ch in (1..=0x10ffff).filter_map(char::from_u32) {
+            spend(
+                remaining,
+                self.alphabet.symbols.len() + view.alphabet.symbols.len() + 1,
+            )?;
+            if !symbols().any(|symbol| symbol == ch) {
+                other = Some(ch);
+                break;
+            }
+        }
+        let other = other.ok_or(InvalidPolicy("combined policy has no other symbol"))?;
+        let mut cursor = 0;
+        while let Some(&state) = pending.get(cursor) {
+            cursor += 1;
+            for ch in symbols().chain(std::iter::once(other)) {
+                spend(
+                    remaining,
+                    reachable.len().checked_ilog2().unwrap_or(0) as usize + 3,
+                )?;
+                let next = self.step(state / view.states.len(), ch)? * view.states.len()
+                    + view.ceiling_step(state % view.states.len(), ch)?;
+                if let Err(index) = reachable.binary_search(&next) {
+                    if reachable.len() == MAXIMUM_STATES {
+                        return Err(InvalidPolicy("combined policy exceeds DFA state limit"));
+                    }
+                    spend(remaining, reachable.len() - index + 1)?;
+                    reachable.insert(index, next);
+                    pending.push(next);
+                }
+            }
+        }
+        Ok(Some(reachable))
+    }
 }
 
 pub(super) struct Binding {
     pub(super) policy: Arc<CompiledPolicy>,
+    pub(super) reachable: Option<Vec<usize>>,
     principal: Caller,
     lineage: Vec<String>,
     generation: u64,
@@ -380,6 +442,10 @@ impl Binding {
     pub(super) fn logical_owned_bytes(&self) -> u64 {
         // Facts are a per-caller layer. No rule/path table is included here.
         (size_of::<Self>()
+            + self
+                .reachable
+                .as_ref()
+                .map_or(0, |states| states.capacity() * size_of::<usize>())
             + self.principal.id.capacity()
             + self.principal.lineage.capacity() * size_of::<String>()
             + self
