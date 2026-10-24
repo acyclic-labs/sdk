@@ -11,6 +11,11 @@ use acyclic_native_runtime::spawn;
 use crate::goal::request_head as record;
 use record::Turn;
 
+pub(super) type ClaimedTurn<'a> = (
+    Admission<RuntimeTask<crate::executor::TurnOutput>>,
+    Option<super::orphans::Driving<'a>>,
+);
+
 /// Where this thread's latest head publication stands: before its request
 /// write, inside it (where the head becomes durable at an await the caller
 /// cannot see), written but not yet admitted, or admitted. Cancellation
@@ -326,15 +331,7 @@ impl LocalHarness {
         &'a self,
         operation: OperationId,
         prompt: &'a str,
-    ) -> Result<
-        crate::conversation::BoundedContentFuture<
-            'a,
-            (
-                Admission<RuntimeTask<crate::executor::TurnOutput>>,
-                Option<super::orphans::Driving<'a>>,
-            ),
-        >,
-    > {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ClaimedTurn<'a>>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             serialized(&self.admission, async || {
                 // Every accepted admission of this operation, retries included,

@@ -53,6 +53,74 @@ struct WorkflowIdentities<'a> {
 }
 
 impl WorkflowIdentities<'_> {
+    fn validate_next(
+        &self,
+        admission: &WorkflowAdmission,
+        previous: Option<&WorkflowRecord>,
+        record: &WorkflowRecord,
+        io: Option<&PreparationIo>,
+        stored: bool,
+    ) -> Result<()> {
+        let checkpoint = previous
+            .map(WorkflowRecord::checkpoint)
+            .transpose()?
+            .unwrap_or((
+                &admission.initial.machine,
+                admission.initial.revision,
+                &admission.initial.state,
+            ));
+        let terminal = previous
+            .is_some_and(|prior| !matches!(prior.transition.status, MachineStatus::Suspended));
+        validate_workflow_next(checkpoint, terminal, &self.reserved, &self.keys, record, io)
+            .map_err(|error| {
+                if stored && !error.is_native_failure() {
+                    Error::Storage(
+                        "workflow history diverges from admission or reuses an identity".into(),
+                    )
+                } else {
+                    error
+                }
+            })
+    }
+
+    fn candidate_revision(
+        &self,
+        admission: &WorkflowAdmission,
+        candidate: &WorkflowRecord,
+        require_next: bool,
+        previous: Option<&WorkflowRecord>,
+        matched: Option<&WorkflowRecord>,
+        io: Option<&PreparationIo>,
+    ) -> Result<u64> {
+        let revision = previous
+            .map(WorkflowRecord::checkpoint)
+            .transpose()?
+            .map_or(0, |(_, revision, _)| revision);
+        if let Some(io) = io {
+            io.check_cancellation()?;
+        }
+        for identity in candidate.operation_ids() {
+            if let Some(io) = io {
+                io.charge(acyclic_fs::WorkCounters {
+                    items_examined: 1,
+                    ..Default::default()
+                })?;
+            }
+            if self.reserved.contains(&identity)
+                && matched.is_none()
+                && previous.is_none_or(|prior| prior.operation_id != candidate.operation_id)
+            {
+                return Err(Error::Conflict(
+                    "workflow command identity is already bound".into(),
+                ));
+            }
+        }
+        if require_next && revision == candidate.prior.revision {
+            self.validate_next(admission, previous, candidate, io, false)?;
+        }
+        Ok(revision)
+    }
+
     fn advance(&mut self, record: &WorkflowRecord) -> Result<()> {
         let Some(hold) = &mut self.hold else {
             self.reserved.extend(record.operation_ids());

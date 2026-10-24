@@ -708,7 +708,7 @@ pub(super) async fn stock_restart_with_publication_fault(
                         IdempotencyKey::new("complete")?,
                         json!(7),
                         None
-                    )
+                    )?
                     .await
                     .is_err()
             );

@@ -273,36 +273,7 @@ where
                     break;
                 }
                 for record in page {
-                    let checkpoint = previous
-                        .as_ref()
-                        .map(WorkflowRecord::checkpoint)
-                        .transpose()?
-                        .unwrap_or((
-                            &admission.initial.machine,
-                            admission.initial.revision,
-                            &admission.initial.state,
-                        ));
-                    let terminal = previous.as_ref().is_some_and(|prior| {
-                        !matches!(prior.transition.status, MachineStatus::Suspended)
-                    });
-                    validate_workflow_next(
-                        checkpoint,
-                        terminal,
-                        &identities.reserved,
-                        &identities.keys,
-                        &record,
-                        io,
-                    )
-                    .map_err(|error| {
-                        if error.is_native_failure() {
-                            error
-                        } else {
-                            Error::Storage(
-                                "workflow history diverges from admission or reuses an identity"
-                                    .into(),
-                            )
-                        }
-                    })?;
+                    identities.validate_next(admission, previous.as_ref(), &record, io, true)?;
                     identities.advance(&record)?;
                     if let Some(prior) = previous.take() {
                         if prior.operation_id == operation_id {
@@ -331,54 +302,14 @@ where
                 }
                 previous_page_owned = if page_has_match { 0 } else { page_owned };
             }
-            let revision = previous
-                .as_ref()
-                .map(WorkflowRecord::checkpoint)
-                .transpose()?
-                .map_or(0, |(_, revision, _)| revision);
-            if let Some(io) = io {
-                io.check_cancellation()?;
-            }
-            for identity in candidate.operation_ids() {
-                if let Some(io) = io {
-                    io.charge(acyclic_fs::WorkCounters {
-                        items_examined: 1,
-                        ..Default::default()
-                    })?;
-                }
-                if identities.reserved.contains(&identity)
-                    && matched.is_none()
-                    && previous
-                        .as_ref()
-                        .is_none_or(|prior| prior.operation_id != operation_id)
-                {
-                    return Err(Error::Conflict(
-                        "workflow command identity is already bound".into(),
-                    ));
-                }
-            }
-            if require_next && revision == candidate.prior.revision {
-                let checkpoint = previous
-                    .as_ref()
-                    .map(WorkflowRecord::checkpoint)
-                    .transpose()?
-                    .unwrap_or((
-                        &admission.initial.machine,
-                        admission.initial.revision,
-                        &admission.initial.state,
-                    ));
-                let terminal = previous.as_ref().is_some_and(|prior| {
-                    !matches!(prior.transition.status, MachineStatus::Suspended)
-                });
-                validate_workflow_next(
-                    checkpoint,
-                    terminal,
-                    &identities.reserved,
-                    &identities.keys,
-                    candidate,
-                    io,
-                )?;
-            }
+            let revision = identities.candidate_revision(
+                admission,
+                candidate,
+                require_next,
+                previous.as_ref(),
+                matched.as_ref(),
+                io,
+            )?;
             if let Some(prior) = previous
                 && prior.operation_id == operation_id
             {

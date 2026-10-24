@@ -121,27 +121,7 @@ where
                 };
                 (held, reference)
             };
-            let (_expected_path, expected_path) = {
-                let expected_path = crate::executor::with_history_io(io, |work| {
-                    crate::executor::preparation_format(
-                        format_args!(".system/workflows/{}/admission.json", self.id()),
-                        work,
-                    )
-                })?;
-                let held = io
-                    .map(|io| io.guard_owned(expected_path.capacity() as u64))
-                    .transpose()?;
-                (held, expected_path)
-            };
-            if reference.volume() != &self.volume
-                || reference.path() != expected_path
-                || reference.descriptor().media_type() != "application/json"
-            {
-                return Err(reject(
-                    crate::wire::ErrorCode::Unauthorized,
-                    "workflow admission belongs to another volume",
-                ));
-            }
+            self.validate_admission_reference(&reference, io)?;
             let _bytes;
             let bytes = self.read_bound_content(&reference, io).await?;
             _bytes = external_read_hold(&bytes, io)?;
@@ -159,6 +139,36 @@ where
             }
             Ok(Some(admission))
         })
+    }
+
+    fn validate_admission_reference(
+        &self,
+        reference: &FileRef,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        let (_expected_path, expected_path) = {
+            let expected_path = crate::executor::with_history_io(io, |work| {
+                crate::executor::preparation_format(
+                    format_args!(".system/workflows/{}/admission.json", self.id()),
+                    work,
+                )
+            })?;
+            let held = io
+                .map(|io| io.guard_owned(expected_path.capacity() as u64))
+                .transpose()?;
+            (held, expected_path)
+        };
+        if reference.volume() != &self.volume
+            || reference.path() != expected_path
+            || reference.descriptor().media_type() != "application/json"
+        {
+            return Err(observation_boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "workflow admission belongs to another volume",
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) async fn admit_with_io(

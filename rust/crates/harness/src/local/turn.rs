@@ -271,15 +271,8 @@ impl LocalHarness {
         &'a self,
         operation: OperationId,
         prompt: &'a str,
-    ) -> Result<
-        crate::conversation::BoundedContentFuture<
-            'a,
-            (
-                Admission<RuntimeTask<TurnOutput>>,
-                Option<super::orphans::Driving<'a>>,
-            ),
-        >,
-    > {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, super::admission::ClaimedTurn<'a>>>
+    {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             if prompt.is_empty() || prompt.len() as u64 > self.limits.file_bytes {
                 return Err(Error::Invalid(
