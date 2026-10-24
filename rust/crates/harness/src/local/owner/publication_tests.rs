@@ -120,8 +120,9 @@ fn negative_control_an_owner_reader_can_outrun_the_publishers_flush() {
 fn private_legacy_owner_migrates_once_without_changing_its_original_identity() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("owner.json");
+    let key = vec![71_u8; 32];
     let owner: Owner = serde_json::from_value(serde_json::json!({
-        "key": [71; 32].to_vec(), "agent": AgentId::from_bytes([72; 16]),
+        "key": key, "agent": AgentId::from_bytes([72; 16]),
         "task": TaskId::from_bytes([73; 16]),
         "project": VolumeRef::new(
             crate::resources::ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None).unwrap(),
