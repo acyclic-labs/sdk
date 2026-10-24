@@ -59,6 +59,7 @@ dependencies = [
  "sha2",
  "thiserror",
  "ts-rs",
+ "url",
  "zeroize",
 ]
 
@@ -236,6 +237,7 @@ dependencies = [
  "js-sys",
  "jsonschema",
  "once_cell",
+ "pin-project-lite",
  "prost",
  "prost-build",
  "prost-reflect",
@@ -284,12 +286,17 @@ dependencies = [
 name = "acyclic-markdown"
 version = "0.2.0"
 dependencies = [
+ "acyclic-markdown-work",
  "pulldown-cmark",
  "syntect",
  "unicase",
  "unicode-segmentation",
  "unicode-width",
 ]
+
+[[package]]
+name = "acyclic-markdown-work"
+version = "0.2.0"
 
 [[package]]
 name = "acyclic-native-runtime"

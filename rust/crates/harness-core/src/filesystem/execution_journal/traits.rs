@@ -281,12 +281,11 @@ where
     ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
         if io.is_none() {
             return crate::conversation::BoundedContentFuture::new(None, || {
-                let span = obs_span!("acyclic.harness.journal.stage", bytes = bytes.len());
-                // Construct directly in the one admitted allocation, before
-                // polling. No async forwarding frame duplicates the storage
-                // future or requires a second trait-erasure allocation.
-                crate::obs::traced_future(
-                    span,
+                // Construct one storage payload, but acquire its tracing
+                // parent only when polling begins. No forwarding coroutine
+                // duplicates that payload or needs a second allocation.
+                crate::obs::traced_on_poll(
+                    move || obs_span!("acyclic.harness.journal.stage", bytes = bytes.len()),
                     self.stage_with_io(operation, key, bytes, media, None),
                 )
             });

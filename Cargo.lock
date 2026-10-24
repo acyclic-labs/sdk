@@ -459,6 +459,7 @@ dependencies = [
  "jsonschema",
  "loom",
  "once_cell",
+ "pin-project-lite",
  "proc-macro2",
  "proptest",
  "prost",

@@ -13,7 +13,7 @@ pub(super) fn expected_saved_bytes(mode: usize) -> usize {
     FRAME_BYTES.get()[mode] + TRACE_BYTES.get()[mode] - UNMETERED_BYTES.get()[mode]
 }
 
-fn unmetered_layout(mode: usize, future: impl std::future::Future) {
+fn unmetered_layout(mode: usize, future: impl Sized) {
     let mut sizes = UNMETERED_BYTES.get();
     sizes[mode] = std::mem::size_of_val(&future);
     UNMETERED_BYTES.set(sizes);
@@ -246,15 +246,20 @@ pub(super) fn stage<'a>(
     media: &'static str,
     io: Option<&'a PreparationIo>,
 ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
-    // The one-box staging factory constructs its traced payload directly;
-    // an async forwarding reference would retain an additional coroutine state.
-    let span = obs_span!("acyclic.harness.journal.stage", bytes = bytes.len());
+    // Independent concrete layout: one pinned payload, a lazy span and its
+    // factory. No async forwarding state and no production adapter reuse.
+    struct PollLayout<F, B> {
+        _future: Option<F>,
+        _span: Option<crate::obs::OperationSpan>,
+        _build: B,
+    }
     unmetered_layout(
         4,
-        single_payload_trace_frame(
-            span,
-            journal.stage_with_io(operation, key, bytes, media, None),
-        ),
+        PollLayout {
+            _future: Some(journal.stage_with_io(operation, key, bytes, media, None)),
+            _span: None,
+            _build: move || obs_span!("acyclic.harness.journal.stage", bytes = bytes.len()),
+        },
     );
     #[cfg(not(target_arch = "wasm32"))]
     let native = match io.and_then(PreparationIo::original_native_work) {

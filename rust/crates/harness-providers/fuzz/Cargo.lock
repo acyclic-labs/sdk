@@ -165,6 +165,7 @@ dependencies = [
  "js-sys",
  "jsonschema",
  "once_cell",
+ "pin-project-lite",
  "prost",
  "prost-build",
  "prost-reflect",
