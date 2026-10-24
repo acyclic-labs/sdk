@@ -222,6 +222,9 @@ def cost_receipt(env,server,started_cpu,started_cache_cpu,started_wall):
 def run(argv):
     meta=os.environ.get('BUILD_SLOT_RECEIPT_META')
     if not meta: raise RuntimeError('bb-job requires a terminal-receipt owner')
+    if 'NoNewPrivs:\t1' in Path('/proc/self/status').read_text():
+        print('[buildbox] HOME guard INFRA: inherited no_new_privs disables required setuid FUSE',file=sys.stderr,flush=True)
+        return 224
     # The kernel mount flags, not a caller-supplied marker, decide whether a
     # namespace is needed. No no_new_privs: fusermount3 must retain setuid.
     if not os.statvfs('/home/var').f_flag & os.ST_RDONLY:

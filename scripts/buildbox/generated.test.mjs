@@ -80,9 +80,11 @@ test('a restarted client cannot reuse a detached jobs source copy',()=>{
   for(const negative of [false,true]){
    const source=negative?original.replace('return `${key}-${path.basename(jobPrefix)}`;','return key;'):original;
    fs.writeFileSync(path.join(cwd,'generator.mjs'),source+'\nexport { sourceCopyKey };\n');
-   const probe=`import {sourceCopyKey} from './generator.mjs';import assert from 'node:assert/strict';
+   const probe=`import {sourceCopyKey} from './generator.mjs';import assert from 'node:assert/strict';import fs from 'node:fs';import path from 'node:path';
 const key='pr-gate-fixture.0';const old=sourceCopyKey(key,'/mnt/bb/jobs/100-1-a');const next=sourceCopyKey(key,'/mnt/bb/jobs/101-1-b');
-assert.notEqual(old,next,'local claim reuse reset a detached remote checkout');assert.ok(!old.includes('/'));
+fs.mkdirSync(old,{recursive:true});fs.writeFileSync(path.join(old,'source'),'first job');
+fs.mkdirSync(next,{recursive:true});fs.writeFileSync(path.join(next,'source'),'second job');
+assert.equal(fs.readFileSync(path.join(old,'source'),'utf8'),'first job','local claim reuse reset a detached remote checkout');assert.ok(!old.includes('/'));
 assert.equal(old,sourceCopyKey(key,'/mnt/bb/jobs/100-1-a'));
 `;
    const result=spawnSync(process.execPath,['--input-type=module','-e',probe],{cwd,encoding:'utf8'});

@@ -152,6 +152,13 @@ sys.stdout.buffer.write(bytes(range(256)))
         self.assertEqual(result.returncode,1);self.assertIn(b'Read-only file system',result.stderr)
         self.assertFalse(path.exists())
 
+    def test_legacy_no_new_privs_parent_is_explicit_infra(self):
+        worker=self.worker()
+        code=f'import ctypes,os,sys;assert ctypes.CDLL(None).prctl(38,1,0,0,0)==0;os.execv(sys.executable,[sys.executable,{str(worker)!r},sys.executable,"-c","print(123)"])'
+        result,_=self.run_job([sys.executable,'-c',code])
+        self.assertEqual(result.returncode,224);self.assertEqual(result.stdout,b'')
+        self.assertIn(b'HOME guard INFRA: inherited no_new_privs',result.stderr)
+
     def test_private_home_preserves_real_fuse_mount_and_no_new_privs_negative_control(self):
         code='''import array,ctypes,os,socket,subprocess,tempfile
 from pathlib import Path
