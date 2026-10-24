@@ -7,6 +7,50 @@ import YAML from "./vendor/yaml.cjs";
 
 const workflow = YAML.parse(readFileSync(".github/workflows/release-acyclic.yml", "utf8"));
 
+function assertCacheRevisions(action, release) {
+  let revision;
+  for (const [steps, names, operation] of [
+    [action.runs.steps, ["Restore Cargo downloads", "Restore compiler output"], "restore"],
+    [release.jobs.build.steps, ["Save native compiler output", "Save native Cargo downloads"], "save"],
+  ]) {
+    for (const name of names) {
+      const uses = steps.find(step => step.name === name)?.uses;
+      const pinned = new RegExp(`^actions/cache/${operation}@([0-9a-f]{40})$`).exec(uses);
+      assert.ok(pinned, `${name} requires an immutable ${operation} action`);
+      revision ??= pinned[1];
+      assert.equal(pinned[1], revision, `${name} must preserve the cache action revision`);
+    }
+  }
+}
+
+test("cache revision agreement covers every immutable restore/save pin", () => {
+  const fixture = () => {
+    const action = YAML.parse(readFileSync(".github/actions/rust-build-cache/action.yml", "utf8"));
+    const release = structuredClone(workflow);
+    const steps = [
+      ...["downloads", "compiler"].map(id => action.runs.steps.find(step => step.id === id)),
+      ...["Save native compiler output", "Save native Cargo downloads"].map(name => release.jobs.build.steps.find(step => step.name === name)),
+    ];
+    return { action, release, steps };
+  };
+  for (let mask = 0; mask < 16; mask++) {
+    const { action, release, steps } = fixture();
+    steps.forEach((step, index) => { step.uses = step.uses.split("@")[0] + "@" + ((mask >> index) & 1 ? "a" : "b").repeat(40); });
+    if (mask === 0 || mask === 15) assertCacheRevisions(action, release);
+    else assert.throws(() => assertCacheRevisions(action, release), /preserve the cache action revision/);
+  }
+  for (let index = 0; index < 4; index++) {
+    for (const pin of ["v6", "a".repeat(39), "g".repeat(40)]) {
+      const { action, release, steps } = fixture();
+      steps[index].uses = steps[index].uses.split("@")[0] + "@" + pin;
+      assert.throws(() => assertCacheRevisions(action, release), /requires an immutable/);
+    }
+    const { action, release, steps } = fixture();
+    steps[index].uses = `actions/cache/${index < 2 ? "save" : "restore"}@${"a".repeat(40)}`;
+    assert.throws(() => assertCacheRevisions(action, release), /requires an immutable/);
+  }
+});
+
 test("the product Cargo invocation preserves the configured compiler wrapper", () => {
   const result = spawnSync(process.execPath, ["--input-type=module", "--eval", `
     import childProcess from 'node:child_process';
@@ -32,7 +76,7 @@ test("the product Cargo invocation preserves the configured compiler wrapper", (
 test("native compiler caches keep one daily snapshot while restoring the previous working set", () => {
   const action = YAML.parse(readFileSync(".github/actions/rust-build-cache/action.yml", "utf8"));
   const compiler = action.runs.steps.find(step => step.name === "Restore compiler output");
-  assert.equal(compiler.uses, "actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25");
+  assertCacheRevisions(action, workflow);
   assert.equal(compiler.with.path, "${{ runner.temp }}/sccache");
   const [matchingInputs, matchingTarget] = compiler.with["restore-keys"].trim().split("\n");
   assert.equal(compiler.with.key, matchingInputs + "${{ steps.cache-day.outputs.day }}");
@@ -68,7 +112,6 @@ test("native restore summaries use matched-key outputs and post-build saves pres
     for (const [id, name] of [["compiler", "Save native compiler output"], ["downloads", "Save native Cargo downloads"]]) {
       const save = steps.find(step => step.name === name);
       const cached = action.runs.steps.find(step => step.id === id);
-      assert.equal(save.uses, "actions/cache/save@caa296126883cff596d87d8935842f9db880ef25");
       assert.equal(save.with.path, cached.with.path);
       assert.equal(save.with.key, `\${{ steps.rust-cache.outputs.${id}-key }}`);
       assert.equal(save.if, id === "compiler"
