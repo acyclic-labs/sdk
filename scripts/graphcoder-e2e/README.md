@@ -61,6 +61,13 @@ receipt has `qualification: false`; a successful selection never qualifies the
 complete platform. The full run requires both passing cases and coverage.
 Known product failures retain their assertions and fail normally.
 
+`instructions-and-skills` checks discovery without loading an unselected skill
+body. `skill-invocation` selects `/inventory` through headless and real-PTY
+composer input, then requires the instruction markers, selected body and expanded
+arguments in the actual model request. Both paths use the retained skill catalog
+and its pinned body reader. A live inventory that requires a body must select
+the skill explicitly; listing available skill metadata does not invoke it.
+
 `matrix.json` embeds each case's complete captures and acknowledged requests.
 The identical JSON is published to retained job stdout before writing the export
 file. Serial aggregates retain child stdout/stderr even when that child's report

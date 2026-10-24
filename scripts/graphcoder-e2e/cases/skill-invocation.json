@@ -1,0 +1,53 @@
+{
+  "id": "skill-invocation",
+  "workspace": {
+    "kind": "plain",
+    "files": {
+      "AGENTS.md": "AGENTS_E2E_INSTRUCTION\n",
+      "CLAUDE.md": "CLAUDE_E2E_INSTRUCTION\n",
+      ".agents/skills/inventory/SKILL.md": "---\nname: inventory\ndescription: Report the supplied instruction and skill inventory\n---\nSKILL_E2E_BODY\n$ARGUMENTS\n"
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {"contains": "SKILL_E2E_BODY"},
+        "text": ["INVENTORY_E2E_DONE"]
+      },
+      {
+        "when": {"contains": "SKILL_E2E_BODY"},
+        "text": ["INVENTORY_E2E_PTY_DONE"]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "/inventory Report the exact instruction and skill markers supplied in your context.",
+      "answer": "INVENTORY_E2E_DONE"
+    },
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {"contains": ["GraphCoder"], "cursor": true},
+          "prompt": "/inventory Report the exact instruction and skill markers supplied in your context."
+        },
+        {
+          "when": {"contains": ["INVENTORY_E2E_PTY_DONE", "\u25cb"]},
+          "send": "\u0004"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 2,
+    "last_model_contains": [
+      "AGENTS_E2E_INSTRUCTION",
+      "CLAUDE_E2E_INSTRUCTION",
+      "SKILL_E2E_BODY",
+      "Report the exact instruction and skill markers supplied in your context."
+    ],
+    "model_absent": ["$ARGUMENTS"]
+  }
+}

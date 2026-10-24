@@ -323,7 +323,7 @@ impl CommandCatalog {
         Ok(catalog)
     }
 
-    fn add_skills(&mut self, skills: Vec<SkillSpec>) -> Result<()> {
+    pub(crate) fn add_skills(&mut self, skills: Vec<SkillSpec>) -> Result<()> {
         for skill in skills {
             let name = skill.name.to_ascii_lowercase();
             let spec = CommandSpec {

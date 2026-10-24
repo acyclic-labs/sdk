@@ -27,6 +27,7 @@
   ],
   "assert": {
     "requests": 1,
+    "model_absent": ["SKILL_E2E_BODY"],
     "model_contains": [
       "AGENTS_E2E_INSTRUCTION",
       "CLAUDE_E2E_INSTRUCTION",

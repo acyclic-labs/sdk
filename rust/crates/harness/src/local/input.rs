@@ -369,6 +369,73 @@ impl ComposerInput {
     }
 
     #[cfg(any(test, feature = "native-execution"))]
+    async fn checkout_command_catalog(
+        &self,
+        catalog: CommandCatalog,
+        root: &ContextRoot,
+        workspace: &LocalWorkspace,
+        view: &workspace::View,
+        cut: acyclic_fs::LazySnapshotRef,
+        accounting: &mut acyclic_fs::kernel::KernelAccounting<'_>,
+    ) -> Result<CommandCatalog> {
+        let (work, cancellation) = original_work(accounting)?;
+        let limits = ContextDiscoveryLimits::default();
+        let mut directories = 0_u32;
+        let mut entries = 0_u32;
+        let mut remaining = self.maximum_bytes;
+        let mut bounds = native_sources::Bounds {
+            directories: &mut directories,
+            entries: &mut entries,
+            remaining: &mut remaining,
+            limits,
+        };
+        let user_prefix = format!("{}/user", root.directory);
+        native_sources::capture(
+            self.settings.as_ref(),
+            &user_prefix,
+            self.publisher.as_ref(),
+            work,
+            cancellation,
+            &mut bounds,
+        )
+        .await?;
+        capture_checkout_commands(
+            view,
+            cut,
+            &root.directory,
+            self.publisher.as_ref(),
+            accounting,
+            &mut bounds,
+        )
+        .await?;
+        let mut catalog = catalog
+            .with_sources(
+                self.reader.as_ref(),
+                &[
+                    CommandRoot {
+                        scope: CommandScope::User,
+                        root: ContextRoot {
+                            volume: self.journal.clone(),
+                            directory: user_prefix,
+                        },
+                    },
+                    CommandRoot {
+                        scope: CommandScope::Project,
+                        root: root.clone(),
+                    },
+                ],
+                &[],
+                limits,
+            )
+            .await?;
+        // Share the model context's retained catalog. Rediscovering host
+        // paths here would lose selected-child and authored skill sources.
+        if let Some(sources) = self.files.skill_sources(&self.journal)? {
+            catalog.add_skills(sources.catalog(&workspace.path, view).await?)?;
+        }
+        Ok(catalog)
+    }
+    #[cfg(any(test, feature = "native-execution"))]
     async fn resolve_checkout_input(
         &self,
         operation: OperationId,
@@ -416,134 +483,11 @@ impl ComposerInput {
             volume: self.journal.clone(),
             directory: prefix.clone(),
         };
-        let limits = ContextDiscoveryLimits::default();
         let catalog = if commands
             && text.trim_start().starts_with('/')
             && !catalog.selects_sourceless(text, self.maximum_bytes)?
         {
-            let mut pending = native_storage::PathFrontier::new(&work)?;
-            for path in [".claude/commands", ".codex/prompts"] {
-                pending.push(native_storage::path(&work, &[path])?)?;
-            }
-            let mut directories = 0_u32;
-            let mut entries = 0_u32;
-            let mut remaining = self.maximum_bytes;
-            let user_prefix = format!("{prefix}/user");
-            native_sources::capture(
-                self.settings.as_ref(),
-                &user_prefix,
-                publisher.as_ref(),
-                &work,
-                &cancellation,
-                &mut native_sources::Bounds {
-                    directories: &mut directories,
-                    entries: &mut entries,
-                    remaining: &mut remaining,
-                    limits,
-                },
-            )
-            .await?;
-            while let Some(path) = pending.pop() {
-                let path = &path.value;
-                let absolute = native_storage::path(&work, &["/", path])?;
-                directories += 1;
-                if directories > limits.directories {
-                    return Err(Error::Invalid("command directory bound exceeded".into()));
-                }
-                let mut cursor = None;
-                loop {
-                    let listed = view
-                        .list_directory_at_snapshot(
-                            cut,
-                            &absolute.value,
-                            cursor,
-                            128,
-                            &mut accounting,
-                        )
-                        .await;
-                    let (page, _, allocation) = match listed {
-                        Ok(page) => page,
-                        Err(
-                            acyclic_fs::LazyWorkspaceError::NotFound
-                            | acyclic_fs::LazyWorkspaceError::Filesystem(
-                                acyclic_fs::FsError::NotFound,
-                            ),
-                        ) if matches!(path.as_str(), ".claude/commands" | ".codex/prompts") => {
-                            break;
-                        }
-                        Err(error) => return Err(error.into()),
-                    };
-                    let page = Held {
-                        value: page,
-                        _allocation: allocation,
-                    };
-                    for entry in &page.value.entries {
-                        entries += 1;
-                        if entries > limits.entries {
-                            return Err(Error::Invalid("command entry bound exceeded".into()));
-                        }
-                        let (name, allocation) = entry
-                            .name
-                            .unicode_text(&work, &cancellation)
-                            .map_err(storage)?;
-                        let name = Held {
-                            value: name,
-                            _allocation: allocation,
-                        };
-                        let name = &name.value;
-                        let child = native_storage::path(&work, &[path, "/", name])?;
-                        match entry.kind {
-                            acyclic_fs::demand::SourceNodeKind::Directory => pending.push(child)?,
-                            acyclic_fs::demand::SourceNodeKind::RegularFile
-                                if name.ends_with(".md") =>
-                            {
-                                let used = copy_checkout_file(
-                                    view,
-                                    cut,
-                                    &prefix,
-                                    &child.value,
-                                    remaining,
-                                    publisher.as_ref(),
-                                    &mut accounting,
-                                )
-                                .await?;
-                                remaining = remaining.checked_sub(used).ok_or_else(|| {
-                                    Error::Invalid("command byte bound exceeded".into())
-                                })?;
-                            }
-                            _ if name.ends_with(".md") => {
-                                return Err(Error::Invalid(
-                                    "command entry is not a regular file".into(),
-                                ));
-                            }
-                            _ => {}
-                        }
-                    }
-                    cursor = page.value.next;
-                    if cursor.is_none() {
-                        break;
-                    }
-                }
-            }
-            catalog
-                .with_sources(
-                    reader,
-                    &[
-                        CommandRoot {
-                            scope: CommandScope::User,
-                            root: ContextRoot {
-                                volume: self.journal.clone(),
-                                directory: user_prefix,
-                            },
-                        },
-                        CommandRoot {
-                            scope: CommandScope::Project,
-                            root: root.clone(),
-                        },
-                    ],
-                    &[],
-                    limits,
-                )
+            self.checkout_command_catalog(catalog, &root, workspace, view, cut, &mut accounting)
                 .await?
         } else {
             catalog
@@ -598,6 +542,111 @@ impl ComposerInput {
 }
 
 #[cfg(any(test, feature = "native-execution"))]
+async fn capture_checkout_commands(
+    view: &workspace::View,
+    cut: acyclic_fs::LazySnapshotRef,
+    prefix: &str,
+    publisher: &dyn ContentPublisher,
+    accounting: &mut acyclic_fs::kernel::KernelAccounting<'_>,
+    bounds: &mut native_sources::Bounds<'_>,
+) -> Result<()> {
+    let (work, cancellation) = original_work(accounting)?;
+    let mut pending = native_storage::PathFrontier::new(work)?;
+    for path in [".claude/commands", ".codex/prompts"] {
+        pending.push(native_storage::path(work, &[path])?)?;
+    }
+    while let Some(path) = pending.pop() {
+        let path = &path.value;
+        let absolute = native_storage::path(work, &["/", path])?;
+        *bounds.directories += 1;
+        if *bounds.directories > bounds.limits.directories {
+            return Err(Error::Invalid("command directory bound exceeded".into()));
+        }
+        let mut cursor = None;
+        loop {
+            let listed = view
+                .list_directory_at_snapshot(cut, &absolute.value, cursor, 128, accounting)
+                .await;
+            let (page, _, allocation) = match listed {
+                Ok(page) => page,
+                Err(
+                    acyclic_fs::LazyWorkspaceError::NotFound
+                    | acyclic_fs::LazyWorkspaceError::Filesystem(acyclic_fs::FsError::NotFound),
+                ) if matches!(path.as_str(), ".claude/commands" | ".codex/prompts") => {
+                    break;
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let page = Held {
+                value: page,
+                _allocation: allocation,
+            };
+            for entry in &page.value.entries {
+                *bounds.entries += 1;
+                if *bounds.entries > bounds.limits.entries {
+                    return Err(Error::Invalid("command entry bound exceeded".into()));
+                }
+                let (name, allocation) = entry
+                    .name
+                    .unicode_text(work, cancellation)
+                    .map_err(storage)?;
+                let name = Held {
+                    value: name,
+                    _allocation: allocation,
+                };
+                let name = &name.value;
+                let child = native_storage::path(work, &[path, "/", name])?;
+                match entry.kind {
+                    acyclic_fs::demand::SourceNodeKind::Directory => pending.push(child)?,
+                    acyclic_fs::demand::SourceNodeKind::RegularFile if name.ends_with(".md") => {
+                        let used = copy_checkout_file(
+                            view,
+                            cut,
+                            prefix,
+                            &child.value,
+                            *bounds.remaining,
+                            publisher,
+                            accounting,
+                        )
+                        .await?;
+                        *bounds.remaining = bounds
+                            .remaining
+                            .checked_sub(used)
+                            .ok_or_else(|| Error::Invalid("command byte bound exceeded".into()))?;
+                    }
+                    _ if name.ends_with(".md") => {
+                        return Err(Error::Invalid("command entry is not a regular file".into()));
+                    }
+                    _ => {}
+                }
+            }
+            cursor = page.value.next;
+            if cursor.is_none() {
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(test, feature = "native-execution"))]
+fn original_work<'a>(
+    accounting: &acyclic_fs::kernel::KernelAccounting<'a>,
+) -> Result<(
+    &'a acyclic_fs::NativeMaterializationWork,
+    &'a acyclic_fs::CancellationToken,
+)> {
+    match accounting {
+        acyclic_fs::kernel::KernelAccounting::NativeOriginal { work, cancellation } => {
+            Ok((*work, *cancellation))
+        }
+        _ => Err(Error::Invalid(
+            "composer capture requires its original work".into(),
+        )),
+    }
+}
+
+#[cfg(any(test, feature = "native-execution"))]
 fn source_display_name(path: &str) -> Result<&str> {
     crate::conversation::validate_content_path(path, &mut None)?;
     path.rsplit('/')
@@ -621,14 +670,7 @@ async fn copy_checkout_file(
             "composer path targets internal content".into(),
         ));
     }
-    let work = match accounting {
-        acyclic_fs::kernel::KernelAccounting::NativeOriginal { work, .. } => *work,
-        _ => {
-            return Err(Error::Invalid(
-                "composer capture requires its original work".into(),
-            ));
-        }
-    };
+    let (work, _) = original_work(accounting)?;
     let absolute = native_storage::path(work, &["/", path])?;
     let (chunk, _) = view
         .read_at_snapshot(cut, &absolute.value, None, maximum, accounting)

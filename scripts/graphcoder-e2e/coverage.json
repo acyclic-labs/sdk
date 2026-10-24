@@ -81,9 +81,10 @@
     },
     "A9": {
       "target": "Instructions, skill descriptors and lazy bodies",
-      "owner": "skills-context",
+      "owner": "e2e-gate",
       "cases": [
         "instructions-and-skills",
+        "skill-invocation",
         "file-mention",
         "pty-mention",
         "custom-slash-command"
