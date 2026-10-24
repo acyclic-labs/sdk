@@ -128,22 +128,22 @@ async fn small_directory_move_does_not_materialize_unrelated_file_records()
     }
     // Actual former full-namespace production path is the independent control.
     // Replacing subtree expansion with it makes both strict inequalities fail.
+    let [expanded, full_scan]: [crate::WorkCounters; 2] = observed
+        .try_into()
+        .map_err(|_| "missing expanded and full-scan work controls")?;
+    assert!(expanded.items_examined < full_scan.items_examined, "{expanded:?} {full_scan:?}");
     assert!(
-        observed[0].items_examined < observed[1].items_examined,
-        "{observed:?}"
-    );
-    assert!(
-        observed[0].peak_allocation_bytes < observed[1].peak_allocation_bytes,
-        "{observed:?}"
+        expanded.peak_allocation_bytes < full_scan.peak_allocation_bytes,
+        "{expanded:?} {full_scan:?}"
     );
     let original =
         crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
             .map_err(|(error, _)| error)?;
     let (retained, guard) = raw_changed_paths(&changes, 6, &original, &cancellation).await?;
     assert_eq!(retained.len(), 6);
-    assert!(original.journal_work()?.items_examined < observed[1].items_examined);
+    assert!(original.journal_work()?.items_examined < full_scan.items_examined);
     drop((retained, guard));
-    println!("SMALL_DIRECTORY_MOVE_WORK {observed:?}");
+    println!("SMALL_DIRECTORY_MOVE_WORK {expanded:?} {full_scan:?}");
     Ok(())
 }
 
