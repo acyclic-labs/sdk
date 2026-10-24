@@ -13,14 +13,14 @@
       "mode": "headless",
       "text": "hello",
       "exit": 1,
-      "stderr_contains": ["discovered skill names are repeated"]
+      "outcome": { "completion": "failed", "error": "conflict: discovered skill names are repeated" }
     },
     {
       "mode": "jsonl",
       "operation": "00000000-0000-0000-0000-000000000002",
       "text": "hello again",
       "exit": 1,
-      "stderr_contains": ["discovered skill names are repeated"]
+      "outcome": { "completion": "failed", "error": "conflict: discovered skill names are repeated" }
     }
   ],
   "assert": { "requests": 0 }
