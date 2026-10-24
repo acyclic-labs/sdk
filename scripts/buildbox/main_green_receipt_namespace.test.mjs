@@ -30,7 +30,7 @@ async function mutant(root) {
   const needle = 'return namespace !== null && owner?.pid_namespace === namespace;';
   assert.equal(source.split(needle).length, 2);
   const file = path.join(root, 'unfenced.mjs');
-  fs.writeFileSync(file, source.replace(needle, 'return true;'));
+  fs.writeFileSync(file, source.replace(needle, 'return owner != null;'));
   return import(pathToFileURL(file).href);
 }
 
@@ -80,4 +80,3 @@ test('a foreign completed receipt cannot enter ledger mutation', async () => {
     assert.equal(fs.existsSync(ledger), negative);
   });
 });
-

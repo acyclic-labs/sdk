@@ -99,6 +99,53 @@ async fn run_on<P: StreamProvider>(
     .await
 }
 
+type ExampleResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+struct ExampleStorage<A, O> {
+    files: Arc<Files<A, O>>,
+    agent: AgentId,
+    source: VolumeRef,
+    destination: VolumeRef,
+    results_volume: VolumeRef,
+    task_id: TaskId,
+    command: OperationId,
+    approval: InteractionId,
+    issuer: AuthorityIssuer,
+    scope: Scope,
+}
+
+struct ExampleTask<P, A, O> {
+    storage: ExampleStorage<A, O>,
+    runtime: Runtime<P, A, O>,
+    fence: LeaseFence,
+}
+
+struct ExampleView<P, A, O> {
+    task: ExampleTask<P, A, O>,
+    directory: tempfile::TempDir,
+    preparation_directory: tempfile::TempDir,
+    owner: Arc<TaskJournalOwner<P>>,
+    view: Arc<NativeVolumeView<A, O>>,
+    allocation: NativePreparationRoot,
+    custody: acyclic_fs::NativeAllocation,
+}
+
+struct ApprovedPlan<P, A, O> {
+    content: Arc<FilesystemContentVerifier<A, O>>,
+    results: Arc<FilesystemContentPublisher<A, O>>,
+    plan: TaskEffectPlan,
+    approvals: Arc<FilesystemExecutionJournal<P, A, O>>,
+}
+
+struct ExampleProcess<P, A, O> {
+    prepared: ExampleView<P, A, O>,
+    request: NativeProcessRequest,
+    approved: ApprovedPlan<P, A, O>,
+    effects: Arc<ConversationEffectHost<P>>,
+    process: Arc<NativeProcessProvider<P, A, O>>,
+    output: Arc<capture::Output>,
+}
+
 async fn prepare_on<P, A, O>(
     mcp: Option<&'static str>,
     stream: std::sync::Arc<P>,
@@ -112,27 +159,22 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    acyclic_native_runtime::initialize_native_io_services()?;
-    acyclic_fs::initialize_native_mount_services()?;
-    let provider = ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?;
-    let files = FilesystemHost::new(filesystem, &provider, None)?;
-    let agent = AgentId::from_bytes([1; 16]);
-    let volume = |name| {
-        VolumeRef::new(
-            provider.clone(),
-            name,
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(agent),
-            &mut None,
-        )
-    };
-    let source = volume("source".into())?;
-    let destination = volume("destination".into())?;
-    let results_volume = volume("results".into())?;
-    let task_id = TaskId::from_bytes([3; 16]);
-    let command = OperationId::from_bytes([4; 16]);
-    let approval = InteractionId::from_bytes([5; 16]);
-    let issuer = issuer();
+    let storage = prepare_storage(mcp, filesystem).await?;
+    let work = capture::work()?;
+    let task = prepare_task(storage, &stream, &work).await?;
+    let prepared = prepare_view(task, &work, restart_path).await?;
+    let process = prepare_process(prepared, &stream, mcp, lost_response, restart_path).await?;
+    finish_preparation(process, mcp, receipt_fault, lost_response, restart_path).await
+}
+
+fn approval_scope(
+    mcp: Option<&'static str>,
+    volumes: [&VolumeRef; 3],
+    issuer: &AuthorityIssuer,
+    agent: AgentId,
+    approval: InteractionId,
+) -> Result<Scope> {
+    let [source, destination, results_volume] = volumes;
     let mut grants = vec![
         "operation:declare".into(),
         "operation:observe".into(),
@@ -157,29 +199,63 @@ where
             "tool:call:mcp.example.echo".into(),
         ]);
     }
-    let scope = issuer
-        .issue(
-            "owner",
-            &Capabilities::new(grants),
-            Some(agent),
-            None,
+    issuer.issue(
+        "owner",
+        &Capabilities::new(grants),
+        Some(agent),
+        None,
+        &mut None,
+    )
+}
+
+async fn prepare_storage<A, O>(
+    mcp: Option<&'static str>,
+    filesystem: Fs<A, O>,
+) -> ExampleResult<ExampleStorage<A, O>>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    acyclic_native_runtime::initialize_native_io_services()?;
+    acyclic_fs::initialize_native_mount_services()?;
+    let provider = ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?;
+    let files = FilesystemHost::new(filesystem, &provider, None)?;
+    let agent = AgentId::from_bytes([1; 16]);
+    let volume = |name| {
+        VolumeRef::new(
+            provider.clone(),
+            name,
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
             &mut None,
         )
-        .expect("scope proof");
+    };
+    let source = volume("source".into())?;
+    let destination = volume("destination".into())?;
+    let results_volume = volume("results".into())?;
+    let task_id = TaskId::from_bytes([3; 16]);
+    let command = OperationId::from_bytes([4; 16]);
+    let approval = InteractionId::from_bytes([5; 16]);
+    let issuer = issuer();
+    let scope = approval_scope(
+        mcp,
+        [&source, &destination, &results_volume],
+        &issuer,
+        agent,
+        approval,
+    )?;
     for volume in [&source, &destination, &results_volume] {
         files.create_volume(volume).await?;
     }
-    let setup_scope = issuer
-        .issue(
-            "setup",
-            &Capabilities::new([source.capability(VolumeOperation::Write, &mut None)?]),
-            Some(agent),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
+    let setup_scope = issuer.issue(
+        "setup",
+        &Capabilities::new([source.capability(VolumeOperation::Write, &mut None)?]),
+        Some(agent),
+        None,
+        &mut None,
+    )?;
     let setup = ContentGrant::verify(
-        &issuer.verifier(&mut None).expect("verifier copy"),
+        &issuer.verifier(&mut None)?,
         &setup_scope,
         &source,
         VolumeOperation::Write,
@@ -200,14 +276,45 @@ where
             acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
-    let work = capture::work()?;
+    Ok(ExampleStorage {
+        files,
+        agent,
+        source,
+        destination,
+        results_volume,
+        task_id,
+        command,
+        approval,
+        issuer,
+        scope,
+    })
+}
+
+async fn prepare_task<P, A, O>(
+    storage: ExampleStorage<A, O>,
+    stream: &Arc<P>,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> ExampleResult<ExampleTask<P, A, O>>
+where
+    P: StreamProvider,
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    let ExampleStorage {
+        files,
+        agent,
+        results_volume,
+        issuer,
+        scope,
+        ..
+    } = &storage;
     let runtime = task::open(
         stream.clone(),
         files.clone(),
         results_volume.clone(),
-        &issuer,
-        &scope,
-        Some(&work),
+        issuer,
+        scope,
+        Some(work),
     )
     .await?;
     let WorkPull::Claimed(lease) = runtime
@@ -229,12 +336,8 @@ where
     let mut conversation = StreamAggregate::open(
         &stream.clone(),
         (
-            issuer
-                .verifier(&mut None)
-                .expect("verifier copy")
-                .audience()
-                .clone(),
-            issuer.verifier(&mut None).expect("verifier copy"),
+            issuer.verifier(&mut None)?.audience().clone(),
+            issuer.verifier(&mut None)?,
             SchemaRegistry::new(),
         ),
         None,
@@ -252,26 +355,57 @@ where
                 expected_revision: 0,
                 scope: scope.clone(),
                 causal_parent: None,
-                action: Action::BindConversation { agent },
+                action: Action::BindConversation { agent: *agent },
             },
             &mut None,
         )
         .await?;
+    let fence = LeaseFence::from(&lease.reservation);
+    Ok(ExampleTask {
+        storage,
+        runtime,
+        fence,
+    })
+}
+
+async fn prepare_view<P, A, O>(
+    task: ExampleTask<P, A, O>,
+    work: &acyclic_fs::NativeMaterializationWork,
+    restart_path: Option<&std::path::Path>,
+) -> ExampleResult<ExampleView<P, A, O>>
+where
+    P: StreamProvider,
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    let ExampleTask {
+        storage,
+        runtime,
+        fence,
+    } = &task;
+    let ExampleStorage {
+        files,
+        task_id,
+        source,
+        destination,
+        issuer,
+        scope,
+        ..
+    } = storage;
     let directory = if let Some(path) = restart_path {
         tempfile::tempdir_in(path.parent().ok_or("restart storage has no parent")?)?
     } else {
         tempfile::tempdir()?
     };
     let work_per_volume = work.budget();
-    let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
-    let fence = LeaseFence::from(&lease.reservation);
+    let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
     let owner = runtime
         .task_host()
-        .journal_owner(task_id, &fence, Some(&io))
+        .journal_owner(*task_id, fence, Some(&io))
         .await?
-        .into_native_shared(&work)?;
+        .into_native_shared(work)?;
     let context = runtime
-        .task_context_with_native_work(task_id, &fence, &work)
+        .task_context_with_native_work(*task_id, fence, work)
         .await?;
     let preparation_directory = tempfile::tempdir_in(
         directory
@@ -281,13 +415,13 @@ where
     )?;
     std::fs::create_dir(preparation_directory.path().join("target"))?;
     std::fs::create_dir(preparation_directory.path().join("backup"))?;
-    let (allocation, _custody) =
-        NativePreparationRoot::witness(directory.path(), preparation_directory.path(), &work)?
+    let (allocation, custody) =
+        NativePreparationRoot::witness(directory.path(), preparation_directory.path(), work)?
             .await?;
     let mut selections = Vec::new();
     for (volume, path, writable) in [
-        (&source, "source", false),
-        (&destination, "destination", true),
+        (source, "source", false),
+        (destination, "destination", true),
     ] {
         let generation = files
             .resolve(
@@ -298,12 +432,12 @@ where
             .generation;
         selections.push((volume, generation, path, writable));
     }
-    let verifier = issuer.verifier(&mut None).expect("verifier copy");
+    let verifier = issuer.verifier(&mut None)?;
     let bindings = selections
         .iter()
         .map(
             |(volume, generation, path, writable)| BorrowedNativeVolumeBinding {
-                host: &files,
+                host: files,
                 volume,
                 generation,
                 path,
@@ -311,7 +445,7 @@ where
                 namespace: &NativeVolumeNamespace::MaterializedDirectory,
                 mounted: None,
                 verifier: &verifier,
-                scope: &scope,
+                scope,
                 publication: PublicationPermit::Unrestricted,
             },
         )
@@ -327,34 +461,61 @@ where
                 work_per_volume,
             },
             &bindings,
-            &work,
+            work,
         )?
         .await?,
     );
-    let mut request = native_request(mcp, lost_response, view.manifest().clone())?;
-    if restart_path.is_some() {
-        request.timeout_ms = 30_000;
-    }
+    Ok(ExampleView {
+        task,
+        directory,
+        preparation_directory,
+        owner,
+        view,
+        allocation,
+        custody,
+    })
+}
+
+async fn approve_plan<P, A, O>(
+    storage: &ExampleStorage<A, O>,
+    stream: &Arc<P>,
+    request: &NativeProcessRequest,
+) -> ExampleResult<ApprovedPlan<P, A, O>>
+where
+    P: StreamProvider,
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    let ExampleStorage {
+        files,
+        results_volume,
+        issuer,
+        scope,
+        command,
+        approval,
+        task_id,
+        ..
+    } = storage;
     let content = FilesystemContentVerifier::new(
         files.clone(),
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
+        &issuer.verifier(&mut None)?,
+        scope,
         1_000_000,
         None,
     )?;
     let results = FilesystemContentPublisher::new(
         files.clone(),
-        &results_volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
+        results_volume,
+        &issuer.verifier(&mut None)?,
+        scope,
         1_000_000,
         None,
     )?;
     let request_ref = results
         .stage(
-            command,
+            *command,
             "native/request.json",
-            &serde_json::to_vec(&request)?,
+            &serde_json::to_vec(request)?,
             "application/json",
             "request.json",
             acyclic_harness::conversation::ContentAccess::default(),
@@ -363,7 +524,7 @@ where
         .0;
     let result_schema = results
         .stage(
-            command,
+            *command,
             "native/schema.json",
             b"{\"type\":\"object\"}",
             "application/schema+json",
@@ -379,34 +540,70 @@ where
         request: request_ref,
         result_schema,
     };
-    let approvals = execution_journal(
-        stream.clone(),
-        files.clone(),
-        &results_volume,
-        &issuer,
-        &scope,
-    )?;
+    let approvals =
+        execution_journal(stream.clone(), files.clone(), results_volume, issuer, scope)?;
     approvals
         .open_interaction(
-            approval,
+            *approval,
             &Interaction::approval(
                 "Run this exact example process".into(),
-                command,
-                request.approval_digest(task_id, command, None)?,
+                *command,
+                request.approval_digest(*task_id, *command, None)?,
             )?,
             None,
         )?
         .await?;
     approvals
         .resolve_interaction(
-            approval,
+            *approval,
             InteractionResponse::Approval {
                 approved: true,
                 reason: None,
             },
-            &scope,
+            scope,
         )
         .await?;
+    Ok(ApprovedPlan {
+        content,
+        results,
+        plan,
+        approvals,
+    })
+}
+
+async fn prepare_process<P, A, O>(
+    prepared: ExampleView<P, A, O>,
+    stream: &Arc<P>,
+    mcp: Option<&'static str>,
+    lost_response: bool,
+    restart_path: Option<&std::path::Path>,
+) -> ExampleResult<ExampleProcess<P, A, O>>
+where
+    P: StreamProvider,
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    let ExampleView {
+        task, view, owner, ..
+    } = &prepared;
+    let ExampleStorage {
+        issuer,
+        scope,
+        command,
+        approval,
+        ..
+    } = &task.storage;
+    let mut request = native_request(mcp, lost_response, view.manifest().clone())?;
+    if restart_path.is_some() {
+        request.timeout_ms = 30_000;
+    }
+    let approved = approve_plan(&task.storage, stream, &request).await?;
+    let ApprovedPlan {
+        content,
+        results,
+        plan,
+        approvals,
+    } = &approved;
     let authority = NativeProcessAuthority {
         verifier: issuer.verifier(&mut None)?,
         schemas: SchemaRegistry::default(),
@@ -418,10 +615,10 @@ where
     let process = Arc::new(
         NativeProcessProvider::new(
             owner.clone(),
-            command,
+            *command,
             plan.clone(),
             Some(view.clone()),
-            approval,
+            *approval,
             authority,
         )
         .await?
@@ -432,11 +629,7 @@ where
     let effects = ConversationEffectHost::new(
         stream.clone(),
         (
-            issuer
-                .verifier(&mut None)
-                .expect("verifier copy")
-                .audience()
-                .clone(),
+            issuer.verifier(&mut None)?.audience().clone(),
             issuer.clone(),
             scope.clone(),
         ),
@@ -446,57 +639,125 @@ where
         None,
         None,
     )?;
-    let mut restart = Restart {
-        task: task_id,
-        fence: LeaseFence::from(&lease.reservation),
-        scope: scope.clone(),
-        command,
-        approval,
-        plan: plan.clone(),
-        results_volume,
-        destination: destination.clone(),
-        request: request.clone(),
+    Ok(ExampleProcess {
+        prepared,
+        request,
+        approved,
+        effects,
+        process,
+        output,
+    })
+}
+
+fn restart_record<P, A, O>(process: &ExampleProcess<P, A, O>) -> Restart {
+    let storage = &process.prepared.task.storage;
+    Restart {
+        task: storage.task_id,
+        fence: process.prepared.task.fence.clone(),
+        scope: storage.scope.clone(),
+        command: storage.command,
+        approval: storage.approval,
+        plan: process.approved.plan.clone(),
+        results_volume: storage.results_volume.clone(),
+        destination: storage.destination.clone(),
+        request: process.request.clone(),
         first: None,
         applied: false,
         published: false,
-    };
+    }
+}
+
+async fn run_approved_model<P, A, O>(
+    process: &ExampleProcess<P, A, O>,
+    mcp: Option<&'static str>,
+    receipt_fault: Option<(&str, bool)>,
+    lost_response: bool,
+    restart_path: Option<&std::path::Path>,
+) -> ExampleResult<()>
+where
+    P: StreamProvider,
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    if mcp == Some("tools/call") && restart_path.is_none() {
+        let storage = &process.prepared.task.storage;
+        model_tool::run(
+            model_tool::Approved {
+                owner: process.prepared.owner.clone(),
+                effects: process.effects.clone(),
+                content: process.approved.content.clone(),
+                task: storage.task_id,
+                command: storage.command,
+                plan: process.approved.plan.clone(),
+                request: process.request.clone(),
+            },
+            process
+                .prepared
+                .task
+                .runtime
+                .harness()
+                .durable_context(
+                    storage.task_id,
+                    OperationId::from_bytes(storage.task_id.into_bytes()),
+                    None,
+                )
+                .await?,
+            process.approved.approvals.clone(),
+            false,
+            !lost_response && receipt_fault.is_none(),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn finish_preparation<P, A, O>(
+    process: ExampleProcess<P, A, O>,
+    mcp: Option<&'static str>,
+    receipt_fault: Option<(&str, bool)>,
+    lost_response: bool,
+    restart_path: Option<&std::path::Path>,
+) -> ExampleResult<Evidence<A, O>>
+where
+    P: StreamProvider,
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    let mut restart = restart_record(&process);
     if let Some(path) = restart_path {
         use std::io::Write as _;
         let mut file = std::fs::File::create(path)?;
         file.write_all(&serde_json::to_vec(&restart)?)?;
         file.sync_all()?;
     }
-    if mcp == Some("tools/call") && restart_path.is_none() {
-        model_tool::run(
-            model_tool::Approved {
-                owner: owner.clone(),
-                effects: effects.clone(),
-                content: content.clone(),
-                task: task_id,
-                command,
-                plan: plan.clone(),
-                request: request.clone(),
-            },
-            runtime
-                .harness()
-                .durable_context(task_id, OperationId::from_bytes(task_id.into_bytes()), None)
-                .await?,
-            approvals.clone(),
-            false,
-            !lost_response && receipt_fault.is_none(),
-        )
-        .await?;
-    }
+    run_approved_model(&process, mcp, receipt_fault, lost_response, restart_path).await?;
+    let ExampleProcess {
+        prepared,
+        request,
+        approved,
+        effects,
+        process,
+        output,
+    } = process;
+    let ExampleView {
+        task,
+        directory,
+        preparation_directory,
+        owner,
+        view,
+        allocation: _allocation,
+        custody: _custody,
+    } = prepared;
     let status = if mcp == Some("tools/call") && receipt_fault.is_some() {
         None
     } else {
         let first = effects
-            .run_task_effect(&owner, command, &plan, None, false)
+            .run_task_effect(&owner, task.storage.command, &approved.plan, None, false)
             .await
             .map(|result| result.0);
         verify_first_result(
             first,
-            content.as_ref(),
+            approved.content.as_ref(),
             &request,
             receipt_fault,
             lost_response,
@@ -504,9 +765,9 @@ where
         .await?
     };
     let applied = receipt_fault.is_none_or(|(kind, _)| kind == "observed");
-    verify_publication(&files, &destination, applied).await?;
+    verify_publication(&task.storage.files, &task.storage.destination, applied).await?;
     output
-        .verify(content.as_ref(), status.as_ref(), applied)
+        .verify(approved.content.as_ref(), status.as_ref(), applied)
         .await?;
     drop(effects);
     drop(process);
@@ -519,7 +780,7 @@ where
         restart,
         directory,
         _preparation_directory: preparation_directory,
-        files: Arc::downgrade(&files),
+        files: Arc::downgrade(&task.storage.files),
     })
 }
 
@@ -541,7 +802,7 @@ where
         &acyclic_harness::core::SchemaRegistry::new(),
         acyclic_harness::filesystem::FilesystemJournalBinding {
             volume: &volume,
-            verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+            verifier: &issuer.verifier(&mut None)?,
             scope: &scope,
             maximum_bytes: 1_000_000,
             io: None,

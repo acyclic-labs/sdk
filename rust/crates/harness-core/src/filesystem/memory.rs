@@ -86,6 +86,42 @@ async fn new_memory_content<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
     Ok((host, volume, memory_store))
 }
 
+async fn bind_memory_conversation<P: StreamProvider>(
+    stream: &Arc<P>,
+    conversation: &Authority,
+    verifier: &crate::core::AuthorityVerifier,
+    scope: &Scope,
+    agent: AgentId,
+) -> Result<()> {
+    crate::store::StreamAggregate::open(
+        stream,
+        (
+            conversation.clone(),
+            verifier.clone(),
+            SchemaRegistry::new(),
+        ),
+        None,
+        crate::store::default_projection_read_limits(),
+        crate::store::DEFAULT_TERMINAL_EFFECTS,
+        None,
+        &mut None,
+    )
+    .await?
+    .execute(
+        Command {
+            operation_id: OperationId::new(),
+            idempotency_key: IdempotencyKey::new("local-conversation-bind")?,
+            expected_revision: 0,
+            scope: scope.clone(),
+            causal_parent: None,
+            action: Action::BindConversation { agent },
+        },
+        &mut None,
+    )
+    .await?;
+    Ok(())
+}
+
 /// A fully bound journal and owner-private file volume.
 ///
 /// The journal runs on any [`StreamProvider`]: [`MemoryStream`] by default, or a
@@ -251,32 +287,7 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
             )?
             .with_input_verifier(input.clone()),
         );
-        crate::store::StreamAggregate::open(
-            &stream,
-            (
-                conversation.clone(),
-                verifier.clone(),
-                SchemaRegistry::new(),
-            ),
-            None,
-            crate::store::default_projection_read_limits(),
-            crate::store::DEFAULT_TERMINAL_EFFECTS,
-            None,
-            &mut None,
-        )
-        .await?
-        .execute(
-            Command {
-                operation_id: OperationId::new(),
-                idempotency_key: IdempotencyKey::new("local-conversation-bind")?,
-                expected_revision: 0,
-                scope: scope.clone(),
-                causal_parent: None,
-                action: Action::BindConversation { agent },
-            },
-            &mut None,
-        )
-        .await?;
+        bind_memory_conversation(&stream, &conversation, &verifier, &scope, agent).await?;
         let publisher = Arc::new(MemoryContentPublisher {
             files: FilesystemContentPublisher::new(
                 Arc::clone(&host),
