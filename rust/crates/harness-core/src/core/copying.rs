@@ -135,6 +135,14 @@ impl crate::resource_preparation::ResourceCreationProofRef {
 }
 
 impl<'a, 'w> CodecQuota<'a, 'w> {
+    /// Formats one component into this assembly's existing custody.
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn format(&mut self, args: std::fmt::Arguments<'_>) -> Result<String> {
+        let value = crate::executor::preparation_format(args, self.work())?;
+        self.adopt(value.capacity() as u64)?;
+        Ok(value)
+    }
+
     pub(crate) fn produce<T>(
         work: &'a mut Option<&'w mut dyn HistoryIo>,
         copy: impl FnOnce(&mut Self) -> Result<T>,

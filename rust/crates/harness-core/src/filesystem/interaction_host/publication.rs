@@ -100,14 +100,13 @@ where
             None => aggregate.0.reducer().revision(),
         };
         drop((committed, hold));
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let scope = scope.copy(&mut work)?;
-        let idempotency_key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
-            crate::executor::preparation_format(format_args!("interaction:{operation_id}"), work)
-        })?)?;
-        let hold = io
-            .map(|io| io.guard_owned(io.owned_since(before)?))
-            .transpose()?;
+        let ((scope, idempotency_key), retained) = CodecQuota::produce(&mut work, |quota| {
+            Ok((
+                scope.copy_in_quota(quota)?,
+                IdempotencyKey::new(quota.format(format_args!("interaction:{operation_id}"))?)?,
+            ))
+        })?;
+        let hold = io.map(|io| io.guard_owned(retained)).transpose()?;
         let command = Command {
             operation_id,
             idempotency_key,
@@ -129,11 +128,12 @@ where
         result
     }
 
-    pub(super) async fn aggregate<'a>(
+    pub(super) async fn aggregate(
         &self,
-        io: Option<&'a PreparationIo>,
-    ) -> Result<(StreamAggregate<P>, Option<DecodeReservation<'a>>)> {
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        io: Option<&PreparationIo>,
+    ) -> Result<(StreamAggregate<P>, Option<PreparationIo>)> {
+        let custody = io.map(PreparationIo::scoped).transpose()?;
+        let io = custody.as_ref();
         let mut history = io.map(PreparationIo::history_io);
         let mut work = history.as_mut().map(|work| work as &mut dyn HistoryIo);
         let authority = match work.as_deref_mut() {
@@ -178,9 +178,6 @@ where
                 "interaction private volume belongs to another agent",
             ));
         }
-        let hold = io
-            .map(|io| io.guard_owned(io.owned_since(before)?))
-            .transpose()?;
-        Ok((aggregate, hold))
+        Ok((aggregate, custody))
     }
 }

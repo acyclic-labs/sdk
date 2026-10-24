@@ -242,22 +242,16 @@ where
                 "interaction payload exceeds limit",
             ));
         }
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let path = crate::executor::with_history_io(io, |work| {
-            crate::executor::preparation_format(
-                format_args!(".system/interactions/{id}/{kind}.json"),
-                work,
-            )
+        let ((path, name, key), retained) = with_history_io(io, |work| {
+            CodecQuota::produce(work, |quota| {
+                Ok((
+                    quota.format(format_args!(".system/interactions/{id}/{kind}.json"))?,
+                    quota.format(format_args!("{kind}.json"))?,
+                    IdempotencyKey::new(quota.format(format_args!("interaction:{id}:{kind}"))?)?,
+                ))
+            })
         })?;
-        let name = crate::executor::with_history_io(io, |work| {
-            crate::executor::preparation_format(format_args!("{kind}.json"), work)
-        })?;
-        let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
-            crate::executor::preparation_format(format_args!("interaction:{id}:{kind}"), work)
-        })?)?;
-        let names_hold = io
-            .map(|io| io.guard_owned(io.owned_since(before)?))
-            .transpose()?;
+        let names_hold = io.map(|io| io.guard_owned(retained)).transpose()?;
         let grant = with_history_io(io, |work| {
             ContentGrant::verify(
                 &self.verifier,

@@ -2,6 +2,7 @@
 use super::*;
 use crate::conversation::FileRef;
 use crate::sync::SyncMutex;
+use crate::sync::atomic::{AtomicU64, Ordering};
 use acyclic_fs::kernel::{KernelAccounting, KernelOwnedAllocation, allocation::AllocationLedger};
 use acyclic_fs::{CancellationToken, OperationReceipt, WorkBudget, WorkCounters, WorkspaceError};
 #[cfg(not(target_arch = "wasm32"))]
@@ -16,6 +17,7 @@ mod history;
 mod quota;
 mod records;
 mod sdk;
+mod standalone_custody;
 #[cfg(test)]
 mod tests;
 pub(in crate::filesystem) use codec::decode_record;
@@ -31,6 +33,7 @@ use records::{decode_allowance_error, decode_allowance_with_code};
 pub(in crate::filesystem) use sdk::{
     content_workspace, create, generation_ref, operation_key, retain,
 };
+use standalone_custody::{StandaloneCustody, StandaloneLedger};
 
 /// Work and retained ownership for one preparation attempt.
 pub enum PreparationIo {
@@ -40,12 +43,14 @@ pub enum PreparationIo {
         budget: WorkBudget,
         /// Spent work and live owned bytes. This ledger is acquired alone;
         /// callbacks must not acquire another preparation ledger or reenter it.
-        work: Box<
+        work: Arc<
             SyncMutex<(
                 WorkCounters,
                 std::result::Result<AllocationLedger, acyclic_fs::WorkError>,
             )>,
         >,
+        /// This owner's share of the common live-byte ledger.
+        custody: StandaloneCustody,
         /// Cancellation for this attempt.
         cancellation: CancellationToken,
     },
@@ -60,6 +65,30 @@ pub enum PreparationIo {
 }
 
 impl PreparationIo {
+    /// Owns one attempt's storage while sharing its original work allowances.
+    pub(in crate::filesystem) fn scoped(&self) -> Result<Self> {
+        self.check_cancellation()?;
+        match self {
+            Self::Owned {
+                budget,
+                work,
+                cancellation,
+                ..
+            } => Ok(Self::owned(*budget, Arc::clone(work), cancellation.clone())),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native { work, .. } => Self::from_native_work(work),
+        }
+    }
+
+    fn owned(budget: WorkBudget, work: StandaloneLedger, cancellation: CancellationToken) -> Self {
+        let custody = StandaloneCustody::new(Arc::clone(&work));
+        Self::Owned {
+            budget,
+            work,
+            custody,
+            cancellation,
+        }
+    }
     pub(in crate::filesystem) fn owned_since(&self, before: u64) -> Result<u64> {
         self.owned_bytes()?
             .checked_sub(before)
@@ -111,25 +140,25 @@ impl PreparationIo {
             ));
         }
         cancellation.check()?;
-        Ok(Self::Owned {
+        Ok(Self::owned(
             budget,
-            work: Box::new(SyncMutex::new((
+            Arc::new(SyncMutex::new((
                 WorkCounters::default(),
                 Ok(AllocationLedger::default()),
             ))),
-            cancellation: cancellation.clone(),
-        })
+            cancellation.clone(),
+        ))
     }
     pub(crate) fn for_unmeasured(cancellation: &CancellationToken) -> Result<Self> {
         cancellation.check()?;
-        Ok(Self::Owned {
-            budget: WorkBudget::UNBOUNDED,
-            work: Box::new(SyncMutex::new((
+        Ok(Self::owned(
+            WorkBudget::UNBOUNDED,
+            Arc::new(SyncMutex::new((
                 WorkCounters::default(),
                 Ok(AllocationLedger::default()),
             ))),
-            cancellation: cancellation.clone(),
-        })
+            cancellation.clone(),
+        ))
     }
     /// Uses the original native invocation's ledger and execution lease.
     #[cfg(not(target_arch = "wasm32"))]
@@ -247,12 +276,12 @@ impl PreparationIo {
     }
     pub(crate) fn owned_bytes(&self) -> Result<u64> {
         match self {
-            Self::Owned { work, .. } => work
+            Self::Owned { work, custody, .. } => work
                 .lock()
                 .map_err(|_| self.invalid("preparation accounting is poisoned"))?
                 .1
                 .as_ref()
-                .map(|ledger| ledger.live_bytes())
+                .map(|_| custody.bytes.load(Ordering::Relaxed))
                 .map_err(|error| acyclic_fs::FsError::from(*error).into()),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { custody, .. } => Ok(custody
@@ -270,6 +299,7 @@ impl PreparationIo {
             Self::Owned {
                 budget,
                 work,
+                custody,
                 cancellation,
             } => {
                 let mut state = work
@@ -279,12 +309,19 @@ impl PreparationIo {
                 let allocations = allocations
                     .as_mut()
                     .map_err(|error| acyclic_fs::FsError::from(*error))?;
-                operation(&mut KernelAccounting::borrowed_standalone(
+                let before = allocations.live_bytes();
+                let result = operation(&mut KernelAccounting::borrowed_standalone(
                     allocations,
                     spent,
                     *budget,
                     cancellation,
-                ))
+                ));
+                let after = allocations.live_bytes();
+                if let Err(error) = custody.record(before, after) {
+                    state.1 = Err(acyclic_fs::WorkError::Overflow);
+                    return Err(error.into());
+                }
+                result
             }
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { work, .. } => operation(&mut KernelAccounting::NativeOriginal {
@@ -346,6 +383,7 @@ impl PreparationIo {
                 budget,
                 work,
                 cancellation,
+                ..
             } => {
                 let mut state = work
                     .lock()
@@ -412,21 +450,12 @@ impl PreparationIo {
     }
     pub(crate) fn release(&self, bytes: u64) -> std::result::Result<(), acyclic_fs::FsError> {
         match self {
-            Self::Owned {
-                budget,
-                work,
-                cancellation,
-            } => {
-                let mut state = work
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let (spent, allocations) = &mut *state;
-                let allocations = allocations
-                    .as_mut()
-                    .map_err(|error| acyclic_fs::FsError::from(*error))?;
-                KernelAccounting::borrowed_standalone(allocations, spent, *budget, cancellation)
-                    .release_owned(&mut KernelOwnedAllocation::Standalone, bytes)
-            }
+            Self::Owned { custody, .. } => self.account(|accounting| {
+                if bytes > custody.bytes.load(Ordering::Relaxed) {
+                    return Err(acyclic_fs::WorkError::Overflow.into());
+                }
+                accounting.release_owned(&mut KernelOwnedAllocation::Standalone, bytes)
+            }),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { custody, .. } => custody
                 .lock()

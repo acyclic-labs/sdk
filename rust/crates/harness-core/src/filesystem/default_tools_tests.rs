@@ -18,6 +18,7 @@ mod aggregate_custody_tests;
 
 struct Fixture {
     host: Arc<Host>,
+    stream: Arc<MemoryStream>,
     parent: StreamAggregate<MemoryStream>,
     issuer: AuthorityIssuer,
     scope: Scope,
@@ -177,6 +178,7 @@ async fn fixture() -> Result<Fixture> {
         .await?;
     Ok(Fixture {
         host,
+        stream,
         parent,
         issuer,
         scope,

@@ -310,6 +310,15 @@ impl AllocationLedger {
         Ok(())
     }
 
+    /// Releases storage whose owner has retired it, including after cancellation.
+    ///
+    /// # Errors
+    /// Returns an invariant error if the release exceeds live storage.
+    pub fn release_owned(&mut self, bytes: u64) -> Result<(), crate::FsError> {
+        self.release(bytes)
+            .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))
+    }
+
     /// Returns currently retained logical bytes.
     pub const fn live_bytes(self) -> u64 {
         self.live_bytes

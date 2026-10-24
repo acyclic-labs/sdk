@@ -22,11 +22,21 @@ fn seeded_io(
     spent = spent
         .checked_add(initial)
         .map_err(acyclic_fs::FsError::from)?;
-    Ok(PreparationIo::Owned {
-        budget,
-        work: Box::new(crate::sync::SyncMutex::new((spent, Ok(allocations)))),
-        cancellation: cancellation.clone(),
-    })
+    let mut io = PreparationIo::for_unmeasured(cancellation)?;
+    io.retain_owned(live)?;
+    if let PreparationIo::Owned {
+        budget: configured,
+        work,
+        ..
+    } = &mut io
+    {
+        *configured = budget;
+        *work
+            .lock()
+            .map_err(|_| Error::Invalid("seed accounting poisoned".into()))? =
+            (spent, Ok(allocations));
+    }
+    Ok(io)
 }
 
 proptest! {

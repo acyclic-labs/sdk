@@ -27,6 +27,7 @@ pub use mutex::Mutex as SyncMutex;
 #[cfg(any(
     test,
     acyclic_harness_loom,
+    feature = "filesystem",
     all(
         not(target_arch = "wasm32"),
         any(feature = "mcp-stdio", feature = "mcp-http")

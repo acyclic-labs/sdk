@@ -265,6 +265,7 @@ impl MemoryStore {
             budget,
             work,
             cancellation,
+            ..
         }) = io
         {
             return if owned_scan::conflict(

@@ -266,14 +266,10 @@ impl<'a> KernelAccounting<'a> {
     ) -> Result<(), crate::FsError> {
         match (self, allocation) {
             (Self::Standalone { allocations, .. }, KernelOwnedAllocation::Standalone) => {
-                allocations.release(bytes).map_err(|error| {
-                    error.into_work_or(crate::FsError::PendingMutationAllocationFailed)
-                })
+                allocations.release_owned(bytes)
             }
             (Self::BorrowedStandalone { allocations, .. }, KernelOwnedAllocation::Standalone) => {
-                allocations.release(bytes).map_err(|error| {
-                    error.into_work_or(crate::FsError::PendingMutationAllocationFailed)
-                })
+                allocations.release_owned(bytes)
             }
             #[cfg(not(target_arch = "wasm32"))]
             (
