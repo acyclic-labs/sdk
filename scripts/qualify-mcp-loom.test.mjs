@@ -2,12 +2,36 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { qualificationMain, qualifySkillMaterializerLoom } from "./qualify-mcp-loom.mjs";
+import { qualificationMain, qualifySkillMaterializerLoom, qualifyFsPolicyLoom } from "./qualify-mcp-loom.mjs";
 import { harnessModelSuites, qualifyHarnessModelsLoom, qualifyChildViewsLoom, qualifyQueryModelLoom } from "./qualify-mcp-loom.mjs";
 import { gateQualifications, qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom, qualifyHookEffectsLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyOwnershipLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
+
+test("filesystem policy qualification requires real cache and authority models in the gate", () => {
+  const suites = [["facade::policy_cache::loom_tests::", 2], ["distributed::head_payload_loom_tests::", 8]];
+  for (const missing of [null, ...suites.map(([prefix]) => prefix)]) {
+    let executed = 0;
+    const run = (command, args, options) => {
+      if (command === "cargo") {
+        assert.deepEqual(args, ["test", "--locked", "--message-format=json", "-p", "acyclic-fs", "--lib", "--no-run",
+          "--no-default-features", "--features", "memory,model-checking"]);
+        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_fs_loom(?: |$)/);
+        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_loom(?: |$)/);
+        return { status: 0, stdout: JSON.stringify({ ...artifact, target: { name: "acyclic_fs" } }) };
+      }
+      const [prefix, count] = suites[executed++];
+      assert.deepEqual(args, [prefix]);
+      return { status: 0, stdout: summary(missing === prefix ? 0 : count, 0, 100) };
+    };
+    qualifyOrReject(missing, () => qualifyFsPolicyLoom(run));
+    if (missing === null) assert.equal(executed, suites.length);
+  }
+  assert.throws(() => qualifyFsPolicyLoom(() => ({ status: 101, stdout: "", stderr: "stale provider signature" })),
+    /build failed.*stale provider signature/s);
+  assertGateStep(["--fs-policy"]);
+});
 
 test("gate runs every harness model suite and rejects an absent suite or a stale model build", () => {
   const suites = Object.values(harnessModelSuites).flat();
