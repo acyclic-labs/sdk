@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, marker::PhantomData};
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub struct Record {
     pub invocation: ToolInvocation,
@@ -185,7 +186,6 @@ pub fn assert_replay(record: Record, limits: Limits) {
             maximum_items: u64::MAX,
             maximum_depth: 256,
         },
-        0,
         None,
         Some(JsonValueSchema::Root),
         &mut |_| Ok(()),
@@ -203,7 +203,6 @@ pub fn check(data: &[u8]) {
             maximum_items: 4096,
             maximum_depth: 256,
         },
-        0,
         None,
         Some(JsonValueSchema::Root),
         &mut |_| Ok(()),

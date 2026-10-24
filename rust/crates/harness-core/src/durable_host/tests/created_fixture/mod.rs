@@ -30,6 +30,17 @@ pub(crate) struct CreationFixture {
     machine: MachineIdentity,
 }
 
+pub(crate) struct ForkSetup {
+    pub(crate) preparer: FilesystemForkPreparer<MemoryAuthorityBackend, MemoryObjectBackend>,
+    pub(crate) fork: crate::fork::ForkRequest,
+    pub(crate) project: VolumeRef,
+    pub(crate) private: VolumeRef,
+    pub(crate) parent_scope: Scope,
+    pub(crate) verifier: AuthorityVerifier,
+    /// Keeps the issuing authority alive as long as its scopes.
+    pub(crate) issuer: AuthorityIssuer,
+}
+
 pub(crate) struct PreparedFilesystemChild {
     _runtime: AuthorityIssuer,
     pub(crate) request: ResourcePreparationRequest,

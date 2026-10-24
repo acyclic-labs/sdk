@@ -35,7 +35,7 @@ type RecursiveOwner<P, A, O> = (
 const REVISION: &str = "portable-recursive-5";
 
 /// Selects an explicitly readable project and exact conflict sides.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct MergeToolArguments {
     /// Selected source task.
@@ -46,7 +46,7 @@ pub struct MergeToolArguments {
 }
 
 /// Chooses one immutable side of a provider conflict.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct MergeToolSelection {
     /// Opaque provider conflict key.
@@ -56,7 +56,7 @@ pub struct MergeToolSelection {
 }
 
 /// Immutable sides of the inspected join.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case")]
 pub enum MergeToolSide {
     /// Common ancestor.
@@ -67,7 +67,7 @@ pub enum MergeToolSide {
     Source,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub(in crate::filesystem) struct RecursiveForkSourceIntent {
     pub arguments: ForkToolArguments,
@@ -105,7 +105,7 @@ pub(in crate::filesystem) struct RecursiveMergeToolBinding<P, A, O> {
     pub notice: ConversationMessage,
 }
 
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub(in crate::filesystem) struct RecursiveForkToolPlan {
     pub arguments: ForkToolArguments,
@@ -117,7 +117,7 @@ pub(in crate::filesystem) struct RecursiveForkToolPlan {
     pub allocation_digest: [u8; 32],
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub(in crate::filesystem) struct RecursiveMergeToolPlan {
     pub arguments: MergeToolArguments,
@@ -188,7 +188,7 @@ fn definition(name: &str, maximum: u64) -> ToolDefinition {
         projection_schema: crate::tool::json_projection_schema(output) }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(
     tag = "kind",
     content = "plan",
@@ -223,8 +223,6 @@ use validation::*;
 #[cfg(test)]
 #[path = "../default_tools_tests.rs"]
 mod tests;
-pub(super) use codec::{
-    decode, encode, recursive_box, recursive_decode_slot_bytes, recursive_reject,
-};
+pub(super) use codec::{decode, encode, recursive_box, recursive_reject};
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) use codec::{recursive_transition_owned_bytes, recursive_value_owned_bytes};

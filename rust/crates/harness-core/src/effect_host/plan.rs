@@ -1,6 +1,6 @@
 use super::*;
 /// Immutable provider selection and ref-only task request.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct TaskEffectPlan {
     /// Registered provider identity.

@@ -156,7 +156,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 },
                 preparation,
                 resource,
-                evidence: allocation_ref(&self.host.provider, volume, io)?.into_resource(),
+                // The operation's journal holds its allocation and seed
+                // binding; the volume's own creation commit is keyed to them.
+                evidence: preparation_journal(&self.host.provider, request.operation_id, io)?
+                    .into_resource(),
             });
         }
         Ok(proofs)

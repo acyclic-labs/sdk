@@ -163,6 +163,7 @@ mod tests {
                     access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
                 },
                 acyclic_fs::OperationId::new(),
+                &[],
                 &work,
                 &cancellation,
                 None,

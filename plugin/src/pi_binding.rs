@@ -7,7 +7,8 @@ use acyclic_harness::{
 };
 
 /// Persisted host discriminator.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(
     tag = "kind",
     content = "binding",
@@ -31,7 +32,8 @@ impl PluginTaskBinding {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiTaskBinding {
     pub(crate) native_session_id: String,
@@ -42,7 +44,8 @@ pub(crate) struct PiTaskBinding {
     pub(crate) results: Option<PiScratchBinding>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiScratchBinding {
     pub(crate) volume: VolumeRef,
@@ -50,7 +53,8 @@ pub(crate) struct PiScratchBinding {
 }
 
 /// Explicit progress; an omitted allocation is never preparing.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(
     tag = "state",
     content = "creation",
@@ -62,7 +66,8 @@ pub(crate) enum PiScratchAllocation {
     Created(PiScratchCreation),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiScratchCreation {
     pub(crate) workspace_id: [u8; 16],

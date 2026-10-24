@@ -31,6 +31,7 @@ mod tests {
                     access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
                 },
                 OperationId::new(),
+                &[],
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
                 None,

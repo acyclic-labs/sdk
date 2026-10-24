@@ -120,20 +120,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             let (generation_root, authority_head) = self
                 .resolve_checkout_generation(selector, mode, &mut accounting, cancellation)
                 .await?;
-            let before = readonly_standalone_live(&accounting);
-            let (root, allocation) = read_generation_root_with_accounting(
-                &self.fs.inner.objects,
-                generation_root,
-                self.config,
-                &mut accounting,
-                cancellation,
-            )
-            .await?;
-            let root_bytes = root_parent_bytes(&root)?;
-            readonly_cleanup_standalone(&mut accounting, before, root_bytes)?;
-            if root.volume_id != self.id {
-                return Err(FsError::VolumeMismatch);
-            }
+            let (root, allocation) = self
+                .checkout_root(generation_root, &mut accounting, cancellation)
+                .await?;
             let authority_head = self
                 .fence_checkout(mode, authority_head, &mut accounting, cancellation)
                 .await?;
@@ -175,6 +164,67 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         .await;
         budget.finish(result, &accounting)
     }
+
+    /// Opens a private writable overlay over this volume's unpublished initial
+    /// generation, which its creation commit is about to publish. No authority
+    /// fences that generation yet, so the overlay has no head.
+    pub(super) async fn unpublished_checkout(
+        &self,
+        generation_root: ObjectId,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Checkout<A, O>, FsError> {
+        let (root, allocation) = self
+            .checkout_root(generation_root, accounting, cancellation)
+            .await?;
+        let CheckoutState {
+            base_root,
+            root,
+            dependencies,
+            proof_owned_bytes,
+        } = self.checkout_state(generation_root, root, allocation, accounting, cancellation)?;
+        accounting.check()?;
+        Ok(Checkout {
+            volume: self.clone(),
+            generation_root,
+            base_root,
+            root,
+            authority_head: None,
+            observed_generation: ObservedGeneration::UNKNOWN,
+            authored_operation_id: None,
+            live_operation_id: None,
+            publication_closure: None,
+            prepared_merge_parent: None,
+            dependencies,
+            proof_owned_bytes,
+            mode: CheckoutMode::tracking_transaction(),
+        })
+    }
+
+    /// Reads and authenticates the generation root a checkout opens over.
+    async fn checkout_root(
+        &self,
+        generation_root: ObjectId,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(GenerationRoot, KernelOwnedAllocation), FsError> {
+        let before = readonly_standalone_live(accounting);
+        let (root, allocation) = read_generation_root_with_accounting(
+            &self.fs.inner.objects,
+            generation_root,
+            self.config,
+            accounting,
+            cancellation,
+        )
+        .await?;
+        let root_bytes = root_parent_bytes(&root)?;
+        readonly_cleanup_standalone(accounting, before, root_bytes)?;
+        if root.volume_id != self.id {
+            return Err(FsError::VolumeMismatch);
+        }
+        Ok((root, allocation))
+    }
+
     fn checkout_state(
         &self,
         generation_root: ObjectId,

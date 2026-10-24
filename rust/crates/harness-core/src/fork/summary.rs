@@ -13,7 +13,7 @@ use acyclic_stream::StreamProvider;
 use serde::{Deserialize, Serialize};
 
 /// Immutable checkpoint and bounded canonical work selected before fork admission.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct SummaryForkSelection {
@@ -55,7 +55,7 @@ impl SummaryForkSelection {
 }
 
 /// Exact child-owned Summary projection bound by the original fork seed.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct SummaryForkCapture {

@@ -913,3 +913,62 @@ fn native_reply_validation_borrows_body_and_rejects_tampering() {
         }
     }
 }
+
+#[test]
+fn an_owned_recovery_decode_is_charged_by_its_own_nodes() {
+    fn nodes(value: &Value) -> u64 {
+        1 + match value {
+            Value::Array(items) => items.iter().map(nodes).sum(),
+            Value::Object(fields) => fields.values().map(|value| 1 + nodes(value)).sum(),
+            _ => 0,
+        }
+    }
+    let input = serde_json::to_value(PiTaskInput::<PiTaskBinding, PiRootIntent> {
+        binding: binding(),
+        execution: PiTaskExecution::Child {
+            launch: preparation(),
+        },
+    })
+    .unwrap();
+    let peak = |value: std::borrow::Cow<'_, Value>| {
+        let work = work();
+        let decoded = crate::pi_recovery::decode_recovery_value::<PiTaskInput>(
+            value,
+            acyclic_harness::JsonValueSchema::None,
+            crate::MAXIMUM_ADAPTER_STATE_BYTES,
+            &work,
+        )
+        .unwrap();
+        drop(decoded);
+        work.receipt().peak_allocation_bytes
+    };
+    let borrowed = peak(std::borrow::Cow::Borrowed(&input));
+    let owned = peak(std::borrow::Cow::Owned(input.clone()));
+    // Both conversions are bounded by the input's own nodes and bytes, far inside
+    // one request's allocation peak, and the consuming conversion is charged no more
+    // than the borrowed one it replaces.
+    let budget = crate::pi_root_provider::allocation_budget().peak_allocation_bytes;
+    assert!(
+        borrowed * 8 < budget && owned <= borrowed,
+        "{borrowed} / {owned} of {budget}"
+    );
+    // Negative control: the same decode under a peak below its own charge is refused,
+    // so the charge is real and not a fixed per-type ceiling the budget hides.
+    let starved = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget {
+            peak_allocation_bytes: borrowed / 2,
+            ..crate::pi_root_provider::allocation_budget()
+        },
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .unwrap();
+    assert!(
+        crate::pi_recovery::decode_recovery_value::<PiTaskInput>(
+            std::borrow::Cow::Borrowed(&input),
+            acyclic_harness::JsonValueSchema::None,
+            crate::MAXIMUM_ADAPTER_STATE_BYTES,
+            &starved,
+        )
+        .is_err()
+    );
+}

@@ -369,6 +369,14 @@ impl DemandWork {
     pub(crate) fn take_native_io_failure(&mut self) -> Option<DemandError> {
         self.roots.io_failure.take()
     }
+    /// Installs `failure` as the pending failure and returns the one it replaces, so an
+    /// invocation window reports only failures that happened inside it.
+    pub(crate) fn replace_native_io_failure(
+        &mut self,
+        failure: Option<DemandError>,
+    ) -> Option<DemandError> {
+        std::mem::replace(&mut self.roots.io_failure, failure)
+    }
     pub(crate) fn poison_native_original_work(&mut self) {
         self.roots.poisoned = true;
         self.record_native_io_failure(DemandError::OriginalWorkPoisoned);

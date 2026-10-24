@@ -205,13 +205,13 @@ pub(crate) async fn read_value<'a>(
     Ok((value, None))
 }
 
+/// The conversion's typed layout cost, its serde diagnostics and the record.
 #[cfg(feature = "filesystem")]
 fn conversion_allowance<T: crate::filesystem::UploadRecord>(
     shape: crate::executor::json::JsonValueShape,
+    layout: crate::executor::json::LayoutCost,
     io: &PreparationIo,
 ) -> Result<u64> {
-    use serde::__private229::de::Content;
-    use std::mem::size_of;
     let overflow = || {
         stock_boundary(
             Some(io),
@@ -219,55 +219,16 @@ fn conversion_allowance<T: crate::filesystem::UploadRecord>(
             "tool projection conversion allowance overflows",
         )
     };
-    let nodes = shape
-        .lexical_items()
-        .checked_add(shape.virtual_items())
-        .ok_or_else(overflow)?;
-    let slots = nodes.checked_mul(10).ok_or_else(overflow)?;
-    let (content, typed, boxes, strings) =
-        if T::json_value_schema() == crate::executor::json::JsonValueSchema::ToolResultContent {
-            let content_slot = size_of::<Content<'static>>()
-                .max(size_of::<(Content<'static>, Content<'static>)>())
-                as u64;
-            let typed_slot = [
-                size_of::<crate::model::ModelDataPart>(),
-                size_of::<FileRef>(),
-                size_of::<String>(),
-                size_of::<u8>(),
-                size_of::<(String, Value)>(),
-            ]
-            .into_iter()
-            .fold(0, usize::max) as u64;
-            (
-                slots
-                    .checked_mul(content_slot)
-                    .and_then(|bytes| bytes.checked_mul(3))
-                    .ok_or_else(overflow)?,
-                slots.checked_mul(typed_slot).ok_or_else(overflow)?,
-                nodes
-                    .checked_mul(size_of::<crate::model::NativeMediaPolicy>() as u64)
-                    .ok_or_else(overflow)?,
-                shape.input_bytes().checked_mul(3).ok_or_else(overflow)?,
-            )
-        } else {
-            (0, 0, 0, 0)
-        };
     // Closed serde label widths, including diagnostic punctuation.
-    let diagnostics =
-        crate::executor::json::audited_serde_diagnostic_bytes(shape.input_bytes(), 1378)?;
-    [
-        content,
-        typed,
-        boxes,
-        strings,
-        crate::executor::json::json_owned_value_conversion_additional_bytes(shape)?,
-        diagnostics,
-        size_of::<T>() as u64,
-    ]
-    .into_iter()
-    .try_fold(0_u64, |bytes, next| {
-        bytes.checked_add(next).ok_or_else(overflow)
-    })
+    let diagnostics = crate::executor::json::audited_serde_diagnostic_bytes(
+        shape.diagnostic_source_bytes(),
+        1378,
+    )?;
+    [layout.bytes(), diagnostics, std::mem::size_of::<T>() as u64]
+        .into_iter()
+        .try_fold(0_u64, |bytes, next| {
+            bytes.checked_add(next).ok_or_else(overflow)
+        })
 }
 
 #[cfg(feature = "filesystem")]
@@ -278,7 +239,7 @@ fn convert<'a, T: crate::filesystem::UploadRecord>(
     io: &'a PreparationIo,
 ) -> Result<(T, crate::filesystem::DecodeReservation<'a>)> {
     let (input, mut hold) = source;
-    let shape = crate::executor::json::json_owned_value_shape_bounded(
+    let (shape, layout) = crate::executor::json::admit_value_layout(
         &input,
         crate::executor::json::JsonBounds {
             maximum_bytes,
@@ -286,6 +247,8 @@ fn convert<'a, T: crate::filesystem::UploadRecord>(
             maximum_depth,
         },
         T::json_value_schema(),
+        T::LAYOUT,
+        Some(Invalid),
         &mut |charge| match charge {
             crate::executor::json::JsonCodecCharge::Inspect { items } => {
                 crate::model::charge_items(Some(io), items)
@@ -297,7 +260,7 @@ fn convert<'a, T: crate::filesystem::UploadRecord>(
             )),
         },
     )?;
-    hold.absorb(io.reserve_decode(conversion_allowance::<T>(shape, io)?)?)?;
+    hold.absorb(io.reserve_decode(conversion_allowance::<T>(shape, layout, io)?)?)?;
     let value: T = match serde_json::from_value(input) {
         Ok(value) => value,
         Err(source) => {

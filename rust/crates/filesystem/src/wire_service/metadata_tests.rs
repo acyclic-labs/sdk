@@ -11,7 +11,8 @@ proptest! {
             let budget = WorkBudget::UNBOUNDED;
             let workspace = fs.create_workspace_with_operation::<_, (), WorkspaceError>("wire-metadata",
                 crate::VolumeInitialization { config: VolumeConfig::portable(Lifecycle::Ephemeral), access_policy: Some(crate::access::INITIAL_POLICY) },
-                crate::OperationId::new(), budget, &cancellation, None).await?.value.workspace();
+                crate::OperationId::new(),
+                &[], budget, &cancellation, None).await?.value.workspace();
             let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), budget, &cancellation).await?.value;
             let update = wire::Metadata { posix_mode: Some(wire::OptionalU32 { value: Some(wire::optional_u32::Value::Present(mode)) }),
                 modified_ns: Some(wire::OptionalI64 { value: Some(wire::optional_i64::Value::Present(time)) }), ..Default::default() };

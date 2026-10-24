@@ -1,6 +1,9 @@
 use super::*;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout,
+)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PiNativeSourceMode {
     CallerTool,
@@ -8,7 +11,8 @@ pub(crate) enum PiNativeSourceMode {
 }
 
 /// Exact native source selection retained in the original child admission.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PiNativeSourceCut {
     pub(crate) mode: PiNativeSourceMode,
@@ -28,7 +32,8 @@ pub(crate) const PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES: u64 = 957;
 
 const NATIVE_HEADER_DIAGNOSTIC_LABEL_BYTES: u64 = 103;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 struct NativeHeader {
     #[serde(rename = "type")]
@@ -81,7 +86,6 @@ impl PiNativeSourceCut {
         let selected = crate::pi_root_provider::guarded_pi_decode::<Vec<Value>>(
             self.entries_json.as_bytes(),
             maximum_bytes,
-            std::mem::size_of::<Vec<Value>>() as u64,
             acyclic_harness::wire::ErrorCode::Invalid,
             JsonValueSchema::Root,
             0,
@@ -163,7 +167,6 @@ impl PiNativeSourceCut {
                 .ok_or_else(|| invalid("Pi child header is absent"))?
                 .as_bytes(),
             maximum_bytes,
-            std::mem::size_of::<NativeHeader>() as u64,
             acyclic_harness::wire::ErrorCode::Invalid,
             JsonValueSchema::None,
             NATIVE_HEADER_DIAGNOSTIC_LABEL_BYTES,
@@ -186,7 +189,6 @@ impl PiNativeSourceCut {
                     .ok_or_else(|| invalid("Pi child lost a source entry"))?
                     .as_bytes(),
                 maximum_bytes,
-                std::mem::size_of::<Value>() as u64,
                 acyclic_harness::wire::ErrorCode::Invalid,
                 JsonValueSchema::Root,
                 0,

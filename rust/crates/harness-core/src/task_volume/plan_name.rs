@@ -3,8 +3,12 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// Markdown filename stem, with the same path rules as ordinary file tools.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[serde(try_from = "String", into = "String")]
+// The conversion copies the decoded text into a shared allocation.
+#[heap_layout(as = std::sync::Arc<str>)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct PlanName(#[cfg_attr(feature = "wasm", tsify(type = "string"))] pub(super) Arc<str>);
 

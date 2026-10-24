@@ -18,26 +18,16 @@ pub(super) fn preparation_journal(
     WorkspaceRef::new(provider, name.into_bytes(), None)
 }
 
-pub(super) fn allocation_ref(
-    provider: &ProviderRef,
-    volume: &VolumeRef,
-    io: Option<&PreparationIo>,
-) -> Result<WorkspaceRef> {
-    let volume_name = crate::executor::with_history_io(io, |work| volume.storage_name(work))?;
-    let hold = io
-        .map(|io| io.guard_owned(volume_name.capacity() as u64))
-        .transpose()?;
-    let name = crate::executor::with_history_io(io, |work| {
-        crate::executor::preparation_format(format_args!("fork-allocation-{volume_name}"), work)
-    })?;
-    drop(volume_name);
-    drop(hold);
-    let provider = match io {
-        Some(io) => provider.clone_with_io(io)?,
-        None => provider.clone(),
-    };
-    WorkspaceRef::new(provider, name.into_bytes(), None)
-}
+/// The operation's allocation record in its preparation journal: who prepared
+/// the fork, for which parent and child, under which original task. It is
+/// published in the same commit as `/request.json`. The child volumes it
+/// names are claimed by their own creation commits, whose operation keys
+/// commit to this operation and its request digest, so a second operation
+/// naming the same volume loses at that creation.
+pub(super) const ALLOCATION_RECORD: &str = "/allocation.json";
+/// Digest of the seed derived from the operation's report, published in the
+/// same commit as `/report.json`.
+pub(super) const SEED_RECORD: &str = "/seed.json";
 
 pub(crate) fn seed_digest(
     seed: &ForkSeed,
@@ -81,20 +71,53 @@ pub(super) async fn write_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T:
     preparation: Option<&Arc<TaskResourcePreparation>>,
 ) -> Result<()> {
     let bytes = encode(value, maximum_bytes, io)?;
-    let hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+    let mut files = crate::model::vec_with_capacity(1, io)?;
+    files.push((path, bytes));
+    write_files(host, journal, files, key, io, preparation).await
+}
+
+/// Publishes every file in one create-only commit: all of them or none.
+pub(super) async fn write_files<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    host: &FilesystemHost<A, O>,
+    journal: &WorkspaceRef,
+    files: Vec<(&str, acyclic_stream::OwnedBytes)>,
+    key: &IdempotencyKey,
+    io: Option<&PreparationIo>,
+    preparation: Option<&Arc<TaskResourcePreparation>>,
+) -> Result<()> {
+    // A journal's first records are its creation commit: whichever write finds
+    // it absent creates it holding them, and only later writes commit.
+    let name = std::str::from_utf8(journal.as_resource().key()).map_err(|_| {
+        stock_boundary(
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "fork journal name is not UTF-8",
+        )
+    })?;
+    if bounded_io::create(host, name, key, &files, io, preparation).await? {
+        return Ok(());
+    }
+    let mut holds = Vec::new();
+    PreparationIo::reserve(&mut holds, files.len(), io)?;
+    let mut mutations = crate::model::vec_with_capacity(files.len(), io)?;
+    for (path, bytes) in files {
+        holds.push(io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten());
+        mutations.push(WorkspaceMutation::PutFile {
+            path: stock_string_copy(path, io)?,
+            bytes,
+        });
+    }
     let result = (host)
         .create_records(
             journal,
-            &[WorkspaceMutation::PutFile {
-                path: stock_string_copy(path, io)?,
-                bytes,
-            }],
+            &mutations,
             IdempotencyKey(stock_string_copy(key.as_str(), io)?),
             io,
             preparation,
         )?
         .await;
-    drop(hold);
+    drop(mutations);
+    drop(holds);
     match result {
         Ok(_) => Ok(()),
         Err(error) if error.code() == crate::wire::ErrorCode::Conflict => Ok(()),
@@ -118,10 +141,46 @@ where
     O: AsyncObjectStore,
     T: Serialize + bounded_io::PreparationRecord,
 {
+    write_once_alongside(
+        host,
+        journal,
+        (path, value),
+        Vec::new(),
+        maximum,
+        key,
+        operation,
+        io,
+        preparation,
+    )
+    .await
+}
+
+/// Like [`write_once`], publishing `alongside` in the same commit as the
+/// first `value`. A caller that finds a prior `value` checks its companions
+/// itself: all were published together or none was.
+pub(super) async fn write_once_alongside<A, O, T>(
+    host: &FilesystemHost<A, O>,
+    journal: &WorkspaceRef,
+    (path, value): (&str, &T),
+    alongside: Vec<(&str, acyclic_stream::OwnedBytes)>,
+    maximum: u64,
+    key: &IdempotencyKey,
+    operation: OperationId,
+    io: Option<&PreparationIo>,
+    preparation: Option<&Arc<TaskResourcePreparation>>,
+) -> Result<T>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+    T: Serialize + bounded_io::PreparationRecord,
+{
     if let Some(prior) = read_record(host, journal, path, maximum, io).await? {
         return Ok(prior);
     }
-    write_record(host, journal, path, value, maximum, key, io, preparation).await?;
+    let mut files = crate::model::vec_with_capacity(alongside.len().saturating_add(1), io)?;
+    files.push((path, encode(value, maximum, io)?));
+    files.extend(alongside);
+    write_files(host, journal, files, key, io, preparation).await?;
     read_record(host, journal, path, maximum, io)
         .await?
         .ok_or(Error::Indeterminate(operation))
@@ -215,13 +274,34 @@ pub(super) async fn read_allocation_claim<A: AsyncAuthorityStore, O: AsyncObject
     read_record_decoded_bounded(
         host,
         journal,
-        "/claim.json",
+        ALLOCATION_RECORD,
         maximum_bytes,
         io,
         |bytes, io| match io {
             Some(io) => io.decode_json(bytes),
             None => crate::contract::json_from_slice(bytes)
                 .map_err(|error| Error::Invalid(format!("fork allocation is invalid: {error}"))),
+        },
+    )
+    .await
+}
+
+pub(super) async fn read_seed_binding<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    host: &FilesystemHost<A, O>,
+    journal: &WorkspaceRef,
+    maximum_bytes: u64,
+    io: Option<&PreparationIo>,
+) -> Result<Option<[u8; 32]>> {
+    read_record_decoded_bounded(
+        host,
+        journal,
+        SEED_RECORD,
+        maximum_bytes,
+        io,
+        |bytes, io| match io {
+            Some(io) => io.decode_json::<[u8; 32]>(bytes),
+            None => crate::contract::json_from_slice(bytes)
+                .map_err(|cause| Error::Invalid(cause.to_string())),
         },
     )
     .await
@@ -285,7 +365,14 @@ pub(in crate::filesystem) fn journal_absent(error: &Error) -> bool {
         Error::NotFound(_) => true,
         #[cfg(not(target_arch = "wasm32"))]
         Error::NativeWorkspace { source, .. } => {
-            matches!(source.as_ref(), acyclic_fs::WorkspaceError::NotFound)
+            // A measured open of a never-created journal reaches its absent authority.
+            matches!(
+                source.as_ref(),
+                acyclic_fs::WorkspaceError::NotFound
+                    | acyclic_fs::WorkspaceError::Filesystem(acyclic_fs::FsError::Authority(
+                        acyclic_fs::AuthorityStoreError::Missing
+                    ))
+            )
         }
         _ => false,
     }
@@ -311,6 +398,7 @@ mod tests {
             &host,
             "first-winner",
             &IdempotencyKey::new("create")?,
+            &[],
             None,
             None,
         )

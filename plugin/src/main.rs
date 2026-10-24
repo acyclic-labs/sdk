@@ -10,6 +10,9 @@
     reason = "explicit Send future bounds avoid higher-ranked lifetime errors in native commands"
 )]
 
+#[cfg(test)]
+acyclic_test_support::counting_allocator!();
+
 mod adapter_state;
 mod cli_output;
 mod codex_hook_mcp;

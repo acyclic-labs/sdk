@@ -299,7 +299,7 @@ impl ExecutionSummary {
 
 pub(super) const OBSERVATION_VERSION: u32 = 2;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Observation {
     pub(super) version: u32,

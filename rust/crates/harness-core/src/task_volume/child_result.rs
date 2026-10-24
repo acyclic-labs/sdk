@@ -4,7 +4,7 @@ use crate::{Outcome, TaskId, executor::TurnOutput};
 use serde::{Deserialize, Serialize};
 
 /// One settled child outcome retained independently of its next receive.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct ChildTurnResult {
     /// Original admitted child identity.

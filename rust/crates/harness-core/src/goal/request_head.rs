@@ -2,7 +2,7 @@ use crate::{OperationId, workflow::WorkflowCommand};
 use serde::{Deserialize, Serialize};
 
 /// Ordinary local request head. Goal status/content remains exclusively GOAL.md.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[doc(hidden)]
 pub struct Turn {

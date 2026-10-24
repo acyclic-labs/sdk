@@ -34,8 +34,7 @@ use acyclic_harness::{
     store::{HistoryReadLimits, HistoryReader},
 };
 use acyclic_harness::{
-    JsonValueSchema, json_typed_diagnostic_owned_bytes, json_value_decode_owned_bytes,
-    sdk_json_diagnostic_bytes,
+    JsonValueSchema, json_typed_diagnostic_owned_bytes, sdk_json_diagnostic_bytes,
 };
 use acyclic_stream::{BoxProviderFuture, LocalStream};
 use serde::{Serialize, de::DeserializeOwned};
@@ -145,6 +144,12 @@ fn same_allocation(left: &PiRootAllocation, right: &PiRootAllocation) -> bool {
             })
 }
 
+/// What a provider retains of a fully observed allocation: its canonical digest.
+pub(crate) type ObservedAllocation = [u8; 32];
+// A provider's retained memo must own no heap: anything it kept beyond plain data
+// would be held outside every allocation ledger.
+const _: () = assert!(!std::mem::needs_drop::<ObservedAllocation>());
+
 struct ProviderState {
     dispatched: bool,
     handles: BTreeMap<String, PiRootHandle>,
@@ -161,6 +166,9 @@ pub(crate) struct PiRootProvider {
     journal_owner: Option<Arc<TaskJournalOwner<LocalStream>>>,
     original: NativeMaterializationWork,
     state: Mutex<ProviderState>,
+    /// The digest of the allocation this provider last observed in full. Retained
+    /// memo state is plain data: it owns no heap, so it needs no ledger of its own.
+    observed: std::sync::OnceLock<ObservedAllocation>,
     #[cfg(test)]
     fault: std::sync::atomic::AtomicU8,
     _custody: NativeAllocation,
@@ -182,6 +190,7 @@ pub(crate) fn service_resources_with_native_work(
             binary_identity: binary.0,
             instance_id: instance.0,
             private_state_root: resources.private_state_root.clone(),
+            validated_fork_plans: Arc::clone(&resources.validated_fork_plans),
         },
         data.1,
     );
@@ -317,6 +326,7 @@ pub(crate) fn root_provider(
             dispatched: false,
             handles: BTreeMap::new(),
         }),
+        observed: std::sync::OnceLock::new(),
         #[cfg(test)]
         fault: std::sync::atomic::AtomicU8::new(0),
         _custody: custody,

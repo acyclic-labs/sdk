@@ -3,43 +3,50 @@ use serde::de::DeserializeSeed;
 use std::borrow::Cow;
 
 /// Decodes a complete document after source and ownership admission.
-pub fn json_from_slice_bounded<
-    'de,
-    S: DeserializeSeed<'de>,
-    F: FnMut(JsonCodecCharge) -> Result<()>,
->(
+///
+/// The admission walks the document against the decoded type's
+/// [`HeapLayout`](super::layout::HeapLayout) and charges the walk's peak
+/// before the decode allocates.
+pub fn json_from_slice_bounded<'de, S, F>(
     seed: S,
     bytes: &'de [u8],
     bounds: JsonBounds,
-    maximum_owned_bytes: u64,
     code: Option<crate::wire::ErrorCode>,
     value_schema: Option<&'static JsonValueSchema>,
     charge: &mut F,
-) -> Result<S::Value> {
+) -> Result<S::Value>
+where
+    S: DeserializeSeed<'de>,
+    S::Value: super::layout::HeapLayout,
+    F: FnMut(JsonCodecCharge) -> Result<()>,
+{
     let bounds = JsonBounds {
         maximum_depth: bounds.maximum_depth.min(256),
         ..bounds
     };
-    let shape = admission::source(
+    let admitted = admission::admit_typed(
         bytes,
         bounds,
         value_schema,
-        code.map(|_| crate::wire::ErrorCode::Invalid),
+        <S::Value as super::layout::HeapLayout>::LAYOUT,
+        code,
         charge,
     )?;
-    let owned = (bytes.len() as u64)
-        .max(8)
-        .checked_mul(2)
-        .and_then(|scratch| maximum_owned_bytes.checked_add(scratch))
-        .ok_or_else(|| {
-            boundary(
-                "JSON owned bound overflow",
-                code.map(|_| crate::wire::ErrorCode::Invalid),
-            )
-        })?;
+    let (value_shape, layout) = match admitted {
+        Ok(admitted) => admitted,
+        Err((value_shape, syntax)) => {
+            // Nothing is decoded; the caller still holds the diagnostic the
+            // syntax error renders.
+            charge(JsonCodecCharge::Admission {
+                maximum_owned_bytes: 0,
+                value_shape,
+            })?;
+            return Err(decode_error(syntax, code));
+        }
+    };
     charge(JsonCodecCharge::Admission {
-        maximum_owned_bytes: owned,
-        value_shape: shape,
+        maximum_owned_bytes: decoded_bytes::<S::Value>(layout)?,
+        value_shape,
     })?;
     charge(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
     let mut decoder = serde_json::Deserializer::from_slice(bytes);
@@ -51,22 +58,42 @@ pub fn json_from_slice_bounded<
     Ok(value)
 }
 
-/// Converts a borrowed or consuming Value after its original tree admission.
-pub fn json_from_value_bounded<T: DeserializeOwned, F: FnMut(JsonCodecCharge) -> Result<()>>(
+/// The heap a typed decode reaches at its peak, plus the decoded value
+/// itself, which its holder owns once the decode returns.
+pub(super) fn decoded_bytes<T>(layout: super::layout::LayoutCost) -> Result<u64> {
+    layout
+        .bytes()
+        .checked_add(size_of::<T>() as u64)
+        .ok_or_else(|| boundary("typed decode reservation overflows", None))
+}
+
+/// Converts a borrowed or consuming Value after its original tree admission
+/// and the typed layout admission of the conversion.
+pub fn json_from_value_bounded<T, F>(
     source: Cow<'_, Value>,
     bounds: JsonBounds,
-    maximum_owned_bytes: u64,
     code: Option<crate::wire::ErrorCode>,
     value_schema: &'static JsonValueSchema,
     charge: &mut F,
-) -> Result<T> {
-    let mut shape = json_owned_value_shape_bounded(source.as_ref(), bounds, value_schema, charge)?;
+) -> Result<T>
+where
+    T: DeserializeOwned + super::layout::HeapLayout,
+    F: FnMut(JsonCodecCharge) -> Result<()>,
+{
+    let (mut value_shape, layout) = admission::admit_value_layout(
+        source.as_ref(),
+        bounds,
+        value_schema,
+        T::LAYOUT,
+        code,
+        charge,
+    )?;
     if matches!(source, Cow::Borrowed(_)) {
-        shape.origin = Origin::Borrowed;
+        value_shape.origin = Origin::Borrowed;
     }
     charge(JsonCodecCharge::Admission {
-        maximum_owned_bytes,
-        value_shape: shape,
+        maximum_owned_bytes: decoded_bytes::<T>(layout)?,
+        value_shape,
     })?;
     match source {
         Cow::Borrowed(value) => T::deserialize(value),

@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeSet, sync::Arc};
 
 /// Model schema selection.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum McpSchemaExposure {
@@ -23,7 +23,7 @@ pub enum McpSchemaExposure {
 }
 
 /// Local discovery policy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(rename_all = "snake_case")]
 pub enum McpDiscoveryPolicy {
@@ -34,7 +34,7 @@ pub enum McpDiscoveryPolicy {
 }
 
 /// Complete immutable remote catalog.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(deny_unknown_fields)]
 pub struct McpCatalog {

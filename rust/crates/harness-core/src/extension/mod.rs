@@ -16,7 +16,9 @@ pub use runtime::ExtensionRuntime;
 mod tests;
 
 /// Exact executable identity for one installed extension version.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
+)]
 pub struct ExtensionIdentity {
     /// Namespaced extension name.
     pub name: String,

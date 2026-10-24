@@ -90,6 +90,10 @@ mod materialization;
 
 mod merge_drivers;
 
+mod creation_race;
+
+mod populated_creation;
+
 mod operation_identity;
 
 mod proof_cache;

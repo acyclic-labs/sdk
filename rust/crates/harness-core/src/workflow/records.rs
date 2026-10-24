@@ -1,7 +1,7 @@
 use super::*;
 
 /// Replay-safe command with immutable arguments.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowCommand {
     /// Stable dispatch and reconciliation identity.
@@ -30,7 +30,7 @@ impl WorkflowCommand {
 }
 
 /// Suspension or terminal result of a machine step.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineStatus {
     /// Await another durable input.
@@ -48,7 +48,7 @@ pub enum MachineStatus {
 }
 
 /// One deterministic step and its ordered outbox.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct MachineTransition {
     /// Complete next state.
@@ -60,7 +60,7 @@ pub struct MachineTransition {
 }
 
 /// Durable state pinned to an exact implementation.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct MachineCheckpoint {
     /// Implementation identity.
@@ -72,7 +72,7 @@ pub struct MachineCheckpoint {
 }
 
 /// Atomic transition, including the durable input and outbox.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowRecord {
     /// Input operation identity.
@@ -166,7 +166,7 @@ impl WorkflowRecord {
 }
 
 /// Immutable admission of one workflow instance.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowAdmission {
     /// Caller operation identity.

@@ -7,7 +7,10 @@ use crate::filesystem::UploadRecord as Record;
 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
 use serde::de::DeserializeOwned as Record;
 
-fn decode<T: Record>(bytes: &[u8], work: NativeWork<'_>) -> Result<(T, NativeCustody)> {
+fn decode<T: Record + crate::HeapLayout>(
+    bytes: &[u8],
+    work: NativeWork<'_>,
+) -> Result<(T, NativeCustody)> {
     if bytes.len() > super::MAXIMUM_RESPONSE_BYTES {
         return Err(crate::rejection(work, "search response exceeds byte limit"));
     }
@@ -33,7 +36,6 @@ fn decode<T: Record>(bytes: &[u8], work: NativeWork<'_>) -> Result<(T, NativeCus
             maximum_items: u64::MAX,
             maximum_depth: 256,
         },
-        0,
         None,
         Some(&crate::executor::json::JsonValueSchema::None),
         &mut |_| Ok(()),

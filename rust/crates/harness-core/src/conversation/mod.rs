@@ -55,7 +55,7 @@ pub const MAX_CONVERSATION_PAGE_MESSAGES: usize = u32::MAX as usize;
 pub const DEFAULT_CONVERSATION_PAGE_MESSAGES: u32 = 1_024;
 
 /// Admission and rendering bounds.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct Limits {
     /// Maximum bytes in one referenced file admitted to a conversation.
@@ -217,6 +217,9 @@ pub use volumes::{
 mod tests;
 
 /// Projection of one agent-owned conversation.
+///
+/// It has no heap layout: rebuilding its indexes allocates per message, so a
+/// bounded decode reads [`ConversationStateWire`] and rebuilds under its work.
 #[derive(Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "ConversationStateWire")]
 pub struct ConversationState {
@@ -237,7 +240,7 @@ pub struct ConversationState {
 }
 
 /// Only an issuer-authenticated reducer snapshot makes this a trusted prefix.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ArchivedConversationPrefix {
     through_sequence: u64,
@@ -245,7 +248,7 @@ pub(crate) struct ArchivedConversationPrefix {
     checkpoint: FileRef,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ConversationStateWire {
     pub(crate) agent: Option<AgentId>,
@@ -307,7 +310,7 @@ impl TryFrom<ConversationStateWire> for ConversationState {
 }
 
 /// Exact history revision and ordered subset selected for one model request.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct ModelContextSelection {
     /// Number of canonical messages observed when selecting.

@@ -100,6 +100,8 @@ fn workflow_value_payloads_do_not_reserve_typed_metadata_diagnostics() -> Result
         },
     ] {
         record.transition.status = status;
+        let (reserved, peak) = crate::executor::json::assert_layout_covers_decode(&record);
+        eprintln!("WorkflowRecord layout reserved {reserved} B, decode peak {peak} B");
         let mut wire =
             serde_json::to_value(&record).map_err(|error| Error::Invalid(error.to_string()))?;
         for malformed in [false, true] {

@@ -50,7 +50,6 @@ impl crate::pi_host::PiControlHost<'_> {
                 &self.filesystem,
                 command.operation_id,
                 "root-source-observation",
-                self.protected.policy().maximum_payload_bytes,
                 OBSERVED_SOURCE_DIAGNOSTIC_LABEL_BYTES,
                 context,
                 work,

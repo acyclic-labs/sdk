@@ -2,6 +2,10 @@
 #![no_main]
 #[cfg(test)]
 use acyclic_harness::native_environment;
+// The included production records derive `crate::HeapLayout`, which names
+// its crate by the core package path that `acyclic_harness` re-exports.
+extern crate acyclic_harness as acyclic_harness_core;
+use acyclic_harness::HeapLayout;
 #[cfg(test)]
 acyclic_test_support::counting_allocator!();
 use libfuzzer_sys::fuzz_target;

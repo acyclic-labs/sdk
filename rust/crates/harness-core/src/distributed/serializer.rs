@@ -99,28 +99,7 @@ pub(super) fn encode(
     Ok(output)
 }
 
-fn scheduler_json_owned_bytes(input_bytes: u64, items: u64) -> Result<u64> {
-    use serde::__private229::de::Content;
-    // Scheduler frames and item counts are bounded by MAX_RECORD_BYTES.
-    const CONTENT_LAYERS: u64 = 3;
-    let slots = items * (2 + 8);
-    let content_bytes =
-        slots * std::mem::size_of::<(Content<'static>, Content<'static>)>() as u64 * CONTENT_LAYERS;
-    let typed_bytes = slots * std::mem::size_of::<(String, serde_json::Value)>() as u64;
-    let strings = input_bytes * (CONTENT_LAYERS + 2);
-    let scratch = input_bytes.max(8) * 2;
-    const LABEL_BYTES: u64 = 9955;
-    let diagnostics =
-        crate::executor::json::audited_serde_diagnostic_bytes(input_bytes, LABEL_BYTES)?;
-    Ok(content_bytes
-        + typed_bytes * 2
-        + strings
-        + scratch
-        + diagnostics
-        + std::mem::size_of::<OperationSpec>() as u64)
-}
-
-pub(super) fn decode_json<T: serde::de::DeserializeOwned>(
+pub(super) fn decode_json<T: serde::de::DeserializeOwned + crate::HeapLayout>(
     input: &[u8],
     schema: &'static crate::executor::json::JsonValueSchema,
     owned: fn(&T) -> Result<u64>,
@@ -146,14 +125,13 @@ pub(super) fn decode_json<T: serde::de::DeserializeOwned>(
             .map_err(|source| invalid(source.to_string()));
     };
     let native = operations::original_native_decode_mode(observer);
-    let diagnostic = if result_value {
-        crate::executor::json::audited_serde_diagnostic_bytes(
-            input.len() as u64,
-            "Value Number map sequence string number boolean null invalid type invalid value".len()
-                as u64,
-        )?
+    // Scheduler records render one Serde label set beside the first quoted
+    // string; result values render only Value's labels.
+    let labels = if result_value {
+        "Value Number map sequence string number boolean null invalid type invalid value".len()
+            as u64
     } else {
-        0
+        9955
     };
     let bound = if result_value {
         input.len() as u64
@@ -170,25 +148,20 @@ pub(super) fn decode_json<T: serde::de::DeserializeOwned>(
             maximum_items: bound + 1,
             maximum_depth: 256,
         },
-        0,
         code,
         native,
         schema,
         &mut |charge| {
             let charged = (|| match charge {
-                JsonCodecCharge::Admission { value_shape, .. } => {
-                    let planned = if result_value {
-                        crate::executor::json::json_value_decode_owned_bytes(value_shape)?
-                            .checked_add(diagnostic)
-                    } else {
-                        scheduler_json_owned_bytes(
-                            value_shape.input_bytes(),
-                            value_shape.lexical_items(),
-                        )?
-                        .checked_add(
-                            crate::executor::json::json_value_virtual_owned_bytes(value_shape)?,
-                        )
-                    }
+                JsonCodecCharge::Admission {
+                    maximum_owned_bytes,
+                    value_shape,
+                } => {
+                    let planned = crate::executor::json::audited_serde_diagnostic_bytes(
+                        value_shape.diagnostic_source_bytes(),
+                        labels,
+                    )?
+                    .checked_add(maximum_owned_bytes)
                     .ok_or_else(|| {
                         guarded_boundary(
                             &Some(&mut *observer),

@@ -2,7 +2,7 @@ use super::*;
 use crate::conversation::VolumeRef;
 
 /// Original project location, independent of an instruction's retained storage.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct InstructionIdentity {
@@ -53,7 +53,7 @@ impl InstructionIdentity {
 
 /// Immutable instruction bytes together with their original project identity.
 /// The direct form reads legacy manifests without rewriting their file references.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(untagged, deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ProjectInstruction {

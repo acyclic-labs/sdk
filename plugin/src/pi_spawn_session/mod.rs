@@ -272,7 +272,7 @@ impl PiSession {
             .pending
             .iter()
             .any(|entry| entry.fork_key == operations.fork.into_bytes());
-        let (mut acknowledgement, pending) = self
+        let (mut acknowledgement, pending, mut held) = self
             .spawn_step(
                 &native,
                 live.as_ref(),
@@ -298,8 +298,15 @@ impl PiSession {
                 .await?;
             acknowledgement = result.0;
             self.spawn_save_pending(result.1, commit, operations, &work)?;
+            held = held.or(result.2);
         }
-        let prepared = if let Some(plan) = coordinator.load_original_plan(original).await? {
+        #[cfg(debug_assertions)]
+        crash_after_fork_publish(held.is_some());
+        // A fork prepared in this invocation is reused as held; only a fork published by an
+        // earlier invocation (or before a crash) is observed back from its durable records.
+        let prepared = if let Some(held) = held {
+            Some(held)
+        } else if let Some(plan) = coordinator.load_original_plan(original).await? {
             let source = if plan.commit.source_task == owner.policy().root_task {
                 self.roots
                     .get(&key)
@@ -378,6 +385,7 @@ impl PiSession {
     ) -> Result<(
         Option<(Value, NativeAllocation)>,
         Option<(PendingSpawn, NativeAllocation)>,
+        Option<crate::pi_fork::PreparedPiFork>,
     )> {
         let host = self.command_host(work, Some(native.clone()))?;
         let reply = if let Some(live) = live {
@@ -423,7 +431,7 @@ impl PiSession {
         } else {
             host.control_step_with_native_work(command, retry).await?
         };
-        Ok((reply, host.pending_to_save()?))
+        Ok((reply, host.pending_to_save()?, host.prepared_fork()?))
     }
 
     fn spawn_command<'a, T: Serialize + Sync>(
@@ -463,7 +471,7 @@ impl PiSession {
         }
     }
 
-    fn spawn_input<'a, T: DeserializeOwned + Send>(
+    fn spawn_input<'a, T: DeserializeOwned + acyclic_harness::HeapLayout + Send>(
         &self,
         owner: &'a pi_owner::PiOwnerConfig,
         operation: OperationId,
@@ -504,12 +512,25 @@ impl PiSession {
             Ok(Some(pi_root_provider::guarded_pi_decode(
                 bytes.as_ref(),
                 maximum,
-                std::mem::size_of::<T>() as u64,
                 acyclic_harness::wire::ErrorCode::Invalid,
                 acyclic_harness::JsonValueSchema::None,
                 schema_bytes,
                 work,
             )?))
         }
+    }
+}
+
+/// Debug-build fault point: dies once per marker file right after this invocation published
+/// a fork and before the session records it, so a test proves the fork is resumed from its
+/// durable records alone.
+#[cfg(debug_assertions)]
+fn crash_after_fork_publish(published: bool) {
+    if published
+        && let Some(marker) = std::env::var_os("ACYCLIC_TEST_CRASH_AFTER_FORK_PUBLISH")
+        && std::fs::remove_file(marker).is_ok()
+    {
+        // Exits without unwinding or running any destructor, as a killed process does.
+        std::process::exit(70);
     }
 }

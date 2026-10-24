@@ -69,6 +69,7 @@ once_cell = "1.21.3"
 pin-project-lite = "0.2.17"
 acyclic-differential = { version = "=0.2.0", path = "../differential", optional = true }
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
+acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 arrayvec = { version = "0.7.8", default-features = false }
 async-trait.workspace = true
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }

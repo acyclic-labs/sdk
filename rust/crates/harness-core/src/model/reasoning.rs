@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Provider-neutral reasoning retained in the canonical transcript.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ReasoningBlock {
@@ -19,7 +19,7 @@ pub struct ReasoningBlock {
 }
 
 /// Origin identity used when choosing native replay or foreign context.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ReasoningOrigin {
@@ -33,7 +33,7 @@ pub struct ReasoningOrigin {
 }
 
 /// Reasoning shapes normalized by the adapters.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ReasoningKind {
@@ -52,7 +52,7 @@ pub enum ReasoningKind {
 }
 
 /// Preservation result recorded without changing the original transcript block.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "kebab-case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ReasoningOutcome {

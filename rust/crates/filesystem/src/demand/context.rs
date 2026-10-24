@@ -47,10 +47,6 @@ impl NativeDemandReadMeter {
     pub(crate) fn with_original_leaf<T>(&self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
         operation(&mut self.lock())
     }
-    #[cfg(any(test, feature = "native-watch"))]
-    pub(crate) fn take_native_io_failure(&self) -> Option<DemandError> {
-        self.lock().take_native_io_failure()
-    }
 }
 
 #[cfg(test)]

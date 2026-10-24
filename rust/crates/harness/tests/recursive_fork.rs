@@ -24,7 +24,8 @@ use acyclic_harness::filesystem::{
 };
 use acyclic_harness::fork::{
     Capture, CapturedResource, CompositeForkVerifier, ForkPreparation, ForkReport, ForkRequest,
-    ForkSeed, ForkSelection, ResourceRevision, SharedGrant, StreamHistoryForkVerifier,
+    ForkSeed, ForkSeedVolume, ForkSelection, ResourceRevision, SharedGrant,
+    StreamHistoryForkVerifier,
 };
 use acyclic_harness::merge::{ProjectJoinOutcome, ProjectMergeVerifier, ProjectWorkspaceProvider};
 use acyclic_harness::model::{FileProjectionPolicy, ModelContent, ModelContentPart};

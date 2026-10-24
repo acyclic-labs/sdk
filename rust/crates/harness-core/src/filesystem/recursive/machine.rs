@@ -9,40 +9,35 @@ pub struct ForkPreparationMachine {
     schema: Value,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
 enum State {
     Ready {
         command: Box<WorkflowCommand>,
         request_digest: [u8; 32],
+        /// The admitted request's finite byte allowance, which bounds the
+        /// report's canonical re-encoding when it settles.
+        maximum_bytes: u64,
     },
     Waiting {
         operation_id: OperationId,
         request_digest: [u8; 32],
+        maximum_bytes: u64,
     },
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct CommandResults {
     commands: [CommandResult; 1],
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct CommandResult {
     operation_id: OperationId,
     value: Outcome<ForkReport>,
 }
-impl PreparationRecord for State {
-    fn maximum_slot_bytes() -> u64 {
-        crate::filesystem::default_tools::recursive_decode_slot_bytes::<Self>()
-            + std::mem::size_of::<CommandResult>() as u64
-    }
-}
+impl PreparationRecord for State {}
 impl PreparationRecord for CommandResults {
-    fn maximum_slot_bytes() -> u64 {
-        crate::filesystem::default_tools::recursive_decode_slot_bytes::<Self>()
-            + std::mem::size_of::<CommandResult>() as u64
-    }
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
         crate::executor::json::JsonValueSchema::ForkPreparationCommandResults
     }
@@ -108,6 +103,7 @@ impl ForkPreparationMachine {
             &State::Ready {
                 command: crate::filesystem::default_tools::recursive_box(command, io)?,
                 request_digest,
+                maximum_bytes: request.maximum_bytes,
             },
             io,
         )
@@ -125,10 +121,11 @@ impl ForkPreparationMachine {
                 "fork preparation is already settled",
             ));
         }
-        let (operation_id, request_digest) = match decode::<State>(state, io)? {
+        let (operation_id, request_digest, maximum_bytes) = match decode::<State>(state, io)? {
             State::Ready {
                 command,
                 request_digest,
+                maximum_bytes,
             } => {
                 crate::executor::with_history_io(io, |work| command.validate(work))?;
                 if !input.is_null() || command.kind != FORK_PREPARE_TASK_COMMAND_KIND {
@@ -141,6 +138,7 @@ impl ForkPreparationMachine {
                     &State::Waiting {
                         operation_id: command.operation_id,
                         request_digest,
+                        maximum_bytes,
                     },
                     io,
                 )?;
@@ -155,7 +153,8 @@ impl ForkPreparationMachine {
             State::Waiting {
                 operation_id,
                 request_digest,
-            } => (operation_id, request_digest),
+                maximum_bytes,
+            } => (operation_id, request_digest, maximum_bytes),
         };
         let CommandResults { commands: [result] } = decode(input, io)?;
         if result.operation_id != operation_id {
@@ -171,7 +170,7 @@ impl ForkPreparationMachine {
                     || crate::executor::with_history_io(io, |work| {
                         crate::executor::json::canonical_json_digest(
                             &report.request,
-                            u64::MAX,
+                            maximum_bytes,
                             work,
                         )
                     })? != request_digest
@@ -264,7 +263,7 @@ impl ResumableMachine for ForkPreparationMachine {
     }
 }
 fn preparation_state_schema() -> Value {
-    serde_json::json!({"oneOf":[{"type":"object","required":["phase","command","request_digest"],"properties":{"phase":{"const":"ready"},"command":{"type":"object"},"request_digest":{"type":"array","minItems":32,"maxItems":32,"items":{"type":"integer","minimum":0,"maximum":255}}},"additionalProperties":false},{"type":"object","required":["phase","operation_id","request_digest"],"properties":{"phase":{"const":"waiting"},"operation_id":{"type":"string"},"request_digest":{"type":"array","minItems":32,"maxItems":32,"items":{"type":"integer","minimum":0,"maximum":255}}},"additionalProperties":false},{"type":"null"}]})
+    serde_json::json!({"oneOf":[{"type":"object","required":["phase","command","request_digest","maximum_bytes"],"properties":{"phase":{"const":"ready"},"command":{"type":"object"},"request_digest":{"type":"array","minItems":32,"maxItems":32,"items":{"type":"integer","minimum":0,"maximum":255}},"maximum_bytes":{"type":"integer","minimum":1,"maximum":(u64::MAX - 1)}},"additionalProperties":false},{"type":"object","required":["phase","operation_id","request_digest","maximum_bytes"],"properties":{"phase":{"const":"waiting"},"operation_id":{"type":"string"},"request_digest":{"type":"array","minItems":32,"maxItems":32,"items":{"type":"integer","minimum":0,"maximum":255}},"maximum_bytes":{"type":"integer","minimum":1,"maximum":(u64::MAX - 1)}},"additionalProperties":false},{"type":"null"}]})
 }
 
 #[cfg(test)]

@@ -51,11 +51,7 @@ impl UploadRecord for JoinCommitWitness {
     }
 }
 
-impl fork_preparer_io::PreparationRecord for JoinCommitWitness {
-    fn maximum_slot_bytes() -> u64 {
-        std::mem::size_of::<serde_json::Value>().max(std::mem::size_of::<Self>()) as u64
-    }
-}
+impl fork_preparer_io::PreparationRecord for JoinCommitWitness {}
 
 impl<A, O> ProjectMergeVerifier for FilesystemProjectMergeVerifier<A, O>
 where

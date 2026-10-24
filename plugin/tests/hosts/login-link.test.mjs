@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { hostLogin, linkLogin } from "./login-link.mjs";
+import { hostLogin, linkLogin, releaseLogin } from "./login-link.mjs";
 
 // A fixture login with a marker in place of real credentials.
 function fixture() {
@@ -42,6 +42,73 @@ test("a relative symbolic link target does not reach the login", () => {
     mkdirSync(join(root, "fixture", "home", "codex"), { recursive: true });
     symlinkSync(join("config", "auth.json"), link);
     assert.equal(existsSync(link), false);
+  } finally {
+    restore();
+  }
+});
+
+// A host refreshing its token writes a new file and renames it over the link.
+for (const platform of ["win32", "linux"]) {
+  test(`a login the host refreshed during the run replaces the source (${platform} link)`, () => {
+    const { root, restore } = fixture();
+    try {
+      const login = hostLogin("codex", join(root, "fixture", "home"), { CODEX_HOME: "config" });
+      linkLogin(login, platform);
+      writeFileSync(`${login.link}.tmp`, "rotated-marker");
+      renameSync(`${login.link}.tmp`, login.link);
+      assert.equal(releaseLogin(login), "restored");
+      assert.equal(readFileSync(login.source, "utf8"), "rotated-marker");
+      assert.equal(existsSync(login.link), false);
+    } finally {
+      restore();
+    }
+  });
+
+  test(`a refreshed login on another filesystem replaces the source (${platform} link)`, () => {
+    const { root, restore } = fixture();
+    try {
+      const login = hostLogin("codex", join(root, "fixture", "home"), { CODEX_HOME: "config" });
+      linkLogin(login, platform);
+      writeFileSync(`${login.link}.tmp`, "rotated-marker");
+      renameSync(`${login.link}.tmp`, login.link);
+      const crossDevice = () => {
+        throw Object.assign(new Error("cross-device link not permitted"), { code: "EXDEV" });
+      };
+      assert.equal(releaseLogin(login, crossDevice), "restored");
+      assert.equal(readFileSync(login.source, "utf8"), "rotated-marker");
+      assert.equal(existsSync(login.link), false);
+      assert.equal(existsSync(`${login.source}.acyclic-restore`), false);
+    } finally {
+      restore();
+    }
+  });
+
+  test(`an untouched link is only removed (${platform} link)`, () => {
+    const { root, restore } = fixture();
+    try {
+      const login = hostLogin("codex", join(root, "fixture", "home"), { CODEX_HOME: "config" });
+      linkLogin(login, platform);
+      assert.equal(releaseLogin(login), "unlinked");
+      assert.equal(readFileSync(login.source, "utf8"), "fixture-marker");
+      assert.equal(lstatSync(login.source).isFile(), true);
+      assert.equal(existsSync(login.link), false);
+    } finally {
+      restore();
+    }
+  });
+}
+
+// Negative control: removing the replaced file, as the run did before, loses
+// the only valid login and leaves the revoked one in place.
+test("removing a refreshed login leaves the revoked one behind", () => {
+  const { root, restore } = fixture();
+  try {
+    const login = hostLogin("codex", join(root, "fixture", "home"), { CODEX_HOME: "config" });
+    linkLogin(login, "win32");
+    writeFileSync(`${login.link}.tmp`, "rotated-marker");
+    renameSync(`${login.link}.tmp`, login.link);
+    rmSync(login.link, { force: true });
+    assert.equal(readFileSync(login.source, "utf8"), "fixture-marker");
   } finally {
     restore();
   }

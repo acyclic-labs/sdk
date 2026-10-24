@@ -124,7 +124,7 @@ pub(crate) fn validate_execution_page(maximum: u32) -> Result<()> {
 }
 
 /// Durable input to any custom executor.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 pub struct TurnInput {
     /// Stable durable turn execution identity.
     pub operation_id: OperationId,
@@ -164,7 +164,7 @@ impl TurnInput {
 }
 
 /// Gapless replay record returned by a durable execution journal.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 pub struct ExecutionRecord {
     /// Owning turn execution.
     pub operation_id: OperationId,
@@ -177,7 +177,9 @@ pub struct ExecutionRecord {
 }
 
 /// Canonical executor observation suitable for a durable journal.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelPurpose {
@@ -229,7 +231,7 @@ impl ModelPurpose {
 }
 
 /// Canonical executor observation suitable for a durable journal.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[allow(
@@ -334,7 +336,7 @@ pub enum ExecutionEvent {
 }
 
 /// Stable, non-secret classes of a settled tool failure the model receives as its result.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ToolFailureKind {
@@ -417,7 +419,7 @@ pub struct ExecutionReplay {
 }
 
 /// Terminal result produced by an executor.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 pub struct TurnOutput {
     /// User-visible assistant text.
     pub text: String,
@@ -536,7 +538,7 @@ pub struct StockExecutor {
 }
 
 /// Journal payload separating canonical history from the exact transformed request.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ResponseProjection {
     pub(crate) context: crate::context::Context,
@@ -544,7 +546,7 @@ pub(crate) struct ResponseProjection {
     pub(crate) checkpoint: Option<FileRef>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct ContextAccounting {
     capacity: crate::context::ModelContextCapacity,
@@ -555,10 +557,6 @@ struct ContextAccounting {
 impl crate::filesystem::PreparationRecord for ContextAccounting {
     fn diagnostic_label_bytes() -> u64 {
         native_stock::stock_serde_diagnostic_label_bytes()
-    }
-    fn maximum_slot_bytes() -> u64 {
-        <crate::context::Context as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
-            .max(std::mem::size_of::<Self>() as u64)
     }
 }
 

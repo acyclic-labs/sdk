@@ -5,7 +5,7 @@ use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 
 /// Consumer-selected finite ceilings, pinned with the editing tool definition.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct PatchLimits {
     /// Separate ceiling for source, diff and resulting UTF-8 bytes.

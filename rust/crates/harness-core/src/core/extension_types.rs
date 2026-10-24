@@ -1,6 +1,6 @@
 use super::*;
 /// Explicit treatment of one extension's state at a child fork.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtensionForkPolicy {
     /// Retain the selected immutable state revision for the child.
@@ -12,7 +12,7 @@ pub enum ExtensionForkPolicy {
 }
 
 /// One versioned extension state record. Bytes live only at `content`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionRecord {
     /// Namespaced schema identity.
@@ -30,7 +30,7 @@ pub struct ExtensionRecord {
 }
 
 /// Version transition that never rewrites or removes its retained input.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionStateMigration {
     /// Latest state event that was validated as the migration input.
@@ -84,7 +84,9 @@ pub(crate) fn validate_extension_name(name: &str) -> Result<()> {
 }
 
 /// Exact installed version required by another extension at activation.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionDependency {
     /// Namespaced extension identity.
@@ -107,7 +109,7 @@ impl ExtensionDependency {
 }
 
 /// File-backed configuration pinned to one installed extension schema.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionConfiguration {
     /// Exact installed extension version.
@@ -119,7 +121,7 @@ pub struct ExtensionConfiguration {
 }
 
 /// Immutable agent selection captured for task admission. The source points
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionAdmission {
     pub(in crate::core) source: EventReference,

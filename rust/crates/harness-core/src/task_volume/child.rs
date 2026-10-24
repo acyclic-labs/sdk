@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Harness acknowledgement of a child's execution state.
 /// Results remain in the named task's ordinary completion and chunk files.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
@@ -82,7 +82,7 @@ pub struct ChildRequest {
     pub grants: Option<Vec<String>>,
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Default, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct RequestMetadata {
     model: Option<String>,
@@ -168,7 +168,9 @@ impl ChildRequest {
 }
 
 /// Files owned by a parent below `agents/<ref>/`.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub enum ChildFile {
@@ -221,7 +223,7 @@ impl ChildFile {
 }
 
 /// Exact text accepted in a child's control file.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "lowercase")]
 pub enum Control {
     /// Stop starting work until resumed.
@@ -262,7 +264,7 @@ impl Control {
 }
 
 /// Desired execution state, folded from accepted control-file publications.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ChildState {
     /// Child may start or continue work.

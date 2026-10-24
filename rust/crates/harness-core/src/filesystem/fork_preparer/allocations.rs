@@ -12,6 +12,13 @@ pub(super) fn creation_volumes(request: &ForkRequest) -> impl Iterator<Item = &V
 }
 
 pub(super) fn seed_creation_volumes(seed: &ForkSeed) -> Result<impl Iterator<Item = &VolumeRef>> {
+    Ok(seed_creation_roles(seed)?.map(|(_, volume)| volume))
+}
+
+fn seed_creation_roles(
+    seed: &ForkSeed,
+) -> Result<impl Iterator<Item = (crate::fork::ForkSeedVolume, &VolumeRef)>> {
+    use crate::fork::ForkSeedVolume;
     let project = seed
         .resources
         .iter()
@@ -21,15 +28,17 @@ pub(super) fn seed_creation_volumes(seed: &ForkSeed) -> Result<impl Iterator<Ite
         })
         .ok_or_else(|| Error::Invalid("fork has no child project".into()))?;
     Ok([
-        Some(&seed.child_private_volume),
-        Some(project),
-        seed.child_result_volume.as_ref(),
+        Some((ForkSeedVolume::Private, &seed.child_private_volume)),
+        Some((ForkSeedVolume::Project, project)),
+        seed.child_result_volume
+            .as_ref()
+            .map(|volume| (ForkSeedVolume::Result, volume)),
     ]
     .into_iter()
     .flatten())
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AllocationClaim {
     pub(super) operation_id: OperationId,
@@ -37,7 +46,6 @@ pub(crate) struct AllocationClaim {
     pub(crate) task_origin: Option<ResourceCreationOrigin>,
     pub(super) parent: Authority,
     pub(super) child: Authority,
-    pub(super) volume: VolumeRef,
 }
 
 impl bounded_io::UploadRecord for [u8; 32] {
@@ -51,7 +59,6 @@ impl bounded_io::UploadRecord for AllocationClaim {
         let mut bytes = crate::core::owned_sum([
             self.parent.id.capacity() as u64,
             self.child.id.capacity() as u64,
-            self.volume.logical_owned_bytes()?,
         ])?;
         if let Some(origin) = &self.task_origin {
             bytes = crate::core::owned_sum([
@@ -220,29 +227,8 @@ impl bounded_io::UploadRecord for Capture {
         }
     }
 }
-fn fork_collection_slot_bytes() -> u64 {
-    use std::mem::size_of;
-    [
-        size_of::<ForkSelection>(),
-        size_of::<Capture>(),
-        size_of::<SharedGrant>(),
-        size_of::<ReferenceGrant>(),
-        size_of::<FileRef>(),
-        size_of::<String>(),
-        size_of::<(String, serde_json::Value)>(),
-    ]
-    .into_iter()
-    .max()
-    .unwrap_or(0) as u64
-        + 2 * 5
-            * size_of::<(
-                serde::__private229::de::Content<'static>,
-                serde::__private229::de::Content<'static>,
-            )>() as u64
-}
-
 macro_rules! fork_preparation_records {
-    ($($record:ty => $schema:ident => $slot:expr),+ $(,)?) => {$(
+    ($($record:ty => $schema:ident),+ $(,)?) => {$(
         impl bounded_io::PreparationRecord for $record {
             fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
                 crate::core::owned_sum([
@@ -250,41 +236,17 @@ macro_rules! fork_preparation_records {
                     bounded_io::UploadRecord::logical_owned_bytes(self)?,
                 ]).map(Some)
             }
-            fn maximum_slot_bytes() -> u64 { $slot }
-            fn decode_owned_allowance(
-                shape: crate::executor::json::JsonValueShape, scratch: u64, input: u64,
-                code: Option<crate::wire::ErrorCode>,
-            ) -> Result<u64> {
-                let nodes = shape.lexical_items().checked_add(shape.virtual_items());
-                let nodes = nodes.map(|nodes| if shape.unresolved_raw() { nodes.max(input) } else { nodes });
-                // Input is held by the caller; admit only DTO slots, strings and decoder scratch.
-                nodes.and_then(|nodes| nodes.checked_mul(Self::maximum_slot_bytes()))
-                    .and_then(|slots| slots.checked_mul(8))
-                    .and_then(|slots| input.checked_mul(2).and_then(|strings| slots.checked_add(strings)))
-                    .and_then(|bytes| bytes.checked_add(scratch))
-                    .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>() as u64))
-                    .ok_or_else(|| {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        if let Some(code) = code {
-                            return Error::NativeBoundary { code, reason: "fork decode storage overflows" };
-                        }
-                        let _ = code;
-                        Error::Invalid("fork decode storage overflows".into())
-                    })
-            }
             fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema { crate::executor::json::JsonValueSchema::$schema }
         }
     )+};
 }
 fork_preparation_records!(
-    ForkRequest => ForkRequest => fork_collection_slot_bytes(),
-    ForkReport => ForkReport => fork_collection_slot_bytes(),
-    // Claim collections contain only strings; its one tagged owner needs Content scratch.
-    AllocationClaim => None => (std::mem::size_of::<String>()
-        + 2 * std::mem::size_of::<(serde::__private229::de::Content<'static>, serde::__private229::de::Content<'static>)>()) as u64,
-    Capture => None => fork_collection_slot_bytes(),
-    [u8; 32] => None => 0,
-    Uuid => None => 0,
+    ForkRequest => ForkRequest,
+    ForkReport => ForkReport,
+    AllocationClaim => None,
+    Capture => None,
+    [u8; 32] => None,
+    Uuid => None,
 );
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
@@ -371,24 +333,92 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "fork allocation belongs to another Filesystem provider".into(),
             ));
         }
-        for volume in seed_creation_volumes(seed)? {
-            self.claim_fork_allocation(
-                AllocationClaim {
-                    operation_id: seed.operation_id,
-                    preparation_digest: digest,
-                    task_origin: None,
-                    parent: seed.parent.clone(),
-                    child: seed.child.clone(),
-                    volume: volume.clone(),
-                },
-                MAX_REQUEST_BYTES,
+        // A child volume belongs to the one operation whose key created it, so
+        // two operations can never claim the same volume.
+        for (role, volume) in seed_creation_roles(seed)? {
+            self.require_seed_creation(seed.operation_id, role, volume)
+                .await?;
+        }
+        let claim = AllocationClaim {
+            operation_id: seed.operation_id,
+            preparation_digest: digest,
+            task_origin: None,
+            parent: seed.parent.clone(),
+            child: seed.child.clone(),
+        };
+        let journal = preparation_journal(&self.provider, seed.operation_id, None)?;
+        let key = |suffix| {
+            IdempotencyKey::new(crate::executor::with_history_io(None, |work| {
+                crate::executor::preparation_format(
+                    format_args!("fork:{}:{suffix}", seed.operation_id),
+                    work,
+                )
+            })?)
+        };
+        // A trusted seed has no preparation request: its allocation and seed
+        // binding are the journal's creation commit.
+        let prior = read_allocation_claim(self, &journal, MAX_REQUEST_BYTES, None).await?;
+        if prior.is_none() {
+            write_files(
+                self,
+                &journal,
+                vec![
+                    (ALLOCATION_RECORD, encode(&claim, MAX_REQUEST_BYTES, None)?),
+                    (SEED_RECORD, encode(&digest, MAX_REQUEST_BYTES, None)?),
+                ],
+                &key("claim")?,
                 None,
                 None,
             )
             .await?;
         }
-        self.bind_fork_seed(seed, MAX_REQUEST_BYTES, None, None)
-            .await
+        let retained = read_allocation_claim(self, &journal, MAX_REQUEST_BYTES, None)
+            .await?
+            .ok_or(Error::Indeterminate(seed.operation_id))?;
+        let binding = read_seed_binding(self, &journal, MAX_REQUEST_BYTES, None).await?;
+        if !same_allocation_claim(&retained, &claim) || binding != Some(digest) {
+            return Err(Error::Conflict(
+                "fork operation is allocated to another seed".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn require_seed_creation(
+        &self,
+        operation: OperationId,
+        role: crate::fork::ForkSeedVolume,
+        volume: &VolumeRef,
+    ) -> Result<()> {
+        let key = ForkSeed::creation_key(operation, role)?;
+        let operation = acyclic_fs::OperationId::from_bytes(
+            bounded_io::operation_key(&key, None)?.into_bytes(),
+        );
+        let reference = bounded_io::content_workspace(&self.provider, volume, None)?;
+        let workspace = self.open(&reference, None).await?;
+        let name = std::str::from_utf8(reference.as_resource().key())
+            .map_err(|_| Error::Invalid("workspace reference key must be UTF-8".into()))?;
+        let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+        let (created, recorded) = self
+            .filesystem
+            .workspace_for_creation_operation(
+                name,
+                workspace.volume_config(),
+                operation,
+                &io,
+                io.cancellation(),
+            )
+            .await;
+        let created = match created {
+            Err(acyclic_fs::WorkspaceError::Filesystem(acyclic_fs::FsError::CreationRejected)) => {
+                recorded?;
+                None
+            }
+            created => io.sdk((created, recorded))?,
+        };
+        created.map(drop).ok_or_else(|| {
+            Error::Conflict("fork child volume was not created by this fork operation".into())
+        })
     }
 
     /// Reads the original protected claim through the same bounded codec as publication verification.
@@ -474,7 +504,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
             let (journal_hold, journal) = {
                 let before = io.owned_bytes()?;
-                let journal = allocation_ref(&self.provider, volume, Some(&io))?;
+                let journal = preparation_journal(&self.provider, fork.0.operation_id, Some(&io))?;
                 let journal_hold = io.guard_owned(io.owned_bytes()? - before)?;
                 (journal_hold, journal)
             };
@@ -496,7 +526,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             if claim.operation_id != fork.0.operation_id
                 || claim.parent != fork.0.parent
                 || claim.child != fork.0.child
-                || claim.volume != *volume
                 || claim.preparation_digest != preparation_digest
             {
                 return Err(reject(
@@ -521,7 +550,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io: Option<&'a PreparationIo>,
     ) -> Result<(AllocationClaim, Option<bounded_io::DecodeReservation<'a>>)> {
         let (journal_hold, journal) = {
-            let journal = allocation_ref(&self.provider, volume, io)?;
+            let journal = preparation_journal(&self.provider, seed.operation_id, io)?;
             let journal_hold = io
                 .map(|io| io.guard_owned(journal.logical_owned_bytes()?))
                 .transpose()?;
@@ -538,21 +567,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if claim.operation_id != seed.operation_id
             || claim.parent != seed.parent
             || claim.child != seed.child
-            || claim.volume != *volume
             || !seed_creation_volumes(seed)?.any(|selected| selected == volume)
         {
             return Err(Error::Conflict(
                 "fork child volume belongs to another preparation".into(),
             ));
         }
-        let retained =
-            read_record_decoded_bounded(self, &journal, "/seed.json", maximum, io, |bytes, io| {
-                match io {
-                    Some(io) => io.decode_json::<[u8; 32]>(bytes),
-                    None => crate::contract::json_from_slice(bytes)
-                        .map_err(|cause| Error::Invalid(cause.to_string())),
-                }
-            })
+        let retained = read_seed_binding(self, &journal, maximum, io)
             .await?
             .ok_or_else(|| {
                 Error::Unauthorized("fork seed was not bound to its allocation".into())
@@ -568,142 +589,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         acyclic_differential::record(("fork allocation verified", 1u64));
         Ok((claim, claim_hold))
     }
-
-    pub(super) async fn bind_fork_seed(
-        &self,
-        seed: &ForkSeed,
-        maximum_bytes: u64,
-        io: Option<&PreparationIo>,
-        preparation: Option<&Arc<TaskResourcePreparation>>,
-    ) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            preparation
-                .ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "native seed binding requires its original issued creation guard",
-                })?
-                .verify(
-                    false,
-                    Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
-                )?
-                .await?;
-        }
-        let binding = seed_digest(seed, MAX_REPORT_BYTES, io)?;
-        for volume in seed_creation_volumes(seed)? {
-            let journal = allocation_ref(&self.provider, volume, io)?;
-            let claim = read_record::<A, O, AllocationClaim>(
-                self,
-                &journal,
-                "/claim.json",
-                maximum_bytes,
-                io,
-            )
-            .await?
-            .ok_or_else(|| {
-                stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "fork child volume was not allocated",
-                )
-            })?;
-            if claim.operation_id != seed.operation_id
-                || claim.parent != seed.parent
-                || claim.child != seed.child
-                || claim.volume != *volume
-            {
-                return Err(stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Conflict,
-                    "fork child volume belongs to another preparation",
-                ));
-            }
-            let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
-                crate::executor::preparation_format(
-                    format_args!("fork:{}:seed", seed.operation_id),
-                    work,
-                )
-            })?)?;
-            let prior = write_once(
-                self,
-                &journal,
-                "/seed.json",
-                &binding,
-                maximum_bytes,
-                &key,
-                seed.operation_id,
-                io,
-                preparation,
-            )
-            .await?;
-            if prior != binding {
-                return Err(stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Conflict,
-                    "fork allocation has another seed",
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    pub(super) async fn claim_fork_allocation(
-        &self,
-        claim: AllocationClaim,
-        maximum_bytes: u64,
-        io: Option<&PreparationIo>,
-        preparation: Option<&Arc<TaskResourcePreparation>>,
-    ) -> Result<()> {
-        crate::executor::with_history_io(io, |work| claim.volume.validate(work))?;
-        if claim.volume.provider() != &self.provider {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "fork allocation belongs to another Filesystem provider",
-            ));
-        }
-        let journal = allocation_ref(&self.provider, &claim.volume, io)?;
-        let name = std::str::from_utf8(journal.as_resource().key()).map_err(|_| {
-            stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "allocation journal name is not UTF-8",
-            )
-        })?;
-        let creation_key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
-            crate::executor::preparation_format(
-                format_args!("fork:{}:allocation-journal", claim.operation_id),
-                work,
-            )
-        })?)?;
-        bounded_io::create(self, name, &creation_key, io, preparation).await?;
-        let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
-            crate::executor::preparation_format(
-                format_args!("fork:{}:allocation", claim.operation_id),
-                work,
-            )
-        })?)?;
-        let prior = write_once(
-            self,
-            &journal,
-            "/claim.json",
-            &claim,
-            maximum_bytes,
-            &key,
-            claim.operation_id,
-            io,
-            preparation,
-        )
-        .await?;
-        if !same_allocation_claim(&prior, &claim) {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Conflict,
-                "fork child volume is already allocated",
-            ));
-        }
-        Ok(())
-    }
 }
 
 pub(super) fn same_allocation_claim(
@@ -714,7 +599,6 @@ pub(super) fn same_allocation_claim(
         || retained.preparation_digest != requested.preparation_digest
         || retained.parent != requested.parent
         || retained.child != requested.child
-        || retained.volume != requested.volume
     {
         return false;
     }
@@ -742,8 +626,6 @@ pub(super) fn same_task_origin(
         _ => false,
     }
 }
-
-use crate::executor::stock_boundary;
 
 fn require_archive_witness(seed: &ForkSeed, verifier: &AuthorityVerifier) -> Result<()> {
     let proof = seed.history_witness.as_deref().ok_or_else(|| {
@@ -792,7 +674,6 @@ mod tests {
             }),
             parent: request.parent.clone(),
             child: request.child.clone(),
-            volume: request.preparation.child_private_volume.clone(),
         };
         drop(request);
         drop(held);

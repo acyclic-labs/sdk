@@ -204,7 +204,7 @@ impl TaskGroup {
             let target = old.saturating_mul(2).max(4);
             let bytes = target
                 .checked_sub(old)
-                .and_then(|slots| slots.checked_mul(std::mem::size_of::<Weak<GroupState>>()))
+                .and_then(|added| added.checked_mul(std::mem::size_of::<Weak<GroupState>>()))
                 .and_then(|bytes| bytes.checked_add(std::mem::size_of::<GroupChildCustody>()))
                 .ok_or(crate::Error::NativeWork {
                     cause: acyclic_fs::NativeTreeMaterializationError::Work(

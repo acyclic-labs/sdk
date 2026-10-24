@@ -314,6 +314,7 @@ pub(crate) async fn register(
                 access_policy: Some(acyclic_harness::filesystem::INITIAL_ACCESS_POLICY),
             },
             OperationId::from_bytes(identity("journal", session, work)?),
+            &[],
             work,
             work.cancellation(),
             None,

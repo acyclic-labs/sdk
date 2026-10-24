@@ -6,7 +6,8 @@ use serde_json::Value;
 use serde_json::value::RawValue;
 use std::collections::BTreeMap;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiRootAllocation {
     pub(crate) roots: BTreeMap<String, RootCreation>,

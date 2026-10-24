@@ -115,6 +115,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
                 "companion-fault",
                 acyclic_fs::VolumeInitialization::new(config, None),
                 operation,
+                &[],
                 budget,
                 &CancellationToken::new(),
                 None,

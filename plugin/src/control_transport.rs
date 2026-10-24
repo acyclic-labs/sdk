@@ -4,7 +4,7 @@ use super::*;
 
 pub(crate) type ControlDispatchResponse = (Value, Option<acyclic_fs::NativeAllocation>);
 pub(crate) type ControlEncodedResponse = (
-    Vec<u8>,
+    ControlFrame,
     Option<acyclic_fs::NativeAllocation>,
     Option<acyclic_harness::Error>,
 );
@@ -22,7 +22,10 @@ pub(crate) const CONTROL_PROBE_WAIT: std::time::Duration = std::time::Duration::
 pub(crate) const CONTROL_HOOK_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 pub(crate) const CONTROL_COMMAND_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, acyclic_harness::HeapLayout,
+)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum ControlCommand {
     Ping,
@@ -47,7 +50,8 @@ impl ControlCommand {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 pub(crate) struct ControlRequest {
     pub(crate) version: u32,
     pub(crate) command: ControlCommand,
@@ -57,7 +61,8 @@ pub(crate) struct ControlRequest {
     pub(crate) arguments: Value,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(crate) struct CliRouting {
     pub(crate) selected_cwd: PathBuf,
@@ -913,7 +918,9 @@ pub(crate) async fn dispatch_control_envelope(
             Err(acyclic_harness::Error::Storage(error)),
             original_native_work.as_ref(),
         ),
-        Ok(LedgerDecision::Completed(response)) => Ok((response, None, None)),
+        Ok(LedgerDecision::Completed(response)) => {
+            Ok((ControlFrame::encoded(response), None, None))
+        }
         Ok(LedgerDecision::Execute) => {
             let result =
                 dispatch_control_request(control, envelope.request.clone(), original_native_work)
@@ -924,6 +931,15 @@ pub(crate) async fn dispatch_control_envelope(
             let failure = encoded.2;
             let allocation = encoded.1;
             let response = encoded.0;
+            if response.reply_failed() {
+                // The operation took effect but its reply was never funded.
+                // Its outcome is recorded indeterminate, so a retry is refused
+                // rather than replayed as a failure, and it ages out with the
+                // normal retention window. Should that record fail, the
+                // operation stays started and a restart records it the same.
+                let _ = ledger.interrupt(&envelope);
+                return Ok((response, allocation, failure));
+            }
             match ledger.complete(&envelope, &response) {
                 Ok(()) => Ok((response, allocation, failure)),
                 Err(error) => {

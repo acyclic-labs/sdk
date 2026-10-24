@@ -34,6 +34,7 @@ pub async fn local_owner_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
             },
             acyclic_fs::OperationId::from_bytes(operation),
+            &[],
             acyclic_fs::WorkBudget::UNBOUNDED,
             &cancellation,
             None,

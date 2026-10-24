@@ -12,6 +12,12 @@ use acyclic_fs::kernel::{FileKind, LogicalName, NameEncoding};
 use acyclic_fs::{Generation, WorkCounters};
 
 /// One transient reader over an existing owner and immutable allocation.
+/// The original ledger context that owner verification charges, beside a reader's I/O.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) type OwnerWork = Option<acyclic_fs::NativeMaterializationWork>;
+#[cfg(target_arch = "wasm32")]
+pub(super) type OwnerWork = ();
+
 pub(super) struct ProjectSourceReader<P, A, O> {
     host: Arc<FilesystemHost<A, O>>,
     owner: Arc<TaskJournalOwner<P>>,
@@ -20,6 +26,9 @@ pub(super) struct ProjectSourceReader<P, A, O> {
     workspace: acyclic_fs::Workspace<A, O>,
     limits: Limits,
     pub(super) io: PreparationIo,
+    /// The owner's own ledger context, when the reader's I/O runs under a resource
+    /// ceiling of it: owner verification is the owner's work, never the reader's.
+    owner_work: OwnerWork,
     pub(super) serial: tokio::sync::Mutex<()>,
 }
 
@@ -35,6 +44,7 @@ where
         handle: ProjectSourceReadHandle,
         limits: Limits,
         io: PreparationIo,
+        owner_work: OwnerWork,
     ) -> Result<Box<Self>> {
         limits.validate(&mut None)?;
         let authorization = handle.authorization();
@@ -46,17 +56,17 @@ where
         )?;
         let reference =
             bounded_io::content_workspace(&host.provider, &authorization.project, Some(&io))?;
-        Self::verify_owner(&owner, &io).await?;
+        Self::verify_owner(&owner, &io, &owner_work).await?;
         let workspace = host.open(&reference, Some(&io)).await?;
-        Self::verify_owner(&owner, &io).await?;
+        Self::verify_owner(&owner, &io, &owner_work).await?;
         io.retain_owned(workspace.name().as_str().len() as u64)?;
         let generation = host
             .generation(&workspace, &authorization.generation, Some(&io))
             .await?;
-        Self::verify_owner(&owner, &io).await?;
+        Self::verify_owner(&owner, &io, &owner_work).await?;
         let view =
             Self::require_unrestricted(&workspace, &handle, &owner, generation.id(), &io).await?;
-        Self::finish_verification(&workspace, &owner, &view.0, &io).await?;
+        Self::finish_verification(&workspace, &owner, &view.0, &io, &owner_work).await?;
         drop(view);
         io.retain_owned(std::mem::size_of::<Self>() as u64)?;
         io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
@@ -68,6 +78,7 @@ where
             workspace,
             limits,
             io,
+            owner_work,
             serial: tokio::sync::Mutex::new(()),
         }))
     }
@@ -168,7 +179,14 @@ where
         self.owner
             .verify_project_source_read(&self.handle, Some(work))
             .await?;
-        Self::finish_verification(&self.workspace, &self.owner, &view.0, &self.io).await?;
+        Self::finish_verification(
+            &self.workspace,
+            &self.owner,
+            &view.0,
+            &self.io,
+            &self.owner_work,
+        )
+        .await?;
         original.remaining()?;
         self.io
             .cancellation()
@@ -220,13 +238,14 @@ where
         owner: &TaskJournalOwner<P>,
         view: &acyclic_fs::access::PathTrie,
         io: &PreparationIo,
+        owner_work: &OwnerWork,
     ) -> Result<()> {
-        Self::verify_owner(owner, io).await?;
+        Self::verify_owner(owner, io, owner_work).await?;
         crate::filesystem::access::require_current(workspace, view, io).await
     }
 
     async fn verify(&self) -> Result<()> {
-        Self::verify_owner(&self.owner, &self.io).await?;
+        Self::verify_owner(&self.owner, &self.io, &self.owner_work).await?;
         let view = Self::require_unrestricted(
             &self.workspace,
             &self.handle,
@@ -235,12 +254,25 @@ where
             &self.io,
         )
         .await?;
-        Self::finish_verification(&self.workspace, &self.owner, &view.0, &self.io).await
+        Self::finish_verification(
+            &self.workspace,
+            &self.owner,
+            &view.0,
+            &self.io,
+            &self.owner_work,
+        )
+        .await
     }
 
-    async fn verify_owner(owner: &TaskJournalOwner<P>, io: &PreparationIo) -> Result<()> {
+    async fn verify_owner(
+        owner: &TaskJournalOwner<P>,
+        io: &PreparationIo,
+        owner_work: &OwnerWork,
+    ) -> Result<()> {
+        #[cfg(target_arch = "wasm32")]
+        let () = owner_work;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
+        if let Some(work) = owner_work.as_ref().or(io.original_native_work()) {
             let cancellation = owner
                 .invocation_cancellation()
                 .ok_or(Error::NativeBoundary {

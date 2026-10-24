@@ -1,6 +1,10 @@
 #![no_main]
 #[cfg(test)]
 use acyclic_harness::{conversation, resources};
+// The included production records derive `crate::HeapLayout`, which names
+// its crate by the core package path that `acyclic_harness` re-exports.
+extern crate acyclic_harness as acyclic_harness_core;
+use acyclic_harness::HeapLayout;
 
 use acyclic_harness::{
     AgentId, OperationId, TaskId, conversation::VolumeRef, tool::files::*, workflow,

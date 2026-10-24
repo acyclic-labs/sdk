@@ -15,6 +15,8 @@ pub(crate) struct ServiceResources {
     pub(crate) binary_identity: String,
     pub(crate) instance_id: String,
     pub(crate) private_state_root: PathBuf,
+    /// Fork plans validated once per publication, for the service's lifetime.
+    pub(crate) validated_fork_plans: Arc<crate::pi_fork::ValidatedForkPlans>,
 }
 
 pub(crate) type ServiceConfiguredInfrastructure = (LocalFs, LocalCoreStateStore, String, String);
@@ -60,6 +62,7 @@ impl ServiceResources {
             data,
             fs,
             private_state_root,
+            validated_fork_plans: Arc::default(),
         };
         resources
             .shared_roots

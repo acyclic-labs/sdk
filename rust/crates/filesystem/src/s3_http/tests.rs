@@ -132,6 +132,7 @@ async fn adapter_with_limits(
                 access_policy: Some(crate::access::INITIAL_POLICY),
             },
             crate::OperationId::new(),
+            &[],
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
             None,

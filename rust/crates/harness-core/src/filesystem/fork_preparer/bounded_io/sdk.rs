@@ -133,13 +133,76 @@ pub(in crate::filesystem) fn generation_ref(
     })
 }
 
+/// Why a creation returned no workspace.
+enum CreationFailure {
+    /// The workspace already exists under another creation.
+    Rejected,
+    Workspace(acyclic_fs::WorkspaceError),
+    Filesystem(acyclic_fs::FsError),
+    Owner(Error),
+}
+
+impl From<acyclic_fs::FsError> for CreationFailure {
+    fn from(error: acyclic_fs::FsError) -> Self {
+        match error {
+            acyclic_fs::FsError::CreationRejected => Self::Rejected,
+            error => Self::Filesystem(error),
+        }
+    }
+}
+
+impl From<acyclic_fs::WorkspaceError> for CreationFailure {
+    fn from(error: acyclic_fs::WorkspaceError) -> Self {
+        match error {
+            acyclic_fs::WorkspaceError::Filesystem(acyclic_fs::FsError::CreationRejected) => {
+                Self::Rejected
+            }
+            error => Self::Workspace(error),
+        }
+    }
+}
+
+impl From<Error> for CreationFailure {
+    fn from(error: Error) -> Self {
+        Self::Owner(error)
+    }
+}
+
+impl CreationFailure {
+    /// Whether this creation published (or had published) the workspace;
+    /// `false` when another creation owns it.
+    fn created<T>(
+        result: std::result::Result<T, Self>,
+        map: impl FnOnce(Self) -> Error,
+    ) -> Result<bool> {
+        match result {
+            Ok(_) => Ok(true),
+            Err(Self::Rejected) => Ok(false),
+            Err(error) => Err(map(error)),
+        }
+    }
+
+    fn into_error(self) -> Error {
+        match self {
+            Self::Rejected => Error::Conflict("workspace exists under another creation".into()),
+            Self::Workspace(error) => error.into(),
+            Self::Filesystem(error) => error.into(),
+            Self::Owner(error) => error,
+        }
+    }
+}
+
+/// Creates `name` with `files` published by its creation commit, or recovers
+/// exactly that creation. Returns `false` when the workspace already exists
+/// under another creation, which the caller then reads or commits onto.
 pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>,
     name: &str,
     key: &IdempotencyKey,
+    files: &[(&str, acyclic_stream::OwnedBytes)],
     io: Option<&PreparationIo>,
     preparation: Option<&Arc<TaskResourcePreparation>>,
-) -> Result<()> {
+) -> Result<bool> {
     let lifecycle = if host.filesystem.capabilities().durable {
         acyclic_fs::Lifecycle::Durable
     } else {
@@ -163,29 +226,33 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
         &unmeasured
     };
     let mut guard = preparation.map(Arc::as_ref);
-    operation_io.sdk(
-        host.filesystem
-            .create_workspace_with_operation::<_, _, Error>(
-                name,
-                acyclic_fs::VolumeInitialization {
-                    config: acyclic_fs::VolumeConfig::portable(lifecycle),
-                    access_policy: Some(crate::filesystem::access::INITIAL_POLICY),
-                },
-                acyclic_fs::OperationId::from_bytes(
-                    operation_key(key, Some(operation_io))?.into_bytes(),
-                ),
-                operation_io,
-                operation_io.cancellation(),
-                guard.as_mut(),
-            )
-            .await,
-    )?;
+    let (result, recorded) = host
+        .filesystem
+        .create_workspace_with_operation::<_, _, CreationFailure>(
+            name,
+            acyclic_fs::VolumeInitialization {
+                config: acyclic_fs::VolumeConfig::portable(lifecycle),
+                access_policy: Some(crate::filesystem::access::INITIAL_POLICY),
+            },
+            acyclic_fs::OperationId::from_bytes(
+                operation_key(key, Some(operation_io))?.into_bytes(),
+            ),
+            files,
+            operation_io,
+            operation_io.cancellation(),
+            guard.as_mut(),
+        )
+        .await;
+    let created = operation_io.sdk((
+        CreationFailure::created(result, CreationFailure::into_error),
+        recorded,
+    ))?;
     if let Some(task) =
         preparation.filter(|_| io.is_none_or(|io| io.original_native_work().is_none()))
     {
         task.verify(false, io)?.await?;
     }
-    Ok(())
+    Ok(created)
 }
 
 pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObjectStore>(

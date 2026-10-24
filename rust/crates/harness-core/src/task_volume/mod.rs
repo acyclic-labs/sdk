@@ -134,7 +134,7 @@ impl From<StreamError> for Error {
 }
 
 /// Exact publication fence. A scheduler must retain its own execution lease too.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct Generation {
@@ -150,7 +150,7 @@ pub struct Generation {
 }
 
 /// One logical file backed by a shared immutable slice of its publication segment.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 pub struct FileValue {
     /// Logical immutable identity or mutable state location.
     pub key: FileKey,
@@ -245,7 +245,7 @@ impl FileValue {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 struct Header {
     volume: Uuid,
     epoch: Uuid,

@@ -3,8 +3,12 @@
 // the root workspace's locked dependencies (the contract generators use the
 // locked @napi-rs/cli dev dependency, never a global install), the generated
 // filesystem and actors contracts, the compiled actors package, and the native
-// filesystem adapter installed as its platform package.
+// filesystem adapter installed as its platform package. These outputs are
+// ignored by git, so the test that imports them preloads this script: every run
+// regenerates them from this checkout (incrementally) instead of relying on a
+// manual step.
 //
+//   bun run test:pi-native-recursive   (preloads this script)
 //   node plugin/tests/hosts/prepare-native.mjs
 import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -23,6 +27,8 @@ run("bun", ["install", "--frozen-lockfile", "--ignore-scripts"]);
 // The filesystem package's generation closure: protobuf and Rust-owned
 // contracts for it and the actors package it builds on.
 run("node", ["scripts/generate.mjs", "filesystem"]);
+// The actors package builds on the capability holders in the auth WASM.
+run("node", ["scripts/build-wasm.mjs", "auth"]);
 run("node", ["node_modules/typescript/bin/tsc", "-b", "typescript/packages/actors", "--pretty", "false"]);
 run("cargo", ["build", "-p", "acyclic-fs-napi", "--locked"]);
 

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Complete provider tool call, shared by stream events and replayed context.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ToolCall {
@@ -14,11 +14,13 @@ pub struct ToolCall {
     /// Schema-defined arguments.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
     #[serde(deserialize_with = "crate::deserialize_json_value")]
+    #[heap_layout(as = serde_json::Value)]
     pub arguments: Value,
     /// Opaque provider continuation data retained for follow-ups and replay.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
     #[serde(deserialize_with = "crate::deserialize_json_value")]
+    #[heap_layout(as = serde_json::Value)]
     pub metadata: Value,
 }
 

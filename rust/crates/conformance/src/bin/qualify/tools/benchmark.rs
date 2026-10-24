@@ -218,6 +218,7 @@ pub(super) fn with_workspace_mount<T>(
                         access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
                     },
                     acyclic_fs::OperationId::new(),
+                    &[],
                     acyclic_fs::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
                     None,

@@ -2,10 +2,13 @@
 use super::*;
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PreparationAttempt<'_, A, O> {
+    /// Captures are scoped to the request digest: a changed request under the
+    /// same operation never adopts another request's attempt or result.
     pub(super) async fn capture(
         &self,
         journal: &WorkspaceRef,
         request: &ForkRequest,
+        digest: &blake3::Hash,
         index: usize,
         selection: &ForkSelection,
         provider: &dyn ForkCaptureProvider,
@@ -16,11 +19,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let (start, result) = crate::executor::with_history_io(io, |work| {
             Ok::<_, Error>((
                 crate::executor::preparation_format(
-                    format_args!("/capture-{index}-attempt.json"),
+                    format_args!("/capture-{digest}-{index}-attempt.json"),
                     work,
                 )?,
                 crate::executor::preparation_format(
-                    format_args!("/capture-{index}-result.json"),
+                    format_args!("/capture-{digest}-{index}-result.json"),
                     work,
                 )?,
             ))
@@ -45,7 +48,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
                 crate::executor::preparation_format(
                     format_args!(
-                        "fork:{}:capture-attempt:{index}:{attempt}",
+                        "fork:{}:{digest}:capture-attempt:{index}:{attempt}",
                         request.operation_id
                     ),
                     work,
@@ -79,7 +82,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         validate_capture(selection, &captured)?;
         let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
             crate::executor::preparation_format(
-                format_args!("fork:{}:capture-result:{index}", request.operation_id),
+                format_args!(
+                    "fork:{}:{digest}:capture-result:{index}",
+                    request.operation_id
+                ),
                 work,
             )
         })?)?;

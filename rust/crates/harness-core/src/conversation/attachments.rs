@@ -1,7 +1,7 @@
 use super::*;
 
 /// Immutable file plus optional user-visible label.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct Attachment {
     /// Version-pinned file.
@@ -318,7 +318,7 @@ pub async fn verified_attachment_manifest<'a, V: ContentResidencyVerifier + ?Siz
 }
 
 /// A complete ordered attachment list, inline or in one version-pinned file.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[allow(
     clippy::large_enum_variant,
@@ -329,12 +329,14 @@ pub enum ReferencedAttachments {
     Inline {
         /// Complete ordered attachments.
         #[serde(deserialize_with = "deserialize_inline_attachments")]
+        #[heap_layout(as = Vec<Attachment>)]
         items: Vec<Attachment>,
     },
     /// Complete canonical JSON list retained as a file, never a partial page.
     Manifest {
         /// Version-pinned file containing a canonical JSON array.
         #[serde(deserialize_with = "deserialize_manifest_file")]
+        #[heap_layout(as = FileRef)]
         manifest: FileRef,
         /// Exact number of list members.
         item_count: u32,

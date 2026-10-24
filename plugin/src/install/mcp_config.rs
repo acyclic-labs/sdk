@@ -8,7 +8,8 @@ pub(crate) enum McpConfigShape {
     VsCode,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 pub(crate) struct McpConfigOwnership {
     pub(crate) version: u32,
     pub(crate) config_path: PathBuf,

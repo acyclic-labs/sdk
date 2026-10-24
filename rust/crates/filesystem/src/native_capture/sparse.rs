@@ -84,7 +84,7 @@ pub(super) async fn settled_sparse_ranges(
                 )
                 .await
                 .map_err(|error| {
-                    if let Some(cause) = meter.state.take_native_io_failure() {
+                    if let Some(cause) = meter.take_native_io_failure() {
                         capture_demand_error(cause)
                     } else if error.kind() == std::io::ErrorKind::UnexpectedEof {
                         CaptureError::from(crate::FsError::SourceSnapshotStale)

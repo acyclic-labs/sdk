@@ -33,7 +33,6 @@ pub use local_owner::{local_owner_mount_options, local_owner_workspace};
 mod allocation;
 mod completion;
 pub(super) mod journal;
-mod journal_allocation;
 mod journal_encoding;
 #[cfg(test)]
 mod journal_properties;

@@ -96,7 +96,9 @@ impl PiRootProvider {
         .await
     }
 
-    pub(super) async fn read_with_native_work<T: DeserializeOwned + Serialize>(
+    pub(super) async fn read_with_native_work<
+        T: DeserializeOwned + Serialize + acyclic_harness::HeapLayout,
+    >(
         &self,
         reference: &FileRef,
         work: &NativeMaterializationWork,

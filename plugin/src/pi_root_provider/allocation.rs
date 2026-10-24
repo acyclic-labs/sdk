@@ -362,6 +362,7 @@ impl PiRootProvider {
                             access_policy: Some(acyclic_harness::filesystem::INITIAL_ACCESS_POLICY),
                         },
                         operation,
+                        &[],
                         &io,
                         &cancellation,
                         Some(&mut guard),

@@ -4,17 +4,24 @@
 // isolated fixture home. Credentials are never read: the host's own login
 // file is linked into the fixture home and the link is removed again.
 //
-//   node live.mjs --host codex|claude-code --binary <acyclic executable> [--keep]
+// The host keeps its own protections on: Codex runs its workspace-write
+// sandbox and Claude Code its ordinary edit permissions, never a bypass. The
+// fixture lives under the user's home rather than the temporary directory,
+// which both sandboxes leave writable, so the plugin's data and every path
+// outside the workspace are outside the host's writable roots, as they are
+// for a real user.
+//
+//   node live.mjs --host codex|claude-code --binary <acyclic executable> [--model <claude model, default claude-haiku-5-5>] [--keep]
 //
 // Prints one JSON verdict line; evidence stays in the fixture directory.
 import { spawn, spawnSync } from "node:child_process";
 import {
   cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hostLogin, linkLogin } from "./login-link.mjs";
+import { hostLogin, linkLogin, releaseLogin } from "./login-link.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pluginRoot = resolve(here, "..", "..");
@@ -38,9 +45,11 @@ function target() {
   return `linux-${arch}-gnu`;
 }
 
-const root = mkdtempSync(join(tmpdir(), `acyclic-live-${host}-`));
+const root = mkdtempSync(join(argument("--root-parent", homedir()), `.acyclic-live-${host}-`));
 const home = join(root, "home");
 const workspace = join(root, "workspace");
+// Outside every writable root the host grants: the agent's attempt must fail.
+const outside = join(root, "outside.txt");
 // A complete profile: Windows resolves known folders (Local AppData) from
 // USERPROFILE and refuses ones that do not exist.
 for (const directory of ["config", "state", "data", "codex", "claude", join("AppData", "Local"), join("AppData", "Roaming")]) {
@@ -99,7 +108,8 @@ const PROMPT = [
   "This is an automated acceptance test of workspace isolation. Follow these steps exactly and do nothing else.",
   "1. With your file-editing tool, create the file root.txt containing exactly the word root.",
   "2. Run the shell command: echo bash > bash.txt",
-  "3. Start one subagent whose whole task is: create the file child.txt containing exactly the word child, then stop. Wait for it to finish.",
+  `2b. Run the shell command: echo outside > ${outside} . It is expected to be refused; do not retry it, do not work around it, and continue.`,
+  "3. Start one subagent whose whole task is: run the shell command: echo child > child.txt && pwd > child-cwd.txt , then stop. Wait for it to finish.",
   "4. Run the shell command: acyclic-plugin agents --json . Then merge that finished subagent with: acyclic-plugin git merge agents/<ref> (use the ref listed for it).",
   "5. Start another subagent whose whole task is: create the file discard.txt containing exactly the word discard, then stop. Wait for it to finish.",
   "6. Discard that second subagent with: acyclic-plugin discard agents/<ref> (use its listed ref from acyclic-plugin agents --json).",
@@ -128,13 +138,18 @@ function hostCommand() {
   if (host === "codex") {
     return [hostBinary("codex"), [
       "exec", "--json", "--skip-git-repo-check",
-      "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust",
-      "--enable", "hooks", PROMPT,
+      "--sandbox", "workspace-write", "--config", 'approval_policy="never"',
+      "--dangerously-bypass-hook-trust", "--enable", "hooks", PROMPT,
     ]];
   }
   return [hostBinary("claude"), [
-    "-p", PROMPT, "--output-format", "stream-json", "--verbose", "--include-hook-events",
-    "--permission-mode", "bypassPermissions", "--debug", "hooks", "--debug-file", join(root, "claude-debug.log"),
+    // Every run against a real Anthropic model uses Haiku, to keep cost down.
+    "-p", PROMPT, "--model", argument("--model", "claude-haiku-5-5"), "--output-format", "stream-json", "--verbose", "--include-hook-events",
+    // Edits are accepted inside the working directories only; shell
+    // commands are allowed for the steps the prompt names and nothing else.
+    "--permission-mode", "acceptEdits",
+    "--allowedTools", "Task", "Agent", "Bash(echo:*)", "Bash(pwd:*)", "Bash(acyclic-plugin:*)",
+    "--debug", "hooks", "--debug-file", join(root, "claude-debug.log"),
   ]];
 }
 
@@ -174,8 +189,26 @@ try {
     } catch { return []; }
   });
   const doctorCheck = name => new RegExp(String.raw`^pass\s+` + name + String.raw`\s`, "m").test(doctor.stdout);
+  // Codex reports each shell command with its exit code.
+  const commands = stdout.split("\n").flatMap(line => {
+    try {
+      const { type, item } = JSON.parse(line);
+      return type === "item.completed" && item?.type === "command_execution"
+        ? [{ command: item.command, exit: item.exit_code, output: String(item.aggregated_output ?? "").slice(0, 400) }]
+        : [];
+    } catch { return []; }
+  });
+  writeFileSync(join(root, "commands.json"), JSON.stringify(commands, null, 2));
+  const childCwd = read("child-cwd.txt");
+  // The child's working directory, which the plugin chose, must be one the
+  // host sandbox lets it write: its own write landing there proves it.
   const checks = {
     exited: status === 0,
+    outsideBlocked: !existsSync(outside),
+    childWroteInItsDirectory: childCwd !== null && read("child.txt") === "child",
+    pluginCommandsSucceeded: host !== "codex" || commands
+      .filter(({ command }) => /acyclic-plugin/.test(command))
+      .every(({ exit }) => exit === 0),
     rootEdit: read("root.txt") === "root",
     bash: read("bash.txt") === "bash",
     childMerged: read("child.txt") === "child" && reported("applied"),
@@ -187,10 +220,15 @@ try {
       : reported("applied"),
     installed: doctorCheck(host === "codex" ? "codex-install" : "claude-code-install") && doctorCheck("service"),
   };
-  verdict = { host, platform: `${process.platform}-${process.arch}`, pass: Object.values(checks).every(Boolean), checks, timings, evidence: root };
+  verdict = { host, platform: `${process.platform}-${process.arch}`, pass: Object.values(checks).every(Boolean), checks, childCwd, workspace, timings, evidence: root };
 } finally {
-  rmSync(login.link, { force: true });
-  spawnSync(native, ["uninstall", host], { env, encoding: "utf8" });
+  // A refreshed login must survive the run, or the host is logged out. The
+  // host is uninstalled even when that restoration fails.
+  try {
+    timings.login = releaseLogin(login);
+  } finally {
+    spawnSync(native, ["uninstall", host], { env, encoding: "utf8" });
+  }
 }
 console.log(JSON.stringify(verdict));
 if (verdict.pass && !keep) rmSync(root, { recursive: true, force: true });

@@ -166,6 +166,7 @@ async fn fixture() -> Result<(Workspace, Arc<Objects>), Box<dyn std::error::Erro
                 access_policy: Some(crate::access::INITIAL_POLICY),
             },
             crate::OperationId::new(),
+            &[],
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
             None,

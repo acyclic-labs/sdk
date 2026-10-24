@@ -58,7 +58,10 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             .fork_project(
                 &project_head.generation,
                 &child_project,
-                &IdempotencyKey::new(format!("project-fork-{level}"))?,
+                &ForkSeed::creation_key(
+                    OperationId::from_bytes(identity(level + 80)),
+                    ForkSeedVolume::Project,
+                )?,
             )
             .await?;
         let child_authority = Authority {
@@ -122,7 +125,10 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 &child_private,
                 &child_write,
                 Some(Vec::new()),
-                &IdempotencyKey::new(format!("scratch-fork-{level}"))?,
+                &ForkSeed::creation_key(
+                    OperationId::from_bytes(identity(level + 80)),
+                    ForkSeedVolume::Private,
+                )?,
             )
             .await?;
         let controller = ParentProjectController::new(
@@ -390,6 +396,20 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             );
         }
         if level == 1 {
+            // Another operation naming the same child volumes is refused:
+            // they were created under this seed's operation.
+            let mut sharing = seed.clone();
+            sharing.operation_id = OperationId::from_bytes([77; 16]);
+            assert!(matches!(
+                host.claim_fork_seed(
+                    &sharing,
+                    aggregate.reducer(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
+                    &grant_scope,
+                )
+                .await,
+                Err(acyclic_harness::Error::Conflict(_))
+            ));
             let unbound = issuer
                 .issue(
                     "unbound-parent",

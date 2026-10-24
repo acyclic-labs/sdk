@@ -1,7 +1,7 @@
 use super::*;
 
 /// Semantic event type retained in a conversation history.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageKind {
     /// Human input.
@@ -25,7 +25,7 @@ pub enum MessageKind {
 }
 
 /// One canonical, payload-free conversation record.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct ConversationMessage {
     /// Caller-assigned stable identity.

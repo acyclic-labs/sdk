@@ -29,14 +29,14 @@ pub const fn default_projection_read_limits() -> HistoryReadLimits {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ProjectionLocation {
     pub(super) bytes: u64,
     pub(super) chunks: Vec<ProjectionChunk>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ProjectionChunk {
     digest: [u8; 32],
@@ -306,15 +306,6 @@ fn decode_projection_location(
         index,
         acyclic_stream::MAX_RECORD_BYTES as u64,
         "ProjectionLocation ProjectionChunk Vec u8 u32 u64 bytes chunks digest",
-        |shape, _| {
-            shape
-                .lexical_items()
-                .checked_mul(64)
-                .and_then(|bytes| {
-                    bytes.checked_add(128 + std::mem::size_of::<ProjectionLocation>() as u64)
-                })
-                .ok_or_else(|| Error::Invalid("projection locator reservation overflows".into()))
-        },
         |location: &ProjectionLocation| {
             (
                 (location.chunks.capacity() * std::mem::size_of::<ProjectionChunk>()) as u64

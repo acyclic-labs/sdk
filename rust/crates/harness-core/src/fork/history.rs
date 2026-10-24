@@ -1,7 +1,7 @@
 //! history fork protocol.
 use super::*;
 /// Child-owned pointer to one immutable revision of authoritative parent history.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct InheritedConversationPrefix {
     /// Version of this direct-parent reference contract.
