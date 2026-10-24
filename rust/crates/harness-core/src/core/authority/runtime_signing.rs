@@ -22,7 +22,10 @@ pub(super) fn prepare_key(bytes: &[u8; 32]) -> SigningKey {
 impl RuntimeSigner {
     pub(super) fn new(id: &str, seed: [u8; 32]) -> Self {
         let seed = zeroize::Zeroizing::new(seed);
-        let metadata = prepare_key(&blake3::derive_key("acyclic.harness.metadata.v1", &seed));
+        let metadata = prepare_key(&blake3::derive_key(
+            "acyclic.harness.metadata.v1",
+            &seed[..],
+        ));
         let workload = workload::RuntimeKeys::new(&seed);
         let public = Arc::new(PublicAuthority {
             trust: std::sync::RwLock::new(workload::trust(id, &workload)),
