@@ -513,8 +513,21 @@ impl StockExecution<'_> {
                     .map(ToolInvocationOutcome::Settled);
             }
         };
+        self.finish_tool_result(journal, identity, invocation, tool, &result, _hook_context)
+            .await
+    }
+
+    async fn finish_tool_result(
+        &self,
+        journal: &dyn ExecutionJournal,
+        identity: (OperationId, u32),
+        invocation: &ToolInvocation,
+        tool: &crate::tool::Tool,
+        result: &ToolResult,
+        _hook_context: &mut Vec<ModelMessage>,
+    ) -> Result<ToolInvocationOutcome> {
         let (projection, content) = match self
-            .project_tool_output(journal, (operation_id, step), invocation, tool, &result)
+            .project_tool_output(journal, identity, invocation, tool, result)
             .await?
         {
             Ok(projected) => projected,
@@ -525,9 +538,9 @@ impl StockExecution<'_> {
             match self
                 .complete_with_post_hook::<true>(
                     journal,
-                    (operation_id, step),
+                    identity,
                     invocation,
-                    &result,
+                    result,
                     &projection,
                 )
                 .await?
@@ -542,9 +555,9 @@ impl StockExecution<'_> {
             let publication = self
                 .publish_tool_completion(
                     journal,
-                    (operation_id, step),
+                    identity,
                     &invocation.call_id,
-                    &result,
+                    result,
                     &projection,
                 )
                 .await?;
