@@ -78,3 +78,36 @@ else if(args[0]==='build' && args.includes('acyclic-harness-conformance') && pro
     }
   } finally { rmSync(cwd, { recursive: true, force: true }); }
 });
+
+test('host consumer codegen has one phase owner while Windows checks retain status', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'consumer-phase-owner-'));
+  try {
+    mkdirSync(join(cwd, 'scripts'));
+    writeFileSync(join(cwd, 'feature.mjs'), String.raw`
+import { appendFileSync } from 'node:fs';
+appendFileSync('calls', JSON.stringify(['matrix', ...process.argv.slice(2)])+'\n');
+process.exitCode=Number(process.env.FEATURE_RC??0);
+`);
+    writeFileSync(join(cwd, 'scripts/check-consumer-builds.mjs'), String.raw`
+import { appendFileSync } from 'node:fs';
+appendFileSync('calls','consumer\n');
+process.exitCode=Number(process.env.CONSUMER_RC??0);
+`);
+    const payload=readFileSync(new URL('./gate-feature-payload.sh', import.meta.url),'utf8');
+    const guard='  if [ "$argument" = --windows-msvc ]; then exit "$rc"; fi';
+    assert.ok(payload.includes(guard));
+    for(const negative of [false,true])for(const matrix of [0,101])for(const consumer of [0,42]){
+      writeFileSync(join(cwd,'payload.sh'),negative?payload.replace(guard,':'):payload);
+      writeFileSync(join(cwd,'calls'),'');
+      const env={...process.env,GATE_FEATURE_SCRIPT:'feature.mjs',FEATURE_RC:String(matrix),CONSUMER_RC:String(consumer)};
+      const native=spawnSync('bash',['payload.sh','6'],{cwd,encoding:'utf8',env});
+      assert.equal(native.status,matrix||consumer,native.stdout+native.stderr);
+      const windows=spawnSync('bash',['payload.sh','6','--windows-msvc','--each-feature'],{cwd,encoding:'utf8',env});
+      assert.equal(windows.status,matrix||(negative?consumer:0),windows.stdout+windows.stderr);
+      const calls=readFileSync(join(cwd,'calls'),'utf8').trim().split('\n');
+      assert.equal(calls.filter(line=>line==='consumer').length,negative?2:1);
+      assert.deepEqual(calls.filter(line=>line!=='consumer').map(line=>JSON.parse(line)),
+        [['matrix','6'],['matrix','6','--windows-msvc','--each-feature']]);
+    }
+  }finally{rmSync(cwd,{recursive:true,force:true});}
+});
