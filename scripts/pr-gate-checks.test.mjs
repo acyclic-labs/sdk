@@ -68,5 +68,23 @@ esac
     const failed=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,BROKEN_METADATA:'1'}});
     assert.equal(failed.status,2);assert.match(failed.stdout+failed.stderr,/metadata control/);
     assert.ok(readFileSync(join(cwd,'calls'),'utf8').split('\n').filter(Boolean).every(c=>c.startsWith('metadata ')));
+    // A failed consumer-codegen phase must reach the PR's final verdict even
+    // when every test, document and clippy invocation succeeds.
+    writeFileSync(join(cwd,'scripts/check-feature-matrix.mjs'),'');
+    writeFileSync(join(cwd,'scripts/gate-feature-matrix.sh'),
+      '#!/bin/bash\necho "FAILED cargo build --package reverse-consumer"\nexit 1\n');
+    const propagation='[ "$rc" != 0 ] || rc=$(cat .gate-features.rc)';
+    assert.ok(source.includes(propagation));
+    for(const negative of [false,true]){
+      writeFileSync(join(cwd,'runner.sh'),negative?source.replace(propagation,':'):source);
+      const result=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{
+        ...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,
+        CARGO_TARGET_DIR:join(cwd,'target'),GATE_FEATURE_TARGET_DIR:join(cwd,'features'),
+        BROKEN_FUZZ:'0',WINDOWS_FEATURE_RC:'0',BROKEN_METADATA:'0',
+      }});
+      assert.equal(result.status,negative?0:1,result.stdout+result.stderr);
+      assert.match(result.stdout,/GATE_FEATURES rc=1/);
+      assert.match(result.stdout,new RegExp('GATE_DONE rc='+(negative?0:1)));
+    }
   }finally{rmSync(cwd,{recursive:true,force:true});}
 });

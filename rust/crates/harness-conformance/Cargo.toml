@@ -9,6 +9,9 @@ publish = false
 description = "Internal Harness report qualification command"
 default-run = "harness-conformance"
 
+[package.metadata.acyclic]
+consumer-examples = true
+
 [lib]
 doctest = false
 

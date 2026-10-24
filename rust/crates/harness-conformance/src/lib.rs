@@ -51,19 +51,25 @@ where
     A: acyclic_fs::AsyncAuthorityStore + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
 {
-    // Hosts only need the observation result. Erase the composed driver future
-    // here so each substrate does not inherit every driver's async layout.
+    // Erase each driver before awaiting it. Boxing only this outer dispatcher
+    // still embeds every concrete driver in its async state layout.
     Box::pin(async move {
         match recipe.get("driver").and_then(serde_json::Value::as_str) {
-            None | Some("executor") => Ok(CaseObservation::Executor(
-                observation::collect_on(recipe, paths, filesystem, stream).await?,
-            )),
-            Some("composer") => Ok(CaseObservation::Composer(
-                composer::collect(recipe, paths, filesystem, stream).await?,
-            )),
-            Some("filesystem-policy") => Ok(CaseObservation::FilesystemPolicy(
-                policy_owner::collect(recipe, filesystem).await?,
-            )),
+            None | Some("executor") => {
+                let driver: acyclic_stream::BoxProviderFuture<'_, TestResult<_>> =
+                    Box::pin(observation::collect_on(recipe, paths, filesystem, stream));
+                Ok(CaseObservation::Executor(driver.await?))
+            }
+            Some("composer") => {
+                let driver: acyclic_stream::BoxProviderFuture<'_, TestResult<_>> =
+                    Box::pin(composer::collect(recipe, paths, filesystem, stream));
+                Ok(CaseObservation::Composer(driver.await?))
+            }
+            Some("filesystem-policy") => {
+                let driver: acyclic_stream::BoxProviderFuture<'_, TestResult<_>> =
+                    Box::pin(policy_owner::collect(recipe, filesystem));
+                Ok(CaseObservation::FilesystemPolicy(driver.await?))
+            }
             _ => Err("unknown portable fixture driver".into()),
         }
     })

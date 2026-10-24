@@ -17,6 +17,10 @@ categories = ["filesystem", "data-structures"]
 name = "main"
 path = "tests/main.rs"
 
+[[test]]
+name = "shared_storage_contract"
+path = "tests/shared_storage_contract.rs"
+
 [[bench]]
 name = "lease_paths"
 harness = false
