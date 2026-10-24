@@ -150,10 +150,22 @@ finally:
                 self.custody_case(interrupted, negative=True)
 
     def test_foreign_namespace_never_observes_or_signals_numeric_command_pid(self):
-        with patch.object(job, 'identity') as observed:
-            job.stop_command({'pid': 123, 'identity': 'owned', 'pid_namespace': 'foreign'})
-            job.stop_command({'pid': 123, 'identity': 'owned'})
-            observed.assert_not_called()
+        def probe(module):
+            with patch.object(module, 'identity', return_value=None) as observed:
+                module.stop_command({'pid': 123, 'identity': 'owned', 'pid_namespace': 'foreign'})
+                module.stop_command({'pid': 123, 'identity': 'owned'})
+                observed.assert_not_called()
+        probe(job)
+        source = (HERE / 'bb-job.py').read_text()
+        boundary = "if not command or command.get('pid_namespace') != pid_namespace(): return"
+        self.assertEqual(source.count(boundary), 1)
+        path = self.d / 'foreign-namespace-negative.py'
+        path.write_text(source.replace(boundary, 'if not command: return'))
+        spec = importlib.util.spec_from_file_location('foreign_negative', path)
+        former = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(former)
+        with self.assertRaises(AssertionError):
+            probe(former)
 
     def test_command_cleanup_never_waits_for_a_reused_pid(self):
         def probe(module, before, after):
@@ -286,6 +298,7 @@ print('retired',flush=True)
                 start=Path(str(prefix)+'.t0');start.touch()
                 output=self.d/f'parent-{negative}.txt'
                 meta=self.d/f'nested-{negative}'
+                meta.write_text('{}')
                 code='''import os,subprocess,sys
 from pathlib import Path
 env=dict(os.environ,BB_JOB_ACTIVE='0',BUILD_SLOT_RECEIPT_META=sys.argv[2])
