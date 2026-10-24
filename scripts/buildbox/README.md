@@ -70,6 +70,11 @@ identity. An invisible foreign PID is held, never presumed dead. The constructor
 registers each namespace with its outer receipt; after that owner has terminated
 the namespace, its terminal callback finalizes interrupted descendant receipts.
 Unproven termination defers cleanup instead of deleting another live job's files.
+Receipt publication and ledger appends use kernel `flock` custody, released even
+after SIGKILL. Unknown legacy directory-lock owners are neither observed nor
+stolen and cannot block these writers. Missing parent metadata never proves that
+a foreign namespace ended. The namespace tests include legacy locks, a killed
+kernel writer and concurrent receipt completion with one ledger entry.
 Admission's live PID-birth lease can also certify an independently written job
 record; a foreign namespace or an unobservable daemon never grants that authority.
 Cleanup takes an exclusive kernel lease; the running job holds the shared lease

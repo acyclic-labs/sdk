@@ -34,8 +34,9 @@ function endedNamespace(m) {
   if (!scope || scope.namespace !== m.owner?.pid_namespace || !scope.parent_receipt_meta) return false;
   const parent = read(scope.parent_receipt_meta), registered = read(scope.registration_file);
   const terminal = parent?.receipt_file && read(parent.receipt_file);
-  return registered?.epoch === scope.epoch && registered.parent_receipt_meta === scope.parent_receipt_meta &&
-    terminal?.receipt_file === parent.receipt_file && terminal.namespace_custody === 'pidns-v1';
+  return Boolean(parent?.receipt_file && terminal && registered?.epoch && registered.epoch === scope.epoch &&
+    registered.parent_receipt_meta === scope.parent_receipt_meta &&
+    terminal.receipt_file === parent.receipt_file && terminal.namespace_custody === 'pidns-v1');
 }
 export function processIdentity(pid) {
   try {
@@ -76,31 +77,32 @@ export function execution(metaFile) {
   atomic(metaFile + '.exec', value);
   return value;
 }
+function kernelWriter(file, operation, value) {
+  // Kernel custody ends on exit, including SIGKILL. Legacy mkdir locks are
+  // deliberately not consulted or stolen: their PID coordinates are unknown.
+  fs.closeSync(fs.openSync(file + '.writer-lock', 'a', 0o600));
+  const writer = spawnSync('flock', ['--exclusive', '--no-fork', file + '.writer-lock',
+    process.execPath, new URL(import.meta.url).pathname, operation], {
+    input: JSON.stringify(value), encoding: 'utf8', maxBuffer: 1 << 28
+  });
+  if (writer.stderr) process.stderr.write(writer.stderr);
+  if (writer.status !== 0) throw new Error(`receipt writer failed: ${writer.status ?? writer.signal ?? writer.error}`);
+  return JSON.parse(writer.stdout);
+}
 export function finish(metaFile, rc, category, extra = {}) {
+  const m = read(metaFile);
+  if (!m) throw new Error(`missing receipt metadata: ${metaFile}`);
+  if (fs.existsSync(m.receipt_file)) return read(m.receipt_file);
+  return kernelWriter(m.receipt_file, 'locked-finish', {metaFile, rc, category, extra});
+}
+function finishLocked(metaFile, rc, category, extra = {}) {
   const m = read(metaFile);
   if (!m) throw new Error(`missing receipt metadata: ${metaFile}`);
   const file = m.receipt_file;
   if (fs.existsSync(file)) return read(file);
   const foreignEnded = !canObserveOwner(m.owner) && category === 'interrupted' && endedNamespace(m);
   if (!canObserveOwner(m.owner) && !foreignEnded) return null;
-  // mkdir serializes the wrapper, independent watcher and reboot recovery.
-  // If a writer dies while holding it, the next observer recovers the lock.
-  const lock = file + '.lock';
-  try { fs.mkdirSync(lock); }
-  catch (e) {
-    if (e.code !== 'EEXIST') throw e;
-    const owner = read(lock + '/owner');
-    if (!owner || canObserveOwner(owner) && processIdentity(owner.pid) !== owner.identity ||
-        foreignEnded && owner.pid_namespace === m.owner.pid_namespace) {
-      try {
-        if (Date.now() - fs.statSync(lock).mtimeMs < 1000) return null;
-        fs.rmSync(lock, { recursive: true, force: true });
-      } catch (err) { if (err.code !== 'ENOENT') throw err; }
-    }
-    return null;
-  }
-  atomic(lock + '/owner', { pid: process.pid, identity: processIdentity(process.pid), pid_namespace: pidNamespace() });
-  try {
+  {
     if (fs.existsSync(file)) return read(file);
     const runtimeFile = metaFile + '.runtime';
     let runtime, cleanupAllowed = true;
@@ -153,24 +155,12 @@ export function finish(metaFile, rc, category, extra = {}) {
       }
     }
     return out;
-  } finally { fs.rmSync(lock, { recursive: true, force: true }); }
+  }
 }
 function ledgerRecord(ledger, out) {
-  const lock = ledger + '.receipt-lock';
-  for (;;) {
-    try { fs.mkdirSync(lock); break; }
-    catch (e) {
-      if (e.code !== 'EEXIST') throw e;
-      const owner = read(lock + '/owner');
-      try {
-        if ((!owner || canObserveOwner(owner) && processIdentity(owner.pid) !== owner.identity) && Date.now() - fs.statSync(lock).mtimeMs > 1000)
-          fs.rmSync(lock, { recursive: true, force: true });
-      } catch (err) { if (err.code !== 'ENOENT') throw err; }
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
-    }
-  }
-  atomic(lock + '/owner', { pid: process.pid, identity: processIdentity(process.pid), pid_namespace: pidNamespace() });
-  try {
+  return kernelWriter(ledger, 'locked-ledger', {ledger, out});
+}
+function ledgerRecordLocked(ledger, out) {
     let lines = [], previous = '';
     try { previous = fs.readFileSync(ledger, 'utf8'); lines = previous.split('\n'); } catch {}
     if (!lines.some(s => { try { return JSON.parse(s).receipt_file === out.receipt_file; } catch { return false; } }))
@@ -179,7 +169,7 @@ function ledgerRecord(ledger, out) {
         try { fs.writeFileSync(fd, (previous && !previous.endsWith('\n') ? '\n' : '') + JSON.stringify(out) + '\n'); fs.fsyncSync(fd); }
         finally { fs.closeSync(fd); }
       }
-  } finally { fs.rmSync(lock, { recursive: true, force: true }); }
+  return true;
 }
 export async function watch(metaFile, interval = 1000) {
   const m = read(metaFile);
@@ -314,5 +304,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }
   else if (op === 'watch') await watch(file);
   else if (op === 'recover') recover(file);
+  else if (op === 'locked-finish') {
+    const {metaFile, rc, category, extra} = JSON.parse(fs.readFileSync(0, 'utf8'));
+    process.stdout.write(JSON.stringify(finishLocked(metaFile, rc, category, extra)));
+  }
+  else if (op === 'locked-ledger') {
+    const {ledger, out} = JSON.parse(fs.readFileSync(0, 'utf8'));
+    process.stdout.write(JSON.stringify(ledgerRecordLocked(ledger, out)));
+  }
   else throw new Error(`unknown receipt operation: ${op}`);
 }
