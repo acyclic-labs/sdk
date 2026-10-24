@@ -21,7 +21,8 @@ import time
 VERSION = 'sdk-target-reflink-v2-hierarchy'
 ROOT = Path('/mnt/bb/sdk-target-store-v1')
 BUDGET = 64 * 1024**3  # Logical upper bound, including shared extents.
-SCAFFOLD = {'.host-targets', '.host-src', '.gate.lock', '.cargo-lock'}
+SCAFFOLD = {'.host-targets', '.host-src', '.gate.lock', '.cargo-lock',
+            '.gate-cache-boot', '.gate-cache-inflight'}
 
 
 def children(root):

@@ -1,5 +1,7 @@
 """Exercise the actual Cargo proxy's kernel lease ownership."""
 import fcntl
+from contextlib import nullcontext
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -12,6 +14,43 @@ import bb_cargo_cache as cache
 
 
 class LocalTargetLease(unittest.TestCase):
+    def test_gate_markers_do_not_suppress_snapshot_restore_or_publication(self):
+        for former in [False,True]:
+            # Exercise real reflinks on the target store's production filesystem.
+            with self.subTest(former=former), tempfile.TemporaryDirectory(dir=cache.store.ROOT.parent) as temporary:
+                root=Path(temporary);target=root/'target';target.mkdir()
+                for name in ['.gate-cache-boot','.gate-cache-inflight']:(target/name).write_text('current-job')
+                metadata=root/'meta.json';metadata.write_text(json.dumps({'repo':'sdk'}))
+                scaffold=cache.store.SCAFFOLD-({'.gate-cache-boot','.gate-cache-inflight'} if former else set())
+                env={'BUILD_SLOT_RECEIPT_META':str(metadata),'BB_JOB_HOME':str(root/'job/home'),'RUSTC_WRAPPER':'sccache'}
+                records=[];builds=[];original_run=subprocess.run
+                def compile_or_copy(argv,**kwargs):
+                    if argv[0]!=cache.CARGO:return original_run(argv,**kwargs)
+                    destination=Path(kwargs['env']['CARGO_TARGET_DIR'])
+                    builds.append((destination/'artifact').exists())
+                    (destination/'artifact').write_text('compiled')
+                    return subprocess.CompletedProcess(argv,0)
+                with patch.dict(os.environ,env,clear=True), patch.object(cache.store,'ROOT',root/'store'), \
+                     patch.object(cache.store,'SCAFFOLD',scaffold), patch.object(cache.store,'private_target',return_value=True), \
+                     patch.object(cache.store,'request_key',return_value='fixture'), patch.object(cache,'target_path',return_value=target) as selected, \
+                     patch.object(cache,'local_target_leases',return_value=nullcontext([])), \
+                     patch.object(cache.subprocess,'run',side_effect=compile_or_copy), \
+                     patch.object(cache,'record',side_effect=lambda _,row:records.append(dict(row))):
+                    self.assertEqual(cache.run(['check']),0)
+                    if not former:
+                        restored=root/'restored';restored.mkdir()
+                        for name in ['.gate-cache-boot','.gate-cache-inflight']:(restored/name).write_text('next-job')
+                        selected.return_value=restored
+                        self.assertEqual(cache.run(['check']),0)
+                        self.assertEqual(records[-1]['status'],'hit')
+                        self.assertEqual(builds,[False,True],'second Cargo invocation must see the restored artifact')
+                completed=root/'store/entries/fixture/complete.json'
+                self.assertEqual(completed.exists(),not former)
+                self.assertEqual(records[0]['status'],'private-target' if former else 'miss')
+                for name in ['.gate-cache-boot','.gate-cache-inflight']:
+                    self.assertEqual((target/name).read_text(),'current-job')
+                    self.assertFalse((root/'store/entries/fixture/target'/name).exists())
+
     def test_request_diagnostics_preserve_key_and_hash_every_component(self):
         store=cache.store
         meta={'repo':'sdk','source':{'content_sha256':'tree'},'argv':['cargo','check']}
