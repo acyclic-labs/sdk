@@ -34,6 +34,13 @@ mod compaction;
     not(target_arch = "wasm32")
 ))]
 #[doc(hidden)]
+pub mod native_discovery;
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+#[doc(hidden)]
 pub mod native_skills;
 #[cfg(all(
     feature = "filesystem-local",

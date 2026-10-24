@@ -163,6 +163,18 @@ impl Drop for Output {
 }
 
 impl Tty {
+    /// Query this owned terminal after splitting input and output, without reopening it.
+    pub fn size_reader(&self) -> impl Fn() -> io::Result<ratatui::layout::Size> + use<> {
+        let owner = Arc::clone(&self.owner);
+        move || {
+            Owner::run(&owner, Instant::now() + PROBE_TIMEOUT, |guard| {
+                let (width, height) =
+                    ffi::console_size(guard.writer().output.as_raw_handle() as usize)?;
+                Ok(ratatui::layout::Size::new(width, height))
+            })
+        }
+    }
+
     /// Separate output while retaining this decoder's negotiation-buffered keys.
     /// Dropping either half restores the console and cancels its outstanding I/O.
     pub fn split(self) -> (Self, Output) {

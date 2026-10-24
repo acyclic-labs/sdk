@@ -190,53 +190,22 @@ pub async fn discover_skills_at(
     work: &mut DiscoveryWork,
     generation: Option<&GenerationRef>,
 ) -> Result<Vec<SkillMetadata>> {
-    let mut result: Vec<SkillMetadata> = Vec::new();
-    let mut names = std::collections::HashSet::new();
+    let mut result = Vec::new();
     for root in skills {
         root.validate(&mut None)?;
-        let (generation, entries) = work.list(reader, root, &root.directory, generation).await?;
-        for entry in entries {
-            if entry.kind != PrivateDirectoryEntryKind::Directory {
-                continue;
-            }
-            let directory = child(&root.directory, &entry.name);
-            let (_, files) = work
-                .list(reader, root, &directory, Some(&generation))
-                .await?;
-            let Some(entry) = files.iter().find(|entry| entry.name == name) else {
-                continue;
-            };
-            if entry.kind != PrivateDirectoryEntryKind::File {
-                return Err(Error::Invalid("skill entry is not a file".into()));
-            }
-            let source = PinnedContextPath {
-                root: root.clone(),
-                generation: generation.clone(),
-                path: child(&directory, name),
-            };
-            let prefix = reader
-                .read_private_prefix(
-                    &root.volume,
-                    &root.directory,
-                    &source.path,
-                    &generation,
-                    u64::from(work.limits.header_bytes),
-                    crate::conversation::ContentAccess::default(),
-                )?
-                .await?;
-            if prefix.len() > work.limits.header_bytes as usize {
-                return Err(Error::Storage("prefix reader exceeded bound".into()));
-            }
-            let metadata = parse_skill_metadata(&prefix, source)?;
-            if !names.insert(metadata.name.clone()) {
-                return Err(Error::Conflict(format!(
-                    "skill name {} is declared twice",
-                    metadata.name
-                )));
-            }
-            result.push(metadata);
-        }
+        result.extend(
+            discover_skills_from(
+                &mut VolumeDiscovery { reader, root },
+                &root.directory,
+                name,
+                work,
+                generation,
+                false,
+            )
+            .await?,
+        );
     }
+    validate_skill_catalog(&result, &mut None)?;
     Ok(result)
 }
 

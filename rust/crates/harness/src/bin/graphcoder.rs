@@ -74,7 +74,11 @@ async fn open(
             .unwrap_or_else(|| registry.default_model().into()),
     };
     let provider = Arc::new(registry.resolve(&selection)?);
-    let mut config = LocalHarnessConfig::new(&args.workspace, (provider.model().clone(), provider));
+    let mut config = LocalHarnessConfig::new(&args.workspace, (provider.model().clone(), provider))
+        .working_directory(&std::env::current_dir()?)?;
+    if let Some(directory) = &args.directory {
+        config = config.active_directory(directory);
+    }
     let search = acyclic_harness::search::SearchConfig::from_file(&settings.search_config_path())?;
     let search = if args.settings_root.is_some() {
         search.without_native_sources()

@@ -252,6 +252,7 @@ impl Fixture {
             )?,
             provider: self.provider.clone(),
             context_manifest: None,
+            active_directory: String::new(),
             skill_cache: super::super::context::skills::cache(),
             context_read_observer: None,
             #[cfg(any(test, feature = "hooks"))]

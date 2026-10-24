@@ -7,6 +7,7 @@ use crate::{
 mod continuations;
 pub(super) mod crash_cuts;
 mod generation;
+mod nested;
 #[cfg(any(test, feature = "native-execution"))]
 mod skills;
 
@@ -71,7 +72,7 @@ async fn instruction(harness: &LocalHarness, name: &str, text: &str) -> Result<(
         name,
         text.as_bytes(),
         "text/markdown",
-        name,
+        name.rsplit('/').next().unwrap_or(name),
         crate::conversation::ContentAccess::default(),
     )?
     .await?;

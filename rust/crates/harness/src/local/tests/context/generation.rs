@@ -21,7 +21,7 @@ fn update_after_agents<'a>(
     })
 }
 
-async fn capture(restore_faulty_route: bool) -> Result<Vec<Vec<u8>>> {
+async fn capture(checkout: bool) -> Result<(Vec<Vec<u8>>, Vec<Vec<u8>>)> {
     let directory = tempfile::tempdir().map_err(super::super::super::storage)?;
     let project = volume(directory.path()).await?;
     let mut harness = LocalHarness::open(volume_config(directory.path(), project, text())?).await?;
@@ -33,14 +33,14 @@ async fn capture(restore_faulty_route: bool) -> Result<Vec<Vec<u8>>> {
             std::fs::write(harness.workspace().unwrap().path.join(name), bytes)
                 .map_err(super::super::super::storage)?;
         }
-        // Negative control: restoring the former routing must make this same
-        // production manifest capture fail the exact same byte-level detector.
-        if restore_faulty_route {
-            harness.checkout_context = true;
-        }
+        harness.checkout_context = checkout;
     }
     #[cfg(not(any(test, feature = "native-execution")))]
-    assert!(!restore_faulty_route);
+    assert!(!checkout);
+    // The former live-read shape retains the first read, then observes the
+    // second file after the inline update. Both production routes now pin it.
+    let first_live = std::fs::read(harness.workspace().unwrap().path.join("AGENTS.md"))
+        .map_err(super::super::super::storage)?;
     harness.context_read_observer = Some(update_after_agents);
     let operation = OperationId::new();
     harness.stage_context_manifest(operation).await?;
@@ -51,22 +51,29 @@ async fn capture(restore_faulty_route: bool) -> Result<Vec<Vec<u8>>> {
     for file in &captured.discovery.instructions {
         bodies.push(reader.read(file, 1024, None, None)?.await?.to_vec());
     }
-    Ok(bodies)
+    let second_live = std::fs::read(harness.workspace().unwrap().path.join("CLAUDE.md"))
+        .map_err(super::super::super::storage)?;
+    Ok((bodies, vec![first_live, second_live]))
 }
 
 #[tokio::test]
 async fn volume_generation_is_pinned_across_an_update_between_instruction_reads() -> Result<()> {
     let expected = vec![b"old agents".to_vec(), b"old claude".to_vec()];
-    let actual = capture(false).await?;
+    let (actual, broken) = capture(false).await?;
     assert_eq!(actual, expected, "manifest mixed project generations");
+    assert_eq!(broken, [b"old agents".to_vec(), b"new claude".to_vec()]);
+    assert_ne!(
+        broken, expected,
+        "detector missed live reads across generations"
+    );
     #[cfg(any(test, feature = "native-execution"))]
     {
-        let broken = capture(true).await?;
-        assert_eq!(broken, [b"old agents".to_vec(), b"new claude".to_vec()]);
-        assert_ne!(
-            broken, expected,
-            "detector missed the former checkout route"
+        let (actual, broken) = capture(true).await?;
+        assert_eq!(
+            actual, expected,
+            "checkout manifest mixed project generations"
         );
+        assert_ne!(broken, expected, "detector missed live checkout reads");
     }
     Ok(())
 }

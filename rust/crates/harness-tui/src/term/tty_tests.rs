@@ -307,3 +307,34 @@ fn negative_control_spinning_wait_is_detected() {
     .unwrap_or_else(|error| panic!("{error}"));
     assert_waits_make_progress(&trace);
 }
+
+#[test]
+fn size_reads_the_owned_device_instead_of_another_terminal() -> io::Result<()> {
+    use rustix::termios::{Winsize, tcsetwinsize};
+    let first = rustix_openpty::openpty(None, None)?;
+    let second = rustix_openpty::openpty(None, None)?;
+    let _first_master = File::from(first.controller);
+    let _second_master = File::from(second.controller);
+    let first_file = File::from(first.user);
+    let second_file = File::from(second.user);
+    for (file, columns, rows) in [(&first_file, 83, 29), (&second_file, 132, 51)] {
+        tcsetwinsize(
+            file,
+            Winsize {
+                ws_col: columns,
+                ws_row: rows,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            },
+        )?;
+    }
+    let mut tty = RawTty::from_file(first_file)?;
+    let actual = tty.size()?;
+    let wrong = rustix::termios::tcgetwinsize(&second_file)?;
+    assert_eq!(actual, ratatui::layout::Size::new(83, 29));
+    assert_ne!(
+        actual,
+        ratatui::layout::Size::new(wrong.ws_col, wrong.ws_row)
+    );
+    tty.restore()
+}

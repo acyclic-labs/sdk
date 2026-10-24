@@ -4,10 +4,10 @@ use super::resolve_file_mentions;
 use crate::{
     Error, Result,
     context::{
-        ContextDiscoveryLimits, ContextRoot, DiscoveryWork, PinnedContextPath, child,
-        discover_skills, frontmatter_end, parse_frontmatter,
+        ContextDiscoveryLimits, ContextRoot, DiscoveryKind, DiscoveryWork, PinnedContextPath,
+        VolumeDiscovery, child, discover_skills, frontmatter_end, parse_frontmatter,
     },
-    conversation::{ContentResidencyVerifier, PrivateDirectoryEntryKind},
+    conversation::ContentResidencyVerifier,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -250,36 +250,41 @@ impl CommandCatalog {
             for declaration in roots.iter().filter(|root| root.scope == scope) {
                 let root = &declaration.root;
                 root.validate(&mut None)?;
-                let (generation, entries) = work.list(reader, root, &root.directory, None).await?;
+                let mut source = VolumeDiscovery { reader, root };
+                let (generation, entries) =
+                    work.list_source(&mut source, &root.directory, None).await?;
                 for (directory, leaf) in [(".claude", "commands"), (".codex", "prompts")] {
                     let Some(entry) = entries.iter().find(|entry| entry.name == directory) else {
                         continue;
                     };
                     require_directory(entry.kind)?;
                     let path = child(&root.directory, directory);
-                    let (_, children) = work.list(reader, root, &path, Some(&generation)).await?;
+                    let (_, children) = work
+                        .list_source(&mut source, &path, Some(&generation))
+                        .await?;
                     let Some(entry) = children.iter().find(|entry| entry.name == leaf) else {
                         continue;
                     };
                     require_directory(entry.kind)?;
                     let mut pending = vec![(child(&path, leaf), String::new())];
                     while let Some((path, namespace)) = pending.pop() {
-                        let (_, entries) =
-                            work.list(reader, root, &path, Some(&generation)).await?;
+                        let (_, entries) = work
+                            .list_source(&mut source, &path, Some(&generation))
+                            .await?;
                         for entry in entries {
                             let source = PinnedContextPath {
                                 root: root.clone(),
                                 generation: generation.clone(),
                                 path: child(&path, &entry.name),
                             };
-                            if entry.kind == PrivateDirectoryEntryKind::Directory {
+                            if entry.kind == DiscoveryKind::Directory {
                                 pending.push((source.path, format!("{namespace}{}:", entry.name)));
                                 continue;
                             }
                             let Some(stem) = entry.name.strip_suffix(".md") else {
                                 continue;
                             };
-                            if entry.kind != PrivateDirectoryEntryKind::File {
+                            if entry.kind != DiscoveryKind::File {
                                 return Err(Error::Invalid("command entry is not a file".into()));
                             }
                             let name = format!("{namespace}{stem}").to_ascii_lowercase();
@@ -620,8 +625,8 @@ fn resolve_builtin(command: BuiltinCommand, arguments: &str) -> CommandResolutio
     }
 }
 
-fn require_directory(kind: PrivateDirectoryEntryKind) -> Result<()> {
-    if kind != PrivateDirectoryEntryKind::Directory {
+fn require_directory(kind: DiscoveryKind) -> Result<()> {
+    if kind != DiscoveryKind::Directory {
         return Err(Error::Invalid(
             "command directory is not a directory".into(),
         ));

@@ -38,6 +38,11 @@ impl RawTty {
         Ok(tty)
     }
 
+    pub(crate) fn size(&self) -> io::Result<ratatui::layout::Size> {
+        let size = rustix::termios::tcgetwinsize(&self.file)?;
+        Ok(ratatui::layout::Size::new(size.ws_col, size.ws_row))
+    }
+
     /// Restore while the lifecycle still holds exclusive ownership. There is
     /// no destructor restoration: retained state can outlive a newer session.
     pub fn restore(&mut self) -> io::Result<()> {

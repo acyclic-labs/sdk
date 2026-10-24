@@ -27,6 +27,7 @@
     "rust/crates/actors-wasm",
     "rust/crates/auth",
     "rust/crates/contract-derive",
+    "rust/crates/differential",
     "rust/crates/grpc-observability",
     "rust/crates/native-runtime",
     "rust/crates/proto-codegen",

@@ -61,6 +61,12 @@ impl Drop for Output {
 }
 
 impl Tty {
+    /// Query this owned terminal after splitting input and output, without reopening it.
+    pub fn size_reader(&self) -> impl Fn() -> io::Result<ratatui::layout::Size> + use<> {
+        let state = Arc::clone(&self.state);
+        move || lifecycle::active(&state, |guard| guard.writer().size())
+    }
+
     /// Separate output from the existing decoder without reopening the terminal.
     /// Dropping either half restores the owner and wakes any outstanding read.
     pub fn split(self) -> (Self, Output) {

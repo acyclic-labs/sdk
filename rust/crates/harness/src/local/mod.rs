@@ -79,6 +79,7 @@ pub struct LocalHarness {
     /// Unbound: each model command binds it to its executing task's reader.
     provider: Arc<dyn ModelProvider>,
     context_manifest: Option<crate::conversation::FileRef>,
+    active_directory: String,
     skill_cache: context::skills::Cache,
     #[cfg(any(test, feature = "hooks"))]
     settings: Arc<crate::native_settings::SettingsConfig>,
