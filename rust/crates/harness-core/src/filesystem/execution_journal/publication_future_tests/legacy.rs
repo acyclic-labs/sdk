@@ -246,14 +246,16 @@ pub(super) fn stage<'a>(
     media: &'static str,
     io: Option<&'a PreparationIo>,
 ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
-    unmetered_layout(4, async move {
-        let span = obs_span!("acyclic.harness.journal.stage", bytes = bytes.len());
+    // The one-box staging factory constructs its traced payload directly;
+    // an async forwarding reference would retain an additional coroutine state.
+    let span = obs_span!("acyclic.harness.journal.stage", bytes = bytes.len());
+    unmetered_layout(
+        4,
         single_payload_trace_frame(
             span,
             journal.stage_with_io(operation, key, bytes, media, None),
-        )
-        .await
-    });
+        ),
+    );
     #[cfg(not(target_arch = "wasm32"))]
     let native = match io.and_then(PreparationIo::original_native_work) {
         Some(work) => {
