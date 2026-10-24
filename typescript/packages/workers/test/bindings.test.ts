@@ -88,6 +88,22 @@ for (const kind of ["actor","worker"] as const) {
       expect((await settled).message).toBe("cancelled");
     }
   });
+  test(`${kind} abort releases its reader without waiting for source cleanup`, async () => {
+    let read!: () => void, release!: () => void, cancelled = 0, calls = 0, outcome = "pending";
+    const reading = new Promise<void>(resolve => {read = resolve;});
+    const cleanup = new Promise<void>(resolve => {release = resolve;});
+    const body = new ReadableStream<Uint8Array>({pull() {read();},cancel() {cancelled++;return cleanup;}},{highWaterMark:0});
+    const target = handle({async invoke() {calls++;return {status:200,body:new Uint8Array(),headers:[]};}});
+    const abort = new AbortController();
+    const request = new Request("https://example.com/",{method:"POST",body,duplex:"half",signal:abort.signal} as RequestInit);
+    const pending = target.fetch(request).then(() => {outcome="fulfilled";},() => {outcome="rejected";});
+    await reading; abort.abort(new Error("cancelled"));
+    // One event-loop turn drains runnable promise jobs. There is no transport
+    // I/O and cleanup remains explicitly held: a pending result is a dependency.
+    await new Promise<void>(resolve => {setImmediate(resolve);});
+    try {expect(cancelled).toBe(1);expect(outcome).toBe("rejected");expect(request.body!.locked).toBe(false);expect(calls).toBe(0);}
+    finally {release();await pending;}
+  });
   test(`${kind} standard Fetch cancellation cancels a blocked body before transport`, async () => {
     for (const source of ["request","init"] as const) {
       let read!: () => void, controller!: ReadableStreamDefaultController<Uint8Array>, cancelled = 0, calls = 0;

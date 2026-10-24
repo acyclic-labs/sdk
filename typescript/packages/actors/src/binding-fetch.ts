@@ -1,8 +1,7 @@
 export async function readBindingRequestBody(request: Request, signal: AbortSignal): Promise<Uint8Array> {
   if (!request.body) { signal.throwIfAborted(); return new Uint8Array(); }
   const reader = request.body.getReader(), chunks: Uint8Array[] = [];
-  let cancellation: Promise<void> | undefined;
-  const cancel = () => { cancellation ??= reader.cancel(signal.reason); void cancellation.catch(() => undefined); };
+  const cancel = () => { void reader.cancel(signal.reason).catch(() => undefined); };
   signal.addEventListener("abort", cancel, {once:true});
   try {
     // A queued actor call may already be aborted before its reader is admitted.
@@ -21,7 +20,6 @@ export async function readBindingRequestBody(request: Request, signal: AbortSign
     return body;
   } finally {
     signal.removeEventListener("abort",cancel);
-    if (cancellation) await cancellation.catch(() => undefined);
     reader.releaseLock();
   }
 }
