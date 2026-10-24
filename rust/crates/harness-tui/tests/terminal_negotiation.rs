@@ -35,8 +35,45 @@ fn visible_prompt(bytes: &[u8], mux: Multiplexer, at: usize) {
     assert_eq!(
         term.grid()[Point::new(Line(0), Column(0))].c,
         'Z',
-        "{mux:?} failure={at}"
+        "{mux:?} failure={at} bytes={bytes:?}"
     );
+}
+
+// Capture a completed output frame, rather than treating a temporarily empty
+// nonblocking PTY queue as end-of-stream. The owning test leaves the controller
+// blocking and writes the unique marker after every query/cleanup byte.
+fn completed_prompt(mut source: impl std::io::BufRead) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    source.read_until(b'Z', &mut bytes)?;
+    if bytes.last() != Some(&b'Z') {
+        return Err(std::io::ErrorKind::UnexpectedEof.into());
+    }
+    Ok(bytes)
+}
+
+#[test]
+fn prompt_capture_requires_the_completion_marker() -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{self, BufReader, Cursor, Read};
+    struct NotReady;
+    impl Read for NotReady {
+        fn read(&mut self, _bytes: &mut [u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::WouldBlock.into())
+        }
+    }
+    let prefix = b"query-prefix\x18";
+    let frame = [prefix.as_slice(), b"Z"].concat();
+    assert_eq!(
+        completed_prompt(BufReader::with_capacity(1, Cursor::new(&frame)))?,
+        frame
+    );
+    // The old capture accepted either incomplete transcript as a finished frame.
+    assert!(
+        matches!(completed_prompt(Cursor::new(prefix)), Err(error) if error.kind() == io::ErrorKind::UnexpectedEof)
+    );
+    assert!(
+        matches!(completed_prompt(BufReader::new(Cursor::new(prefix).chain(NotReady))), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
+    );
+    Ok(())
 }
 
 #[test]
@@ -54,10 +91,9 @@ fn every_query_send_failure_boundary_is_cancelled_and_leaves_a_visible_prompt() 
 #[test]
 fn real_pty_query_failure_boundaries_restore_a_visible_prompt()
 -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_harness_tui::term::{Environment, ProbeIo, Tty, detect};
-    use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
+    use acyclic_harness_tui::term::{Environment, Probe, ProbeIo, Tty, detect};
     use std::fs::File;
-    use std::io::{self, Read, Write};
+    use std::io::{self, BufReader, Write};
     use std::time::Instant;
     struct FailSend<'a> {
         tty: &'a mut Tty,
@@ -77,10 +113,11 @@ fn real_pty_query_failure_boundaries_restore_a_visible_prompt()
         }
     }
     for mux in [Multiplexer::None, Multiplexer::Tmux, Multiplexer::Screen] {
+        assert!(!Probe::batch(mux).contains(&b'Z'));
+        assert!(!mux.wrap(b"\x18").contains(&b'Z'));
         for at in 0..=negotiation::batch_len(mux) {
             let pty = rustix_openpty::openpty(None, None)?;
-            let mut controller = File::from(pty.controller);
-            fcntl_setfl(&controller, fcntl_getfl(&controller)? | OFlags::NONBLOCK)?;
+            let controller = File::from(pty.controller);
             let mut observer = File::from(pty.user);
             let mut tty = Tty::from_file(observer.try_clone()?)?;
             let key = match mux {
@@ -98,16 +135,7 @@ fn real_pty_query_failure_boundaries_restore_a_visible_prompt()
             );
             drop(tty);
             observer.write_all(b"Z")?;
-            let mut bytes = Vec::new();
-            let mut buffer = [0; 1024];
-            loop {
-                match controller.read(&mut buffer) {
-                    Ok(0) => break,
-                    Ok(count) => bytes.extend_from_slice(buffer.get(..count).unwrap_or_default()),
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                    Err(error) => return Err(error.into()),
-                }
-            }
+            let bytes = completed_prompt(BufReader::new(controller))?;
             visible_prompt(&bytes, mux, at);
         }
     }
