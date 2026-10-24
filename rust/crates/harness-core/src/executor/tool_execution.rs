@@ -462,55 +462,15 @@ impl StockExecution<'_> {
                 started,
             )
             .await?;
-        let execution = async {
-            if claimed {
-                stock_tool_call(
-                    context,
-                    self.io,
-                    |context| tool.executor.execute(invocation.clone(), context),
-                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                    |context, work| {
-                        tool.executor
-                            .execute_with_native_context(context, invocation, work)
-                    },
-                )
-                .await
-                .map(Some)
-            } else {
-                stock_tool_call(
-                    context,
-                    self.io,
-                    |context| tool.executor.reconcile(invocation.clone(), context),
-                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                    |context, work| {
-                        tool.executor
-                            .reconcile_with_native_context(context, invocation, work)
-                    },
-                )
-                .await
-            }
-        };
-        let execution = if tool.executor.cancellable_on_drop() {
-            match cancel_safe_call(execution, journal.model_cancellation()).await? {
-                Some(result) => result,
-                None => {
-                    self.reject_tool_call(
-                        journal,
-                        operation_id,
-                        step,
-                        &invocation.call_id,
-                        ToolFailureKind::Interrupted,
-                        Error::InteractionRejected(crate::InteractionRejection::Cancelled),
-                    )
-                    .await?;
-                    return Err(Error::InteractionRejected(
-                        crate::InteractionRejection::Cancelled,
-                    ));
-                }
-            }
-        } else {
-            execution.await
-        };
+        let execution = self
+            .observe_tool_cancellation(
+                journal,
+                identity,
+                &invocation.call_id,
+                tool.executor.cancellable_on_drop(),
+                self.call_tool_executor(tool, context, invocation, claimed),
+            )
+            .await?;
         let result = match execution {
             Ok(Some(result)) => result,
             Err(error) if error.is_native_failure() => return Err(error),
@@ -593,6 +553,69 @@ impl StockExecution<'_> {
                 Err(content) => content,
             }))
         }
+    }
+
+    async fn call_tool_executor(
+        &self,
+        tool: &crate::tool::Tool,
+        context: &mut Option<crate::runtime::ToolContext>,
+        invocation: &ToolInvocation,
+        claimed: bool,
+    ) -> Result<Option<ToolResult>> {
+        if claimed {
+            stock_tool_call(
+                context,
+                self.io,
+                |context| tool.executor.execute(invocation.clone(), context),
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                |context, work| {
+                    tool.executor
+                        .execute_with_native_context(context, invocation, work)
+                },
+            )
+            .await
+            .map(Some)
+        } else {
+            stock_tool_call(
+                context,
+                self.io,
+                |context| tool.executor.reconcile(invocation.clone(), context),
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                |context, work| {
+                    tool.executor
+                        .reconcile_with_native_context(context, invocation, work)
+                },
+            )
+            .await
+        }
+    }
+
+    async fn observe_tool_cancellation<T>(
+        &self,
+        journal: &dyn ExecutionJournal,
+        identity: (OperationId, u32),
+        call_id: &str,
+        cancellable: bool,
+        execution: impl std::future::Future<Output = T>,
+    ) -> Result<T> {
+        if !cancellable {
+            return Ok(execution.await);
+        }
+        if let Some(result) = cancel_safe_call(execution, journal.model_cancellation()).await? {
+            return Ok(result);
+        }
+        self.reject_tool_call(
+            journal,
+            identity.0,
+            identity.1,
+            call_id,
+            ToolFailureKind::Interrupted,
+            Error::InteractionRejected(crate::InteractionRejection::Cancelled),
+        )
+        .await?;
+        Err(Error::InteractionRejected(
+            crate::InteractionRejection::Cancelled,
+        ))
     }
 
     #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
