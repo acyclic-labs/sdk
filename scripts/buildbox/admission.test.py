@@ -45,11 +45,27 @@ class AdmissionTests(unittest.TestCase):
     def test_env_shebang_missing_interpreter_and_unsupported_forms_are_infra(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
             script=Path(temporary)/'wrapper'
-            for shebang in ['#!/usr/bin/env missing-interpreter-control','#!/usr/bin/env -S python3 -u']:
+            for shebang in ['#!/usr/bin/env missing-interpreter-control','#!/usr/bin/env -S python3 -u','#!/usr/bin/env "']:
                 script.write_text(shebang+'\n');script.chmod(0o755)
                 with self.assertRaisesRegex(RuntimeError,'admission-INFRA'):resolve_wrapper({'PATH':'/usr/bin:/bin','RUSTC_WRAPPER':str(script)})
                 self.assertTrue(os.access('/usr/bin/env',os.X_OK),'old interpreter-only check admits both')
             script.write_text('#!/usr/bin/env python3\n');self.assertEqual(resolve_wrapper({'PATH':'/usr/bin:/bin','RUSTC_WRAPPER':str(script)})['path'],str(script))
+
+    def test_nested_job_malformed_shebang_is_infra_before_child_exec(self):
+        from unittest.mock import patch
+        spec=importlib.util.spec_from_file_location('job',HERE/'bb-job.py')
+        job=importlib.util.module_from_spec(spec);spec.loader.exec_module(job)
+        with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+            root=Path(temporary);meta=root/'meta';meta.write_text('{}')
+            script=root/'wrapper';script.write_bytes(b'#!/usr/bin/env "\n');script.chmod(0o755)
+            env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BB_JOB_ACTIVE':'1','RUSTC_WRAPPER':str(script)}
+            env.pop('BB_CACHE_DISABLED',None)
+            with patch.dict(os.environ,env,clear=True),patch.object(job,'protect_home'),patch.object(job.os,'execvpe') as executed:
+                self.assertEqual(job.run(['true'],namespace_ready=True),224)
+                executed.assert_not_called()
+            # The old parser raises ValueError outside the typed runtime boundary.
+            import shlex
+            with self.assertRaises(ValueError):shlex.split('/usr/bin/env "')
 
     def test_shared_daemon_selects_each_workspaces_relative_wrapper(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:

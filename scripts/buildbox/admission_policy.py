@@ -46,7 +46,9 @@ def resolve_wrapper(env, compiler=False, cwd=None):
     executable = str(Path(executable).resolve(strict=True))
     data = Path(executable).read_bytes()
     if data.startswith(b'#!'):
-        fields = shlex.split(data.splitlines()[0][2:].decode())
+        try: fields = shlex.split(data.splitlines()[0][2:].decode())
+        except ValueError as error:
+            raise RuntimeError('RUSTC_WRAPPER_SHEBANG_UNSUPPORTED admission-INFRA') from error
         interpreter = fields[0] if fields else ''
         if not os.path.isabs(interpreter) or not os.access(interpreter, os.X_OK):
             raise RuntimeError('RUSTC_WRAPPER_INTERPRETER_MISSING admission-INFRA: ' + interpreter)
