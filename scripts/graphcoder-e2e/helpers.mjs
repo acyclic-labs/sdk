@@ -1,12 +1,13 @@
 // Enumerate the helper suite in Node: shell globbing and inherited stdin cannot
 // silently select an empty suite. Qualification rejects every vacuous outcome.
 import assert from "node:assert/strict";
-import { readdir } from "node:fs/promises";
+import { readdir, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import { Processes } from "./process.mjs";
 import { qualified } from "./qualification.mjs";
+import { environment, scratchDirectory } from "./scratch.mjs";
 
 export async function runHelperSuite(files, { signal = AbortSignal.timeout(9000),
   processes = new Processes(), publish = result => {
@@ -14,6 +15,7 @@ export async function runHelperSuite(files, { signal = AbortSignal.timeout(9000)
   } } = {}) {
   assert.ok(files.length > 0, "helper suite inventory is empty");
   const start = performance.now();
+  const scratch = scratchDirectory("graphcoder-e2e-helpers-");
   let draining;
   const cancel = () => {
     draining ??= processes.close();
@@ -22,7 +24,7 @@ export async function runHelperSuite(files, { signal = AbortSignal.timeout(9000)
   signal.addEventListener("abort", cancel, { once: true });
   try {
     signal.throwIfAborted();
-    const env = { ...process.env };
+    const env = { ...environment(join(scratch, "profile")), E2E_SCRATCH_ROOT: scratch };
     delete env.NODE_TEST_CONTEXT; // A new suite owns its runner, never its caller's worker context.
     const result = await processes.runOwned(process.execPath, ["--test", "--test-reporter=tap",
       ...(process.platform === "win32" ? ["--test-concurrency=1"] : []), ...files], { env });
@@ -34,6 +36,7 @@ export async function runHelperSuite(files, { signal = AbortSignal.timeout(9000)
   } finally {
     signal.removeEventListener("abort", cancel);
     await (draining ?? processes.close());
+    await rm(scratch, { recursive: true, force: true });
   }
 }
 

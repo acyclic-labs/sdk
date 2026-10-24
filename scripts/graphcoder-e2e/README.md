@@ -38,6 +38,16 @@ The strict helper launcher also owns its complete process tree. Its active
 nine-second budget cancels and drains the scope; cancellation always fails
 qualification, including when a late child summary reports success.
 
+Set `E2E_SCRATCH_ROOT` to an absolute owned directory before any Windows
+invocation; this lane uses `D:/lane-scratch/e2e-gate/`. Windows has no system-temp
+fallback. The old independent `E2E_WORKSPACE_ROOT` and `E2E_NTFS_ROOT` selectors
+are rejected. Fixture profiles, temporary files, helper workers, Git and the
+mock all use the same scratch ownership boundary. `E2E_OUTPUT` can separately
+select a durable evidence directory. Remove the owned scratch after retaining
+the reports and retiring every process/mount. Helper scratch is removed at its
+completion barrier. The secondary Windows case directory remains a distinct
+fixture; two directories on D: do not constitute a ReFS-versus-NTFS proof.
+
 `coverage.json` maps every A1–A26 target to real case identities and names the
 owner of remaining scope gaps. Missing rows, unknown identities, duplicate
 identities, unmapped cases and recorded gaps fail qualification. A mapped row

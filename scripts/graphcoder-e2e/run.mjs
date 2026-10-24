@@ -4,14 +4,13 @@
 //   node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL [case-id...]
 // Install scripts/graphcoder-pty's pinned @xterm/headless before timing.
 // On Windows, cross-build the ConPTY transport on bb2 and set E2E_CONPTY_HOST
-// to its EXE. Use serial.mjs for the full matrix. E2E_WORKSPACE_ROOT=Q:/wt selects ReFS;
-// designated cases also run under E2E_NTFS_ROOT (default: local C: temp).
+// to its EXE. Use serial.mjs for the full matrix. E2E_SCRATCH_ROOT selects
+// all temporary directories and is mandatory on Windows.
 // E2E_OUTPUT selects the matrix/capture directory; roots are retained on failure.
 // Unix requires python3 and a controlling PTY; no alternate GraphCoder runtime.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
@@ -22,19 +21,20 @@ import { inventory, readCoverage } from "./coverage.mjs";
 import { fenced } from "./orphan-check.mjs";
 import { qualification } from "./qualification.mjs";
 import { publishReport } from "./report.mjs";
+import { environment, scratchDirectory } from "./scratch.mjs";
 
 const [binaryArg, mockArg, ...selected] = process.argv.slice(2);
 assert.ok(binaryArg && mockArg, "usage: node run.mjs GRAPHCODER MOCK_MODEL [case-id...]");
 const binary = resolve(binaryArg), mock = resolve(mockArg);
 const directory = dirname(fileURLToPath(import.meta.url));
-const output = resolve(process.env.E2E_OUTPUT ?? mkdtempSync(join(tmpdir(), "graphcoder-e2e-results-")));
+const scratch = scratchDirectory("graphcoder-e2e-");
+const output = resolve(process.env.E2E_OUTPUT ?? join(scratch, "results"));
 mkdirSync(output, { recursive: true });
-const roots = [mkdtempSync(join(process.env.E2E_WORKSPACE_ROOT ?? tmpdir(), "graphcoder-e2e-"))];
+const roots = [join(scratch, "primary")];
 if (process.platform === "win32") {
-  const ntfs = process.env.E2E_NTFS_ROOT ?? join(process.env.LOCALAPPDATA, "Temp");
-  mkdirSync(ntfs, { recursive: true });
-  roots.push(mkdtempSync(join(ntfs, "graphcoder-e2e-ntfs-")));
+  roots.push(join(scratch, "ntfs"));
 }
+for (const root of roots) mkdirSync(root, { recursive: true });
 const scripts = inventory();
 const coverage = readCoverage(scripts);
 const identities = new Set(scripts.map(test => test.id));
@@ -60,13 +60,6 @@ function expand(value, fixture) {
     workspace: fixture.workspace.replaceAll("\\", "/"),
     ...(port ? { url: `http://127.0.0.1:${port}/${fixture.id}/v1` } : {}) });
 }
-function environment(settings) {
-  const env = { ...process.env, TERM: "xterm-256color", HOME: settings, USERPROFILE: settings,
-    LOCALAPPDATA: join(settings, "AppData/Local"), APPDATA: join(settings, "AppData/Roaming"), CODEX_HOME: join(settings, ".codex"),
-    XDG_CONFIG_HOME: settings, XDG_DATA_HOME: settings, XDG_CACHE_HOME: settings, XDG_STATE_HOME: settings };
-  for (const key of Object.keys(env)) if (/API_KEY$|^GRAPHCODER_MODEL$|^ANTHROPIC_AUTH_TOKEN$/.test(key)) delete env[key];
-  return env;
-}
 function files(frames) {
   return [...(frames[0]?.[1]?.files ?? []), ...frames.slice(1).flatMap(change => [change.file, ...(change.files ?? [])].filter(Boolean))];
 }
@@ -85,20 +78,18 @@ async function execute(test, gitOrigin) {
   const artifact = join(output, test.id); await mkdir(artifact, { recursive: true });
   const captures = [], interrupted = [];
   try {
+    fixture.env = environment(fixture.settings);
     await mkdir(dirname(fixture.workspace), { recursive: true });
     if (test.workspace?.kind === "git") {
-      const cloned = await processes.run("git", ["clone", "--quiet", "--shared", gitOrigin, fixture.workspace]);
+      const cloned = await processes.run("git", ["clone", "--quiet", "--shared", gitOrigin, fixture.workspace], { env: fixture.env });
       assert.equal(cloned.code, 0, cloned.stderr);
     } else await mkdir(fixture.workspace, { recursive: true });
     await mkdir(fixture.settings, { recursive: true });
-    // Windows known-folder discovery verifies the expanded profile directories.
-    await Promise.all(["AppData/Local", "AppData/Roaming"].map(path => mkdir(join(fixture.settings, path), { recursive: true })));
     await Promise.all([seed(fixture.workspace, expand(test.workspace?.files, fixture)), seed(fixture.settings, expand(test.settings, fixture))]);
     const provider = { adapter: test.adapter ?? "responses", authentication: "optional", base_url: `http://127.0.0.1:${port}/${test.id}/v1`,
       models: { tiny: { capacity: test.capacity ?? { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: true } } }, max_event_bytes: 65536,
       token_counter: { path: "count", adapter: test.adapter ?? "responses", response_field: "input_tokens", framing_tokens: 0 } };
     await json(fixture.catalog, { e2e: provider });
-    fixture.env = environment(fixture.settings);
     fixture.env.E2E_MOCK_URL = `http://127.0.0.1:${port}/${test.id}/v1`;
     fixture.env.ACYCLIC_TEST_SOURCE_ROOT = resolve(directory, "../..");
     fixture.requests = events.seen.filter(event => event.case === test.id);
@@ -182,14 +173,15 @@ try {
   const scripts = Object.fromEntries(cases.map(test => [test.id, expand(test.model,
     { id: test.id, workspace: join(test.root, test.id, "workspace") })]));
   await json(join(output, "script.json"), { cases: scripts });
-  server = processes.start(mock, ["--script", join(output, "script.json"), "--record", join(output, "requests.jsonl")]);
+  const env = environment(join(scratch, "support-profile"));
+  server = processes.start(mock, ["--script", join(output, "script.json"), "--record", join(output, "requests.jsonl")], { env });
   events = new Events(server.child.stdout, server.closed);
   port = (await events.wait(event => event.event === "ready")).port;
   const origin = join(roots[0], "origin"); await mkdir(origin);
   await seed(origin, { "seed.txt": "base\n" });
   for (const args of [["init", "--quiet", "--initial-branch=main", origin], ["-C", origin, "add", "."],
     ["-C", origin, "-c", "user.name=e2e", "-c", "user.email=e2e@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "seed"]]) {
-    const git = await processes.run("git", args); assert.equal(git.code, 0, git.stderr);
+    const git = await processes.run("git", args, { env }); assert.equal(git.code, 0, git.stderr);
   }
   // Unix cases share one mock. Windows runs every case and filesystem variant
   // serially; serial.mjs gives each case its own unchanged ten-second budget.

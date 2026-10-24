@@ -1,13 +1,13 @@
 // A matrix is a collection of bounded case suites. Windows executes them serially.
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import { inventory, readCoverage } from "./coverage.mjs";
 import { Processes } from "./process.mjs";
 import { publishReport } from "./report.mjs";
+import { environment, scratchDirectory } from "./scratch.mjs";
 
 export function collect(cases, receipts, platform, coverage) {
   assert.equal(receipts.length, cases.length, "every case needs a suite receipt");
@@ -60,7 +60,8 @@ async function main() {
   const [binary, mock, ...extra] = process.argv.slice(2);
   assert.ok(binary && mock && !extra.length, "usage: node serial.mjs GRAPHCODER MOCK_MODEL");
   const directory = dirname(fileURLToPath(import.meta.url));
-  const output = resolve(process.env.E2E_OUTPUT ?? await mkdtemp(join(tmpdir(), "graphcoder-e2e-matrix-")));
+  const scratch = scratchDirectory("graphcoder-e2e-matrix-");
+  const output = resolve(process.env.E2E_OUTPUT ?? join(scratch, "results"));
   await mkdir(output, { recursive: true });
   const cases = inventory(), coverage = readCoverage(cases), processes = new Processes();
   let receipts;
@@ -69,7 +70,7 @@ async function main() {
     receipts = await runSuites(cases, async test => {
       const artifact = join(output, test.id);
       const result = await processes.run(process.execPath, [join(directory, "run.mjs"), resolve(binary), resolve(mock), test.id],
-        { env: { ...process.env, E2E_OUTPUT: artifact } });
+        { env: { ...environment(join(scratch, test.id)), E2E_SCRATCH_ROOT: scratch, E2E_OUTPUT: artifact } });
       console.log(`${test.id}: exit ${result.code}`);
       return result;
     }, async test => JSON.parse(await readFile(join(output, test.id, "matrix.json"), "utf8")));
