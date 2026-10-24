@@ -36,6 +36,8 @@ class RuntimeTests(unittest.TestCase):
         shutil.copyfile(HERE/'bb_target_store.py',self.d/'bb_target_store.py')
         shutil.copyfile(HERE/'admission_policy.py',self.d/'admission_policy.py')
         source=(HERE/'bb-job.py').read_text()
+        (self.d/'jobs').mkdir(exist_ok=True)
+        source=source.replace("JOBS=Path('/mnt/bb/jobs')",f"JOBS=Path({str(self.d/'jobs')!r})")
         source=source.replace("'disk_free':disk()", "'disk_free':[{'path':'fixture','free_percent':50}]")
         if negative:source=source.replace("file=sys.stderr,flush=True", "flush=True")
         if cleanup_failure:source=source.replace('try:remove_home(job)','try:raise OSError("cleanup control")')
@@ -153,6 +155,9 @@ print('FIVE_WRITES_DENIED')
         env.pop('BB_JOB_ACTIVE',None)
         bad=subprocess.run([sys.executable,str(worker),sys.executable,'-c',code],env=env,capture_output=True)
         self.assertEqual(bad.returncode,0,bad.stderr.decode());self.assertTrue(target.exists())
+        namespace=os.readlink('/proc/self/ns/pid').removeprefix('pid:[').removesuffix(']')
+        registration=self.d/'jobs'/(namespace+'.pid-namespace.json')
+        self.assertEqual(json.loads(registration.read_text())['parent_receipt_meta'],str(meta))
 
     def test_inherited_home_cwd_is_reopened_in_the_read_only_view(self):
         code='from pathlib import Path;Path("relative-write").write_text("fixture-only")'
@@ -497,7 +502,7 @@ finally:a.close();b.close()
         worker=self.worker();receipt=self.d/'receipt.mjs';receipts=self.d/'receipts'
         # Match the generated-wrapper control's injected watcher cadence. The
         # assertion waits for the actual terminal receipt, never a timed PASS.
-        source=(HERE/'buildbox-receipt.mjs').read_text().replace('/home/var/bin/bb-job.py',str(worker)).replace("const dir = '/mnt/bb/jobs'",f'const dir = {str(receipts)!r}').replace('interval = 1000','interval = 20')
+        source=(HERE/'buildbox-receipt.mjs').read_text().replace('/home/var/bin/bb-job.py',str(worker)).replace('/mnt/bb/jobs/',str(receipts)+'/').replace("const dir = '/mnt/bb/jobs'",f'const dir = {str(receipts)!r}').replace('interval = 1000','interval = 20')
         receipt.write_text(source);(self.d/'buildbox-receipt.mjs').write_text(source)
         env={**os.environ,'BUILD_SLOT_DEFER_EXEC':'1','BUILD_SLOT_LABEL':'gate-speed-r19-kill-control'}
         env.pop('BB_JOB_ACTIVE',None);env.pop('BUILD_SLOT_EXEC_IN_PAYLOAD',None)
@@ -530,10 +535,10 @@ finally:a.close();b.close()
     def test_killed_generated_wrapper_cleans_outer_scratch_with_negative_control(self):
         worker=self.worker()
         generator=self.d/'generator.mjs';generator.write_text((HERE/'buildbox.mjs').read_text()+'\nexport {launchScript};\n')
-        receipt_source=(HERE/'buildbox-receipt.mjs').read_text().replace('/home/var/bin/bb-job.py',str(worker)).replace('interval = 1000','interval = 20')
+        receipt_source=(HERE/'buildbox-receipt.mjs').read_text().replace('/home/var/bin/bb-job.py',str(worker)).replace('/mnt/bb/jobs/',str(self.d/'jobs')+'/').replace('interval = 1000','interval = 20')
         (self.d/'buildbox-receipt.mjs').write_text(receipt_source)
         for negative in [False,True]:
-            prefix=Path('/mnt/bb/jobs')/f'r19-wrapper-{os.getpid()}-{negative}'
+            prefix=self.d/'jobs'/f'r19-wrapper-{os.getpid()}-{negative}'
             marker=self.d/f'wrapper-ready-{negative}'
             meta=self.d/f'wrapper-{negative}.receipt-meta.v2.json'
             probe=self.d/'generate-wrapper.mjs'
@@ -571,7 +576,8 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
                 self.assertEqual(bool(data.get('outer_targets_removed')),not negative)
             finally:
                 if process.poll() is None:process.kill();process.wait()
-                process.stdout.close();process.stderr.close();job.cleanup_outer(prefix)
+                process.stdout.close();process.stderr.close()
+                with patch.object(job,'JOBS',self.d/'jobs'):job.cleanup_outer(prefix)
                 for p in prefix.parent.glob(prefix.name+'.*'):
                     if p.is_file():p.unlink()
 
