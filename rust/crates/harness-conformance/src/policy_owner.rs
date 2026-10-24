@@ -40,45 +40,49 @@ impl Case {
     }
 }
 
-async fn fork<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore>(
-    source: &Workspace<A, O>,
-    name: &str,
-) -> Result<Workspace<A, O>, acyclic_fs::WorkspaceError> {
-    let cancellation = CancellationToken::new();
-    let result = source
-        .with_stable_policy(WorkBudget::UNBOUNDED, &cancellation, || async {
-            let bound = source
-                .clone()
-                .bind_coarse_access(&[Action::Read, Action::List, Action::Fork], &cancellation)
-                .await?;
-            let generation = bound
-                .head(WorkBudget::UNBOUNDED, &cancellation)
-                .await
-                .map_err(|failure| failure.error)?
-                .value;
-            bound
-                .fork::<_, _, acyclic_fs::WorkspaceError>(
-                    name,
-                    acyclic_fs::ForkOptions::from_generation(
-                        generation,
-                        acyclic_fs::IdempotencyKey::new(),
-                    ),
-                    acyclic_fs::PublicationPermit::Unrestricted,
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                    &mut |_| {
-                        std::future::ready(Ok(acyclic_fs::OperationReceipt {
-                            value: (),
-                            work: acyclic_fs::WorkCounters::UNCHARGED,
-                        }))
-                    },
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
-        })
-        .await;
-    result.map_err(|failure| failure.error)?.value
+// This portable driver also owns a composed policy/fork operation. Keep its
+// concrete filesystem future behind a boundary before collect awaits it.
+fn fork<'a, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore>(
+    source: &'a Workspace<A, O>,
+    name: &'a str,
+) -> acyclic_stream::BoxProviderFuture<'a, Result<Workspace<A, O>, acyclic_fs::WorkspaceError>> {
+    Box::pin(async move {
+        let cancellation = CancellationToken::new();
+        let result = source
+            .with_stable_policy(WorkBudget::UNBOUNDED, &cancellation, || async {
+                let bound = source
+                    .clone()
+                    .bind_coarse_access(&[Action::Read, Action::List, Action::Fork], &cancellation)
+                    .await?;
+                let generation = bound
+                    .head(WorkBudget::UNBOUNDED, &cancellation)
+                    .await
+                    .map_err(|failure| failure.error)?
+                    .value;
+                bound
+                    .fork::<_, _, acyclic_fs::WorkspaceError>(
+                        name,
+                        acyclic_fs::ForkOptions::from_generation(
+                            generation,
+                            acyclic_fs::IdempotencyKey::new(),
+                        ),
+                        acyclic_fs::PublicationPermit::Unrestricted,
+                        WorkBudget::UNBOUNDED,
+                        &cancellation,
+                        &mut |_| {
+                            std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                                value: (),
+                                work: acyclic_fs::WorkCounters::UNCHARGED,
+                            }))
+                        },
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+            })
+            .await;
+        result.map_err(|failure| failure.error)?.value
+    })
 }
 
 fn revoked_policy() -> TestResult<Vec<u8>> {

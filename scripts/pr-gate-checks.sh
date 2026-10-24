@@ -168,7 +168,8 @@ fi
 if [ -n "$features" ]; then
   wait "$features"
   echo "GATE_FEATURES rc=$(cat .gate-features.rc)"
-  grep -aE '^(feature matrix:|FAILED cargo)' .gate-features.out | sed -E 's|--manifest-path [^ ]*/([^/ ]+/Cargo\.toml)|--manifest-path \1|; s/^/GATE_FEATURES /'
+  [ "$rc" != 0 ] || rc=$(cat .gate-features.rc)
+  grep -aE '^(feature matrix:|consumer builds:|FAILED cargo)' .gate-features.out | sed -E 's|--manifest-path [^ ]*/([^/ ]+/Cargo\.toml)|--manifest-path \1|; s/^/GATE_FEATURES /'
   if [ "$(cat .gate-features.rc)" != 0 ] && ! grep -aq '^FAILED cargo' .gate-features.out; then
     echo "GATE_FEATURES FAILED matrix did not complete rc=$(cat .gate-features.rc)"
     cat .gate-features.out

@@ -15,8 +15,11 @@ macro_rules! contract {
     (@methods $(#[$doc:meta])* fn $name:ident $(<$g:ident: $bound:path>)?
         (&$receiver:ident $(, $arg:ident: $ty:ty)* $(,)?)
         -> impl Future<Output = $out:ty $(,)?> + ProviderTask $end:tt $($rest:tt)*) => {
-        async fn $name $(<$g: $bound>)? (&$receiver $(, $arg: $ty)*) -> $out {
-            (**$receiver).$name($($arg),*).await
+        fn $name $(<$g: $bound>)? (&$receiver $(, $arg: $ty)*)
+            -> impl Future<Output = $out> + ProviderTask {
+            // Forward the provider's actual future: shared ownership must not
+            // insert another async frame or defer the provider's admission.
+            (**$receiver).$name($($arg),*)
         }
         contract!(@methods $($rest)*);
     };
