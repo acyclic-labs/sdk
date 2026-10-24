@@ -50,7 +50,7 @@ proptest! {
         prop_assert_eq!(roundtrip,step);
         let wire = events("responses",&bound).unwrap().concat();
         let frames: Vec<serde_json::Value> = wire.lines().filter_map(|line|line.strip_prefix("data: ")).map(|line|serde_json::from_str(line).unwrap()).collect();
-        let done: Vec<_> = frames.iter().filter(|event|event["type"]=="response.output_item.done").collect();
+        let done: Vec<_> = frames.iter().filter(|event|event["type"]=="response.output_item.done" && event["item"]["type"]!="message").collect();
         prop_assert_eq!(&done[0]["item"]["namespace"],&json!("collaboration"));
         prop_assert_eq!(&done[0]["item"]["arguments"],&json!(bound.tools[0].arguments.to_string()));
         prop_assert_eq!(&done[1]["item"]["type"],&json!("custom_tool_call"));

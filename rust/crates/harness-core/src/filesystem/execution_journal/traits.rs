@@ -280,14 +280,15 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
         if io.is_none() {
-            return crate::conversation::BoundedContentFuture::new(None, || async move {
+            return crate::conversation::BoundedContentFuture::new(None, || {
                 let span = obs_span!("acyclic.harness.journal.stage", bytes = bytes.len());
-                // Storage construction must not occupy the tracing poll frame
-                // while that same storage future drives a generation mutation.
-                let staging = crate::conversation::BoundedContentFuture::new(None, || {
-                    self.stage_with_io(operation, key, bytes, media, None)
-                })?;
-                crate::obs::traced_future(span, staging).await
+                // Construct directly in the one admitted allocation, before
+                // polling. No async forwarding frame duplicates the storage
+                // future or requires a second trait-erasure allocation.
+                crate::obs::traced_future(
+                    span,
+                    self.stage_with_io(operation, key, bytes, media, None),
+                )
             });
         }
         #[cfg(not(target_arch = "wasm32"))]

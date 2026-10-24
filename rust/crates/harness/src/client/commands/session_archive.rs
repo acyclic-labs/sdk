@@ -35,9 +35,6 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                     .state(CommandFileRoot::Session, "layout.json")?
                     .unwrap_or_else(|| serde_json::json!({}));
                 layout["selected_task"] = task.clone();
-                if result["cleared"] == true {
-                    layout["history_after"] = serde_json::json!(self.output_sequence());
-                }
                 match self
                     .write_state(CommandFileRoot::Session, "layout.json", &layout)
                     .await

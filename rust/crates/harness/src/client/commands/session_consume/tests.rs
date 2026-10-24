@@ -2,6 +2,80 @@ use super::*;
 use acyclic_stream::{MemoryStream, StreamPath};
 use proptest::prelude::*;
 
+#[tokio::test]
+async fn clear_outcome_hides_itself_and_prior_output_after_reopen() {
+    clear_boundary::<true>().await;
+}
+
+#[tokio::test]
+#[should_panic(expected = "clear retained its own outcome")]
+async fn layout_only_clear_boundary_retains_its_completion_negative_control() {
+    clear_boundary::<false>().await;
+}
+
+async fn clear_boundary<const RETAIN_COMPLETION: bool>() {
+    let volume = Arc::new(
+        files::TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("clear-boundary").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let session = uuid::Uuid::from_bytes([9; 16]);
+    let mut commands = CommandSession::open(volume.clone(), session, 65536, 128)
+        .await
+        .unwrap();
+    for (index, cleared) in [false, true, false].into_iter().enumerate() {
+        let request = files::FileValue::new(
+            files::FileKey::Session {
+                session: component(session.to_string()).unwrap(),
+                file: files::TaskFile::Request(
+                    component(
+                        OperationId::from_bytes([u8::try_from(index).unwrap() + 1; 16]).to_string(),
+                    )
+                    .unwrap(),
+                ),
+            },
+            serde_json::to_vec(&CommandResolution::Prompt {
+                text: "fixture".into(),
+                source: None,
+                mentions: Vec::new(),
+            })
+            .unwrap(),
+        );
+        volume
+            .append(volume.head().await.unwrap(), &request)
+            .await
+            .unwrap();
+        commands
+            .consume(&request, |_, _, _| async move {
+                Ok(json!({"selected_task":null,"cleared":cleared,"value":index}))
+            })
+            .await
+            .unwrap();
+        if !RETAIN_COMPLETION {
+            commands.cleared_output = 0;
+        }
+        if cleared {
+            assert!(
+                commands.output_page(0).unwrap().is_none(),
+                "clear retained its own outcome"
+            );
+        } else {
+            assert_eq!(
+                commands.output_page(0).unwrap().unwrap()["ok"]["value"],
+                index
+            );
+            assert!(commands.output_page(1).unwrap().is_none());
+        }
+        commands = CommandSession::open(volume.clone(), session, 65536, 128)
+            .await
+            .unwrap();
+        assert_eq!(commands.output_page(0).unwrap().is_none(), cleared);
+    }
+}
+
 async fn framed_result<const EXACT: bool>(extra: usize, task_root: bool) {
     let volume = Arc::new(
         files::TaskVolume::open(

@@ -66,6 +66,7 @@
         "jsonl-reopen",
         "pty-quit-resume",
         "pty-checkpoint-rewind",
+        "pty-clear-history",
         "pty-cancel-escape",
         "pty-cancel-ctrl-c",
         "pty-cancel-retained-history",

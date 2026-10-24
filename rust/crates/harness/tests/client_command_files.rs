@@ -112,7 +112,12 @@ async fn each_command_dispatches_through_ordinary_volume_files() -> Result<()> {
             .resolve(&format!("/{}{arguments}", spec.name), &DeniedReader, 1024)
             .await?;
         let changes = resolution.file_changes(&snapshot(), OperationId::new())?;
-        assert_eq!(changes.len(), 1, "{}", spec.name);
+        assert_eq!(
+            changes.len(),
+            if spec.name == "diff" { 2 } else { 1 },
+            "{}",
+            spec.name
+        );
         for change in changes {
             let prefix = match change.root {
                 CommandFileRoot::Config => "config",
@@ -125,7 +130,11 @@ async fn each_command_dispatches_through_ordinary_volume_files() -> Result<()> {
                 assert!(change.path.starts_with("requests/"));
             }
             fixture
-                .put(&path, &change.contents.to_string(), &spec.name)
+                .put(
+                    &path,
+                    &change.contents.to_string(),
+                    &format!("{}:{path}", spec.name),
+                )
                 .await?;
             let (_, bytes) = source(&fixture, &path)
                 .await?

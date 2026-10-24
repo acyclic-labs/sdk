@@ -75,12 +75,13 @@ fn detach_stale_mount(mount: &libc::statfs) -> Result<(), NativeMountError> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     let mut tree = acyclic_native_runtime::ProcessTree::spawn(&mut command)?;
-    let deadline = Instant::now() + DISKUTIL_UNMOUNT_TIMEOUT;
+    let clock = crate::native_mount::clock::Clock::capture();
+    let deadline = clock.instant() + DISKUTIL_UNMOUNT_TIMEOUT;
     let status = loop {
         if let Some(status) = tree.try_wait(None)? {
             break status;
         }
-        if Instant::now() >= deadline {
+        if clock.instant() >= deadline {
             tree.terminate(None)?;
             return Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into());
         }

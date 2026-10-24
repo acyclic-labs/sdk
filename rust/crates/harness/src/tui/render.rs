@@ -57,6 +57,7 @@ pub struct ClientRenderer {
     file_notices: Vec<Line<'static>>,
     outcome_cut: Option<(u64, u64)>,
     outcome_notice: Option<Line<'static>>,
+    confirmation_notice: Option<&'static str>,
     composed_notices: Vec<Line<'static>>,
     diff: Vec<Line<'static>>,
 }
@@ -256,10 +257,7 @@ impl ClientRenderer {
             .transpose()?
             .unwrap_or(false);
         // Layout is followed by CommandSession, outside the answer selection.
-        let after = files
-            .state(crate::client::CommandFileRoot::Session, "layout.json")?
-            .and_then(|layout| layout["history_after"].as_u64())
-            .unwrap_or(0);
+        let after = files.history_after()?;
         if self.tool_details != details || self.archive.after() != after {
             self.tool_details = details;
             self.task = task::TaskRows::default();
@@ -357,6 +355,8 @@ impl ClientRenderer {
     fn compose_notices(&mut self) {
         self.composed_notices.clone_from(&self.notices);
         self.composed_notices.extend_from_slice(&self.file_notices);
+        self.composed_notices
+            .extend(self.confirmation_notice.map(Line::raw));
         if !self.busy {
             self.composed_notices
                 .extend(self.outcome_notice.iter().cloned());
@@ -415,13 +415,20 @@ impl ClientRenderer {
     ) -> crate::Result<Screen<'_>> {
         use crate::client::CommandFileRoot;
         let layout = files.state(CommandFileRoot::Session, "layout.json")?;
-        self.refresh_notices(
-            files,
-            layout
-                .as_ref()
-                .and_then(|value| value["history_after"].as_u64())
-                .unwrap_or(0),
-        )?;
+        let confirmation = layout
+            .as_ref()
+            .and_then(|layout| layout.get("confirmation"))
+            .and_then(|confirmation| confirmation["request"]["kind"].as_str())
+            .and_then(|kind| match kind {
+                "clear_all" => Some("Clear all conversations? Enter yes or no."),
+                "delete" => Some("Delete this conversation? Enter yes or no."),
+                _ => None,
+            });
+        if self.confirmation_notice != confirmation {
+            self.confirmation_notice = confirmation;
+            self.compose_notices();
+        }
+        self.refresh_notices(files, files.history_after()?)?;
         let view = layout
             .as_ref()
             .and_then(|value| value.get("open_view"))

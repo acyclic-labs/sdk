@@ -77,7 +77,7 @@ mod tests {
                 .await?,
             );
             let mut client =
-                CommandSession::open(volume.clone(), uuid::Uuid::new_v4(), 65536, 32).await?;
+                CommandSession::open(volume.clone(), uuid::Uuid::from_u128(7), 65536, 32).await?;
             let task = TaskId::new();
             client
                 .write_state(
@@ -157,7 +157,7 @@ mod tests {
                         &json!({"selected_task":task,"open_view":form,"view_input":form}),
                     )
                     .await?;
-                #[cfg(feature = "tui")]
+                #[cfg(feature = "terminal")]
                 if form == "feedback" {
                     use crate::tui::{
                         ClientRenderer, PromptInput, Viewport,

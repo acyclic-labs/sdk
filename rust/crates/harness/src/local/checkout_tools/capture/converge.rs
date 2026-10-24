@@ -37,6 +37,7 @@ impl Cursor {
         checkout: &mut Candidate,
         (options, policy): (&CaptureOptions, &CapturePolicy),
         cancellation: &CancellationToken,
+        optional_before_images: bool,
     ) -> Result<WatchBatch> {
         self.watcher.begin_rescan().map_err(storage)?;
         #[cfg(all(test, not(acyclic_harness_loom)))]
@@ -44,15 +45,28 @@ impl Cursor {
         self.watcher.watch_tree(EXCLUDED).map_err(storage)?;
         #[cfg(all(test, not(acyclic_harness_loom)))]
         self.inject("watch-tree")?;
-        capture_baseline(
+        let captured = capture_baseline(
             checkout,
             options,
             policy,
             WorkBudget::UNBOUNDED,
             cancellation,
         )
-        .await
-        .map_err(storage)?;
+        .await;
+        if let Err(failure) = captured {
+            // This first import exists only to retain display before-images.
+            // Failure leaves capture_baseline's private candidate unpublished.
+            // Loss-of-continuity rescans remain mandatory and fail closed.
+            let unreadable = matches!(&failure.error,
+                CaptureError::Kernel(cause) if matches!(cause.as_ref(),
+                    acyclic_fs::FsError::NativeKernel(acyclic_fs::NativeTreeMaterializationError::Io(error))
+                    if error.kind() == std::io::ErrorKind::PermissionDenied
+                        || cfg!(windows) && error.raw_os_error() == Some(32)));
+            if !optional_before_images || !unreadable {
+                return Err(storage(failure));
+            }
+            self.unreadable_diff_source = true;
+        }
         #[cfg(all(test, not(acyclic_harness_loom)))]
         self.inject("baseline")?;
         let batch = self.watcher.finish_rescan().map_err(storage)?;
@@ -71,6 +85,8 @@ pub(super) async fn capture(
     cancellation: &CancellationToken,
 ) -> Result<()> {
     let mut initial = cursor.initial.take();
+    let optional_before_images =
+        physical.import_source && matches!(initial, Some(WatchBatch::Changes { .. }));
     if let Some(WatchBatch::RescanRequired { reason, .. }) = initial {
         require_rescan(reason)?;
     }
@@ -99,7 +115,12 @@ pub(super) async fn capture(
                 .map_err(storage)?;
             initial = None;
             let batch = cursor
-                .baseline(checkout, configuration, cancellation)
+                .baseline(
+                    checkout,
+                    configuration,
+                    cancellation,
+                    optional_before_images && rescans == 1,
+                )
                 .await?;
             if !replay(
                 cursor,

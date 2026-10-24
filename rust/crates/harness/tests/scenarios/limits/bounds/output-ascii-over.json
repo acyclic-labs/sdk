@@ -1,2 +1,2 @@
 {"limits":{"file_bytes":1},"turns":["xx"],"expect":{"text":null,"error":"assistant output exceeds file limit","request_count":1,
-  "result":null},"replay":false}
+  "result":null,"events":[{"kind":"model_started"}],"model_events":[]},"replay":false}

@@ -33,7 +33,7 @@ fn unicode_theme_resolution_matches_completion() -> Result<()> {
 #[test]
 fn catalog_aliases_dispatch_without_model_text_or_reads() -> Result<()> {
     let catalog = CommandCatalog::builtins()?;
-    assert_eq!(catalog.commands().count(), 30);
+    assert_eq!(catalog.commands().count(), 31);
     for spec in catalog.commands() {
         let argument = match spec.arguments {
             CommandArguments::RequiredText => " echo @missing.txt",

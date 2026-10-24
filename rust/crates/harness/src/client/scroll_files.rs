@@ -52,6 +52,33 @@ fn scroll_step(current: usize, rows: isize, maximum: usize) -> usize {
     }
 }
 
+fn folded_motion(
+    motions: impl IntoIterator<Item = isize>,
+    maximum: usize,
+) -> impl Fn(usize) -> usize {
+    let (mut minimum, mut ceiling, mut forward, mut backward) = (0, maximum, 0_usize, 0_usize);
+    for rows in motions {
+        minimum = scroll_step(minimum, rows, maximum);
+        ceiling = scroll_step(ceiling, rows, maximum);
+        let distance = rows.unsigned_abs();
+        let (same, opposite) = if rows >= 0 {
+            (&mut forward, &mut backward)
+        } else {
+            (&mut backward, &mut forward)
+        };
+        let cancelled = distance.min(*opposite);
+        *opposite -= cancelled;
+        *same = same.saturating_add(distance - cancelled).min(maximum);
+    }
+    move |current| {
+        current
+            .min(maximum)
+            .saturating_sub(backward)
+            .saturating_add(forward)
+            .clamp(minimum, ceiling)
+    }
+}
+
 /// Publish movements bounded by the actual rendered transcript viewport,
 /// each folded against the bounds in order, as one layout change. A burst
 /// that changes nothing appends nothing.
@@ -60,13 +87,13 @@ pub async fn scroll_tui<P: StreamProvider + ?Sized>(
     motions: impl IntoIterator<Item = isize>,
     maximum: usize,
 ) -> Result<()> {
-    let motions: Vec<_> = motions.into_iter().collect();
+    // A sequence of bounded translations is itself a bounded translation.
+    // Retain that function across CAS retries rather than retaining each notch.
+    let motion = folded_motion(motions, maximum);
     files
         .update_state(CommandFileRoot::Session, "layout.json", |layout| {
             let back = scroll_offset(layout)?;
-            let next = motions.iter().fold(back.min(maximum), |current, rows| {
-                scroll_step(current, *rows, maximum)
-            });
+            let next = motion(back);
             if next == back {
                 return Ok(false);
             }
@@ -123,5 +150,32 @@ pub fn frame_due(batch: &std::collections::VecDeque<crate::tui::key_event::Input
         None => true,
         Some(InputEvent::Mouse(mouse)) => PromptInput::reads_presented_viewport(mouse),
         Some(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod motion_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn folded_motions_equal_each_bounded_step(
+            motions in prop::collection::vec(any::<isize>(), 0..64),
+            maximum in any::<usize>(), current in any::<usize>(),
+        ) {
+            let expected = motions.iter().fold(current.min(maximum), |at, rows| scroll_step(at, *rows, maximum));
+            prop_assert_eq!(folded_motion(motions, maximum)(current), expected);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "each movement keeps its boundary")]
+    fn summing_motions_loses_intermediate_bounds_negative_control() {
+        assert_eq!(
+            scroll_step(0, 100 - 1, 10),
+            folded_motion([100, -1], 10)(0),
+            "each movement keeps its boundary"
+        );
     }
 }

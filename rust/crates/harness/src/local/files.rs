@@ -70,12 +70,17 @@ impl LocalHarness {
                 .chain(change.files)
                 .find(|file| file.key == key);
         }
-        let base = serde_json::from_slice(
+        let base = serde_json::from_slice::<super::checkout_tools::diff::Baseline>(
             &baseline
                 .ok_or_else(|| Error::Conflict("missing diff baseline".into()))?
                 .bytes,
         )
         .map_err(storage)?;
+        let super::checkout_tools::diff::Baseline::Captured(base) = base else {
+            return Err(Error::Unsupported(
+                "project diff before-images unavailable: checkout contains an unreadable source file".into(),
+            ));
+        };
         let reader = FilesystemContentVerifier::new(
             self.files
                 .for_workspace(&self.project, selected.workspace().clone())?,

@@ -23,6 +23,7 @@ const WATCH_FENCE_TIMEOUT: Duration = Duration::from_secs(1);
 pub(in crate::local) struct Cursor {
     watcher: NativeWatch,
     initial: Option<WatchBatch>,
+    unreadable_diff_source: bool,
     #[cfg(target_os = "macos")]
     work: acyclic_fs::NativeMaterializationWork,
     #[cfg(all(test, not(acyclic_harness_loom)))]
@@ -64,6 +65,7 @@ impl Cursor {
         Ok(Self {
             watcher,
             initial: None,
+            unreadable_diff_source: false,
             #[cfg(target_os = "macos")]
             work,
             #[cfg(all(test, not(acyclic_harness_loom)))]
@@ -108,7 +110,7 @@ impl CheckoutTools {
                 .await
                 .map_err(|failure| failure.cause)?;
             if phase == 0 {
-                self.retain_diff_base(view.workspace()).await?;
+                self.retain_diff_base(view.workspace(), false).await?;
             }
             return Ok(());
         }
@@ -256,7 +258,8 @@ impl CheckoutTools {
             }
         }
         if phase == 0 {
-            self.retain_diff_base(view.workspace()).await?;
+            self.retain_diff_base(view.workspace(), cursor.unreadable_diff_source)
+                .await?;
         }
         *slot = Some(cursor);
         Ok(())

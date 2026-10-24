@@ -1,0 +1,16 @@
+{
+  "id": "pty-clear-history",
+  "workspace": {"kind": "plain", "files": {}},
+  "model": {"steps": [
+    {"when": {"user": "before clear"}, "text": ["CLEAR_E2E_PRIVATE_REPLY"]},
+    {"when": {"user": "after clear"}, "text": ["CLEAR_E2E_FRESH_REPLY"]}
+  ]},
+  "inputs": [{"mode": "pty", "actions": [
+    {"when": {"contains": ["GraphCoder"], "cursor": true}, "prompt": "before clear"},
+    {"when": {"contains": ["CLEAR_E2E_PRIVATE_REPLY", "○"]}, "prompt": "/clearall "},
+    {"when": {"contains": ["Clear all conversations? Enter yes or no.", "○"]}, "prompt": "yes"},
+    {"when": {"contains": ["GraphCoder", "○"], "absent": ["CLEAR_E2E_PRIVATE_REPLY", "Enter yes or no."]}, "prompt": "after clear"},
+    {"when": {"contains": ["CLEAR_E2E_FRESH_REPLY", "○"], "absent": ["CLEAR_E2E_PRIVATE_REPLY"]}, "send": "\u0004"}
+  ]}],
+  "assert": {"requests": 2}
+}

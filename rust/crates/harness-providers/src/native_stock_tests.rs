@@ -83,16 +83,41 @@ impl ResumableMachine for OneCommand {
         input: serde_json::Value,
         work: &NativeMaterializationWork,
     ) -> Result<(MachineTransition, acyclic_fs::NativeAllocation)> {
-        drop(input);
         let mut history = HistoryWork::new(PreparationIo::from_native_work(work)?);
         history.retain_owned(std::mem::size_of::<MachineTransition>() as u64)?;
         let transition = if state == &serde_json::Value::Bool(true) {
+            let commands = input["commands"]
+                .as_array()
+                .filter(|commands| commands.len() == 1)
+                .ok_or_else(|| invalid("stock fixture requires its one command result"))?;
+            let operation: OperationId =
+                serde::Deserialize::deserialize(&commands[0]["operation_id"])
+                    .map_err(|_| invalid("stock fixture result has no operation identity"))?;
+            if operation != self.command.operation_id {
+                return Err(invalid("stock fixture result belongs to another command"));
+            }
+            let outcome = &commands[0]["value"];
+            let status = if let Some(message) = outcome["Failed"]["message"].as_str() {
+                history.retain_owned(message.len() as u64)?;
+                history.allocation_attempt(message.len() as u64)?;
+                work.charge(acyclic_fs::WorkCounters {
+                    bytes_copied: message.len() as u64,
+                    ..acyclic_fs::WorkCounters::UNCHARGED
+                })?;
+                MachineStatus::Failed {
+                    message: message.to_owned(),
+                }
+            } else if outcome.get("Succeeded").is_some() {
+                MachineStatus::Completed {
+                    value: serde_json::Value::Null,
+                }
+            } else {
+                return Err(invalid("stock fixture command has no terminal result"));
+            };
             MachineTransition {
                 state: serde_json::Value::Bool(true),
                 commands: Vec::new(),
-                status: MachineStatus::Completed {
-                    value: serde_json::Value::Null,
-                },
+                status,
             }
         } else {
             let slot = std::mem::size_of::<WorkflowCommand>() as u64;

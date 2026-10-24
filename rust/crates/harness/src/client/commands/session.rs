@@ -53,6 +53,7 @@ pub struct CommandSession<P: ?Sized> {
     pending_session: usize,
     pending_tasks: BTreeMap<String, usize>,
     outputs: BTreeMap<u64, files::FileKey>,
+    cleared_output: u64,
     activity_cursor: Option<(u64, String)>,
     catalog: CommandCatalog,
     composer: Option<Arc<dyn ComposerResolver>>,
@@ -153,6 +154,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             next_change: None,
             generation: snapshot.generation,
             files: BTreeMap::new(),
+            cleared_output: 0,
             pending: VecDeque::new(),
             pending_session: 0,
             pending_tasks: BTreeMap::new(),
@@ -254,10 +256,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     /// One archive page from immutable outcome files, newest first. Selection
     /// lives in layout.json; the index is reconstructed from file-query snapshots.
     pub fn output_page(&self, back: usize) -> Result<Option<Value>> {
-        let after = self
-            .state(CommandFileRoot::Session, "layout.json")?
-            .and_then(|value| value.get("history_after").and_then(Value::as_u64))
-            .unwrap_or(0);
+        let after = self.history_after()?;
         self.outputs
             .range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded))
             .rev()
@@ -266,6 +265,16 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             .and_then(|key| self.files.get(key))
             .map(|file| serde_json::from_slice(&file.bytes).map_err(codec))
             .transpose()
+    }
+
+    /// Shared archive boundary for clients and renderers, including the
+    /// immutable clear outcome itself even after independent reopen.
+    pub fn history_after(&self) -> Result<u64> {
+        Ok(self
+            .state(CommandFileRoot::Session, "layout.json")?
+            .and_then(|value| value.get("history_after").and_then(Value::as_u64))
+            .unwrap_or(0)
+            .max(self.cleared_output))
     }
 
     /// Latest immutable outcome ordinal at the observed query cut.
@@ -578,6 +587,19 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             let order: Order<'_> = serde_json::from_slice(&file.bytes).map_err(codec)?;
             if order.sequence == 0 {
                 return Err(Error::Invalid("zero command output sequence".into()));
+            }
+            #[derive(Deserialize)]
+            struct Clear {
+                #[serde(default)]
+                cleared: bool,
+            }
+            if order.ok.is_some_and(|raw| {
+                serde_json::from_str::<Clear>(raw.get()).is_ok_and(|value| value.cleared)
+            }) {
+                // The immutable clear outcome owns its own boundary. Layout
+                // selection is published before completion and cannot know
+                // that outcome's ordinal in the presence of other writers.
+                self.cleared_output = self.cleared_output.max(order.sequence);
             }
             if self
                 .outputs
