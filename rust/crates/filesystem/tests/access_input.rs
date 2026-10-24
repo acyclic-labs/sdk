@@ -80,8 +80,7 @@ fn check_decisions<const CORRUPT_DECISION: bool>(
         return Ok(()); // Invalid input and policies exceeding compilation budgets fail closed.
     };
     let mut work = usize::MAX;
-    let shared =
-        CompiledPolicy::compile_with_work(input.policy.clone(), config, &mut work, |_| Ok(()));
+    let shared = CompiledPolicy::compile_with_work(&input.policy, config, &mut work, |_| Ok(()));
     let shared = shared.and_then(|policy| {
         std::sync::Arc::new(policy).bind_with_work(
             &input.principal,

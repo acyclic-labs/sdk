@@ -3,6 +3,7 @@ use crate::Fs;
 use crate::access::{Action, INITIAL_POLICY, fixtures};
 use proptest::prelude::*;
 mod policy_cache;
+mod shared_binding;
 
 #[tokio::test]
 async fn retained_content_comparisons_recheck_current_read_authority()

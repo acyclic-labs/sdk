@@ -1,8 +1,5 @@
 use super::*;
-use acyclic_fs::access::{
-    Action, Capability, CompiledPolicy, Context, InvalidPolicy, PathTrie, Principal, PrincipalKind,
-    Resource,
-};
+use acyclic_fs::access::{Action, Capability, Context, PathTrie, Principal, PrincipalKind};
 use acyclic_fs::model::{CheckoutMode, GenerationSelector};
 use acyclic_stream::UnixMillisClock as _;
 use std::marker::PhantomData;
@@ -10,8 +7,6 @@ use std::marker::PhantomData;
 /// Explicit initial policy: signed capabilities supply the authority ceiling.
 /// Reads never synthesize this record when it is missing from an existing volume.
 pub use acyclic_fs::access::INITIAL_POLICY;
-const LEGACY_READ: &[u8] = include_bytes!("access/legacy-read.json");
-const LEGACY_WRITE: &[u8] = include_bytes!("access/legacy-write.json");
 mod read_commit;
 pub(in crate::filesystem) use read_commit::ReadObservation;
 pub(in crate::filesystem) use read_commit::require_current;
@@ -28,15 +23,49 @@ pub(crate) fn capability_payload<'a>(
             .strip_prefix(acyclic_fs::access::SCOPE_PREFIX)
             .map(str::as_bytes)
             .ok_or_else(|| io.invalid("filesystem capability label is invalid")),
-        None => Ok(match operation {
-            VolumeOperation::Read => LEGACY_READ,
-            VolumeOperation::Write => LEGACY_WRITE,
-        }),
+        None => match operation {
+            VolumeOperation::Read => {
+                whole_volume_payload(acyclic_fs::access::ActionSet::SourceRead)
+            }
+            VolumeOperation::Write => {
+                whole_volume_payload(acyclic_fs::access::ActionSet::DestinationWrite)
+            }
+        },
     }
 }
 
-pub(crate) fn access_now() -> u64 {
-    acyclic_stream::SystemUnixMillisClock.now_unix_millis() / 1000
+/// Fixed host ceilings are encoded by the same typed builder as signed scopes.
+/// This bounded immutable vocabulary has one process-wide encoding per kind.
+pub(in crate::filesystem) fn whole_volume_payload(
+    actions: acyclic_fs::access::ActionSet,
+) -> Result<&'static [u8]> {
+    use acyclic_fs::access::ActionSet;
+    use std::sync::OnceLock;
+    static READ: OnceLock<std::result::Result<Vec<u8>, serde_json::Error>> = OnceLock::new();
+    static WRITE: OnceLock<std::result::Result<Vec<u8>, serde_json::Error>> = OnceLock::new();
+    static MOUNT_READ: OnceLock<std::result::Result<Vec<u8>, serde_json::Error>> = OnceLock::new();
+    static MOUNT_WRITE: OnceLock<std::result::Result<Vec<u8>, serde_json::Error>> = OnceLock::new();
+    static OWNER: OnceLock<std::result::Result<Vec<u8>, serde_json::Error>> = OnceLock::new();
+    static METADATA: OnceLock<std::result::Result<Vec<u8>, serde_json::Error>> = OnceLock::new();
+    let cell = match actions {
+        ActionSet::SourceRead => &READ,
+        ActionSet::DestinationWrite => &WRITE,
+        ActionSet::MountRead => &MOUNT_READ,
+        ActionSet::MountWrite => &MOUNT_WRITE,
+        ActionSet::Owner => &OWNER,
+        ActionSet::Metadata => &METADATA,
+    };
+    cell.get_or_init(|| serde_json::to_vec(&Capability::whole_volume(None, actions.actions())))
+        .as_ref()
+        .map(Vec::as_slice)
+        .map_err(|_| {
+            Error::FilesystemAccessConfiguration("whole-volume capability encoding failed")
+        })
+}
+
+pub(crate) fn access_now() -> Result<u64> {
+    acyclic_fs::access::unix_seconds(acyclic_stream::SystemUnixMillisClock.now_unix_millis())
+        .map_err(|_| Error::FilesystemAccessConfiguration("access clock is unavailable"))
 }
 
 pub(crate) fn require_unrestricted(
@@ -44,24 +73,11 @@ pub(crate) fn require_unrestricted(
     actions: &[Action],
     surface: &'static str,
 ) -> Result<()> {
-    if view.allows_every_path(actions, access_now()) {
+    if view.allows_every_path(actions, access_now()?) {
         Ok(())
     } else {
         Err(Error::FilesystemAccessConfiguration(surface))
     }
-}
-
-fn require_authenticated_facts(policy: &CompiledPolicy, io: &PreparationIo) -> Result<()> {
-    io.charge(WorkCounters {
-        items_examined: 1,
-        ..Default::default()
-    })?;
-    if !policy.uses_only_authenticated_identity() {
-        return Err(Error::FilesystemAccessConfiguration(
-            "unauthenticated principal facts",
-        ));
-    }
-    Ok(())
 }
 
 pub(in crate::filesystem) fn require(
@@ -70,7 +86,7 @@ pub(in crate::filesystem) fn require(
     path: &str,
     io: &PreparationIo,
 ) -> Result<()> {
-    if view.decide(action, path, access_now()).allowed {
+    if view.decide(action, path, access_now()?).allowed {
         Ok(())
     } else {
         Err(stock_boundary(
@@ -242,99 +258,35 @@ pub(crate) async fn access_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>
             None
         };
         let mut head = (head, head_hold);
-        let policy_revision = io.sdk(head.0.access_policy_revision(io, io.cancellation()).await)?;
-        let policy = io.sdk(head.0.compiled_access_policy(io, io.cancellation()).await)?;
-        require_authenticated_facts(&policy, io)?;
         let policy_generation = head.0.generation_id();
-        let (selected, latest) = generation_context(
-            &mut head.0,
-            policy.needs_ordinal(),
-            &capability.0,
-            generation,
-            io,
-        )
-        .await?;
         let principal = authenticated_principal(scope, io)?;
-        let volume = crate::executor::with_history_io(Some(io), |work| {
-            crate::executor::preparation_format(
-                format_args!(
-                    "{}",
-                    uuid::Uuid::from_bytes(head.0.volume_id().into_bytes())
-                ),
-                work,
-            )
-        })?;
-        let volume_hold = io.guard_owned(volume.capacity() as u64)?;
-        let volume = (volume, volume_hold);
-        let context = Context {
-            now: access_now(),
-            approvals: 0,
+        let view = io.sdk(
+            head.0
+                .compile_access(
+                    acyclic_fs::access::AccessBinding {
+                        principal: &principal.0,
+                        capability: &capability.0,
+                        facts: acyclic_fs::access::AuthenticatedFacts::Identity,
+                        generation,
+                        context: Context {
+                            now: access_now()?,
+                            approvals: 0,
+                        },
+                    },
+                    io,
+                    io.cancellation(),
+                )
+                .await,
+        )?;
+        let bytes = view.logical_owned_bytes();
+        let hold = if io.original_native_work().is_some() {
+            io.guard_owned(bytes)?
+        } else {
+            io.reserve_decode(bytes)?
         };
-        let resource = Resource {
-            config: head.0.volume_config(),
-            lineage: &[],
-            volume: &volume.0,
-            generation: selected,
-            head: latest,
-            path: "",
-        };
-        let compiled = compile_view(&policy, &principal.0, resource, context, &capability.0, io)?;
-        drop(volume);
-        drop(principal);
-        drop(policy);
-        drop(capability);
-        drop(head);
-        let view = compiled
-            .0
-            .with_policy_revision(policy_generation, policy_revision);
-        let view = match generation {
-            Some(selected) => view.with_data_generation(selected),
-            None => view,
-        };
-        Ok((view, compiled.1, policy_generation))
+        Ok((view, [Some(hold), None, None, None], policy_generation))
     })?
     .await
-}
-
-async fn generation_context<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    head: &mut acyclic_fs::Checkout<A, O>,
-    policy_needs_ordinal: bool,
-    capability: &Capability,
-    generation: Option<GenerationId>,
-    io: &PreparationIo,
-) -> Result<(u64, u64)> {
-    let policy_generation = head.generation_id();
-    // An unpublished immutable checkpoint has no publication ordinal.
-    // Identity suffices for Head/All selectors; only explicit intervals
-    // require the authenticated publication sequence.
-    io.charge(WorkCounters {
-        items_examined: 1 + capability.layers.iter().map(Vec::len).sum::<usize>() as u64,
-        ..Default::default()
-    })?;
-    let needs_ordinal = policy_needs_ordinal
-        || capability.layers.iter().flatten().any(|grant| {
-            matches!(
-                grant.resource.generations,
-                acyclic_fs::access::Generations::Range(_)
-            )
-        });
-    let positions = if needs_ordinal {
-        let (selected, latest) = io.sdk(
-            head.generation_position(
-                generation.unwrap_or(policy_generation),
-                io,
-                io.cancellation(),
-            )
-            .await,
-        )?;
-        (selected.get(), latest.get())
-    } else {
-        (
-            u64::from(generation.is_none_or(|selected| selected == policy_generation)),
-            1,
-        )
-    };
-    Ok(positions)
 }
 
 mod writes;
@@ -385,68 +337,6 @@ fn intersect_capabilities<'a>(
         };
     }
     Ok(capability)
-}
-
-fn compile_view<'a>(
-    policy: &std::sync::Arc<CompiledPolicy>,
-    principal: &Principal,
-    resource: Resource<'_>,
-    context: Context,
-    capability: &Capability,
-    io: &'a PreparationIo,
-) -> Result<(PathTrie, [Option<DecodeReservation<'a>>; 4])> {
-    let mut remaining = usize::try_from(io.remaining()?.items_examined).unwrap_or(usize::MAX);
-    let before = remaining;
-    let mut holds = [None, None, None, None];
-    let mut stage = 0;
-    let mut admission_error = None;
-    let compiled = policy.bind_with_work(
-        principal,
-        resource,
-        context,
-        capability,
-        &mut remaining,
-        |bytes| match io.reserve_decode(bytes as u64) {
-            Ok(hold) => {
-                *holds
-                    .get_mut(stage)
-                    .ok_or(InvalidPolicy("invalid compilation stage"))? = Some(hold);
-                stage += 1;
-                Ok(())
-            }
-            Err(error) => {
-                admission_error = Some(error);
-                Err(InvalidPolicy("compilation storage was not admitted"))
-            }
-        },
-    );
-    io.charge(WorkCounters {
-        items_examined: (before - remaining) as u64,
-        ..Default::default()
-    })?;
-    if let Some(error) = admission_error {
-        return Err(error);
-    }
-    let mut compiled = (
-        compiled.map_err(|_| {
-            stock_boundary(
-                Some(io),
-                crate::wire::ErrorCode::Unauthorized,
-                "filesystem policy compilation refused request",
-            )
-        })?,
-        holds,
-    );
-    let mut retained = compiled.0.logical_owned_bytes();
-    for hold in compiled.1.iter_mut().flatten() {
-        let bytes = retained.min(hold.bytes());
-        hold.substitute(bytes)?;
-        retained -= bytes;
-    }
-    if retained != 0 {
-        return Err(io.invalid("compiled access storage exceeds admission"));
-    }
-    Ok(compiled)
 }
 
 fn authenticated_principal<'a>(

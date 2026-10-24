@@ -30,6 +30,7 @@ shell-words = { version = "1.1", optional = true }
 tempfile = { version = "3.27", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optional = true }
 image = { version = "0.25", default-features = false, features = ["jpeg"], optional = true }
 
 [dev-dependencies]
@@ -52,10 +53,6 @@ loom = "=0.7.2"
 [target.'cfg(unix)'.dev-dependencies]
 rustix = { workspace = true, features = ["process"] }
 rustix-openpty = "0.2"
-
-# Native device primitives: the Windows console, and Darwin's terminal wait.
-[target.'cfg(any(windows, target_vendor = "apple"))'.dependencies]
-acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optional = true }
 
 [lints]
 workspace = true

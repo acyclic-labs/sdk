@@ -538,15 +538,16 @@ fn persist_with(
     // is still best-effort, not an atomic compare-and-swap against CLI writes.
     io.charge(WorkCounters {
         backend_write_operations: 1,
+        durability_operations: 1,
         ..WorkCounters::UNCHARGED
     })?;
-    file.persist(path)
+    file.publish(path, acyclic_native_runtime::RenameMode::Replace)
         .map_err(|_| invalid("cannot replace Codex auth.json"))?;
     Ok(auth)
 }
 
 fn stage(
-    file: &mut tempfile::NamedTempFile,
+    file: &mut acyclic_native_runtime::private_file::StagedFile,
     auth: &Value,
     io: &mut CredentialIo<'_>,
 ) -> Result<()> {
@@ -558,7 +559,7 @@ fn stage(
 }
 
 fn write_staged(
-    file: &mut tempfile::NamedTempFile,
+    file: &mut acyclic_native_runtime::private_file::StagedFile,
     auth: &Value,
     encoded: u64,
     io: &mut CredentialIo<'_>,
@@ -568,7 +569,6 @@ fn write_staged(
         bytes_encoded: encoded,
         output_bytes: encoded,
         backend_write_operations: 3,
-        durability_operations: 1,
         ..WorkCounters::UNCHARGED
     })?;
     file.as_file_mut()
@@ -577,8 +577,8 @@ fn write_staged(
         .map_err(|_| invalid("cannot prepare Codex credential update"))?;
     serde_json::to_writer(file.as_file_mut(), auth)
         .map_err(|_| invalid("cannot encode Codex credential update"))?;
-    file.write_all(b"\n")
-        .and_then(|()| file.as_file().sync_all())
+    file.as_file_mut()
+        .write_all(b"\n")
         .map_err(|_| invalid("cannot flush Codex credential update"))
 }
 

@@ -105,7 +105,13 @@ pub(crate) fn publish_owner(
     path: &Path,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
-    owner.save_new(path, Path::new(""), work)
+    if owner.save_new(path, Path::new(""), work)? {
+        Ok(())
+    } else {
+        Err(acyclic_harness::Error::Invalid(
+            "fixture owner already exists".into(),
+        ))
+    }
 }
 
 fn credential_fixture(policy: &PiOwnerPolicy) -> (tempfile::TempDir, PiOwnerConfig) {
@@ -362,14 +368,13 @@ fn protected_owner_policy_rejects_malformed_or_widened_credentials() {
                         .unwrap()
                 )),
         }
-        let protected =
-            protection::protect_with_copy(&serde_json::to_vec(&value).unwrap(), |bytes| {
-                Ok::<_, std::io::Error>(bytes.to_vec())
-            })
-            .unwrap();
-        let mut bytes = Vec::from(OWNER_MAGIC.as_slice());
-        bytes.extend_from_slice(blake3::hash(&protected).as_bytes());
-        bytes.extend_from_slice(&protected);
+        let bytes = acyclic_native_runtime::owner_record::encode_with(
+            &serde_json::to_vec(&value).unwrap(),
+            MAXIMUM_OWNER_BYTES,
+            None,
+            |parts| Ok::<_, std::io::Error>(parts.concat()),
+        )
+        .unwrap();
         fs::write(directory.path().join(OWNER_FILE), &bytes).unwrap();
         assert!(PiOwnerConfig::load(directory.path(), Path::new(""), &work()).is_err());
         assert_eq!(fs::read(directory.path().join(OWNER_FILE)).unwrap(), bytes);
@@ -387,7 +392,7 @@ fn windows_owner_requires_protected_payload() {
             .windows(plain.len())
             .any(|bytes| bytes == plain)
     );
-    let mut bytes = Vec::from(OWNER_MAGIC.as_slice());
+    let mut bytes = Vec::from(acyclic_native_runtime::owner_record::MAGIC.as_slice());
     bytes.extend_from_slice(blake3::hash(&plain).as_bytes());
     bytes.extend_from_slice(&plain);
     fs::write(directory.path().join(OWNER_FILE), &bytes).unwrap();

@@ -87,64 +87,13 @@ pub(crate) fn windows_pipe_server_is_this_user(
     if process.is_null() {
         return Err(io::Error::last_os_error());
     }
-    let server_user = windows_token_user(process);
+    let server_user = acyclic_native_runtime::private_file::process_user_id(process);
     // SAFETY: `process` was opened above and is closed once.
     unsafe { CloseHandle(process) };
     // SAFETY: the pseudo-handle of this process needs no closing.
-    let own_user = windows_token_user(unsafe { GetCurrentProcess() })?;
+    let own_user =
+        acyclic_native_runtime::private_file::process_user_id(unsafe { GetCurrentProcess() })?;
     Ok(server_user? == own_user)
-}
-
-/// The security identifier of the user `process` runs as, as bytes.
-#[cfg(windows)]
-#[allow(unsafe_code, reason = "reads a process token's user")]
-pub(crate) fn windows_token_user(
-    process: windows_sys::Win32::Foundation::HANDLE,
-) -> io::Result<Vec<u8>> {
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows_sys::Win32::Security::{
-        GetLengthSid, GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser,
-    };
-    use windows_sys::Win32::System::Threading::OpenProcessToken;
-
-    let mut token: HANDLE = std::ptr::null_mut();
-    // SAFETY: `process` is a live process handle and `token` is writable.
-    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let user = (|| {
-        let mut length = 0_u32;
-        // SAFETY: a null buffer of length zero asks only for the length.
-        unsafe { GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut length) };
-        let words = usize::try_from(length)
-            .map_err(io::Error::other)?
-            .div_ceil(8);
-        let mut buffer = vec![0_u64; words.max(1)];
-        // SAFETY: `buffer` holds `length` writable, 8-aligned bytes.
-        if unsafe {
-            GetTokenInformation(
-                token,
-                TokenUser,
-                buffer.as_mut_ptr().cast(),
-                length,
-                &mut length,
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: the call filled a TOKEN_USER at the start of `buffer`,
-        // whose SID points within it.
-        let sid = unsafe { (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
-        // SAFETY: `sid` is a valid SID within `buffer`.
-        let bytes = unsafe { GetLengthSid(sid) };
-        let bytes = usize::try_from(bytes).map_err(io::Error::other)?;
-        // SAFETY: the SID spans `bytes` readable bytes within `buffer`.
-        Ok(unsafe { std::slice::from_raw_parts(sid.cast::<u8>(), bytes) }.to_vec())
-    })();
-    // SAFETY: `token` was opened above and is closed once.
-    unsafe { CloseHandle(token) };
-    user
 }
 
 #[cfg(windows)]

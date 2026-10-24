@@ -48,6 +48,8 @@ pub use process_tree::{
 };
 
 mod file;
+pub mod owner_record;
+pub mod private_file;
 #[cfg(windows)]
 pub use file::device_control_in_place;
 #[cfg(unix)]

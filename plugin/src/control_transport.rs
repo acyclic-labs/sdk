@@ -503,21 +503,18 @@ pub(crate) fn unix_control_socket_path(data: &Path) -> PathBuf {
 }
 
 #[cfg(unix)]
-#[allow(
-    unsafe_code,
-    reason = "geteuid has no preconditions and reads no memory"
-)]
-pub(crate) fn unix_control_runtime_directory() -> PathBuf {
-    // SAFETY: geteuid has no preconditions and reads no memory.
-    let uid = unsafe { libc::geteuid() };
-    PathBuf::from("/tmp").join(format!("acyclic-{uid}"))
+pub(crate) fn prepare_unix_control_runtime_directory() -> Result<PathBuf, String> {
+    let directory = unix_control_runtime_directory();
+    match acyclic_native_runtime::private_file::create_directory(&directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(display(error)),
+    }
+    acyclic_native_runtime::private_file::validate_directory(&directory).map_err(display)?;
+    Ok(directory)
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
-#[allow(
-    unsafe_code,
-    reason = "geteuid has no preconditions and reads no memory"
-)]
 pub(crate) fn prepare_unix_control_socket(data: &Path) -> Result<PathBuf, String> {
     let directory = prepare_unix_control_runtime_directory()?;
 
@@ -535,33 +532,10 @@ pub(crate) fn prepare_unix_control_socket(data: &Path) -> Result<PathBuf, String
     unsafe_code,
     reason = "geteuid has no preconditions and reads no memory"
 )]
-pub(crate) fn prepare_unix_control_runtime_directory() -> Result<PathBuf, String> {
-    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as _};
-
-    let directory = unix_control_runtime_directory();
-    match fs::symlink_metadata(&directory) {
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            let mut builder = fs::DirBuilder::new();
-            builder.mode(0o700);
-            match builder.create(&directory) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(display(error)),
-            }
-        }
-        Err(error) => return Err(display(error)),
-    }
-    let metadata = fs::symlink_metadata(&directory).map_err(display)?;
+pub(crate) fn unix_control_runtime_directory() -> PathBuf {
     // SAFETY: geteuid has no preconditions and reads no memory.
     let uid = unsafe { libc::geteuid() };
-    if !metadata.file_type().is_dir() || metadata.uid() != uid {
-        return Err("Acyclic workspace directory is not owned by the current user".to_owned());
-    }
-    if metadata.permissions().mode() & 0o777 != 0o700 {
-        return Err("Acyclic runtime directory permissions must be 0700".to_owned());
-    }
-    Ok(directory)
+    PathBuf::from("/tmp").join(format!("acyclic-{uid}"))
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]

@@ -6,6 +6,8 @@
 //! new open after a policy change, generation change, or credential expiry.
 
 mod capability;
+mod clock;
+pub use clock::{ClockUnavailable, unix_seconds};
 mod compilation;
 mod decision;
 mod disclosure;
@@ -24,14 +26,41 @@ pub use view::AccessView;
 mod trie;
 
 pub use capability::{
-    Capability, DIRECTORY_READ_PREFIX, FILE_READ_PREFIX, Grant, SCOPE_PREFIX, VolumeOperation,
-    is_filesystem_capability,
+    ActionSet, Capability, DIRECTORY_READ_PREFIX, FILE_READ_PREFIX, Grant, SCOPE_PREFIX,
+    VolumeOperation, is_filesystem_capability,
 };
 pub use decision::{Decision, Denial, decide};
 pub use mount::MountMode;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 pub use trie::{CompiledPolicy, PathTrie, PinnedPath, PreparedPath};
+
+/// Facts authenticated by the adapter that opens an access view. Missing facts
+/// are rejected at the shared binding boundary, never silently fabricated.
+#[derive(Clone, Copy, Debug)]
+pub enum AuthenticatedFacts {
+    /// Only the issuer/agent identity is verified (no groups or approvals).
+    Identity,
+    /// The stream verifier authenticated principal claims, but no task ancestry
+    /// or approvals, and cannot fence generation-sensitive disclosures.
+    MetadataStream,
+    /// A coarse adapter cannot enforce path or caller-specific restrictions.
+    Coarse,
+}
+
+/// Authenticated inputs for the filesystem's single persisted-policy binder.
+pub struct AccessBinding<'a> {
+    /// Verified principal; never populated from request claims.
+    pub principal: &'a Principal,
+    /// Verified capability ceiling.
+    pub capability: &'a Capability,
+    /// Facts this adapter can authenticate and enforce.
+    pub facts: AuthenticatedFacts,
+    /// Optional selected data generation; policy always comes from the head.
+    pub generation: Option<crate::GenerationId>,
+    /// Host clock and authenticated approvals.
+    pub context: Context,
+}
 
 /// Current policy encoding, stored in volume metadata rather than user files.
 pub const POLICY_SCHEMA_VERSION: u32 = 1;

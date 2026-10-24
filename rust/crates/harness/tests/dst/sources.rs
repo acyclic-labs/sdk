@@ -55,7 +55,11 @@ const ALLOWED: [(&str, &str, usize); 13] = [
     // reaching this full-128-bit host fallback while seeded entropy is installed.
     ("actors/src/namespace/entropy.rs", "::new_v4", 2),
     ("harness-core/src/identity.rs", "::new_v4", 1),
-    ("harness-core/src/identity.rs", "getrandom::fill", 1),
+    (
+        "native-runtime/src/owner_record/mod.rs",
+        "getrandom::fill",
+        1,
+    ),
     ("filesystem/src/identity.rs", "::new_v4", 1),
     ("filesystem/src/identity.rs", "::now_v7", 1),
     ("stream/src/lib/domain.rs", "SystemTime::now", 1),

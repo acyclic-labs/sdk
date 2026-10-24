@@ -40,9 +40,7 @@ fn input(pattern: &str) -> Result<(Policy, Capability), Box<dyn std::error::Erro
         .first_mut()
         .ok_or(acyclic_fs::access::InvalidPolicy("missing fixture layer"))?
         .push(deny);
-    let capability = serde_json::from_slice(include_bytes!(
-        "../../harness-core/src/filesystem/access/legacy-read.json"
-    ))?;
+    let capability = Capability::whole_volume(None, ActionSet::SourceRead.actions());
     Ok((policy, capability))
 }
 

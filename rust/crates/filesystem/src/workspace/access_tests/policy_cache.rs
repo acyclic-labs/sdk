@@ -66,7 +66,7 @@ fn one_hundred_thousand_principals_share_paths_and_have_constant_binding_work()
     let config = crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral);
     let mut compile_work = usize::MAX;
     let small = Arc::new(CompiledPolicy::compile_with_work(
-        policy.clone(),
+        &policy,
         config,
         &mut compile_work,
         |_| Ok(()),
@@ -80,7 +80,7 @@ fn one_hundred_thousand_principals_share_paths_and_have_constant_binding_work()
         layer.push(rule);
     }
     let large = Arc::new(CompiledPolicy::compile_with_work(
-        large,
+        &large,
         config,
         &mut compile_work,
         |_| Ok(()),
@@ -205,7 +205,7 @@ fn caller_facts_capability_attenuation_expiry_and_history_match_the_reference()
     let config = crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral);
     let mut remaining = usize::MAX;
     let shared = Arc::new(CompiledPolicy::compile_with_work(
-        policy.clone(),
+        &policy,
         config,
         &mut remaining,
         |_| Ok(()),

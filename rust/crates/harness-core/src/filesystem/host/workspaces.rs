@@ -27,7 +27,8 @@ fn require_publication_time(
 }
 
 fn require_publication_fence(fence: Option<acyclic_fs::access::PolicyFence>) -> Result<()> {
-    if fence.is_some_and(|fence| !fence.valid_at(access::access_now())) {
+    let now = access::access_now()?;
+    if fence.is_some_and(|fence| !fence.valid_at(now)) {
         return Err(Error::Unauthorized(
             "filesystem write authority expired".into(),
         ));

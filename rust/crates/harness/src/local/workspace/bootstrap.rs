@@ -5,17 +5,8 @@ pub(super) fn staging(directory: &Path) -> Result<PathBuf> {
         "project-initializing-{}",
         crate::identity::fresh_uuid()
     ));
-    let builder = std::fs::DirBuilder::new();
-    #[cfg(unix)]
-    let mut builder = builder;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt as _;
-        builder.mode(0o700);
-    }
-    // Exclusive creation establishes this attempt's custody. Never remove or
-    // reuse another attempt, including an abandoned pre-publication directory.
-    builder.create(&path).map_err(storage)?;
+    // Exclusive creation establishes this attempt's custody.
+    acyclic_native_runtime::private_file::create_directory(&path).map_err(storage)?;
     Ok(path)
 }
 

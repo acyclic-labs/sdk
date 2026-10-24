@@ -26,7 +26,7 @@ pub(super) enum RootWitness {
 
 impl Drop for Owner {
     fn drop(&mut self) {
-        self.key.fill(0);
+        acyclic_native_runtime::owner_record::clear_secret(&mut self.key);
     }
 }
 

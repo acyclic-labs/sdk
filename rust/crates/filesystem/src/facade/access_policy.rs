@@ -2,6 +2,8 @@ use super::*;
 use crate::access::{MAXIMUM_POLICY_RECORD_BYTES, POLICY_METADATA_KEY};
 use crate::kernel::{AttributeClass, OwnedSourceChunk};
 
+mod binding;
+
 fn policy_name(
     maximum_bytes: u32,
     accounting: &mut KernelAccounting<'_>,
@@ -67,49 +69,52 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         cancellation: &CancellationToken,
     ) -> W::Output<Arc<crate::access::CompiledPolicy>, FsError> {
         let mut accounting = work.accounting(cancellation);
-        let result = async {
-            let metadata = self
-                .read_metadata_with_accounting(
-                    self.root.root_file_id,
-                    &mut accounting,
-                    cancellation,
-                )
-                .await?;
-            let fs = self.volume.fs.clone();
-            let cache = &fs.inner.policy_cache;
-            let revision = metadata.named_attributes;
-            accounting.charge_items(1)?;
-            if let Some(view) = cache.get(self.volume.id, revision) {
-                return Ok(view);
-            }
-            let name = policy_name(
-                self.volume.config.limits.maximum_component_bytes,
-                &mut accounting,
-            )?;
-            let bytes = attributes::read_attribute(
-                &self.volume,
-                metadata,
-                &name.value,
-                MAXIMUM_POLICY_RECORD_BYTES,
-                &mut accounting,
-                cancellation,
-            )
+        let result = self
+            .compiled_access_policy_accounted(&mut accounting, cancellation)
             .await;
-            name.retire(&mut accounting)?;
-            let bytes = bytes?.ok_or(FsError::InvalidAccessPolicy)?;
-            // No provider I/O is performed under this single-flight lock. A
-            // concurrent miss may read the same record, but compiles it once.
-            let _compilation = cache
-                .compilation
-                .lock()
-                .map_err(|_| FsError::InvalidAccessPolicy)?;
-            if let Some(view) = cache.get(self.volume.id, revision) {
-                return Ok(view);
-            }
-            compile_cached_policy(&self.volume, revision, &bytes.bytes, &mut accounting)
-        }
-        .await;
         work.finish(result, &accounting)
+    }
+
+    async fn compiled_access_policy_accounted(
+        &mut self,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Arc<crate::access::CompiledPolicy>, FsError> {
+        let metadata = self
+            .read_metadata_with_accounting(self.root.root_file_id, accounting, cancellation)
+            .await?;
+        let fs = self.volume.fs.clone();
+        let cache = &fs.inner.policy_cache;
+        let revision = metadata.named_attributes;
+        accounting.charge_items(1)?;
+        if let Some(view) = cache.get(self.volume.id, revision) {
+            return Ok(view);
+        }
+        let name = policy_name(
+            self.volume.config.limits.maximum_component_bytes,
+            accounting,
+        )?;
+        let bytes = attributes::read_attribute(
+            &self.volume,
+            metadata,
+            &name.value,
+            MAXIMUM_POLICY_RECORD_BYTES,
+            accounting,
+            cancellation,
+        )
+        .await;
+        name.retire(accounting)?;
+        let bytes = bytes?.ok_or(FsError::InvalidAccessPolicy)?;
+        // No provider I/O is performed under this single-flight lock. A
+        // concurrent miss may read the same record, but compiles it once.
+        let _compilation = cache
+            .compilation
+            .lock()
+            .map_err(|_| FsError::InvalidAccessPolicy)?;
+        if let Some(view) = cache.get(self.volume.id, revision) {
+            return Ok(view);
+        }
+        compile_cached_policy(&self.volume, revision, &bytes.bytes, accounting)
     }
 
     /// Reads the policy record from this checkout's pinned volume metadata.
@@ -359,7 +364,7 @@ fn compile_cached_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             usize::try_from(accounting.remaining()?.items_examined).unwrap_or(usize::MAX);
         let before = remaining;
         let compiled = crate::access::CompiledPolicy::compile_with_work(
-            policy,
+            &policy,
             volume.config,
             &mut remaining,
             |bytes| match accounting.claim_owned(bytes as u64, 1) {

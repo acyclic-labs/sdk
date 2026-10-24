@@ -1,5 +1,5 @@
 use super::*;
-use crate::access::{Action, Capability, Context, PathTrie, Principal, Resource};
+use crate::access::{Action, Capability, Context, PathTrie, Principal};
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     /// Authorize and publish under one backend-owned policy cut. The operation
@@ -77,20 +77,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             tags: BTreeSet::new(),
             attributes: BTreeMap::new(),
         };
-        let capability = Capability {
-            layers: vec![vec![crate::access::Grant {
-                actions: actions.iter().copied().collect(),
-                resource: crate::access::ResourcePattern {
-                    lineage_root: None,
-                    volume: Some(
-                        uuid::Uuid::from_bytes(self.id.volume_id().into_bytes()).to_string(),
-                    ),
-                    generations: crate::access::Generations::All,
-                    path: "**".into(),
-                },
-            }]],
-            expires_at: None,
-        };
+        let capability = Capability::whole_volume(
+            Some(uuid::Uuid::from_bytes(self.id.volume_id().into_bytes()).to_string()),
+            actions,
+        );
         self.unrestricted_access(&principal, &capability, actions, cancellation)
             .await
     }
@@ -114,42 +104,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             .await
             .map_err(|failure| WorkspaceError::from(failure.error))?
             .value;
-        let revision = checkout
-            .access_policy_revision(WorkBudget::UNBOUNDED, cancellation)
-            .await
-            .map_err(|failure| WorkspaceError::from(failure.error))?
-            .value;
-        let policy = checkout
-            .compiled_access_policy(WorkBudget::UNBOUNDED, cancellation)
-            .await
-            .map_err(|failure| WorkspaceError::from(failure.error))?
-            .value;
-        if !policy.permits_coarse_binding() {
-            return Err(WorkspaceError::AccessDenied);
-        }
-        let volume = uuid::Uuid::from_bytes(self.id.volume_id().into_bytes()).to_string();
-        let mut remaining = usize::MAX;
-        policy
-            .bind_with_work(
-                principal,
-                Resource {
-                    config: self.volume.config,
-                    lineage: &[],
-                    volume: &volume,
-                    generation: 0,
-                    head: 0,
-                    path: "",
+        checkout
+            .compile_access(
+                crate::access::AccessBinding {
+                    principal,
+                    capability,
+                    facts: crate::access::AuthenticatedFacts::Coarse,
+                    generation: None,
+                    context: Context {
+                        now: access_time()?,
+                        approvals: 0,
+                    },
                 },
-                Context {
-                    now: access_time()?,
-                    approvals: 0,
-                },
-                capability,
-                &mut remaining,
-                |_| Ok(()),
+                WorkBudget::UNBOUNDED,
+                cancellation,
             )
-            .map(|view| view.with_policy_revision(checkout.generation_id(), revision))
-            .map_err(|_| WorkspaceError::AccessDenied)
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| WorkspaceError::from(failure.error))
     }
 
     /// Bind a coarse adapter only when its entire exposed operation set is
@@ -258,9 +230,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
 
 pub(crate) fn access_time() -> Result<u64, WorkspaceError> {
     use acyclic_stream::UnixMillisClock as _;
-    let millis = acyclic_stream::SystemUnixMillisClock.now_unix_millis();
-    if millis == 0 {
-        return Err(WorkspaceError::AccessDenied);
-    }
-    Ok(millis / 1000)
+    crate::access::unix_seconds(acyclic_stream::SystemUnixMillisClock.now_unix_millis())
+        .map_err(|_| WorkspaceError::AccessDenied)
 }

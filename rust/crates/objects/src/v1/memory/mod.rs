@@ -30,11 +30,15 @@ use wire::ErrorCode::{
 pub(super) mod persistence;
 
 fn fill_entropy(bytes: &mut [u8]) -> Result<(), getrandom::Error> {
-    #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
-    if acyclic_native_runtime::testing::fill_seeded(bytes) {
-        return Ok(());
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        acyclic_native_runtime::owner_record::fill_random(bytes)
+            .map_err(|_| getrandom::Error::UNSUPPORTED)
     }
-    getrandom::fill(bytes)
+    #[cfg(target_arch = "wasm32")]
+    {
+        getrandom::fill(bytes)
+    }
 }
 
 // Publish a key only after the entropy source fills the complete candidate.

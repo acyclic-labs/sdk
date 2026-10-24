@@ -4,7 +4,7 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 fn compiled() -> TestResult<CompiledPolicy> {
     let mut work = usize::MAX;
     Ok(CompiledPolicy::compile_with_work(
-        serde_json::from_slice(crate::access::INITIAL_POLICY)?,
+        &serde_json::from_slice(crate::access::INITIAL_POLICY)?,
         VolumeConfig::portable(crate::Lifecycle::Ephemeral),
         &mut work,
         |_| Ok(()),

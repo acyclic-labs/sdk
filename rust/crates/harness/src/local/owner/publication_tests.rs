@@ -45,20 +45,19 @@ fn every_owner_cut_is_durable(omit_reader_sync: bool) -> bool {
         .unwrap(),
     };
     let owner = Owner::open(directory.path(), &project, None).unwrap();
-    let mut bytes = serde_json::to_vec(&owner).unwrap();
+    let plain =
+        acyclic_native_runtime::owner_record::SecretBytes(serde_json::to_vec(&owner).unwrap());
+    let mut bytes =
+        acyclic_native_runtime::owner_record::encode_with(&plain.0, 65_536, None, |parts| {
+            Ok::<_, std::io::Error>(parts.concat())
+        })
+        .unwrap();
     let mut safe = true;
     for cut in 0..5 {
         let directory = tempfile::tempdir().unwrap();
         let temporary = directory.path().join(".owner.next");
         let path = directory.path().join("owner.json");
-        let mut file = fs::OpenOptions::new();
-        file.create_new(true).write(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            file.mode(0o600);
-        }
-        let mut file = file.open(&temporary).unwrap();
+        let mut file = acyclic_native_runtime::private_file::create(&temporary).unwrap();
         if cut == 1 {
             file.write_all(&bytes[..bytes.len() / 2]).unwrap();
         } else if cut >= 2 {
@@ -79,9 +78,17 @@ fn every_owner_cut_is_durable(omit_reader_sync: bool) -> bool {
         let flushes = Flushes::default();
         let _subscriber =
             tracing::subscriber::set_default(tracing_subscriber::registry().with(flushes.clone()));
-        publication::SKIP_READER_SYNC.set(omit_reader_sync);
-        let read = Owner::load(&path);
-        publication::SKIP_READER_SYNC.set(false);
+        let read = if omit_reader_sync && cut >= 3 {
+            // Negative control: independently decode a visible record while
+            // omitting the shared private reader's mandatory parent sync.
+            let bytes = fs::read(&path).unwrap();
+            acyclic_native_runtime::owner_record::decode_with(&bytes, 65_536, None, |plain| {
+                Ok::<_, std::io::Error>(serde_json::from_slice::<Owner>(plain).unwrap())
+            })
+            .map_err(storage)
+        } else {
+            Owner::load(&path)
+        };
         match read {
             Err(Error::NotFound(_)) => assert!(cut < 3),
             Ok(read) => {
@@ -107,4 +114,31 @@ fn every_owner_publication_cut_returns_only_durable_credentials() {
 #[test]
 fn negative_control_an_owner_reader_can_outrun_the_publishers_flush() {
     assert!(!every_owner_cut_is_durable(true));
+}
+
+#[test]
+fn private_legacy_owner_migrates_once_without_changing_its_original_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("owner.json");
+    let owner: Owner = serde_json::from_value(serde_json::json!({
+        "key": [71; 32].to_vec(), "agent": AgentId::from_bytes([72; 16]),
+        "task": TaskId::from_bytes([73; 16]),
+        "project": VolumeRef::new(
+            crate::resources::ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None).unwrap(),
+            "project".into(), VolumeClass::Project, VolumeOwner::Project("project".into()), &mut None).unwrap(),
+        "workspace": null, "workspace_identity": null, "workspace_incarnation": null
+    })).unwrap();
+    let mut file = acyclic_native_runtime::private_file::create(&path).unwrap();
+    serde_json::to_writer(&mut file, &owner).unwrap();
+    drop(file);
+    assert_eq!(fs::read(&path).unwrap().first(), Some(&b'{')); // Old plaintext reader control.
+    let migrated = Owner::load(&path).unwrap();
+    assert_eq!(migrated.key, owner.key);
+    assert_eq!(migrated.agent, owner.agent);
+    assert_eq!(migrated.task, owner.task);
+    let protected = fs::read(&path).unwrap();
+    assert!(protected.starts_with(acyclic_native_runtime::owner_record::MAGIC));
+    let reopened = Owner::load(&path).unwrap();
+    assert_eq!(reopened.key, owner.key);
+    assert_eq!(fs::read(&path).unwrap(), protected);
 }

@@ -43,6 +43,49 @@ impl VolumeOperation {
     }
 }
 
+/// Named operation ceilings shared by every host adapter. Native mounts expose
+/// file operations, not policy administration or workspace publication.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ActionSet {
+    /// Read a source volume, including creating an independent fork.
+    SourceRead,
+    /// Publish content into a destination volume.
+    DestinationWrite,
+    /// Read-only native filesystem view.
+    MountRead,
+    /// Writable native filesystem view.
+    MountWrite,
+    /// Owner-managed workspace, including administration.
+    Owner,
+    /// Select names and metadata under an independently verified stream ceiling.
+    Metadata,
+}
+
+impl ActionSet {
+    /// Exact action vocabulary; adapters cannot silently add administration.
+    pub const fn actions(self) -> &'static [Action] {
+        use Action::*;
+        match self {
+            Self::SourceRead => &[List, Read, ReadHistory, Fork],
+            Self::DestinationWrite => &[Create, Write, MergeInto],
+            Self::MountRead => &[List, Read, ReadHistory],
+            Self::MountWrite => &[
+                List,
+                Read,
+                ReadHistory,
+                Create,
+                Write,
+                Append,
+                Delete,
+                Rename,
+                Lock,
+            ],
+            Self::Owner => &Action::ALL,
+            Self::Metadata => &[List],
+        }
+    }
+}
+
 /// One resource-bound grant inside a signed scope.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -66,6 +109,23 @@ pub struct Capability {
 }
 
 impl Capability {
+    /// One whole-volume grant. None denotes the host's separately authenticated
+    /// volume selection, rather than a caller-supplied resource wildcard.
+    #[must_use]
+    pub fn whole_volume(volume: Option<String>, actions: &[Action]) -> Self {
+        Self {
+            layers: vec![vec![Grant {
+                actions: actions.iter().copied().collect(),
+                resource: ResourcePattern {
+                    lineage_root: None,
+                    volume,
+                    generations: super::Generations::All,
+                    path: "**".into(),
+                },
+            }]],
+            expires_at: None,
+        }
+    }
     /// Encode the complete grant as one capability in an existing signed scope.
     pub fn to_scope_label(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self).map(|json| format!("{SCOPE_PREFIX}{json}"))
@@ -148,4 +208,44 @@ pub(super) fn binding(capability: &Capability) -> Result<[u8; 32], InvalidPolicy
     serde_json::to_writer(&mut writer, capability)
         .map_err(|_| InvalidPolicy("capability binding exceeds compilation limit"))?;
     Ok(writer.hash.finalize().into())
+}
+
+#[cfg(test)]
+mod action_set_tests {
+    use super::*;
+
+    #[test]
+    fn volume_and_unbound_ceilings_grant_identical_named_actions() {
+        for set in [
+            ActionSet::SourceRead,
+            ActionSet::DestinationWrite,
+            ActionSet::MountRead,
+            ActionSet::MountWrite,
+            ActionSet::Owner,
+            ActionSet::Metadata,
+        ] {
+            let bound = Capability::whole_volume(Some("fixture".into()), set.actions());
+            let unbound = Capability::whole_volume(None, set.actions());
+            for action in Action::ALL {
+                assert_eq!(
+                    bound.layers[0][0].actions.contains(&action),
+                    unbound.layers[0][0].actions.contains(&action)
+                );
+                assert_eq!(
+                    bound.layers[0][0].actions.contains(&action),
+                    set.actions().contains(&action)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn negative_control_all_actions_cannot_stand_in_for_a_writable_mount() {
+        let mount = Capability::whole_volume(None, ActionSet::MountWrite.actions());
+        let old = Capability::whole_volume(None, &Action::ALL);
+        for action in [Action::Admin, Action::Fork, Action::MergeInto] {
+            assert!(!mount.layers[0][0].actions.contains(&action));
+            assert!(old.layers[0][0].actions.contains(&action));
+        }
+    }
 }

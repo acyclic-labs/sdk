@@ -37,13 +37,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .publication_fence()
             .ok_or_else(|| io.invalid("missing write policy fence"))?;
         if replay {
-            if !view.0.decide(Action::Create, path, access_now()).allowed {
+            if !view.0.decide(Action::Create, path, access_now()?).allowed {
                 require(&view.0, Action::Write, path, io)?;
             }
             return Ok((self.generation_ref_id(view.2, Some(io))?, fence));
         }
         // Refuse before probing existence when neither mutation can succeed.
-        if !view.0.decide(Action::Create, path, access_now()).allowed {
+        if !view.0.decide(Action::Create, path, access_now()?).allowed {
             require(&view.0, Action::Write, path, io)?;
         }
         let generation = io.sdk(workspace.generation(view.2, io, io.cancellation()).await)?;
