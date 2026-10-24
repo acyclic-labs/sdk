@@ -998,11 +998,24 @@ mod cancellation_tests {
             } else {
                 Ok(())
             };
-            let result = futures::executor::block_on(cancel_safe_call(
-                Held(retired.clone()),
-                futures::future::ready(cancellation),
-            ));
-            assert!(retired.load(Ordering::SeqCst));
+            let result = futures::executor::block_on(async {
+                match cancel_safe_call(Held(retired.clone()), futures::future::ready(cancellation))
+                    .await
+                {
+                    Ok(None) => {
+                        // Match the dispatcher's await scrutinee: retirement
+                        // must precede settlement inside this very match arm,
+                        // while the outer caller future is still being polled.
+                        assert!(retired.load(Ordering::SeqCst));
+                        Ok(None)
+                    }
+                    Err(error) => {
+                        assert!(retired.load(Ordering::SeqCst));
+                        Err(error)
+                    }
+                    Ok(Some(_)) => panic!("held invocation unexpectedly completed"),
+                }
+            });
             if failed_follow {
                 assert!(matches!(result, Err(Error::Storage(_))));
             } else {
