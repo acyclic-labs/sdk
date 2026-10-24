@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Hermetic bb2 execution, disk admission, and one owned sccache endpoint."""
 import ctypes
+import contextlib
 from datetime import datetime, timezone
 import hashlib
 import fcntl
@@ -217,6 +218,42 @@ def remove_home(job):
     shutil.rmtree(job)
 
 
+@contextlib.contextmanager
+def adopted_child_reaper(command_pid):
+    """Reap PID 1's adopted exits while the sole managed command waits.
+
+    Setup and cleanup own their synchronous subprocess waits. During this
+    interval only the custody supervisor is managed; its status stays with
+    Popen even if it dies unexpectedly. WNOWAIT makes that boundary explicit.
+    SIGCHLD drives the drain, with no timers or /proc process-tree polling.
+    """
+    if os.getpid()!=1:
+        yield
+        return
+    previous=signal.getsignal(signal.SIGCHLD)
+    if previous not in (signal.SIG_DFL,signal.SIG_IGN):
+        raise RuntimeError('namespace child reaper already owned')
+    draining=False
+    def drain(number=None,frame=None):
+        nonlocal draining
+        if draining:return
+        draining=True
+        try:
+            while True:
+                try:event=os.waitid(os.P_ALL,0,os.WEXITED|os.WNOHANG|os.WNOWAIT)
+                except ChildProcessError:return
+                if event is None or event.si_pid==command_pid:return
+                os.waitpid(event.si_pid,0)
+        finally:draining=False
+    signal.signal(signal.SIGCHLD,drain)
+    try:
+        drain()
+        yield
+    finally:
+        try:drain()
+        finally:signal.signal(signal.SIGCHLD,previous)
+
+
 class OwnedCommand:
     """Keep the command's group leader alive until its custody pipe closes."""
     def __init__(self, argv, env, register):
@@ -257,7 +294,8 @@ raise SystemExit(owner.supervise(int(sys.argv[2]),int(sys.argv[3]),sys.argv[4:])
             if status_read is not None: os.close(status_read)
 
     def wait(self):
-        line = self.status.readline()
+        with adopted_child_reaper(self.child.pid):
+            line = self.status.readline()
         if not line:
             raise RuntimeError('command supervisor exited without an outcome')
         return int(line)
