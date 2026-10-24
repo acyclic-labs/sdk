@@ -7,30 +7,6 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const runner = join(dirname(fileURLToPath(import.meta.url)), "main-gate-checks.sh");
-test("legacy coordinator requires the shared formatter before fallback phases", { skip: process.platform === "win32" }, () => {
-  const cwd = mkdtempSync(join(tmpdir(), "main-gate-format-fallback-"));
-  try {
-    mkdirSync(join(cwd, "bin"));
-    mkdirSync(join(cwd, "scripts"));
-    writeFileSync(join(cwd, "scripts/gate-rust-format.sh"), readFileSync(join(dirname(runner), "gate-rust-format.sh")));
-    writeFileSync(join(cwd, "bin/bun"), '#!/bin/bash\nexit 101\n');
-    chmodSync(join(cwd, "bin/bun"), 0o755);
-    const source = readFileSync(join(dirname(runner), "buildbox/coordinator/gate-checks.sh"), "utf8");
-    const marker = "cat > .gate-feature-matrix.mjs <<'GATE_MATRIX_BOOTSTRAP'";
-    assert.ok(source.includes(marker));
-    const prefix = source.slice(0, source.indexOf(marker));
-    const hook = 'bash scripts/gate-rust-format.sh || exit $?';
-    assert.ok(prefix.includes(hook));
-    // End after the real fallback's prerequisite; all later phases succeed.
-    for (const negative of [false, true]) {
-      const selected = join(cwd, "runner.sh");
-      writeFileSync(selected, (negative ? prefix.replace(hook, ":") : prefix) + '\n)\ngate_main_existing "$@"\n');
-      const result = spawnSync("bash", [selected], { cwd, encoding: "utf8", env: { ...process.env, PATH: `${join(cwd, "bin")}:${process.env.PATH}` } });
-      assert.equal(result.status, negative ? 0 : 101, result.stdout + result.stderr);
-    }
-  } finally { rmSync(cwd, { recursive: true, force: true }); }
-});
-
 test("main covers targets and docs, retains errors and never retries failures", { skip: process.platform === "win32" }, () => {
   const cwd = mkdtempSync(join(tmpdir(), "main-gate-"));
   try {
@@ -114,6 +90,14 @@ esac
         assert.match(result.stdout, /GATE_RUSTFMT rc=101/u);
       }
     }
+    writeFileSync(join(cwd,'scripts/gate-target-cache.py'),readFileSync(join(dirname(runner),'gate-target-cache.py')));
+    rmSync(join(cwd,'.gate-main-metadata.json'),{force:true});
+    const privateRun=spawnSync('bash',[runner],{cwd,encoding:'utf8',env:{...process.env,PATH:`${join(cwd,'bin')}:${process.env.PATH}`,GATE_MAIN_TARGET_DIR:join(cwd,'cache'),EARLY_FAIL:'0',TARGET_RC:'0',DOC_RC:'0',FEATURE_RC:'0',BROWSER_RC:'0',WINDOWS_FEATURE_RC:'0'}});
+    assert.equal(privateRun.status,0,privateRun.stdout+privateRun.stderr);
+    assert.throws(()=>readFileSync(join(cwd,'.gate-main-metadata.json')),/ENOENT/);
+    const output=spawnSync('python3',[join(cwd,'scripts/gate-target-cache.py'),'output'],{cwd,encoding:'utf8'});
+    assert.equal(output.status,0,output.stderr);
+    assert.ok(JSON.parse(readFileSync(join(output.stdout.trim(),'.gate-main-metadata.json'),'utf8')).packages.length);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

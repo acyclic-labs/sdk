@@ -10,12 +10,16 @@ import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import subprocess
 import sys
 
 spec = importlib.util.spec_from_file_location('gate_prepare', Path(__file__).resolve().with_name('gate-prepare.py'))
 preparation = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(preparation)
+queue_spec = importlib.util.spec_from_file_location('gate_queue', Path(__file__).resolve().with_name('gate-queue.py'))
+queue = importlib.util.module_from_spec(queue_spec)
+queue_spec.loader.exec_module(queue)
 
 
 def git(repo, *args):
@@ -57,10 +61,9 @@ def merge(repo, worktree, state, prs, alerts):
         # disappearing or immediately retrying an unchanged refused head.
         g = preparation.Gate(repo, worktree, state, alerts)
         for pr, reason in failed:
-            g.park(pr, 'merge-failed', reason)
-            with (state/'held-pending.txt').open('a', encoding='utf-8') as queue:
-                queue.write(str(pr)+'\n'); queue.flush(); os.fsync(queue.fileno())
-            g.alert('GATE_MERGE_HELD', f'#{pr} head={pin["heads"][str(pr)]}: {reason}; held until a changed head or coordinator recovery')
+            g.park(pr, 'merge-failed', reason, head=pin['heads'][str(pr)])
+            queue.add(state, 'held-pending', [pr])
+            g.alert('GATE_MERGE_HELD', f'#{pr} head={pin["heads"][str(pr)]}: {reason}; gate-speed annotation: held until a changed head or explicit repository recovery')
 
 
 def main():
@@ -76,7 +79,7 @@ def main():
         if args.operation == 'record': record(args.repo, args.worktree, args.state, args.prs)
         else: merge(args.repo, args.worktree, args.state, args.prs, args.alerts)
         return 0
-    except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, KeyError, TypeError, sqlite3.Error, subprocess.CalledProcessError) as error:
         print(f'GATE preparation-INFRA: exact-head merge fence: {error}', file=sys.stderr)
         return 6
 

@@ -27,9 +27,9 @@ test('exact private inputs preserve source times across fresh checkouts',async()
  const cwd=fs.mkdtempSync(path.join(tmpdir(),'source-clock-'));
  try{
   const generator=path.join(cwd,'generator.mjs');
-  fs.writeFileSync(generator,fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8')+'\nexport { SOURCE_TIMES };\n');
+  fs.writeFileSync(generator,fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8')+'\nexport { SOURCE_TIMES, IDENT_ADD, IDENT_SKIP };\n');
   fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
-  const {SOURCE_TIMES}=await import(generator);
+  const {SOURCE_TIMES,IDENT_ADD,IDENT_SKIP}=await import(generator);
   const input=path.join(cwd,'lib.rs'),records=path.join(cwd,'records');
   fs.writeFileSync(input,'exact content');fs.writeFileSync(records,'a'.repeat(40)+' 0\tlib.rs\0');
   function normalize(program=SOURCE_TIMES){
@@ -44,6 +44,7 @@ test('exact private inputs preserve source times across fresh checkouts',async()
   const clock=JSON.parse(fs.readFileSync(path.join(cwd,'clock.json')));
   assert.equal(clock.content_sha256,'c'.repeat(64));assert.equal(clock.cacheable,true);
   assert.equal(clock.files.length,1);assert.equal(clock.files[0][0],'lib.rs');
+  assert.deepEqual(clock.namespace,{version:1,pathspec:IDENT_ADD,skip:IDENT_SKIP},'publication must use the actual upload inventory rules');
   fs.writeFileSync(input,'changed content');fs.writeFileSync(records,'b'.repeat(40)+' 0\tlib.rs\0');
   assert.notEqual(normalize(),first);
   fs.symlinkSync('lib.rs',path.join(cwd,'alias'));
@@ -61,6 +62,70 @@ test('exact private inputs preserve source times across fresh checkouts',async()
   assert.ok(source.indexOf('remote failed: tree-mismatch')<source.indexOf(privateBlock));
  }finally{fs.rmSync(cwd,{recursive:true,force:true});}
 });
+test('watched source directories retain content-derived times across fresh checkouts',async()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'source-directory-clock-'));
+ try{
+  const generator=path.join(cwd,'generator.mjs');
+  const source=fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8');
+  fs.writeFileSync(generator,source+'\nexport { SOURCE_TIMES };\n');
+  fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  const {SOURCE_TIMES}=await import(generator);
+  const root=path.join(cwd,'src'),proto=path.join(root,'proto'),records=path.join(cwd,'records');
+  fs.mkdirSync(proto,{recursive:true});fs.writeFileSync(path.join(proto,'schema.proto'),'schema');
+  fs.writeFileSync(records,'a'.repeat(40)+' 0\tproto/schema.proto\0');
+  function normalize(program=SOURCE_TIMES){
+   const result=spawnSync(process.execPath,['-e',program,records,root,path.join(cwd,'clock.json'),'c'.repeat(64)],{encoding:'utf8'});
+   assert.equal(result.status,0,result.stderr);return fs.statSync(proto).mtimeMs;
+  }
+  const first=normalize();
+  fs.rmSync(proto,{recursive:true});fs.mkdirSync(proto);fs.writeFileSync(path.join(proto,'schema.proto'),'schema');
+  const fresh=fs.statSync(proto).mtimeMs;assert.notEqual(fresh,first);
+  const start=SOURCE_TIMES.indexOf('for(const [name,hash] of directories){');
+  const end=SOURCE_TIMES.indexOf('// Normalize every target',start);
+  assert.ok(start>=0&&end>start);
+  const filesOnly=SOURCE_TIMES.slice(0,start)+SOURCE_TIMES.slice(end);
+  assert.equal(normalize(filesOnly),fresh,'old files-only normalization leaves watched directories fresh');
+  assert.equal(normalize(),first);
+  fs.writeFileSync(records,'b'.repeat(40)+' 0\tproto/schema.proto\0');
+  assert.notEqual(normalize(),first,'changed directory inputs require a different content time');
+  const prepare=source.indexOf("${cargoJob ? '' : NPM_ENSURE}");
+  const clock=source.indexOf('# Shared target slot');
+  const verify=source.indexOf('# Tree identity (2026-10-16 treeid)');
+  assert.ok(prepare>=0&&verify>prepare&&clock>verify,'dependency preparation must precede identity verification and source normalization');
+ }finally{fs.rmSync(cwd,{recursive:true,force:true});}
+});
+
+test('dependency preparation cannot change source under the original uploaded identity',async()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'preparation-identity-'));
+ try{
+  const module=path.join(cwd,'generator.mjs');
+  fs.writeFileSync(module,fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8')+'\nexport { launchScript, NPM_ENSURE };\n');
+  fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  const {launchScript,NPM_ENSURE}=await import(module);
+  const root=path.join(cwd,'input');fs.mkdirSync(root);
+  function git(...args){const r=spawnSync('git',args,{cwd:root,encoding:'utf8'});assert.equal(r.status,0,r.stderr);return r.stdout;}
+  git('init','-q');fs.writeFileSync(path.join(root,'source.rs'),'uploaded');git('add','source.rs');
+  const records=git('ls-files','-s','-z').replace(/^[0-7]* /,'');
+  const crypto=await import('node:crypto');
+  const id={commit:'none',tree:'none',content:crypto.createHash('sha256').update(records).digest('hex'),forced:[],autocrlf:'false',groups:'e30='};
+  const wrapper=launchScript('/mnt/bb/wt-sdk/fixture.0','sdk/fixture','.', ['bash','fixture.sh'],'/mnt/bb/jobs/fixture','','sdk','',id,60,true,{});
+  const encoded=wrapper.match(/echo ([A-Za-z0-9+/=]+) \| base64 -d > \$J\.sh\b/);assert.ok(encoded);
+  const inner=Buffer.from(encoded[1],'base64').toString();
+  const start=inner.indexOf(NPM_ENSURE),verify=inner.indexOf('# Tree identity (2026-10-16 treeid)'),end=inner.indexOf('# Shared target slot');
+  assert.ok(start>=0&&verify>start&&end>verify);
+  const segment=inner.slice(start,end),prepare="printf changed > source.rs\n";
+  for(const negative of [false,true]){
+   fs.writeFileSync(path.join(root,'source.rs'),'uploaded');
+   let body=negative?segment.replace(NPM_ENSURE,'')+NPM_ENSURE:segment;
+   body=body.replace(NPM_ENSURE,prepare).replaceAll('/work/src',root).replaceAll('/tmp/bbid.',cwd+'/bbid.');
+   const result=spawnSync('bash',['-c',body],{cwd:root,encoding:'utf8'});
+   assert.equal(result.status,negative?0:224,result.stdout+result.stderr);
+   assert.equal(fs.readFileSync(path.join(root,'source.rs'),'utf8'),'changed');
+   if(!negative)assert.match(result.stderr,/tree-mismatch/);
+  }
+ }finally{fs.rmSync(cwd,{recursive:true,force:true});}
+});
+
 test('remote wrappers parse, retain isolation and archive outputs before cleanup',()=>{
  const cwd=fs.mkdtempSync(path.join(tmpdir(),'job-shell-'));
  try{
@@ -127,7 +192,7 @@ test('executor failure cannot inherit a successful Cargo payload verdict',()=>{
  try{
   fs.mkdirSync(path.join(cwd,'.codex-fleet'));
   const source=fs.readFileSync(path.join(here,'coordinator/pr-gate.sh'),'utf8');
-  const block=source.slice(source.indexOf('# A successful payload'),source.indexOf('# A new strict target'));
+  const block=source.slice(source.indexOf('# A successful payload'),source.indexOf('# Validate an owned preflight'));
   assert.ok(block.includes('executor exited rc='));
   for(const [remote,payload,negative,expected] of [[1,0,false,4],[224,0,false,4],[224,101,false,4],[1,101,false,4],[-9,101,false,4],[101,101,false,0],[0,0,false,0],[1,0,true,0]]){
    const log=path.join(cwd,'gate.log');fs.writeFileSync(log,`GATE_DONE rc=${payload}\n`);
@@ -169,7 +234,7 @@ test('a cut-off executor is INFRA before any target-specific or source verdict',
   const source=fs.readFileSync(path.join(here,'coordinator/pr-gate.sh'),'utf8');
   const block=source.slice(source.indexOf('# An ended client stream'),source.indexOf('# A successful payload'));
   assert.ok(block.includes('executor/stream ended before payload completion'));
-  assert.ok(source.indexOf(block)<source.indexOf('windows_reason='));
+  assert.ok(source.indexOf(block)<source.indexOf('phase_reason='));
   for(const [payload,negative,expected] of [[false,false,4],[true,false,0],[false,true,0]]){
    const log=path.join(cwd,'gate.log');fs.writeFileSync(log,'test source_failure ... FAILED\n'+(payload?'GATE_DONE rc=101\n':''));
    const result=spawnSync('bash',['-c',`rc=1;n=1;log=${log}\n${negative?'':block}\nexit 0\n`],{encoding:'utf8',env:{...process.env,HOME:cwd}});

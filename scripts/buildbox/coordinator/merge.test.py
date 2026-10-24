@@ -61,6 +61,44 @@ class MergeFence(unittest.TestCase):
         # Negative control: an unfenced call accepts the changed head.
         self.assertEqual(remote(['gh', 'pr', 'merge', '1']).returncode, 0)
 
+    def test_refreshed_new_head_is_not_held_by_the_older_tested_merge_refusal(self):
+        gate.record(self.repo, self.repo, self.state, [1, 2])
+        self.git('update-ref', 'refs/remotes/origin/main', self.head)
+        (self.repo/'file').write_text('new queued head')
+        self.git('commit', '-qam', 'new queued head')
+        newer = self.git('rev-parse', 'HEAD')
+        self.git('update-ref', 'refs/pr-gate/1', newer)
+        self.git('checkout', '-q', '--detach', self.head)
+        real = subprocess.run
+        def remote(args, **kwargs):
+            if args[0] != 'gh': return real(args, **kwargs)
+            return subprocess.CompletedProcess(args, 1 if args[3] == '1' else 0,
+                                               '', 'head changed' if args[3] == '1' else '')
+        for negative in [False, True]:
+            state = self.state if not negative else self.root/'negative-refreshed-head'
+            if negative:
+                state.mkdir()
+                (state/'.prepared-heads.json').write_text((self.state/'.prepared-heads.json').read_text())
+            namespace = {'__file__':str(HERE/'gate-merge.py'), '__name__':'merge_fresh_head'}
+            source = (HERE/'gate-merge.py').read_text()
+            if negative:
+                source = source.replace("g.park(pr, 'merge-failed', reason, head=pin['heads'][str(pr)])",
+                                        "g.park(pr, 'merge-failed', reason)")
+            exec(compile(source, str(HERE/'gate-merge.py'), 'exec'), namespace)
+            with patch.object(gate.subprocess, 'run', side_effect=remote):
+                namespace['merge'](self.repo, self.repo, state, [1, 2], self.alerts)
+            hold = json.loads((state/'head-holds.json').read_text())
+            self.assertEqual(hold['1']['head'], newer if negative else self.head)
+            self.assertNotIn('2', hold)
+            self.assertEqual((state/'held-pending.txt').read_text().split(), ['1'])
+            g = gate.preparation.Gate(self.repo, self.repo, state, self.alerts)
+            self.assertEqual(g.eligible(1), not negative)
+        self.git('update-ref', 'refs/pr-gate/1', self.head)
+        g = gate.preparation.Gate(self.repo, self.repo, self.state, self.alerts)
+        self.assertFalse(g.eligible(1))  # unchanged tested head stays held
+        self.git('update-ref', 'refs/pr-gate/1', newer)
+        self.assertTrue(g.eligible(1))
+
     def test_api_failures_are_held_until_changed_head_or_explicit_recovery(self):
         gate.record(self.repo, self.repo, self.state, [1, 2])
         real = subprocess.run
@@ -144,10 +182,11 @@ class MergeFence(unittest.TestCase):
                 (tools/'merge-hold.txt').write_text('')
                 (tools/'gate-prepare.py').write_text('raise SystemExit(0)\n')
                 (tools/'gate-merge.py').symlink_to(HERE/'gate-merge.py')
+                (tools/'gate-queue.py').symlink_to(HERE/'gate-queue.py')
                 record = f'python "{HERE}/gate-merge.py" record "$@" --repo "{self.repo}" --worktree "{self.repo}" --state "$GATE_STATE"\n'
                 (tools/'pr-gate.sh').write_text(('if [ "$#" -gt 1 ]; then exit 1; fi\n' if bisect else '')+record)
                 gh = bins/'gh'
-                gh.write_text('#!/bin/bash\nif [ "$2" = view ]; then echo OPEN; else printf "%s\\n" "$*" >> "$GATE_STATE/merges"; [ "$3" != 1 ]; fi\n')
+                gh.write_text('#!/bin/bash\nif [ "$2" = view ]; then echo READY; else printf "%s\\n" "$*" >> "$GATE_STATE/merges"; [ "$3" != 1 ]; fi\n')
                 gh.chmod(0o755)
                 (bins/'python').symlink_to(sys.executable)
                 env = {**os.environ, 'GATE_LANES':str(tools), 'GATE_STATE':str(state),

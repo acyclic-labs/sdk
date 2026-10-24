@@ -154,6 +154,18 @@ function finishLocked(metaFile, rc, category, extra = {}) {
   {
     const existing = completedReceipt(file);
     if (existing) return existing;
+    // A wrapper watchdog's exit code is not the child's command outcome.
+    // Resolve its recorded cause at the sole terminal writer, including owner
+    // recovery, before cleanup and before either receipt can be published.
+    if (m.side === 'bb2' && m.job_prefix && category !== 'cancelled' &&
+        !fs.existsSync(m.job_prefix + '.cancelled') && !fs.existsSync(m.job_prefix + '.interrupted')) {
+      const watchdog = ['idle', 'ceiling'].find(kind => fs.existsSync(m.job_prefix + '.' + kind));
+      if (watchdog) {
+        category = 'infra';
+        extra = {...extra, reason: 'watchdog-' + watchdog,
+          detail: watchdog === 'idle' ? 'hang reaper ended a stalled job' : 'job ceiling ended the job'};
+      }
+    }
     const runtimeFile = metaFile + '.runtime';
     let runtime, cleanupAllowed = true;
     if (!foreignEnded && m.side === 'bb2' && category !== 'command' && read(metaFile + '.job')) {
@@ -234,7 +246,10 @@ export async function watch(metaFile, interval = 1000) {
     }
     if (processIdentity(m.owner.pid) !== m.owner.identity) {
       const job = read(metaFile + '.job');
-      if (canObserveOwner(job) && processIdentity(job.pid) === job.identity) {
+      // bb2 finish owns termination through the namespace/birth-fenced pidfd
+      // helper and waits for physical exit before cleanup. A second Node
+      // TERM/grace/KILL path only delays that single custody boundary.
+      if (m.side !== 'bb2' && canObserveOwner(job) && processIdentity(job.pid) === job.identity) {
         try { process.kill(-job.pid, 'SIGTERM'); } catch {}
         await new Promise(r => setTimeout(r, 1000));
         if (processIdentity(job.pid) === job.identity) try { process.kill(-job.pid, 'SIGKILL'); } catch {}

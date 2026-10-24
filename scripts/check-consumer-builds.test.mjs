@@ -50,13 +50,16 @@ else if(args[0]==='build' && args.includes('acyclic-harness-conformance') && pro
 }
 `); chmodSync(cargo, 0o755);
     const hook = readFileSync(new URL('./gate-feature-matrix.sh', import.meta.url), 'utf8');
-    const old = hook.replace(/^CARGO_TARGET_DIR=.*check-consumer-builds\.mjs.*$/m, ':');
-    assert.notEqual(old, hook);
+    const payload = readFileSync(new URL('./gate-feature-payload.sh', import.meta.url), 'utf8');
+    const old = payload.replace(/^node scripts\/check-consumer-builds\.mjs.*$/m, 'consumer_rc=0');
+    assert.notEqual(old, payload);
+    writeFileSync(join(cwd, 'scripts/gate-target-cache.py'), readFileSync(new URL('./gate-target-cache.py', import.meta.url)));
     for (const { negative, reject, affected, feature, expected } of [
       { reject: true, expected: 1 }, { negative: true, reject: true, expected: 0 },
       { expected: 0 }, { affected: true, expected: 0 }, { feature: 3, expected: 3 },
     ]) {
-      writeFileSync(join(cwd, 'runner.sh'), negative ? old : hook);
+      writeFileSync(join(cwd, 'runner.sh'), hook);
+      writeFileSync(join(cwd, 'scripts/gate-feature-payload.sh'), negative ? old : payload);
       writeFileSync(join(cwd, 'calls'), '');
       writeFileSync(join(cwd, '.gate-scope-mode'), affected ? 'affected\n' : 'full\n');
       writeFileSync(join(cwd, '.gate-clippy-packages'), 'acyclic-harness-conformance\nfixture-tool\n');

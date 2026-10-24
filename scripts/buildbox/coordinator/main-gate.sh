@@ -74,8 +74,7 @@ while :; do
           until mkdir Q:/lanes/pr-gate/.lock 2>/dev/null; do sleep 1; done
           trap 'rmdir Q:/lanes/pr-gate/.lock' EXIT
           if [ -s Q:/lanes/pr-gate/baseline-pending.txt ]; then
-            cat Q:/lanes/pr-gate/baseline-pending.txt >> Q:/lanes/pr-gate/pending.txt || exit 1
-            rm Q:/lanes/pr-gate/baseline-pending.txt || exit 1
+            python Q:/lanes/gate-queue.py Q:/lanes/pr-gate move baseline-pending pending || exit 6
           fi
           rmdir Q:/lanes/pr-gate/.lock; trap - EXIT
           exec bash Q:/lanes/gate-drain.sh

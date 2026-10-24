@@ -15,6 +15,33 @@ import shutil
 import subprocess
 
 
+def run_logged(command, log, cwd, env):
+    """One writer owns the file; native shells inherit only a pipe.
+
+    PowerShell/native descendants can reopen inherited file handles with
+    independent positions. Even stderr=STDOUT cannot make that file safe.
+    Reopening a pipe preserves its byte stream instead of overwriting a log.
+    """
+    # Do not retain short diagnostics until EOF: an interrupted coordinator
+    # must leave the bytes already received in its partial, unqualified log.
+    with log.open('wb', buffering=0) as output:
+        process = subprocess.Popen(command, cwd=cwd, env=env,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+        try:
+            shutil.copyfileobj(process.stdout, output)
+            output.flush()
+            os.fsync(output.fileno())
+            return process.wait()
+        except BaseException:
+            process.stdout.close()
+            if process.poll() is None:
+                process.terminate()
+            process.wait()
+            raise
+        finally:
+            process.stdout.close()
+
+
 def baseline_complete(output):
     payloads = re.findall(r'^GATE_TEST_BASELINE_COMPLETE rc=(-?\d+)$', output, re.M)
     executors = re.findall(r'^GATE_TEST_BASELINE_EXECUTOR rc=(-?\d+)$', output, re.M)
@@ -175,11 +202,10 @@ if [ "$rc" != 0 ]; then echo "GATE_TEST_BASELINE_COMPLETE rc=$rc"; exit "$rc"; f
 exit 0
 ''' if not failing_roots else '') if compiler_roots else '').replace('@BASE@', args.base).replace('@ROOTS@', ' '.join(existing)).replace('@PACKAGES@', ' '.join('-p ' + p for p in existing)).replace('@TARGET_TESTS@', '' if only_docs else 'run_tests --all-targets; rc=$?').replace('@SKIPS@', ' '.join('--skip ' + p for p in skips))
             (args.worktree / '.gate-test-baseline.sh').write_text(script, encoding='utf-8', newline='\n')
-            with log.open('w', encoding='utf-8', newline='\n') as output:
-                env = dict(os.environ, BUILD_SLOT_TIER='merge', WSLENV='BUILD_SLOT_TIER')
-                result = subprocess.run([shutil.which('pwsh'), '-NoProfile', '-File', 'Q:/lanes/bs.ps1', '--env', 'BUILD_SLOT_BUILDBOX_HOST=bb2', '--env', 'BUILD_SLOT_TIER=merge', '--env', 'BUILD_SLOT_LABEL=pr-gate-baseline', '--env', 'BUILD_SLOT_PHASE=pr-baseline', '--env', 'BUILD_SLOT_PR=' + os.environ.get('GATE_BASELINE_PRS', ''), '--env', 'BUILD_SLOT_GATE_LOG=' + log.as_posix(), 'bash', '.gate-test-baseline.sh'], cwd=args.worktree, env=env, stdout=output, stderr=subprocess.STDOUT)
+            env = dict(os.environ, BUILD_SLOT_TIER='merge', WSLENV='BUILD_SLOT_TIER')
+            result = run_logged([shutil.which('pwsh'), '-NoProfile', '-File', 'Q:/lanes/bs.ps1', '--env', 'BUILD_SLOT_BUILDBOX_HOST=bb2', '--env', 'BUILD_SLOT_TIER=merge', '--env', 'BUILD_SLOT_LABEL=pr-gate-baseline', '--env', 'BUILD_SLOT_PHASE=pr-baseline', '--env', 'BUILD_SLOT_PR=' + os.environ.get('GATE_BASELINE_PRS', ''), '--env', 'BUILD_SLOT_GATE_LOG=' + log.as_posix(), 'bash', '.gate-test-baseline.sh'], log, cwd=args.worktree, env=env)
             with log.open('a', encoding='utf-8', newline='\n') as output:
-                output.write(f'GATE_TEST_BASELINE_EXECUTOR rc={result.returncode}\n')
+                output.write(f'GATE_TEST_BASELINE_EXECUTOR rc={result}\n')
     if not complete(log):
         raise RuntimeError('baseline did not complete: ' + log.as_posix())
     print(log.as_posix())

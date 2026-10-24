@@ -559,7 +559,7 @@ console.error('[buildbox] shared target ' + mapF.replace(/\\/[^/]*$/, '') + ': '
 // apply to a mutable target shared across source trees: hash-derived times are
 // not monotonic. Later writes in this job retain their actual fresh mtimes.
 const SOURCE_TIMES = `const fs=require('fs'),crypto=require('crypto');const [records,root,clock,content]=process.argv.slice(1);
-const files=[],names=[];let cacheable=true;
+const files=[],names=[],directories=new Map();let cacheable=true;
 for(const record of fs.readFileSync(records,'utf8').split('\\0')){
  if(!record)continue;
  const blob=record.slice(0,record.indexOf(' ')),name=record.slice(record.indexOf('\\t')+1);
@@ -567,6 +567,21 @@ for(const record of fs.readFileSync(records,'utf8').split('\\0')){
  const seconds=946684800+parseInt(blob.slice(0,8),16)%(20*365*86400);
  fs.lutimesSync(root+'/'+name,seconds,seconds);
  names.push(name);
+ const parts=name.split('/');
+ for(let count=0;count<parts.length;count++){
+  const directory=parts.slice(0,count).join('/');
+  if(!directories.has(directory))directories.set(directory,crypto.createHash('sha256'));
+  directories.get(directory).update(blob+'\\t'+parts.slice(count).join('/')+'\\0');
+ }
+}
+// Cargo build scripts may watch directories (proto/data), not just files.
+// Fresh checkout directory times would otherwise invalidate a complete target.
+// Only this exact private uploaded tree receives deterministic past times.
+for(const [name,hash] of directories){
+ const directory=root+(name?'/'+name:''),real=fs.realpathSync(directory);
+ if((real!==root&&!real.startsWith(root+'/'))||!fs.lstatSync(directory).isDirectory()){cacheable=false;continue;}
+ const seconds=946684800+parseInt(hash.digest('hex').slice(0,8),16)%(20*365*86400);
+ fs.utimesSync(directory,seconds,seconds);
 }
 // Normalize every target before inspecting symlink aliases to those targets.
 for(const name of names){
@@ -577,7 +592,8 @@ for(const name of names){
   files.push([name,...[s.mode,s.size,s.mtimeNs,s.ctimeNs].map(String),crypto.createHash('sha256').update(fs.readFileSync(real)).digest('hex')]);
  }catch{cacheable=false;}
 }
-fs.writeFileSync(clock+'.tmp',JSON.stringify({root,content_sha256:content,cacheable,files}));fs.renameSync(clock+'.tmp',clock);
+fs.writeFileSync(clock+'.tmp',JSON.stringify({root,content_sha256:content,cacheable,files,
+ namespace:{version:1,pathspec:${JSON.stringify(IDENT_ADD)},skip:${JSON.stringify(IDENT_SKIP)}}}));fs.renameSync(clock+'.tmp',clock);
 console.error('[buildbox] source clock: exact-content private targets');`;
 // node_modules for every job that is not cargo (2026-10-18 crit-bslot): remote trees often had none and JS gates died
 // rc 127 ("./node_modules/.bin/tsc: No such file or directory", #5338, #5341) when the lane forgot `npm ci`. Every tracked
@@ -586,11 +602,7 @@ console.error('[buildbox] source clock: exact-content private targets');`;
 // real ci that publishes there. The invocation forms (`npm ci` at the root, `npm ci --prefix <dir>`) match what lanes run,
 // so store hashes are shared with them. A failure is reported and the command still runs. BUILD_SLOT_NO_NPM=1 skips.
 const NPM_ENSURE = "if [ -z \"${BUILD_SLOT_NO_NPM:-}\" ]; then (cd /work/src && bbnt=$EPOCHREALTIME && bbnl=$(mktemp /tmp/bbnpm.XXXXXX) &&\n  for f in $(git ls-files -- package-lock.json '*/package-lock.json' 2>/dev/null | grep -v '^managed-agents/'); do\n    d=$(dirname \"$f\"); o=$bbnl.$(echo \"$d\" | tr / _)\n    { if [ \"$d\" = . ]; then npm ci; else npm ci --prefix \"$d\"; fi || echo \"rc=$?\"; } > \"$o\" 2>&1 &\n  done; wait\n  for l in \"$bbnl\".*; do [ -e \"$l\" ] || continue; grep -q '^rc=' \"$l\" && { echo \"[buildbox] node_modules: npm ci for ${l##*.} failed (the command still runs):\"; tail -5 \"$l\"; }; done >&2\n  rm -f \"$bbnl\" \"$bbnl\".*; echo \"[buildbox] node_modules ensured for tracked lockfiles in $(awk -v a=$EPOCHREALTIME -v b=$bbnt 'BEGIN{printf \"%.1f\", a-b}')s\" >&2)\nfi\n";
-// Cargo parallelism per job (2026-10-18 crit-bslot, admission doubled to compile=40): cargo defaulted to every CPU per job,
-// so 20+ concurrent builds ran load 300 on 192 CPUs. Each cargo job gets CARGO_BUILD_JOBS = 2 x CPUs / live jobs on the box
-// (counted at launch: .wpid with a live wrapper and no .rc), clamped to [16, CPUs]: a lone job still uses the whole box, a
-// full box gives each about 10-16. Callers cannot pass CARGO_BUILD_JOBS (stripped from the forwarded env).
-const JOBS_ENV = "bbn=0; for w in /mnt/bb/jobs/*.wpid; do [ -e \"${w%.wpid}.rc\" ] || ! kill -0 \"$(cat \"$w\" 2>/dev/null)\" 2>/dev/null || bbn=$((bbn + 1)); done\nbbc=$(nproc); bbj=$(( bbc * 2 / (bbn > 0 ? bbn : 1) )); [ $bbj -ge 16 ] || bbj=16; [ $bbj -le $bbc ] || bbj=$bbc\nexport CARGO_BUILD_JOBS=$bbj; echo >&2 \"[buildbox] CARGO_BUILD_JOBS=$bbj ($bbn live jobs on $bbc CPUs)\"\n";
+// bb-admit owns admission and Cargo parallelism on the build box.
 let jobTdir = '';  // the target dir the job actually used (its wrapper writes $J.tdir), for copy-back
 function launchScript(src, tkey, rel, argv, J, pathPre = '', repo = 'cloud', base = '', id, maxSec = jobMaxSec(), idleOk = process.env.BUILD_SLOT_IDLE_OK === '1', receipt) {
   // Cargo and explicit gate jobs get the owned compiler cache. Other Node/bash jobs keep a plain toolchain env: tools they run set
@@ -646,6 +658,7 @@ elif [ -d .git ] && [ -d $BBM ]; then  # rsync tree: borrow the mirror's objects
 fi
 if [ ${repo} = cloud ] && ! { git rev-parse -q --verify refs/remotes/origin/main >/dev/null && git merge-base refs/remotes/origin/main HEAD >/dev/null 2>&1; }; then
   echo >&2 "[build-slot] remote failed: no-base-ref (origin/main missing or unrelated to HEAD in the synced checkout)"; exit 224; fi
+${cargoJob ? '' : NPM_ENSURE}
 # Tree identity (2026-10-16 treeid): the content this job runs on must be exactly the client's. Same digest as treeIdentity().
 # A throwaway index seeded from the client's commit without stat data, so every file is hashed again under the client's
 # core.autocrlf (an entry the commit block cached was hashed without it), while committed CRLF blobs stay as committed
@@ -671,7 +684,7 @@ if [ "$BB_HOST_TARGET" != ${TD} ] && ! node -e ${q(MTIME_MAP)} "$bbI.recs" "$BB_
 rm -f "$bbI.recs"
 export BUILD_SLOT_TREE="${id.commit} ${id.tree} ${id.content}"
 export BUILD_SLOT_RECEIPT_META=${J}.receipt-meta.v2.json
-${cargoJob ? '' : NPM_ENSURE}${passEnv()}
+${passEnv()}
 cd /work/src/${q(rel)} && node ${J}.receipt-tool.mjs exec ${J}.receipt-meta.v2.json && ${argv.map((a, i) => q(i === 0 && path.basename(a) === 'cargo' ? '/home/var/bin/bb-cargo/cargo' : a)).join(' ')}`;
   // Hash the complete generated build environment/driver before adding the
   // digest itself. Dispatch filenames are operational, not compiler inputs.
@@ -1027,7 +1040,7 @@ export function beginReceipt(argv) {
 }
 export function endReceipt(ctx, rc) {
   return finish(ctx.metaFile, rc, ctx.termination || ctx.remote?.termination || (cause || rc === 224 || rc === 222 ? 'infra' : rc >= 128 ? 'interrupted' : 'command'),
-    { reason: ctx.failure?.cause || cause || null, detail: ctx.failure?.detail || causeDetail || null, remote_receipt: ctx.remote, cache: ctx.remote?.cache, admission: ctx.remote?.admission, disk_free: ctx.remote?.disk_free, home_removed: ctx.remote?.home_removed, home_leaks: ctx.remote?.home_leaks });
+    { reason: ctx.failure?.cause || cause || ctx.remote?.reason || null, detail: ctx.failure?.detail || causeDetail || ctx.remote?.detail || null, remote_receipt: ctx.remote, cache: ctx.remote?.cache, admission: ctx.remote?.admission, disk_free: ctx.remote?.disk_free, home_removed: ctx.remote?.home_removed, home_leaks: ctx.remote?.home_leaks });
 }
 export async function run(argv, sharedReceipt) {
   if (sharedReceipt) return runTracked(argv, sharedReceipt);
@@ -1070,15 +1083,11 @@ async function runTracked(argv, ctx) {
   // Concurrent jobs from one checkout (a node gate's control/local/ci/tsc steps, shards) each get their own remote copy
   // <base>.<n> for the whole job, so one job's rsync --delete or npm ci never rewrites a tree another job is running in.
   const n = await claimCopy(base); if (n === null) { say(`all ${COPIES} remote copies of ${base} busy`); return unavailable('copies-busy', `${COPIES} copies of ${base}`); }
-  let adm = null;
-  try { configureRemoteTier(cwd); return await runIn(argv, t0, cwd, co, rel, `${base}.${n}`, tkey, id, comparisonBase, ctx); } finally { releaseCopy(base, n); if (adm) adm(); used(); }
+  try { configureRemoteTier(cwd); return await runIn(argv, t0, cwd, co, rel, `${base}.${n}`, tkey, id, comparisonBase, ctx); } finally { releaseCopy(base, n); used(); }
   } finally { verdictLock?.stdin.end(); }
 }
 
-// Admission control (2026-10-15): see the header of /home/var/opt/buildbox/bb-admit-patch.mjs. Lock-free: a waiter is
-// admitted when fewer than (limit - running) live tickets of its class are ahead of it. It reads the queue before the
-// running set, so a ticket moving between them is counted twice (wait longer), never missed (overshoot).
-const ADMIT = process.env.BUILD_SLOT_ADMIT_DIR || '/home/var/.cache/buildbox/admit';
+// Client command classification is a dispatch hint; bb2 owns admission policy.
 const LIGHT_CARGO = new Set(['fmt', 'metadata', 'locate-project', 'tree', 'pkgid', 'version', '--version', '-V', 'search', 'verify-project']);
 const COMPILE_CARGO = /\bcargo\s+(\+\S+\s+)?(build|b|check|c|clippy|test|t|nextest|doc|d|run|r|bench|install|llvm-cov|miri|udeps|hack)\b|\bbuild-slot\b|\bnode-gate|\baffected-tests|\bbun run build|\bnpm run build|\bwasm-pack\b|\bjust\b|\bmake\b/;
 // Light class (2026-10-18, crit-bslot: a format check or git commit queued 20-25 min behind cargo in the compile FIFO):
@@ -1141,23 +1150,7 @@ function jobClass(argv) {
   if (isLight(argv)) return 'light';
   return OPAQUE_CARGO.test(opaqueText(argv)) ? 'compile' : 'other';
 }
-function admitLimits() {
-  const l = { compile: 6, other: 16 };
-  try { for (const m of fs.readFileSync(process.env.BUILD_SLOT_ADMIT_CONF || '/home/var/.cache/buildbox/admit.conf', 'utf8').matchAll(/(compile|other)=(\d+)/g)) l[m[1]] = Number(m[2]); } catch {}
-  return l;
-}
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
-function live(dir) {
-  let l = []; try { l = fs.readdirSync(dir); } catch {}
-  return l.filter((f) => { const pid = Number(f.split('-').pop()); if (pid && pidAlive(pid)) return true; try { fs.rmSync(`${dir}/${f}`, { force: true }); } catch {} return false; }).sort();
-}
-// Planned maintenance (2026-10-16, bb-rebuild maint on): queued jobs are not admitted while the marker exists, so a
-// resize starts on an idle box; they continue when it is cleared. Past 60 min of maintenance they are admitted anyway and
-// fail on their own (vm-unreachable), as build-slot's own wait does.
-const MAINT = process.env.BB_MAINT_MARKER || '/home/var/.ssh/buildbox/maintenance';
-const MAINT_MAX_MS = Number(process.env.BB_MAINT_MAX_SEC || 3600) * 1000;
-let maintSince = 0;
-const inMaint = () => { if (!fs.existsSync(MAINT)) { maintSince = 0; return false; } maintSince ||= Date.now(); return Date.now() - maintSince < MAINT_MAX_MS; };
 // Job ceiling (2026-10-16 compute reduction; two lane jobs sat deadlocked for 4.5 h and 7.8 h): a VM-side watchdog kills a
 // job past its wall-clock ceiling (rc 124). Lane and proof jobs: 30 min. Merge gates (tier 0/1), qualification
 // (BUILD_SLOT_TIER=qual or a qual- label) and explicit stress runs (BUILD_SLOT_STRESS=1): 3 h. BUILD_SLOT_JOB_MAX_SEC can
@@ -1169,36 +1162,12 @@ function jobMaxSec() {
   const cap = long ? 10800 : 1800; const want = Number(process.env.BUILD_SLOT_JOB_MAX_SEC || cap);
   return Math.max(60, Math.min(cap, Number.isFinite(want) ? want : cap));
 }
-const CRIT_MAX = Number(process.env.BUILD_SLOT_CRIT_MAX || 4);  // 2026-10-16 01:4xZ coordinator: 2 -> 4 (5 staging/main crits queued)
-// Tenants and fair share (2026-10-18, crit-bslot). Tenant = BUILD_SLOT_TENANT (or BUILD_SLOT_SESSION), else graphcoder for
-// gc-/co-/hf- labels or target dirs and for sdk-repo checkouts, else cloud. Within a tier, waiters are ordered by their
-// tenant's share, not arrival: a ticket's rank is its tenant's running jobs of this class plus its place among that tenant's
-// waiters, so tenants alternate instead of one FIFO burst starving the other. Tiers still come first (crit, merge, lane,
-// proof). Per-tenant compile caps (agreed 2026-10-18: graphcoder 8; admit.conf tenant.<name>=N overrides): a tenant at its
-// cap has no eligible compile ticket (crit tier 0 excepted), and at most cap - running of its tickets are eligible at once.
-// The tenant is the ticket file's first line (S:<tenant>).
-const sessOf0 = (dir, f) => { try { return /^S:(\S+)/.exec(fs.readFileSync(`${dir}/${f}`, 'utf8'))?.[1] || 'legacy'; } catch { return 'legacy'; } };
-const sessOf = (dir, f) => { const s = sessOf0(dir, f); return s === 'sdk' ? 'graphcoder' : s; };  // round-1 tickets named the sdk tenant by repo
-function tenantCaps() {
-  const c = { graphcoder: 8 };
-  try { for (const m of fs.readFileSync(process.env.BUILD_SLOT_ADMIT_CONF || '/home/var/.cache/buildbox/admit.conf', 'utf8').matchAll(/tenant\.([\w.-]+)=(\d+)/g)) c[m[1]] = Number(m[2]); } catch {}
-  return c;
-}
 function tenantOf(label, cwd, repo) {
   const e = process.env.BUILD_SLOT_TENANT || process.env.BUILD_SLOT_SESSION;
   if (e) return e.replace(/[^\w.-]/g, '_');
   const names = [label, path.basename(process.env.CARGO_TARGET_DIR || ''), path.basename(cwd)];
   if (names.some((n) => /^(gc|co|hf)-/.test(n)) || repo === 'sdk') return 'graphcoder';
   return 'cloud';
-}
-function fairOrder(q, r, waiting, cls = 'compile') {
-  const runBy = {}; for (const f of live(r)) { const s = sessOf(r, f); runBy[s] = (runBy[s] || 0) + 1; }
-  const caps = cls === 'compile' ? tenantCaps() : {};
-  const seen = {}, took = {};
-  return waiting.map((f) => { const s = sessOf(q, f); const k = `${f[0]}:${s}`; seen[k] = (seen[k] ?? -1) + 1; return { f, s, tier: f[0], rank: (runBy[s] || 0) + seen[k] }; })
-    .sort((a, b) => a.tier.localeCompare(b.tier) || a.rank - b.rank || a.f.localeCompare(b.f))
-    .filter((x) => { if (x.tier === '0' || caps[x.s] === undefined) return true; took[x.s] = (took[x.s] || 0) + 1; return (runBy[x.s] || 0) + took[x.s] <= caps[x.s]; })
-    .map((x) => x.f);
 }
 function configureRemoteTier(cwd) {
   const label = process.env.BUILD_SLOT_LABEL || path.basename(cwd);
@@ -1252,6 +1221,20 @@ function mergeBase(co) {
   let b = ''; try { const r = co.git(['merge-base', 'HEAD', 'refs/remotes/origin/main'], { encoding: 'utf8', timeout: 30000 }); if (r.status === 0) b = String(r.stdout).trim(); } catch {}
   return /^[0-9a-f]{40}$/.test(b) ? b : '';
 }
+async function maintainSourceCopies(repo, notes, run = sshRun) {
+  if (repo !== 'sdk') return;
+  try {
+    const prune = await run('/home/var/bin/prune-wt-sdk.sh', { timeout: 120000 });
+    if (prune.status === 0) return;
+    const reason = `BB_WT_PRUNE_FAILED rc=${prune.status}: ${String(prune.stderr).slice(-500)}`;
+    notes.push(reason); say(reason);
+  } catch (error) {
+    const reason = `BB_WT_PRUNE_FAILED ${error.message}`;
+    notes.push(reason); say(reason);
+  }
+  // Maintenance cannot deny another worktree. Its own preparation and the
+  // job's real filesystem free-space admission remain mandatory below.
+}
 async function runIn(argv, t0, cwd, co, rel, key, tkey, id, base, ctx) {
   const J = `/mnt/bb/jobs/${Date.now()}-${process.pid}-${crypto.randomUUID().slice(0, 8)}`; const top = co.top; const R = REPOS[co.repo];
   // A client-side flock vanishes on a WSL restart while the detached bb2 job
@@ -1266,10 +1249,7 @@ async function runIn(argv, t0, cwd, co, rel, key, tkey, id, base, ctx) {
   let src = `${R.wt}/${key}`; const notes = [];
   // id and base are the immutable inputs used by run() to own this verdict key.
   say(`BUILD_SLOT_TREE=${id.commit} ${id.tree} ${id.content} (client ${top})`);
-  if (co.repo === 'sdk') {
-    const prune = await sshRun('/home/var/bin/prune-wt-sdk.sh', { timeout: 120000 });
-    if (prune.status !== 0) return unavailable('sync-failed', 'worktree age/count admission refused: ' + prune.stderr.toString().slice(-200));
-  }
+  await maintainSourceCopies(co.repo, notes);
   const g = process.env.BUILD_SLOT_BUILDBOX_RSYNC === '1' && R.rsync ? 'fallback' : await gitPrepLaunch(co, src, launchScript(src, tkey, rel, argv, J, R.path, co.repo, base, id, jobMaxSec(), process.env.BUILD_SLOT_IDLE_OK === '1', receipt), notes, J, id);
   if (g === 'unreachable') { heal(notes.join('; ') || 'ssh failed'); return unavailable('vm-unreachable', notes.join('; ') || 'ssh failed'); }
   if (g === 'fallback' && !R.rsync) return unavailable('sync-failed', `${co.repo} git sync: ${notes.join('; ')}`);

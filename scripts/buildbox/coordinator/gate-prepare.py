@@ -78,9 +78,9 @@ class Gate:
         key = hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
         old = self.read('preparation-hold.json', {})
         if old.get('key') != key:
-            self.alert('GATE_PREPARATION_INFRA', f'#{"+".join(map(str, prs))} preparation-INFRA: {reason} key={key}; coordinator recovery required')
+            self.alert('GATE_PREPARATION_INFRA', f'#{"+".join(map(str, prs))} preparation-INFRA: gate-speed annotation: {reason} key={key}; explicit repository recovery required')
         self.write('preparation-hold.json', {**value, 'key': key})
-        print('GATE preparation-INFRA: ' + reason + '; candidates preserved; coordinator recovery required')
+        print('GATE preparation-INFRA: gate-speed annotation: ' + reason + '; candidates preserved; explicit repository recovery required')
         return 6
 
     def reset(self):
@@ -106,9 +106,12 @@ class Gate:
         self.checked(self.worktree, 'merge', '--abort')
         return True
 
-    def park(self, pr, kind, reason):
+    def park(self, pr, kind, reason, *, head=None):
         holds = self.read('head-holds.json', {})
-        key = {'head': self.oid(self.repo, f'refs/pr-gate/{pr}'), 'base': self.base, 'kind': kind, 'reason': reason}
+        # A delayed merge verdict belongs to its tested head. A queue producer
+        # may already have fetched a newer head into the shared mutable ref.
+        head = self.oid(self.repo, f'refs/pr-gate/{pr}') if head is None else head
+        key = {'head': head, 'base': self.base, 'kind': kind, 'reason': reason}
         fresh = holds.get(str(pr)) != key
         holds[str(pr)] = key
         self.write('head-holds.json', holds)
@@ -164,7 +167,7 @@ def main():
     a = p.parse_args()
     g = Gate(a.repo, a.worktree, a.state, a.alerts)
     if a.operation != 'recover' and g.read('preparation-hold.json'):
-        print('GATE preparation-INFRA: held pending coordinator-confirmed recovery')
+        print('GATE preparation-INFRA: gate-speed annotation: held pending explicit repository recovery')
         return 6
     try:
         if a.operation == 'hold':
@@ -179,7 +182,7 @@ def main():
                 g.refresh([])
                 g.reset()  # checkout AND clean must succeed before releasing hold
                 g.release_failed_merges()
-                # Explicit coordinator command, not an automatic retry loop.
+                # Explicit recovery command, not an automatic retry loop.
                 (g.state / 'preparation-hold.json').unlink(missing_ok=True)
                 g.write('recovery.json', {'at': datetime.now(timezone.utc).isoformat(), **detail})
                 print('GATE_PREPARATION_RECOVERED ' + json.dumps(detail))

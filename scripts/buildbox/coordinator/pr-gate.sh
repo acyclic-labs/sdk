@@ -88,6 +88,16 @@ fi
 # verdicts so a lost executor is reported directly, not as a missing Windows
 # check or as a source test failure seen before the cutoff.
 if ! grep -aq '^GATE_DONE rc=' "$log"; then
+  # Only the executor's idle watchdog plus an observed unfinished test can
+  # qualify a source hang. Ordinary lost streams and bare rc124 stay INFRA.
+  if [ "$rc" = 124 ]; then
+    hang_reason=$(python Q:/lanes/gate-hang.py "$log" --executor-rc "$rc"); hang_rc=$?
+    if [ "$hang_rc" = 0 ]; then
+      v="FAIL #$n: $hang_reason log=$log"
+      echo "GATE $v"; echo "$(date -u +%FT%T.000Z) pr-gate GATE_FAIL ${v#* }" >> ~/.codex-fleet/alerts.log
+      exit 1
+    fi
+  fi
   v="INFRA #$n: executor/stream ended before payload completion (rc=$rc); remote job identity is in the build-slot receipt log=$log"
   echo "GATE $v"; echo "$(date -u +%FT%T.000Z) pr-gate GATE_INFRA ${v#* }" >> ~/.codex-fleet/alerts.log
   exit 4
@@ -101,11 +111,12 @@ if [ "$rc" = 224 ] || [ "$payloads" != 1 ] || [ "$payload_rc" != "$rc" ]; then
   exit 4
 fi
 
-# A new strict target requirement cannot inherit a PASS from main's old gap.
-windows_reason=$(bash Q:/lanes/gate-windows-runtime-verdict.sh "$log"); windows_status=$?
-if [ "$windows_status" != 0 ]; then
-  if [ "$windows_status" = 4 ] || [ "$rc" = 224 ]; then kind=INFRA; code=4; else kind=FAIL; code=1; fi
-  v="$kind #$n: $(printf '%s' "$windows_reason" | tr '\n' ';' | cut -c1-900) log=$log"
+# Validate an owned preflight failure before requiring later compiler phases.
+# The same checker owns execution policy and required-phase interpretation.
+phase_reason=$(bash Q:/lanes/gate-checks.sh --required-phases "$log"); phase_status=$?
+if [ "$phase_status" != 0 ]; then
+  if [ "$phase_status" = 4 ] || [ "$rc" = 224 ]; then kind=INFRA; code=4; else kind=FAIL; code=1; fi
+  v="$kind #$n: $(printf '%s' "$phase_reason" | tr '\n' ';' | cut -c1-900) log=$log"
   echo "GATE $v"
   echo "$(date -u +%FT%T.000Z) pr-gate GATE_${v%% *} ${v#* }" >> ~/.codex-fleet/alerts.log
   exit "$code"

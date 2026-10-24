@@ -22,14 +22,8 @@ flock -x 9
 waited=$((SECONDS-started))
 echo "GATE_FEATURES_CACHE target=$target workers=$workers lock_wait_seconds=$waited"
 rc=0
-CARGO_TARGET_DIR="$target" node "${GATE_FEATURE_SCRIPT:-scripts/check-feature-matrix.mjs}" "$workers" "$@" || rc=$?
-# `check` cannot qualify downstream async layouts. Generate code for each
-# library/consumer independently, including unpublished harness adapters.
-consumer_scope=()
-if [ -f .gate-scope-mode ] && [ "$(tr -d '\r' < .gate-scope-mode)" = affected ]; then
-  consumer_scope=(--scope-file=.gate-clippy-packages)
-fi
-CARGO_TARGET_DIR="$target" node scripts/check-consumer-builds.mjs "${consumer_scope[@]}" || rc=$?
+CARGO_TARGET_DIR="$target" python3 scripts/gate-target-cache.py matrix "$target" -- \
+  bash scripts/gate-feature-payload.sh "$workers" "$@" || rc=$?
 # The target-pruner reads the unit's own mtime, not its nested artifacts.
 for ((i=0; i<workers; i++)); do
   unit=$target; ((i == 0)) || unit="$target-features-$i"

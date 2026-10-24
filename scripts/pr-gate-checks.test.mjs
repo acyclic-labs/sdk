@@ -11,6 +11,8 @@ test('affected PR checks every target and docs, including test=false fuzz binari
   const cwd=mkdtempSync(join(tmpdir(),'pr-gate-targets-'));
   try{
     mkdirSync(join(cwd,'bin'));mkdirSync(join(cwd,'scripts'));
+    mkdirSync(join(cwd,'scripts/buildbox/coordinator'),{recursive:true});
+    writeFileSync(join(cwd,'scripts/buildbox/coordinator/gate-checks.sh'),'#!/bin/bash\n[ "$1" = --windows-runtime-only ] || exit 9\necho "GATE_WINDOWS_RUNTIME_CLIPPY rc=0"\n');
     writeFileSync(join(cwd,'scripts/gate-rust-format.sh'),readFileSync(join(scripts,'gate-rust-format.sh')));
     writeFileSync(join(cwd,'bin/bun'),'#!/bin/bash\necho "format $*" >> calls\nexit "${FORMAT_RC:-0}"\n');
     chmodSync(join(cwd,'bin/bun'),0o755);
@@ -78,7 +80,7 @@ esac
     writeFileSync(join(cwd,'scripts/check-feature-matrix.mjs'),'');
     writeFileSync(join(cwd,'scripts/gate-feature-matrix.sh'),
       '#!/bin/bash\necho "FAILED cargo build --package reverse-consumer"\nexit 1\n');
-    const propagation='[ "$rc" != 0 ] || rc=$(cat .gate-features.rc)';
+    const propagation='[ "$rc" != 0 ] || rc=$(cat "$gate_output/.gate-features.rc")';
     assert.ok(source.includes(propagation));
     for(const negative of [false,true]){
       writeFileSync(join(cwd,'runner.sh'),negative?source.replace(propagation,':'):source);
@@ -109,6 +111,31 @@ esac
         assert.deepEqual(readFileSync(join(cwd,'calls'),'utf8').trim().split('\n'),[expected]);
         assert.match(result.stdout,/GATE_RUSTFMT rc=101/);
       }
+    }
+    // Exercise the real helper too: private jobs keep generated metadata,
+    // artifacts, diagnostics and statuses outside the uploaded source tree.
+    writeFileSync(join(cwd,'scripts/gate-target-cache.py'),readFileSync(join(scripts,'gate-target-cache.py')));
+    writeFileSync(join(cwd,'.gate-scope-mode'),'affected\n');
+    writeFileSync(join(cwd,'scripts/gate-feature-matrix.sh'),readFileSync(join(scripts,'gate-feature-matrix.sh')));
+    writeFileSync(join(cwd,'scripts/gate-feature-payload.sh'),readFileSync(join(scripts,'gate-feature-payload.sh')));
+    writeFileSync(join(cwd,'scripts/check-consumer-builds.mjs'),'process.exit(0);\n');
+    writeFileSync(join(cwd,'runner.sh'),source);
+    for(const file of ['.gate-pr-metadata.json','.gate-fuzz-executables','.gate-fuzz-executables.artifacts','.gate-clippy.out','.gate-clippy.rc','.gate-tests.out'])rmSync(join(cwd,file),{force:true});
+    const privateRun=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,CARGO_TARGET_DIR:join(cwd,'target'),BROKEN_FUZZ:'0'}});
+    assert.equal(privateRun.status,0,privateRun.stdout+privateRun.stderr);
+    assert.throws(()=>readFileSync(join(cwd,'.gate-pr-metadata.json')),/ENOENT/);
+    const output=spawnSync('python3',[join(cwd,'scripts/gate-target-cache.py'),'output'],{cwd,encoding:'utf8'});
+    assert.equal(output.status,0,output.stderr);
+    assert.ok(JSON.parse(readFileSync(join(output.stdout.trim(),'.gate-pr-metadata.json'),'utf8')).packages.length);
+    writeFileSync(join(cwd,'scripts/check-feature-matrix.mjs'),"console.log('FAILED cargo check --manifest-path fixture/Cargo.toml');console.error('error[E0000]: retained feature diagnostic');console.log('feature matrix: 0/1 sets ok');process.exitCode=101;\n");
+    for(const negative of [false,true]){
+      const retaining='if [ "$(cat "$gate_output/.gate-features.rc")" != 0 ]; then cat "$gate_output/.gate-features.out"; fi';
+      writeFileSync(join(cwd,'runner.sh'),negative?source.replace(retaining,''):source);
+      const failedFeatures=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,CARGO_TARGET_DIR:join(cwd,'target'),BROKEN_FUZZ:'0'}});
+      assert.equal(failedFeatures.status,101,failedFeatures.stdout+failedFeatures.stderr);
+      assert.match(failedFeatures.stdout,/GATE_FEATURES rc=101/);
+      if(negative)assert.doesNotMatch(failedFeatures.stdout,/error\[E0000\]: retained feature diagnostic/);
+      else assert.match(failedFeatures.stdout,/error\[E0000\]: retained feature diagnostic/);
     }
   }finally{rmSync(cwd,{recursive:true,force:true});}
 });
