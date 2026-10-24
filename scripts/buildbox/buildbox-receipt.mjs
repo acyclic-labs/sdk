@@ -27,17 +27,56 @@ function namespaceRecord() {
   const record = read(`/mnt/bb/jobs/${ns.replaceAll(/[^0-9]/g, '')}.pid-namespace.json`);
   return record?.namespace === ns && record.init_identity === processIdentity(1) ? record : null;
 }
-function endedNamespace(m) {
+// Recovery consumes historical files, including records cut off by a killed
+// writer. All such reads pass this parser; invalid data never grants custody.
+export function recoveryRecord(file, type = 'meta') {
+  const invalid = reason => ({kind: 'invalid', reason});
+  if (typeof file !== 'string' || !path.isAbsolute(file)) return invalid('invalid-path');
+  let value;
+  try { value = JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch (error) { return {kind: error.code === 'ENOENT' ? 'missing' : 'invalid', reason: error.code === 'ENOENT' ? 'missing-record' : 'unreadable-json'}; }
+  const object = x => x !== null && typeof x === 'object' && !Array.isArray(x);
+  const absolute = x => typeof x === 'string' && path.isAbsolute(x);
+  if (!object(value)) return invalid('record-not-object');
+  if (type === 'meta' || type === 'parent' || type === 'terminal') {
+    if (!absolute(value.receipt_file)) return invalid('invalid-receipt-path');
+  }
+  if (type === 'meta') {
+    if (!Array.isArray(value.argv) || value.argv.some(x => typeof x !== 'string')) return invalid('invalid-argv');
+    if (typeof value.admission_start !== 'string' || !Number.isFinite(Date.parse(value.admission_start))) return invalid('invalid-admission-start');
+    if (!object(value.owner) || !Number.isSafeInteger(value.owner.pid) || value.owner.pid <= 0) return invalid('invalid-owner');
+    if (typeof value.owner.identity !== 'string' || !value.owner.identity) return invalid('invalid-owner-identity');
+    if (value.owner.pid_namespace != null && typeof value.owner.pid_namespace !== 'string') return invalid('invalid-owner-namespace');
+    for (const name of ['ledger', 'job_prefix']) if (value[name] != null && !absolute(value[name])) return invalid('invalid-' + name);
+    if (value.namespace_scope != null) {
+      const s = value.namespace_scope;
+      if (!object(s) || typeof s.namespace !== 'string' || typeof s.epoch !== 'string' || !s.epoch ||
+          !absolute(s.parent_receipt_meta) || !absolute(s.registration_file)) return invalid('invalid-namespace-scope');
+    }
+  }
+  if (type === 'registration' && (typeof value.epoch !== 'string' || !absolute(value.parent_receipt_meta))) return invalid('invalid-registration');
+  if (type === 'terminal' && (value.receipt_file !== file || !Number.isInteger(value.exit_status) ||
+      !['command','infra','cancelled','interrupted'].includes(value.termination))) return invalid('invalid-terminal');
+  return {kind: 'valid', value};
+}
+function namespaceOutcome(m) {
   // An outer wrapper waits for namespace init. Only a registered namespace and
   // its completed owner can prove that invisible child PIDs have exited.
   const scope = m.namespace_scope;
-  if (!scope || scope.namespace !== m.owner?.pid_namespace || !scope.parent_receipt_meta) return false;
-  const parent = read(scope.parent_receipt_meta), registered = read(scope.registration_file);
-  const terminal = parent?.receipt_file && read(parent.receipt_file);
-  return Boolean(parent?.receipt_file && terminal && registered?.epoch && registered.epoch === scope.epoch &&
+  if (!scope) return 'held-no-namespace-scope';
+  if (scope.namespace !== m.owner?.pid_namespace) return 'held-namespace-mismatch';
+  const p = recoveryRecord(scope.parent_receipt_meta, 'parent');
+  if (p.kind !== 'valid') return 'held-parent-' + p.kind;
+  const r = recoveryRecord(scope.registration_file, 'registration');
+  if (r.kind !== 'valid') return 'held-registration-' + r.kind;
+  const t = recoveryRecord(p.value.receipt_file, 'terminal');
+  if (t.kind !== 'valid') return 'held-terminal-' + t.kind;
+  const parent = p.value, registered = r.value, terminal = t.value;
+  return registered.epoch === scope.epoch &&
     registered.parent_receipt_meta === scope.parent_receipt_meta &&
-    terminal.receipt_file === parent.receipt_file && terminal.namespace_custody === 'pidns-v1');
+    terminal.receipt_file === parent.receipt_file && terminal.namespace_custody === 'pidns-v1' ? 'ended' : 'held-unproven-custody';
 }
+function endedNamespace(m) { return namespaceOutcome(m) === 'ended'; }
 export function processIdentity(pid) {
   try {
     const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ').pop().split(' ');
@@ -198,10 +237,21 @@ export async function watch(metaFile, interval = 1000) {
 }
 export function recover(dir) {
   const seen = new Map();
+  const outcomes = [];
   for (const name of fs.readdirSync(dir)) {
     if (!name.endsWith('.receipt-meta.v2.json') && !name.endsWith('.receipt-meta.json')) continue;
-    const file = path.join(dir, name), m = read(file);
-    const terminal = m?.receipt_file && read(m.receipt_file);
+    const file = path.join(dir, name), parsed = recoveryRecord(file);
+    if (parsed.kind !== 'valid') {
+      outcomes.push({file, outcome: parsed.kind, reason: parsed.reason});
+      process.stderr.write('[buildbox] receipt recovery ' + JSON.stringify(outcomes.at(-1)) + '\n');
+      continue;
+    }
+    // A failed ledger disk write or damaged record is local to this record.
+    // It must not prevent another job from arming its own terminal receipt.
+    try {
+    const m = parsed.value, t = recoveryRecord(m.receipt_file, 'terminal');
+    const terminal = t.kind === 'valid' ? t.value : null;
+    if (t.kind === 'invalid') { outcomes.push({file, outcome:'invalid-terminal', reason:t.reason}); continue; }
     if (terminal && m.ledger && canObserveOwner(m.owner)) {
       if (!seen.has(m.ledger)) {
         let records = [];
@@ -217,15 +267,24 @@ export function recover(dir) {
       const job = read(file + '.job');
       if (canObserveOwner(job) && processIdentity(job.pid) === job.identity) {
         const p = spawn(process.execPath, [new URL(import.meta.url).pathname, 'watch', file], { detached: true, stdio: 'ignore' });
-        p.unref(); continue;
+        p.unref(); outcomes.push({file, outcome:'watching'}); continue;
       }
       const result = finish(file, 137, 'interrupted', { reason: 'receipt owner absent during recovery' });
       if (result && m.job_prefix) {
         const tmp = m.job_prefix + '.rc.receipt-tmp';
         fs.writeFileSync(tmp, '137\n'); fs.renameSync(tmp, m.job_prefix + '.rc');
       }
+      outcomes.push({file, outcome:result ? 'interrupted' : 'held-unproven-custody'});
+    } else {
+      outcomes.push({file, outcome:terminal ? 'terminal' : canObserveOwner(m.owner) ? 'active' : namespaceOutcome(m)});
+    }
+    } catch (error) {
+      const outcome = {file, outcome:'record-infra', reason:String(error.message)};
+      outcomes.push(outcome);
+      process.stderr.write('[buildbox] receipt recovery ' + JSON.stringify(outcome) + '\n');
     }
   }
+  return outcomes;
 }
 // Native bb2 entry point, including scripts which invoke build-slot recursively.
 // Children retain a parent_log_id so cost readers never sum parent and child time.

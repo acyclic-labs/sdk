@@ -1,0 +1,35 @@
+# bb2 tool installation
+
+All lanes and the efficiency loop must install bb2 tools through:
+
+```
+sudo /home/var/bin/bb-install.py --source /mnt/bb/<candidate>/scripts/buildbox
+# prints /mnt/bb/tmp/bb-install-<qualified-generation>
+# after acquiring the idle PR mkdir lock:
+sudo /home/var/bin/bb-install.py --publish /mnt/bb/tmp/bb-install-<qualified-generation>
+```
+
+The installer freezes a root-owned candidate, runs the receipt, runtime,
+admission and publication controls as `var`, and publishes only after they
+pass. Publication writes a temporary file beside the destination, flushes it,
+renames it and flushes the directory. Failed qualification changes no tool.
+`installed-tools.json` records the qualified hashes. Bin directories and tools
+are root-owned and unwritable by the job/lane account; direct writes fail.
+Do not use sudo to bypass this boundary. The installer is the only privileged
+publication path. Existing jobs keep their running interpreter/inode.
+
+Take the coordinator's idle `Q:/lanes/pr-gate/.lock` mkdir lock for the final
+publication, releasing it immediately afterward. Qualification can happen
+before this lock is acquired. Never interrupt a running gate. Daemon upgrades
+must drain existing leases before stopping the idle daemon; replacing its file
+does not replace already loaded code.
+
+The current tool list is the SDK-owned runtime set. Another tool must be added
+to the installer's explicit list with its required checks before installation;
+an unreviewed filename cannot silently become a privileged tool.
+
+Cargo's read-only metadata/tree/locate-project/pkgid/verify-project/read-manifest
+commands bypass build tickets centrally in bb-admit. They retain the same
+receipt and job HOME boundary. Callers need no tenant-specific copy of this
+policy. Wrapper executables (including script interpreters) are resolved at
+admission; an unavailable wrapper returns typed admission-INFRA (224).

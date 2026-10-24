@@ -98,3 +98,44 @@ test('killed kernel writer releases custody and concurrent completions append on
   assert.equal(JSON.parse(fs.readFileSync(receipt)).exit_status,0);
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
+
+test('recovery classifies damaged historical records without failing unrelated work',()=>{
+ const {root,module}=fixture();
+ try {
+  run(module,`const root=${JSON.stringify(root)};
+   const metadata=name=>root+'/'+name+'.receipt-meta.v2.json';
+   const owner={pid:process.pid,identity:r.processIdentity(process.pid),pid_namespace:r.pidNamespace()};
+   const base={owner,argv:[],admission_start:new Date().toISOString()};
+   const scope={namespace:'pid:[foreign]',epoch:'cut-off',registration_file:root+'/registration',parent_receipt_meta:root+'/missing-parent'};
+   r.atomic(metadata('missing-parent'),{...base,owner:{...owner,pid_namespace:scope.namespace},namespace_scope:scope,receipt_file:root+'/missing.terminal'});
+   r.atomic(metadata('no-scope'),{...base,owner:{...owner,pid_namespace:'pid:[foreign]'},receipt_file:root+'/legacy.terminal'});
+   r.atomic(metadata('healthy'),{...base,receipt_file:root+'/healthy.terminal'});
+   r.atomic(metadata('invalid-path'),{...base,receipt_file:{bad:true}});
+   const fs=await import('node:fs');fs.writeFileSync(metadata('unparseable'),'{');
+   const outcomes=r.recover(root);console.log(JSON.stringify(outcomes));
+   if(outcomes.find(x=>x.file===metadata('missing-parent')).outcome!=='held-parent-missing')throw Error('missing parent classification');
+   if(outcomes.find(x=>x.file===metadata('no-scope')).outcome!=='held-no-namespace-scope')throw Error('legacy classification');
+   if(outcomes.find(x=>x.file===metadata('unparseable')).reason!=='unreadable-json')throw Error('invalid JSON classification');
+   if(outcomes.find(x=>x.file===metadata('invalid-path')).reason!=='invalid-receipt-path')throw Error('schema classification');
+   if(outcomes.find(x=>x.file===metadata('healthy')).outcome!=='active')throw Error('unrelated record blocked');
+   r.finish(metadata('healthy'),0,'command');
+  `);
+  assert.equal(JSON.parse(fs.readFileSync(root+'/healthy.terminal')).exit_status,0);
+  assert.equal(fs.existsSync(root+'/missing.terminal'),false);
+  assert.equal(fs.existsSync(root+'/legacy.terminal'),false);
+  // The pre-guard implementation dereferences a missing parent and aborts
+  // recovery before the unrelated admission can arm its receipt.
+  const mutant=path.join(root,'missing-parent-mutant.mjs');
+  fs.writeFileSync(mutant,fs.readFileSync(module,'utf8').replace("if (p.kind !== 'valid') return 'held-parent-' + p.kind;","if (p.kind !== 'valid') return p.value.receipt_file;").replace("} catch (error) {\n      const outcome", "} catch (error) { throw error;\n      const outcome"));
+  const bad=spawnSync(process.execPath,[mutant,'recover',root],{encoding:'utf8'});
+  assert.notEqual(bad.status,0);assert.match(bad.stderr,/receipt_file/);
+  const unscoped=path.join(root,'unscoped-mutant.mjs');
+  fs.writeFileSync(unscoped,fs.readFileSync(module,'utf8').replace("if (!scope) return 'held-no-namespace-scope';","if (!scope) return 'ended';"));
+  run(unscoped,`r.recover(${JSON.stringify(root)});`);
+  assert.equal(fs.existsSync(root+'/legacy.terminal'),true,'inventing namespace custody wrongly terminates a legacy owner');
+  const unvalidated=path.join(root,'schema-mutant.mjs');
+  fs.writeFileSync(unvalidated,fs.readFileSync(module,'utf8').replace("if (!absolute(value.receipt_file)) return invalid('invalid-receipt-path');",''));
+  const schema=run(unvalidated,`console.log(JSON.stringify(r.recoveryRecord(${JSON.stringify(root+'/invalid-path.receipt-meta.v2.json')})));`);
+  assert.equal(JSON.parse(schema.stdout).kind,'valid','old missing schema admits an unusable receipt path');
+ } finally {fs.rmSync(root,{recursive:true,force:true});}
+});

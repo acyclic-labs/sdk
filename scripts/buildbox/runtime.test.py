@@ -27,12 +27,14 @@ class RuntimeTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='r19-runtime-',dir='/mnt/bb/tmp')
         self.d=Path(self.temp.name)
+        shutil.copyfile(HERE/'admission_policy.py',self.d/'admission_policy.py')
         self.real_home=Path(tempfile.mkdtemp(prefix="gate-home-fixture-",dir="/home/var"))
     def tearDown(self):
         self.temp.cleanup();job.remove_home(self.real_home)
     def worker(self,negative=False,cleanup_failure=False):
         shutil.copyfile(HERE/'job_exports.py',self.d/'job_exports.py')
         shutil.copyfile(HERE/'bb_target_store.py',self.d/'bb_target_store.py')
+        shutil.copyfile(HERE/'admission_policy.py',self.d/'admission_policy.py')
         source=(HERE/'bb-job.py').read_text()
         source=source.replace("'disk_free':disk()", "'disk_free':[{'path':'fixture','free_percent':50}]")
         if negative:source=source.replace("file=sys.stderr,flush=True", "flush=True")

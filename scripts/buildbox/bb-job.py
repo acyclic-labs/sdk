@@ -19,6 +19,7 @@ import tempfile
 import time
 import uuid
 import bb_target_store
+from admission_policy import resolve_wrapper
 
 BIN=Path(__file__).parent
 NODE='/home/var/tools/node24/node-v24.3.0-linux-x64/bin/node'
@@ -294,6 +295,9 @@ def run(argv,namespace_ready=False):
             os.environ['RUSTC']='/home/var/bin/bigstack/rustc'
             if os.environ.get('BB_CACHE_DISABLED')=='1':os.environ['RUSTC_WRAPPER']=''
             else:os.environ.setdefault('RUSTC_WRAPPER','/home/var/bin/sccache-rustc')
+        try: resolve_wrapper(os.environ, compiler=compiler_job)
+        except RuntimeError as error:
+            print('[buildbox] '+str(error),file=sys.stderr,flush=True);return 224
         if Path(argv[0]).name=='cargo': argv=['/home/var/bin/bb-cargo/cargo']+argv[1:]
         os.execvpe(argv[0],argv,os.environ)
     JOBS.mkdir(parents=True,exist_ok=True)
@@ -317,6 +321,10 @@ def run(argv,namespace_ready=False):
         raise SystemExit(128+n)
     for sig in [signal.SIGTERM,signal.SIGINT,signal.SIGHUP]: signal.signal(sig,interrupted)
     try:
+        try: runtime['rustc_wrapper']=resolve_wrapper(env, compiler=compiler_job)
+        except RuntimeError as error:
+            runtime['admission_error']=str(error)
+            print('[buildbox] '+str(error),file=sys.stderr,flush=True);return 224
         print('BB_DISK_FREE '+json.dumps(runtime['disk_free']),file=sys.stderr,flush=True)
         if any(x['free_percent']<10 for x in runtime['disk_free']):
             print('BB_DISK_LOW preparation-INFRA: / and /mnt/bb require at least 10% free',file=sys.stderr,flush=True)

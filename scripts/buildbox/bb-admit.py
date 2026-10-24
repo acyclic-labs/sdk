@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 import uuid
+from admission_policy import cargo_query, canonical_argv, resolve_wrapper
 
 ROOT = Path(os.environ.get('BB_ADMIT_ROOT', '/mnt/bb/admit'))
 SOCKET = ROOT/'admit.sock'
@@ -191,6 +192,9 @@ def serve():
                     if meta:atomic(meta+'.runtime',{'disk_free':readings,'cache':'not-started','admission':{'tier':t['tier'],'tenant':t['tenant'],'wait_seconds':env['BB_ADMIT_WAIT_SECONDS']}})
                     t['conn'].send(json.dumps({'rc':224}).encode());sched.release(t);close_client(t['conn']);return
             command=t['argv']
+            actual=canonical_argv(command, env)
+            wrapper=resolve_wrapper(env, compiler=bool(actual and Path(actual[0]).name=='cargo'))
+            if wrapper: os.write(t['fds'][2],('BB_WRAPPER_ADMITTED '+json.dumps(wrapper)+'\n').encode())
             if env.get('BB_ADMIT_WRAPPED_COMMAND')!='1':
                 command=[sys.executable,str(Path(__file__).with_name('bb-job.py')),*command]
             child=subprocess.Popen(command,cwd=t['cwd'],env=env,stdin=t['fds'][0],stdout=t['fds'][1],stderr=t['fds'][2],start_new_session=True)
@@ -263,6 +267,13 @@ def client(args):
     tier,tenant,sep,*argv=args
     if sep!='--' or not argv: raise ValueError('bb-admit <tier> <tenant> -- command ...')
     tier={'crit':0,'prio':0,'merge':1,'qual':1,'lane':2,'proof':3}.get(tier,int(tier) if tier.isdigit() else 2)
+    if cargo_query(canonical_argv(argv, os.environ)):
+        # Read-only Cargo queries retain receipts and hermetic execution but
+        # take no build ticket, even when every tenant/compile slot is occupied.
+        os.environ['BB_ADMITTED']='1'
+        os.environ['BB_ADMIT_WAIT_SECONDS']='0'
+        if os.environ.get('BB_ADMIT_WRAPPED_COMMAND')=='1': os.execvpe(argv[0],argv,os.environ)
+        os.execv(sys.executable,[sys.executable,str(Path(__file__).with_name('bb-job.py')),*argv])
     ROOT.mkdir(parents=True,exist_ok=True)
     # A rolling upgrade takes EXCLUSIVE here: existing admitted/queued work
     # drains uninterrupted while new ticket handshakes block in flock.
