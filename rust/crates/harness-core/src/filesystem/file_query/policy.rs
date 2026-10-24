@@ -63,12 +63,11 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
         io: &PreparationIo,
     ) -> crate::Result<std::sync::Arc<PathTrie>> {
         let failure = |_| crate::Error::FilesystemAccessConfiguration("file query");
+        let now = access::access_now()?;
         let mut view = self.policy.current().map_err(failure)?;
         let mut current = revision(workspace, io).await?;
         if !view.matches_policy_revision(current.0, current.1)
-            || view
-                .valid_until()
-                .is_some_and(|end| access::access_now() >= end)
+            || view.valid_until().is_some_and(|end| now >= end)
         {
             self.policy
                 .publish(compile(&self.reader, workspace, io).await?)

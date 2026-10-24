@@ -262,13 +262,13 @@ async fn private_checkpoints_cannot_claim_a_publication_range_or_head_grant() ->
             Generations::All => assert!(
                 result?
                     .0
-                    .decide(Action::Read, "payload", access::access_now())
+                    .decide(Action::Read, "payload", access::access_now()?)
                     .allowed
             ),
             Generations::Head => assert!(
                 !result?
                     .0
-                    .decide(Action::Read, "payload", access::access_now())
+                    .decide(Action::Read, "payload", access::access_now()?)
                     .allowed
             ),
             Generations::Range(_) => assert!(

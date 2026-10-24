@@ -28,8 +28,12 @@ async fn compile<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         crate::core::filesystem_scope_label(scope.capabilities(), &mut Some(&mut io.history_io()))?;
     let payload = match label {
         Some(_) => crate::filesystem::access::capability_payload(label, VolumeOperation::Read, io)?,
-        None if writable => include_bytes!("../access/legacy-native.json"),
-        None => crate::filesystem::access::capability_payload(None, VolumeOperation::Read, io)?,
+        None if writable => crate::filesystem::access::whole_volume_payload(
+            acyclic_fs::access::ActionSet::MountWrite,
+        )?,
+        None => crate::filesystem::access::whole_volume_payload(
+            acyclic_fs::access::ActionSet::MountRead,
+        )?,
     };
     let (view, holds, _) = crate::filesystem::access::access_view(
         workspace,
@@ -170,27 +174,16 @@ where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
 {
-    use acyclic_fs::access::{Action, Capability, Generations, Grant, ResourcePattern};
-    let capability = Capability {
-        layers: vec![vec![Grant {
-            actions: if writable {
-                Action::ALL.into_iter().collect()
-            } else {
-                [Action::List, Action::Read, Action::ReadHistory]
-                    .into_iter()
-                    .collect()
-            },
-            resource: ResourcePattern {
-                lineage_root: None,
-                volume: Some(
-                    uuid::Uuid::from_bytes(workspace.id().volume_id().into_bytes()).to_string(),
-                ),
-                generations: Generations::All,
-                path: "**".into(),
-            },
-        }]],
-        expires_at: None,
+    use acyclic_fs::access::{ActionSet, Capability};
+    let actions = if writable {
+        ActionSet::MountWrite
+    } else {
+        ActionSet::MountRead
     };
+    let capability = Capability::whole_volume(
+        Some(uuid::Uuid::from_bytes(workspace.id().volume_id().into_bytes()).to_string()),
+        actions.actions(),
+    );
     Ok(crate::Capabilities::new([capability
         .to_scope_label()
         .map_err(|error| Error::Invalid(error.to_string()))?]))
@@ -378,7 +371,7 @@ pub async fn require_unrestricted_volume_access<A: AsyncAuthorityStore, O: Async
     let label = crate::core::filesystem_scope_label(signed.capabilities(), &mut None)?;
     let payload = match label {
         Some(_) => access::capability_payload(label, VolumeOperation::Read, &io)?,
-        None => include_bytes!("../access/legacy-checkout.json"),
+        None => access::whole_volume_payload(acyclic_fs::access::ActionSet::Owner)?,
     };
     let compiled =
         access::access_view(workspace, signed, None, payload, Some(ceiling), &io).await?;

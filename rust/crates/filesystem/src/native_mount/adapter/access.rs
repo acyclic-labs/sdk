@@ -37,11 +37,13 @@ pub(in crate::native_mount) fn access_time(
     if let Some(now) = super::tests::return_fence::override_unix_seconds() {
         return Ok(now);
     }
-    clock
+    let millis = clock
         .now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|time| time.as_secs())
-        .map_err(|_| MountSourceError::AccessDenied)
+        .ok()
+        .and_then(|time| u64::try_from(time.as_millis()).ok())
+        .unwrap_or(0);
+    crate::access::unix_seconds(millis).map_err(|_| MountSourceError::AccessDenied)
 }
 
 pub(in crate::native_mount) fn require(

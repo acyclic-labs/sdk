@@ -12,11 +12,13 @@ keywords = ["filesystem", "io", "runtime"]
 categories = ["filesystem"]
 
 [features]
-test-support = ["dep:blake3", "tokio/macros", "tokio/time", "tokio/test-util"]
+test-support = ["tokio/macros", "tokio/time", "tokio/test-util"]
 
 [dependencies]
 bytes.workspace = true
-blake3 = { workspace = true, optional = true }
+blake3.workspace = true
+getrandom = { workspace = true, features = ["std"] }
+zeroize.workspace = true
 # The owned-task API (`spawn`, `spawn_blocking`) is part of every build.
 tokio = { version = "1.48.0", default-features = false, features = ["rt", "sync"] }
 
@@ -30,12 +32,14 @@ libc = "0.2.175"
 rustix.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 compio-buf = { version = "=0.8.3", features = ["bytes"] }
 compio-driver = { version = "=0.12.5", default-features = false }
 windows-sys = { version = "0.61.2", features = [
   "Wdk_Storage_FileSystem",
   "Win32_Foundation",
   "Win32_Security",
+  "Win32_Security_Cryptography",
   "Win32_Storage_FileSystem",
   "Win32_System_Console",
   "Win32_System_IO",

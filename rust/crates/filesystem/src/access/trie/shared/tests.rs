@@ -43,7 +43,7 @@ fn literal_view() -> Result<(Arc<CompiledPolicy>, PathTrie), InvalidPolicy> {
     };
     let mut remaining = MAXIMUM_WORK;
     let program = Arc::new(CompiledPolicy::compile_with_work(
-        policy.clone(),
+        &policy,
         config,
         &mut remaining,
         |_| Ok(()),

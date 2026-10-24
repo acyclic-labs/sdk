@@ -35,19 +35,18 @@ impl ServiceLog {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
         {
-            let mut directory = fs::DirBuilder::new();
-            directory.recursive(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::DirBuilderExt as _;
-                directory.mode(0o700);
-            }
-            directory.create(parent)?;
+            acyclic_native_runtime::private_file::create_directory_all(parent)?;
         }
         let mut log = Self {
             archive: suffix(path, ".1"),
             staged: suffix(path, ".1.next"),
-            file: FileLock::new(file_options().create(true).open(path)?),
+            file: FileLock::new(match acyclic_native_runtime::private_file::create(path) {
+                Ok(file) => file,
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    file_options().open(path)?
+                }
+                Err(error) => return Err(error),
+            }),
             limit,
         };
         match file_options().open(&log.archive) {
@@ -91,7 +90,7 @@ impl ServiceLog {
             // No instrumented filesystem calls here: tracing from its own
             // writer would recursively acquire this lock.
             remove_staged(&self.staged)?;
-            let mut archive = file_options().create_new(true).open(&self.staged)?;
+            let mut archive = acyclic_native_runtime::private_file::create(&self.staged)?;
             (&*self.file).rewind()?;
             io::copy(&mut &*self.file, &mut archive)?;
             drop(archive);
@@ -135,7 +134,6 @@ fn file_options() -> OpenOptions {
         use std::os::unix::fs::OpenOptionsExt as _;
         // A diagnostic destination must not block waiting for a FIFO reader.
         options.custom_flags(libc::O_NONBLOCK);
-        options.mode(0o600);
     }
     options
 }

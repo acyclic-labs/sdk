@@ -32,7 +32,7 @@ pub(super) fn owner<T>(
             effect: Effect::Allow,
             principal: PrincipalPattern::default(),
             actions,
-            resource: resource.clone(),
+            resource,
             conditions: Conditions {
                 relation: Some(Relation::SelfTask),
                 ..Conditions::default()
@@ -44,12 +44,11 @@ pub(super) fn owner<T>(
         layers: vec![
             std::iter::once(volume)
                 .chain(volumes.iter().map(|(_, volume, _)| volume))
-                .map(|volume| Grant {
-                    actions: Action::ALL.into_iter().collect(),
-                    resource: ResourcePattern {
-                        volume: Some(volume.id().into()),
-                        ..resource.clone()
-                    },
+                .flat_map(|volume| {
+                    Capability::whole_volume(Some(volume.id().into()), ActionSet::Owner.actions())
+                        .layers
+                        .into_iter()
+                        .flatten()
                 })
                 .collect(),
         ],

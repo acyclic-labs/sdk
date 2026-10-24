@@ -17,12 +17,23 @@ use windows::{
     core::PCWSTR,
 };
 
-fn user(buffer: &mut [usize; 16]) -> windows::core::Result<PSID> {
+// windows::core wraps Win32 status in HRESULT, whereas std::io classifies the
+// underlying Win32 code. Normalize exactly that facility at this OS boundary.
+pub(super) fn io_error(error: io::Error) -> io::Error {
+    match error.raw_os_error().map(|code| code as u32) {
+        Some(code) if code & 0xffff_0000 == 0x8007_0000 => {
+            io::Error::from_raw_os_error((code & 0xffff) as i32)
+        }
+        _ => error,
+    }
+}
+
+fn user(process: HANDLE, buffer: &mut [usize; 16]) -> windows::core::Result<PSID> {
     let mut length = 0;
     // SAFETY: buffer is aligned and larger than TOKEN_USER plus SECURITY_MAX_SID_SIZE.
     unsafe {
         let mut handle = HANDLE::default();
-        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut handle)?;
+        OpenProcessToken(process, TOKEN_QUERY, &mut handle)?;
         let handle = OwnedHandle::from_raw_handle(handle.0);
         GetTokenInformation(
             HANDLE(handle.as_raw_handle()),
@@ -36,7 +47,7 @@ fn user(buffer: &mut [usize; 16]) -> windows::core::Result<PSID> {
 }
 
 /// Creates a new file with a protected DACL granting only its current user access.
-pub fn create_owner_only_file(path: &Path) -> io::Result<File> {
+pub(super) fn create(path: &Path) -> io::Result<File> {
     let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     if name[..name.len() - 1].contains(&0) {
         return Err(io::Error::new(
@@ -44,8 +55,41 @@ pub fn create_owner_only_file(path: &Path) -> io::Result<File> {
             "NUL in credential path",
         ));
     }
+    with_security(|attributes| {
+        // SAFETY: the encoded path and protected security descriptor live through the call.
+        let handle = unsafe {
+            CreateFileW(
+                PCWSTR(name.as_ptr()),
+                GENERIC_READ.0 | GENERIC_WRITE.0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                Some(attributes),
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL,
+                None,
+            )?
+        };
+        // SAFETY: the new handle is transferred exactly once to File.
+        Ok(unsafe { File::from_raw_handle(handle.0) })
+    })
+}
+
+pub(super) fn create_directory(path: &Path) -> io::Result<()> {
+    let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    if name[..name.len() - 1].contains(&0) {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    with_security(|attributes| {
+        // SAFETY: encoded path and descriptor remain live through CreateDirectoryW.
+        unsafe {
+            CreateDirectoryW(PCWSTR(name.as_ptr()), Some(attributes))?;
+        }
+        Ok(())
+    })
+}
+
+fn with_security<T>(action: impl FnOnce(&SECURITY_ATTRIBUTES) -> io::Result<T>) -> io::Result<T> {
     let mut token = [0usize; 16];
-    let owner = user(&mut token)?;
+    let owner = user(unsafe { GetCurrentProcess() }, &mut token)?;
     let mut acl = [0usize; 32];
     let acl_pointer = acl.as_mut_ptr().cast::<ACL>();
     let mut descriptor = SECURITY_DESCRIPTOR::default();
@@ -67,23 +111,33 @@ pub fn create_owner_only_file(path: &Path) -> io::Result<File> {
             lpSecurityDescriptor: security.0,
             bInheritHandle: false.into(),
         };
-        let handle = CreateFileW(
-            PCWSTR(name.as_ptr()),
-            GENERIC_READ.0 | GENERIC_WRITE.0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            Some(&attributes),
-            CREATE_NEW,
-            FILE_ATTRIBUTE_NORMAL,
-            None,
-        )?;
-        // SAFETY: the new handle is transferred exactly once to File.
-        Ok(File::from_raw_handle(handle.0))
+        action(&attributes)
     }
 }
 
+/// The security identifier of a process owner, obtained through the same token
+/// query used to build private file and directory descriptors.
+pub(super) fn process_user_id(process: *mut std::ffi::c_void) -> io::Result<Vec<u8>> {
+    let mut buffer = [0usize; 16];
+    let sid = user(HANDLE(process), &mut buffer)?;
+    // SAFETY: user returned a SID inside the retained aligned buffer.
+    let length = unsafe { GetLengthSid(sid) } as usize;
+    Ok(unsafe { std::slice::from_raw_parts(sid.0.cast::<u8>(), length) }.to_vec())
+}
+
 /// Checks a file has a protected DACL granting full access only to its current user.
-pub fn has_owner_only_permissions(file: &File) -> io::Result<bool> {
+pub(super) fn is_private(file: &File) -> io::Result<bool> {
     use windows::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: the held file handle and initialized output are live for this call.
+    unsafe {
+        GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut information)?;
+    }
+    if information.nNumberOfLinks != 1
+        || information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+    {
+        return Ok(false);
+    }
     let mut descriptor = PSECURITY_DESCRIPTOR::default();
     let mut acl = std::ptr::null_mut();
     let mut owner = PSID::default();
@@ -102,7 +156,7 @@ pub fn has_owner_only_permissions(file: &File) -> io::Result<bool> {
         .ok()?;
         let check = (|| -> windows::core::Result<bool> {
             let mut token = [0usize; 16];
-            let current = user(&mut token)?;
+            let current = user(GetCurrentProcess(), &mut token)?;
             let mut control = 0;
             let mut revision = 0;
             GetSecurityDescriptorControl(descriptor, &mut control, &mut revision)?;

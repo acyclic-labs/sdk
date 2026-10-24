@@ -27,7 +27,8 @@ fn compile_once(
     compiles.fetch_add(1, Ordering::SeqCst);
     let mut work = usize::MAX;
     let mut compiled = CompiledPolicy::compile_with_work(
-        serde_json::from_slice(crate::access::INITIAL_POLICY).map_err(|error| error.to_string())?,
+        &serde_json::from_slice(crate::access::INITIAL_POLICY)
+            .map_err(|error| error.to_string())?,
         VolumeConfig::portable(crate::Lifecycle::Ephemeral),
         &mut work,
         |_| Ok(()),

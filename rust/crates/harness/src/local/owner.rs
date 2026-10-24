@@ -319,8 +319,7 @@ impl Owner {
                         &mut None,
                     )?,
                 };
-                let mut key = [0; 32];
-                crate::identity::fill_random(&mut key).map_err(storage)?;
+                let mut key = acyclic_native_runtime::owner_record::new_key().map_err(storage)?;
                 let owner = Self {
                     key,
                     agent: AgentId::new(),
@@ -330,7 +329,7 @@ impl Owner {
                     workspace_identity,
                     workspace_incarnation,
                 };
-                key.fill(0);
+                acyclic_native_runtime::owner_record::clear_secret(&mut key);
                 if owner.publish(directory, &path)? {
                     owner
                 } else {
@@ -366,117 +365,102 @@ impl Owner {
     }
 
     fn load(path: &Path) -> Result<Self> {
-        let metadata = fs::symlink_metadata(path).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                Error::NotFound("local owner".into())
-            } else {
-                storage(error)
+        use acyclic_native_runtime::{owner_record, private_file};
+        let record = private_file::read_with(path, 65_536, |file, length| {
+            let mut bytes = owner_record::SecretBytes(Vec::with_capacity(
+                usize::try_from(length + 1).map_err(std::io::Error::other)?,
+            ));
+            file.read_to_end(&mut bytes.0)?;
+            Ok::<_, std::io::Error>(bytes)
+        })
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => Error::NotFound("local owner".into()),
+            std::io::ErrorKind::PermissionDenied => {
+                Error::Unauthorized("local owner is not private".into())
             }
+            _ => storage(error),
         })?;
-        if !metadata.is_file() || metadata.len() > 65_536 {
-            return Err(Error::Invalid("invalid local owner record".into()));
+        if record.0.first() == Some(&b'{') {
+            // Migrate only a complete old payload from an already authenticated
+            // private descriptor. Preserve the original identity and key; never
+            // recover credentials by generating a replacement.
+            let owner: Self = serde_json::from_slice(&record.0)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            let directory = path
+                .parent()
+                .ok_or_else(|| Error::Invalid("owner has no parent".into()))?;
+            owner.publish_as(directory, path, acyclic_native_runtime::RenameMode::Replace)?;
+            return Ok(owner);
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            if metadata.mode() & 0o077 != 0 || metadata.nlink() != 1 {
-                return Err(Error::Unauthorized(
-                    "local owner record has public permissions".into(),
-                ));
-            }
-        }
-        let mut bytes = Vec::new();
-        fs::File::open(path)
-            .map_err(storage)?
-            .take(65_537)
-            .read_to_end(&mut bytes)
-            .map_err(storage)?;
-        let owner =
-            serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()));
-        bytes.fill(0);
-        let owner = owner?;
-        // A concurrent publisher may have renamed the complete, synced file
-        // but not flushed its name yet. Every reader establishes durability
-        // before returning credentials that downstream state will depend on.
-        #[cfg(test)]
-        let sync = !publication::SKIP_READER_SYNC.get();
-        #[cfg(not(test))]
-        let sync = true;
-        if sync {
-            acyclic_native_runtime::sync_parent(
-                path.parent()
-                    .ok_or_else(|| Error::Invalid("local owner has no parent".into()))?,
-                acyclic_native_runtime::Durability::Full,
-            )
-            .map_err(storage)?;
-        }
-        Ok(owner)
+        let plain = owner_record::decode_with(&record.0, 65_536, None, |bytes| {
+            Ok::<_, std::io::Error>(owner_record::SecretBytes(bytes.to_vec()))
+        })
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+        serde_json::from_slice(&plain.0).map_err(|error| Error::Invalid(error.to_string()))
     }
 
-    // Publication is a fresh temporary file, written and synced, then renamed
-    // into place without replacement: a kill at any step leaves either no
-    // record or a complete one, never a partial record that refuses reopen.
     fn publish(&self, directory: &Path, path: &Path) -> Result<bool> {
+        self.publish_as(
+            directory,
+            path,
+            acyclic_native_runtime::RenameMode::NoReplace,
+        )
+    }
+
+    fn publish_as(
+        &self,
+        directory: &Path,
+        path: &Path,
+        mode: acyclic_native_runtime::RenameMode,
+    ) -> Result<bool> {
+        use acyclic_native_runtime::{owner_record, private_file};
         let temporary = directory.join(format!(".owner-{}.next", crate::identity::fresh_uuid()));
-        #[cfg(test)]
-        let temporary = if publication::torn() {
-            path.to_path_buf()
-        } else {
-            temporary
-        };
-        let mut options = fs::OpenOptions::new();
-        options.create_new(true).write(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let result = (|| -> std::io::Result<()> {
-            let mut file = options.open(&temporary)?;
-            #[cfg(test)]
-            publication::step(0)?;
-            let mut bytes = serde_json::to_vec(self).map_err(std::io::Error::other)?;
+        let plain = owner_record::SecretBytes(
+            serde_json::to_vec(self).map_err(|error| Error::Invalid(error.to_string()))?,
+        );
+        let bytes = owner_record::encode_with(&plain.0, 65_536, None, |parts| {
+            Ok::<_, std::io::Error>(owner_record::SecretBytes(parts.concat()))
+        })
+        .map_err(storage)?;
+        let write = |file: &mut fs::File| -> std::io::Result<()> {
             #[cfg(test)]
             {
-                let half = bytes.len() / 2;
-                acyclic_native_runtime::write_file_all(&mut file, &bytes[..half])?;
+                let half = bytes.0.len() / 2;
+                acyclic_native_runtime::write_file_all(file, &bytes.0[..half])?;
                 publication::step(1)?;
-                bytes.drain(..half);
+                acyclic_native_runtime::write_file_all(file, &bytes.0[half..])
             }
-            let written = acyclic_native_runtime::write_file_all(&mut file, &bytes);
-            bytes.fill(0);
-            written?;
-            acyclic_native_runtime::flush_file_all(&file)?;
-            drop(file);
-            #[cfg(test)]
-            publication::step(2)?;
-            #[cfg(test)]
-            if publication::torn() {
-                return Ok(());
-            }
-            acyclic_native_runtime::durable_rename(
-                &temporary,
-                path,
-                acyclic_native_runtime::RenameMode::NoReplace,
-                None,
-            )?;
-            #[cfg(test)]
-            publication::step(3)?;
-            Ok(())
-        })();
+            #[cfg(not(test))]
+            acyclic_native_runtime::write_file_all(file, &bytes.0)
+        };
+        // Negative control alone recreates the old torn-publication mechanism.
         #[cfg(test)]
-        if publication::killed(&result) {
-            // A killed process runs no cleanup.
-            return Err(Error::Storage("killed during owner publication".into()));
+        if publication::torn() {
+            let mut file = private_file::create(path).map_err(storage)?;
+            publication::step(0).map_err(storage)?;
+            write(&mut file).map_err(storage)?;
+            return Ok(true);
         }
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary);
+        let observe = |stage| {
+            #[cfg(test)]
+            publication::step(match stage {
+                private_file::PublicationStage::Created => 0,
+                private_file::PublicationStage::Synced => 2,
+                private_file::PublicationStage::Published => 3,
+            })?;
+            #[cfg(not(test))]
+            let _ = stage;
+            Ok(())
+        };
+        match mode {
+            acyclic_native_runtime::RenameMode::NoReplace => {
+                private_file::publish_new(path, &temporary, write, observe)
+            }
+            acyclic_native_runtime::RenameMode::Replace => {
+                private_file::publish(path, &temporary, mode, write, observe).map(|()| true)
+            }
         }
-        match result {
-            Ok(()) => Ok(true),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-            Err(error) => Err(storage(error)),
-        }
+        .map_err(storage)
     }
 }
 
@@ -490,7 +474,6 @@ pub(super) mod publication {
     const KILLED: &str = "killed during owner publication";
 
     thread_local! {
-        pub(super) static SKIP_READER_SYNC: Cell<bool> = const { Cell::new(false) };
         static KILL_AT: Cell<Option<usize>> = const { Cell::new(None) };
         static TORN: Cell<bool> = const { Cell::new(false) };
     }
@@ -515,11 +498,5 @@ pub(super) mod publication {
             return Err(std::io::Error::other(KILLED));
         }
         Ok(())
-    }
-
-    pub(super) fn killed(result: &std::io::Result<()>) -> bool {
-        result
-            .as_ref()
-            .is_err_and(|error| error.to_string() == KILLED)
     }
 }

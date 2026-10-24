@@ -413,9 +413,9 @@ impl PathTrie {
         )
     }
 
-    /// Compile with caller work and preallocation admission. The two storage
-    /// reservations cover NFA preparation and additional DFA storage. They must
-    /// remain funded until the returned trie is dropped. Failed work is charged
+    /// Compile with caller work and preallocation admission. Storage reservations
+    /// cover shared policy compilation and principal binding. They must remain
+    /// funded until the returned trie is dropped. Failed work is charged
     /// through `remaining_work`; the global compilation limits still apply.
     pub fn compile_with_work(
         policy: &Policy,
@@ -424,35 +424,43 @@ impl PathTrie {
         context: Context,
         capability: &Capability,
         remaining_work: &mut usize,
-        reserve: impl FnMut(usize) -> Result<(), InvalidPolicy>,
-    ) -> Result<Self, InvalidPolicy> {
-        Self::compile_context(
-            Compilation {
-                policy,
-                principal,
-                resource,
-                context,
-                capability,
-                historical: resource.generation != resource.head,
-            },
-            remaining_work,
-            reserve,
-        )
-    }
-
-    fn compile_context(
-        input: Compilation<'_>,
-        remaining_work: &mut usize,
         mut reserve: impl FnMut(usize) -> Result<(), InvalidPolicy>,
     ) -> Result<Self, InvalidPolicy> {
-        let Compilation {
+        let program = std::sync::Arc::new(CompiledPolicy::compile_with_work(
             policy,
+            resource.config,
+            remaining_work,
+            &mut reserve,
+        )?);
+        let mut view = program.bind_with_work(
             principal,
             resource,
             context,
             capability,
-            historical,
-        } = input;
+            remaining_work,
+            reserve,
+        )?;
+        view.shared
+            .as_mut()
+            .ok_or(InvalidPolicy("missing shared policy binding"))?
+            .owns_program = true;
+        Ok(view)
+    }
+
+    // Only a capability ceiling may use this automaton. Persisted policies must
+    // enter through CompiledPolicy and the shared revision cache.
+    fn compile_ceiling(
+        principal: &Principal,
+        resource: Resource<'_>,
+        context: Context,
+        capability: &Capability,
+        remaining_work: &mut usize,
+        mut reserve: impl FnMut(usize) -> Result<(), InvalidPolicy>,
+    ) -> Result<Self, InvalidPolicy> {
+        let initial: Policy = serde_json::from_slice(super::INITIAL_POLICY)
+            .map_err(|_| InvalidPolicy("invalid initial policy"))?;
+        let policy = &initial;
+        let historical = false;
         let mut available = (*remaining_work).min(MAXIMUM_WORK);
         let before = available;
         let result = (|| {
@@ -1035,14 +1043,4 @@ struct CompiledStates {
     states: Vec<State>,
     rule_ids: Vec<String>,
     valid_until: Option<u64>,
-}
-
-#[derive(Clone, Copy)]
-struct Compilation<'a> {
-    policy: &'a Policy,
-    principal: &'a Principal,
-    resource: Resource<'a>,
-    context: Context,
-    capability: &'a Capability,
-    historical: bool,
 }

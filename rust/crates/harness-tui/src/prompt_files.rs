@@ -64,10 +64,7 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
-    // Private permissions on Unix and atomic replacement on Windows too.
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-    temporary.write_all(bytes)?;
-    temporary.as_file().sync_all()?;
-    temporary.persist(path).map_err(|error| error.error)?;
-    Ok(())
+    let mut staged = acyclic_native_runtime::private_file::StagedFile::create(parent, ".prompt-")?;
+    staged.as_file_mut().write_all(bytes)?;
+    staged.publish(path, acyclic_native_runtime::RenameMode::Replace)
 }

@@ -1,27 +1,13 @@
 //! Credentials are private at creation, including the staging pathname.
-#[cfg(any(unix, test))]
+#[cfg(test)]
 use std::fs::File;
 use std::{io, path::Path};
 
-pub(crate) fn create(parent: &Path) -> io::Result<tempfile::NamedTempFile> {
-    tempfile::Builder::new()
-        .prefix(".codex-")
-        .make_in(parent, create_file)
+pub(crate) fn create(
+    parent: &Path,
+) -> io::Result<acyclic_native_runtime::private_file::StagedFile> {
+    acyclic_native_runtime::private_file::StagedFile::create(parent, ".codex-")
 }
-
-#[cfg(unix)]
-fn create_file(path: &Path) -> io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt as _;
-    std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-}
-
-#[cfg(windows)]
-use acyclic_fs::create_owner_only_file as create_file;
 
 #[cfg(test)]
 mod tests {
@@ -34,9 +20,9 @@ mod tests {
         std::fs::write(&path, b"old")?;
         let mut staged = create(root.path())?;
         assert!(private(staged.as_file())?);
-        staged.write_all(b"fixture credentials")?;
+        staged.as_file_mut().write_all(b"fixture credentials")?;
         assert!(private(staged.as_file())?);
-        staged.persist(&path).map_err(|e| e.error)?;
+        staged.publish(&path, acyclic_native_runtime::RenameMode::Replace)?;
         assert!(private(&File::open(&path)?)?);
         Ok(())
     }
@@ -60,5 +46,5 @@ mod tests {
         Ok(file.metadata()?.permissions().mode() & 0o777 == 0o600)
     }
     #[cfg(windows)]
-    use acyclic_fs::has_owner_only_permissions as private;
+    use acyclic_native_runtime::private_file::is_private as private;
 }

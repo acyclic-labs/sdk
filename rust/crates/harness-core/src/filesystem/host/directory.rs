@@ -227,7 +227,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 items_examined: page.entries.len() as u64,
                 ..Default::default()
             })?;
-            let now = super::super::access::access_now();
+            let now = super::super::access::access_now()?;
             let (removed, successor) = filter_page(&mut page, parent, request.path.is_empty(), now);
             page_hold.substitute(page_bytes - removed)?;
             if page.entries.is_empty() && page.has_more {

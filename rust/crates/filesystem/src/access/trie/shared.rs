@@ -102,7 +102,7 @@ pub struct CompiledPolicy {
 impl CompiledPolicy {
     /// Compile and admit all policy paths once, independently of the principal.
     pub fn compile_with_work(
-        policy: Policy,
+        policy: &Policy,
         config: crate::VolumeConfig,
         remaining: &mut usize,
         mut reserve: impl FnMut(usize) -> Result<(), InvalidPolicy>,
@@ -115,7 +115,7 @@ impl CompiledPolicy {
                 expires_at: None,
             };
             let (bytes, validation) = super::super::compilation::preparation(
-                &policy,
+                policy,
                 &empty,
                 super::super::names::folds_unicode(config),
             )?;
@@ -125,7 +125,7 @@ impl CompiledPolicy {
             config
                 .validate()
                 .map_err(|_| InvalidPolicy("invalid volume configuration"))?;
-            let paths = compile_paths(&policy, config, &mut available, &mut reserve)?;
+            let paths = compile_paths(policy, config, &mut available, &mut reserve)?;
             Self::assemble(policy, config, paths)
         })();
         *remaining -= before - available;
@@ -133,7 +133,7 @@ impl CompiledPolicy {
     }
 
     fn assemble(
-        policy: Policy,
+        policy: &Policy,
         config: crate::VolumeConfig,
         paths: Paths,
     ) -> Result<Self, InvalidPolicy> {
@@ -156,6 +156,7 @@ impl CompiledPolicy {
                 && rule.conditions.role.is_none()
                 && rule.conditions.tag.is_none()
                 && rule.conditions.relation.is_none()
+                && rule.conditions.approvals.is_none()
                 && rule.resource.lineage_root.is_none()
         });
         let coarse = policy.layers.iter().flatten().all(|rule| {
@@ -178,9 +179,9 @@ impl CompiledPolicy {
         });
         let mut rules = Vec::with_capacity(count);
         let mut layers = Vec::with_capacity(policy.layers.len());
-        for layer in policy.layers {
+        for layer in &policy.layers {
             let start = rules.len();
-            rules.extend(layer.into_iter().map(ProgramRule::new));
+            rules.extend(layer.iter().cloned().map(ProgramRule::new));
             layers.push(start..rules.len());
         }
         let constant = rules.iter().all(|rule| {
@@ -306,6 +307,7 @@ impl CompiledPolicy {
         let reachable = self.reachable_pairs(&view, remaining, &mut reserve)?;
         let binding = Binding {
             policy: Arc::clone(self),
+            owns_program: false,
             reachable,
             principal: Caller::new(principal),
             lineage: resource.lineage.to_vec(),
@@ -423,6 +425,7 @@ impl CompiledPolicy {
 
 pub(super) struct Binding {
     pub(super) policy: Arc<CompiledPolicy>,
+    pub(super) owns_program: bool,
     pub(super) reachable: Option<Vec<usize>>,
     principal: Caller,
     lineage: Vec<String>,
@@ -440,7 +443,8 @@ impl Binding {
     }
 
     pub(super) fn logical_owned_bytes(&self) -> u64 {
-        // Facts are a per-caller layer. No rule/path table is included here.
+        // Cached programs carry their own charge. A standalone public compile
+        // instead transfers its program storage to this view's caller.
         (size_of::<Self>()
             + self
                 .reachable
@@ -474,6 +478,11 @@ impl Binding {
                 .iter()
                 .map(|(key, value)| key.capacity() + value.capacity())
                 .sum::<usize>()) as u64
+            + if self.owns_program {
+                self.policy.logical_owned_bytes()
+            } else {
+                0
+            }
     }
 
     pub(super) fn decision<'a>(
@@ -771,20 +780,7 @@ impl CompiledPolicy {
                 native_custody: None,
             })
         } else {
-            let initial: Policy = serde_json::from_slice(super::super::INITIAL_POLICY)
-                .map_err(|_| InvalidPolicy("invalid initial policy"))?;
-            PathTrie::compile_context(
-                Compilation {
-                    policy: &initial,
-                    principal,
-                    resource,
-                    context,
-                    capability,
-                    historical: false,
-                },
-                remaining,
-                reserve,
-            )
+            PathTrie::compile_ceiling(principal, resource, context, capability, remaining, reserve)
         }
     }
 }
