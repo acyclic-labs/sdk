@@ -51,7 +51,7 @@ The inherited working directory is reopened through the protected namespace;
 relative paths cannot retain the old writable HOME mount.
 Only the job process tree is restricted; concurrent tenant writes cannot fail
 this job. No shared inventory or path exclusions remain. Unsupported kernels
-and writable inherited real-HOME stdio descriptors refuse execution as INFRA.
+and all inherited real-HOME file descriptors refuse execution as INFRA. Even read-only handles can otherwise reopen their old mount through procfs.
 The terminal receipt records the enforced guard. Installed tools
 are readable, and Cargo uses writable `/mnt/bb/toolchains/cargo`. Provision
 toolchains and registry caches outside the job before qualification; job commands

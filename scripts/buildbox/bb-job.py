@@ -54,13 +54,15 @@ def protect_home(real_home):
     """Verify the inherited private read-only HOME mount, retaining setuid FUSE."""
     real_home=real_home.resolve(strict=True)
     require_private_proc()
-    for fd in [0,1,2]:
+    # Even O_RDONLY handles can reopen their old writable mount through
+    # /proc/self/fd. Refuse every inherited HOME handle, irrespective of mode.
+    for fd in os.listdir('/proc/self/fd'):
         try:
             link=os.readlink(f'/proc/self/fd/{fd}')
             if not link.startswith('/'):continue
             target=Path(link).resolve()
-            if target.is_relative_to(real_home) and fcntl.fcntl(fd,fcntl.F_GETFL)&os.O_ACCMODE!=os.O_RDONLY:
-                raise RuntimeError('writable inherited real HOME descriptor '+str(fd))
+            if target.is_relative_to(real_home):
+                raise RuntimeError('inherited real HOME descriptor '+str(fd))
         except FileNotFoundError:pass
     if not os.statvfs(real_home).f_flag & os.ST_RDONLY:
         raise RuntimeError('real HOME requires a private read-only mount')

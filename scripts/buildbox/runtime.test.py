@@ -191,8 +191,25 @@ print('FIVE_WRITES_DENIED')
         worker=self.worker()
         with (self.real_home/'inherited-output').open('w') as output:
             result=subprocess.run(args,env=env,stdout=output,stderr=subprocess.PIPE)
-        self.assertEqual(result.returncode,224);self.assertIn(b'writable inherited',result.stderr)
+        self.assertEqual(result.returncode,224);self.assertIn(b'inherited real HOME descriptor',result.stderr)
         self.assertEqual((self.real_home/'inherited-output').read_text(),'')
+
+    def test_read_only_inherited_home_input_cannot_reopen_the_old_mount(self):
+        target=self.real_home/'input';target.write_text('original')
+        worker=self.worker();meta=self.d/'readfd.meta';meta.write_text('{}')
+        env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        env.pop('BB_JOB_ACTIVE',None)
+        args=[sys.executable,str(worker),sys.executable,'-c','from pathlib import Path;Path("/proc/self/fd/0").write_text("changed")']
+        with target.open('r') as stream:
+            result=subprocess.run(args,env=env,stdin=stream,capture_output=True)
+        self.assertEqual(result.returncode,224,result.stderr.decode())
+        self.assertIn(b'inherited real HOME descriptor 0',result.stderr)
+        self.assertEqual(target.read_text(),'original')
+        worker.write_text(worker.read_text().replace('if target.is_relative_to(real_home):','if target.is_relative_to(real_home) and fcntl.fcntl(int(fd),fcntl.F_GETFL)&os.O_ACCMODE!=os.O_RDONLY:'))
+        with target.open('r') as stream:
+            negative=subprocess.run(args,env=env,stdin=stream,capture_output=True)
+        self.assertEqual(negative.returncode,0,negative.stderr.decode())
+        self.assertEqual(target.read_text(),'changed')
 
     def test_active_marker_does_not_bypass_kernel_home_guard(self):
         path=self.real_home/'forged-active-marker'
