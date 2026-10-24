@@ -125,7 +125,9 @@ export class ActorStub {
   #request(method: string, url: string, body: Uint8Array, headers: readonly Semantic.Header[], rpcMethod?: string): Semantic.InvokeActorRequest {
     const reference = this.reference;
     return { actorId: this.#id.toString() as Semantic.ActorId, namespace: decoder.decode(reference.namespace) as Semantic.ActorNamespace,
-      accountId: reference.account, method, url, body, headers, locationHint: this.#hint, bindingName: this.#binding, rpcMethod };
+      accountId: reference.account, method, url, body, headers, bindingName: this.#binding,
+      ...(this.#hint === undefined ? {} : {locationHint:this.#hint}),
+      ...(rpcMethod === undefined ? {} : {rpcMethod}) };
   }
   async fetch(input: RequestInfo | URL, init?: RequestInit, options?: ActorsCallOptions): Promise<Response> {
     const request = new Request(input, init);

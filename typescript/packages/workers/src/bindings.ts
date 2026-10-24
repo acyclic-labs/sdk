@@ -12,7 +12,7 @@ export interface BindingAuthority {
 export async function materializeBindings(declarations: readonly semantic.Binding[], authority: BindingAuthority): Promise<Readonly<Record<string, DeploymentBinding>>> {
   declarations = declarations.map(binding => {
     if (!(binding.targetAccount instanceof Uint8Array) && !Array.isArray(binding.targetAccount)) throw new TypeError("binding account must contain bytes");
-    return Object.freeze({ ...binding, targetAccount: Object.freeze(Array.from(binding.targetAccount)) });
+    return Object.freeze({ ...binding, targetAccount: Uint8Array.from(binding.targetAccount) });
   });
   const names = new Set<string>();
   for (const binding of declarations) {

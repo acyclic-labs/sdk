@@ -34,4 +34,5 @@ impl DeleteWorkerRequest {
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 #[derive(Clone, Debug, Default, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/DeleteWorkerResponse.ts")]
+#[ts(type = "Record<never, never>")]
 pub struct DeleteWorkerResponse {}

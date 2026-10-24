@@ -1,5 +1,8 @@
 import type { CanonicalCompatible, ReadonlyBytes, ReadonlyInputSemantic, ReadonlySemantic } from "../src/generated/readonly.js";
 
+// @ts-expect-error A symbol index signature is not an empty protobuf record.
+const wrongEmptyRecord: CanonicalCompatible<Record<symbol, never>, Record<never, never>> = true;
+
 declare const brand: unique symbol;
 type Identifier = string & { readonly [brand]: "Identifier" };
 type Digest = Uint8Array & { readonly [brand]: "Digest" };

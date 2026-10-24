@@ -17,7 +17,8 @@ export class WorkerServiceBinding {
   get identity(): ResourceIdentity { return ResourceIdentity.decode(this.#identity.encode()); }
   #request(method: string, url: string, body: Uint8Array, headers: readonly Semantic.Header[], rpcMethod?: string): Semantic.InvokeWorkerRequest {
     return { workerName: new TextDecoder().decode(this.#identity.id) as Semantic.ActorNamespace,
-      accountId: this.#identity.account, method, url, body, headers, bindingName: this.#binding, rpcMethod };
+      accountId: this.#identity.account, method, url, body, headers, bindingName: this.#binding,
+      ...(rpcMethod === undefined ? {} : {rpcMethod}) };
   }
   async fetch(input: RequestInfo | URL, init?: RequestInit, options?: ActorsCallOptions): Promise<Response> {
     const request = new Request(input, init);

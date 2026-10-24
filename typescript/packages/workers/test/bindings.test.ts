@@ -33,3 +33,27 @@ test("deployment declarations become scoped namespace and private service handle
   // Negative control: without complete admission, even an earlier valid entry could cause host effects.
   expect(factories).toBe(0);
 });
+
+
+test("binding admission snapshots caller bytes and scope before awaiting Rust", async () => {
+  const target = account.slice();
+  const declaration = {...namespace,targetAccount:target};
+  let admitted: number[] = [];
+  const pending = materializeBindings([declaration], {
+    namespace(binding) {
+      admitted = Array.from(binding.targetAccount);
+      return {async invokeActor(request) {
+        expect(request.accountId).toEqual(account);
+        expect(request.namespace).toBe("ClassOne");
+        return {status:200,headers:[],body:request.body};
+      }};
+    },
+    service() { throw new Error("wrong binding kind"); },
+  });
+  // Negative control: retaining caller backing bytes changes the admitted scope.
+  target.fill(120); declaration.actorNamespace = "ClassTwo";
+  const env = await pending;
+  expect(admitted).toEqual(Array.from(account));
+  const binding = env.OBJECTS as ActorNamespaceBinding;
+  await binding.getByName("same").rpc("call",new Uint8Array());
+});
