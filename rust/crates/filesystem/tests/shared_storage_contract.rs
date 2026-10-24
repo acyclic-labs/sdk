@@ -108,7 +108,8 @@ fn shared_contract_retains_the_leaf_future_layout_for_every_method_form() {
     let ordinary = std::mem::size_of_val(&Probe::ordinary(provider.as_ref(), value));
     let generic = std::mem::size_of_val(&Probe::generic(provider.as_ref(), &value));
     let defaulted = std::mem::size_of_val(&Probe::defaulted(provider.as_ref(), value));
-    let generic_defaulted = std::mem::size_of_val(&Probe::generic_defaulted(provider.as_ref(), &value));
+    let generic_defaulted =
+        std::mem::size_of_val(&Probe::generic_defaulted(provider.as_ref(), &value));
     assert_eq!(
         std::mem::size_of_val(&Probe::ordinary(&provider, value)),
         ordinary
