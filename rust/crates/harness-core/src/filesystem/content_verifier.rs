@@ -263,7 +263,6 @@ where
             ));
         }
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            self.verify_creation(volume, None, None).await?;
             let after = after
                 .map(|name| {
                     LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), u32::MAX)

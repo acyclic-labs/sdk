@@ -41,7 +41,7 @@ async fn measured(
 async fn root_reads(fixture: &mut Fixture, harness: &Harness) -> Result<usize> {
     // Instruction capture has already selected the generation, outside this
     // incremental cost. Do not call discovery or inspect its observed trace.
-    let (workspace, generation) = selected(harness).await?;
+    let (_, generation) = selected(harness).await?;
     let reader = harness.context_reader()?;
     for name in ["AGENTS.md", "CLAUDE.md"] {
         match reader
@@ -65,10 +65,21 @@ async fn root_reads(fixture: &mut Fixture, harness: &Harness) -> Result<usize> {
         }
     }
     measured(fixture, async {
-        for root in ["/.agents/skills", "/.claude/skills"] {
-            match harness
-                .files
-                .stat(&workspace, Some(&generation), root)
+        // The independent oracle uses the authorized public reader directly.
+        // Discovery uses its trait adapter, which must not reverify creation.
+        for root in [".agents/skills", ".claude/skills"] {
+            match reader
+                .list_private_directory(
+                    &harness.project,
+                    root,
+                    root,
+                    crate::filesystem::DirectoryOptions {
+                        generation: Some(&generation),
+                        after: None,
+                        maximum_entries: 128,
+                        ceiling: None,
+                    },
+                )
                 .await
             {
                 Err(Error::NotFound(_)) => {}
