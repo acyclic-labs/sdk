@@ -28,9 +28,10 @@ class RuntimeTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory(prefix='r19-runtime-',dir='/mnt/bb/tmp')
         self.d=Path(self.temp.name)
         shutil.copyfile(HERE/'admission_policy.py',self.d/'admission_policy.py')
-        self.real_home=Path(tempfile.mkdtemp(prefix="gate-home-fixture-",dir="/home/var"))
+        self.real_home=self.d/'home'
+        self.real_home.mkdir()
     def tearDown(self):
-        self.temp.cleanup();job.remove_home(self.real_home)
+        self.temp.cleanup()
     def worker(self,negative=False,cleanup_failure=False):
         shutil.copyfile(HERE/'job_exports.py',self.d/'job_exports.py')
         shutil.copyfile(HERE/'bb_target_store.py',self.d/'bb_target_store.py')
@@ -39,6 +40,18 @@ class RuntimeTests(unittest.TestCase):
         (self.d/'jobs').mkdir(exist_ok=True)
         source=source.replace("JOBS=Path('/mnt/bb/jobs')",f"JOBS=Path({str(self.d/'jobs')!r})")
         source=source.replace("'disk_free':disk()", "'disk_free':[{'path':'fixture','free_percent':50}]")
+        # Keep the production user-HOME mount intact, and exercise the same
+        # recursive mount operation on a second, test-owned data-volume root.
+        # Old-guard negatives can then write only that fixture, even when this
+        # entire suite is already inside a protected buildbox job.
+        start=source.index("    subprocess.run(['mount','--rbind','/home/var','/home/var'],check=True)")
+        end=source.index('    # A cwd inherited from HOME',start)
+        fixture_mount=source[start:end].replace("'/home/var'",repr(str(self.real_home)))
+        source=source[:end]+fixture_mount+source[end:]
+        source=source.replace("env=dict(os.environ); real_home=Path('/home/var')",
+                f'env=dict(os.environ); real_home=Path({str(self.real_home)!r})')
+        source=source.replace("try:protect_home(Path('/home/var'))",
+                f'try:protect_home(Path({str(self.real_home)!r}))')
         if negative:source=source.replace("file=sys.stderr,flush=True", "flush=True")
         if cleanup_failure:source=source.replace('try:remove_home(job)','try:raise OSError("cleanup control")')
         p=self.d/('negative.py' if negative else 'worker.py');p.write_text(source);return p
@@ -146,6 +159,26 @@ print('FIVE_WRITES_DENIED')
         env[LIMIT_ENV]=json.dumps(capture_limits())
         result=subprocess.run([sys.executable,str(worker),sys.executable,'-c',child],env=env,capture_output=True)
         self.assertEqual(result.returncode,0,result.stderr.decode());self.assertTrue((home/'.cache/child').exists())
+
+    def test_home_controls_own_their_fixture_and_preserve_the_user_home_mount(self):
+        self.assertTrue(self.real_home.is_relative_to(self.d))
+        self.assertFalse(self.real_home.is_relative_to(Path('/home/var')))
+        code=f'''import os
+from pathlib import Path
+for root in ['/home/var',{str(self.real_home)!r}]:
+ assert os.statvfs(root).f_flag & os.ST_RDONLY,root
+'''
+        result,_=self.run_job([sys.executable,'-c',code])
+        self.assertEqual(result.returncode,0,result.stderr.decode())
+        worker=self.worker();source=worker.read_text()
+        start=source.index(f"    subprocess.run(['mount','--rbind',{str(self.real_home)!r},{str(self.real_home)!r}],check=True)")
+        end=source.index('    # A cwd inherited from HOME',start)
+        worker.write_text(source[:start]+source[end:])
+        meta=self.d/'missing-fixture-mount.meta';meta.write_text('{}')
+        bad=subprocess.run([sys.executable,str(worker),sys.executable,'-c',code],
+                env=self.worker_env({'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}),capture_output=True)
+        self.assertEqual(bad.returncode,224,bad.stderr.decode())
+        self.assertIn(b'HOME guard INFRA',bad.stderr)
 
     def test_proc_roots_cannot_reach_an_outside_writable_home_view(self):
         target=self.real_home/'proc-alias-write'
@@ -271,7 +304,7 @@ finally:a.close();b.close()
         subprocess.run(['git','init','--quiet',str(repo)],check=True)
         before=(repo/'.git/HEAD').read_bytes()
         with self.assertRaisesRegex(RuntimeError,'private buildbox worktree namespace'):
-            job.private_git(self.d,Path('/home/var'),str(repo))
+            job.private_git(self.d,self.real_home,str(repo))
         self.assertEqual((repo/'.git/HEAD').read_bytes(),before)
 
     def test_private_git_base_preserves_local_main_fallback(self):
@@ -671,9 +704,13 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
 
     def test_storage_device_rejects_root_and_live_cleanup_requires_custody(self):
         self.assertEqual(job.bb_target_store.require_data_path(self.d/'not-created/target')['device'],Path('/mnt/bb').stat().st_dev)
-        with self.assertRaisesRegex(RuntimeError,'/mnt/bb filesystem'):job.bb_target_store.require_data_path('/work/root-target-negative-control')
+        # /work/target is a private data-volume bind mount inside a real job.
+        # Use one uncreated root-volume child for both spellings of this probe.
+        negative=Path('/work')/('root-target-negative-'+self.d.name)
+        self.assertFalse(negative.exists())
+        with self.assertRaisesRegex(RuntimeError,'/mnt/bb filesystem'):job.bb_target_store.require_data_path(negative)
         alias=self.d/'root-alias';alias.symlink_to('/work',target_is_directory=True)
-        with self.assertRaisesRegex(RuntimeError,'/mnt/bb filesystem'):job.bb_target_store.require_data_path(alias/'target')
+        with self.assertRaisesRegex(RuntimeError,'/mnt/bb filesystem'):job.bb_target_store.require_data_path(alias/negative.name)
         directory=Path(tempfile.mkdtemp(prefix='job-custody-control-',dir=job.JOBS))
         file=self.d/'runtime.json';file.write_text(json.dumps({'hermetic_home':str(directory)}))
         try:
