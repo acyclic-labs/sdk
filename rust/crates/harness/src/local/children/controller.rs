@@ -24,6 +24,9 @@ mod results;
 mod stopping;
 
 impl LocalHarness {
+    // The child owns admission, execution and recovery state. Keep construction
+    // of that future out of both parent coordination poll frames.
+    #[inline(never)]
     pub(super) fn service_child<'a>(
         &'a self,
         files: Arc<Files>,

@@ -155,6 +155,9 @@ pub(in crate::executor) fn native_progress_owned_bytes(
 ) -> Result<u64> {
     let root = std::mem::size_of::<ExecutionProgress<TurnOutput>>() as u64;
     match progress {
+        ExecutionProgress::PreDispatchFailed(failure) => {
+            native_size_add(root, failure.owned_bytes())
+        }
         ExecutionProgress::Ready(output) => {
             native_size_add(root, native_output_payload_bytes(output)?)
         }

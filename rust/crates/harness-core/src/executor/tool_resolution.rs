@@ -32,7 +32,16 @@ impl StockExecution<'_> {
         journal
             .open_interaction(approval, request, self.io)?
             .await?;
-        let Some(outcome) = journal.interaction_outcome(approval, self.io)?.await? else {
+        let decision = journal.interaction_outcome(approval, self.io)?;
+        futures::pin_mut!(decision);
+        let outcome = match futures::future::select(journal.model_cancellation(), decision).await {
+            futures::future::Either::Left((cancelled, _)) => {
+                cancelled?;
+                Some(InteractionOutcome::Cancelled {})
+            }
+            futures::future::Either::Right((outcome, _)) => outcome?,
+        };
+        let Some(outcome) = outcome else {
             return if started {
                 Err(Error::Indeterminate(invocation.operation_id))
             } else {

@@ -11,13 +11,17 @@ fn modal(layout: &serde_json::Value) -> bool {
 /// modal help starts at its first row and retains a separate navigation offset.
 pub fn tui_scroll<P: StreamProvider + ?Sized>(files: &CommandSession<P>) -> Result<usize> {
     let layout = files.state(CommandFileRoot::Session, "layout.json")?;
-    let is_modal = layout.as_ref().is_some_and(modal);
+    scroll_offset(layout.as_ref().unwrap_or(&serde_json::Value::Null))
+}
+
+fn scroll_offset(layout: &serde_json::Value) -> Result<usize> {
+    let is_modal = modal(layout);
     let key = if is_modal {
         "view_back"
     } else {
         "transcript_back"
     };
-    let Some(value) = layout.as_ref().and_then(|layout| layout.get(key)) else {
+    let Some(value) = layout.get(key) else {
         return Ok(if is_modal { usize::MAX } else { 0 });
     };
     let rows = value
@@ -56,27 +60,25 @@ pub async fn scroll_tui<P: StreamProvider + ?Sized>(
     motions: impl IntoIterator<Item = isize>,
     maximum: usize,
 ) -> Result<()> {
-    let back = tui_scroll(files)?;
-    let next = motions
-        .into_iter()
-        .fold(back.min(maximum), |current, rows| {
-            scroll_step(current, rows, maximum)
-        });
-    if next != back {
-        let mut layout = files
-            .state(CommandFileRoot::Session, "layout.json")?
-            .unwrap_or_else(|| serde_json::json!({}));
-        let key = if modal(&layout) {
-            "view_back"
-        } else {
-            "transcript_back"
-        };
-        layout[key] = serde_json::json!(next);
-        files
-            .write_state(CommandFileRoot::Session, "layout.json", &layout)
-            .await?;
-    }
-    Ok(())
+    let motions: Vec<_> = motions.into_iter().collect();
+    files
+        .update_state(CommandFileRoot::Session, "layout.json", |layout| {
+            let back = scroll_offset(layout)?;
+            let next = motions.iter().fold(back.min(maximum), |current, rows| {
+                scroll_step(current, *rows, maximum)
+            });
+            if next == back {
+                return Ok(false);
+            }
+            let key = if modal(layout) {
+                "view_back"
+            } else {
+                "transcript_back"
+            };
+            layout[key] = serde_json::json!(next);
+            Ok(true)
+        })
+        .await
 }
 
 /// Effects for the next decoded input event plus the view motions decoded

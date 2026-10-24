@@ -70,6 +70,48 @@ async fn fixture() -> Result<(tempfile::TempDir, LocalHarness, CheckoutTools)> {
     Ok((directory, harness, tools))
 }
 
+#[tokio::test]
+async fn arriving_descendant_under_a_replaced_directory_is_absent() -> Result<()> {
+    let (directory, harness, tools) = fixture().await?;
+    // A queued arrival can name a directory which the completed command has
+    // already replaced with a file. It cannot acquire another native watch.
+    let folder = directory.path().join("folder");
+    std::fs::write(&folder, b"replacement").map_err(storage)?;
+    let relative = Path::new("folder").join("child");
+    let config = tools.workspace.view().workspace().volume_config();
+    let path = acyclic_fs::native_capture::host_path_to_namespace(
+        &relative,
+        config.profile,
+        config.limits,
+    )
+    .map_err(storage)?;
+    let batch = WatchBatch::Changes {
+        epoch: 0,
+        first_sequence: 0,
+        next_sequence: 1,
+        changes: vec![acyclic_fs::WatchChange::Arrived(path)],
+        original: Default::default(),
+    };
+    let mut cursor = Cursor::open(&tools.workspace, &tools.capture_policy)?;
+    arrivals::register(
+        &mut cursor.watcher,
+        &batch,
+        &tools.workspace,
+        &tools.capture_policy,
+    )?;
+    let error = std::fs::symlink_metadata(directory.path().join(relative))
+        .err()
+        .ok_or_else(|| Error::Invalid("fixture descendant unexpectedly exists".into()))?;
+    assert!(acyclic_fs::native_capture::host_path_is_absent(&error));
+    // Unix reports ENOTDIR here; Windows may report an absent descendant.
+    // The Unix observation is a negative control for the old classifier.
+    #[cfg(unix)]
+    assert_ne!(error.kind(), std::io::ErrorKind::NotFound);
+    drop(cursor);
+    drop(tools);
+    harness.close().await
+}
+
 async fn contents(tools: &CheckoutTools) -> Result<Vec<u8>> {
     let cancellation = CancellationToken::new();
     let workspace = tools.workspace.view().workspace();
@@ -130,6 +172,13 @@ async fn recovers(stage: &'static str) -> Result<()> {
             epoch: 1,
             reason: WatchInvalidationReason::NativeRescanRequired,
         });
+    }
+    if stage == "fence" {
+        // The fence belongs to an incremental capture, after the initial
+        // source import. Registration alone no longer selects that path.
+        let mut initial = Some(cursor);
+        run(&tools, &mut initial).await?;
+        cursor = initial.take().expect("successful initial capture");
     }
     cursor.injection = Some(Injection {
         stage,
@@ -411,4 +460,37 @@ async fn rescan_preserves_the_original_publication_fence() -> Result<()> {
     drop((cursor, other, checkout));
     drop(tools);
     harness.close().await
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(4))]
+    #[test]
+    fn initial_watch_registration_captures_seeded_before_images(seed in "[a-z]{1,48}") {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let (directory, harness, tools) = fixture().await?;
+            let original = format!("before-{seed}\n");
+            std::fs::write(directory.path().join("marker"), original.as_bytes()).map_err(storage)?;
+            let mut slot = Some(Cursor::initial(&tools.workspace, &tools.capture_policy)?);
+            let cancellation = CancellationToken::new();
+            let workspace = tools.workspace.view().workspace();
+            let empty = workspace.head(WorkBudget::UNBOUNDED, &cancellation).await.map_err(storage)?.value;
+            // No event mentions this file: it predates watcher registration.
+            run(&tools, &mut slot).await?;
+            let before = workspace.head(WorkBudget::UNBOUNDED, &cancellation).await.map_err(storage)?.value;
+            let bytes = before.read("/marker", 64, WorkBudget::UNBOUNDED, &cancellation).await.map_err(storage)?.value;
+            assert_eq!(bytes.as_ref(), original.as_bytes());
+            std::fs::write(directory.path().join("marker"), b"after").map_err(storage)?;
+            run(&tools, &mut slot).await?;
+            assert_eq!(contents(&tools).await?, b"after");
+            let bytes = before.read("/marker", 64, WorkBudget::UNBOUNDED, &cancellation).await.map_err(storage)?.value;
+            assert_eq!(bytes.as_ref(), original.as_bytes());
+            // Negative control: the registration's empty authored generation
+            // reproduces the missing before-image, independently of new head.
+            assert!(empty.read("/marker", 64, WorkBudget::UNBOUNDED, &cancellation).await.is_err());
+            drop(slot);
+            drop(tools);
+            harness.close().await
+        }).unwrap();
+    }
 }

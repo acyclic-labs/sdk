@@ -6,6 +6,46 @@ fn authorization() -> std::future::Ready<Result<(Vec<CommitCondition>, Option<u6
     std::future::ready(Ok((Vec::new(), None)))
 }
 
+#[tokio::test]
+async fn preparation_cannot_settle_an_unfinished_prompt_hook() -> Result<()> {
+    let volume = TaskVolume::open(
+        Arc::new(MemoryStream::default()),
+        StreamPath::new("hook-preparation")?,
+    )
+    .await?;
+    let task = TaskId::new();
+    let operation = OperationId::new();
+    for event in HookEvent::at(HookSite::Prompt) {
+        assert!(!unsettled_prompt(&volume, task, operation).await?);
+        let failure = run_once::<_, _, _, _, _, true>(
+            &volume,
+            (task, operation, event.name()),
+            4096,
+            true,
+            authorization,
+            || async { Err(Error::Conflict("capture acknowledgement lost".into())) },
+        )
+        .await;
+        assert!(matches!(failure, Err(Error::Conflict(_))));
+        assert!(unsettled_prompt(&volume, task, operation).await?);
+        assert!(!unsettled_prompt(&volume, task, OperationId::new()).await?);
+        let (_, outcome) = keys(task, operation, event.name())?;
+        let cut = volume.snapshot(&Query::File(outcome.clone()), 1).await?;
+        volume
+            .append(
+                cut.generation,
+                &FileValue::new(
+                    outcome,
+                    serde_json::to_vec(&HookOutput::default())
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                ),
+            )
+            .await?;
+        assert!(!unsettled_prompt(&volume, task, operation).await?);
+    }
+    Ok(())
+}
+
 proptest! {
     // Property: replay uses the exact retained output without executing again;
     // a failed/cancelled dispatch leaves a claim that prevents every retry.

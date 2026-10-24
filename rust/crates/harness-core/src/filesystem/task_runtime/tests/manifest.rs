@@ -435,3 +435,122 @@ async fn native_request_uses_manifest_and_original_ledger() -> Result<()> {
     )));
     Ok(())
 }
+
+#[cfg(all(
+    feature = "hooks",
+    feature = "filesystem-local",
+    not(target_arch = "wasm32")
+))]
+#[tokio::test]
+async fn unfinished_prompt_hook_prevents_terminal_preparation_failure_on_replay() -> Result<()> {
+    use crate::hooks::{HookEvent, HookOutput, HookSite};
+    use crate::task_volume::{Component, FileKey, FileValue, Query, TaskFile};
+    for (event, settled) in
+        HookEvent::at(HookSite::Prompt).flat_map(|event| [(event, false), (event, true)])
+    {
+        let fixture = Fixture::new().await?;
+        let provider: Arc<dyn StreamProvider> = fixture.stream.clone();
+        let files = crate::task_volume::TaskFiles::open(
+            provider,
+            &fixture.volume,
+            &fixture.issuer.verifier(&mut None)?,
+            &fixture.signed,
+            65_536,
+        )
+        .await?;
+        let runtime = fixture
+            .runtime(None)
+            .await?
+            .with_task_files(Arc::new(files))?;
+        let (reference, _) = manifest(&fixture, true, "retained hook").await?;
+        let (task, fence, command, payload) =
+            retained_command(&fixture, &runtime, reference).await?;
+        let context = runtime.task_context(task, fence.clone()).await?;
+        let files = context
+            .task_files()
+            .ok_or_else(|| Error::Invalid("task files absent".into()))?;
+        let operation = super::super::execution_operation(task, command.operation_id, None)?;
+        let failure = crate::hooks::effects::run_once::<_, _, _, _, _, true>(
+            &files.inner,
+            (task, operation, event.name()),
+            4096,
+            true,
+            || std::future::ready(Ok((Vec::new(), None))),
+            || async { Err(Error::Conflict("hook capture acknowledgement lost".into())) },
+        )
+        .await;
+        assert!(matches!(failure, Err(Error::Conflict(_))));
+        if settled {
+            let outcome = FileKey::Task {
+                task: Component::new(task.to_string())?,
+                file: TaskFile::Context(Component::new(format!(
+                    "hook-{operation}-{}-outcome",
+                    event.name()
+                ))?),
+            };
+            let cut = files
+                .inner
+                .snapshot(&Query::File(outcome.clone()), 1)
+                .await?;
+            files
+                .inner
+                .append(
+                    cut.generation,
+                    &FileValue::new(
+                        outcome,
+                        serde_json::to_vec(&HookOutput::default())
+                            .map_err(|error| Error::Invalid(error.to_string()))?,
+                    ),
+                )
+                .await?;
+        }
+        // An unbound provider is normally a known preparation failure. The
+        // retained hook claim prevents that error from settling this command.
+        let result = runtime
+            .commands()
+            .execute(
+                runtime.task_context(task, fence.clone()).await?,
+                fence.clone(),
+                command.clone(),
+                payload.clone(),
+            )
+            .await;
+        if settled {
+            let Ok(TaskCommandProgress::Ready(value)) = result else {
+                panic!("settled hook did not produce a command result");
+            };
+            let outcome: Outcome<Value> =
+                serde_json::from_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
+            assert!(matches!(outcome, Outcome::Failed { .. }));
+        } else {
+            assert!(
+                matches!(result, Err(Error::Indeterminate(id)) if id == operation),
+                "unfinished hook settled"
+            );
+        }
+        // Exercise the worker too: a raw Unsupported error is definitive on
+        // current main, even if the command adapter declined to return Ready.
+        let crate::distributed::WorkPull::Claimed(lease) =
+            runtime.task_host().recover_work(task, &mut None).await?
+        else {
+            return Err(Error::Invalid("hook fixture lost its lease".into()));
+        };
+        if let TaskWorkerAttempt::Unresolved { error, .. } = runtime
+            .resume_task(lease, &runtime.commands(), 2, None)
+            .await
+        {
+            return Err(error);
+        }
+        let outcome = runtime.task_host().outcome(task).await?;
+        if settled {
+            // The fixture machine consumes the failed command and completes.
+            assert_eq!(
+                outcome,
+                Some(Outcome::Succeeded(Value::String("done".into())))
+            );
+        } else {
+            assert!(matches!(outcome, Some(Outcome::Indeterminate { .. })));
+        }
+    }
+    Ok(())
+}

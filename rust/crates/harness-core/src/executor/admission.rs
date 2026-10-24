@@ -6,7 +6,8 @@ impl ModelEventAdmission {
     #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
     #[doc(hidden)]
     pub fn from_state(mut state: Self, limits: Limits) -> Result<Self> {
-        if state.count > limits.model_events_per_step
+        if state.text_bytes > limits.file_bytes
+            || state.count > limits.model_events_per_step
             || state.calls.len() > limits.tool_calls_per_step
         {
             return Err(Error::Invalid(
@@ -60,6 +61,13 @@ impl ModelEventAdmission {
                 .map(|_| ())
             })?;
         }
+        if self.next_text_bytes(event)? > limits.file_bytes {
+            return Err(stock_boundary(
+                io,
+                Invalid,
+                "assistant output exceeds file limit",
+            ));
+        }
         let ModelEvent::ToolCall(call) = event else {
             return Ok(None);
         };
@@ -81,6 +89,17 @@ impl ModelEventAdmission {
             ));
         }
         Ok(Some(position))
+    }
+
+    fn next_text_bytes(&self, event: &ModelEvent) -> Result<u64> {
+        match event {
+            ModelEvent::Content { delta } => self
+                .text_bytes
+                .checked_add(delta.len() as u64)
+                .ok_or_else(|| Error::Invalid("model output size overflow".into())),
+            ModelEvent::MessageCompleted { text } => Ok(self.text_bytes.max(text.len() as u64)),
+            _ => Ok(self.text_bytes),
+        }
     }
 
     fn call_position(&self, call_id: &str, io: Option<&PreparationIo>) -> Result<(usize, bool)> {
@@ -129,6 +148,7 @@ impl ModelEventAdmission {
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         let position = self.validate_next(event, limits, io)?;
+        let text_bytes = self.next_text_bytes(event)?;
         match event {
             ModelEvent::ToolCall(crate::model::ToolCall { call_id, .. }) => {
                 let position = position.ok_or_else(|| {
@@ -156,10 +176,12 @@ impl ModelEventAdmission {
             }
             ModelEvent::Completed { .. } => self.completed = true,
             ModelEvent::Content { .. }
+            | ModelEvent::MessageCompleted { .. }
             | ModelEvent::Reasoning { .. }
             | ModelEvent::ReasoningBlock { .. } => {}
         }
         self.count += 1;
+        self.text_bytes = text_bytes;
         Ok(())
     }
 }

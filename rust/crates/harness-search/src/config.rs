@@ -41,6 +41,9 @@ pub struct SearchConfig {
     /// Config-file fallback keys, indexed by `exa` or `tinyfish`.
     #[serde(default)]
     pub api_keys: BTreeMap<String, String>,
+    /// Explicit endpoint for private gateways; validated by the selected adapter.
+    #[serde(default)]
+    pub endpoint: Option<String>,
     #[serde(skip, default = "native_sources")]
     native_sources: bool,
 }
@@ -54,6 +57,7 @@ impl Default for SearchConfig {
         Self {
             provider: SearchBackend::default(),
             api_keys: BTreeMap::new(),
+            endpoint: None,
             native_sources: true,
         }
     }
@@ -65,6 +69,7 @@ impl SearchConfig {
         Self {
             provider,
             api_keys,
+            endpoint: None,
             native_sources: false,
         }
     }
@@ -77,6 +82,13 @@ impl SearchConfig {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(_) => Err(Error::Storage("cannot read search configuration".into())),
         }
+    }
+
+    /// Confine credential lookup to this configuration's explicitly supplied keys.
+    #[must_use]
+    pub fn without_native_sources(mut self) -> Self {
+        self.native_sources = false;
+        self
     }
 
     fn key(&self) -> Result<Option<String>> {
@@ -112,8 +124,14 @@ impl SearchConfig {
             return Ok(None);
         };
         let provider: Arc<dyn SearchProvider> = match self.provider {
-            SearchBackend::Exa => Arc::new(Exa::new(&key)?),
-            SearchBackend::TinyFish => Arc::new(TinyFish::new(&key)?),
+            SearchBackend::Exa => Arc::new(match &self.endpoint {
+                Some(endpoint) => Exa::with_endpoint(&key, endpoint)?,
+                None => Exa::new(&key)?,
+            }),
+            SearchBackend::TinyFish => Arc::new(match &self.endpoint {
+                Some(endpoint) => TinyFish::with_endpoint(&key, endpoint)?,
+                None => TinyFish::new(&key)?,
+            }),
         };
         Ok(Some(provider))
     }

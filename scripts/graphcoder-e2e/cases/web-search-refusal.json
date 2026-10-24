@@ -1,0 +1,76 @@
+{
+  "id": "web-search-refusal",
+  "workspace": {
+    "kind": "plain"
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "search",
+            "name": "web_search",
+            "arguments": {
+              "query": "fixture query"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "path": "search"
+        },
+        "status": 403,
+        "json": {
+          "error": "fixture search refusal"
+        }
+      },
+      {
+        "when": {
+          "tool_result": "rejected"
+        },
+        "text": [
+          "SEARCH_REFUSAL_HANDLED"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "search fixture query",
+      "answer": "SEARCH_REFUSAL_HANDLED"
+    },
+    {
+      "mode": "headless",
+      "text": "search fixture query",
+      "answer": "SEARCH_REFUSAL_HANDLED"
+    }
+  ],
+  "assert": {
+    "requests": 2,
+    "tool_contains": [
+      "rejected",
+      "search HTTP request rejected"
+    ],
+    "model_contains": [
+      "\"name\":\"web_search\""
+    ],
+    "http": [
+      {
+        "path": "search",
+        "body": {
+          "query": "fixture query",
+          "numResults": 5,
+          "contents": {
+            "highlights": true
+          }
+        }
+      }
+    ]
+  },
+  "settings": {
+    ".codex/search.json": "{\"provider\": \"exa\", \"api_keys\": {\"exa\": \"e2e-unused-key\"}, \"endpoint\": \"{{url}}/search\"}"
+  }
+}

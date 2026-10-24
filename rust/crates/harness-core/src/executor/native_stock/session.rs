@@ -229,8 +229,9 @@ impl StockExecutor {
         instruction: ModelContent,
     ) -> Result<crate::context::ContextSummary> {
         let _execution = journal.claim_execution(operation, None)?;
+        let phase = &mut DispatchPhase::new();
         StockExecution::ordinary(self)
-            .summarize(journal, None, operation, 0, source, instruction)
+            .summarize(journal, None, operation, 0, (source, instruction), phase)
             .await
             .map(|(summary, _)| summary)
     }
@@ -244,6 +245,7 @@ impl StockExecutor {
         instruction: ModelContent,
     ) -> Result<crate::context::ContextSummary> {
         let _ownership = journal.claim_execution(input.operation_id, None)?;
+        let phase = &mut DispatchPhase::new();
         let execution = StockExecution::ordinary(self);
         execution.validate_turn_input(journal, input).await?;
         execution
@@ -252,8 +254,8 @@ impl StockExecutor {
                 Some(input),
                 input.operation_id,
                 step,
-                source,
-                instruction,
+                (source, instruction),
+                phase,
             )
             .await
             .map(|(summary, _)| summary)

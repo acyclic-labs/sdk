@@ -52,6 +52,7 @@ mod inline_reuse;
 #[cfg(all(test, feature = "memory", any(windows, target_os = "linux")))]
 mod inline_reuse_tests;
 mod reconcile;
+pub use reconcile::host_path_is_absent;
 use reconcile::*;
 mod checkout_walk;
 use checkout_walk::*;
@@ -63,6 +64,9 @@ mod transaction;
 use transaction::*;
 mod stage;
 use stage::*;
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod held_root_tests;
 mod metadata;
 #[cfg(test)]
 #[cfg(feature = "test-support")]
@@ -73,9 +77,6 @@ mod rescan_probe_tests;
 #[cfg(test)]
 #[cfg(all(target_os = "linux", feature = "memory"))]
 mod stat_probe_tests;
-#[cfg(test)]
-#[cfg(target_os = "linux")]
-mod held_root_tests;
 use metadata::*;
 #[cfg(test)]
 #[cfg(feature = "memory")]

@@ -16,7 +16,7 @@ done
 RUSTFLAGS="--cfg acyclic_harness_loom --cfg acyclic_loom" cargo test -p acyclic-harness-core --features "$features" --lib --no-run --message-format=json |
 python3 scripts/qualify-graphcoder-artifact.py task_volume::files::models::
 RUSTFLAGS="--cfg acyclic_harness_loom --cfg acyclic_loom" cargo test -p acyclic-harness --features "$features" --lib --no-run --message-format=json |
-python3 scripts/qualify-graphcoder-artifact.py local::checkout_tools::tests:: client::commands::session::init_models::
+python3 scripts/qualify-graphcoder-artifact.py local::checkout_tools::tests:: client::commands::session::init_models:: client::commands::session::scroll_models::
 
 cargo test -p acyclic-harness-tui --features tui --lib --no-run --message-format=json |
 python3 scripts/qualify-graphcoder-artifact.py term::session::tests:: term::tty::tests:: term::region::tests:: term::frame:: completion::

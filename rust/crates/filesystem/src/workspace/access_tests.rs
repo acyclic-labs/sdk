@@ -3,6 +3,43 @@ use crate::Fs;
 use crate::access::{Action, INITIAL_POLICY, fixtures};
 use proptest::prelude::*;
 
+#[tokio::test]
+async fn retained_content_comparisons_recheck_current_read_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    let owner = workspace().await?;
+    let cancel = CancellationToken::new();
+    owner.write_text("/entry", "before").await?;
+    let bound = owner
+        .clone()
+        .bind_coarse_access(&Action::ALL, &cancel)
+        .await?;
+    let original = bound.head(WorkBudget::UNBOUNDED, &cancel).await?.value;
+    owner.write_text("/entry", "after").await?;
+    let changed = bound.head(WorkBudget::UNBOUNDED, &cancel).await?.value;
+    for (selected, expected) in [(&original, true), (&changed, false)] {
+        assert_eq!(
+            selected
+                .matches_content(&original, "/entry", WorkBudget::UNBOUNDED, &cancel)
+                .await?
+                .value,
+            expected
+        );
+    }
+    fixtures::publish_policy(&owner, &fixtures::denied(Action::Read, "entry")).await?;
+    for selected in [&original, &changed] {
+        assert!(matches!(
+            selected
+                .matches_content(&original, "/entry", WorkBudget::UNBOUNDED, &cancel)
+                .await,
+            Err(crate::OperationFailure {
+                error: WorkspaceError::AccessDenied,
+                ..
+            })
+        ));
+    }
+    Ok(())
+}
+
 async fn workspace() -> Result<
     Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
     Box<dyn std::error::Error>,

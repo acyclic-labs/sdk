@@ -14,6 +14,23 @@ const OPERATION: OperationId = OperationId::from_bytes([13; 16]);
 const ADMISSION: OperationId = OperationId::from_bytes([14; 16]);
 
 pub(super) async fn initialize(harness: &Harness) -> Result<SelectedModelContext> {
+    initialize_messages(
+        harness,
+        OPERATION,
+        [
+            (MessageKind::User, "old-user"),
+            (MessageKind::Assistant, "old-assistant"),
+            (MessageKind::User, PROMPT),
+        ],
+    )
+    .await
+}
+
+pub(in crate::local::admission) async fn initialize_messages(
+    harness: &Harness,
+    operation: OperationId,
+    messages: [(MessageKind, &str); 3],
+) -> Result<SelectedModelContext> {
     let reader = FilesystemContentVerifier::new(
         harness.files.clone(),
         &harness.verifier,
@@ -57,14 +74,7 @@ pub(super) async fn initialize(harness: &Harness) -> Result<SelectedModelContext
     )
     .await?;
     let mut ids = Vec::new();
-    for (index, (kind, text)) in [
-        (MessageKind::User, "old-user"),
-        (MessageKind::Assistant, "old-assistant"),
-        (MessageKind::User, PROMPT),
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    for (index, (kind, text)) in messages.into_iter().enumerate() {
         let file = publisher
             .stage_once(
                 OperationId::new(),
@@ -105,7 +115,7 @@ pub(super) async fn initialize(harness: &Harness) -> Result<SelectedModelContext
     append(
         &mut aggregate,
         harness,
-        OPERATION,
+        operation,
         Action::SelectModelContext {
             selection: (selection.clone()).into(),
         },

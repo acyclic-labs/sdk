@@ -40,6 +40,7 @@ tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring
 keyring = { version = "3.6.3", optional = true, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 
 [dev-dependencies]
+proptest.workspace = true
 jsonschema.workspace = true
 uuid.workspace = true
 

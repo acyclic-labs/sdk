@@ -31,6 +31,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 mod conversation;
 
+mod approval_files;
 mod cancellation;
 mod canonical;
 mod chunks;

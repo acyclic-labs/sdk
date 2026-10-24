@@ -102,7 +102,7 @@ pub(crate) use paths::{
     customer_path, customer_path_with_accounting, workspace_owned_strings_bytes,
     workspace_vec_bytes,
 };
-use read_core::{list, plan, read_link, read_range, read_selected, stat};
+use read_core::{list, matches_content, plan, read_link, read_range, read_selected, stat};
 pub use transaction::Transaction;
 
 #[cfg(test)]

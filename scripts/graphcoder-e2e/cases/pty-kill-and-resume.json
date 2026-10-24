@@ -43,21 +43,16 @@
       "actions": [
         {
           "when": {
+            "task_failure": "model provider unavailable (co",
             "contains": [
               "RECOVERED_E2E"
             ]
           },
-          "send": "\u0003"
-        },
-        {
-          "when": {
-            "contains": [
-              "cancelled"
-            ]
-          },
           "send": "\u0004"
         }
-      ]
+      ],
+      "resume": true,
+      "exit": 1
     }
   ],
   "assert": {

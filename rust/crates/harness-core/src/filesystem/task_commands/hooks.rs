@@ -24,7 +24,13 @@ where
         pipeline: ContextPipeline,
         tools: &crate::tool::ToolRegistry,
         context: Arc<TaskContext>,
-        (fence, operation, reconcile_only, digest): (&LeaseFence, OperationId, bool, [u8; 32]),
+        (fence, operation, reconcile_only, digest, phase): (
+            &LeaseFence,
+            OperationId,
+            bool,
+            [u8; 32],
+            &mut crate::executor::DispatchPhase,
+        ),
         prompt: &ModelContent,
         io: Option<&super::super::PreparationIo>,
     ) -> Result<PromptHooks> {
@@ -79,7 +85,7 @@ where
                     &input,
                     tools,
                     &context,
-                    (fence, operation, reconcile_only),
+                    (fence, operation, reconcile_only, phase),
                 )
                 .await?
             {
@@ -131,7 +137,12 @@ where
         input: &serde_json::Value,
         tools: &crate::tool::ToolRegistry,
         context: &Arc<TaskContext>,
-        (fence, operation, reconcile_only): (&LeaseFence, OperationId, bool),
+        (fence, operation, reconcile_only, phase): (
+            &LeaseFence,
+            OperationId,
+            bool,
+            &mut crate::executor::DispatchPhase,
+        ),
     ) -> Result<std::result::Result<Vec<String>, String>> {
         if bound.rules.commands(event, input, tools)?.next().is_none() {
             return Ok(Ok(Vec::new()));
@@ -154,7 +165,12 @@ where
                 issued,
                 reconcile_only,
             )
-            .await?
+            .await
+            .inspect_err(|_| {
+                // The hook ledger claims effects before the model journal.
+                // A lost capture acknowledgement retains command uncertainty.
+                phase.delegate();
+            })?
             .ok_or_else(|| Error::Invalid("started model has no prompt hook outcome".into()))?;
         crate::hooks::report(event, &output);
         let mut output = output;

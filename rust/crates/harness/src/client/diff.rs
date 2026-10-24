@@ -6,7 +6,7 @@ use crate::{
     conversation::{ContentResidencyVerifier, VolumeRef, validate_content_path},
     resources::GenerationRef,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 mod compute;
 mod file;
@@ -28,30 +28,7 @@ pub struct DiffLimits {
     pub work: usize,
 }
 
-/// One exact path in an authoritative volume query delta, relative to its volume.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DiffPath {
-    /// Canonical volume-relative path, including any declared subtree boundary.
-    pub path: String,
-    /// Pinned baseline content; absent for a path created since the fork base.
-    pub base: Option<PinnedContextPath>,
-    /// Pinned current content; absent for a removed path.
-    pub current: Option<PinnedContextPath>,
-}
-
-/// A pushed volume query publication. It carries only paths affected by this
-/// publication, while each path's baseline stays pinned to the fork base.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DiffPublication {
-    /// Previous query generation; a mismatch requires snapshot recovery.
-    pub previous: GenerationRef,
-    /// Exact published generation, including for deletion-only publications.
-    pub generation: GenerationRef,
-    /// All affected paths, including both names of a rename and hard-link aliases.
-    pub paths: Vec<DiffPath>,
-}
+pub use crate::context::{DiffPath, DiffPublication};
 
 /// Per-volume component of ClientViews. Query ownership and push subscriptions
 /// stay with the Streams/filesystem client; this reducer opens no watcher or timer.
@@ -139,6 +116,93 @@ impl DiffView {
         reader: &dyn ContentResidencyVerifier,
         limits: DiffLimits,
     ) -> Result<Vec<String>> {
+        let digest = self.validate_publication(publication, limits)?;
+        if publication.generation == self.generation && self.last_digest == Some(digest) {
+            return Ok(Vec::new());
+        }
+        if self.last_digest.is_none()
+            && publication.previous == self.base
+            && publication.generation == self.base
+            && publication.paths.is_empty()
+        {
+            self.last_digest = Some(digest);
+            return Ok(Vec::new());
+        }
+        if publication.previous != self.generation || publication.generation == self.generation {
+            return Err(Error::Conflict(
+                "diff query cursor mismatch; reopen snapshot".into(),
+            ));
+        }
+        let mut updates = Vec::new();
+        let mut work = limits.work;
+        let (mut count, mut rendered, mut added, mut removed) = (
+            self.files.len(),
+            self.render_bytes,
+            self.added,
+            self.removed,
+        );
+        for change in &publication.paths {
+            if let Some(old) = self.files.get(&change.path) {
+                count -= 1;
+                rendered -= old.patch.len();
+                added -= old.added;
+                removed -= old.removed;
+            }
+        }
+        if count > limits.files || rendered > limits.render_bytes {
+            return Err(Error::Invalid("diff view exceeds retained bounds".into()));
+        }
+        for change in &publication.paths {
+            let diff = path_diff(
+                change,
+                reader,
+                limits,
+                limits.render_bytes - rendered,
+                &mut work,
+            )
+            .await?;
+            if let Some(diff) = &diff {
+                count = count
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Invalid("diff count overflow".into()))?;
+                rendered = rendered
+                    .checked_add(diff.patch.len())
+                    .ok_or_else(|| Error::Invalid("diff size overflow".into()))?;
+                added = added
+                    .checked_add(diff.added)
+                    .ok_or_else(|| Error::Invalid("diff lines overflow".into()))?;
+                removed = removed
+                    .checked_add(diff.removed)
+                    .ok_or_else(|| Error::Invalid("diff lines overflow".into()))?;
+                if count > limits.files {
+                    return Err(Error::Invalid(
+                        "diff view exceeds retained file bound".into(),
+                    ));
+                }
+            }
+            updates.push((change.path.clone(), diff));
+        }
+        let mut changed = Vec::new();
+        for (path, diff) in updates {
+            if self.files.get(&path) != diff.as_ref() {
+                changed.push(path.clone());
+                if let Some(diff) = diff {
+                    self.files.insert(path, diff);
+                } else {
+                    self.files.remove(&path);
+                }
+            }
+        }
+        (self.added, self.removed, self.render_bytes) = (added, removed, rendered);
+        self.generation = publication.generation.clone();
+        self.last_digest = Some(digest);
+        Ok(changed)
+    }
+    fn validate_publication(
+        &self,
+        publication: &DiffPublication,
+        limits: DiffLimits,
+    ) -> Result<[u8; 32]> {
         if limits.files == 0
             || limits.changes == 0
             || limits.file_bytes == 0
@@ -182,87 +246,53 @@ impl DiffView {
         serde_json::to_writer(&mut hasher, publication)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let digest = *hasher.finalize().as_bytes();
-        if publication.generation == self.generation && self.last_digest == Some(digest) {
-            return Ok(Vec::new());
-        }
-        if self.last_digest.is_none()
-            && publication.previous == self.base
-            && publication.generation == self.base
-            && publication.paths.is_empty()
-        {
-            self.last_digest = Some(digest);
-            return Ok(Vec::new());
-        }
-        if publication.previous != self.generation || publication.generation == self.generation {
-            return Err(Error::Conflict(
-                "diff query cursor mismatch; reopen snapshot".into(),
-            ));
-        }
-        let mut updates = Vec::new();
-        let mut work = limits.work;
-        let (mut count, mut rendered, mut added, mut removed) = (
-            self.files.len(),
-            self.render_bytes,
-            self.added,
-            self.removed,
-        );
-        for change in &publication.paths {
-            if let Some(old) = self.files.get(&change.path) {
-                count -= 1;
-                rendered -= old.patch.len();
-                added -= old.added;
-                removed -= old.removed;
-            }
-        }
-        if count > limits.files || rendered > limits.render_bytes {
-            return Err(Error::Invalid("diff view exceeds retained bounds".into()));
-        }
-        for change in &publication.paths {
-            let before = read(&change.base, reader, limits.file_bytes, &mut work).await?;
-            let after = read(&change.current, reader, limits.file_bytes, &mut work).await?;
-            let diff = FileDiff::between_work(
-                before.as_deref(),
-                after.as_deref(),
-                limits.render_bytes - rendered,
-                &mut work,
-            )?;
-            if let Some(diff) = &diff {
-                count = count
-                    .checked_add(1)
-                    .ok_or_else(|| Error::Invalid("diff count overflow".into()))?;
-                rendered = rendered
-                    .checked_add(diff.patch.len())
-                    .ok_or_else(|| Error::Invalid("diff size overflow".into()))?;
-                added = added
-                    .checked_add(diff.added)
-                    .ok_or_else(|| Error::Invalid("diff lines overflow".into()))?;
-                removed = removed
-                    .checked_add(diff.removed)
-                    .ok_or_else(|| Error::Invalid("diff lines overflow".into()))?;
-                if count > limits.files {
-                    return Err(Error::Invalid(
-                        "diff view exceeds retained file bound".into(),
-                    ));
-                }
-            }
-            updates.push((change.path.clone(), diff));
-        }
-        let mut changed = Vec::new();
-        for (path, diff) in updates {
-            if self.files.get(&path) != diff.as_ref() {
-                changed.push(path.clone());
-                if let Some(diff) = diff {
-                    self.files.insert(path, diff);
-                } else {
-                    self.files.remove(&path);
-                }
-            }
-        }
-        (self.added, self.removed, self.render_bytes) = (added, removed, rendered);
-        self.generation = publication.generation.clone();
-        self.last_digest = Some(digest);
-        Ok(changed)
+        Ok(digest)
     }
+}
+
+async fn path_diff(
+    change: &DiffPath,
+    reader: &dyn ContentResidencyVerifier,
+    limits: DiffLimits,
+    maximum_render_bytes: usize,
+    work: &mut usize,
+) -> Result<Option<FileDiff>> {
+    Ok(if change.matches_base {
+        if change.base.is_none() || change.current.is_none() {
+            return Err(Error::Invalid("equal diff requires both endpoints".into()));
+        }
+        None
+    } else if let Some(bytes) = change
+        .largest_file_bytes
+        .filter(|bytes| *bytes > limits.file_bytes)
+    {
+        let kind = match (&change.base, &change.current) {
+            (None, Some(_)) => DiffKind::Added,
+            (Some(_), None) => DiffKind::Removed,
+            (Some(_), Some(_)) => DiffKind::Modified,
+            (None, None) => {
+                return Err(Error::Invalid("absent diff has a file length".into()));
+            }
+        };
+        Some(FileDiff {
+            kind,
+            binary: false,
+            omitted_bytes: Some(bytes),
+            added: 0,
+            removed: 0,
+            hunks: Vec::new(),
+            patch: String::new(),
+        })
+    } else {
+        let before = read(&change.base, reader, limits.file_bytes, work).await?;
+        let after = read(&change.current, reader, limits.file_bytes, work).await?;
+        FileDiff::between_work(
+            before.as_deref(),
+            after.as_deref(),
+            maximum_render_bytes,
+            work,
+        )?
+    })
 }
 
 /// A live diff subscription with an inspectable current view between reads.

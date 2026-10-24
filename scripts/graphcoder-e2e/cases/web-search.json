@@ -1,10 +1,7 @@
 {
   "id": "web-search",
   "workspace": {
-    "kind": "plain",
-    "files": {
-      "search.json": "{\"provider\": \"exa\", \"api_keys\": {\"exa\": \"e2e-unused-key\"}, \"endpoint\": \"{{url}}/search\"}"
-    }
+    "kind": "plain"
   },
   "model": {
     "steps": [
@@ -49,17 +46,19 @@
     {
       "mode": "headless",
       "text": "search fixture query",
-      "answer": "done",
-      "extra_args": [
-        "--search-config",
-        "{{workspace}}/search.json"
-      ]
+      "answer": "done"
+    },
+    {
+      "mode": "headless",
+      "text": "search fixture query",
+      "answer": "done"
     }
   ],
   "assert": {
     "requests": 2,
     "tool_contains": [
-      "SEARCH_E2E_RESULT"
+      "SEARCH_E2E_RESULT",
+      "https://example.invalid/e2e"
     ],
     "model_contains": [
       "\"name\":\"web_search\""
@@ -76,5 +75,8 @@
         }
       }
     ]
+  },
+  "settings": {
+    ".codex/search.json": "{\"provider\": \"exa\", \"api_keys\": {\"exa\": \"e2e-unused-key\"}, \"endpoint\": \"{{url}}/search\"}"
   }
 }

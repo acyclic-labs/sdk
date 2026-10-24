@@ -949,11 +949,13 @@ fn linux_demand_watch_accepts_directories_absent_from_the_source()
     Ok(())
 }
 
-mod work;
 #[cfg(unix)]
 mod fence_cookie;
 #[cfg(target_os = "macos")]
 mod fsevents_fence;
+#[cfg(target_os = "linux")]
+mod root_metadata;
+mod work;
 
 /// A failed delivery batch is reported once, but it keeps the watch
 /// invalidated: every later fence refuses to confirm, and every poll asks for

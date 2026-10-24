@@ -83,6 +83,9 @@ impl LocalHarness {
                 self.compact(operation, required(target)?, &instructions)
                     .await
             }
+            CommandResolution::Submit {
+                request: CommandRequest::Rewind,
+            } => self.rewind_checkpoint(operation, required(target)?).await,
             CommandResolution::Submit { request } => {
                 let (task, paused) = match request {
                     CommandRequest::TogglePause => (Some(required(target)?), None),

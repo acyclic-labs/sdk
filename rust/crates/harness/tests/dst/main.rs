@@ -216,7 +216,7 @@ fn prompt<'a>(
             return Ok(Vec::new());
         }
         // The same identity, request-file, client and finish path used by graphcoder -p.
-        let operation = entry(client::local_identity(harness, Some(prompt), None)).await?;
+        let operation = client::local_identity(None);
         let command = client::prepare_local_prompt(operation, prompt)?;
         let (mut connection, target) =
             entry(client::connect_local(harness.clone(), operation)).await?;

@@ -84,3 +84,6 @@ use validation::{validate_context_refs, validate_source_messages};
 use value::{BorrowedContext, ContextMessages};
 #[cfg(test)]
 mod tests;
+
+mod diff;
+pub use diff::{DiffPath, DiffPublication};

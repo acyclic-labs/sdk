@@ -100,6 +100,15 @@ pub enum Query {
     },
     /// Approval requests and decisions.
     Approvals(Component),
+    /// Open requests only; settled requests leave the derived index.
+    PendingApprovals(Component),
+    /// One exact approval request and its decisions, independent of task history.
+    Approval {
+        /// Original task identity.
+        task: Component,
+        /// Exact interaction identity.
+        request: Component,
+    },
     /// Notifications for one task.
     Notifications(Component),
     /// Active child execution acknowledgements; archive history is retained.
@@ -117,18 +126,28 @@ pub enum Query {
 impl Query {
     #[doc(hidden)]
     pub fn ranges(&self) -> Vec<(std::ops::Bound<FileKey>, std::ops::Bound<FileKey>)> {
-        use std::ops::Bound::{Excluded, Included, Unbounded};
-        let range = |task: &Component, first: TaskFile, last: TaskFile| {
-            let bound = |file| {
-                Included(FileKey::Task {
-                    task: task.clone(),
-                    file,
-                })
-            };
-            (bound(first), bound(last))
-        };
         let minimum = Component(Arc::from(""));
         let maximum = Component(Arc::from("\u{10ffff}"));
+        if let Self::Approval { task, request } = self {
+            return vec![
+                range(
+                    task,
+                    TaskFile::ApprovalRequest(request.clone()),
+                    TaskFile::ApprovalRequest(request.clone()),
+                ),
+                range(
+                    task,
+                    TaskFile::ApprovalDecision {
+                        request: request.clone(),
+                        principal: minimum,
+                    },
+                    TaskFile::ApprovalDecision {
+                        request: request.clone(),
+                        principal: maximum,
+                    },
+                ),
+            ];
+        }
         if let Self::TaskSession { task, session } = self {
             let mut ranges = Self::Session(session.clone()).ranges();
             ranges.push(range(
@@ -138,137 +157,31 @@ impl Query {
             ));
             return ranges;
         }
-        let chunks = |task: &Component, turn: u64| {
-            range(
-                task,
-                TaskFile::Chunk { turn, sequence: 0 },
-                TaskFile::Chunk {
-                    turn,
-                    sequence: u64::MAX,
-                },
-            )
-        };
-        let tools = |task: &Component, turn: u64, first: &Component, last: &Component| {
-            range(
-                task,
-                TaskFile::Tool {
-                    turn,
-                    call: first.clone(),
-                    file: ToolFile::Request,
-                },
-                TaskFile::Tool {
-                    turn,
-                    call: last.clone(),
-                    file: ToolFile::Result,
-                },
-            )
-        };
-        vec![match self {
-            Self::UiDirectory(directory) => (
-                Included(FileKey::Ui {
-                    directory: directory.clone(),
-                    name: minimum,
-                }),
-                Included(FileKey::Ui {
-                    directory: directory.clone(),
-                    name: maximum,
-                }),
-            ),
-            Self::SessionFiles {
-                session,
-                executions,
-            } => {
-                let (first, last) = if *executions {
-                    (
-                        TaskFile::ExecutionClaim(minimum),
-                        TaskFile::ExecutionResult(maximum),
-                    )
-                } else {
-                    (TaskFile::Request(minimum), TaskFile::Request(maximum))
-                };
-                (
-                    Included(FileKey::Session {
-                        session: session.clone(),
-                        file: first,
-                    }),
-                    Included(FileKey::Session {
-                        session: session.clone(),
-                        file: last,
-                    }),
-                )
-            }
-            Self::Session(session) => (
-                Included(FileKey::Session {
-                    session: session.clone(),
-                    file: TaskFile::Request(minimum),
-                }),
-                Included(FileKey::Session {
-                    session: session.clone(),
-                    file: TaskFile::ExecutionResult(maximum),
-                }),
-            ),
-            Self::Config => (
-                Included(FileKey::Input(InputPath("config/".into()))),
-                Included(FileKey::Input(InputPath("config/\u{10ffff}".into()))),
-            ),
-            Self::Inputs => (
-                Included(FileKey::Input(InputPath(String::new()))),
-                Included(FileKey::Input(InputPath("\u{10ffff}".into()))),
-            ),
-            Self::Plans => (
-                Included(FileKey::Plan(PlanName(Arc::from("")))),
-                Excluded(FileKey::Agent(minimum)),
-            ),
-            Self::Children => (
-                Included(FileKey::Child {
-                    reference: minimum,
-                    file: ChildFile::Request,
-                }),
-                Included(FileKey::Child {
-                    reference: maximum,
-                    file: ChildFile::Result(u64::MAX),
-                }),
-            ),
-            Self::Child(reference) => (
-                Included(FileKey::Child {
-                    reference: reference.clone(),
-                    file: ChildFile::Request,
-                }),
-                Included(FileKey::Child {
-                    reference: reference.clone(),
-                    file: ChildFile::Result(u64::MAX),
-                }),
-            ),
-            Self::ActiveAgents => (
-                Included(FileKey::Child {
-                    reference: minimum,
-                    file: super::super::ChildFile::Request,
-                }),
-                Included(FileKey::Child {
-                    reference: maximum,
-                    file: super::super::ChildFile::Result(u64::MAX),
-                }),
-            ),
-            Self::Agents => (
-                Included(FileKey::Agent(minimum)),
-                Included(FileKey::Agent(maximum)),
-            ),
-            Self::Turn { task, turn } => {
-                return vec![
-                    range(
-                        task,
-                        TaskFile::TurnRequest(*turn),
-                        TaskFile::TurnRequest(*turn),
-                    ),
-                    chunks(task, *turn),
-                    range(
-                        task,
-                        TaskFile::Completion(*turn),
-                        TaskFile::Completion(*turn),
-                    ),
-                    tools(task, *turn, &minimum, &maximum),
-                ];
-            }
+        if let Some(range) = self.root_range(&minimum, &maximum) {
+            return vec![range];
+        }
+        if let Self::Turn { task, turn } = self {
+            return vec![
+                range(
+                    task,
+                    TaskFile::TurnRequest(*turn),
+                    TaskFile::TurnRequest(*turn),
+                ),
+                chunks(task, *turn),
+                range(
+                    task,
+                    TaskFile::Completion(*turn),
+                    TaskFile::Completion(*turn),
+                ),
+                tools(task, *turn, &minimum, &maximum),
+            ];
+        }
+        vec![self.task_range(minimum, maximum)]
+    }
+
+    fn task_range(&self, minimum: Component, maximum: Component) -> FileRange {
+        use std::ops::Bound::{Included, Unbounded};
+        match self {
             Self::Chunks { task, turn }
             | Self::File(FileKey::Task {
                 task,
@@ -293,7 +206,7 @@ impl Query {
                     file: ToolFile::Result,
                 },
             ),
-            Self::Approvals(task) => range(
+            Self::Approvals(task) | Self::PendingApprovals(task) => range(
                 task,
                 TaskFile::ApprovalRequest(minimum),
                 TaskFile::ApprovalDecision {
@@ -311,120 +224,192 @@ impl Query {
             }
             Self::File(key) => (Included(key.clone()), Included(key.clone())),
             _ => (Unbounded, Unbounded),
-        }]
+        }
+    }
+
+    fn root_range(&self, minimum: &Component, maximum: &Component) -> Option<FileRange> {
+        use std::ops::Bound::{Excluded, Included};
+        Some(match self {
+            Self::UiDirectory(directory) => (
+                Included(FileKey::Ui {
+                    directory: directory.clone(),
+                    name: minimum.clone(),
+                }),
+                Included(FileKey::Ui {
+                    directory: directory.clone(),
+                    name: maximum.clone(),
+                }),
+            ),
+            Self::SessionFiles {
+                session,
+                executions,
+            } => {
+                let (first, last) = if *executions {
+                    (
+                        TaskFile::ExecutionClaim(minimum.clone()),
+                        TaskFile::ExecutionResult(maximum.clone()),
+                    )
+                } else {
+                    (
+                        TaskFile::Request(minimum.clone()),
+                        TaskFile::Request(maximum.clone()),
+                    )
+                };
+                (
+                    Included(FileKey::Session {
+                        session: session.clone(),
+                        file: first,
+                    }),
+                    Included(FileKey::Session {
+                        session: session.clone(),
+                        file: last,
+                    }),
+                )
+            }
+            Self::Session(session) => (
+                Included(FileKey::Session {
+                    session: session.clone(),
+                    file: TaskFile::Request(minimum.clone()),
+                }),
+                Included(FileKey::Session {
+                    session: session.clone(),
+                    file: TaskFile::ExecutionResult(maximum.clone()),
+                }),
+            ),
+            Self::Config => (
+                Included(FileKey::Input(InputPath("config/".into()))),
+                Included(FileKey::Input(InputPath("config/\u{10ffff}".into()))),
+            ),
+            Self::Inputs => (
+                Included(FileKey::Input(InputPath(String::new()))),
+                Included(FileKey::Input(InputPath("\u{10ffff}".into()))),
+            ),
+            Self::Plans => (
+                Included(FileKey::Plan(PlanName(Arc::from("")))),
+                Excluded(FileKey::Agent(minimum.clone())),
+            ),
+            Self::Children => (
+                Included(FileKey::Child {
+                    reference: minimum.clone(),
+                    file: ChildFile::Request,
+                }),
+                Included(FileKey::Child {
+                    reference: maximum.clone(),
+                    file: ChildFile::Result(u64::MAX),
+                }),
+            ),
+            Self::Child(reference) => (
+                Included(FileKey::Child {
+                    reference: reference.clone(),
+                    file: ChildFile::Request,
+                }),
+                Included(FileKey::Child {
+                    reference: reference.clone(),
+                    file: ChildFile::Result(u64::MAX),
+                }),
+            ),
+            Self::ActiveAgents => (
+                Included(FileKey::Child {
+                    reference: minimum.clone(),
+                    file: super::super::ChildFile::Request,
+                }),
+                Included(FileKey::Child {
+                    reference: maximum.clone(),
+                    file: super::super::ChildFile::Result(u64::MAX),
+                }),
+            ),
+            Self::Agents => (
+                Included(FileKey::Agent(minimum.clone())),
+                Included(FileKey::Agent(maximum.clone())),
+            ),
+            _ => return None,
+        })
     }
 
     /// Matches typed keys without rendering paths or decoding payload bytes.
     pub fn matches(&self, key: &FileKey) -> bool {
-        match (self, key) {
-            (Self::TaskSession { task: selected, .. }, FileKey::Task { task, .. }) => {
-                selected == task && super::super::recent::kind(key).is_some()
+        match self {
+            Self::Root => true,
+            Self::TaskSession {
+                task: selected_task,
+                session: selected_session,
+            } => match key {
+                FileKey::Task { task, .. } => {
+                    selected_task == task && super::super::recent::kind(key).is_some()
+                }
+                FileKey::Session { session, .. } => selected_session == session,
+                _ => false,
+            },
+            Self::UiDirectory(selected) => {
+                matches!(key, FileKey::Ui { directory, .. } if selected == directory)
             }
-            (
-                Self::TaskSession {
-                    session: selected, ..
-                },
-                FileKey::Session { session, .. },
-            ) => selected == session,
-            (Self::UiDirectory(selected), FileKey::Ui { directory, .. }) => selected == directory,
-            (Self::CommandSession { session, .. }, key) => {
+            Self::CommandSession { session, .. } => {
                 super::super::command_query::matches(session, key)
             }
-            (
-                Self::SessionFiles {
-                    session: selected,
-                    executions,
-                },
-                FileKey::Session { session, file },
-            ) => {
-                selected == session
-                    && if *executions {
-                        matches!(
-                            file,
-                            TaskFile::ExecutionClaim(_) | TaskFile::ExecutionResult(_)
-                        )
-                    } else {
-                        matches!(file, TaskFile::Request(_))
-                    }
+            Self::SessionFiles {
+                session: selected,
+                executions,
+            } => {
+                matches!(key, FileKey::Session { session, file } if selected == session && if *executions {
+                matches!(file, TaskFile::ExecutionClaim(_) | TaskFile::ExecutionResult(_))
+            } else { matches!(file, TaskFile::Request(_)) })
             }
-            (Self::Session(selected), FileKey::Session { session, .. }) => selected == session,
-            (
-                Self::ActiveAgents,
+            Self::Session(selected) => {
+                matches!(key, FileKey::Session { session, .. } if selected == session)
+            }
+            Self::ActiveAgents => matches!(
+                key,
                 FileKey::Child {
                     file: super::super::ChildFile::Status,
                     ..
-                },
-            ) => true,
-            (Self::Root, _)
-            | (Self::Plans, FileKey::Plan(_))
-            | (Self::Agents, FileKey::Agent(_))
-            | (Self::Tasks, FileKey::Task { .. }) => true,
-            (Self::Children, FileKey::Child { .. }) => true,
-            (Self::Child(wanted), FileKey::Child { reference, .. }) => wanted == reference,
-            (Self::Inputs, FileKey::Input(path)) => !path.0.starts_with("config/"),
-            (Self::Config, FileKey::Input(path)) => matches!(
-                path.0.as_str(),
-                "config/settings.json" | "config/keymap.json" | "config/theme.json"
+                }
             ),
-            (Self::Turns(t), FileKey::Task { task, file }) => t == task && file.turn().is_some(),
-            (Self::Turn { task: t, turn }, FileKey::Task { task, file }) => {
-                t == task && file.turn() == Some(*turn)
+            Self::Plans => matches!(key, FileKey::Plan(_)),
+            Self::Agents => matches!(key, FileKey::Agent(_)),
+            Self::Tasks => matches!(key, FileKey::Task { .. }),
+            Self::Children => matches!(key, FileKey::Child { .. }),
+            Self::Child(wanted) => {
+                matches!(key, FileKey::Child { reference, .. } if wanted == reference)
             }
-            (
-                Self::File(FileKey::Task {
-                    task: t,
-                    file: TaskFile::TextHead { turn, .. },
-                }),
-                FileKey::Task {
-                    task,
-                    file: TaskFile::Chunk { turn: n, .. },
-                },
-            )
-            | (
-                Self::Chunks { task: t, turn },
-                FileKey::Task {
-                    task,
-                    file: TaskFile::Chunk { turn: n, .. },
-                },
-            )
-            | (
-                Self::Tools { task: t, turn },
-                FileKey::Task {
-                    task,
-                    file: TaskFile::Tool { turn: n, .. },
-                },
-            ) => t == task && turn == n,
-            (
-                Self::Tool {
-                    task: t,
-                    turn,
-                    call,
-                },
-                FileKey::Task {
-                    task,
-                    file:
-                        TaskFile::Tool {
-                            turn: n, call: c, ..
-                        },
-                },
-            ) => t == task && turn == n && call == c,
-            (
-                Self::TaskOverviews,
+            Self::Inputs => matches!(key, FileKey::Input(path) if !path.0.starts_with("config/")),
+            Self::Config => {
+                matches!(key, FileKey::Input(path) if matches!(path.0.as_str(), "config/settings.json" | "config/keymap.json" | "config/theme.json"))
+            }
+            Self::TaskOverviews => matches!(
+                key,
                 FileKey::Task {
                     file: TaskFile::Status,
                     ..
-                },
-            ) => true,
-            (
-                Self::TaskView {
-                    task: selected,
-                    reasoning,
-                    details,
-                    terminal,
-                    ..
-                },
-                FileKey::Task { task, .. },
-            ) => {
+                }
+            ),
+            Self::File(FileKey::Task {
+                task: selected,
+                file:
+                    TaskFile::TextHead {
+                        turn: selected_turn,
+                        ..
+                    },
+            }) => {
+                matches!(key, FileKey::Task { task, file: TaskFile::Chunk { turn, .. } } if selected == task && selected_turn == turn)
+            }
+            Self::File(wanted) => wanted == key,
+            _ => self.matches_task(key),
+        }
+    }
+
+    fn matches_task(&self, key: &FileKey) -> bool {
+        let FileKey::Task { task, file } = key else {
+            return false;
+        };
+        match self {
+            Self::Task(selected) => selected == task,
+            Self::TaskView {
+                task: selected,
+                reasoning,
+                details,
+                terminal,
+                ..
+            } => {
                 selected == task
                     && super::super::recent::kind(key).is_some_and(|kind| match kind {
                         3 => *reasoning,
@@ -434,40 +419,62 @@ impl Query {
                         _ => true,
                     })
             }
-            (Self::Task(t), FileKey::Task { task, .. })
-            | (
-                Self::Executions(t),
-                FileKey::Task {
-                    task,
-                    file: TaskFile::ExecutionClaim(_) | TaskFile::ExecutionResult(_),
-                },
-            )
-            | (
-                Self::Requests(t),
-                FileKey::Task {
-                    task,
-                    file: TaskFile::Request(_),
-                },
-            )
-            | (
-                Self::Approvals(t),
-                FileKey::Task {
-                    task,
-                    file: TaskFile::ApprovalRequest(_) | TaskFile::ApprovalDecision { .. },
-                },
-            )
-            | (
-                Self::Notifications(t),
-                FileKey::Task {
-                    task,
-                    file: TaskFile::Notification(_),
-                },
-            ) => t == task,
-            (Self::File(wanted), actual) => wanted == actual,
+            Self::Turns(selected) => selected == task && file.turn().is_some(),
+            Self::Turn {
+                task: selected,
+                turn,
+            } => selected == task && file.turn() == Some(*turn),
+            Self::Chunks {
+                task: selected,
+                turn: selected_turn,
+            } => {
+                matches!(file, TaskFile::Chunk { turn, .. } if selected == task && selected_turn == turn)
+            }
+            Self::Tools {
+                task: selected,
+                turn: selected_turn,
+            } => {
+                matches!(file, TaskFile::Tool { turn, .. } if selected == task && selected_turn == turn)
+            }
+            Self::Tool {
+                task: selected,
+                turn: selected_turn,
+                call: selected_call,
+            } => {
+                matches!(file, TaskFile::Tool { turn, call, .. } if selected == task && selected_turn == turn && selected_call == call)
+            }
+            Self::Approval {
+                task: selected,
+                request: selected_request,
+            } => {
+                selected == task
+                    && match file {
+                        TaskFile::ApprovalRequest(request)
+                        | TaskFile::ApprovalDecision { request, .. } => selected_request == request,
+                        _ => false,
+                    }
+            }
+            Self::Executions(selected) => {
+                selected == task
+                    && matches!(
+                        file,
+                        TaskFile::ExecutionClaim(_) | TaskFile::ExecutionResult(_)
+                    )
+            }
+            Self::Requests(selected) => selected == task && matches!(file, TaskFile::Request(_)),
+            Self::Approvals(selected) | Self::PendingApprovals(selected) => {
+                selected == task
+                    && matches!(
+                        file,
+                        TaskFile::ApprovalRequest(_) | TaskFile::ApprovalDecision { .. }
+                    )
+            }
+            Self::Notifications(selected) => {
+                selected == task && matches!(file, TaskFile::Notification(_))
+            }
             _ => false,
         }
     }
-
     pub(crate) fn matches_file(&self, file: &super::super::FileValue) -> bool {
         self.matches(&file.key)
             && match self {
@@ -517,6 +524,11 @@ impl Query {
             [".tasks", t, "executions"] => Self::Executions(component(t)?),
             [".tasks", t, "turns"] => Self::Turns(component(t)?),
             [".tasks", t, "approvals"] => Self::Approvals(component(t)?),
+            [".tasks", t, "approvals", "open"] => Self::PendingApprovals(component(t)?),
+            [".tasks", t, "approvals", r] => Self::Approval {
+                task: component(t)?,
+                request: component(r)?,
+            },
             [".tasks", t, "notifications"] => Self::Notifications(component(t)?),
             [".tasks", t, "turns", n] => Self::Turn {
                 task: component(t)?,
@@ -551,4 +563,41 @@ impl Query {
                 || super::super::ChildStatus::parse(&file.bytes)
                     .is_ok_and(|status| status.active()))
     }
+}
+
+type FileRange = (std::ops::Bound<FileKey>, std::ops::Bound<FileKey>);
+
+fn range(task: &Component, first: TaskFile, last: TaskFile) -> FileRange {
+    let bound = |file| {
+        std::ops::Bound::Included(FileKey::Task {
+            task: task.clone(),
+            file,
+        })
+    };
+    (bound(first), bound(last))
+}
+fn chunks(task: &Component, turn: u64) -> FileRange {
+    range(
+        task,
+        TaskFile::Chunk { turn, sequence: 0 },
+        TaskFile::Chunk {
+            turn,
+            sequence: u64::MAX,
+        },
+    )
+}
+fn tools(task: &Component, turn: u64, first: &Component, last: &Component) -> FileRange {
+    range(
+        task,
+        TaskFile::Tool {
+            turn,
+            call: first.clone(),
+            file: ToolFile::Request,
+        },
+        TaskFile::Tool {
+            turn,
+            call: last.clone(),
+            file: ToolFile::Result,
+        },
+    )
 }

@@ -173,6 +173,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             Query::TaskView { .. } | Query::TaskSession { .. } | Query::TaskOverviews
         ) {
             super::recent::snapshot(&index, query, maximum_files)?
+        } else if let Query::PendingApprovals(task) = query {
+            super::approval_query::snapshot(&index, task, maximum_files)?
         } else if let Query::CommandSession { session, recent } = query {
             super::command_query::snapshot(&index, session, *recent, maximum_files)?
         } else {

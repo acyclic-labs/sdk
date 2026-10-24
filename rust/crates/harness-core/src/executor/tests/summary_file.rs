@@ -9,8 +9,8 @@ fn file_summary_returns_collected_text_without_reading_its_published_output() ->
         .unwrap();
     proptest::test_runner::TestRunner::default()
         .run(
-            &("[a-zé猫 ]{1,32}", "[a-zé猫 ]{1,32}"),
-            |(source, text)| {
+            &("[a-zé猫 ]{1,32}", "[a-zé猫 ]{1,32}", any::<bool>()),
+            |(source, text, completed)| {
                 runtime.block_on(async {
                     let journal = Journal::default();
                     let operation = OperationId::new();
@@ -67,8 +67,17 @@ fn file_summary_returns_collected_text_without_reading_its_published_output() ->
                         ]),
                         Limits::default(),
                     )?;
-                    let (provider, _) =
-                        counted_model(8_192, None, [ScriptedTurn::Text(text.clone())], []);
+                    let turn = if completed {
+                        tool_turn([
+                            ModelEvent::Content {
+                                delta: "superseded summary".into(),
+                            },
+                            ModelEvent::MessageCompleted { text: text.clone() },
+                        ])
+                    } else {
+                        ScriptedTurn::Text(text.clone())
+                    };
+                    let (provider, _) = counted_model(8_192, None, [turn], []);
                     // The default automatic policy does not fit this small model.
                     // A selected summary uses only its explicit output ceiling.
                     let executor = StockExecutor::new(

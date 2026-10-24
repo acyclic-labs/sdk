@@ -75,7 +75,10 @@ impl TaskRows {
         (self.reasoning_changed, &self.reasoning_rows)
     }
     pub(super) fn busy(&self) -> bool {
-        self.state["state"] == "active" || self.state["state"] == "running"
+        matches!(
+            self.state["state"].as_str(),
+            Some("active" | "running" | "pending")
+        )
     }
     pub(super) fn stopped(&self) -> bool {
         self.state["state"] == "cancelled"

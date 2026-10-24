@@ -1,0 +1,124 @@
+{
+  "id": "pty-diff-folder-move",
+  "workspace": {
+    "kind": "plain",
+    "files": {
+      "folder/a.txt": "FOLDER_BASE_E2E\n"
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "tools": [
+          {
+            "id": "edit",
+            "name": "write",
+            "arguments": {
+              "path": "folder/a.txt",
+              "text": "FOLDER_EDIT_E2E\n",
+              "media_type": "text/plain",
+              "display_name": "a.txt"
+            }
+          }
+        ]
+      },
+      {
+        "text": [
+          "FOLDER_EDIT_READY"
+        ]
+      },
+      {
+        "when": {
+          "user": "move folder"
+        },
+        "tools": [
+          {
+            "id": "move",
+            "name": "shell",
+            "arguments": {
+              "command": "node -e \"require('node:fs').renameSync('folder', 'moved')\""
+            }
+          }
+        ]
+      },
+      {
+        "text": [
+          "FOLDER_CHANGE_READY"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "edit folder content"
+        },
+        {
+          "when": {
+            "contains": [
+              "FOLDER_EDIT_READY",
+              "○"
+            ]
+          },
+          "prompt": "/diff "
+        },
+        {
+          "when": {
+            "contains": [
+              "folder/a.txt (modified)",
+              "+FOLDER_EDIT_E2E"
+            ]
+          },
+          "prompt": "move folder"
+        },
+        {
+          "when": {
+            "contains": [
+              "folder/a.txt (removed)",
+              "-FOLDER_BASE_E2E",
+              "moved/a.txt (added)",
+              "+FOLDER_EDIT_E2E",
+              "FOLDER_CHANGE_READY",
+              "○"
+            ]
+          },
+          "send": "\u0004"
+        }
+      ]
+    },
+    {
+      "mode": "pty",
+      "resume": true,
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "folder/a.txt (removed)",
+              "-FOLDER_BASE_E2E",
+              "moved/a.txt (added)",
+              "+FOLDER_EDIT_E2E"
+            ]
+          },
+          "send": "\u0004"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 4,
+    "files": {
+      "moved/a.txt": "FOLDER_EDIT_E2E\n"
+    },
+    "absent_files": [
+      "folder/a.txt"
+    ]
+  }
+}

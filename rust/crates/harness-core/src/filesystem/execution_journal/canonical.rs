@@ -1,5 +1,7 @@
 use super::*;
 
+mod output;
+
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
     P: StreamProvider,
@@ -280,7 +282,6 @@ where
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        use crate::executor::ModelPurpose;
         tracing::trace!(target: "acyclic_harness::read_profile", phase = "canonical-summary:begin");
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let result = async {
@@ -299,29 +300,14 @@ where
                 self,
                 operation,
                 limits.model_events_per_step.saturating_add(2),
-                |event| {
-                    matches!(
-                        event,
-                        ExecutionEvent::ContextPrepared { step: 0, .. }
-                            | ExecutionEvent::ModelStarted {
-                                step: 0,
-                                purpose: ModelPurpose::Summary,
-                                ..
-                            }
-                            | ExecutionEvent::Model {
-                                step: 0,
-                                purpose: ModelPurpose::Summary,
-                                ..
-                            }
-                    )
-                },
+                canonical_summary_event,
                 io,
             )
             .await?;
             let records = crate::executor::retain_preparation((records, hold))?;
             let mut prepared = None;
             let mut request = None;
-            let mut output = String::new();
+            let mut output = output::CanonicalSummaryOutput::default();
             let mut admission = ModelEventAdmission::default();
             for record in &records {
                 crate::model::charge_items(io, 1)?;
@@ -343,24 +329,13 @@ where
                         );
                     }
                     ExecutionEvent::Model { event, .. } => {
-                        let event =
-                            crate::executor::load_json::<ModelEvent>(self, event, io).await?;
-                        admission.observe(&event.0, limits, io)?;
-                        match &event.0 {
-                            ModelEvent::Content { delta } => {
-                                canonical_push_text(&mut output, delta, limits.render_bytes, io)?;
-                            }
-                            ModelEvent::Completed { .. }
-                            | ModelEvent::Reasoning { .. }
-                            | ModelEvent::ReasoningBlock { .. } => {}
-                            ModelEvent::ToolCall(_) => {
-                                return Err(canonical_boundary(
-                                    io,
-                                    crate::wire::ErrorCode::Invalid,
-                                    "canonical summary requested a tool",
-                                ));
-                            }
-                        }
+                        self.observe_summary_event(
+                            event,
+                            (&mut admission, &mut output),
+                            limits,
+                            io,
+                        )
+                        .await?;
                     }
                     _ => {
                         return Err(canonical_boundary(
@@ -371,6 +346,7 @@ where
                     }
                 }
             }
+            let output = output.finish(io)?;
             if prepared
                 .as_ref()
                 .and_then(|projection| projection.0.canonical.as_ref())
@@ -392,36 +368,75 @@ where
                 )
             })?;
             verify_summary_prefix_with_io(&request, source, summary.source_messages, limits, io)?;
-            crate::executor::with_history_io(io, |work| {
-                limits.validate_file(&summary.output, work)
-            })?;
-            let verifier = self.input_verifier.as_ref().ok_or_else(|| {
-                canonical_boundary(
-                    io,
-                    crate::wire::ErrorCode::Unsupported,
-                    "canonical summary reader is not bound",
-                )
-            })?;
-            let bytes = verifier
-                .read(&summary.output, self.maximum_payload_bytes, None, io)?
-                .await?;
-            if let Some(io) = io {
-                io.check_cancellation()?;
-            }
-            let matches = bytes.as_ref() == output.as_bytes();
-            if !matches {
-                return Err(canonical_boundary(
-                    io,
-                    crate::wire::ErrorCode::Conflict,
-                    "canonical summary output differs from admitted observations",
-                ));
-            }
-            Ok(())
+            self.verify_summary_output(&summary.output, &output, limits, io)
+                .await
         }
         .await;
         PreparationIo::release_since(io, Some(before))?;
         tracing::trace!(target: "acyclic_harness::read_profile", phase = "canonical-summary:end");
         result
+    }
+    async fn observe_summary_event(
+        &self,
+        reference: &FileRef,
+        state: (
+            &mut ModelEventAdmission,
+            &mut output::CanonicalSummaryOutput,
+        ),
+        limits: Limits,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        let (admission, output) = state;
+        let event = crate::executor::load_json::<ModelEvent>(self, reference, io).await?;
+        admission.observe(&event.0, limits, io)?;
+        match &event.0 {
+            ModelEvent::Content { .. } | ModelEvent::MessageCompleted { .. } => {
+                output.observe(&event.0, limits.render_bytes, io)?;
+            }
+            ModelEvent::Completed { .. }
+            | ModelEvent::Reasoning { .. }
+            | ModelEvent::ReasoningBlock { .. } => {}
+            ModelEvent::ToolCall(_) => {
+                return Err(canonical_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "canonical summary requested a tool",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    async fn verify_summary_output(
+        &self,
+        reference: &FileRef,
+        output: &str,
+        limits: Limits,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        crate::executor::with_history_io(io, |work| limits.validate_file(reference, work))?;
+        let verifier = self.input_verifier.as_ref().ok_or_else(|| {
+            canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "canonical summary reader is not bound",
+            )
+        })?;
+        let bytes = verifier
+            .read(reference, self.maximum_payload_bytes, None, io)?
+            .await?;
+        if let Some(io) = io {
+            io.check_cancellation()?;
+        }
+        let matches = bytes.as_ref() == output.as_bytes();
+        if !matches {
+            return Err(canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Conflict,
+                "canonical summary output differs from admitted observations",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -636,5 +651,22 @@ where
         },
         limits,
         io,
+    )
+}
+
+fn canonical_summary_event(event: &ExecutionEvent) -> bool {
+    matches!(
+        event,
+        ExecutionEvent::ContextPrepared { step: 0, .. }
+            | ExecutionEvent::ModelStarted {
+                step: 0,
+                purpose: crate::executor::ModelPurpose::Summary,
+                ..
+            }
+            | ExecutionEvent::Model {
+                step: 0,
+                purpose: crate::executor::ModelPurpose::Summary,
+                ..
+            }
     )
 }

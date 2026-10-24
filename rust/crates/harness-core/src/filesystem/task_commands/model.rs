@@ -5,6 +5,27 @@ use crate::filesystem::task_runtime::observed::boundary;
 use crate::filesystem::{FilesystemExecutionJournal, PreparationIo};
 use crate::wire::ErrorCode;
 
+type ModelJournal<P, A, O> = Option<Arc<FilesystemExecutionJournal<P, A, O>>>;
+
+struct ModelExecution<P, A, O> {
+    context: Arc<TaskContext>,
+    command: ModelExecutionInput,
+    pipeline: ContextPipeline,
+    tools: crate::tool::ToolRegistry,
+    journal: ModelJournal<P, A, O>,
+    operation: OperationId,
+    #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+    hooks: Option<Arc<crate::hooks::BoundHooks>>,
+}
+
+struct ModelExecutionInput {
+    input: ModelContent,
+    selected_context: Option<SelectedModelContext>,
+    max_steps: u32,
+    summary_source: Option<Box<FileRef>>,
+    selected_output_volume: Option<crate::conversation::VolumeRef>,
+    max_output_tokens: Option<u32>,
+}
 impl<P, A, O> FilesystemTaskCommands<'_, P, A, O>
 where
     P: StreamProvider + 'static,
@@ -13,26 +34,273 @@ where
 {
     pub(super) async fn model_command(
         &self,
-        CommandInvocation {
-            context,
+        invocation: CommandInvocation<'_>,
+        payload: Value,
+    ) -> Result<TaskCommandProgress> {
+        let task = invocation.admission.task_id();
+        let turn = invocation.command.operation_id;
+        let context = invocation.context;
+        let fence = invocation.fence;
+        let io = invocation.io;
+        let reconciliation_only = invocation.reconciliation_only;
+        let mut phase = crate::executor::DispatchPhase::new();
+        // Keep execution out of the failure-settlement frame. Preparation and
+        // recovery carry large storage futures, while settlement needs only the
+        // dispatch capability. The bounded allocation also retains native IO
+        // custody rather than adding an unaccounted executor allocation.
+        let result = match BoundedContentFuture::new(io, || {
+            self.run_model_command(invocation, payload, &mut phase)
+        }) {
+            Ok(future) => future.await,
+            Err(error) => Err(error),
+        };
+        #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+        if result.is_err()
+            && io.is_none()
+            && let Some(files) = context.task_files()
+        {
+            let operation = crate::filesystem::task_runtime::execution_operation(task, turn, io)?;
+            // Hook claims precede ModelStarted. Raw definitive errors are also
+            // settled by the worker, so preserving the original error here
+            // would still retire a task whose hook capture needs recovery.
+            if !matches!(
+                crate::hooks::effects::unsettled_prompt(&files.inner, task, operation).await,
+                Ok(false)
+            ) {
+                return Err(Error::Indeterminate(operation));
+            }
+        }
+        match result {
+            Err(error) if !reconciliation_only && phase.can_fail(&error) => {
+                let (journal, operation) =
+                    self.command_journal(task, fence, turn, context, io).await?;
+                let progress = phase
+                    .finish::<TurnOutput>(Err(error), journal.as_ref(), operation, io)
+                    .await?;
+                Self::model_progress(progress, io)
+            }
+            result => result,
+        }
+    }
+
+    async fn run_model_command(
+        &self,
+        invocation @ CommandInvocation {
+            admission,
+            fence,
+            command: _,
+            reconciliation_only,
+            io,
+            ..
+        }: CommandInvocation<'_>,
+        payload: Value,
+        phase: &mut crate::executor::DispatchPhase,
+    ) -> Result<TaskCommandProgress> {
+        let context = self.model_task_context(invocation).await?;
+        let stock = admission.task.name == "acyclic.stock_turn"
+            || super::super::child_agent::is_child(admission);
+        let mut command = self.decoded_model_command(payload, io)?;
+        let steering = self
+            .model_steering(invocation, &context, stock, &command)
+            .await?;
+        let (journal, operation) = self.prepared_model_journal(invocation, &context).await?;
+        if self
+            .reconcile_undispatched_model(
+                invocation,
+                #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+                &context,
+                journal.as_deref(),
+                operation,
+            )
+            .await?
+        {
+            return mail::reconciled(io);
+        }
+        if let Some(steering) = steering {
+            BoundedContentFuture::new(io, || {
+                self.steer(
+                    &context,
+                    fence,
+                    &mut command,
+                    steering,
+                    reconciliation_only,
+                    io,
+                )
+            })?
+            .await?;
+        }
+        reserve_model_input(io)?;
+        #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+        let manifest_digest = *command.context_manifest.descriptor().sha256();
+        let (pipeline, tools) = BoundedContentFuture::new(io, || {
+            self.prepared_model_context(
+                &context,
+                command.context_manifest,
+                command.summary_source.is_some(),
+                io,
+            )
+        })?
+        .await?;
+        #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+        let (pipeline, hooks) = if command.summary_source.is_none() {
+            match BoundedContentFuture::new(io, || {
+                self.prompt_hooks(
+                    pipeline,
+                    &tools,
+                    Arc::clone(&context),
+                    (
+                        fence,
+                        operation,
+                        reconciliation_only,
+                        manifest_digest,
+                        phase,
+                    ),
+                    &command.input,
+                    io,
+                )
+            })?
+            .await?
+            {
+                super::hooks::PromptHooks::Ready(pipeline, hooks) => (pipeline, hooks),
+                super::hooks::PromptHooks::Blocked(message) => {
+                    return ready(Outcome::<Value>::Failed { message }, io);
+                }
+            }
+        } else {
+            (pipeline, None)
+        };
+        self.execute_model_command(
+            invocation,
+            ModelExecution {
+                context,
+                command: ModelExecutionInput {
+                    input: command.input,
+                    selected_context: command.selected_context,
+                    max_steps: command.max_steps,
+                    summary_source: command.summary_source,
+                    selected_output_volume: command.selected_output_volume,
+                    max_output_tokens: command.max_output_tokens,
+                },
+                pipeline,
+                tools,
+                journal,
+                operation,
+                #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+                hooks,
+            },
+            phase,
+        )
+        .await
+    }
+
+    async fn model_task_context(
+        &self,
+        invocation: CommandInvocation<'_>,
+    ) -> Result<Arc<TaskContext>> {
+        if invocation.io.is_none() && invocation.context.owned_mailbox.is_none() {
+            Ok(Arc::new(
+                self.runtime
+                    .task_context(invocation.admission.task_id(), invocation.fence.clone())
+                    .await?,
+            ))
+        } else {
+            Ok(Arc::clone(invocation.context))
+        }
+    }
+
+    fn decoded_model_command(
+        &self,
+        payload: Value,
+        io: Option<&PreparationIo>,
+    ) -> Result<ModelTaskCommand> {
+        let command: ModelTaskCommand = mail::decode_command(payload, io)?;
+        self.model.as_ref().ok_or_else(|| {
+            boundary(
+                io,
+                ErrorCode::Unsupported,
+                "model command provider is not bound",
+            )
+        })?;
+        Ok(command)
+    }
+
+    async fn prepared_model_context(
+        &self,
+        context: &Arc<TaskContext>,
+        manifest: FileRef,
+        summary: bool,
+        io: Option<&PreparationIo>,
+    ) -> Result<(ContextPipeline, crate::tool::ToolRegistry)> {
+        if summary {
+            Ok((
+                ContextPipeline::default(),
+                crate::tool::ToolRegistry::default(),
+            ))
+        } else {
+            self.model_context(manifest, context, io).await
+        }
+    }
+
+    async fn prepared_model_journal(
+        &self,
+        invocation: CommandInvocation<'_>,
+        context: &Arc<TaskContext>,
+    ) -> Result<(ModelJournal<P, A, O>, OperationId)> {
+        let CommandInvocation {
             admission,
             fence,
             command: workflow,
             reconciliation_only,
             io,
-        }: CommandInvocation<'_>,
-        payload: Value,
-    ) -> Result<TaskCommandProgress> {
+            ..
+        } = invocation;
         let task = admission.task_id();
-        let context = if io.is_none() && context.owned_mailbox.is_none() {
-            Arc::new(self.runtime.task_context(task, fence.clone()).await?)
-        } else {
-            Arc::clone(context)
-        };
         let turn = workflow.operation_id;
-        let stock = admission.task.name == "acyclic.stock_turn"
-            || super::super::child_agent::is_child(admission);
-        let mut command: ModelTaskCommand = mail::decode_command(payload, io)?;
+        Ok(if io.is_some() || reconciliation_only {
+            let (journal, operation) = BoundedContentFuture::new(io, || {
+                self.command_journal(task, fence, turn, context, io)
+            })?
+            .await?;
+            (Some(journal), operation)
+        } else {
+            (
+                None,
+                crate::filesystem::task_runtime::execution_operation(task, turn, io)?,
+            )
+        })
+    }
+
+    async fn execute_model_command(
+        &self,
+        invocation: CommandInvocation<'_>,
+        prepared: ModelExecution<P, A, O>,
+        phase: &mut crate::executor::DispatchPhase,
+    ) -> Result<TaskCommandProgress> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if invocation.io.is_some() {
+            return BoundedContentFuture::new(invocation.io, || {
+                self.execute_native_model(invocation, prepared, phase)
+            })?
+            .await;
+        }
+        let CommandInvocation {
+            fence,
+            command: workflow,
+            reconciliation_only,
+            io,
+            ..
+        } = invocation;
+        let turn = workflow.operation_id;
+        let ModelExecution {
+            context,
+            command,
+            pipeline,
+            tools,
+            journal,
+            operation,
+            #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+            hooks,
+        } = prepared;
         let binding = self.model.as_ref().ok_or_else(|| {
             boundary(
                 io,
@@ -45,10 +313,226 @@ where
         } else {
             &binding.compaction
         };
-        let steering = if stock || command.mailbox_operation.is_some() {
+        let require_journal = || {
+            journal
+                .as_ref()
+                .ok_or_else(|| boundary(io, ErrorCode::Storage, "model journal is absent"))
+        };
+        let input = TurnInput {
+            operation_id: operation,
+            input: command.input,
+            selected_context: command.selected_context,
+            max_steps: command.max_steps,
+        };
+        BoundedContentFuture::new(io, || async {
+            let execution = BoundedContentFuture::new(io, || {
+                self.runtime.stock_execution_with_context(
+                    Arc::clone(&context),
+                    fence.clone(),
+                    turn,
+                    binding.model.clone(),
+                    binding.provider_for(&context),
+                    pipeline,
+                    tools,
+                    command.selected_output_volume.as_ref(),
+                )
+            })?
+            .await?
+            .with_compaction_policy(compaction.clone())
+            .with_summary_source(command.summary_source);
+            #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+            let execution = execution.with_hooks(hooks);
+            let execution = match command.max_output_tokens {
+                Some(maximum) => execution.with_max_output_tokens(maximum)?,
+                None => execution,
+            };
+            if reconciliation_only {
+                let result =
+                    BoundedContentFuture::new(io, || execution.reconcile_progress(input))?.await;
+                let journal = require_journal()?;
+                return BoundedContentFuture::new(io, || {
+                    Self::reconcile_model(result.map(drop), journal, operation, io)
+                })?
+                .await;
+            }
+            phase.delegate();
+            Self::model_progress(
+                BoundedContentFuture::new(io, || execution.execute_progress(input))?.await?,
+                io,
+            )
+        })?
+        .await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn execute_native_model(
+        &self,
+        invocation: CommandInvocation<'_>,
+        prepared: ModelExecution<P, A, O>,
+        phase: &mut crate::executor::DispatchPhase,
+    ) -> Result<TaskCommandProgress> {
+        let CommandInvocation {
+            admission,
+            fence,
+            reconciliation_only,
+            io,
+            ..
+        } = invocation;
+        let task = admission.task_id();
+        let ModelExecution {
+            context,
+            command,
+            pipeline,
+            tools,
+            journal,
+            operation,
+            #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+                hooks: _hooks,
+        } = prepared;
+        let binding = self.model.as_ref().ok_or_else(|| {
+            boundary(
+                io,
+                ErrorCode::Unsupported,
+                "model command provider is not bound",
+            )
+        })?;
+        let io =
+            io.ok_or_else(|| boundary(None, ErrorCode::Storage, "native model IO is absent"))?;
+        let compaction = if command.summary_source.is_some() {
+            &crate::context::CompactionPolicy::Disabled
+        } else {
+            &binding.compaction
+        };
+        let require_journal = || {
+            journal
+                .as_ref()
+                .ok_or_else(|| boundary(Some(io), ErrorCode::Storage, "model journal is absent"))
+        };
+        let input = TurnInput {
+            operation_id: operation,
+            input: command.input,
+            selected_context: command.selected_context,
+            max_steps: command.max_steps,
+        };
+        let work = io.original_native_work().ok_or_else(|| {
+            boundary(
+                Some(io),
+                ErrorCode::Unsupported,
+                "model requires original native work",
+            )
+        })?;
+        let context = match &command.selected_output_volume {
+            Some(volume) => context.with_output_volume(volume).await?,
+            None => context,
+        };
+        let journal = require_journal()?;
+        let executor = self
+            .runtime
+            .stock_executor_with_native_work(
+                task,
+                fence,
+                operation,
+                &context,
+                &binding.model,
+                binding.provider_for(&context),
+                &pipeline,
+                tools,
+                journal,
+                work,
+                compaction,
+                command.max_output_tokens,
+            )?
+            .with_summary_source(command.summary_source);
+        let executor = if reconciliation_only {
+            executor.into_reconciliation()
+        } else {
+            executor
+        };
+        phase.delegate();
+        let result = executor
+            .execute_progress_with_native_context(&context, &input, journal.as_ref(), work)?
+            .await;
+        drop(executor);
+        drop(context);
+        if reconciliation_only {
+            return Self::reconcile_model(result.map(drop), journal, operation, Some(io)).await;
+        }
+        let (progress, custody) = result?;
+        io.absorb_native_custody(custody)?;
+        Self::model_progress(progress, Some(io))
+    }
+
+    async fn reconcile_undispatched_model(
+        &self,
+        invocation: CommandInvocation<'_>,
+        #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))] context: &Arc<TaskContext>,
+        journal: Option<&FilesystemExecutionJournal<P, A, O>>,
+        operation: OperationId,
+    ) -> Result<bool> {
+        let CommandInvocation {
+            reconciliation_only,
+            io,
+            ..
+        } = invocation;
+        if !reconciliation_only {
+            return Ok(false);
+        }
+        let journal =
+            journal.ok_or_else(|| boundary(io, ErrorCode::Storage, "model journal is absent"))?;
+        if was_dispatched(journal, operation, MODEL_TASK_COMMAND_KIND, io).await? {
+            return Ok(false);
+        }
+        #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+        if io.is_none()
+            && let Some(executor) = &context.harness.workspace_tools
+        {
+            let task = invocation.admission.task_id();
+            let fence = invocation.fence;
+            // Hook dispatch precedes provider dispatch. Cancellation must
+            // retain a claimed hook even when no model request was sent.
+            let owned = Arc::new(self.runtime.task_context(task, fence.clone()).await?);
+            for event in crate::hooks::HookEvent::at(crate::hooks::HookSite::Prompt) {
+                let issued = ToolContext::new(
+                    Arc::clone(&owned),
+                    operation,
+                    super::hooks::prompt_hook_call(event),
+                    None,
+                )?;
+                executor
+                    .run_hooks(
+                        (&crate::hooks::Hooks::default(), [0; 32]),
+                        event,
+                        (&Value::Null).into(),
+                        &crate::tool::ToolRegistry::default(),
+                        issued,
+                        true,
+                    )
+                    .await?;
+            }
+        }
+        Ok(true)
+    }
+
+    async fn model_steering(
+        &self,
+        invocation: CommandInvocation<'_>,
+        context: &Arc<TaskContext>,
+        stock: bool,
+        command: &ModelTaskCommand,
+    ) -> Result<Option<(crate::workflow::WorkflowRecord, OperationId)>> {
+        let CommandInvocation {
+            admission,
+            fence,
+            command: workflow,
+            io,
+            ..
+        } = invocation;
+        let task = admission.task_id();
+        let turn = workflow.operation_id;
+        Ok(if stock || command.mailbox_operation.is_some() {
             BoundedContentFuture::new(io, || async {
                 let journal = self
-                    .command_workflow_journal(&context, task, fence, io)
+                    .command_workflow_journal(context, task, fence, io)
                     .await?;
                 let latest = journal.observe_latest_record(io).await?.ok_or_else(|| {
                     boundary(io, ErrorCode::Unauthorized, "model checkpoint is absent")
@@ -91,204 +575,7 @@ where
             .await?
         } else {
             None
-        };
-        let (journal, operation) = if io.is_some() || reconciliation_only {
-            let (journal, operation) = BoundedContentFuture::new(io, || {
-                self.command_journal(task, fence, turn, &context, io)
-            })?
-            .await?;
-            (Some(journal), operation)
-        } else {
-            (
-                None,
-                crate::filesystem::task_runtime::execution_operation(task, turn, io)?,
-            )
-        };
-        let require_journal = || {
-            journal
-                .as_ref()
-                .ok_or_else(|| boundary(io, ErrorCode::Storage, "model journal is absent"))
-        };
-        if reconciliation_only
-            && !was_dispatched(
-                require_journal()?.as_ref(),
-                operation,
-                MODEL_TASK_COMMAND_KIND,
-                io,
-            )
-            .await?
-        {
-            #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-            if io.is_none()
-                && let Some(executor) = &context.harness.workspace_tools
-            {
-                // Hook dispatch precedes provider dispatch. Cancellation must
-                // retain a claimed hook even when no model request was sent.
-                let owned = Arc::new(self.runtime.task_context(task, fence.clone()).await?);
-                for event in crate::hooks::HookEvent::at(crate::hooks::HookSite::Prompt) {
-                    let issued = ToolContext::new(
-                        Arc::clone(&owned),
-                        operation,
-                        super::hooks::prompt_hook_call(event),
-                        None,
-                    )?;
-                    executor
-                        .run_hooks(
-                            (&crate::hooks::Hooks::default(), [0; 32]),
-                            event,
-                            (&Value::Null).into(),
-                            &crate::tool::ToolRegistry::default(),
-                            issued,
-                            true,
-                        )
-                        .await?;
-                }
-            }
-            return mail::reconciled(io);
-        }
-        if let Some(steering) = steering {
-            BoundedContentFuture::new(io, || {
-                self.steer(
-                    &context,
-                    fence,
-                    &mut command,
-                    steering,
-                    reconciliation_only,
-                    io,
-                )
-            })?
-            .await?;
-        }
-        if let Some(io) = io {
-            io.retain_owned(
-                std::mem::size_of::<TurnInput>()
-                    .saturating_sub(std::mem::size_of::<ModelTaskCommand>()) as u64,
-            )?;
-        }
-        #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-        let manifest_digest = *command.context_manifest.descriptor().sha256();
-        let (pipeline, tools) = BoundedContentFuture::new(io, || async {
-            if command.summary_source.is_some() {
-                Ok((
-                    crate::context::ContextPipeline::default(),
-                    crate::tool::ToolRegistry::default(),
-                ))
-            } else {
-                self.model_context(command.context_manifest, &context, io)
-                    .await
-            }
-        })?
-        .await?;
-        #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-        let (pipeline, hooks) = if command.summary_source.is_none() {
-            match BoundedContentFuture::new(io, || {
-                self.prompt_hooks(
-                    pipeline,
-                    &tools,
-                    Arc::clone(&context),
-                    (fence, operation, reconciliation_only, manifest_digest),
-                    &command.input,
-                    io,
-                )
-            })?
-            .await?
-            {
-                super::hooks::PromptHooks::Ready(pipeline, hooks) => (pipeline, hooks),
-                super::hooks::PromptHooks::Blocked(message) => {
-                    return ready(Outcome::<Value>::Failed { message }, io);
-                }
-            }
-        } else {
-            (pipeline, None)
-        };
-        let input = TurnInput {
-            operation_id: operation,
-            input: command.input,
-            selected_context: command.selected_context,
-            max_steps: command.max_steps,
-        };
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(io) = io {
-            return BoundedContentFuture::new(Some(io), || async {
-                let work = io.original_native_work().ok_or_else(|| {
-                    boundary(
-                        Some(io),
-                        ErrorCode::Unsupported,
-                        "model requires original native work",
-                    )
-                })?;
-                let context = match &command.selected_output_volume {
-                    Some(volume) => context.with_output_volume(volume).await?,
-                    None => context,
-                };
-                let journal = require_journal()?;
-                let executor = self
-                    .runtime
-                    .stock_executor_with_native_work(
-                        task,
-                        fence,
-                        operation,
-                        &context,
-                        &binding.model,
-                        binding.provider_for(&context),
-                        &pipeline,
-                        tools,
-                        journal,
-                        work,
-                        compaction,
-                        command.max_output_tokens,
-                    )?
-                    .with_summary_source(command.summary_source);
-                let executor = if reconciliation_only {
-                    executor.into_reconciliation()
-                } else {
-                    executor
-                };
-                let result = executor
-                    .execute_progress_with_native_context(&context, &input, journal.as_ref(), work)?
-                    .await;
-                drop(executor);
-                drop(context);
-                if reconciliation_only {
-                    return Self::reconcile_model(result.map(drop), journal, operation, Some(io))
-                        .await;
-                }
-                let (progress, custody) = result?;
-                io.absorb_native_custody(custody)?;
-                Self::model_progress(progress, Some(io))
-            })?
-            .await;
-        }
-        BoundedContentFuture::new(io, || async {
-            let execution = self
-                .runtime
-                .stock_execution_with_context(
-                    Arc::clone(&context),
-                    fence.clone(),
-                    turn,
-                    binding.model.clone(),
-                    binding.provider_for(&context),
-                    pipeline,
-                    tools,
-                    command.selected_output_volume.as_ref(),
-                )
-                .await?
-                .with_compaction_policy(compaction.clone())
-                .with_summary_source(command.summary_source);
-            #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-            let execution = execution.with_hooks(hooks);
-            let execution = match command.max_output_tokens {
-                Some(maximum) => execution.with_max_output_tokens(maximum)?,
-                None => execution,
-            };
-            if reconciliation_only {
-                let result = execution.reconcile_progress(input).await;
-                return Self::reconcile_model(result.map(drop), require_journal()?, operation, io)
-                    .await;
-            }
-            Self::model_progress(execution.execute_progress(input).await?, io)
-        })?
-        .await
+        })
     }
 
     fn model_progress(
@@ -296,6 +583,12 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<TaskCommandProgress> {
         match progress {
+            ExecutionProgress::PreDispatchFailed(failure) => ready(
+                Outcome::<TurnOutput>::Failed {
+                    message: failure.into_message(),
+                },
+                io,
+            ),
             ExecutionProgress::Ready(output) => ready(Outcome::Succeeded(output), io),
             ExecutionProgress::Pending(_) => Ok(TaskCommandProgress::Pending),
             ExecutionProgress::Rejected(reason) => rejected(reason, io),
@@ -447,4 +740,14 @@ where
         command.input = ModelContent::Parts(parts);
         Ok(())
     }
+}
+
+fn reserve_model_input(io: Option<&PreparationIo>) -> Result<()> {
+    if let Some(io) = io {
+        io.retain_owned(
+            std::mem::size_of::<TurnInput>().saturating_sub(std::mem::size_of::<ModelTaskCommand>())
+                as u64,
+        )?;
+    }
+    Ok(())
 }

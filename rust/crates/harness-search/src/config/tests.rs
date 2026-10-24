@@ -1,5 +1,20 @@
 use super::*;
 
+proptest::proptest! {
+    #[test]
+    fn configured_gateway_preserves_adapter_endpoint_and_rejects_unsafe_urls(port in 1u16..=65535, path in "[a-z]{0,12}") {
+        for provider in [SearchBackend::Exa,SearchBackend::TinyFish] {
+            let mut config = SearchConfig::explicit(provider,[(provider.id().into(),"test-only-placeholder".into())].into());
+            config.endpoint = Some(format!("http://127.0.0.1:{port}/{path}"));
+            assert!(config.provider().unwrap().is_some());
+            for endpoint in [format!("file:///tmp/{path}"),format!("http://user@127.0.0.1:{port}/{path}"),format!("http://127.0.0.1:{port}/{path}?key=secret"),format!("http://127.0.0.1:{port}/{path}#fragment")] {
+                config.endpoint = Some(endpoint);
+                assert!(config.provider().is_err(),"invalid configured endpoint bypassed adapter validation");
+            }
+        }
+    }
+}
+
 #[test]
 fn config_provider_names_match_keychain_accounts_and_environment_variables() -> Result<()> {
     for (id, variable) in [("exa", "EXA_API_KEY"), ("tinyfish", "TINYFISH_API_KEY")] {
@@ -27,6 +42,7 @@ fn credential_precedence_is_lazy_and_blank_keys_fall_through() -> Result<()> {
             (None, None, None, None),
         ] {
             let config = SearchConfig {
+                endpoint: None,
                 provider,
                 api_keys: config_key
                     .map(|key| (provider.id().into(), key.into()))
@@ -90,5 +106,18 @@ fn malformed_config_and_keychain_errors_do_not_disclose_secrets() -> Result<()> 
         return Err(Error::Invalid("invalid config accepted".into()));
     };
     assert!(!error.to_string().contains("unknown-secret"));
+    Ok(())
+}
+
+#[test]
+fn isolated_settings_never_consult_native_credentials() -> Result<()> {
+    let config = SearchConfig::default().without_native_sources();
+    assert_eq!(
+        config.resolve_with(
+            |_| panic!("isolated settings consulted keychain"),
+            |_| panic!("isolated settings consulted environment"),
+        )?,
+        None
+    );
     Ok(())
 }

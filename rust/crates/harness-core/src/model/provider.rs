@@ -11,6 +11,12 @@ pub enum ModelEvent {
         /// Incremental content.
         delta: String,
     },
+    /// Authoritative text of the final completed assistant message in a step.
+    /// Deltas remain independently available for live transcript rendering.
+    MessageCompleted {
+        /// Exact message text, including an empty message.
+        text: String,
+    },
     /// Provider-exposed reasoning fragment.
     Reasoning {
         /// Incremental reasoning.
@@ -98,6 +104,7 @@ impl ModelEvent {
     pub fn logical_owned_bytes(&self) -> Result<u64> {
         let payload = match self {
             Self::Content { delta } | Self::Reasoning { delta } => delta.capacity() as u64,
+            Self::MessageCompleted { text } => text.capacity() as u64,
             Self::ReasoningBlock { block } => block.payload_bytes()?,
             Self::ToolCall(call) => call.payload_bytes()?,
             Self::Completed { metadata } => {

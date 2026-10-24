@@ -117,3 +117,228 @@ proptest! {
 fn payload_only_result_budget_is_detected_negative_control() {
     futures::executor::block_on(framed_result::<false>(8, false));
 }
+
+async fn selection_before_completion<const ORDERED: bool>(id: [u8; 16], failed: bool) {
+    use futures::StreamExt as _;
+    let volume = Arc::new(
+        files::TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("selection-order").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let mut commands =
+        CommandSession::open(volume.clone(), uuid::Uuid::from_bytes([1; 16]), 65536, 128)
+            .await
+            .unwrap();
+    let request = files::FileValue::new(
+        files::FileKey::Session {
+            session: component(commands.session.to_string()).unwrap(),
+            file: files::TaskFile::Request(
+                component(OperationId::from_bytes([2; 16]).to_string()).unwrap(),
+            ),
+        },
+        serde_json::to_vec(&CommandResolution::Prompt {
+            text: "first".into(),
+            source: None,
+            mentions: Vec::new(),
+        })
+        .unwrap(),
+    );
+    volume
+        .append(volume.head().await.unwrap(), &request)
+        .await
+        .unwrap();
+    let mut observation = volume.observe(files::Query::Root, None, 128).await.unwrap();
+    let selected = TaskId::from_bytes(id);
+    SELECTION_AFTER_OUTCOME.with(|flag| flag.set(!ORDERED));
+    let outcome = commands
+        .consume(&request, |_, _, _| async {
+            if failed {
+                Err(Error::TaskFailed {
+                    task: selected,
+                    message: "interrupted stream".into(),
+                })
+            } else {
+                Ok(json!({"selected_task":selected}))
+            }
+        })
+        .await;
+    SELECTION_AFTER_OUTCOME.with(|flag| flag.set(false));
+    assert_eq!(outcome.is_err(), failed);
+    assert_eq!(commands.active_task(), None);
+    assert_eq!(commands.presentation_task().unwrap(), Some(selected));
+    let mut seen_selection = false;
+    while let Some(change) = observation.changes.next().await {
+        let change = change.unwrap();
+        for file in change.file.iter().chain(&change.files) {
+            match &file.key {
+                files::FileKey::Ui { name, .. } if name.as_str() == "layout.json" => {
+                    seen_selection = serde_json::from_slice::<Value>(&file.bytes).unwrap()["selected_task"]
+                        == json!(selected);
+                }
+                files::FileKey::Session {
+                    file: files::TaskFile::ExecutionResult(_),
+                    ..
+                } => {
+                    let outcome: Value = serde_json::from_slice(&file.bytes).unwrap();
+                    assert_eq!(
+                        outcome["completion"],
+                        if failed { "failed" } else { "completed" }
+                    );
+                    assert!(
+                        seen_selection,
+                        "completion must follow its selected conversation"
+                    );
+                    return;
+                }
+                _ => {}
+            }
+        }
+    }
+    panic!("missing completion");
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+    #[test]
+    fn every_completion_observer_has_the_selection(id in prop::array::uniform16(any::<u8>()), failed in any::<bool>()) {
+        futures::executor::block_on(selection_before_completion::<true>(id, failed));
+    }
+}
+
+#[test]
+#[should_panic(expected = "completion must follow its selected conversation")]
+fn completion_before_selection_negative_control() {
+    futures::executor::block_on(selection_before_completion::<false>([3; 16], false));
+}
+
+#[test]
+fn failed_task_keeps_its_selected_transcript() {
+    futures::executor::block_on(selection_before_completion::<true>([3; 16], true));
+}
+
+fn cancelled_execution<const RETAIN: bool>(task: TaskId) -> crate::client::CommandExecution {
+    let failure = Err(Error::InteractionRejected(
+        crate::InteractionRejection::Cancelled,
+    ));
+    if RETAIN {
+        crate::client::CommandExecution::admitted(task, failure)
+    } else {
+        // The former uncontextual error discarded an admitted task.
+        crate::client::CommandExecution::from(failure)
+    }
+}
+
+async fn cancelled_selection<const RETAIN: bool>(task_root: bool, recovering: bool) {
+    let volume = Arc::new(
+        files::TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("cancelled-selection").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let session = uuid::Uuid::from_bytes([1; 16]);
+    let operation = OperationId::from_bytes([2; 16]);
+    let selected = crate::runtime::task_id_for_admission(operation);
+    let id = component(operation.to_string()).unwrap();
+    let request = files::FileValue::new(
+        if task_root {
+            files::FileKey::Task {
+                task: component(TaskId::from_bytes([3; 16]).to_string()).unwrap(),
+                file: files::TaskFile::Request(id),
+            }
+        } else {
+            files::FileKey::Session {
+                session: component(session.to_string()).unwrap(),
+                file: files::TaskFile::Request(id),
+            }
+        },
+        serde_json::to_vec(&CommandResolution::Prompt {
+            text: "retain my interrupted answer".into(),
+            source: None,
+            mentions: Vec::new(),
+        })
+        .unwrap(),
+    );
+    volume
+        .append(volume.head().await.unwrap(), &request)
+        .await
+        .unwrap();
+    let mut commands = CommandSession::open(volume.clone(), session, 65536, 128)
+        .await
+        .unwrap();
+    if recovering {
+        let claim = related(&request.key, files::TaskFile::ExecutionClaim).unwrap();
+        commands
+            .publish(claim, request.bytes.to_vec(), true)
+            .await
+            .unwrap();
+    }
+    let outcome = commands
+        .consume_with_recovery::<true, _, _, _, _>(
+            &request,
+            |_, _, _| async {
+                assert!(!recovering, "claimed cancellation redispatched");
+                cancelled_execution::<RETAIN>(selected)
+            },
+            |_, _, _| async {
+                assert!(recovering, "unclaimed cancellation recovered");
+                cancelled_execution::<RETAIN>(selected)
+            },
+        )
+        .await;
+    assert!(matches!(
+        outcome,
+        Err(Error::InteractionRejected(
+            crate::InteractionRejection::Cancelled
+        ))
+    ));
+    assert_eq!(commands.active_task(), None);
+    assert_eq!(
+        commands.presentation_task().unwrap(),
+        Some(selected),
+        "cancelled completion lost its admitted conversation"
+    );
+    assert_eq!(
+        commands.output_page(0).unwrap().unwrap()["completion"],
+        "cancelled"
+    );
+    drop(commands);
+    let mut reopened = CommandSession::open(volume, session, 65536, 128)
+        .await
+        .unwrap();
+    assert_eq!(reopened.presentation_task().unwrap(), Some(selected));
+    assert!(
+        reopened
+            .consume(&request, |_, _, _| async {
+                panic!("cancelled task redispatched")
+            })
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn cancelled_admissions_retain_selection_and_never_redispatch() {
+    for task_root in [false, true] {
+        for recovering in [false, true] {
+            futures::executor::block_on(cancelled_selection::<true>(task_root, recovering));
+        }
+    }
+}
+
+#[test]
+#[should_panic(expected = "cancelled completion lost its admitted conversation")]
+fn uncontextual_cancellation_is_detected_negative_control() {
+    futures::executor::block_on(cancelled_selection::<false>(false, false));
+}
+
+#[test]
+#[should_panic(expected = "completion must follow its selected conversation")]
+fn failed_completion_before_selection_negative_control() {
+    futures::executor::block_on(selection_before_completion::<false>([3; 16], true));
+}

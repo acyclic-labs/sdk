@@ -15,6 +15,7 @@ path = "../graphcoder.rs"
 [dependencies]
 acyclic-harness = { path = "../../..", features = ["filesystem-local", "native-execution", "terminal", "tui", "search-http"] }
 acyclic-harness-providers = { path = "../../../../harness-providers" }
+acyclic-stream = { path = "../../../../stream", default-features = false }
 clap.workspace = true
 dirs.workspace = true
 futures.workspace = true
@@ -27,7 +28,6 @@ workspace = true
 acyclic-harness = { path = "../../..", features = ["test-support"] }
 serde.workspace = true
 serde_json.workspace = true
-acyclic-stream = { path = "../../../../stream", default-features = false }
 proptest.workspace = true
 acyclic-test-support = { path = "../../../../test-support" }
 alacritty_terminal = "0.26"

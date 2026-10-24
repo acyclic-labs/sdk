@@ -148,6 +148,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             Query::TaskView { .. } | Query::TaskSession { .. } | Query::TaskOverviews
         ) {
             super::recent::snapshot(&index, query, maximum_files)?
+        } else if let Query::PendingApprovals(task) = query {
+            super::approval_query::snapshot(&index, task, maximum_files)?
         } else if let Query::CommandSession { session, recent } = query {
             super::command_query::snapshot(&index, session, *recent, maximum_files)?
         } else {
@@ -318,8 +320,18 @@ pub fn record_changes(
             cursor.position += 1;
             cursor.accepted = cursor.accepted.max(cursor.position);
             cursor.commit = *record.commit_id.as_bytes();
+            let settled =
+                if matches!(query, Query::PendingApprovals(_)) && query.matches_file(&file) {
+                    super::approval_query::Pending::prepare(&file.key)
+                        .filter(|(_, open)| !open)
+                        .map(|(key, _)| key)
+                } else {
+                    None
+                };
             let file = query.matches_file(&file).then_some(file);
-            let (file, removed) = if query == Query::ActiveAgents {
+            let (file, removed) = if let Some(key) = settled {
+                (None, vec![key])
+            } else if query == Query::ActiveAgents {
                 match file {
                     Some(file) if !super::ChildStatus::parse(&file.bytes)?.active() => {
                         (None, vec![file.key])

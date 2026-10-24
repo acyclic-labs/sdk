@@ -9,6 +9,17 @@ pub(super) struct Commands<'a> {
     pub drained: acyclic_fs::CancellationToken,
 }
 
+impl<'a> Commands<'a> {
+    pub(super) fn new(harness: &'a LocalHarness, inner: &'a dyn TaskCommandHost) -> Self {
+        Self {
+            harness,
+            inner,
+            cancellation: acyclic_fs::CancellationToken::new(),
+            drained: acyclic_fs::CancellationToken::new(),
+        }
+    }
+}
+
 impl TaskCommandHost for Commands<'_> {
     fn invocation_cancellation(&self) -> Option<&acyclic_fs::CancellationToken> {
         Some(&self.cancellation)

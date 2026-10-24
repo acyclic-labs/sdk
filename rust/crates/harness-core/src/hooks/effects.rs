@@ -7,6 +7,42 @@ use crate::{
 };
 use acyclic_stream::{CommitCondition, StreamProvider};
 
+fn keys(task: TaskId, operation: OperationId, phase: &str) -> Result<(FileKey, FileKey)> {
+    let task = Component::new(task.to_string())?;
+    Ok((
+        FileKey::Task {
+            task: task.clone(),
+            file: TaskFile::Context(Component::new(format!("hook-{operation}-{phase}-claim"))?),
+        },
+        FileKey::Task {
+            task,
+            file: TaskFile::Context(Component::new(format!("hook-{operation}-{phase}-outcome"))?),
+        },
+    ))
+}
+
+/// Claims without outcomes must recover before a preparation error can settle.
+pub(crate) async fn unsettled_prompt<P: StreamProvider + ?Sized>(
+    volume: &TaskVolume<P>,
+    task: TaskId,
+    operation: OperationId,
+) -> Result<bool> {
+    let pairs = HookEvent::at(HookSite::Prompt)
+        .map(|event| keys(task, operation, event.name()))
+        .collect::<Result<Vec<_>>>()?;
+    let selected: Vec<_> = pairs
+        .iter()
+        .flat_map(|(a, b)| [a.clone(), b.clone()])
+        .collect();
+    let snapshot = volume
+        .snapshot_files(&selected, &Query::Task(Component::new(task.to_string())?))
+        .await?;
+    Ok(pairs.iter().any(|(claim, outcome)| {
+        snapshot.files.iter().any(|file| file.key == *claim)
+            && !snapshot.files.iter().any(|file| file.key == *outcome)
+    }))
+}
+
 #[doc(hidden)]
 pub async fn run_once<P, A, AF, F, FF, const CLAIM: bool>(
     volume: &TaskVolume<P>,
@@ -29,15 +65,7 @@ where
             "hook outcome requires a finite file bound".into(),
         ));
     }
-    let task = Component::new(task.to_string())?;
-    let claim = FileKey::Task {
-        task: task.clone(),
-        file: TaskFile::Context(Component::new(format!("hook-{operation}-{phase}-claim"))?),
-    };
-    let result = FileKey::Task {
-        task,
-        file: TaskFile::Context(Component::new(format!("hook-{operation}-{phase}-outcome"))?),
-    };
+    let (claim, result) = keys(task, operation, phase)?;
     let bounds = JsonBounds {
         maximum_bytes,
         maximum_items: maximum_bytes,

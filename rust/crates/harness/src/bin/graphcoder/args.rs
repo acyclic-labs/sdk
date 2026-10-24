@@ -25,8 +25,12 @@ pub struct Args {
     pub prompt: Option<String>,
     #[arg(long, value_enum, default_value_t, requires_if("jsonl", "operation"))]
     pub input_format: InputFormat,
+    /// Resume/replay this submission instead of allocating a new launch identity.
     #[arg(long)]
     pub operation: Option<String>,
+    /// Reopen the last interactive conversation, including after a normal quit.
+    #[arg(long, conflicts_with_all = ["prompt", "input_format"])]
+    pub resume: bool,
     #[arg(long)]
     pub inline: bool,
 }
@@ -37,7 +41,14 @@ mod tests {
 
     #[test]
     fn headless_modes_use_explicit_jsonl_identity_and_reject_mixed_formats() {
+        assert!(
+            Args::try_parse_from(["graphcoder", "--resume"])
+                .unwrap()
+                .resume
+        );
+        assert!(Args::try_parse_from(["graphcoder", "--resume", "-p", "hello"]).is_err());
         assert!(Args::try_parse_from(["graphcoder", "-p", "hello"]).is_ok());
+        assert!(Args::try_parse_from(["graphcoder", "--search-config", "search.json"]).is_err());
         assert!(Args::try_parse_from(["graphcoder", "--input-format", "jsonl"]).is_err());
         assert!(
             Args::try_parse_from([

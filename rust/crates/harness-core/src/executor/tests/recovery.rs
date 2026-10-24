@@ -76,13 +76,13 @@ async fn prepared_context_survives_recovery_before_model_dispatch() -> Result<()
         .ensure_started(&journal, &input)
         .await?;
     let original = StockExecution::ordinary(&executor)
-        .prepared_response(&journal, &input, 0, &[])
+        .prepared_response(&journal, &input, 0, &[], &mut DispatchPhase::new())
         .await?;
     assert_eq!(source.0.load(Ordering::SeqCst), 1);
     assert_eq!(provider.requests().len(), 0);
     let reopened = executor.clone();
     let recovered = StockExecution::ordinary(&reopened)
-        .prepared_response(&journal, &input, 0, &[])
+        .prepared_response(&journal, &input, 0, &[], &mut DispatchPhase::new())
         .await?;
     assert_eq!(original.bytes(), recovered.bytes());
     assert_eq!(source.0.load(Ordering::SeqCst), 1);

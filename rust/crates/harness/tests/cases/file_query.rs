@@ -16,6 +16,10 @@ use acyclic_harness::{
 use acyclic_stream::MemoryStream;
 use futures::{FutureExt as _, StreamExt as _};
 use std::sync::Arc;
+#[path = "../file_query/diff_tree.rs"]
+mod diff_tree;
+#[path = "../file_query/diffs.rs"]
+mod diffs;
 #[path = "../file_query/goal_sources.rs"]
 mod goal_sources;
 #[path = "../file_query/goals.rs"]
@@ -200,6 +204,7 @@ async fn one_matching_plan_with_unrelated_entries_stays_live()
 struct Fixture<O = MemoryObjectBackend> {
     host: Arc<FilesystemHost<MemoryAuthorityBackend, O>>,
     source: FilesystemFileQuery<MemoryStream, O>,
+    reader: Arc<FilesystemContentVerifier<MemoryAuthorityBackend, O>>,
     filesystem: Fs<MemoryAuthorityBackend, O>,
     reads: Arc<std::sync::atomic::AtomicUsize>,
     volume: VolumeRef,
@@ -285,6 +290,7 @@ impl<O: AsyncObjectStore + 'static> Fixture<O> {
         Ok(Self {
             host,
             source,
+            reader,
             volume,
             issuer,
             agent,

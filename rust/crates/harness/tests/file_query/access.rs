@@ -3,6 +3,63 @@ use acyclic_fs::access::{Action, Effect, Policy};
 use acyclic_harness::task_volume;
 use proptest::prelude::*;
 
+#[tokio::test]
+async fn retained_diff_snapshots_and_follow_recheck_disclosure_policy()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    for revoke in [false, true] {
+        let fixture = Fixture::new().await?;
+        fixture.write(&[("plans/a.md", Some("before"))]).await?;
+        let workspace = fixture
+            .filesystem
+            .open_workspace(
+                fixture.volume.storage_name(&mut None)?,
+                BOUNDARY_BUDGET,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await?
+            .value;
+        let base = workspace
+            .head(BOUNDARY_BUDGET, &acyclic_fs::CancellationToken::new())
+            .await?
+            .value;
+        let mut changes = fixture.source.observe_diff(base.id(), 16).await?;
+        changes.next().await.ok_or("missing initial diff")??;
+        if revoke {
+            publish_policy(&fixture, true, false).await?;
+        } else {
+            fixture.write(&[("plans/a.md", Some("after"))]).await?;
+        }
+        let snapshot = fixture.source.observe_diff(base.id(), 16).await;
+        let publication = changes.next().await.ok_or("missing diff publication")?;
+        if revoke {
+            assert!(
+                matches!(
+                    &snapshot,
+                    Err(acyclic_harness::Error::TaskFiles(error))
+                        if matches!(error.as_ref(), task_volume::Error::FileRead(
+                            acyclic_harness::Error::FilesystemAccessConfiguration("file query")
+                        ))
+                ),
+                "{:?}",
+                snapshot.err()
+            );
+            assert!(matches!(
+                publication,
+                Err(acyclic_harness::Error::FilesystemAccessConfiguration(
+                    "file query"
+                ))
+            ));
+        } else {
+            let mut snapshot = snapshot?;
+            let retained = snapshot.next().await.ok_or("missing retained diff")??;
+            for diff in [retained, publication?] {
+                assert!(diff.paths.iter().any(|path| path.path == "plans/a.md"));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) async fn publish_policy<O: AsyncObjectStore + 'static>(
     fixture: &Fixture<O>,
     read: bool,

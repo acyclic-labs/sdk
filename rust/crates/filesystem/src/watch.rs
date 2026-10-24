@@ -604,7 +604,9 @@ impl NativeEventDelivery {
         {
             return Ok(());
         }
-        if relative.as_os_str().is_empty() {
+        // An attribute notification on the held root is metadata, not a
+        // replacement. Fence and capture still verify its native identity.
+        if relative.as_os_str().is_empty() && mask & !(libc::IN_ATTRIB | libc::IN_ISDIR) != 0 {
             state.invalidation = Some(WatchInvalidationReason::RootChanged);
             return Ok(());
         }
@@ -3033,19 +3035,9 @@ impl NativeWatch {
             return Ok(());
         }
         #[cfg(windows)]
-        let mut children_delivered = true;
-        #[cfg(windows)]
-        for observed in &self.windows_directories {
-            work.started_io(WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::default()
-            })
+        let children_delivered = self
+            .fence_windows_directories(started, timeout, work)
             .map_err(demand_watch_error)?;
-            children_delivered &= observed
-                .watcher
-                .fence_with_work(timeout.saturating_sub(started.elapsed()), work)
-                .map_err(demand_watch_error)?;
-        }
         let delivered = match &self.watcher {
             #[cfg(target_os = "macos")]
             NativeWatchDriver::Source(_) => {
@@ -3091,6 +3083,56 @@ impl NativeWatch {
         drop(state);
         self.fenced.notify_all();
         Ok(())
+    }
+
+    #[cfg(windows)]
+    fn fence_windows_directories<W: crate::demand::SourceDemandReadWork>(
+        &mut self,
+        started: Instant,
+        timeout: Duration,
+        work: &mut W,
+    ) -> Result<bool, crate::demand::DemandError> {
+        use crate::demand::DemandError;
+        let mut delivered = true;
+        let mut at = 0;
+        while let Some(observed) = self.windows_directories.get(at) {
+            work.started_io(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            match observed
+                .watcher
+                .fence_with_work(timeout.saturating_sub(started.elapsed()), work)
+            {
+                Ok(complete) => delivered &= complete,
+                Err(DemandError::Io(error)) => {
+                    // Windows completes a removed directory's pending read with
+                    // access denied. Authenticate its binding beneath the held
+                    // root before treating that failure as an obsolete watch.
+                    if self.windows_registration_is_current(observed, work)? {
+                        return Err(DemandError::Io(error));
+                    }
+                    observed.watcher.retire_with_work(work)?;
+                    if !observed.watcher.is_stopped() {
+                        return Err(DemandError::WorkerUnavailable);
+                    }
+                    work.started_io(WorkCounters {
+                        bytes_copied: ((self.windows_directories.len() - at - 1) as u64)
+                            .checked_mul(size_of::<WindowsDirectoryWatch>() as u64)
+                            .ok_or(WorkError::Overflow)?,
+                        ..WorkCounters::UNCHARGED
+                    })?;
+                    drop(self.windows_directories.remove(at));
+                    // The failed stream cannot prove delivery. Its replacement
+                    // must be captured by the existing rescan protocol.
+                    delivered = false;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
+            at += 1;
+        }
+        Ok(delivered)
     }
 
     /// `FSEvents` cannot report that it delivered everything up to now. A
@@ -4295,6 +4337,43 @@ mod demand_admission_tests {
             windows_budget(),
             &CancellationToken::new(),
         )?;
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_fence_retires_a_directory_replaced_by_a_file_and_requires_rescan()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        std::fs::create_dir(root.path().join("folder"))?;
+        std::fs::write(root.path().join("folder/child"), b"before")?;
+        let watch = watcher(root.path())?;
+        watch
+            .lock()
+            .map_err(|_| NativeWatchError::StatePoisoned)?
+            .accept_lazy_baseline()?;
+        observed(
+            &watch,
+            &namespace("/folder")?,
+            windows_budget(),
+            &CancellationToken::new(),
+        )?;
+        std::fs::remove_file(root.path().join("folder/child"))?;
+        std::fs::remove_dir(root.path().join("folder"))?;
+        std::fs::write(root.path().join("folder"), b"replacement")?;
+        let mut held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
+        let cancellation = CancellationToken::new();
+        let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        held.fence_with_work(Duration::from_secs(1), &mut work)?;
+        assert!(held.windows_directories.is_empty());
+        assert_eq!(
+            held.invalidation()?,
+            Some(WatchInvalidationReason::NativeRescanRequired)
+        );
+        assert_eq!(std::fs::read(root.path().join("folder"))?, b"replacement");
+        held.accept_lazy_baseline()?;
+        held.fence_with_work(Duration::from_secs(1), &mut work)?;
+        assert_eq!(held.invalidation()?, None);
         Ok(())
     }
 

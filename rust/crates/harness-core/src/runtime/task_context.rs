@@ -74,6 +74,15 @@ impl Clone for TaskContext {
 }
 
 impl TaskContext {
+    /// Borrows the task's configured private files; callers still verify the journal owner.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[doc(hidden)]
+    pub fn task_files(
+        &self,
+    ) -> Option<&crate::task_volume::TaskFiles<dyn acyclic_stream::StreamProvider>> {
+        self.harness.task_files.as_deref()
+    }
+
     #[cfg(feature = "filesystem")]
     #[doc(hidden)]
     pub fn invocation_cancellation(&self) -> Option<&acyclic_fs::CancellationToken> {

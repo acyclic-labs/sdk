@@ -19,7 +19,10 @@ pub fn diff_lines(files: &BTreeMap<String, FileDiff>) -> Vec<Line<'static>> {
             file.added,
             file.removed
         )));
-        if file.binary {
+        if let Some(bytes) = file.omitted_bytes {
+            rows.push(Line::raw("file too large to diff"));
+            rows.push(Line::raw(format!("({bytes} bytes)")));
+        } else if file.binary {
             rows.push(Line::raw("Binary file changed"));
         } else {
             rows.extend(

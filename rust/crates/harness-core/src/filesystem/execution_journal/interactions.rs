@@ -151,36 +151,31 @@ where
             owner.require_interaction_grant(&mut work)?;
             owner.verify(false, &mut work).await?;
         }
+        if io.is_none()
+            && self.interactions.is_none()
+            && self.task_files.is_some()
+            && matches!(interaction, Interaction::Approval { .. })
+        {
+            return self.open_file_approval(id, interaction).await;
+        }
         let host = self.interactions.as_ref().ok_or_else(|| {
             reject(
                 crate::wire::ErrorCode::Unsupported,
                 "task execution has no conversation interaction owner",
             )
         })?;
-        {
-            let (request_hold, original) = {
-                let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-                let original = host.read_request(id, io).await?;
-                let request_hold = io
-                    .map(|io| io.guard_owned(io.owned_since(before)?))
-                    .transpose()?;
-                (request_hold, original)
-            };
-            if let Some(original) = &original {
-                if let Some((owner, _)) = &self.owner {
-                    owner.verify(false, &mut work).await?;
-                }
-                return if original == interaction {
-                    Ok(())
-                } else {
-                    Err(reject(
-                        crate::wire::ErrorCode::Conflict,
-                        "interaction identity reused",
-                    ))
-                };
+        if let Some(same) = Self::existing_interaction(host, id, interaction, io).await? {
+            if let Some((owner, _)) = &self.owner {
+                owner.verify(false, &mut work).await?;
             }
-            drop(original);
-            drop(request_hold);
+            return if same {
+                Ok(())
+            } else {
+                Err(reject(
+                    crate::wire::ErrorCode::Conflict,
+                    "interaction identity reused",
+                ))
+            };
         }
         let operation = interaction_open_operation(id, io)?;
         let (ticket_hold, ticket) = {
@@ -241,6 +236,23 @@ where
         result
     }
 
+    async fn existing_interaction(
+        host: &FilesystemInteractionHost<P, A, O>,
+        id: InteractionId,
+        interaction: &Interaction,
+        io: Option<&PreparationIo>,
+    ) -> Result<Option<bool>> {
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let original = host.read_request(id, io).await?;
+        let request_hold = io
+            .map(|io| io.guard_owned(io.owned_since(before)?))
+            .transpose()?;
+        let same = original.as_ref().map(|original| original == interaction);
+        drop(original);
+        drop(request_hold);
+        Ok(same)
+    }
+
     pub(super) async fn interaction_outcome_with_io(
         &self,
         id: InteractionId,
@@ -253,6 +265,9 @@ where
         if let Some((owner, _)) = &self.owner {
             owner.require_interaction_grant(&mut work)?;
             owner.verify(true, &mut work).await?;
+        }
+        if io.is_none() && self.interactions.is_none() && self.task_files.is_some() {
+            return self.file_approval_outcome(id).await;
         }
         let host = self.interactions.as_ref().ok_or_else(|| {
             crate::filesystem::interaction_host::interaction_boundary(

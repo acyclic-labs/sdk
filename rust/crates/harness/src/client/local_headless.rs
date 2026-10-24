@@ -194,69 +194,75 @@ impl LocalFileClient {
         Ok(())
     }
 
-    async fn submit(&mut self, file: &FileValue) -> Result<()> {
-        validate(file, self.operation)?;
-        // Both -p and JSONL enter through this boundary. Already pinned prompt
-        // resolutions are data, so template expansion is never parsed twice.
-        let normalized;
-        let file = match serde_json::from_slice::<CommandResolution>(&file.bytes) {
-            Ok(CommandResolution::Prompt {
-                text,
-                source: None,
-                mentions,
-            }) if mentions.is_empty() => {
-                let resolution = self.local.resolve_input(self.operation, &text).await?;
-                let mut captured = file.clone();
-                captured.bytes = serde_json::to_vec(&resolution)
-                    .map_err(|error| Error::Invalid(error.to_string()))?
-                    .into();
-                normalized = captured;
-                validate(&normalized, self.operation)?;
-                &normalized
-            }
-            _ => file,
-        };
-        let resolution = serde_json::from_slice::<CommandResolution>(&file.bytes)
-            .or_else(|_| {
-                serde_json::from_slice::<CommandRequest>(&file.bytes)
-                    .map(|request| CommandResolution::Submit { request })
-            })
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        match resolution {
-            CommandResolution::Select { .. }
-            | CommandResolution::Confirm { .. }
-            | CommandResolution::Sdk { .. }
-            | CommandResolution::Submit {
-                request:
-                    CommandRequest::Quit | CommandRequest::Theme { .. } | CommandRequest::CycleMode,
-            } => {
-                return Err(Error::Unsupported(
-                    "command requires an interactive client".into(),
-                ));
-            }
-            _ => {}
-        }
-        let cursor = self.query.cursor();
-        let mut expected = Generation {
-            volume: cursor.volume,
-            epoch: cursor.epoch,
-            position: cursor.position,
-            commit: cursor.commit,
-        };
-        loop {
-            match self.local.task_files().write(expected, file).await {
-                Ok(_) => {
-                    self.submitted = true;
-                    return Ok(());
+    #[inline(never)]
+    fn submit<'a>(
+        &'a mut self,
+        file: &'a FileValue,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            validate(file, self.operation)?;
+            // Both -p and JSONL enter through this boundary. Already pinned prompt
+            // resolutions are data, so template expansion is never parsed twice.
+            let normalized;
+            let file = match serde_json::from_slice::<CommandResolution>(&file.bytes) {
+                Ok(CommandResolution::Prompt {
+                    text,
+                    source: None,
+                    mentions,
+                }) if mentions.is_empty() => {
+                    let resolution = self.local.resolve_input(self.operation, &text).await?;
+                    let mut captured = file.clone();
+                    captured.bytes = serde_json::to_vec(&resolution)
+                        .map_err(|error| Error::Invalid(error.to_string()))?
+                        .into();
+                    normalized = captured;
+                    validate(&normalized, self.operation)?;
+                    &normalized
                 }
-                Err(crate::task_volume::Error::Conflict(next))
-                    if next.position > expected.position =>
-                {
-                    expected = next
+                _ => file,
+            };
+            let resolution = serde_json::from_slice::<CommandResolution>(&file.bytes)
+                .or_else(|_| {
+                    serde_json::from_slice::<CommandRequest>(&file.bytes)
+                        .map(|request| CommandResolution::Submit { request })
+                })
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            match resolution {
+                CommandResolution::Select { .. }
+                | CommandResolution::Confirm { .. }
+                | CommandResolution::Sdk { .. }
+                | CommandResolution::Submit {
+                    request:
+                        CommandRequest::Quit | CommandRequest::Theme { .. } | CommandRequest::CycleMode,
+                } => {
+                    return Err(Error::Unsupported(
+                        "command requires an interactive client".into(),
+                    ));
                 }
-                Err(error) => return Err(error.into()),
+                _ => {}
             }
-        }
+            let cursor = self.query.cursor();
+            let mut expected = Generation {
+                volume: cursor.volume,
+                epoch: cursor.epoch,
+                position: cursor.position,
+                commit: cursor.commit,
+            };
+            loop {
+                match self.local.task_files().write(expected, file).await {
+                    Ok(_) => {
+                        self.submitted = true;
+                        return Ok(());
+                    }
+                    Err(crate::task_volume::Error::Conflict(next))
+                        if next.position > expected.position =>
+                    {
+                        expected = next
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        })
     }
 
     fn outcome(&self) -> Result<Option<HeadlessOutcome>> {
@@ -272,90 +278,97 @@ impl LocalFileClient {
             .transpose()
     }
 
-    async fn run(
-        &mut self,
+    // Prompt and JSONL share this owner loop. Construct its storage/follow state
+    // on a separate frame so it is not retained as scratch space in prompt's
+    // poll while the same thread is driving a model and staging its journal.
+    #[inline(never)]
+    fn run<'a>(
+        &'a mut self,
         operation: OperationId,
-        mut input: impl Stream<Item = Result<String>> + Unpin,
+        mut input: impl Stream<Item = Result<String>> + Unpin + 'a,
         mut input_open: bool,
-        output: &mut impl Write,
-    ) -> Result<HeadlessOutcome> {
-        if operation != self.operation {
-            return Err(Error::Unauthorized("headless operation differs".into()));
-        }
-        self.initial(output)?;
-        loop {
-            let settled = self.outcome()?;
-            if settled.is_none()
-                && self.host_done
-                && self.query.cursor().position >= self.drain_through
-            {
-                let error = self
-                    .host_error
-                    .take()
-                    .unwrap_or(Error::Indeterminate(operation));
-                return if HeadlessOutcome::from_error(&error) == HeadlessOutcome::Indeterminate {
-                    Ok(HeadlessOutcome::Indeterminate)
-                } else {
-                    Err(error)
-                };
+        output: &'a mut impl Write,
+    ) -> Pin<Box<dyn Future<Output = Result<HeadlessOutcome>> + 'a>> {
+        Box::pin(async move {
+            if operation != self.operation {
+                return Err(Error::Unauthorized("headless operation differs".into()));
             }
-            if let Some(outcome) = settled {
-                if input_open {
-                    match input.next().now_or_never() {
-                        Some(Some(line)) => {
-                            self.submit(&parse_local_request(&line?, operation)?)
-                                .await?;
-                            continue;
+            self.initial(output)?;
+            loop {
+                let settled = self.outcome()?;
+                if settled.is_none()
+                    && self.host_done
+                    && self.query.cursor().position >= self.drain_through
+                {
+                    let error = self
+                        .host_error
+                        .take()
+                        .unwrap_or(Error::Indeterminate(operation));
+                    return if HeadlessOutcome::from_error(&error) == HeadlessOutcome::Indeterminate
+                    {
+                        Ok(HeadlessOutcome::Indeterminate)
+                    } else {
+                        Err(error)
+                    };
+                }
+                if let Some(outcome) = settled {
+                    if input_open {
+                        match input.next().now_or_never() {
+                            Some(Some(line)) => {
+                                self.submit(&parse_local_request(&line?, operation)?)
+                                    .await?;
+                                continue;
+                            }
+                            Some(None) | None => {}
                         }
-                        Some(None) | None => {}
+                    }
+                    return Ok(outcome);
+                }
+                let submitted = self.submitted
+                    || self
+                        .query
+                        .file(&key(operation, TaskFile::Request)?)
+                        .is_some();
+                enum Next {
+                    Input(Option<Result<String>>),
+                    File(Result<()>),
+                    Host(Result<()>),
+                }
+                let next = tokio::select! {
+                    biased;
+                    line = input.next(), if input_open => Next::Input(line),
+                    change = self.query.publish_next(async |change| publish(output, change)) => Next::File(change),
+                    result = &mut self.host, if !self.host_done => Next::Host(result),
+                };
+                match next {
+                    Next::Input(Some(line)) => {
+                        self.submit(&parse_local_request(&line?, operation)?)
+                            .await?
+                    }
+                    Next::Input(None) => {
+                        input_open = false;
+                        if !submitted {
+                            return Err(Error::NotFound("operation was not submitted".into()));
+                        }
+                    }
+                    Next::File(result) => {
+                        result?;
+                    }
+                    Next::Host(result) => {
+                        self.host_done = true;
+                        self.host_error = result.err();
+                        self.drain_through = self
+                            .local
+                            .task_files()
+                            .inner
+                            .snapshot(&selection(operation)?, MAXIMUM_FILES)
+                            .await?
+                            .cursor
+                            .position;
                     }
                 }
-                return Ok(outcome);
             }
-            let submitted = self.submitted
-                || self
-                    .query
-                    .file(&key(operation, TaskFile::Request)?)
-                    .is_some();
-            enum Next {
-                Input(Option<Result<String>>),
-                File(Result<()>),
-                Host(Result<()>),
-            }
-            let next = tokio::select! {
-                biased;
-                line = input.next(), if input_open => Next::Input(line),
-                change = self.query.publish_next(async |change| publish(output, change)) => Next::File(change),
-                result = &mut self.host, if !self.host_done => Next::Host(result),
-            };
-            match next {
-                Next::Input(Some(line)) => {
-                    self.submit(&parse_local_request(&line?, operation)?)
-                        .await?
-                }
-                Next::Input(None) => {
-                    input_open = false;
-                    if !submitted {
-                        return Err(Error::NotFound("operation was not submitted".into()));
-                    }
-                }
-                Next::File(result) => {
-                    result?;
-                }
-                Next::Host(result) => {
-                    self.host_done = true;
-                    self.host_error = result.err();
-                    self.drain_through = self
-                        .local
-                        .task_files()
-                        .inner
-                        .snapshot(&selection(operation)?, MAXIMUM_FILES)
-                        .await?
-                        .cursor
-                        .position;
-                }
-            }
-        }
+        })
     }
 }
 
@@ -395,7 +408,8 @@ impl HeadlessClient for LocalFileClient {
         validate(&command, operation)?;
         self.initial(output)?;
         self.submit(&command).await?;
-        Box::pin(self.run(operation, futures::stream::empty(), false, output)).await
+        self.run(operation, futures::stream::empty(), false, output)
+            .await
     }
     async fn input<W: Write>(
         &mut self,
@@ -403,7 +417,7 @@ impl HeadlessClient for LocalFileClient {
         input: impl Stream<Item = Result<String>> + Unpin,
         output: &mut W,
     ) -> Result<HeadlessOutcome> {
-        Box::pin(self.run(operation, input, true, output)).await
+        self.run(operation, input, true, output).await
     }
 }
 

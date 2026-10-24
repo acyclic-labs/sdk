@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 const PUBLICATION_ATTEMPTS: usize = 4;
+mod dispatch;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod dispatch_tests;
+pub(crate) use dispatch::dispatch;
 
 #[cfg(test)]
 thread_local! {
@@ -34,7 +38,7 @@ fn ready(task: &Component, id: &Component) -> FileKey {
 }
 
 /// Contents of `requests/search-<id>/result.json`. Credentials are never published.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SearchOutcome {
     /// The provider returned the normalized, ranked sources.
@@ -258,7 +262,7 @@ async fn settle<P, F, A, Fut>(
     work: NativeWork<'_>,
 ) -> Result<()>
 where
-    P: StreamProvider,
+    P: StreamProvider + ?Sized,
     F: FnMut() -> Result<Option<Arc<dyn SearchProvider>>>,
     A: Fn(bool) -> Fut,
     Fut: std::future::Future<Output = Result<Vec<CommitCondition>>>,
@@ -447,7 +451,7 @@ where
     finish(volume, result, encoded, authorize, work).await
 }
 
-async fn retain_response<P: StreamProvider>(
+async fn retain_response<P: StreamProvider + ?Sized>(
     volume: &TaskVolume<P>,
     key: FileKey,
     bytes: OwnedBytes,
@@ -497,7 +501,7 @@ async fn finish<P, A, Fut>(
     work: NativeWork<'_>,
 ) -> Result<()>
 where
-    P: StreamProvider,
+    P: StreamProvider + ?Sized,
     A: Fn(bool) -> Fut,
     Fut: std::future::Future<Output = Result<Vec<CommitCondition>>>,
 {
@@ -524,7 +528,7 @@ async fn publish<P, A, Fut>(
     work: NativeWork<'_>,
 ) -> Result<()>
 where
-    P: StreamProvider,
+    P: StreamProvider + ?Sized,
     A: Fn(bool) -> Fut,
     Fut: std::future::Future<Output = Result<Vec<CommitCondition>>>,
 {

@@ -1,5 +1,6 @@
 [
   {"name":"compact","description":"Summarize the current context","arguments":"text","action":{"kind":"builtin","command":"compact"}},
+  {"name":"rewind","description":"Restore the selected context checkpoint","arguments":"none","action":{"request":{"kind":"rewind"},"kind":"request"}},
   {"name":"model","description":"Select or inspect the model","arguments":"word","action":{"kind":"builtin","command":"model"}},
   {"name":"diff","description":"Cycle the captured workspace diff view","arguments":"none","action":{"kind":"builtin","command":"diff"},"aliases":["view"]},
   {"name":"plan","description":"Show private plans/ files","arguments":"none","action":{"kind":"builtin","command":"plan"}},

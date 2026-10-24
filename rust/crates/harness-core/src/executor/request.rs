@@ -21,6 +21,7 @@ impl StockExecution<'_> {
         prior_messages: &[ModelMessage],
     ) -> Result<Vec<ModelEvent>> {
         let _execution = journal.claim_execution(input.operation_id, self.io)?;
+        let phase = &mut DispatchPhase::new();
         self.verify_task_context_binding(input.operation_id)?;
         self.validate_turn_input(journal, input).await?;
         if step >= input.max_steps {
@@ -31,8 +32,15 @@ impl StockExecution<'_> {
             ));
         }
         self.ensure_started(journal, input).await?;
-        self.run_model_step(journal, input, step, prior_messages, ModelPurpose::Response)?
-            .await
+        self.run_model_step(
+            journal,
+            input,
+            step,
+            prior_messages,
+            ModelPurpose::Response,
+            phase,
+        )?
+        .await
     }
 
     pub(super) fn run_model_step<'a>(
@@ -42,6 +50,7 @@ impl StockExecution<'_> {
         step: u32,
         prior_messages: &'a [ModelMessage],
         purpose: ModelPurpose,
+        phase: &'a mut DispatchPhase,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ModelEvent>>> {
         crate::conversation::BoundedContentFuture::new(self.io, || {
             let span = obs_span!(
@@ -56,7 +65,14 @@ impl StockExecution<'_> {
                 let operation = span.clone();
                 span.scope(async move {
                     let result = self
-                        .cancellable_model_step(journal, input, step, prior_messages, purpose)
+                        .cancellable_model_step(
+                            journal,
+                            input,
+                            step,
+                            prior_messages,
+                            purpose,
+                            phase,
+                        )
                         .await
                         .and_then(|events| completed_model_events(events, input.operation_id));
                     operation.record("outcome", if result.is_ok() { "ok" } else { "err" });
@@ -71,7 +87,14 @@ impl StockExecution<'_> {
                 let _ = span;
                 async move {
                     let events = self
-                        .cancellable_model_step(journal, input, step, prior_messages, purpose)
+                        .cancellable_model_step(
+                            journal,
+                            input,
+                            step,
+                            prior_messages,
+                            purpose,
+                            phase,
+                        )
                         .await?;
                     completed_model_events(events, input.operation_id)
                 }

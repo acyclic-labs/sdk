@@ -588,11 +588,11 @@ mod prepared_request_reuse_properties {
             .await
             .unwrap();
         let hot = StockExecution::ordinary(&executor)
-            .prepared_response(&journal, &input, 0, &[])
+            .prepared_response(&journal, &input, 0, &[], &mut DispatchPhase::new())
             .await
             .unwrap();
         let cold = StockExecution::ordinary(&executor.clone())
-            .prepared_response(&journal, &input, 0, &[])
+            .prepared_response(&journal, &input, 0, &[], &mut DispatchPhase::new())
             .await
             .unwrap();
         let mut expected_messages = messages;

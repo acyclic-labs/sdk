@@ -74,6 +74,7 @@ async fn commit<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 mod access_policy;
 mod change_sets;
 mod projection_policy;
+mod content_equality;
 
 mod discovery;
 

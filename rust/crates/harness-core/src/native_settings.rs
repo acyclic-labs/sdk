@@ -47,6 +47,11 @@ impl SettingsConfig {
         ]
     }
 
+    /// Host-only search settings in the same explicitly selected user config root.
+    pub fn search_config_path(&self) -> PathBuf {
+        self.codex_home.join("search.json")
+    }
+
     /// Selects user settings by default; repository settings require explicit trust.
     pub fn new(workspace: impl Into<PathBuf>, home: impl Into<PathBuf>) -> Self {
         let home = home.into();

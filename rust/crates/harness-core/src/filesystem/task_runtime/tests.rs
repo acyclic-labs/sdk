@@ -228,7 +228,16 @@ impl ResumableMachine for Machine {
     fn initialize(&self, input: &Value) -> Result<Value> {
         Ok(input.clone())
     }
-    fn transition(&self, state: &Value, _: &Value) -> Result<MachineTransition> {
+    fn transition(&self, state: &Value, input: &Value) -> Result<MachineTransition> {
+        if input.get("commands").is_some() {
+            return Ok(MachineTransition {
+                state: state.clone(),
+                commands: Vec::new(),
+                status: MachineStatus::Completed {
+                    value: Value::String("done".into()),
+                },
+            });
+        }
         let command: WorkflowCommand = serde_json::from_value(state["command"].clone())
             .map_err(|error| Error::Invalid(error.to_string()))?;
         self.admit(&command);
@@ -264,12 +273,25 @@ impl ResumableMachine for Machine {
     fn transition_with_native_work(
         &self,
         state: &Value,
-        _: Value,
+        input: Value,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(MachineTransition, acyclic_fs::NativeAllocation)> {
         let io = super::super::PreparationIo::from_native_work(work)?;
         let (state, custody) = crate::tool::clone_value(state, None, work)?;
         io.absorb_native_custody(custody)?;
+        if input.get("commands").is_some() {
+            let value = Value::String(crate::executor::stock_string_copy("done", Some(&io))?);
+            io.retain_owned(
+                std::mem::size_of::<MachineTransition>()
+                    .saturating_sub(std::mem::size_of::<Value>()) as u64,
+            )?;
+            let transition = MachineTransition {
+                state,
+                commands: Vec::new(),
+                status: MachineStatus::Completed { value },
+            };
+            return Ok((transition, io.take_native_custody(io.owned_bytes()?)?));
+        }
         let command = {
             let encoded = io.encode(&state["command"], io.remaining()?.bytes_encoded, false)?;
             let command = crate::filesystem::retain_decoded(io.decode(

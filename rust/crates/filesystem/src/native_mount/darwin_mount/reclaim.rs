@@ -44,6 +44,58 @@ fn same_mount(left: &libc::statfs, right: &libc::statfs) -> bool {
         && left.f_mntfromname == right.f_mntfromname
 }
 
+// Like ordinary mount retirement, startup recovery must use Disk Arbitration
+// when the mount owner cannot issue the privileged unmount syscall directly.
+// The caller retains the authenticated destination fence throughout this call.
+fn detach_stale_mount(mount: &libc::statfs) -> Result<(), NativeMountError> {
+    let destination = field(&mount.f_mntonname)?;
+    // SAFETY: the caller retains the terminated kernel name and exclusive fence.
+    if unsafe { libc::unmount(destination.as_ptr(), libc::MNT_FORCE) } == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() != Some(libc::EPERM) {
+        return Err(error.into());
+    }
+    // A failed direct attempt is no authority to detach a replacement mount.
+    if !mount_table()?
+        .iter()
+        .any(|current| same_mount(mount, current))
+    {
+        return Ok(());
+    }
+    let mut command = std::process::Command::new("/usr/sbin/diskutil");
+    command
+        .args([
+            std::ffi::OsStr::new("unmount"),
+            std::ffi::OsStr::new("force"),
+        ])
+        .arg(std::ffi::OsStr::from_bytes(destination.to_bytes()))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let mut tree = acyclic_native_runtime::ProcessTree::spawn(&mut command)?;
+    let deadline = Instant::now() + DISKUTIL_UNMOUNT_TIMEOUT;
+    let status = loop {
+        if let Some(status) = tree.try_wait(None)? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            tree.terminate(None)?;
+            return Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into());
+        }
+        std::thread::sleep(STOP_POLL_INTERVAL);
+    };
+    tree.terminate(None)?;
+    if !status.success() {
+        return Err(NativeMountError::DriverExit {
+            operation: "Darwin stale mount retirement",
+            status,
+        });
+    }
+    Ok(())
+}
+
 // Bootstrap is deliberately outside a bounded callback invocation. The fence
 // is the durable SDK ownership record and its kernel lock is the process
 // liveness witness, including after SIGKILL and across PID reuse.
@@ -85,9 +137,12 @@ pub(in crate::native_mount) fn reclaim_stale_mounts() -> Result<(), NativeMountE
         {
             continue;
         }
-        // SAFETY: the terminated kernel name and its exclusive SDK fence remain live.
-        if unsafe { libc::unmount(destination.as_ptr(), libc::MNT_FORCE) } != 0 {
-            return Err(std::io::Error::last_os_error().into());
+        detach_stale_mount(&mount)?;
+        if mount_table()?
+            .iter()
+            .any(|current| same_mount(&mount, current))
+        {
+            return Err(std::io::Error::other("stale mount remained after retirement").into());
         }
         // Keep the fence file: other processes may already hold its inode.
         drop(owner);

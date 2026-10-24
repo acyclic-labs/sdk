@@ -269,3 +269,169 @@ async fn reopening_after_tool_hooks_reuses_both_phases_and_the_effective_invocat
     assert!(body.contains("retained-post-feedback"));
     Ok(())
 }
+
+#[tokio::test]
+async fn ask_guard_waits_for_exact_file_decision_before_dispatch() -> Result<()> {
+    use crate::task_volume::{Component, FileApproval, FileKey, FileValue, Query, TaskFile};
+    use futures::StreamExt as _;
+    for approved in [false, true] {
+        let root = tempfile::tempdir().map_err(super::super::storage)?;
+        let script = fixture(root.path())?;
+        let settings = json!({"hooks":{"PreToolUse":[{"matcher":"Write","hooks":[rule(&script,"ask",json!({"hookSpecificOutput":{"permissionDecision":"ask","permissionDecisionReason":"guard approval"}}))]}]}});
+        std::fs::write(
+            root.path().join("home/.claude/settings.json"),
+            settings.to_string(),
+        )
+        .map_err(super::super::storage)?;
+        let executed = Arc::new(Mutex::new(Vec::new()));
+        let provider = scripted([calls(&["guarded"]), ScriptedTurn::Text("finished".into())]);
+        let harness = LocalHarness::open(configured(
+            root.path(),
+            provider,
+            vec![guarded("guarded", &["Write"], &executed)],
+        )?)
+        .await?;
+        let task =
+            super::context::admitted(harness.submit(OperationId::new(), "guard tool").await?)?;
+        // Earlier approvals remain addressable but cannot consume this request's budget.
+        for _ in 0..64 {
+            let old = FileApproval {
+                task,
+                id: crate::InteractionId::new(),
+                request: crate::interaction::Interaction::Approval {
+                    prompt: "old request".into(),
+                    operation_id: OperationId::new(),
+                    action_digest: [3; 32],
+                },
+            };
+            let volume = &harness.task_files().inner;
+            volume
+                .append(
+                    volume.head().await?,
+                    &FileValue::new(
+                        old.key()?,
+                        serde_json::to_vec(&old).map_err(super::super::storage)?,
+                    ),
+                )
+                .await?;
+            volume
+                .decide_approval(&old, Component::new("user")?, true)
+                .await?;
+        }
+        let mut observed = harness
+            .task_files()
+            .observe(
+                Query::Approvals(Component::new(task.to_string())?),
+                None,
+                128,
+            )
+            .await?;
+        assert_eq!(observed.snapshot.take().unwrap().files.len(), 128);
+        let decide = async {
+            let request = loop {
+                let change = observed.changes.next().await.expect("approval follow")?;
+                if let Some(file) = change.file.into_iter().chain(change.files).find(|file| {
+                    matches!(
+                        file.key,
+                        FileKey::Task {
+                            file: TaskFile::ApprovalRequest(_),
+                            ..
+                        }
+                    )
+                }) {
+                    let request: FileApproval =
+                        serde_json::from_slice(&file.bytes).map_err(super::super::storage)?;
+                    assert_eq!(request.key()?, file.key);
+                    break request;
+                }
+            };
+            // Negative control: the former all-history selection now exceeds 128.
+            assert!(
+                harness
+                    .task_files()
+                    .snapshot(&Query::Approvals(Component::new(task.to_string())?), 128)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                executed.lock().unwrap().is_empty(),
+                "tool ran before approval"
+            );
+            let decision_key = FileKey::Task {
+                task: Component::new(task.to_string())?,
+                file: TaskFile::ApprovalDecision {
+                    request: Component::new(request.id.to_string())?,
+                    principal: Component::new("user")?,
+                },
+            };
+            let snapshot = harness.task_files().snapshot(&request.query()?, 4).await?;
+            // Negative control: an ordinary agent writer cannot approve itself.
+            assert!(matches!(
+                harness
+                    .task_files()
+                    .write(
+                        snapshot.generation,
+                        &FileValue::new(decision_key, b"{}".to_vec())
+                    )
+                    .await,
+                Err(crate::task_volume::Error::Unauthorized)
+            ));
+            harness
+                .task_files()
+                .inner
+                .decide_approval(&request, Component::new("user")?, approved)
+                .await?;
+            let saved = harness.task_files().snapshot(&request.query()?, 4).await?;
+            assert!(saved.files.iter().any(|file| request.decision(&file.key, &file.bytes).unwrap() == Some(approved)));
+            Ok::<_, Error>(())
+        };
+        let (output, decision) = futures::join!(harness.resume(task), decide);
+        decision?;
+        if approved {
+            assert_eq!(output?.text, "finished");
+        } else {
+            assert!(
+                matches!(output, Err(Error::TaskFailed { message, .. }) if message == "declined")
+            );
+        }
+        assert_eq!(executed.lock().unwrap().len(), usize::from(approved));
+        harness.close().await?;
+    }
+    Ok(())
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(16))]
+    #[test]
+    fn approval_decisions_cannot_substitute_another_intent(digest in proptest::array::uniform32(proptest::prelude::any::<u8>()), approved in proptest::prelude::any::<bool>()) {
+        use crate::task_volume::{Component, FileApproval, FileApprovalDecision, FileKey, TaskFile};
+        use crate::interaction::{ApprovalBinding, Interaction};
+        let mut digest = digest;
+        digest[0] |= 1;
+        let task = crate::TaskId::new();
+        let id = crate::InteractionId::new();
+        let operation_id = OperationId::new();
+        let request = FileApproval { task, id, request: Interaction::Approval { prompt: "approve".into(), operation_id, action_digest: digest } };
+        let query = request.query().unwrap();
+        proptest::prop_assert_eq!(&crate::task_volume::Query::folder(&format!(".tasks/{task}/approvals/{id}")).unwrap(), &query);
+        proptest::prop_assert_eq!(&serde_json::from_slice::<crate::task_volume::Query>(&serde_json::to_vec(&query).unwrap()).unwrap(), &query);
+        proptest::prop_assert!(query.matches(&request.key().unwrap()));
+        let encoded = serde_json::to_vec(&request).unwrap();
+        proptest::prop_assert_eq!(&serde_json::from_slice::<FileApproval>(&encoded).unwrap(), &request);
+        let key = FileKey::Task { task: Component::new(task.to_string()).unwrap(), file: TaskFile::ApprovalDecision { request: Component::new(id.to_string()).unwrap(), principal: Component::new("user").unwrap() } };
+        let mut decision = FileApprovalDecision { binding: ApprovalBinding { operation_id, action_digest: digest }, approved };
+        let bytes = serde_json::to_vec(&decision).unwrap();
+        proptest::prop_assert_eq!(request.decision(&key, &bytes).unwrap(), Some(approved));
+        decision.binding.action_digest[31] ^= 1;
+        let substituted = serde_json::to_vec(&decision).unwrap();
+        // Negative control accepts the boolean without checking the exact action.
+        let unchecked: FileApprovalDecision = serde_json::from_slice(&substituted).unwrap();
+        proptest::prop_assert_eq!(unchecked.approved, approved);
+        proptest::prop_assert!(request.decision(&key, &substituted).is_err());
+        decision.binding.action_digest = digest;
+        decision.binding.operation_id = OperationId::new();
+        proptest::prop_assert!(request.decision(&key, &serde_json::to_vec(&decision).unwrap()).is_err());
+        let wrong_task = FileKey::Task { task: Component::new(crate::TaskId::new().to_string()).unwrap(), file: match key { FileKey::Task { file, .. } => file, _ => unreachable!() } };
+        proptest::prop_assert_eq!(request.decision(&wrong_task, &bytes).unwrap(), None);
+    }
+}

@@ -114,6 +114,17 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             let index = self.index.lock().await;
             let generation = self.generation(&index);
             if generation.position == cursor.position && generation.commit == cursor.commit {
+                if let Query::PendingApprovals(task) = query {
+                    for key in index.approvals.keys(task, maximum_files)? {
+                        include(
+                            &mut sizes,
+                            &mut bytes,
+                            &index.files.get(&key).ok_or(Error::InvalidSegment)?.file,
+                            maximum_files,
+                        )?;
+                    }
+                    return Ok((sizes, bytes));
+                }
                 for range in query.ranges() {
                     for (_, file) in index
                         .files

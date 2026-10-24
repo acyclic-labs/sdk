@@ -79,6 +79,9 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             if let Some(operation) = self.view_input(input).await? {
                 return Ok(operation);
             }
+            if let Some(operation) = self.submit_approval(input).await? {
+                return Ok(operation);
+            }
             let cut = self.generation;
             let resolution = match &self.composer {
                 Some(composer) => composer.resolve(operation, input).await?,

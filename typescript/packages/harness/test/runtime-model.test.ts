@@ -3,6 +3,22 @@ import { type TaskId, type HarnessRuntimeSpawner, type HarnessRuntimeState, poli
 import { mailboxFile, durableDigest, parseNumber, jsonProjection, contracts, testModel, imagePolicy, parseNull } from "./support/runtime-fixture.js";
 import { syntheticAccounting, scriptedPreparation } from "./support/model-accounting.mjs";
 
+test("completed assistant messages replace streamed prefixes including empty answers", async () => {
+  for (const answer of ["", "  final λ\nanswer\n"]) {
+    const runtime = await Harness.builder(contracts).model(testModel, {
+      ...syntheticAccounting(contracts),
+      prepare: scriptedPreparation(contracts, async function* () {
+        yield { kind: "content" as const, delta: "older answer" };
+        yield { kind: "content" as const, delta: answer };
+        yield { kind: "message_completed" as const, text: answer };
+        yield { kind: "completed" as const, metadata: {} };
+      }),
+      async reconcile() { return undefined; },
+    }).build();
+    expect((await runtime.run("go")).text).toBe(answer);
+  }
+});
+
 test("executes model tool calls with durable task ownership and typed receipts", async () => {
   let modelStep = 0; let sender: TaskId | undefined; let toolOperationId: string | undefined;
   const payload = await mailboxFile(3);
@@ -20,7 +36,7 @@ test("executes model tool calls with durable task ownership and typed receipts",
     return effect.state === "succeeded" ? input * 4 : 0;
   });
   const runtime = await Harness.builder(contracts).state(host).spawner(host).tool(tool).grant("tool:call:double").model(testModel, {
-    ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* () { if (modelStep++ === 0) { yield { kind: "tool_call" as const, callId: "call", name: "double", arguments: 3 }; yield { kind: "completed" as const, metadata: {} }; } else { yield { kind: "content" as const, delta: "done" }; yield { kind: "completed" as const, metadata: { tokens: 1 } }; } }),
+    ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* () { if (modelStep++ === 0) { yield { kind: "content" as const, delta: "intermediate answer" }; yield { kind: "tool_call" as const, callId: "call", name: "double", arguments: 3 }; yield { kind: "completed" as const, metadata: {} }; } else { yield { kind: "content" as const, delta: "done" }; yield { kind: "completed" as const, metadata: { tokens: 1 } }; } }),
     async reconcile() { return undefined; },
   }).build();
   const output = await runtime.run("go");

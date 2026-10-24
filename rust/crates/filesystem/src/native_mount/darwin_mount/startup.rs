@@ -302,8 +302,13 @@ impl DarwinMountSession {
         if !probe.mounted(destination, &ProbeWork::Live(original))? {
             return Err(driver_errno(libc::EIO));
         }
-        self.native_root_identity =
-            Some(crate::native_host::HostRoot::open(destination, &mut &*original)?.identity());
+        // This is an identity query, not an admission to read the directory.
+        // Opening an NFS root for data can fail even when its metadata is
+        // available. The destination fence and mounted probe remain held here.
+        self.native_root_identity = Some(crate::native_host::root_path_identity(
+            destination,
+            &mut &*original,
+        )?);
         Ok(())
     }
 }

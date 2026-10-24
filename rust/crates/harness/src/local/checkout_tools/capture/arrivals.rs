@@ -36,7 +36,7 @@ pub(super) fn register(
         let path = workspace.path.join(&relative);
         let metadata = match std::fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) if acyclic_fs::native_capture::host_path_is_absent(&error) => continue,
             Err(error) => return Err(storage(error)),
         };
         if !metadata.is_dir() || metadata.file_type().is_symlink() {

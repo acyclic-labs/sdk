@@ -1,7 +1,7 @@
 //! Runtime ownership of request-file subscriptions over the stock package.
 use crate::{
     Error, OperationId, Result,
-    client::{CommandRequest, CommandResolution, CommandSession, CommandTool},
+    client::{CommandExecution, CommandRequest, CommandResolution, CommandSession, CommandTool},
     local::LocalHarness,
     task_volume::FileValue,
 };
@@ -150,6 +150,15 @@ pub(crate) async fn execute_request<P: acyclic_stream::StreamProvider + ?Sized>(
             |operation, target, resolution| {
                 let settings = &settings;
                 async move {
+                    if matches!(
+                        &resolution,
+                        CommandResolution::Submit {
+                            request: CommandRequest::Rewind
+                        }
+                    ) {
+                        return Box::pin(execute(local, operation, target, resolution, settings))
+                            .await;
+                    }
                     if !matches!(
                         &resolution,
                         CommandResolution::Prompt { .. }
@@ -161,7 +170,7 @@ pub(crate) async fn execute_request<P: acyclic_stream::StreamProvider + ?Sized>(
                                 request: CommandRequest::Replace { .. }
                             }
                     ) {
-                        return Err(Error::Indeterminate(operation));
+                        return CommandExecution::from(Err(Error::Indeterminate(operation)));
                     }
                     let task = crate::runtime::task_id_for_admission(operation);
                     match local.resume(task).await {
@@ -169,16 +178,22 @@ pub(crate) async fn execute_request<P: acyclic_stream::StreamProvider + ?Sized>(
                             Box::pin(execute(local, operation, target, resolution, settings)).await
                         }
                         output => {
-                            let mut value = serde_json::to_value(output?)
-                                .map_err(|error| Error::Invalid(error.to_string()))?;
-                            let fields = value.as_object_mut().ok_or_else(|| {
-                                Error::Invalid("turn output must be an object".into())
-                            })?;
-                            fields.insert("task".into(), serde_json::json!(task));
-                            fields.insert("selected_task".into(), serde_json::json!(task));
-                            fields
-                                .insert("admission_operation".into(), serde_json::json!(operation));
-                            Ok(value)
+                            let result = async {
+                                let mut value = serde_json::to_value(output?)
+                                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                                let fields = value.as_object_mut().ok_or_else(|| {
+                                    Error::Invalid("turn output must be an object".into())
+                                })?;
+                                fields.insert("task".into(), serde_json::json!(task));
+                                fields.insert("selected_task".into(), serde_json::json!(task));
+                                fields.insert(
+                                    "admission_operation".into(),
+                                    serde_json::json!(operation),
+                                );
+                                Ok(value)
+                            }
+                            .await;
+                            CommandExecution::admitted(task, result)
                         }
                     }
                 }
@@ -193,28 +208,38 @@ async fn execute(
     target: Option<crate::TaskId>,
     resolution: CommandResolution,
     settings: &serde_json::Value,
-) -> Result<serde_json::Value> {
-    let target = target.filter(|task| task.to_string() != local.client_owner().id);
-    let _driving = local.driver_claim(operation).await;
-    let mut result = local
-        .dispatch_configured_command(operation, target, resolution, settings)
-        .await?;
-    if result.get("admission_operation").is_some() {
-        let task = result
-            .get("task")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| Error::Invalid("command admission has no task".into()))?;
-        let output = serde_json::to_value(local.resume(crate::TaskId::parse(task)?).await?)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        result
-            .as_object_mut()
-            .ok_or_else(|| Error::Invalid("command result must be an object".into()))?
-            .extend(
-                output
-                    .as_object()
-                    .ok_or_else(|| Error::Invalid("turn output must be an object".into()))?
-                    .clone(),
-            );
+) -> CommandExecution {
+    let mut admitted = None;
+    let outcome = async {
+        let target = target.filter(|task| task.to_string() != local.client_owner().id);
+        let _driving = local.driver_claim(operation).await;
+        let mut result = local
+            .dispatch_configured_command(operation, target, resolution, settings)
+            .await?;
+        if result.get("admission_operation").is_some() {
+            let task = result
+                .get("task")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| Error::Invalid("command admission has no task".into()))?;
+            let task = crate::TaskId::parse(task)?;
+            admitted = Some(task);
+            let output = serde_json::to_value(local.resume(task).await?)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            result
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("command result must be an object".into()))?
+                .extend(
+                    output
+                        .as_object()
+                        .ok_or_else(|| Error::Invalid("turn output must be an object".into()))?
+                        .clone(),
+                );
+        }
+        Ok(result)
     }
-    Ok(result)
+    .await;
+    match admitted {
+        Some(task) => CommandExecution::admitted(task, outcome),
+        None => outcome.into(),
+    }
 }

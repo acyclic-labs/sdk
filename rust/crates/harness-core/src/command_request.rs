@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(test)]
+#[path = "command_request/diff_tests.rs"]
+mod diff_tests;
+
 /// Exact composer range and immutable file selected by an `@` mention.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -70,6 +74,8 @@ pub enum CommandRequest {
         /// User-supplied summary guidance.
         instructions: String,
     },
+    /// Restore the currently selected summary checkpoint and its fixed history cut.
+    Rewind,
     /// Change the model through the harness request owner.
     Model {
         /// Provider/model identifier.
@@ -246,8 +252,11 @@ impl CommandResolution {
                 request: CommandRequest::Theme { .. },
             } => &[(Config, "theme.json")],
             Self::Select {
-                query: CommandQuery::Reasoning | CommandQuery::Details | CommandQuery::Diff,
+                query: CommandQuery::Reasoning | CommandQuery::Details,
             } => &[(Config, "settings.json")],
+            Self::Select {
+                query: CommandQuery::Diff,
+            } => &[(Config, "settings.json"), (Session, "layout.json")],
             Self::Select {
                 query: CommandQuery::Attention,
             } => &[
@@ -273,28 +282,65 @@ impl CommandResolution {
         snapshot: &CommandFileSnapshot,
         operation: OperationId,
     ) -> Result<Vec<CommandFileChange>> {
-        let config = |root, path: &str, contents| {
-            vec![CommandFileChange {
-                operation,
-                root,
-                path: path.into(),
-                contents,
-                create_only: false,
-            }]
-        };
-        let publish_request = |root, contents| {
-            vec![CommandFileChange {
-                operation,
-                root,
-                path: format!("requests/{operation}.json"),
-                contents,
-                create_only: true,
-            }]
-        };
+        let config = |root, path: &str, contents| config_change(operation, root, path, contents);
+        let publish_request = |root, contents| request_change(operation, root, contents);
         match self {
-            Self::Submit {
-                request: CommandRequest::Model { model },
-            } => {
+            Self::Submit { request } => Self::submission_changes(request, snapshot, operation),
+            Self::Select { query } => Self::selection_changes(query, snapshot, operation),
+            Self::Sdk { command, arguments } if command == "back" => {
+                let back = arguments.parse::<u64>().map_err(|_| {
+                    Error::Invalid(
+                        "display page unavailable; request an explicit archival page".into(),
+                    )
+                })?;
+                let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
+                layout.insert("history_page".into(), json!(back));
+                layout.insert("open_view".into(), json!("history"));
+                layout.insert("view_request".into(), json!(operation));
+                Ok(config(
+                    CommandFileRoot::Session,
+                    "layout.json",
+                    layout.into(),
+                ))
+            }
+            Self::Sdk { .. } => Ok(publish_request(
+                CommandFileRoot::Session,
+                serde_json::to_value(self).map_err(codec)?,
+            )),
+            Self::Tool { .. } | Self::Prompt { .. } => Ok(publish_request(
+                CommandFileRoot::Task,
+                serde_json::to_value(self).map_err(codec)?,
+            )),
+            Self::Confirm { request } => {
+                let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
+                let mut confirmation = json!({"request":request,"operation":operation});
+                if matches!(request, CommandRequest::Delete) {
+                    let task = layout
+                        .get("selected_task")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| Error::Invalid("delete requires a selected task".into()))?;
+                    crate::TaskId::parse(task)?;
+                    confirmation["task"] = json!(task);
+                }
+                layout.insert("confirmation".into(), confirmation);
+                Ok(config(
+                    CommandFileRoot::Session,
+                    "layout.json",
+                    layout.into(),
+                ))
+            }
+        }
+    }
+
+    fn submission_changes(
+        request: &CommandRequest,
+        snapshot: &CommandFileSnapshot,
+        operation: OperationId,
+    ) -> Result<Vec<CommandFileChange>> {
+        let config = |root, path: &str, contents| config_change(operation, root, path, contents);
+        let publish_request = |root, contents| request_change(operation, root, contents);
+        match request {
+            CommandRequest::Model { model } => {
                 let mut settings = document(snapshot, CommandFileRoot::Task, "settings.json")?;
                 settings.insert("model".into(), json!(model));
                 return Ok(config(
@@ -303,16 +349,12 @@ impl CommandResolution {
                     settings.into(),
                 ));
             }
-            Self::Submit {
-                request: CommandRequest::Theme { name },
-            } => {
+            CommandRequest::Theme { name } => {
                 let mut theme = document(snapshot, CommandFileRoot::Config, "theme.json")?;
                 theme.insert("name".into(), json!(name));
                 return Ok(config(CommandFileRoot::Config, "theme.json", theme.into()));
             }
-            Self::Submit {
-                request: CommandRequest::CycleMode,
-            } => {
+            CommandRequest::CycleMode => {
                 let mut settings = document(snapshot, CommandFileRoot::Task, "settings.json")?;
                 cycle(&mut settings, "agent_mode", "agent_modes")?;
                 return Ok(config(
@@ -321,9 +363,7 @@ impl CommandResolution {
                     settings.into(),
                 ));
             }
-            Self::Submit {
-                request: CommandRequest::Quit,
-            } => {
+            CommandRequest::Quit => {
                 let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
                 layout.insert("exit_requested".into(), json!(true));
                 return Ok(config(
@@ -332,7 +372,7 @@ impl CommandResolution {
                     layout.into(),
                 ));
             }
-            Self::Submit { request } => {
+            request => {
                 let root = if matches!(
                     request,
                     CommandRequest::Pause {
@@ -352,55 +392,17 @@ impl CommandResolution {
                     serde_json::to_value(request).map_err(codec)?,
                 ));
             }
-            Self::Sdk { command, arguments } if command == "back" => {
-                let back = arguments.parse::<u64>().map_err(|_| {
-                    Error::Invalid(
-                        "display page unavailable; request an explicit archival page".into(),
-                    )
-                })?;
-                let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
-                layout.insert("history_page".into(), json!(back));
-                layout.insert("open_view".into(), json!("history"));
-                layout.insert("view_request".into(), json!(operation));
-                return Ok(config(
-                    CommandFileRoot::Session,
-                    "layout.json",
-                    layout.into(),
-                ));
-            }
-            Self::Sdk { .. } => {
-                return Ok(publish_request(
-                    CommandFileRoot::Session,
-                    serde_json::to_value(self).map_err(codec)?,
-                ));
-            }
-            Self::Tool { .. } | Self::Prompt { .. } => {
-                return Ok(publish_request(
-                    CommandFileRoot::Task,
-                    serde_json::to_value(self).map_err(codec)?,
-                ));
-            }
-            Self::Confirm { request } => {
-                let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
-                let mut confirmation = json!({"request":request,"operation":operation});
-                if matches!(request, CommandRequest::Delete) {
-                    let task = layout
-                        .get("selected_task")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| Error::Invalid("delete requires a selected task".into()))?;
-                    crate::TaskId::parse(task)?;
-                    confirmation["task"] = json!(task);
-                }
-                layout.insert("confirmation".into(), confirmation);
-                return Ok(config(
-                    CommandFileRoot::Session,
-                    "layout.json",
-                    layout.into(),
-                ));
-            }
-            Self::Select {
-                query: query @ (CommandQuery::Reasoning | CommandQuery::Details),
-            } => {
+        }
+    }
+
+    fn selection_changes(
+        query: &CommandQuery,
+        snapshot: &CommandFileSnapshot,
+        operation: OperationId,
+    ) -> Result<Vec<CommandFileChange>> {
+        let config = |root, path: &str, contents| config_change(operation, root, path, contents);
+        match query {
+            query @ (CommandQuery::Reasoning | CommandQuery::Details) => {
                 let mut settings = document(snapshot, CommandFileRoot::Config, "settings.json")?;
                 toggle(
                     &mut settings,
@@ -416,9 +418,7 @@ impl CommandResolution {
                     settings.into(),
                 ));
             }
-            Self::Select {
-                query: query @ (CommandQuery::Tree | CommandQuery::Terminal),
-            } => {
+            query @ (CommandQuery::Tree | CommandQuery::Terminal) => {
                 let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
                 toggle(
                     &mut layout,
@@ -434,54 +434,24 @@ impl CommandResolution {
                     layout.into(),
                 ));
             }
-            Self::Select {
-                query: CommandQuery::Diff,
-            } => {
+            CommandQuery::Diff => {
                 let mut settings = document(snapshot, CommandFileRoot::Config, "settings.json")?;
                 // The choices are configuration data, shared with the renderer.
                 cycle(&mut settings, "diff_mode", "diff_modes")?;
-                return Ok(config(
-                    CommandFileRoot::Config,
-                    "settings.json",
-                    settings.into(),
-                ));
-            }
-            Self::Select {
-                query: CommandQuery::Attention,
-            } => {
+                let mut changes = config(CommandFileRoot::Config, "settings.json", settings.into());
                 let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
-                let shared = document(snapshot, CommandFileRoot::Config, "attention.json")?;
-                let attention = if shared.contains_key("tasks") {
-                    shared
-                } else {
-                    document(snapshot, CommandFileRoot::Session, "attention.json")?
-                };
-                let candidates = match attention.get("tasks") {
-                    None => &[][..],
-                    Some(Value::Array(tasks)) => tasks.as_slice(),
-                    _ => return Err(Error::Invalid("attention query requires tasks".into())),
-                };
-                if candidates.is_empty() {
-                    return Ok(Vec::new());
-                }
-                for candidate in candidates {
-                    crate::TaskId::parse(candidate.as_str().ok_or_else(|| {
-                        Error::Invalid("attention tasks must be task IDs".into())
-                    })?)?;
-                }
-                let current = layout.get("selected_task");
-                let next = candidates
-                    .iter()
-                    .position(|task| Some(task) == current)
-                    .map_or(0, |index| (index + 1) % candidates.len());
-                layout.insert("selected_task".into(), candidates[next].clone());
-                return Ok(config(
+                layout.insert("open_view".into(), json!("diff"));
+                layout.insert("view_input".into(), Value::Null);
+                layout.insert("view_request".into(), json!(operation));
+                changes.extend(config(
                     CommandFileRoot::Session,
                     "layout.json",
                     layout.into(),
                 ));
+                return Ok(changes);
             }
-            Self::Select { query } => {
+            CommandQuery::Attention => Self::attention_changes(snapshot, operation),
+            query => {
                 let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
                 if *query == CommandQuery::Find {
                     layout.insert("search_query".into(), json!(""));
@@ -511,6 +481,75 @@ impl CommandResolution {
             }
         }
     }
+    fn attention_changes(
+        snapshot: &CommandFileSnapshot,
+        operation: OperationId,
+    ) -> Result<Vec<CommandFileChange>> {
+        let config = |root, path: &str, contents| config_change(operation, root, path, contents);
+
+        let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
+        let shared = document(snapshot, CommandFileRoot::Config, "attention.json")?;
+        let attention = if shared.contains_key("tasks") {
+            shared
+        } else {
+            document(snapshot, CommandFileRoot::Session, "attention.json")?
+        };
+        let candidates = match attention.get("tasks") {
+            None => &[][..],
+            Some(Value::Array(tasks)) => tasks.as_slice(),
+            _ => return Err(Error::Invalid("attention query requires tasks".into())),
+        };
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+        for candidate in candidates {
+            crate::TaskId::parse(
+                candidate
+                    .as_str()
+                    .ok_or_else(|| Error::Invalid("attention tasks must be task IDs".into()))?,
+            )?;
+        }
+        let current = layout.get("selected_task");
+        let next = candidates
+            .iter()
+            .position(|task| Some(task) == current)
+            .map_or(0, |index| (index + 1) % candidates.len());
+        layout.insert("selected_task".into(), candidates[next].clone());
+        return Ok(config(
+            CommandFileRoot::Session,
+            "layout.json",
+            layout.into(),
+        ));
+    }
+}
+
+fn config_change(
+    operation: OperationId,
+    root: CommandFileRoot,
+    path: &str,
+    contents: Value,
+) -> Vec<CommandFileChange> {
+    vec![CommandFileChange {
+        operation,
+        root,
+        path: path.into(),
+        contents,
+        create_only: false,
+    }]
+}
+
+fn request_change(
+    operation: OperationId,
+    root: CommandFileRoot,
+    contents: Value,
+) -> Vec<CommandFileChange> {
+    vec![CommandFileChange {
+        operation,
+        root,
+        path: format!("requests/{operation}.json"),
+        contents,
+        create_only: true,
+    }]
 }
 
 fn codec(error: serde_json::Error) -> Error {

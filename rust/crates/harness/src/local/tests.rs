@@ -33,6 +33,7 @@ mod hook_lifecycle;
 mod input;
 #[cfg(any(test, feature = "native-execution"))]
 mod input_user;
+mod pre_dispatch;
 #[cfg(all(any(test, feature = "native-execution"), unix))]
 mod tool_hooks;
 use std::{

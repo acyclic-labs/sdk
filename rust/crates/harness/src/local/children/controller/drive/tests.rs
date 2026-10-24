@@ -34,6 +34,19 @@ async fn outcome_after_ready_child_io(broken: bool) -> Result<bool> {
     else {
         panic!("parent admission");
     };
+    let commands = harness.commands()?;
+    let advancing =
+        crate::package::harness::worker::advance_while(&harness, task, &commands, || async {
+            Ok(true)
+        });
+    let bytes = std::mem::size_of_val(&advancing);
+    assert!(bytes <= 4096, "parent retains a {bytes}-byte worker future");
+    drop(advancing);
+    drop(commands);
+    let driving = harness.drive_turn(task, None);
+    let bytes = std::mem::size_of_val(&driving);
+    assert!(bytes <= 4096, "caller retains a {bytes}-byte resumed turn");
+    drop(driving);
     let host = Arc::clone(harness.runtime.task_host());
     let (entered, locked) = oneshot::channel();
     let (release, released) = oneshot::channel();

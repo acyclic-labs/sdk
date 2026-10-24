@@ -2,7 +2,7 @@
 # Build binaries/dependencies before invoking this runtime qualification.
 set -euo pipefail
 if [ "$#" -ne 2 ]; then
-  echo 'usage: qualify-graphcoder-e2e.sh GRAPHСODER MOCK_MODEL' >&2
+  echo 'usage: qualify-graphcoder-e2e.sh GRAPHCODER MOCK_MODEL' >&2
   exit 2
 fi
 node --test scripts/graphcoder-e2e/*.test.mjs

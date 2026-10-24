@@ -1,6 +1,7 @@
 //! Manual compaction is a retained model command selecting the shared summary engine.
 use super::*;
 pub(super) mod checkpoints;
+mod rewind;
 pub(super) mod source;
 use crate::{
     filesystem::ModelTaskCommand,

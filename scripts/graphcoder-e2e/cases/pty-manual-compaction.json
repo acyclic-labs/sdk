@@ -58,7 +58,7 @@
         {
           "when": {
             "contains": [
-              "MANUAL_E2E_FIRST",
+              "Compacted conversation",
               "\u25cb"
             ]
           },

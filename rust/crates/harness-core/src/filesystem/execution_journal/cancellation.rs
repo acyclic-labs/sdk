@@ -1,9 +1,6 @@
-//! Cancellation is an ordinary request followed at the model-stream boundary.
+//! Cancellation is an ordinary request followed while awaiting a model or approval.
 use super::*;
-use crate::{
-    command_request::{CommandRequest, CommandResolution},
-    task_volume::{Component, FileKey, Query, TaskFile},
-};
+use crate::task_volume::{Query, cancellation_key, is_cancellation};
 use futures::StreamExt as _;
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
@@ -19,25 +16,10 @@ where
         let task = owner.task_id();
         let mut observed = files
             .inner
-            .observe(
-                Query::File(FileKey::Task {
-                    task: Component::new(task.to_string())?,
-                    file: TaskFile::Request(Component::new(format!("cancel-{task}"))?),
-                }),
-                None,
-                1,
-            )
+            .observe(Query::File(cancellation_key(task)?), None, 1)
             .await?;
-        let cancelled = |file: &crate::task_volume::FileValue| {
-            let request = serde_json::from_slice::<CommandResolution>(&file.bytes)
-                .ok()
-                .and_then(|value| match value {
-                    CommandResolution::Submit { request } => Some(request),
-                    _ => None,
-                })
-                .or_else(|| serde_json::from_slice::<CommandRequest>(&file.bytes).ok());
-            matches!(request, Some(CommandRequest::Cancel { task: target }) if target == task)
-        };
+        let cancelled =
+            |file: &crate::task_volume::FileValue| is_cancellation(task, &file.key, &file.bytes);
         if observed
             .snapshot
             .as_ref()

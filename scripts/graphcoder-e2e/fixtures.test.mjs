@@ -39,3 +39,15 @@ test("unsafe fixture paths fail before their I/O begins", async () => {
     }), /unsafe seed path/);
   }
 });
+
+test("large byte fixtures remain compact and bounded", async () => {
+  let actual;
+  await seed("fixture", { large: { repeat: "x", count: 1_048_576 } }, {
+    mkdir: async () => {}, writeFile: async (_, bytes) => { actual = bytes; },
+  });
+  assert.equal(actual.length, 1_048_576);
+  assert.ok(actual.every(byte => byte === 120));
+  await assert.rejects(seed("fixture", { large: { repeat: "x", count: Infinity } }, {
+    mkdir: async () => {}, writeFile: () => assert.fail("unbounded bytes reached I/O"),
+  }), /bounded byte count/);
+});

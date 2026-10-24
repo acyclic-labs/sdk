@@ -30,63 +30,10 @@ pub(super) async fn open(
     Scope,
     Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
 )> {
-    let mut grants = vec![
-        "model:generate".to_owned(),
-        "operation:declare".to_owned(),
-        "conversation:bind".to_owned(),
-        "conversation:append".to_owned(),
-        "conversation:select_context".to_owned(),
-        "operation:observe".to_owned(),
-        "operation:cancel".to_owned(),
-        "operation:wake".to_owned(),
-        "mail:read".to_owned(),
-        "mail:send".to_owned(),
-        "fork:publish".to_owned(),
-        "project:merge".to_owned(),
-    ];
-    grants.extend(
-        code.actors()
-            .map(|actor| format!("task:spawn:{}@{}", actor.name, actor.version)),
-    );
-    for volume in [config.project, config.scratch] {
-        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            grants.push(volume.capability(operation, &mut None)?);
-        }
-        grants.push(volume.directory_read_capability("", &mut None)?);
-    }
-    for definition in config.tools.definitions(None)? {
-        grants.push(format!("tool:call:{}", definition.name));
-    }
-    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-    grants.extend(
-        config
-            .capabilities
-            .iter()
-            // Registry definitions above already supply every tool-call grant.
-            .filter(|grant| !grant.starts_with("tool:call:"))
-            .map(str::to_owned),
-    );
-    grants.push(
-        config
-            .journal
-            .directory_read_capability("inputs", &mut None)?,
-    );
-    let scope = RuntimeScope::new(
-        Capabilities::new(grants.iter().map(String::as_str)),
-        config.limits,
-    )?
-    .with_run_limits(config.run_limits, &mut None)?;
-    for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-        grants.push(config.journal.capability(operation, &mut None)?);
-        grants.push(config.task_volume.capability(operation, &mut None)?);
-    }
-    let signed = config.issuer.issue(
-        "owner",
-        &Capabilities::new(grants),
-        Some(config.agent),
-        None,
-        &mut None,
-    )?;
+    let task_grants = code
+        .actors()
+        .map(|identity| format!("task:spawn:{}@{}", identity.name, identity.version));
+    let (scope, signed) = scopes(&config, task_grants)?;
     let projection_files = Arc::new(
         crate::task_volume::TaskFiles::open(
             config.stream.clone(),
@@ -156,4 +103,66 @@ pub(super) async fn open(
         None => runtime,
     };
     Ok((Arc::new(runtime), signed, projection_files))
+}
+
+fn scopes(
+    config: &Configuration<'_>,
+    task_grants: impl IntoIterator<Item = String>,
+) -> Result<(RuntimeScope, Scope)> {
+    let mut grants = vec![
+        "model:generate".to_owned(),
+        crate::contract::capability::INTERACTION_ROUTE.to_owned(),
+        "operation:declare".to_owned(),
+        "conversation:bind".to_owned(),
+        "conversation:append".to_owned(),
+        "conversation:select_context".to_owned(),
+        "operation:observe".to_owned(),
+        "operation:cancel".to_owned(),
+        "operation:wake".to_owned(),
+        "mail:read".to_owned(),
+        "mail:send".to_owned(),
+        "fork:publish".to_owned(),
+        "project:merge".to_owned(),
+    ];
+    grants.extend(task_grants);
+    for volume in [config.project, config.scratch] {
+        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+            grants.push(volume.capability(operation, &mut None)?);
+        }
+        grants.push(volume.directory_read_capability("", &mut None)?);
+    }
+    for definition in config.tools.definitions(None)? {
+        grants.push(format!("tool:call:{}", definition.name));
+    }
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    grants.extend(
+        config
+            .capabilities
+            .iter()
+            // Registry definitions above already supply every tool-call grant.
+            .filter(|grant| !grant.starts_with("tool:call:"))
+            .map(str::to_owned),
+    );
+    grants.push(
+        config
+            .journal
+            .directory_read_capability("inputs", &mut None)?,
+    );
+    let scope = RuntimeScope::new(
+        Capabilities::new(grants.iter().map(String::as_str)),
+        config.limits,
+    )?
+    .with_run_limits(config.run_limits, &mut None)?;
+    for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+        grants.push(config.journal.capability(operation, &mut None)?);
+        grants.push(config.task_volume.capability(operation, &mut None)?);
+    }
+    let signed = config.issuer.issue(
+        "owner",
+        &Capabilities::new(grants),
+        Some(config.agent),
+        None,
+        &mut None,
+    )?;
+    Ok((scope, signed))
 }

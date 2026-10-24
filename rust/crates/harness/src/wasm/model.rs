@@ -226,37 +226,20 @@ pub fn admit_model_event(
     } else {
         from_js(state)?
     };
-    if state.text_bytes > limits.file_bytes {
-        return Err(JsValue::from_str(
-            "model output admission state exceeds file limit",
-        ));
-    }
-    let prior_text_bytes = state.text_bytes;
     let admission_state = ModelEventAdmission {
         count: state.count,
         calls: state.calls,
         completed: state.completed,
+        text_bytes: state.text_bytes,
     };
     let mut admission =
         ModelEventAdmission::from_state(admission_state, limits).map_err(js_error)?;
     admission.observe(&event, limits, None).map_err(js_error)?;
-    let text_bytes = match &event {
-        ModelEvent::Content { delta } => prior_text_bytes
-            .checked_add(delta.len() as u64)
-            .ok_or_else(|| JsValue::from_str("model output size overflow"))?,
-        ModelEvent::Reasoning { .. }
-        | ModelEvent::ReasoningBlock { .. }
-        | ModelEvent::ToolCall(_)
-        | ModelEvent::Completed { .. } => prior_text_bytes,
-    };
-    if text_bytes > limits.file_bytes {
-        return Err(JsValue::from_str("assistant output exceeds file limit"));
-    }
     let state = WasmModelEventAdmissionState {
         count: admission.count,
         calls: admission.calls,
         completed: admission.completed,
-        text_bytes,
+        text_bytes: admission.text_bytes,
     };
     let output = WasmModelEventAdmission { event, state };
     let js = to_js(&output)?;

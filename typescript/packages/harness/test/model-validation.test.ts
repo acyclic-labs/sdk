@@ -508,6 +508,29 @@ test("Rust model event admission preserves per-step bounds and cumulative UTF-8 
     { count: 2, calls: [], completed: false, text_bytes: 0 })).toThrow();
 });
 
+test("completed message admission retains exact text without adding it to streamed bytes", () => {
+  const limits = { ...DEFAULT_LIMITS, file_bytes: 3, render_bytes: 3 };
+  const streamed = contracts.admitModelEvent({ kind: "content", delta: "old" }, limits);
+  const admitted = contracts.admitModelEvent({ kind: "message_completed", text: "é" }, limits, streamed.state);
+  expect(admitted.event).toEqual({ kind: "message_completed", text: "é" });
+  expect(admitted.state.text_bytes).toBe(3);
+  expect(() => contracts.admitModelEvent({ kind: "message_completed", text: "long" }, limits, streamed.state)).toThrow();
+});
+
+test("authoritative messages preserve the native bounded stream admission", () => {
+  const limits = { ...DEFAULT_LIMITS, file_bytes: 4, render_bytes: 4 };
+  const first = contracts.admitModelEvent({ kind: "content", delta: "é" }, limits);
+  const full = contracts.admitModelEvent({ kind: "content", delta: "ok" }, limits, first.state);
+  expect(full.state.text_bytes).toBe(4);
+  expect(() => contracts.admitModelEvent({ kind: "content", delta: "x" }, limits, full.state)).toThrow();
+  expect(full.state.count).toBe(2);
+  const final = contracts.admitModelEvent({ kind: "message_completed", text: "" }, limits, full.state);
+  expect(final.event).toEqual({ kind: "message_completed", text: "" });
+  expect(final.state.text_bytes).toBe(4);
+  expect(() => contracts.admitModelEvent({ kind: "message_completed", text: "ééx" }, limits, final.state)).toThrow();
+  expect(final.state.count).toBe(3);
+});
+
 test("Rust model event admission rejects duplicate tool identities and accepts camelCase call IDs", () => {
   const limits = { ...DEFAULT_LIMITS, tool_calls_per_step: 1 };
   const first = contracts.admitModelEvent({ kind: "tool_call", callId: "call-1", name: "lookup", arguments: {} }, limits);

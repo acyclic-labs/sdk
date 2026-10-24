@@ -167,20 +167,70 @@ async fn complete_publication_delta_includes_unchanged_descendants_of_a_rename()
             .iter()
             .all(|change| change.before.is_some() != change.after.is_some())
     );
-    drop(paths);
     drop(guard);
-    // Selecting only changed file IDs loses descendants whose records did not
-    // change. Such a producer would miss both narrow-prefix watch notifications.
-    let (incomplete, guard) = raw_changed_paths(&changes, 64, &original, &cancellation).await?;
-    assert!(!incomplete.iter().any(|change| {
-        super::namespace_path_text(&change.path).is_ok_and(|path| path.ends_with("/nested/file"))
-    }));
-    drop(incomplete);
+    // The public retained delta and live publication must expose the same
+    // unchanged descendants, including narrow-prefix watch notifications.
+    let (retained, guard) = raw_changed_paths(&changes, 64, &original, &cancellation).await?;
+    assert_eq!(retained, paths);
+    drop(paths);
+    drop(retained);
     drop(guard);
     assert!(matches!(
         raw_endpoint_paths(&changes, 1, &original, &cancellation).await,
         Err(WorkspaceError::ChangedPathLimit)
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn changed_directory_bindings_expand_only_their_descendants() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = unbounded!(fs, create_workspace("directory-move"))?;
+    let mut seed = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(seed, create_dir_all("/src/deep"))?;
+    seed.write_text("/src/deep/file", "unchanged").await?;
+    unbounded!(seed, hard_link("/src/deep/file", "/outside"))?;
+    let TransactionCommit::Committed(base) = commit(&mut seed).await? else {
+        return Err("seed did not commit".into());
+    };
+    let mut transaction = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(transaction, rename("/src", "/lib", false))?;
+    let TransactionCommit::Committed(current) = commit(&mut transaction).await? else {
+        return Err("rename did not commit".into());
+    };
+    let (diff, _) = unbounded!(base, diff_to(&current, 64))?;
+    let names = |paths: Vec<ChangedPath>| {
+        paths
+            .iter()
+            .map(|change| namespace_path_text(&change.path))
+            .collect::<Result<Vec<_>, _>>()
+    };
+    let expected = [
+        "/lib",
+        "/lib/deep",
+        "/lib/deep/file",
+        "/src",
+        "/src/deep",
+        "/src/deep/file",
+    ];
+    for _ in 0..2 {
+        assert_eq!(names(unbounded!(diff, changed_paths(6))?.0)?, expected);
+    }
+    assert!(matches!(
+        unbounded!(diff, changed_paths(5)),
+        Err(WorkspaceError::ChangedPathLimit)
+    ));
+    // Negative control: deleting the changed binding identities recreates the
+    // former selection which sees no unchanged descendants of the moved folder.
+    let mut changes = diff.changes.clone();
+    changes.bindings.clear();
+    let broken = ChangeSet {
+        from: base,
+        to: current,
+        changes,
+        work: diff.work,
+    };
+    assert_ne!(names(unbounded!(broken, changed_paths(64))?.0)?, expected);
     Ok(())
 }
 

@@ -59,6 +59,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror",
  "ts-rs",
+ "url",
  "zeroize",
 ]
 
@@ -78,9 +79,9 @@ version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-fs-base",
+ "acyclic-fs-wire",
  "acyclic-native-runtime",
  "acyclic-objects",
- "acyclic-proto-build",
  "acyclic-stream",
  "async-trait",
  "blake3",
@@ -121,6 +122,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-fs-wire"
+version = "0.2.0"
+dependencies = [
+ "acyclic-proto-build",
+ "prost",
+ "tonic",
+ "tonic-prost",
+]
+
+[[package]]
 name = "acyclic-grpc-observability"
 version = "0.2.0"
 dependencies = [
@@ -133,50 +144,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "acyclic-harness"
-version = "0.2.0"
-dependencies = [
- "acyclic-actors",
- "acyclic-fs",
- "acyclic-harness-core",
- "acyclic-harness-search",
- "acyclic-native-runtime",
- "acyclic-stream",
- "arrayvec",
- "async-trait",
- "base64 0.22.1",
- "blake3",
- "bytes",
- "futures",
- "hex",
- "http",
- "js-sys",
- "jsonschema",
- "once_cell",
- "prost",
- "prost-reflect",
- "pulldown-cmark",
- "rmcp",
- "schemars",
- "serde",
- "serde-saphyr",
- "serde_json",
- "sha2 0.11.0",
- "sse-stream",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
- "wasm-bindgen",
- "wasm-bindgen-futures",
-]
-
-[[package]]
 name = "acyclic-harness-core"
 version = "0.2.0"
 dependencies = [
  "acyclic-actors",
+ "acyclic-auth",
  "acyclic-fs",
  "acyclic-native-runtime",
  "acyclic-stream",
@@ -186,6 +158,7 @@ dependencies = [
  "blake3",
  "bytes",
  "dirs",
+ "ed25519-dalek",
  "futures",
  "hex",
  "http",
@@ -210,6 +183,7 @@ dependencies = [
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "zeroize",
 ]
 
 [[package]]
@@ -217,7 +191,6 @@ name = "acyclic-harness-providers"
 version = "0.2.0"
 dependencies = [
  "acyclic-fs",
- "acyclic-harness",
  "acyclic-harness-core",
  "acyclic-stream",
  "async-stream",
@@ -251,24 +224,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "acyclic-harness-search"
-version = "0.2.0"
-dependencies = [
- "acyclic-fs",
- "acyclic-harness-core",
- "acyclic-stream",
- "async-trait",
- "bytes",
- "futures",
- "hex",
- "http",
- "schemars",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "acyclic-native-runtime"
 version = "0.2.0"
 dependencies = [
@@ -279,6 +234,7 @@ dependencies = [
  "libc",
  "pin-project-lite",
  "rustix",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "windows-sys 0.61.2",

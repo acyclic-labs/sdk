@@ -1,6 +1,91 @@
 use super::*;
 use proptest::prelude::*;
 
+async fn compaction_feedback<const DROP_SUCCESS: bool>() {
+    use crate::client::CommandSession;
+    use acyclic_stream::{MemoryStream, StreamPath};
+    use std::sync::Arc;
+    struct NoFiles;
+    impl crate::conversation::ContentResidencyVerifier for NoFiles {}
+    let volume = Arc::new(
+        crate::task_volume::TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("compaction-feedback").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let id = uuid::Uuid::from_bytes([1; 16]);
+    let mut files = CommandSession::open(volume.clone(), id, 65536, 128)
+        .await
+        .unwrap();
+    let mut renderer = ClientRenderer::default();
+    for compacted in [true, false] {
+        files.submit("hello", &NoFiles).await.unwrap();
+        let request = files.take_request().unwrap();
+        assert_eq!(
+            renderer
+                .screen_for(&files)
+                .unwrap()
+                .notifications
+                .is_empty(),
+            compacted,
+            "admission must retain the preceding settled output"
+        );
+        let result = if compacted {
+            serde_json::json!({"compacted":"task","summary":"fact"})
+        } else {
+            serde_json::json!({"text":"done"})
+        };
+        files
+            .consume(&request, |_, _, _| async { Ok(result) })
+            .await
+            .unwrap();
+        renderer.screen_for(&files).unwrap();
+        if DROP_SUCCESS {
+            renderer.outcome_notice = None;
+            renderer.compose_notices();
+        }
+        let visible = renderer
+            .screen_for(&files)
+            .unwrap()
+            .notifications
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert_eq!(
+            visible.contains("Compacted conversation"),
+            compacted,
+            "settled compaction must have a completion marker"
+        );
+        let replay = CommandSession::open(volume.clone(), id, 65536, 128)
+            .await
+            .unwrap();
+        let mut replay_renderer = ClientRenderer::default();
+        assert_eq!(
+            replay_renderer
+                .screen_for(&replay)
+                .unwrap()
+                .notifications
+                .is_empty(),
+            !compacted
+        );
+        // The next ordinary command must clear the preceding completion marker.
+    }
+}
+
+#[tokio::test]
+async fn compaction_completion_is_rendered_only_after_its_outcome_and_on_replay() {
+    compaction_feedback::<false>().await;
+}
+
+#[tokio::test]
+#[should_panic(expected = "settled compaction must have a completion marker")]
+async fn negative_control_error_only_feedback_cannot_acknowledge_compaction() {
+    compaction_feedback::<true>().await;
+}
+
 fn partition(text: &str, cuts: &[bool]) {
     let mut stream = StreamText::default();
     let mut rows = Vec::new();
@@ -176,4 +261,19 @@ fn archived_query_cannot_steal_the_active_task_selection() {
             .is_err()
         );
     });
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(16))]
+    #[test]
+    fn diff_errors_are_visible_and_replaceable(message in "[a-z ]{1,64}") {
+        let mut renderer = super::ClientRenderer::default();
+        renderer.update_diff(Err(crate::Error::Invalid(message.clone())));
+        let visible = renderer.diff.iter().map(ToString::to_string).collect::<String>();
+        proptest::prop_assert!(visible.contains("Diff unavailable:"));
+        proptest::prop_assert!(visible.contains(&message));
+        renderer.update_diff(Ok(vec![super::Line::raw("new accepted diff")]));
+        proptest::prop_assert_eq!(renderer.diff.len(), 1);
+        proptest::prop_assert_eq!(renderer.diff[0].to_string(), "new accepted diff");
+    }
 }

@@ -10,6 +10,7 @@ mod blob;
 mod checkpoint;
 pub(crate) mod closure;
 pub(crate) mod codec;
+mod content_eq;
 #[doc(hidden)]
 #[cfg(any(test, feature = "fuzzing"))]
 pub mod encoder_fuzz;
@@ -65,6 +66,7 @@ pub(crate) use attribute_mutation::apply_attribute_mutations_with_accounting;
 pub(crate) use blob::BlobDemandFailure;
 pub(crate) use blob::{build_blob_with_accounting, read_blob_range_with_accounting};
 pub(crate) use checkpoint::build_checkpoint_with_accounting;
+pub(crate) use content_eq::records_match_content;
 pub(crate) use file_read::{OriginalReadAccounting, read_object_with_accounting};
 pub(crate) use file_read::{decode_owned, owned_read_bytes};
 pub(crate) use generation_mutation::{

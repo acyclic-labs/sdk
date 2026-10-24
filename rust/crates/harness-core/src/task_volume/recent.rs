@@ -27,6 +27,7 @@ pub(super) fn kind(key: &FileKey) -> Option<u8> {
         TaskFile::Tool { .. } => 4,
         TaskFile::ExecutionResult(_) => 6,
         TaskFile::Completion(_) => 7,
+        TaskFile::ApprovalRequest(_) | TaskFile::ApprovalDecision { .. } => 8,
         _ => return None,
     })
 }
@@ -136,7 +137,7 @@ pub(super) fn snapshot(index: &Index, query: &Query, maximum: usize) -> Result<V
             return Err(Error::LimitExceeded);
         }
         let mut files = Vec::new();
-        for kind in 0..=7 {
+        for kind in 0..=8 {
             for ((_, _, sequence), key) in index
                 .views
                 .order

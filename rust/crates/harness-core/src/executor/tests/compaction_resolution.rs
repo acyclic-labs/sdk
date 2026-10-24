@@ -303,8 +303,8 @@ async fn writerless_summary_reports_one_error_without_repeating_resolution() -> 
                     None,
                     operation,
                     0,
-                    crate::context::Context::default(),
-                    instruction,
+                    (crate::context::Context::default(), instruction),
+                    &mut DispatchPhase::new(),
                 ));
                 assert!(matches!(result, Some(Err(Error::Unauthorized(_)))));
             });

@@ -52,6 +52,14 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 }
             }
         }
+        if result.get("rewound").is_some() {
+            self.write_state(
+                CommandFileRoot::Session,
+                "notifications.json",
+                &json!(["Rewound to selected checkpoint"]),
+            )
+            .await?;
+        }
         Ok(())
     }
 

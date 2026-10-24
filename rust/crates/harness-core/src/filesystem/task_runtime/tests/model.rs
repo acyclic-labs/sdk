@@ -337,19 +337,56 @@ async fn native_model_selected_writer_requires_original_created_binding_before_p
             &work,
         )
         .await?;
+    let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+    let fence = LeaseFence::from(&lease.reservation);
     let (attempt, custody) = runtime
         .resume_task_with_native_work(lease, custody, &commands, 2, &work)
         .await?;
-    assert!(matches!(
-        &attempt,
-        TaskWorkerAttempt::Unresolved {
-            error: Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                ..
-            },
-            ..
+    // Consume and retain the Failed result without reissuing its committed identity.
+    match &attempt {
+        TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task: completed }) => {
+            assert_eq!(*completed, task);
         }
-    ));
+        TaskWorkerAttempt::Unresolved { error, .. } => {
+            panic!("known rejection remained unresolved: {error:?}");
+        }
+        _ => panic!("known rejection did not complete the control machine"),
+    }
+    let receipt = work.receipt();
+    let inspection =
+        acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let replay_io = PreparationIo::from_native_work(&inspection)?;
+    let owner = runtime
+        .task_host()
+        .original_journal_owner(
+            task,
+            OperationId::from_bytes(task.into_bytes()),
+            &fence,
+            &replay_io,
+        )
+        .await?;
+    let journal = crate::filesystem::FilesystemWorkflowJournal::for_task(
+        owner.into_native_shared(&inspection)?,
+        fixture.filesystem.clone(),
+        crate::filesystem::FilesystemJournalBinding {
+            volume: &fixture.volume,
+            verifier: &fixture.issuer.verifier(&mut None)?,
+            scope: &fixture.signed,
+            maximum_bytes: 65_536.min(fixture.scope.limits().file_bytes),
+            io: Some(&replay_io),
+        },
+    )?;
+    let record = journal
+        .observe_latest_record(Some(&replay_io))
+        .await?
+        .unwrap();
+    let outcome: Outcome<Value> =
+        serde_json::from_value(record.input["commands"][0]["value"].clone())
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+    assert!(matches!(outcome, Outcome::Failed { message }
+        if message.contains("output volume has no admitted creation binding")));
+    assert_eq!(work.receipt(), receipt);
     assert_eq!(provider.generated.load(Ordering::SeqCst), 0);
     assert_eq!(provider.reconciled.load(Ordering::SeqCst), 0);
     assert!(custody.work().shares_ledger(&work));

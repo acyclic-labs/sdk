@@ -102,3 +102,81 @@ async fn selected_task_settings_do_not_visit_retained_commands() {
 async fn negative_control_always_scanning_retained_commands_is_detected() {
     model::<true>(32).await;
 }
+
+async fn scroll_cut<const CACHED: bool>(modal: bool, before_snapshot: bool) {
+    let volume = Arc::new(
+        files::TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("scroll-cut").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let id = uuid::Uuid::from_bytes([1; 16]);
+    let mut owner = CommandSession::open(volume.clone(), id, 65536, 128)
+        .await
+        .unwrap();
+    owner
+        .write_state(
+            CommandFileRoot::Session,
+            "layout.json",
+            &json!({"transcript_back":2}),
+        )
+        .await
+        .unwrap();
+    let mut input = CommandSession::open(volume.clone(), id, 65536, 128)
+        .await
+        .unwrap();
+    let layout = if modal {
+        json!({"open_view":"shortcuts", "view_back":20, "transcript_back":7, "peer":"retained"})
+    } else {
+        json!({"transcript_back":7, "peer":"retained"})
+    };
+    owner
+        .write_state(CommandFileRoot::Session, "layout.json", &layout)
+        .await
+        .unwrap();
+    if before_snapshot {
+        input = CommandSession::open(volume, id, 65536, 128).await.unwrap();
+    }
+    if CACHED {
+        let mut cached = input
+            .state(CommandFileRoot::Session, "layout.json")
+            .unwrap()
+            .unwrap();
+        cached["transcript_back"] = json!(crate::client::tui_scroll(&input).unwrap() + 3);
+        input
+            .write_state(CommandFileRoot::Session, "layout.json", &cached)
+            .await
+            .expect("scroll must re-resolve at the new cut");
+    } else {
+        // The same shared entry point used by PageUp/wheel in GraphCoder.
+        crate::client::scroll_tui(&mut input, [5, -2], 100)
+            .await
+            .expect("scroll must re-resolve at the new cut");
+    }
+    let actual = input
+        .state(CommandFileRoot::Session, "layout.json")
+        .unwrap()
+        .unwrap();
+    assert_eq!(actual["peer"], "retained");
+    assert_eq!(actual["transcript_back"], if modal { 7 } else { 10 });
+    if modal {
+        assert_eq!(actual["view_back"], 23);
+    }
+}
+
+#[tokio::test]
+async fn scrolling_re_resolves_the_focused_layout_after_a_cut_change() {
+    for modal in [false, true] {
+        for before_snapshot in [false, true] {
+            scroll_cut::<false>(modal, before_snapshot).await;
+        }
+    }
+}
+
+#[tokio::test]
+#[should_panic(expected = "scroll must re-resolve at the new cut")]
+async fn negative_control_cached_scroll_fails_on_an_advanced_cut() {
+    scroll_cut::<true>(false, false).await;
+}

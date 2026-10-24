@@ -632,7 +632,9 @@ impl CaptureBatch<'_> {
     }
 }
 
-pub(super) fn host_path_is_absent(error: &std::io::Error) -> bool {
+/// Whether an observation proves that the path is absent, including a descendant
+/// whose former directory has been replaced by a file.
+pub fn host_path_is_absent(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
         std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory

@@ -577,13 +577,13 @@ export class AgentHarness {
       const selected = input.selectedContext;
       const base = selected?.messages ?? [first];
       const messages: ModelMessage[] = [...(await contextBuilder?.build(input, base) ?? base)];
-      let text = "";
-      let previousAdmission: ModelEventAdmissionState = { count: 0, calls: [], completed: false, text_bytes: 0 };
       const maxSteps = Math.min(this.scope.limits.maxSteps ?? this.components.limits.model_steps, this.components.limits.model_steps);
       for (let step = 0; step < maxSteps; step += 1) {
+        let text = "";
+        let completedText: string | undefined;
         const calls: Extract<ModelEvent, { kind: "tool_call" }>[] = [];
         const assistantParts: ModelContentPart[] = [];
-        let admission: ModelEventAdmissionState = { ...previousAdmission, count: 0, calls: [], completed: false };
+        let admission: ModelEventAdmissionState = { count: 0, calls: [], completed: false, text_bytes: 0 };
         const request = structuredClone({ model: model.identity, messages, tools: this.#modelToolDefinitions(), ...(this.components.modelOutputTokens === undefined ? {} : { maxOutputTokens: this.components.modelOutputTokens }) });
         const inventories = request.messages.map(message =>
           this.contracts.modelContentInventory(message.content, this.components.limits));
@@ -632,6 +632,9 @@ export class AgentHarness {
             if (admittedEvent.kind === "content") {
               text += admittedEvent.delta;
             }
+            else if (admittedEvent.kind === "message_completed") {
+              completedText = admittedEvent.text;
+            }
             else if (admittedEvent.kind === "tool_call") {
               calls.push(admittedEvent);
               assistantParts.push(admittedEvent);
@@ -645,7 +648,6 @@ export class AgentHarness {
           }
         }
         if (!admission.completed) throw new Error("model attempt ended without completion");
-        previousAdmission = admission;
         if (assistantParts.length !== 0) messages.push({ role: "assistant", content: assistantParts });
         const outcomes: Extract<RunReceipt, { kind: "tool" }>[] = [];
         for (const call of calls) {
@@ -673,7 +675,7 @@ export class AgentHarness {
           if (part.kind === "tool_call") receipts.push(outcomes[callIndex++]!);
           else if (part.kind === "reasoning") receipts.push({ kind: "reasoning_block", step, block: part.block });
         }
-        if (calls.length === 0) return { text };
+        if (calls.length === 0) return { text: completedText ?? text };
       }
       throw new Error(`agent loop exceeded ${maxSteps} model steps`);
     });

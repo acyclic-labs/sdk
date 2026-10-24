@@ -12,63 +12,23 @@ impl StockExecution<'_> {
     pub(super) async fn compact_response(
         &self,
         journal: &dyn ExecutionJournal,
-        input: &TurnInput,
-        step: u32,
-        projection: ResponseProjection,
-        accounting: ContextAccounting,
+        turn: (&TurnInput, u32),
+        captured: (ResponseProjection, ContextAccounting),
         context: crate::context::Context,
+        policy: &crate::context::ThresholdCompaction,
+        phase: &mut DispatchPhase,
     ) -> Result<crate::model::PreparedModelRequest> {
-        let crate::context::CompactionPolicy::Threshold(policy) = self.compaction_policy()? else {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Invalid,
-                "automatic compaction is disabled",
-            ));
-        };
-        let canonical_request = crate::model::PreparedModelRequest::prepare(
-            self.request_from_context(&context)?,
-            self.stock.limits,
-            self.io,
-        )?;
-        let count = if projection.canonical.is_some() {
-            stock_count_tokens(self.stock.provider.as_ref(), &canonical_request, self.io).await?
-        } else {
-            accounting.count
-        };
-        with_history_io(self.io, |work| count.validate(&canonical_request, work))?;
-        let (through, maximum) = crate::context::plan_compaction_budget(
-            policy,
-            &context,
-            &count,
-            self.compaction_message_limit(
-                projection.canonical.is_some(),
-                projection
-                    .context
-                    .messages
-                    .len()
-                    .saturating_sub(context.messages.len()),
-            ),
-            self.io,
-        )?;
-        let mandatory = with_history_io(self.io, |work| {
-            crate::context::mandatory_messages(&context, through, &policy.retention, work)
-        })?;
-        let mandatory = crate::model::PreparedModelRequest::prepare(
-            self.request_from_messages(mandatory)?,
-            self.stock.limits,
-            self.io,
-        )?;
-        let mandatory_count =
-            stock_count_tokens(self.stock.provider.as_ref(), &mandatory, self.io).await?;
-        let mandatory_count =
-            with_history_io(self.io, |work| mandatory_count.validate(&mandatory, work))?;
-        if policy.needs_compaction(accounting.capacity, mandatory_count)? {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Invalid,
-                "mandatory content exceeds selected model capacity",
-            ));
-        }
+        let (input, step) = turn;
+        let (projection, accounting) = captured;
+        let (through, maximum) = self
+            .summary_budget(
+                &projection,
+                accounting.count,
+                accounting.capacity,
+                &context,
+                policy,
+            )
+            .await?;
         let (source, instruction) = self.prepare_summary_source(&context, through)?;
         let (summary, text) = crate::conversation::BoundedContentFuture::new(self.io, || {
             self.summarize(
@@ -76,8 +36,8 @@ impl StockExecution<'_> {
                 Some(input),
                 input.operation_id,
                 step,
-                source,
-                instruction,
+                (source, instruction),
+                phase,
             )
         })?
         .await?;
@@ -152,6 +112,61 @@ impl StockExecution<'_> {
             request,
         )
         .await
+    }
+
+    async fn summary_budget(
+        &self,
+        projection: &ResponseProjection,
+        count: crate::context::ModelTokenCount,
+        capacity: crate::context::ModelContextCapacity,
+        context: &crate::context::Context,
+        policy: &crate::context::ThresholdCompaction,
+    ) -> Result<(usize, usize)> {
+        let canonical_request = crate::model::PreparedModelRequest::prepare(
+            self.request_from_context(context)?,
+            self.stock.limits,
+            self.io,
+        )?;
+        let count = if projection.canonical.is_some() {
+            stock_count_tokens(self.stock.provider.as_ref(), &canonical_request, self.io).await?
+        } else {
+            count
+        };
+        with_history_io(self.io, |work| count.validate(&canonical_request, work))?;
+        let (through, maximum) = crate::context::plan_compaction_budget(
+            policy,
+            context,
+            &count,
+            self.compaction_message_limit(
+                projection.canonical.is_some(),
+                projection
+                    .context
+                    .messages
+                    .len()
+                    .saturating_sub(context.messages.len()),
+            ),
+            self.io,
+        )?;
+        let mandatory = with_history_io(self.io, |work| {
+            crate::context::mandatory_messages(context, through, &policy.retention, work)
+        })?;
+        let mandatory = crate::model::PreparedModelRequest::prepare(
+            self.request_from_messages(mandatory)?,
+            self.stock.limits,
+            self.io,
+        )?;
+        let mandatory_count =
+            stock_count_tokens(self.stock.provider.as_ref(), &mandatory, self.io).await?;
+        let mandatory_count =
+            with_history_io(self.io, |work| mandatory_count.validate(&mandatory, work))?;
+        if policy.needs_compaction(capacity, mandatory_count)? {
+            return Err(stock_boundary(
+                self.io,
+                crate::wire::ErrorCode::Invalid,
+                "mandatory content exceeds selected model capacity",
+            ));
+        }
+        Ok((through, maximum))
     }
 
     pub(super) async fn stage_canonical_checkpoint(

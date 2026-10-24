@@ -204,7 +204,6 @@ proptest::proptest! {
 
 #[tokio::test]
 async fn checkpoints_reject_stale_replay_pin_branches_and_continue_completed_tasks() -> Result<()> {
-    use crate::context::SummarySelection;
     use crate::task_volume::{Channel, Component, FileKey, FileValue, TaskFile};
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let project = volume(directory.path()).await?;
@@ -355,35 +354,30 @@ async fn checkpoints_reject_stale_replay_pin_branches_and_continue_completed_tas
     assert!(!branch_request.contains("SUMMARY_B"));
     // Rewind is a file selection at a fixed conversation cursor, with a fresh
     // selection fence. Replaying B cannot undo this later user decision.
-    let rewind = SummarySelection {
-        continuation: None,
-        checkpoint: selected_a.checkpoint,
-        selected_at: local
-            .task_files
-            .inner
-            .head()
-            .await
-            .map_err(super::super::storage)?
-            .position,
-        through: Some(checkpoint_a.boundary.through),
-    };
-    local
-        .task_files
-        .inner
-        .append(
-            local
-                .task_files
-                .inner
-                .head()
-                .await
-                .map_err(super::super::storage)?,
-            &FileValue::new(
-                key,
-                serde_json::to_vec(&rewind).map_err(super::super::storage)?,
-            ),
+    let rewind_operation = OperationId::new();
+    let result = local
+        .dispatch_command(
+            rewind_operation,
+            Some(branch),
+            crate::client::CommandResolution::Submit {
+                request: crate::client::CommandRequest::Rewind,
+            },
         )
-        .await
-        .map_err(super::super::storage)?;
+        .await?;
+    assert_eq!(result["selected_task"], serde_json::json!(target));
+    let rewind = local.selected_checkpoint(target).await?.unwrap().0;
+    assert_eq!(rewind.checkpoint, selected_a.checkpoint);
+    assert_eq!(rewind.through, Some(checkpoint_a.boundary.through));
+    local
+        .dispatch_command(
+            rewind_operation,
+            Some(branch),
+            crate::client::CommandResolution::Submit {
+                request: crate::client::CommandRequest::Rewind,
+            },
+        )
+        .await?;
+    assert_eq!(local.selected_checkpoint(target).await?.unwrap().0, rewind);
     local.compact(b, target, "retain B").await?;
     assert_eq!(local.selected_checkpoint(target).await?.unwrap().0, rewind);
     let rewound = serde_json::from_value(

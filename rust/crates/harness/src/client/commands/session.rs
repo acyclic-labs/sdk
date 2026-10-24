@@ -8,6 +8,8 @@ use serde_json::{Value, json};
 use std::{collections::VecDeque, sync::Arc};
 #[path = "session_activity.rs"]
 mod activity;
+#[path = "session_approval.rs"]
+mod approval;
 #[path = "session_archive.rs"]
 mod archive;
 #[path = "session_confirmation.rs"]
@@ -24,6 +26,9 @@ mod init_models;
 mod input;
 #[path = "session_publish.rs"]
 mod publication;
+#[cfg(all(test, acyclic_harness_loom, feature = "tui"))]
+#[path = "session_scroll_models.rs"]
+mod scroll_models;
 #[path = "session_view.rs"]
 mod view;
 
@@ -268,6 +273,23 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         self.outputs.keys().next_back().copied().unwrap_or(0)
     }
 
+    /// Process outcome of the latest settled command in this session. Reopening
+    /// derives the same status from immutable results, including blocked goals.
+    pub fn exit_outcome(&self) -> Result<crate::client::HeadlessOutcome> {
+        self.outputs
+            .values()
+            .next_back()
+            .map(|key| {
+                let file = self
+                    .files
+                    .get(key)
+                    .ok_or_else(|| Error::Conflict("output file missing".into()))?;
+                crate::client::command_output::completion(&file.bytes)
+            })
+            .transpose()
+            .map(|outcome| outcome.unwrap_or(crate::client::HeadlessOutcome::Completed))
+    }
+
     /// Every retained result after the renderer's own cursor, oldest first.
     pub fn output_since(&self, after: u64) -> impl Iterator<Item = Result<(u64, Value)>> + '_ {
         self.outputs
@@ -379,12 +401,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         name: &str,
         value: &Value,
     ) -> Result<()> {
-        self.publish_rebased::<true, true>(
-            self.state_key(root, name)?,
-            serde_json::to_vec(value).map_err(codec)?,
-            false,
-        )
-        .await?;
+        self.publish_state(root, name, value).await?;
         if root == CommandFileRoot::Session && name == "layout.json" {
             self.load_task_settings().await?;
         }

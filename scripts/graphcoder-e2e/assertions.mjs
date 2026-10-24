@@ -49,7 +49,8 @@ export function requests(test, records) {
   for (const text of test.assert.model_absent ?? []) assert.ok(!wire.includes(text), `model wire contains forbidden ${text}`);
   for (const text of test.assert.last_model_contains ?? []) assert.ok(last.includes(text), `final model input missing ${text}`);
   for (const text of test.assert.last_model_absent ?? []) assert.ok(!last.includes(text), `final model input contains forbidden ${text}`);
-  const outputs = toolResults(records).map(value => { try { return JSON.parse(value); } catch { return value; } });
+  // Auxiliary search/fetch requests have independent, non-conversation schemas.
+  const outputs = toolResults(generations).map(value => { try { return JSON.parse(value); } catch { return value; } });
   for (const text of test.assert.tool_contains ?? []) assert.ok(outputs.some(value => JSON.stringify(value).includes(text)), `actual tool result missing ${text}`);
   for (const value of outputs) {
     const error = value && typeof value === "object" ? value.error

@@ -204,16 +204,21 @@ impl McpRuntimeCallbacks {
                 &[],
             )
             .await?;
+        let completed_message = events
+            .iter()
+            .any(|event| matches!(event, ModelEvent::MessageCompleted { .. }));
         let mut text = String::new();
         for event in events {
             match event {
-                ModelEvent::Content { delta } => text.push_str(&delta),
+                ModelEvent::Content { delta } if !completed_message => text.push_str(&delta),
+                ModelEvent::MessageCompleted { text: completed } => text = completed,
                 ModelEvent::ToolCall(_) => {
                     return Err(Error::Unsupported(
                         "MCP sampling tools require host-selected tool projection".into(),
                     ));
                 }
-                ModelEvent::Reasoning { .. }
+                ModelEvent::Content { .. }
+                | ModelEvent::Reasoning { .. }
                 | ModelEvent::ReasoningBlock { .. }
                 | ModelEvent::Completed { .. } => {}
             }

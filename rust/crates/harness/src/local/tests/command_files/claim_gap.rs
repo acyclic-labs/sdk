@@ -28,7 +28,9 @@ async fn claim_gap<const RECOVER_REQUEST: bool>() -> Result<()> {
         owner
             .consume_with_recovery::<true, _, _, _, _>(
                 &request,
-                |_, _, _| async { unreachable!() },
+                |_, _, _| async {
+                    Err::<Value, _>(Error::Invalid("unexpected unclaimed execution".into()))
+                },
                 |operation, _, _| {
                     let harness = &harness;
                     async move {

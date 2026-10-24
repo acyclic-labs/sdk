@@ -17,9 +17,9 @@ type _ModelPartsHaveNoUntrackedRustVariants = AssertNever<Exclude<ModelContentPa
 type _ModelPartsHaveNoMissingPublicVariants = AssertNever<Exclude<
   "text" | "file" | "reasoning" | "tool_call" | "tool_result", ModelContentPartWire["kind"]>>;
 type _ModelEventsHaveNoUntrackedRustVariants = AssertNever<Exclude<ModelEventWire["kind"],
-  "content" | "reasoning" | "reasoning_block" | "tool_call" | "completed">>;
+  "content" | "message_completed" | "reasoning" | "reasoning_block" | "tool_call" | "completed">>;
 type _ModelEventsHaveNoMissingPublicVariants = AssertNever<Exclude<
-  "content" | "reasoning" | "reasoning_block" | "tool_call" | "completed", ModelEventWire["kind"]>>;
+  "content" | "message_completed" | "reasoning" | "reasoning_block" | "tool_call" | "completed", ModelEventWire["kind"]>>;
 
 type _VerifiedAdmissionCountIsLossless = Assert<Equal<ModelTokenCount["input_tokens"], bigint>>;
 type _CompletedReasoningRetainsTheCanonicalBlock = Assert<Equal<

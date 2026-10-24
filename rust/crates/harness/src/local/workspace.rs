@@ -40,6 +40,9 @@ pub(super) type View = LazyWorkspace<
 pub struct LocalWorkspace {
     pub(super) path: PathBuf,
     pub(super) fresh: bool,
+    /// A new native checkout still owes its first authored source import.
+    /// A materialized SDK volume already has an authored generation.
+    pub(super) import_source: bool,
     pub(super) view: View,
     pub(super) mount_directory: PathBuf,
     pub(super) mounted: Option<
@@ -416,6 +419,7 @@ pub(super) async fn open(
         mount_advances: std::sync::atomic::AtomicUsize::new(0),
         path,
         fresh,
+        import_source: fresh && !existing,
         view,
         mount_directory: directory.join("task-views"),
         mounted: None,

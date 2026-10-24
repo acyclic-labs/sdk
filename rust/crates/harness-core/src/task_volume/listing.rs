@@ -11,6 +11,9 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     ) -> Result<Vec<FileKey>> {
         self.refresh().await?;
         let index = self.index.lock().await;
+        if let Query::PendingApprovals(task) = query {
+            return index.approvals.keys(task, maximum_files);
+        }
         let mut keys = Vec::new();
         for range in query.ranges() {
             for (key, _) in index.files.range(range) {

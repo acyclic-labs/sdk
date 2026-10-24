@@ -1,5 +1,7 @@
 use super::*;
 
+type CollectedStep = (Vec<(ToolInvocation, usize)>, String, Value);
+
 impl StockExecution<'_> {
     pub(super) async fn execute_progress(
         &self,
@@ -9,22 +11,32 @@ impl StockExecution<'_> {
         let _execution = journal.claim_execution(input.operation_id, self.io)?;
         self.verify_task_context_binding(input.operation_id)?;
         self.verify_execution_owner().await?;
+        let mut phase = DispatchPhase::new();
+        let result = self.execute_turn(input, journal, &mut phase).await;
+        phase
+            .finish(result, journal, input.operation_id, self.io)
+            .await
+    }
+
+    async fn execute_turn(
+        &self,
+        input: &TurnInput,
+        journal: &dyn ExecutionJournal,
+        phase: &mut DispatchPhase,
+    ) -> Result<ExecutionProgress<TurnOutput>> {
         self.validate_turn_input(journal, input).await?;
         if let Some(source) = self.stock.summary_source.as_deref() {
             return crate::conversation::BoundedContentFuture::new(self.io, || {
-                self.summarize_file(journal, input, source)
+                self.summarize_file(journal, input, source, phase)
             })?
             .await;
         }
         self.ensure_started(journal, input).await?;
         let mut prior_messages = Vec::new();
         let mut hook_context = Vec::new();
-        let mut text = String::new();
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
         let mut stop_active = false;
         for step in 0..input.max_steps {
-            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
-            let answer_start = text.len();
             let model_events = self
                 .run_model_step(
                     journal,
@@ -32,15 +44,11 @@ impl StockExecution<'_> {
                     step,
                     &prior_messages,
                     ModelPurpose::Response,
+                    phase,
                 )?
                 .await?;
-            let (calls, metadata) = self.collect_turn_events(
-                input,
-                step,
-                model_events,
-                &mut text,
-                &mut prior_messages,
-            )?;
+            let (calls, text, metadata) =
+                self.collect_step_events(input, step, model_events, &mut prior_messages)?;
             if calls.is_empty() {
                 // A Stop block prevents settlement and consumes the step budget.
                 #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
@@ -51,8 +59,8 @@ impl StockExecution<'_> {
                     // of the loop reports the same budget exhaustion as tools.
                     // The superseded answer moves into history; the turn's
                     // output is the answer given after the hook's reason.
-                    let answer = text.split_off(answer_start);
-                    self.continue_after_stop(&mut prior_messages, &answer, reason)?;
+                    self.continue_after_stop(&mut prior_messages, &text, reason)?;
+                    self.retire_step_text(text)?;
                     stop_active = true;
                     continue;
                 }
@@ -63,6 +71,7 @@ impl StockExecution<'_> {
                     steps: step + 1,
                 }));
             }
+            self.retire_step_text(text)?;
             for (invocation, invocation_index) in calls {
                 match self
                     .resolve_tool_call(
@@ -86,6 +95,9 @@ impl StockExecution<'_> {
                     ExecutionProgress::Failed(reason) => {
                         return Ok(ExecutionProgress::Failed(reason));
                     }
+                    ExecutionProgress::PreDispatchFailed(failure) => {
+                        return Err(failure.into_error());
+                    }
                 }
             }
             append_step_context(&mut prior_messages, &mut hook_context, self.io)?;
@@ -97,26 +109,54 @@ impl StockExecution<'_> {
         ))
     }
 
-    fn collect_turn_events(
+    pub(super) fn has_completed_message(&self, events: &[ModelEvent]) -> Result<bool> {
+        for event in events {
+            crate::model::charge_items(self.io, 1)?;
+            if matches!(event, ModelEvent::MessageCompleted { .. }) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    pub(super) fn retire_step_text(&self, text: String) -> Result<()> {
+        #[cfg(feature = "filesystem")]
+        let custody = self
+            .io
+            .filter(|_| text.capacity() != 0)
+            .map(|io| io.guard_owned(text.capacity() as u64))
+            .transpose()?;
+        drop(text);
+        #[cfg(feature = "filesystem")]
+        drop(custody);
+        Ok(())
+    }
+
+    fn collect_step_events(
         &self,
         input: &TurnInput,
         step: u32,
         model_events: Vec<ModelEvent>,
-        text: &mut String,
         prior_messages: &mut Vec<ModelMessage>,
-    ) -> Result<(Vec<(ToolInvocation, usize)>, Value)> {
+    ) -> Result<CollectedStep> {
+        let completed_message = self.has_completed_message(&model_events)?;
         let mut calls = Vec::new();
+        let mut text = String::new();
         let mut completed = Value::Null;
         for event in model_events {
             match event {
-                ModelEvent::Content { delta } => {
+                ModelEvent::Content { delta } if !completed_message => {
                     stock_string_push(
-                        text,
+                        &mut text,
                         &delta,
                         self.stock.limits.file_bytes,
                         "assistant output exceeds file limit",
                         self.io,
                     )?;
+                }
+                ModelEvent::MessageCompleted { text: completed } => {
+                    self.retire_step_text(text)?;
+                    text = completed;
                 }
                 ModelEvent::ToolCall(crate::model::ToolCall {
                     call_id,
@@ -149,10 +189,10 @@ impl StockExecution<'_> {
                         ModelContentPart::Reasoning { block },
                     )?;
                 }
-                ModelEvent::Reasoning { .. } => {}
+                ModelEvent::Content { .. } | ModelEvent::Reasoning { .. } => {}
             }
         }
-        Ok((calls, completed))
+        Ok((calls, text, completed))
     }
 
     pub(super) fn append_assistant_part(

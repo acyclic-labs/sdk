@@ -220,7 +220,7 @@ proptest! {
         // its parent. A later, unrelated rejection must not satisfy this check.
         let broken = futures::executor::block_on(StockExecution::ordinary(&executor)
             .summarize(&journal, Some(&parent), parent.operation_id, 0,
-                crate::context::Context::default(), ModelContent::Text("summarize".into())));
+                (crate::context::Context::default(), ModelContent::Text("summarize".into())), &mut DispatchPhase::new()));
         prop_assert!(!rejected_parent(&broken));
     }
 

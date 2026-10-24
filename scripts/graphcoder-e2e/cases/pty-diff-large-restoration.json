@@ -1,0 +1,120 @@
+{
+  "id": "pty-diff-large-restoration",
+  "workspace": {
+    "kind": "plain",
+    "files": {
+      "large.txt": {
+        "repeat": "x",
+        "count": 1048576
+      }
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "tools": [
+          {
+            "id": "change",
+            "name": "shell",
+            "arguments": {
+              "command": "node -e \"const fs=require('node:fs'); const f=fs.openSync('large.txt','r+'); fs.writeSync(f,Buffer.alloc(1048574,'y'),0,1048574,1); fs.closeSync(f); fs.writeFileSync('small.txt','SMALL_DIFF_E2E'+String.fromCharCode(10))\""
+            }
+          }
+        ]
+      },
+      {
+        "text": [
+          "LARGE_CHANGE_DONE"
+        ]
+      },
+      {
+        "tools": [
+          {
+            "id": "restore",
+            "name": "shell",
+            "arguments": {
+              "command": "node -e \"const fs=require('node:fs'); const f=fs.openSync('large.txt','r+'); fs.writeSync(f,Buffer.alloc(1048574,'x'),0,1048574,1); fs.closeSync(f)\""
+            }
+          }
+        ]
+      },
+      {
+        "text": [
+          "LARGE_RESTORE_DONE"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "change files"
+        },
+        {
+          "when": {
+            "contains": [
+              "LARGE_CHANGE_DONE",
+              "○"
+            ]
+          },
+          "prompt": "/diff "
+        },
+        {
+          "when": {
+            "contains": [
+              "small.txt (added)",
+              "+SMALL_DIFF_E2E"
+            ]
+          },
+          "prompt": "restore large file"
+        },
+        {
+          "when": {
+            "contains": [
+              "small.txt (added)",
+              "+SMALL_DIFF_E2E",
+              "LARGE_RESTORE_DONE",
+              "○"
+            ],
+            "absent": [
+              "large.txt (modified)"
+            ]
+          },
+          "send": "\u0004"
+        }
+      ]
+    },
+    {
+      "mode": "pty",
+      "resume": true,
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "small.txt (added)",
+              "+SMALL_DIFF_E2E"
+            ],
+            "absent": [
+              "large.txt (modified)"
+            ]
+          },
+          "send": "\u0004"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 4,
+    "files": {
+      "small.txt": "SMALL_DIFF_E2E\n"
+    }
+  }
+}

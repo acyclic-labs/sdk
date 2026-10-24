@@ -557,7 +557,9 @@ fn a_composition_wide_reader_cannot_read_a_childs_task() -> TestResult {
     let runtime = super::scenario_runtime()?;
     // Prove this head can execute the scenario before changing its reader.
     runtime.block_on(run(case.clone()))?;
-    case["reader"] = "composition".into();
+    case.as_object_mut()
+        .ok_or("scenario must be an object")?
+        .insert("reader".into(), "composition".into());
     let error = runtime
         .block_on(run(case))
         .err()

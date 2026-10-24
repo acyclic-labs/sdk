@@ -549,7 +549,7 @@ impl LocalHarness {
         let (admission, claim) = Box::pin(self.submit_claimed(operation, prompt)).await?;
         match admission {
             Admission::Accepted(RuntimeTask::Durable { task_id, .. }) => {
-                Box::pin(self.resume_claimed(task_id, claim)).await
+                self.resume_claimed(task_id, claim).await
             }
             Admission::Accepted(RuntimeTask::Live(_)) => Err(Error::Invalid(
                 "local stock turn was not durably admitted".into(),
@@ -575,88 +575,97 @@ impl LocalHarness {
 
     // Each claim, taken under the admission gate where its head was admitted,
     // is held until that head is driven: no await separates them.
-    async fn resume_claimed(
-        &self,
+    #[inline(never)]
+    fn resume_claimed<'a>(
+        &'a self,
         task: TaskId,
-        mut claim: Option<super::orphans::Driving<'_>>,
-    ) -> Result<TurnOutput> {
-        let root = self.loop_root(task).await?;
-        let mut current = task;
-        loop {
-            let output = self.drive_turn(current, claim.take()).await;
-            if !matches!(&output, Ok(_) | Err(Error::TaskFailed { .. })) {
-                return output;
-            }
-            match self.continue_goal(current, root).await? {
-                Some((next, next_claim)) => {
-                    current = next;
-                    claim = Some(next_claim);
+        mut claim: Option<super::orphans::Driving<'a>>,
+    ) -> BoxProviderFuture<'a, Result<TurnOutput>> {
+        Box::pin(async move {
+            let root = Box::pin(self.loop_root(task)).await?;
+            let mut current = task;
+            loop {
+                let output = self.drive_turn(current, claim.take()).await;
+                if !matches!(&output, Ok(_) | Err(Error::TaskFailed { .. })) {
+                    return output;
                 }
-                None => return output,
+                match Box::pin(self.continue_goal(current, root)).await? {
+                    Some((next, next_claim)) => {
+                        current = next;
+                        claim = Some(next_claim);
+                    }
+                    None => return output,
+                }
             }
-        }
+        })
     }
 
     /// Drives one turn, carrying the claim taken where it was admitted, or
     /// claiming it under the admission gate when there is none.
-    pub(super) async fn drive_turn(
-        &self,
+    // A resumed turn contains both admission recovery and child coordination.
+    // Construct it across a heap boundary rather than embedding those mutually
+    // exclusive states in every caller's poll frame on the Windows main stack.
+    #[inline(never)]
+    pub(super) fn drive_turn<'a>(
+        &'a self,
         task: TaskId,
-        claim: Option<super::orphans::Driving<'_>>,
-    ) -> Result<TurnOutput> {
-        let operation = OperationId::from_bytes(task.into_bytes());
-        // Claim under the gate: a new prompt never supersedes a driven turn.
-        let _driving = match claim.filter(|claim| claim.operation() == operation) {
-            Some(claim) => claim,
-            None => {
-                super::admission::serialized(&self.admission, async || {
-                    self.drivers.drive(operation)
-                })
-                .await
-            }
-        };
-        let _executing = _driving.execute()?;
-        let definition = self
-            .runtime
-            .harness()
-            .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
-        let handle = match self.runtime.harness().attach(task, &definition).await {
-            Ok(handle) => handle,
-            Err(Error::NotFound(_)) => self.recover_unadmitted_turn(task).await?,
-            Err(error) => return Err(error),
-        };
-        if !super::orphans::settled(self.runtime.task_host().outcome(task).await?.as_ref()) {
-            let commands = self.commands()?;
-            #[cfg(any(test, feature = "native-execution"))]
-            self.advance_with_children(task, &commands, self.task_files.clone(), None)
+        claim: Option<super::orphans::Driving<'a>>,
+    ) -> BoxProviderFuture<'a, Result<TurnOutput>> {
+        Box::pin(async move {
+            let operation = OperationId::from_bytes(task.into_bytes());
+            // Claim under the gate: a new prompt never supersedes a driven turn.
+            let _driving = match claim.filter(|claim| claim.operation() == operation) {
+                Some(claim) => claim,
+                None => {
+                    super::admission::serialized(&self.admission, async || {
+                        self.drivers.drive(operation)
+                    })
+                    .await
+                }
+            };
+            let _executing = _driving.execute()?;
+            let definition = self
+                .runtime
+                .harness()
+                .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
+            let handle = match self.runtime.harness().attach(task, &definition).await {
+                Ok(handle) => handle,
+                Err(Error::NotFound(_)) => Box::pin(self.recover_unadmitted_turn(task)).await?,
+                Err(error) => return Err(error),
+            };
+            if !super::orphans::settled(self.runtime.task_host().outcome(task).await?.as_ref()) {
+                let commands = self.commands()?;
+                #[cfg(any(test, feature = "native-execution"))]
+                self.advance_with_children(task, &commands, self.task_files.clone(), None)
+                    .await?;
+                #[cfg(not(any(test, feature = "native-execution")))]
+                Box::pin(crate::package::harness::worker::advance(
+                    self, task, &commands,
+                ))
                 .await?;
-            #[cfg(not(any(test, feature = "native-execution")))]
-            Box::pin(crate::package::harness::worker::advance(
-                self, task, &commands,
-            ))
-            .await?;
-            if self.runtime.task_host().outcome(task).await?.is_none() {
-                let admission = self.runtime.task_host().observe_admission(task).await?;
-                return Err(Error::Indeterminate(admission.operation_id));
+                if self.runtime.task_host().outcome(task).await?.is_none() {
+                    let admission = self.runtime.task_host().observe_admission(task).await?;
+                    return Err(Error::Indeterminate(admission.operation_id));
+                }
+            } else {
+                #[cfg(any(test, feature = "native-execution"))]
+                self.advance_with_children(task, &self.commands()?, self.task_files.clone(), None)
+                    .await?;
+                // Advance already refreshes projections; terminal recovery must repair them.
+                self.refresh_command_task(task).await?;
             }
-        } else {
-            #[cfg(any(test, feature = "native-execution"))]
-            self.advance_with_children(task, &self.commands()?, self.task_files.clone(), None)
-                .await?;
-            // Advance already refreshes projections; terminal recovery must repair them.
-            self.refresh_command_task(task).await?;
-        }
-        match handle.result().await? {
-            crate::Outcome::Succeeded(output) => Ok(output),
-            crate::Outcome::Failed { message } => Err(Error::TaskFailed { task, message }),
-            crate::Outcome::Cancelled => Err(Error::InteractionRejected(
-                crate::InteractionRejection::Cancelled,
-            )),
-            crate::Outcome::Indeterminate {
-                operation_id,
-                cause,
-            } => Err(cause.into_error(operation_id)),
-        }
+            match handle.result().await? {
+                crate::Outcome::Succeeded(output) => Ok(output),
+                crate::Outcome::Failed { message } => Err(Error::TaskFailed { task, message }),
+                crate::Outcome::Cancelled => Err(Error::InteractionRejected(
+                    crate::InteractionRejection::Cancelled,
+                )),
+                crate::Outcome::Indeterminate {
+                    operation_id,
+                    cause,
+                } => Err(cause.into_error(operation_id)),
+            }
+        })
     }
 }
 

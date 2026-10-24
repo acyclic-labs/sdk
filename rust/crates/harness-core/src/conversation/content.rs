@@ -53,6 +53,7 @@ impl<'a, T> BoundedContentFuture<'a, T> {
     }
 
     /// Admits the concrete future before invoking its builder.
+    #[inline(never)]
     pub fn new<F>(io: Option<&'a ContentIo>, build: impl FnOnce() -> F) -> Result<Self>
     where
         F: std::future::Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a,
@@ -115,6 +116,7 @@ impl<'a, T> BoundedContentFuture<'a, T> {
 
 impl<T> std::future::Future for BoundedContentFuture<'_, T> {
     type Output = Result<T>;
+    #[inline(never)]
     fn poll(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,

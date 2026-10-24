@@ -222,3 +222,82 @@ proptest::proptest! {
 fn missing_shortcut_binding_is_detected_negative_control() {
     futures::executor::block_on(scenario::<false>(&rows()[0], "renamed", false));
 }
+
+#[tokio::test]
+async fn escape_closes_the_view_then_publishes_the_same_cancel_as_interrupt() {
+    let volume = Arc::new(
+        TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("escape").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let mut files = CommandSession::open(
+        volume.clone(),
+        OperationId::new().to_string().parse().unwrap(),
+        65_536,
+        128,
+    )
+    .await
+    .unwrap();
+    files.submit_input("held turn", &NoFiles).await.unwrap();
+    let task = files.active_task().unwrap();
+    let key = FileKey::Task {
+        task: Component::new(task.to_string()).unwrap(),
+        file: TaskFile::Request(Component::new(format!("cancel-{task}")).unwrap()),
+    };
+    files
+        .write_state(
+            CommandFileRoot::Session,
+            "layout.json",
+            &serde_json::json!({"open_view":"diff","selected_task":task}),
+        )
+        .await
+        .unwrap();
+    apply_tui_input(&mut files, &NoFiles, InputEffect::Host(Action::Escape))
+        .await
+        .unwrap();
+    assert!(
+        volume
+            .snapshot(&crate::task_volume::Query::File(key.clone()), 1)
+            .await
+            .unwrap()
+            .files
+            .is_empty()
+    );
+    apply_tui_input(&mut files, &NoFiles, InputEffect::Host(Action::Escape))
+        .await
+        .unwrap();
+    let saved = volume
+        .snapshot(&crate::task_volume::Query::File(key.clone()), 1)
+        .await
+        .unwrap();
+    let expected = CommandResolution::Submit {
+        request: CommandRequest::Cancel { task },
+    };
+    assert_eq!(
+        serde_json::from_slice::<CommandResolution>(&saved.files[0].bytes).unwrap(),
+        expected
+    );
+    let generation = saved.generation;
+    apply_tui_input(&mut files, &NoFiles, InputEffect::Interrupt)
+        .await
+        .unwrap();
+    assert_eq!(
+        volume
+            .snapshot(&crate::task_volume::Query::File(key), 1)
+            .await
+            .unwrap()
+            .generation,
+        generation,
+        "cancel is an immutable idempotent publication"
+    );
+    assert_eq!(
+        files
+            .state(CommandFileRoot::Session, "layout.json")
+            .unwrap()
+            .unwrap()["selected_task"],
+        serde_json::json!(task)
+    );
+}

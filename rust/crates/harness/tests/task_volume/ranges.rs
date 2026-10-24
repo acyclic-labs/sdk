@@ -34,6 +34,20 @@ fn folder_ranges_do_not_visit_unrelated_task_history() -> Result<(), Box<dyn std
     for (query, expected) in [
         (Query::Requests(Component::new("t")?), 1),
         (Query::Approvals(Component::new("t")?), 4),
+        (
+            Query::Approval {
+                task: Component::new("t")?,
+                request: Component::new("a")?,
+            },
+            2,
+        ),
+        (
+            Query::Approval {
+                task: Component::new("t")?,
+                request: Component::new("missing")?,
+            },
+            0,
+        ),
         (Query::Notifications(Component::new("t")?), 2),
         (Query::Approvals(Component::new("empty")?), 0),
         (Query::Notifications(Component::new("empty")?), 0),

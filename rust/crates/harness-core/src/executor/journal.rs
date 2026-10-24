@@ -33,7 +33,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         None
     }
 
-    /// Follows an authorized cancellation request while a model stream is active.
+    /// Follows an authorized cancellation while awaiting a model or tool approval.
     /// The default journal has no filesystem cancellation binding.
     fn model_cancellation(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<()>> {
         Box::pin(std::future::pending())

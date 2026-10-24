@@ -41,6 +41,9 @@ pub(crate) mod native;
 pub mod test_support;
 #[cfg(test)]
 mod tests;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[path = "tool.rs"]
+pub mod tools;
 #[cfg(all(
     feature = "search-http",
     feature = "test-support",

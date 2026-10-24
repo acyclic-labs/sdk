@@ -59,6 +59,7 @@ dependencies = [
  "sha2",
  "thiserror",
  "ts-rs",
+ "url",
  "zeroize",
 ]
 
@@ -78,8 +79,8 @@ version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-fs-base",
+ "acyclic-fs-wire",
  "acyclic-native-runtime",
- "acyclic-proto-build",
  "acyclic-stream",
  "async-trait",
  "blake3",
@@ -117,6 +118,16 @@ name = "acyclic-fs-base"
 version = "0.2.0"
 dependencies = [
  "diffy",
+]
+
+[[package]]
+name = "acyclic-fs-wire"
+version = "0.2.0"
+dependencies = [
+ "acyclic-proto-build",
+ "prost",
+ "tonic",
+ "tonic-prost",
 ]
 
 [[package]]
@@ -175,6 +186,7 @@ name = "acyclic-harness-core"
 version = "0.2.0"
 dependencies = [
  "acyclic-actors",
+ "acyclic-auth",
  "acyclic-fs",
  "acyclic-native-runtime",
  "acyclic-stream",
@@ -184,6 +196,7 @@ dependencies = [
  "blake3",
  "bytes",
  "dirs",
+ "ed25519-dalek",
  "futures",
  "http",
  "js-sys",
@@ -207,6 +220,7 @@ dependencies = [
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "zeroize",
 ]
 
 [[package]]
@@ -237,6 +251,7 @@ dependencies = [
  "libc",
  "pin-project-lite",
  "rustix",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "windows-sys 0.61.2",
@@ -262,7 +277,6 @@ dependencies = [
  "async-trait",
  "base64 0.23.1",
  "bytes",
- "fs2",
  "futures",
  "js-sys",
  "loom",
@@ -1084,16 +1098,6 @@ dependencies = [
  "io-lifetimes 2.0.4",
  "rustix",
  "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "fs2"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
-dependencies = [
- "libc",
- "winapi",
 ]
 
 [[package]]
@@ -3890,22 +3894,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "winapi"
-version = "0.3.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c839a674fcd7a98952e593242ea400abe93992746761e38641405d28b00f419"
-dependencies = [
- "winapi-i686-pc-windows-gnu",
- "winapi-x86_64-pc-windows-gnu",
-]
-
-[[package]]
-name = "winapi-i686-pc-windows-gnu"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
-
-[[package]]
 name = "winapi-util"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3913,12 +3901,6 @@ checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
  "windows-sys 0.61.2",
 ]
-
-[[package]]
-name = "winapi-x86_64-pc-windows-gnu"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "windows"

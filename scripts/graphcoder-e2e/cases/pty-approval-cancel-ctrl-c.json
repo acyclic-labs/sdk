@@ -1,0 +1,100 @@
+{
+  "id": "pty-approval-cancel-ctrl-c",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "write",
+            "name": "write",
+            "arguments": {
+              "path": "approved.txt",
+              "text": "APPROVED_E2E\n",
+              "media_type": "text/plain",
+              "display_name": "approved.txt"
+            }
+          }
+        ]
+      },
+      {
+        "text": [
+          "AFTER_CANCEL_E2E_DONE"
+        ],
+        "when": {}
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "prompt": "write approved file",
+          "when": {
+            "cursor": true,
+            "contains": [
+              "GraphCoder"
+            ]
+          }
+        },
+        {
+          "send": "\u0003",
+          "when": {
+            "contains": [
+              "E2E approval policy"
+            ]
+          }
+        },
+        {
+          "prompt": "continue after cancellation",
+          "when": {
+            "task_failure": "cancelled",
+            "contains": [
+              "cancelled",
+              "○"
+            ],
+            "absent": [
+              "E2E approval policy"
+            ]
+          }
+        },
+        {
+          "send": "\u0004",
+          "when": {
+            "contains": [
+              "AFTER_CANCEL_E2E_DONE",
+              "○"
+            ],
+            "absent": [
+              "failed: cancelled",
+              "E2E approval policy"
+            ]
+          }
+        }
+      ],
+      "exit": 0
+    }
+  ],
+  "assert": {
+    "requests": 2,
+    "files": {},
+    "jsonl": {
+      "hooks.jsonl": [
+        {
+          "hook_event_name": "PreToolUse"
+        }
+      ]
+    },
+    "absent_files": [
+      "approved.txt"
+    ]
+  },
+  "settings": {
+    ".claude/settings.json": "{\"hooks\":{\"SessionStart\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"UserPromptSubmit\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"PostToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"Stop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}]}}"
+  }
+}

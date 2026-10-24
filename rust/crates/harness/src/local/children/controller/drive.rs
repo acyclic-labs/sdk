@@ -2,6 +2,7 @@ use super::*;
 use std::{collections::VecDeque, future::Future, pin::Pin};
 
 impl LocalHarness {
+    #[inline(never)]
     pub(in crate::local) fn advance_with_children<'a>(
         &'a self,
         task: TaskId,
@@ -10,120 +11,52 @@ impl LocalHarness {
         control: Option<(Arc<Files>, Component)>,
     ) -> BoxProviderFuture<'a, Result<()>> {
         Box::pin(async move {
-            let snapshot = files.inner.child_lifecycle(None).await.map_err(storage)?;
-            let mut cursor = follow::Follow::new(snapshot.cursor);
-            let mut generation = snapshot.generation;
-            let mut values: BTreeMap<_, _> = snapshot
-                .files
-                .into_iter()
-                .map(|file| (file.key.clone(), file))
-                .collect();
-            let mut active = BTreeSet::new();
             let mut completions = BTreeMap::new();
-            let mut jobs = FuturesUnordered::new();
             let inherited = commands.invocation_cancellation().cloned();
             let mut inherited_stopped = false;
-            for reference in files.inner.child_references().await.map_err(storage)? {
-                if needs_work_count(
-                    &reference,
-                    &values,
-                    false,
-                    files
-                        .inner
-                        .child_input_count(&reference)
-                        .await
-                        .map_err(storage)?,
-                )? {
-                    active.insert(reference.clone());
-                    let request = files
-                        .inner
-                        .child_request(&reference)
-                        .await
-                        .map_err(storage)?;
-                    jobs.push(self.service_child(
-                        files.clone(),
-                        reference.clone(),
-                        request.clone(),
-                        inherited.clone(),
-                    ));
-                }
-            }
-            let cancellation = acyclic_fs::CancellationToken::new();
-            let drained = acyclic_fs::CancellationToken::new();
-            let scoped = draining::Commands {
-                harness: self,
-                inner: commands,
-                cancellation: cancellation.clone(),
-                drained: drained.clone(),
-            };
-            let parent = async {
-                crate::package::harness::worker::advance_while(self, task, &scoped, || async {
-                    if cancellation.is_cancelled()
-                        || commands
-                            .invocation_cancellation()
-                            .is_some_and(|token| token.is_cancelled())
-                    {
-                        return Ok(false);
-                    }
-                    match &control {
-                        None => Ok(true),
-                        Some((files, reference)) => Ok(super::super::commands::state(
-                            files,
-                            reference,
-                            usize::try_from(self.limits.render_bytes).map_err(storage)?,
-                        )
-                        .await?
-                            == ChildState::Running),
-                    }
-                })
-                .await?;
-                if let Some(crate::Outcome::Indeterminate {
-                    operation_id,
-                    cause,
-                }) = self.runtime.task_host().terminal_status(task).await?
-                {
-                    return Err(cause.into_error(operation_id));
-                }
-                Ok(())
-            };
+            let mut children = self.initial_child_drivers(&files, &inherited).await?;
+            let scoped = draining::Commands::new(self, commands);
+            let cancellation = &scoped.cancellation;
+            let drained = &scoped.drained;
+            let parent = self.advance_parent(task, commands, &scoped, &control, cancellation);
             futures::pin_mut!(parent);
             let mut parent_done = false;
             let mut pending = std::collections::VecDeque::new();
             macro_rules! observed {
                 ($work:expr) => {
                     during(
-                        $work,
+                        coordination(|| $work),
                         parent.as_mut(),
                         &mut parent_done,
-                        &mut jobs,
+                        &mut children.jobs,
                         &mut pending,
                     )
                     .await
                 };
             }
-            let result = async {
+            let result = coordination(|| async {
                 loop {
                     if !inherited_stopped && inherited.as_ref().is_some_and(|token| token.is_cancelled()) {
                         inherited_stopped = true;
                         cancellation.cancel();
                         for reference in observed!(files.inner.child_references()).map_err(storage)? {
-                            if !active.contains(&reference) && !matches!(desired(&reference, &values)?, ChildState::Cancelled | ChildState::Archived) {
-                                active.insert(reference.clone());
+                            if !children.active.contains(&reference) && !matches!(desired(&reference, &children.values)?, ChildState::Cancelled | ChildState::Archived) {
+                                children.active.insert(reference.clone());
                                 let request = observed!(files.inner.child_request(&reference)).map_err(storage)?;
-                                jobs.push(self.service_child(files.clone(), reference, request, inherited.clone()));
+                                children.jobs.push(self.service_child(files.clone(), reference, request, inherited.clone()));
                             }
                         }
                     }
-                    if cancellation.is_cancelled() && jobs.is_empty() { drained.cancel(); }
-                    if parent_done && jobs.is_empty() && completions.is_empty() && pending.is_empty() {
+                    if cancellation.is_cancelled() && children.jobs.is_empty() { drained.cancel(); }
+                    if parent_done && children.jobs.is_empty() && completions.is_empty() && pending.is_empty() {
                         return Ok(());
                     }
                     let event = match pending.pop_front() {
                         Some(event) => event,
                         None => tokio::select! {
                             biased;
-                            change = follow::next(files.as_ref(), Query::Children, &mut cursor) => Wake::File(change),
-                            result = jobs.next(), if !jobs.is_empty() => Wake::child(result),
+                            change = coordination(|| follow::next(files.as_ref(), Query::Children, &mut children.cursor)) => Wake::File(change),
+                            result = children.jobs.next(), if !children.jobs.is_empty() => Wake::child(result),
                             _ = async { inherited.as_ref().unwrap().cancelled().await },
                                 if inherited.is_some() && !inherited_stopped => Wake::Inherited,
                             result = &mut parent, if !parent_done => Wake::Parent(result),
@@ -132,31 +65,26 @@ impl LocalHarness {
                     match event {
                         Wake::File(change) => {
                             let change = change.ok_or_else(|| Error::Conflict("child folder follow ended".into()))?.map_err(storage)?;
-                            let mut changed = BTreeSet::new();
-                            for file in change.file.iter().chain(&change.files) {
-                                if let FileKey::Child { reference, file: ChildFile::Request | ChildFile::Inbox(_) | ChildFile::Control } = &file.key {
-                                    changed.insert(reference.clone());
-                                }
-                            }
-                            advance_fold(&mut values, &mut generation, change);
-                            changed.extend(release_completed(generation.position, &mut active, &mut completions));
+                            let mut changed = changed_references(&change);
+                            advance_fold(&mut children.values, &mut children.generation, change);
+                            changed.extend(release_completed(children.generation.position, &mut children.active, &mut completions));
                             for reference in changed {
-                                if active.contains(&reference) || !needs_work_count(&reference, &values, inherited_stopped,
+                                if children.active.contains(&reference) || !needs_work_count(&reference, &children.values, inherited_stopped,
                                     observed!(files.inner.child_input_count(&reference)).map_err(storage)?)? { continue; }
                                 let request = observed!(files.inner.child_request(&reference)).map_err(storage)?;
-                                active.insert(reference.clone());
-                                jobs.push(self.service_child(files.clone(), reference, request, inherited.clone()));
+                                children.active.insert(reference.clone());
+                                children.jobs.push(self.service_child(files.clone(), reference, request, inherited.clone()));
                             }
                         }
                         Wake::Child(result) => {
                             let (reference, position) = result?;
                             completions.insert(reference, position);
-                            for reference in release_completed(generation.position, &mut active, &mut completions) {
-                                if needs_work_count(&reference, &values, inherited_stopped,
+                            for reference in release_completed(children.generation.position, &mut children.active, &mut completions) {
+                                if needs_work_count(&reference, &children.values, inherited_stopped,
                                     observed!(files.inner.child_input_count(&reference)).map_err(storage)?)? {
                                     let request = observed!(files.inner.child_request(&reference)).map_err(storage)?;
-                                    active.insert(reference.clone());
-                                    jobs.push(self.service_child(files.clone(), reference, request, inherited.clone()));
+                                    children.active.insert(reference.clone());
+                                    children.jobs.push(self.service_child(files.clone(), reference, request, inherited.clone()));
                                 }
                             }
                         }
@@ -167,25 +95,115 @@ impl LocalHarness {
                         Wake::Inherited => {}
                     }
                 }
-            }.await;
-            if result.is_err() {
-                draining::finish(
-                    async {
-                        if parent_done {
-                            Ok(())
-                        } else {
-                            parent.as_mut().await
-                        }
-                    },
-                    &mut jobs,
-                    &cancellation,
-                    &drained,
-                )
-                .await;
-            }
-            result
+            }).await;
+            drain_parent(
+                result,
+                parent.as_mut(),
+                parent_done,
+                &mut children.jobs,
+                cancellation,
+                drained,
+            )
+            .await
         })
     }
+    async fn initial_child_drivers<'a>(
+        &'a self,
+        files: &Arc<Files>,
+        inherited: &Option<acyclic_fs::CancellationToken>,
+    ) -> Result<ChildDrivers<'a>> {
+        let snapshot = coordination(|| files.inner.child_lifecycle(None))
+            .await
+            .map_err(storage)?;
+        let cursor = follow::Follow::new(snapshot.cursor);
+        let generation = snapshot.generation;
+        let values: BTreeMap<_, _> = snapshot
+            .files
+            .into_iter()
+            .map(|file| (file.key.clone(), file))
+            .collect();
+        let mut active = BTreeSet::new();
+        let jobs = FuturesUnordered::new();
+        for reference in coordination(|| files.inner.child_references())
+            .await
+            .map_err(storage)?
+        {
+            if needs_work_count(
+                &reference,
+                &values,
+                false,
+                coordination(|| files.inner.child_input_count(&reference))
+                    .await
+                    .map_err(storage)?,
+            )? {
+                active.insert(reference.clone());
+                let request = coordination(|| files.inner.child_request(&reference))
+                    .await
+                    .map_err(storage)?;
+                jobs.push(self.service_child(
+                    Arc::clone(files),
+                    reference,
+                    request,
+                    inherited.clone(),
+                ));
+            }
+        }
+        Ok(ChildDrivers {
+            cursor,
+            generation,
+            values,
+            active,
+            jobs,
+        })
+    }
+
+    async fn advance_parent(
+        &self,
+        task: TaskId,
+        commands: &dyn TaskCommandHost,
+        scoped: &dyn TaskCommandHost,
+        control: &Option<(Arc<Files>, Component)>,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> Result<()> {
+        crate::package::harness::worker::advance_while(self, task, scoped, || async {
+            if cancellation.is_cancelled()
+                || commands
+                    .invocation_cancellation()
+                    .is_some_and(|token| token.is_cancelled())
+            {
+                return Ok(false);
+            }
+            match control {
+                None => Ok(true),
+                Some((files, reference)) => Ok(super::super::commands::state(
+                    files,
+                    reference,
+                    usize::try_from(self.limits.render_bytes).map_err(storage)?,
+                )
+                .await?
+                    == ChildState::Running),
+            }
+        })
+        .await?;
+        if let Some(crate::Outcome::Indeterminate {
+            operation_id,
+            cause,
+        }) = coordination(|| self.runtime.task_host().terminal_status(task)).await?
+        {
+            return Err(cause.into_error(operation_id));
+        }
+        Ok(())
+    }
+}
+
+// Keep the coordination loop's storage/follow construction separate from the
+// frame which owns parent cancellation and drains every child on failure.
+#[inline(never)]
+fn coordination<'a, T, F>(build: impl FnOnce() -> F) -> BoxProviderFuture<'a, T>
+where
+    F: Future<Output = T> + acyclic_stream::ProviderTask + 'a,
+{
+    Box::pin(build())
 }
 
 // This queue contains at most one completion per currently driven future. The
@@ -234,3 +252,55 @@ mod tests;
 #[cfg(test)]
 #[cfg(all(acyclic_harness_loom, acyclic_loom))]
 mod models;
+
+struct ChildDrivers<'a> {
+    cursor: follow::Follow,
+    generation: Generation,
+    values: BTreeMap<FileKey, FileValue>,
+    active: BTreeSet<Component>,
+    jobs: FuturesUnordered<BoxProviderFuture<'a, Result<(Component, u64)>>>,
+}
+
+fn changed_references(change: &Change) -> BTreeSet<Component> {
+    change
+        .file
+        .iter()
+        .chain(&change.files)
+        .filter_map(|file| match &file.key {
+            FileKey::Child {
+                reference,
+                file: ChildFile::Request | ChildFile::Inbox(_) | ChildFile::Control,
+            } => Some(reference.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+async fn drain_parent(
+    result: Result<()>,
+    mut parent: Pin<&mut (impl Future<Output = Result<()>> + acyclic_stream::ProviderTask)>,
+    parent_done: bool,
+    jobs: &mut FuturesUnordered<BoxProviderFuture<'_, Result<(Component, u64)>>>,
+    cancellation: &acyclic_fs::CancellationToken,
+    drained: &acyclic_fs::CancellationToken,
+) -> Result<()> {
+    if result.is_ok() {
+        return result;
+    }
+    coordination(|| {
+        draining::finish(
+            async {
+                if parent_done {
+                    Ok(())
+                } else {
+                    parent.as_mut().await
+                }
+            },
+            jobs,
+            cancellation,
+            drained,
+        )
+    })
+    .await;
+    result
+}

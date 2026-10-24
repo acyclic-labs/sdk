@@ -220,11 +220,11 @@ async fn compacted_projection_recovers_before_response_admission() -> Result<()>
         .ensure_started(&journal, &input)
         .await?;
     let original = StockExecution::ordinary(&executor)
-        .prepared_response(&journal, &input, 0, &[])
+        .prepared_response(&journal, &input, 0, &[], &mut DispatchPhase::new())
         .await?;
     let counted = accounting_calls.load(Ordering::SeqCst);
     let recovered = StockExecution::ordinary(&executor.clone())
-        .prepared_response(&journal, &input, 0, &[])
+        .prepared_response(&journal, &input, 0, &[], &mut DispatchPhase::new())
         .await?;
     assert_eq!(original.bytes(), recovered.bytes());
     assert_eq!(accounting_calls.load(Ordering::SeqCst), counted);
@@ -305,8 +305,8 @@ async fn malformed_provider_accounting_rejects_before_projection_or_model_public
             max_steps: 1,
         };
         assert!(matches!(
-            executor.execute(input, &journal).await,
-            Err(Error::Invalid(_))
+            executor.execute_progress(input, &journal).await?,
+            ExecutionProgress::PreDispatchFailed(_)
         ));
         let records = journal.0.lock().unwrap();
         assert_eq!(records.len(), 1);
@@ -374,8 +374,10 @@ async fn actual_compacted_accounting_rejects_response_without_repeating_summary(
         max_steps: 1,
     };
     for _ in 0..2 {
-        assert!(matches!(executor.execute(input.clone(), &journal).await,
-                Err(Error::Invalid(message)) if message == "compacted mandatory content exceeds selected model capacity"));
+        assert!(
+            matches!(executor.execute_progress(input.clone(), &journal).await,
+                Err(Error::Invalid(message)) if message == "compacted mandatory content exceeds selected model capacity")
+        );
     }
     assert_eq!(source.0.load(Ordering::SeqCst), 1);
     assert_eq!(provider.requests().len(), 1);
@@ -461,8 +463,8 @@ async fn oversized_mandatory_instruction_or_native_media_rejects_before_summary(
             selected_context: None,
             max_steps: 1,
         };
-        assert!(matches!(executor.execute(input, &journal).await,
-                Err(Error::Invalid(message)) if message == "mandatory content exceeds selected model capacity"));
+        assert!(matches!(executor.execute_progress(input, &journal).await?,
+                ExecutionProgress::PreDispatchFailed(failure) if failure.message().ends_with("mandatory content exceeds selected model capacity")));
         assert!(provider.requests().is_empty());
         assert!(
             !journal

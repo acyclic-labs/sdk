@@ -111,7 +111,14 @@ async fn writerless_summary_negative_control_dispatches_when_resolution_is_defer
     let journal = Journal::default();
     execution.ensure_started(&journal, &input).await?;
     execution
-        .run_model_step(&journal, &input, 0, &[], ModelPurpose::Summary)?
+        .run_model_step(
+            &journal,
+            &input,
+            0,
+            &[],
+            ModelPurpose::Summary,
+            &mut DispatchPhase::new(),
+        )?
         .await?;
     assert!(matches!(
         context.private_summaries(None),
