@@ -74,8 +74,11 @@ test('a foreign completed receipt cannot enter ledger mutation', async () => {
   for (const negative of [false, true]) await fixture(async root => {
     const api = negative ? await mutant(root) : receipt;
     const ledger = path.join(root, 'ledger.jsonl');
-    const { meta } = metadata(root, foreign(), { ledger });
-    fs.writeFileSync(meta.receipt_file, JSON.stringify({ receipt_file: meta.receipt_file, exit_status: 0 }));
+    // Let the producer own the terminal schema, then model its owner becoming
+    // foreign before recovery. No ledger exists during original completion.
+    const { file, meta } = metadata(root, live());
+    assert.equal(receipt.finish(file, 0, 'command').exit_status, 0);
+    fs.writeFileSync(file, JSON.stringify({ ...meta, owner: foreign(), ledger }));
     api.recover(root);
     assert.equal(fs.existsSync(ledger), negative);
   });
