@@ -3,8 +3,10 @@
 acyclic_test_support::counting_allocator!();
 
 mod distributed;
+#[cfg(feature = "local")]
 mod linux_ext4_perf;
 mod logical_objects;
+#[cfg(feature = "local")]
 mod macos_apfs_perf;
 mod measured_fork;
 mod merge_lineage;
