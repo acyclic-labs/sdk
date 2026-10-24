@@ -107,3 +107,30 @@ impl From<acyclic_fs::demand::SourceNodeKind> for DiscoveryKind {
         }
     }
 }
+
+/// Host-valid fixture names outside the portable context namespace.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn excluded_native_names() -> Vec<std::ffi::OsString> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStringExt;
+        let mut units: Vec<_> = "unrelated-".encode_utf16().collect();
+        units.push(0xd800);
+        vec![std::ffi::OsString::from_wide(&units)]
+    }
+    #[cfg(unix)]
+    {
+        let portable = std::ffi::OsString::from("unrelated\\name");
+        // APFS requires valid Unicode at creation; Linux admits raw byte names.
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            vec![portable, std::ffi::OsStr::from_bytes(b"unrelated-\xff").into()]
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            vec![portable]
+        }
+    }
+}
