@@ -408,6 +408,7 @@ case "$lane" in
     node --test scripts/test-typescript-qualification.mjs
     node --test scripts/test-plan-qualification.mjs scripts/test-plan-qualification-gate.mjs scripts/test-plan-qualification-windows-rust.mjs scripts/build-wasm-groups.test.mjs scripts/test-qualify-linux-package-overlap.mjs scripts/qualify-mcp-loom.test.mjs scripts/qualify-ci-preflight-fixtures.test.mjs
     node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
+    node --test scripts/npm-publication-staging.test.mjs scripts/stage-npm-package.test.mjs
     node scripts/test-verify-release-binary.mjs
     source scripts/ensure-bun.sh
     bun test scripts/qualify-rustfmt.test.mjs
