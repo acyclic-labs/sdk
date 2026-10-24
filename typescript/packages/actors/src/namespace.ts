@@ -98,6 +98,7 @@ export class ActorStub {
   get name(): string | undefined { return this.#id.name; }
   get reference(): ActorReference { return this.#id.reference; }
   #call(request: (signal: AbortSignal) => Promise<Semantic.InvokeActorRequest>, options?: ActorsCallOptions): Promise<Semantic.InvokeActorResponse> {
+    if (this.#broken) return Promise.reject(new Error("actor stub is broken; obtain a new stub"));
     const signal = options?.signal ? AbortSignal.any([options.signal, this.#lifetime.signal]) : this.#lifetime.signal;
     const cancelled = () => { this.#break(signal.reason); };
     signal.addEventListener("abort",cancelled,{once:true});
