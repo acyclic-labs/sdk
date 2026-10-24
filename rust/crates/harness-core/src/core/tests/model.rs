@@ -78,6 +78,50 @@ fn malformed_admission_metadata_is_rejected() -> Result<()> {
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn transition_work_with_resident_suffixes(
+    predecessor: &Reducer,
+    event: Event,
+    retained_events: usize,
+    retained_terminal_effects: usize,
+    budget: acyclic_fs::WorkBudget,
+) -> Result<(acyclic_fs::WorkCounters, Event)> {
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+
+    // Eviction changes only optional caches. Keep the revision, active effect,
+    // authority and exact authenticated input of the continuing execution.
+    let mut state = predecessor.copy(&mut None)?;
+    while state.events.len() > retained_events {
+        state.events.pop_front();
+    }
+    while state.projection.indexed_terminal_effects.len() > retained_terminal_effects {
+        let id = state
+            .projection
+            .indexed_terminal_effects
+            .pop_front()
+            .expect("terminal cache entry");
+        state.projection.effects.remove(&id);
+    }
+    let query = NativeMaterializationWork::new(budget, &CancellationToken::new())
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = crate::filesystem::PreparationIo::from_native_work(&query)?;
+    let ApplyResult::Applied { event } =
+        state.apply_committed(event, &mut Some(&mut io.history_io()))?
+    else {
+        panic!("fresh model input replayed")
+    };
+    state.mark_indexed_terminal_effect_with_work(&event, &mut Some(&mut io.history_io()))?;
+    drop(io);
+    let receipt = query.receipt();
+    drop(state);
+    query
+        .admit_retained(
+            budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes(),
+        )
+        .map_err(Error::from)?;
+    Ok((receipt, event))
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn native_component_model_transition_work_grows_linearly_with_bounded_residency() -> Result<()>
 {
@@ -154,7 +198,7 @@ async fn native_component_model_transition_work_grows_linearly_with_bounded_resi
     const TRANSITIONS: u64 = WARMUP + 10 * N;
     let mut recent = VecDeque::new();
     let mut total = acyclic_fs::WorkCounters::default();
-    let mut input_bytes = 0_u64;
+    let mut independent_total = acyclic_fs::WorkCounters::default();
     let mut small = None;
     for index in 0_u64..TRANSITIONS {
         let mut id = [0_u8; 16];
@@ -211,18 +255,29 @@ async fn native_component_model_transition_work_grows_linearly_with_bounded_resi
         else {
             panic!("fresh model event replayed")
         };
-        if index >= WARMUP {
-            input_bytes += serde_json::to_vec(&(
-                &owner.audience,
-                event.revision,
-                event.operation_id,
-                event.intent_digest,
-                &event.scope,
-                &event.causal_parent,
-                &event.payload,
-            ))
-            .expect("signed input")
-            .len() as u64;
+        // Reuse one owned input, including its buffer capacities, throughout
+        // the comparisons and the continuing application.
+        let (independent, mut event) =
+            transition_work_with_resident_suffixes(&state, event, 0, 0, budget)?;
+        // Exhaust every legal cache suffix with this same signed event. Fresh
+        // admission entropy and JSON fragment boundaries cannot change one side
+        // of the comparison. No history-size-dependent copy may hide behind an
+        // average over different inputs.
+        for retained_events in 0..=state.events.len() {
+            for retained_effects in 0..=state.projection.indexed_terminal_effects.len() {
+                let (receipt, returned_event) = transition_work_with_resident_suffixes(
+                    &state,
+                    event,
+                    retained_events,
+                    retained_effects,
+                    budget,
+                )?;
+                event = returned_event;
+                assert_eq!(
+                    receipt, independent,
+                    "transition {index}, events={retained_events}, terminal effects={retained_effects}",
+                );
+            }
         }
         let query = NativeMaterializationWork::new(budget, &CancellationToken::new())
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -235,13 +290,17 @@ async fn native_component_model_transition_work_grows_linearly_with_bounded_resi
         state.mark_indexed_terminal_effect_with_work(&event, &mut Some(&mut io.history_io()))?;
         drop(io);
         let receipt = query.receipt();
+        assert_eq!(receipt, independent, "continuing transition {index}");
         if index >= WARMUP {
             total = total.checked_add(receipt).expect("work counters fit");
+            independent_total = independent_total
+                .checked_add(independent)
+                .expect("work counters fit");
         }
         if index + 1 == WARMUP + N {
             small = Some((
                 serde_json::to_value(total).expect("work counters"),
-                input_bytes,
+                serde_json::to_value(independent_total).expect("independent work counters"),
             ));
         }
         assert_eq!(&state, reference.reducer(), "transition {index}");
@@ -259,8 +318,11 @@ async fn native_component_model_transition_work_grows_linearly_with_bounded_resi
             }
         }
     }
-    let (small, small_bytes) = small.expect("small workload");
-    let input_bound = input_bytes.max(10 * small_bytes);
+    // The independent applications are an additive cost witness for these
+    // exact records, rather than an average over different signed inputs.
+    let (small, independent_small) = small.expect("small workload");
+    let independent_large =
+        serde_json::to_value(independent_total).expect("independent work counters");
     let large = serde_json::to_value(total).expect("work counters");
     for (counter, value) in small.as_object().expect("work counters") {
         assert!(
@@ -269,9 +331,10 @@ async fn native_component_model_transition_work_grows_linearly_with_bounded_resi
                     .get(counter)
                     .and_then(serde_json::Value::as_u64)
                     .expect("counter")
-            ) * u128::from(small_bytes)
-                <= u128::from(value.as_u64().expect("counter")) * u128::from(input_bound),
-            "{counter} grows faster than the signed input: {small:?} -> {large:?}"
+            ) * u128::from(independent_small[counter].as_u64().expect("counter"))
+                <= u128::from(value.as_u64().expect("counter"))
+                    * u128::from(independent_large[counter].as_u64().expect("counter")),
+            "{counter} grows faster than independent applications of the identical signed inputs: {small:?} -> {large:?}"
         );
     }
     assert_eq!(state.revision(), TRANSITIONS + 1);
