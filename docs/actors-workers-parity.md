@@ -60,7 +60,7 @@ C4 hosts/custom domains; C5 alarms/sockets; C6 placement.
 | Implicit activation | Obtaining an ID is local; access instantiates lazily [N]. | Explicit CreateActor RPC (`actors.proto:185`; `actors/src/client.rs:390`); C1 live explicit, entity lazy. | NEED: latest user ruling adopts lazy actor activation. | Remove CreateActor API and callers; get returns a stub; invoke targets namespace/id. |
 | Namespace code/config | Class deployment supplies implementation [N]. | Per-actor code/config (`actors/src/domain/mutations.rs:8`; C1/C3). | NEED: deployment belongs to namespace, not instance. | Explicit versioned namespace deployment; migrate per-instance code/config APIs and tests. |
 | Single live owner | One object owns its state; stub calls address it [S]. | C2 Raft leader and activation-term fences already provide owner discipline; SDK transports invoke a service (`actors/src/client.rs:390`). | HAVE server fencing; NEED SDK namespace-aware targeting. | Carry exact triple; leave routing epochs internal and do not invent a client ownership protocol. |
-| Stub call order/failure | Calls on one stub have E-order; a broken stub fails subsequent calls [S]. | Generic independent InvokeActor HTTP requests (`actors/src/http.rs:288`); no bound stub. | NEED: namespace routing alone cannot promise order. | Bound stub with serialized admission and terminal broken state; Cloud must preserve ordered delivery. |
+| Stub call order/failure | Calls on one stub have E-order; a broken stub fails subsequent calls [S]. | Generic independent InvokeActor HTTP requests (`actors/src/http.rs:288`); no bound stub. | NEED: namespace routing alone cannot promise order. | Per-stub random session and zero-based sequence (InvokeActor.invocation_order, field 95), ordered admission without waiting for responses; failure/cancellation fails every in-flight and future call. Cloud must enforce the sequence. |
 | Delete/recreate fencing | Storage deletion permits later state creation [D]. | DeleteActor RPC (`actors.proto:101`); C2 retains epochs across recreation. | NEED: public operation is deleteAll, not address deletion. | Storage clear API targets triple and clears alarm; expose no generation; Cloud owns epoch fencing. |
 | Initialization gate | Constructor plus blockConcurrencyWhile serializes initialization before delivery [D]. | restore/event/checkpoint (`actors/src/guest.rs:23`; `guest/authoring.rs:176`) lacks explicit initialization gate. | NEED: retain cross-stream transactions while gating calls. | Typed activation/initialization authoring API and serialized gate; Cloud enforces before delivering any event. |
 | Location hint | get accepts placement advice [N,L]. | C6 absent; old home_region is per-instance (`domain/mutations.rs:12`). | NEED: hint is advisory and belongs to first access. | Typed get options carried on invocation; preserve hint with stub. |
@@ -113,8 +113,12 @@ No entries, skips, timeout increases or retry-based test outcomes are introduced
    level, alongside namespace deploy. A Worker has no addressable instances.
 5. Enforce namespace/service binding authority and materialize live typed env
    objects; add private worker RPC/fetch and worker-to-namespace invocation.
-6. Preserve per-stub delivery order/broken-stub semantics, single-writer term
-   fences and initialization gating across all delivery kinds.
+6. Enforce InvokeActor.invocation_order (field 95): random 128-bit lowercase-hex
+   session plus zero-based u64 sequence, scoped to the admitted holder and actor
+   triple. Admit N before N+1 without waiting for N's response; responses may
+   interleave. A failed/cancelled session fails all in-flight and later calls.
+   These fields convey neither address nor authority. Preserve single-writer
+   term fences and initialization gating across all delivery kinds.
 7. Store/obey namespace jurisdiction; receive first-access locationHint as
    advisory placement input. Do not add jurisdiction as an unruled fourth field.
 8. Target alarm/sockets by triple; expose retryCount/isRetry; alarm backoff starts

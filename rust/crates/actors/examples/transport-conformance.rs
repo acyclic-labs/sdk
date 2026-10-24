@@ -74,7 +74,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         actor_id: "actor-a".into(),
         namespace: None,
         account_id: Vec::new(),
-        ..Default::default()
     };
     actors_grpc.inspect_actor(request.clone()).await?;
     actors_http.inspect_actor(&request).await?;
@@ -102,7 +101,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         idempotency_key: "subscription-a".into(),
         namespace: None,
         account_id: Vec::new(),
-        ..Default::default()
     };
     actors_grpc.remove_subscription(request.clone()).await?;
     actors_http.remove_subscription(&request).await?;
@@ -112,7 +110,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         idempotency_key: "subscription-a".into(),
         namespace: None,
         account_id: Vec::new(),
-        ..Default::default()
     };
     actors_grpc.resume_subscription(request.clone()).await?;
     actors_http.resume_subscription(&request).await?;

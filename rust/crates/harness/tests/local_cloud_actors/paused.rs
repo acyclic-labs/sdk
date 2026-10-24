@@ -232,17 +232,7 @@ pub(super) async fn qualify() -> TestResult {
     observation(Some(before), &request, &[paused()])?;
     configure(remote, bearer, 2).await?;
     // One public read after the acknowledged Configure, never an Inspect polling loop.
-    let configured = actors
-        .inspect_actor(wire::InspectActorRequest {
-            namespace: Some(NS.into()),
-            account_id: Vec::new(),
-            actor_id: ID.into(),
-        })
-        .await?
-        .into_inner()
-        .actor
-        .ok_or("configured actor missing")?;
-    observation(Some(configured), &request, &[paused()])?;
+    inspect(&mut actors, &request, &[paused()]).await?;
     let mut expected = paused();
     expected.state = wire::SubscriptionState::Active as i32;
     expected.failed_cursor = None;
@@ -296,7 +286,7 @@ fn paused_oracle_rejects_active_and_changed_failure_boundaries() -> TestResult {
         account_id: Vec::new(),
         actor_id: ID.into(),
         code_sha256: request.code_sha256.clone(),
-        home_region: request.home_region.clone(),
+        home_region: "la".into(),
         configuration_revision: 1,
         subscriptions: vec![expected.clone()],
         ..Default::default()
@@ -334,16 +324,16 @@ proptest::proptest! {
     fn every_boundary_rejects_matching_corrupt_configuration(
         revision in 2u64..=u64::MAX,
         hash_byte in 0usize..32,
-        region_suffix in "[a-z]{1,16}",
+        namespace_suffix in "[a-z]{1,16}",
     ) {
         let request = configuration();
-        // Create, first Configure, Pause, second Configure, Resume, retry, retained follow.
+        // Activate, first Configure, Pause, second Configure, Resume, retry, retained follow.
         for expected in [active(), active(), paused(), paused(), active(), active(), active()] {
             let valid = wire::ActorObservation {
             namespace: Some(NS.into()), account_id: Vec::new(),
                 actor_id: ID.into(),
                 code_sha256: request.code_sha256.clone(),
-                home_region: request.home_region.clone(),
+                home_region: "la".into(),
                 configuration_revision: 1,
                 subscriptions: vec![expected.clone()],
                 ..Default::default()
@@ -355,7 +345,7 @@ proptest::proptest! {
                 match field {
                     0 => reply.actor_id.push_str("-wrong"),
                     1 => *reply.code_sha256.get_mut(hash_byte).ok_or_else(|| proptest::test_runner::TestCaseError::fail("hash byte missing"))? ^= 1,
-                    2 => reply.home_region.push_str(&region_suffix),
+                    2 => reply.namespace = Some(format!("{NS}{namespace_suffix}")),
                     _ => reply.configuration_revision = revision,
                 }
                 let retained = reply.clone();

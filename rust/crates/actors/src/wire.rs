@@ -12,7 +12,7 @@ pub use crate::contract::{
     DeploymentObservationProto as DeploymentObservation,
     DeploymentRequestProto as DeploymentRequest, DeploymentResponseProto as DeploymentResponse,
     ErrorCode, HeaderProto as Header, InspectActorRequestProto as InspectActorRequest,
-    InspectActorResponseProto as InspectActorResponse,
+    InspectActorResponseProto as InspectActorResponse, InvocationOrderProto as InvocationOrder,
     InvokeActorRequestProto as InvokeActorRequest, InvokeActorResponseProto as InvokeActorResponse,
     InvokeWorkerRequestProto as InvokeWorkerRequest,
     RemoveSubscriptionRequestProto as RemoveSubscriptionRequest,

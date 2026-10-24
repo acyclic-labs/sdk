@@ -31,7 +31,10 @@ async fn deployment_kind_mismatch_is_rejected_before_credentials_or_io()
     };
     // Negative control: generic envelope admission accepts this valid Worker.
     crate::domain::DeploymentRequest::try_from(worker.clone())?;
-    assert!(matches!(client.deploy_namespace(&worker).await, Err(Error::InvalidArgument)));
+    assert!(matches!(
+        client.deploy_namespace(&worker).await,
+        Err(Error::InvalidArgument)
+    ));
     let namespace = wire::DeploymentRequest {
         worker_limits: None,
         limits: Some(wire::ActorLimits {
@@ -42,11 +45,20 @@ async fn deployment_kind_mismatch_is_rejected_before_credentials_or_io()
         ..worker.clone()
     };
     crate::domain::DeploymentRequest::try_from(namespace.clone())?;
-    assert!(matches!(client.deploy_worker(&namespace).await, Err(Error::InvalidArgument)));
+    assert!(matches!(
+        client.deploy_worker(&namespace).await,
+        Err(Error::InvalidArgument)
+    ));
     assert_eq!(calls.load(Ordering::Relaxed), 0);
     // Correct operation alternatives proceed as far as credential admission.
-    assert!(matches!(client.deploy_worker(&worker).await, Err(Error::Credential(_))));
-    assert!(matches!(client.deploy_namespace(&namespace).await, Err(Error::Credential(_))));
+    assert!(matches!(
+        client.deploy_worker(&worker).await,
+        Err(Error::Credential(_))
+    ));
+    assert!(matches!(
+        client.deploy_namespace(&namespace).await,
+        Err(Error::Credential(_))
+    ));
     assert_eq!(calls.load(Ordering::Relaxed), 2);
     Ok(())
 }

@@ -96,17 +96,16 @@ impl<State: Send + 'static, Bindings: Send + Sync + 'static> GuestActivation<Sta
                 "delivery actor differs from activation".into(),
             ));
         }
-        if let Some(caller) = &context.admitted_identity {
-            if Some(
+        if let Some(caller) = &context.admitted_identity
+            && Some(
                 caller
                     .reference()
                     .map_err(|e| GuestError::Handler(e.to_string()))?,
             ) != expected
-            {
-                return Err(GuestError::Handler(
-                    "delivery audience differs from activation".into(),
-                ));
-            }
+        {
+            return Err(GuestError::Handler(
+                "delivery audience differs from activation".into(),
+            ));
         }
         Ok(())
     }

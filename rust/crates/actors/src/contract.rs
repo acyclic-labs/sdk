@@ -231,13 +231,15 @@ pub use generated::{
     ActorLimitsProto, ActorObservationProto, ActorState, AddSubscriptionRequestProto,
     AddSubscriptionResponseProto, BindingProto, CheckpointActorRequestProto,
     CheckpointActorResponseProto, DeleteAllRequestProto, DeleteAllResponseProto,
-    DeploymentObservationProto, DeploymentRequestProto, DeploymentResponseProto, ErrorCode,
-    HeaderProto, InspectActorRequestProto, InspectActorResponseProto, InvokeActorRequestProto,
-    InvokeActorResponseProto, InvokeWorkerRequestProto, RemoveSubscriptionRequestProto,
-    RemoveSubscriptionResponseProto, ResumeSubscriptionRequestProto,
-    ResumeSubscriptionResponseProto, ServiceErrorProto, SubscriptionObservationProto,
-    SubscriptionSpecProto, SubscriptionStartProto, SubscriptionState, UpdateNamespaceRequestProto,
-    UpdateNamespaceResponseProto, WorkerLimitsProto, subscription_start,
+    DeleteWorkerRequestProto, DeleteWorkerResponseProto, DeploymentObservationProto,
+    DeploymentRequestProto, DeploymentResponseProto, ErrorCode, HeaderProto,
+    InspectActorRequestProto, InspectActorResponseProto, InvocationOrderProto,
+    InvokeActorRequestProto, InvokeActorResponseProto, InvokeWorkerRequestProto,
+    RemoveSubscriptionRequestProto, RemoveSubscriptionResponseProto,
+    ResumeSubscriptionRequestProto, ResumeSubscriptionResponseProto, ServiceErrorProto,
+    SubscriptionObservationProto, SubscriptionSpecProto, SubscriptionStartProto, SubscriptionState,
+    UpdateNamespaceRequestProto, UpdateNamespaceResponseProto, WorkerLimitsProto,
+    subscription_start,
 };
 
 /// Actors service operations generated from the protobuf contract.
@@ -295,5 +297,3 @@ mod tests {
         fs::remove_dir_all(root).expect("remove deterministic-render fixture");
     }
 }
-
-pub use generated::{DeleteWorkerRequestProto, DeleteWorkerResponseProto};

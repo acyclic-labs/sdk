@@ -29,6 +29,7 @@
         DeleteAllRequestProto,
         DeleteAllResponseProto,
         HeaderProto,
+        InvocationOrderProto,
         InvokeActorRequestProto,
         InvokeActorResponseProto,
         ServiceErrorProto

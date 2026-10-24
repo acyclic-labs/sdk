@@ -388,7 +388,7 @@ fn admitted_actor_audiences_include_namespace_and_legacy_default()
     assert_ne!(a.reference()?, b.reference()?);
     assert!(a.clone().with_namespace(String::new()).is_err());
     let mut raw = serde_json::to_value(a)?;
-    raw["namespace"] = serde_json::json!("");
+    *raw.get_mut("namespace").ok_or("missing namespace")? = serde_json::json!("");
     assert!(serde_json::from_value::<AdmittedCaller>(raw).is_err());
     Ok(())
 }

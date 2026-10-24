@@ -40,7 +40,7 @@ test("all public identity bindings accept byte fields and reject text and mutabl
   )));
   const packages = ["auth", "actors", "stream", "objects", "fs", "machines", "workers", "sdk"];
   const imports = packages.map((name, index) =>
-    `import { ResourceIdentity as Identity${index} } from "@acyclic-labs/${name}/addressing";`).join("\n");
+    `import { ResourceIdentity as Identity${index}, ActorReference as Actor${index} } from "@acyclic-labs/${name}/addressing";`).join("\n");
   const positive = packages.map((_, index) => `{
     const view = Identity${index}.fromFields({ account: new Uint8Array([97]), id: new Uint8Array([98]) });
     const fields = Identity${index}.decode(view.encode()).toFields();
@@ -48,11 +48,18 @@ test("all public identity bindings accept byte fields and reject text and mutabl
     const id: Uint8Array = fields.id;
     const equal: boolean = view.equals(new Identity${index}(account, id));
     const host: string = view.hostname("example.com");
+    const actor = new Actor${index}(account, new TextEncoder().encode("ClassOne"), new TextEncoder().encode("same"));
+    const restored = Actor${index}.decode(actor.encode());
+    const namespace: Uint8Array = restored.toFields().namespace;
+    const sameActor: boolean = restored.equals(actor);
   }`).join("\n");
   const negative = packages.map((_, index) => `{
     new Identity${index}("account", "id");
     const fields = new Identity${index}(new Uint8Array([1]), new Uint8Array([2])).toFields();
     fields.id = new Uint8Array([3]);
+    new Actor${index}(new Uint8Array([1]), "ClassOne", new Uint8Array([2]));
+    const actorFields = Actor${index}.fromLegacyFields(new Uint8Array([1]), undefined, "same").toFields();
+    actorFields.namespace = new Uint8Array([3]);
   }`).join("\n");
   const compiler = fileURLToPath(new URL("../../node_modules/typescript/bin/tsc", import.meta.url));
   const compile = source => {
@@ -69,9 +76,9 @@ test("all public identity bindings accept byte fields and reject text and mutabl
     assert.equal(accepted.status, 0, accepted.stdout + accepted.stderr);
     const rejected = compile(negative);
     assert.notEqual(rejected.status, 0, "invalid consumers were accepted");
-    assert.equal((rejected.stdout.match(/error TS2345:/g) ?? []).length, packages.length, rejected.stdout);
-    assert.equal((rejected.stdout.match(/error TS2540:/g) ?? []).length, packages.length, rejected.stdout);
-    assert.equal((rejected.stdout.match(/error TS\d+:/g) ?? []).length, packages.length * 2, rejected.stdout);
+    assert.equal((rejected.stdout.match(/error TS2345:/g) ?? []).length, packages.length * 2, rejected.stdout);
+    assert.equal((rejected.stdout.match(/error TS2540:/g) ?? []).length, packages.length * 2, rejected.stdout);
+    assert.equal((rejected.stdout.match(/error TS\d+:/g) ?? []).length, packages.length * 4, rejected.stdout);
   } finally {
     rmSync(directory, { recursive: true });
   }

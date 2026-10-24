@@ -286,6 +286,18 @@ fn validate_environment<'a>(
         )?;
         work += 3;
     }
+    work += validate_routes(environment, p, &entries, routes, patterns)?;
+    Ok(work)
+}
+
+fn validate_routes<'a>(
+    environment: &'a Environment,
+    p: &str,
+    entries: &Names<'a, Entry>,
+    routes: &mut HashSet<(&'a String, &'a String)>,
+    patterns: &mut HashSet<&'a String>,
+) -> Result<usize, ManifestError> {
+    let mut work = 0;
     for route in &environment.routes {
         require(
             entries

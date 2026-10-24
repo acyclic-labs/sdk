@@ -114,6 +114,7 @@ fn positive_u64_is_the_single_limits_admission_predicate() {
 #[test]
 fn invoke_round_trips_without_rewriting_wire_fields() {
     let wire = wire::InvokeActorRequest {
+        invocation_order: None,
         namespace: None,
         account_id: Vec::new(),
         location_hint: None,
@@ -140,6 +141,7 @@ fn invoke_round_trips_without_rewriting_wire_fields() {
 #[test]
 fn invoke_rejects_only_the_existing_actor_id_presence_violation() {
     let wire = wire::InvokeActorRequest {
+        invocation_order: None,
         namespace: None,
         account_id: Vec::new(),
         location_hint: None,
@@ -559,5 +561,35 @@ fn deployment_limit_alternatives_are_exclusive_and_operation_scoped()
     namespace.limits = Some(ActorLimits::new(1, 2, 3)?.into());
     assert!(crate::client::validate_operation("DeployNamespace", &namespace).is_ok());
     assert!(crate::client::validate_operation("DeployWorker", &namespace).is_err());
+    Ok(())
+}
+#[test]
+fn invocation_order_is_transport_metadata_with_strict_session_validation() -> Result<(), DomainError>
+{
+    for session in [
+        String::new(),
+        "a".repeat(31),
+        "A".repeat(32),
+        "g".repeat(32),
+        "a".repeat(33),
+    ] {
+        assert!(InvocationOrder::new(session.clone(), 0).is_err());
+        assert!(
+            InvocationOrder::try_from(wire::InvocationOrder {
+                session,
+                sequence: 0
+            })
+            .is_err()
+        );
+    }
+    for sequence in [0, 1, u64::MAX] {
+        let order = InvocationOrder::new("01".repeat(16), sequence)?;
+        assert_eq!(
+            InvocationOrder::try_from(wire::InvocationOrder::from(order.clone()))?,
+            order
+        );
+        assert_eq!(order.session(), "01".repeat(16));
+        assert_eq!(order.sequence(), sequence);
+    }
     Ok(())
 }

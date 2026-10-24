@@ -69,10 +69,10 @@ pub fn check(manifest: &DeploymentManifest) -> Result<(), &'static str> {
             }
         }
         for entry in &env.entries {
-            if let EntryRuntime::ActorNamespace { jurisdiction, .. } = &entry.runtime {
-                if !["", "eu", "us", "fedramp"].contains(&jurisdiction.as_str()) {
-                    return Err("namespace-jurisdiction");
-                }
+            if let EntryRuntime::ActorNamespace { jurisdiction, .. } = &entry.runtime
+                && !["", "eu", "us", "fedramp"].contains(&jurisdiction.as_str())
+            {
+                return Err("namespace-jurisdiction");
             }
         }
         for cron in &env.crons {
@@ -110,7 +110,7 @@ pub fn check(manifest: &DeploymentManifest) -> Result<(), &'static str> {
                 .ok_or("asset-bucket")?;
             let bucket = acyclic_auth::decode_component(bucket).map_err(|_| "asset-bucket")?;
             // Test real object keys, not an encoded directory marker.
-            for suffix in ["index.html", "nested/app.js", "space and %/unicode-λ.css"] {
+            for suffix in ["index.html", "nested/app.js", "space and %/unicode-Î».css"] {
                 let key = format!("assets/{}/{suffix}", asset.bundle_sha256);
                 let resource = acyclic_auth::objects_resource(&bucket, key.as_bytes());
                 if !grant

@@ -149,6 +149,11 @@ message InspectActorResponse {
   ActorObservation actor = 1;
 }
 
+message InvocationOrder {
+  string session = 1;
+  uint64 sequence = 2;
+}
+
 message InvokeActorRequest {
   string actor_id = 1;
   string method = 2;
@@ -160,6 +165,7 @@ message InvokeActorRequest {
   optional string location_hint = 92;
   optional string binding_name = 93;
   optional string rpc_method = 94;
+  InvocationOrder invocation_order = 95;
 }
 
 message InvokeActorResponse {

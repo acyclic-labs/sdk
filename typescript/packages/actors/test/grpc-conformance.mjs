@@ -239,7 +239,7 @@ try {
   });
   assert.equal(seen.size, expected);
   for (const [method, calls] of seen) assert.equal(calls, method.includes(".actors.") ? 3 : 2, method);
-  assert.equal(httpSeen.size, 9);
+  assert.equal(httpSeen.size, ActorsService.methods.length);
   if (await (await actorsClient(options)).transport === "grpc-web") {
     assert.ok(wasmRequests.length > 0, "WASM conformance must exercise the browser transport");
     assert.ok(wasmRequests.every(path => path?.startsWith("/acyclic.actors.v1.ActorsService/")), wasmRequests.join(", "));

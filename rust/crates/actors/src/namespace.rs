@@ -4,7 +4,7 @@ use crate::{
     client, domain,
 };
 use std::{future::Future, sync::Arc};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 
 /// A namespace-scoped ID with optional name-construction provenance.
 #[derive(Clone, Debug)]
@@ -130,18 +130,7 @@ impl<T: Invoker> Namespace<T> {
     }
     /// Generate 128 random bits as lowercase hex, without creating an actor.
     pub fn new_unique_id(&self) -> Result<Id, Error> {
-        // UUID-v4 masks six bits. Select eight unmasked random bytes from each
-        // of two independent draws, retaining a full 128 random bits.
-        let left = uuid::Uuid::new_v4();
-        let right = uuid::Uuid::new_v4();
-        let mut bytes = Vec::with_capacity(16);
-        for value in [left.as_bytes(), right.as_bytes()] {
-            for index in [0, 1, 2, 3, 4, 5, 7, 9] {
-                bytes.push(*value.get(index).ok_or(Error::Scope)?);
-            }
-        }
-        let text: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-        self.id(&text, false)
+        self.id(&random_id()?, false)
     }
     /// Reconstitute an ID only in the exact bound account and namespace.
     pub fn id_from_reference(&self, reference: ActorReference) -> Result<Id, Error> {
@@ -164,9 +153,30 @@ impl<T: Invoker> Namespace<T> {
             location_hint,
             authority: self.authority.clone(),
             binding_name: self.binding_name.clone(),
-            broken: Mutex::new(false),
+            session: random_id()?,
+            sequence: Mutex::new(0),
+            failed: watch::channel(false).0,
         })
     }
+    /// Resolve a name and obtain its local stub in one step.
+    pub fn get_by_name(&self, name: &str, location_hint: Option<String>) -> Result<Stub<T>, Error> {
+        self.get(&self.id_from_name(name)?, location_hint)
+    }
+}
+
+fn random_id() -> Result<String, Error> {
+    // UUID-v4 masks six bits. Select eight unmasked random bytes from each
+    // of two independent draws, retaining a full 128 random bits.
+    let left = uuid::Uuid::new_v4();
+    let right = uuid::Uuid::new_v4();
+    let mut bytes = Vec::with_capacity(16);
+    for value in [left.as_bytes(), right.as_bytes()] {
+        for index in [0, 1, 2, 3, 4, 5, 7, 9] {
+            bytes.push(*value.get(index).ok_or(Error::Scope)?);
+        }
+    }
+    let text: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(text)
 }
 
 /// Ordered call admission and terminal failure state belong to each stub.
@@ -175,10 +185,32 @@ pub struct Stub<T> {
     location_hint: Option<String>,
     authority: Arc<T>,
     binding_name: Option<String>,
-    broken: Mutex<bool>,
+    session: String,
+    sequence: Mutex<u64>,
+    failed: watch::Sender<bool>,
+}
+
+struct InFlight<'a> {
+    failed: &'a watch::Sender<bool>,
+    completed: bool,
+}
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.failed.send_replace(true);
+        }
+    }
 }
 
 impl<T: Invoker> Stub<T> {
+    /// Namespace-scoped ID, preserving optional name provenance.
+    pub const fn id(&self) -> &Id {
+        &self.id
+    }
+    /// Original name, when obtained through idFromName/getByName.
+    pub fn name(&self) -> Option<&str> {
+        self.id.name()
+    }
     /// Safe address projection; serializing this cannot serialize the authority.
     pub fn reference(&self) -> &ActorReference {
         self.id.reference()
@@ -205,7 +237,7 @@ impl<T: Invoker> Stub<T> {
         } else {
             request
         };
-        self.call(&request).await
+        self.call(request).await
     }
     /// Invoke an exported method through the bound namespace, preserving call order.
     pub async fn rpc(
@@ -228,20 +260,40 @@ impl<T: Invoker> Stub<T> {
         } else {
             request
         };
-        self.call(&request).await
+        self.call(request).await
     }
     async fn call(
         &self,
-        request: &domain::InvokeActorRequest,
+        request: domain::InvokeActorRequest,
     ) -> Result<domain::InvokeActorResponse, Error> {
-        let mut broken = self.broken.lock().await;
-        if *broken {
+        let mut failure = self.failed.subscribe();
+        let mut flight = InFlight {
+            failed: &self.failed,
+            completed: false,
+        };
+        let sequence = {
+            let mut next = self.sequence.lock().await;
+            if *self.failed.borrow() {
+                return Err(Error::Broken);
+            }
+            let sequence = *next;
+            *next = next.checked_add(1).ok_or(Error::Broken)?;
+            sequence
+        };
+        let request = request.with_invocation_order(domain::InvocationOrder::new(
+            self.session.clone(),
+            sequence,
+        )?);
+        // Cloud admits sequence N before N+1, then allows handlers/responses to interleave.
+        let response = tokio::select! {
+            biased;
+            _ = failure.wait_for(|failed| *failed) => return Err(Error::Broken),
+            response = self.authority.invoke(&request) => response?,
+        };
+        if *self.failed.borrow() {
             return Err(Error::Broken);
         }
-        // A dropped/cancelled invocation must leave the stub broken as well.
-        *broken = true;
-        let response = self.authority.invoke(request).await?;
-        *broken = false;
+        flight.completed = true;
         Ok(response)
     }
 }
@@ -322,6 +374,30 @@ mod tests {
         )
         .await?;
         assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+    #[tokio::test]
+    async fn responses_interleave_and_cancellation_fails_every_inflight_call() -> Result<(), Error>
+    {
+        let transport = Arc::new(Mock::default());
+        transport.pending.store(true, Ordering::SeqCst);
+        let namespace = Namespace::new(b"account", b"ClassOne", transport.clone())?;
+        let stub = namespace.get_by_name("same", None)?;
+        assert_eq!(stub.name(), Some("same"));
+        assert_eq!(stub.id().as_str(), "same");
+        let mut first = Box::pin(stub.rpc("first".into(), vec![]));
+        let mut second = Box::pin(stub.rpc("second".into(), vec![]));
+        assert!(futures::poll!(first.as_mut()).is_pending());
+        assert!(futures::poll!(second.as_mut()).is_pending());
+        // Negative control: holding the queue until the response admits only one call.
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 2);
+        drop(first);
+        assert!(matches!(second.await, Err(Error::Broken)));
+        assert!(matches!(
+            stub.rpc("third".into(), vec![]).await,
+            Err(Error::Broken)
+        ));
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 2);
         Ok(())
     }
     #[tokio::test]

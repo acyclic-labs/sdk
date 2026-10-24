@@ -1,5 +1,44 @@
 use super::*;
 
+/// Per-stub delivery order, unrelated to the actor address or authorization.
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = InvocationOrder::validate_from_proto)]
+#[derive(Clone, Debug, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/InvocationOrder.ts", rename_all = "camelCase")]
+pub struct InvocationOrder {
+    #[wire(tag = 1)]
+    session: String,
+    #[wire(tag = 2)]
+    #[ts(type = "bigint")]
+    sequence: u64,
+}
+impl InvocationOrder {
+    /// Start a message on a random 128-bit stub session, with a zero-based sequence.
+    pub fn new(session: String, sequence: u64) -> Result<Self, DomainError> {
+        let value = Self { session, sequence };
+        value.validate_from_proto()?;
+        Ok(value)
+    }
+    fn validate_from_proto(&self) -> Result<(), DomainError> {
+        if self.session.len() != 32
+            || !self
+                .session
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(DomainError::Contract(crate::ContractError::InvalidArgument));
+        }
+        Ok(())
+    }
+    /// Random session, never a capability or resource identity.
+    pub fn session(&self) -> &str {
+        &self.session
+    }
+    /// Monotonically increasing delivery position within this stub.
+    pub const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+}
+
 /// Typed invocation request. Method, URL, headers, and body preserve the
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = InvokeActorRequest::validate_from_proto)]
 #[derive(Clone, Debug, PartialEq, TS)]
@@ -33,6 +72,9 @@ pub struct InvokeActorRequest {
     #[wire(tag = 94)]
     #[ts(optional)]
     pub(super) rpc_method: Option<String>,
+    #[wire(tag = 95, message)]
+    #[ts(optional)]
+    invocation_order: Option<InvocationOrder>,
 }
 
 impl InvokeActorRequest {
@@ -51,11 +93,21 @@ impl InvokeActorRequest {
             location_hint: None,
             binding_name: None,
             rpc_method: None,
+            invocation_order: None,
             method,
             url,
             body,
             headers,
         }
+    }
+    /// Attach delivery ordering without changing address or authority.
+    pub fn with_invocation_order(mut self, order: InvocationOrder) -> Self {
+        self.invocation_order = Some(order);
+        self
+    }
+    /// Ordered-stub transport metadata, absent on independent low-level calls.
+    pub const fn invocation_order(&self) -> Option<&InvocationOrder> {
+        self.invocation_order.as_ref()
     }
     /// Returns the Actor identity.
     pub fn actor_id(&self) -> &ActorId {

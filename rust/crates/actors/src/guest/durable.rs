@@ -45,7 +45,7 @@ impl AlarmInfo {
     pub const fn retry_count(self) -> u32 {
         self.retry_count
     }
-    /// Derived from retry_count; never independent state.
+    /// Derived from `retry_count`; never independent state.
     pub const fn is_retry(self) -> bool {
         self.is_retry
     }

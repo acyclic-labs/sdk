@@ -17,7 +17,7 @@ pub enum DeploymentBinding<T> {
 /// Build only Actors/Workers env handles; other product handles belong to their adapters.
 pub fn materialize_bindings<T: Invoker + WorkerInvoker>(
     declarations: &[domain::Binding],
-    authority: Arc<T>,
+    authority: &Arc<T>,
 ) -> Result<BTreeMap<String, DeploymentBinding<T>>, client::Error> {
     let mut env = BTreeMap::new();
     for binding in declarations {

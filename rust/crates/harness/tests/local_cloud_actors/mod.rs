@@ -275,6 +275,7 @@ async fn invoke_response(
 ) -> TestResult<wire::InvokeActorResponse> {
     Ok(client
         .invoke_actor(wire::InvokeActorRequest {
+            invocation_order: None,
             namespace: Some(NAMESPACE.into()),
             account_id: Vec::new(),
             location_hint: None,
@@ -313,7 +314,7 @@ fn actor_observation_rejects_other_identities_and_revisions() -> TestResult {
         match field {
             0 => changed.actor_id.push_str("-other"),
             1 => changed.code_sha256.clear(),
-            2 => changed.home_region.push_str("-other"),
+            2 => changed.namespace = Some(format!("{NAMESPACE}-other")),
             _ => changed.configuration_revision += 1,
         }
         assert!(observation(Some(changed), 1).is_err());
@@ -626,52 +627,7 @@ async fn supported_actor_lifecycle_matches_the_counter_oracle() -> TestResult {
     let phase = std::time::Instant::now();
 
     let expected_subscriptions = subscription_controls(&mut actors, start).await?;
-    let actor_ca = std::fs::read(&endpoints.actors.remote.ca_file)?;
-    actors = grpc::connect(
-        &endpoints.actors.remote.endpoint,
-        &endpoints.actors.migration_bearer,
-        Some(&actor_ca),
-    )
-    .await?;
-    let update = wire::UpdateNamespaceRequest {
-        account_id: Vec::new(),
-        namespace_id: NAMESPACE.into(),
-        code_sha256: digest(CODE_V2),
-        limits: create().limits,
-        bindings: vec![],
-        expected_configuration_revision: 1,
-        idempotency_key: "sdk-migrate-v2".into(),
-    };
-    let updated = actors
-        .update_namespace(update.clone())
-        .await?
-        .into_inner()
-        .deployment
-        .ok_or("missing deployment")?;
-    assert_eq!(updated.name, NAMESPACE);
-    assert_eq!(updated.revision, 2);
-    assert_eq!(updated.code_sha256, digest(CODE_V2));
-    let mut retrier = actors.clone();
-    let (retry, invoked) = futures::join!(retrier.update_namespace(update), async {
-        invoke_version(&mut actors, None, 5, 2).await?;
-        invoke_version(&mut actors, Some(3), 8, 2).await
-    });
-    assert_eq!(
-        retry?.into_inner().deployment.ok_or("missing deployment")?,
-        updated
-    );
-    let observed = actors
-        .inspect_actor(wire::InspectActorRequest {
-            namespace: Some(NAMESPACE.into()),
-            account_id: Vec::new(),
-            actor_id: ACTOR.into(),
-        })
-        .await?
-        .into_inner()
-        .actor
-        .ok_or("missing actor")?;
-    subscriptions(&observed, &expected_subscriptions)?;
-    invoked?;
+    migrate_namespace(&mut actors, &endpoints, &expected_subscriptions).await?;
     println!(
         "Actors subscriptions/migration: {:.3}s",
         phase.elapsed().as_secs_f64()
@@ -780,4 +736,58 @@ async fn subscription_delivery_advances_cursors_and_preserves_event_order() -> T
 #[ignore = "needs node scripts/local-cloud.mjs --topology full (Cloud bf5d555a0e)"]
 async fn paused_subscription_resumes_with_exact_cursor_preservation() -> TestResult {
     paused::qualify().await
+}
+
+async fn migrate_namespace(
+    actors: &mut grpc::Client,
+    endpoints: &Endpoints,
+    expected_subscriptions: &[wire::SubscriptionObservation],
+) -> TestResult {
+    let actor_ca = std::fs::read(&endpoints.actors.remote.ca_file)?;
+    *actors = grpc::connect(
+        &endpoints.actors.remote.endpoint,
+        &endpoints.actors.migration_bearer,
+        Some(&actor_ca),
+    )
+    .await?;
+    let update = wire::UpdateNamespaceRequest {
+        account_id: Vec::new(),
+        namespace_id: NAMESPACE.into(),
+        code_sha256: digest(CODE_V2),
+        limits: create().limits,
+        bindings: vec![],
+        expected_configuration_revision: 1,
+        idempotency_key: "sdk-migrate-v2".into(),
+    };
+    let updated = actors
+        .update_namespace(update.clone())
+        .await?
+        .into_inner()
+        .deployment
+        .ok_or("missing deployment")?;
+    assert_eq!(updated.name, NAMESPACE);
+    assert_eq!(updated.revision, 2);
+    assert_eq!(updated.code_sha256, digest(CODE_V2));
+    let mut retrier = actors.clone();
+    let (retry, invoked) = futures::join!(retrier.update_namespace(update), async {
+        invoke_version(actors, None, 5, 2).await?;
+        invoke_version(actors, Some(3), 8, 2).await
+    });
+    assert_eq!(
+        retry?.into_inner().deployment.ok_or("missing deployment")?,
+        updated
+    );
+    let observed = actors
+        .inspect_actor(wire::InspectActorRequest {
+            namespace: Some(NAMESPACE.into()),
+            account_id: Vec::new(),
+            actor_id: ACTOR.into(),
+        })
+        .await?
+        .into_inner()
+        .actor
+        .ok_or("missing actor")?;
+    subscriptions(&observed, expected_subscriptions)?;
+    invoked?;
+    Ok(())
 }

@@ -49,11 +49,25 @@ fn hosts_and_route_patterns_target_workers_instead_of_actor_instances()
     admission::check(&manifest)?;
     // Negative controls bypass admission: the independent oracle still rejects actor targets.
     let mut invalid = manifest.clone();
-    invalid.environments[0].routes[0].entry = "agent".into();
+    invalid
+        .environments
+        .first_mut()
+        .ok_or_else(missing)?
+        .routes
+        .first_mut()
+        .ok_or_else(missing)?
+        .entry = "agent".into();
     assert!(validate(&invalid).is_err());
     assert_eq!(admission::check(&invalid), Err("worker-route-target"));
     let mut invalid = manifest;
-    invalid.environments[0].worker_routes[0].entry = Some("agent".into());
+    invalid
+        .environments
+        .first_mut()
+        .ok_or_else(missing)?
+        .worker_routes
+        .first_mut()
+        .ok_or_else(missing)?
+        .entry = Some("agent".into());
     assert!(validate(&invalid).is_err());
     assert_eq!(admission::check(&invalid), Err("worker-route-target"));
     Ok(())

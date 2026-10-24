@@ -63,7 +63,7 @@ proptest! {
     ) {
         let value = ActorReference::new(&account, namespace.as_bytes(), id.as_bytes())?;
         let bytes = value.encode();
-        prop_assert_eq!(ActorReference::decode(&bytes)?, value.clone());
+        prop_assert_eq!(&ActorReference::decode(&bytes)?, &value);
         prop_assert!(ResourceIdentity::decode(&bytes).is_err());
         let pair = ResourceIdentity::new(&account, id.as_bytes())?.encode();
         prop_assert!(ActorReference::decode(&pair).is_err());
@@ -511,7 +511,10 @@ fn route_ambiguity_only_applies_to_the_winning_specificity()
         [2, 0, 1],
         [2, 1, 0],
     ] {
-        let reordered = permutation.map(|index| routes[index].clone());
+        let reordered = permutation
+            .map(|index| routes.get(index).cloned().ok_or("missing route"))
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
         assert_eq!(
             select_route(&reordered, "https://example.com/api/x")?,
             Some(Some("api"))

@@ -89,6 +89,7 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
             ),
         };
         let request = wire::InvokeActorRequest {
+            invocation_order: None,
             namespace: None,
             account_id: Vec::new(),
             location_hint: None,
@@ -111,11 +112,6 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
             assert_eq!(response.body, request.body);
         }
         let renewed = wire::InvokeActorRequest {
-            namespace: None,
-            account_id: Vec::new(),
-            location_hint: None,
-            binding_name: None,
-            rpc_method: None,
             body: vec![8],
             ..request.clone()
         };
@@ -128,11 +124,6 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
         assert_eq!(response.body, vec![8]);
         client.call("InvokeActor", &request.encode_to_vec()).await?;
         let invalid = wire::InvokeActorRequest {
-            namespace: None,
-            account_id: Vec::new(),
-            location_hint: None,
-            binding_name: None,
-            rpc_method: None,
             actor_id: String::new(),
             ..request
         };
@@ -179,6 +170,7 @@ fn request_path_measure_admitted_request_conversion() -> Result<(), Error> {
         let requests: Result<Vec<_>, _> = (0..256)
             .map(|_| {
                 domain::InvokeActorRequest::try_from(wire::InvokeActorRequest {
+                    invocation_order: None,
                     namespace: None,
                     account_id: Vec::new(),
                     location_hint: None,

@@ -4,10 +4,10 @@ use super::*;
 impl InspectActorRequest {
     /// Exact namespace, resolving only the absent legacy field.
     pub fn namespace(&self) -> &str {
-        self.namespace
-            .as_ref()
-            .map(ActorNamespace::as_str)
-            .unwrap_or(crate::addressing::DEFAULT_ACTOR_NAMESPACE)
+        self.namespace.as_ref().map_or(
+            crate::addressing::DEFAULT_ACTOR_NAMESPACE,
+            ActorNamespace::as_str,
+        )
     }
     /// Recover the complete address; legacy callers supply their account field.
     pub fn reference(
@@ -42,10 +42,10 @@ impl InspectActorRequest {
 impl AddSubscriptionRequest {
     /// Exact namespace, resolving only the absent legacy field.
     pub fn namespace(&self) -> &str {
-        self.namespace
-            .as_ref()
-            .map(ActorNamespace::as_str)
-            .unwrap_or(crate::addressing::DEFAULT_ACTOR_NAMESPACE)
+        self.namespace.as_ref().map_or(
+            crate::addressing::DEFAULT_ACTOR_NAMESPACE,
+            ActorNamespace::as_str,
+        )
     }
     /// Recover the complete address; legacy callers supply their account field.
     pub fn reference(
@@ -80,10 +80,10 @@ impl AddSubscriptionRequest {
 impl RemoveSubscriptionRequest {
     /// Exact namespace, resolving only the absent legacy field.
     pub fn namespace(&self) -> &str {
-        self.namespace
-            .as_ref()
-            .map(ActorNamespace::as_str)
-            .unwrap_or(crate::addressing::DEFAULT_ACTOR_NAMESPACE)
+        self.namespace.as_ref().map_or(
+            crate::addressing::DEFAULT_ACTOR_NAMESPACE,
+            ActorNamespace::as_str,
+        )
     }
     /// Recover the complete address; legacy callers supply their account field.
     pub fn reference(
@@ -118,10 +118,10 @@ impl RemoveSubscriptionRequest {
 impl ResumeSubscriptionRequest {
     /// Exact namespace, resolving only the absent legacy field.
     pub fn namespace(&self) -> &str {
-        self.namespace
-            .as_ref()
-            .map(ActorNamespace::as_str)
-            .unwrap_or(crate::addressing::DEFAULT_ACTOR_NAMESPACE)
+        self.namespace.as_ref().map_or(
+            crate::addressing::DEFAULT_ACTOR_NAMESPACE,
+            ActorNamespace::as_str,
+        )
     }
     /// Recover the complete address; legacy callers supply their account field.
     pub fn reference(
@@ -156,10 +156,10 @@ impl ResumeSubscriptionRequest {
 impl CheckpointActorRequest {
     /// Exact namespace, resolving only the absent legacy field.
     pub fn namespace(&self) -> &str {
-        self.namespace
-            .as_ref()
-            .map(ActorNamespace::as_str)
-            .unwrap_or(crate::addressing::DEFAULT_ACTOR_NAMESPACE)
+        self.namespace.as_ref().map_or(
+            crate::addressing::DEFAULT_ACTOR_NAMESPACE,
+            ActorNamespace::as_str,
+        )
     }
     /// Recover the complete address; legacy callers supply their account field.
     pub fn reference(
@@ -194,10 +194,10 @@ impl CheckpointActorRequest {
 impl DeleteAllRequest {
     /// Exact namespace, resolving only the absent legacy field.
     pub fn namespace(&self) -> &str {
-        self.namespace
-            .as_ref()
-            .map(ActorNamespace::as_str)
-            .unwrap_or(crate::addressing::DEFAULT_ACTOR_NAMESPACE)
+        self.namespace.as_ref().map_or(
+            crate::addressing::DEFAULT_ACTOR_NAMESPACE,
+            ActorNamespace::as_str,
+        )
     }
     /// Recover the complete address; legacy callers supply their account field.
     pub fn reference(
@@ -232,10 +232,10 @@ impl DeleteAllRequest {
 impl InvokeActorRequest {
     /// Exact namespace, resolving only the absent legacy field.
     pub fn namespace(&self) -> &str {
-        self.namespace
-            .as_ref()
-            .map(ActorNamespace::as_str)
-            .unwrap_or(crate::addressing::DEFAULT_ACTOR_NAMESPACE)
+        self.namespace.as_ref().map_or(
+            crate::addressing::DEFAULT_ACTOR_NAMESPACE,
+            ActorNamespace::as_str,
+        )
     }
     /// Recover the complete address; legacy callers supply their account field.
     pub fn reference(
@@ -270,10 +270,10 @@ impl InvokeActorRequest {
 impl ActorObservation {
     /// Exact namespace, resolving only the absent legacy field.
     pub fn namespace(&self) -> &str {
-        self.namespace
-            .as_ref()
-            .map(ActorNamespace::as_str)
-            .unwrap_or(crate::addressing::DEFAULT_ACTOR_NAMESPACE)
+        self.namespace.as_ref().map_or(
+            crate::addressing::DEFAULT_ACTOR_NAMESPACE,
+            ActorNamespace::as_str,
+        )
     }
     /// Recover the complete address; legacy callers supply their account field.
     pub fn reference(
