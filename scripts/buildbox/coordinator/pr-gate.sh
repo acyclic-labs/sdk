@@ -72,6 +72,14 @@ if grep -aqE "$isolation_errors" "$log"; then
   echo "GATE $v"; echo "$(date -u +%FT%T.000Z) pr-gate GATE_INFRA ${v#* }" >> ~/.codex-fleet/alerts.log
   exit 4
 fi
+# An ended client stream is not a completed payload. Check this before phase
+# verdicts so a lost executor is reported directly, not as a missing Windows
+# check or as a source test failure seen before the cutoff.
+if ! grep -aq '^GATE_DONE rc=' "$log"; then
+  v="INFRA #$n: executor/stream ended before payload completion (rc=$rc); remote job identity is in the build-slot receipt log=$log"
+  echo "GATE $v"; echo "$(date -u +%FT%T.000Z) pr-gate GATE_INFRA ${v#* }" >> ~/.codex-fleet/alerts.log
+  exit 4
+fi
 # A successful payload cannot hide a failed executor/export/cleanup boundary.
 if [ "$rc" != 0 ] && grep -aq '^GATE_DONE rc=0$' "$log"; then
   v="INFRA #$n: executor exited rc=$rc after successful payload; inspect wrapper stderr log=$log"

@@ -52,7 +52,9 @@ class RuntimeTests(unittest.TestCase):
         # are redirected to this isolated fixture. Cargo is the real tool.
         script=self.d/'build-slot';script.write_text((HERE/'build-slot').read_text().replace('/home/var/bin/bb-job.py',str(self.worker())))
         meta=self.d/'fixture.receipt-meta.v2.json';meta.write_text('{}')
-        env={**os.environ,'BUILD_SLOT_RECEIPT_WRAPPED':'1','BB_ADMITTED':'1','BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1'}
+        # Metadata does not compile. Endpoint ownership/startup have separate
+        # controls; do not start two real servers for this stdout-only fixture.
+        env={**os.environ,'BUILD_SLOT_RECEIPT_WRAPPED':'1','BB_ADMITTED':'1','BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
         env.pop('BB_JOB_ACTIVE',None)
         args=['bash',str(script),'cargo','metadata','--format-version','1','--no-deps']
         result=subprocess.run(args,cwd=self.d,env=env,capture_output=True)
@@ -99,14 +101,14 @@ sys.stdout.buffer.write(bytes(range(256)))
         ]:
             result,runtime=self.run_job([sys.executable,'-c','from pathlib import Path;'+operation])
             self.assertEqual(result.returncode,1,result.stderr.decode())
-            self.assertIn(b'PermissionError',result.stderr)
+            self.assertIn(b'Read-only file system',result.stderr)
             self.assertFalse((home/'.cache/leak').exists())
             self.assertEqual((home/'.cache/existing').read_text(),'keep')
             self.assertEqual(runtime['home_guard']['writable'],False)
         child=f'from pathlib import Path;Path({str(home/".cache/child")!r}).write_text("bad")'
         result,_=self.run_job([sys.executable,'-c',f'import subprocess,sys;sys.exit(subprocess.call([sys.executable,"-c",{child!r}]))'])
         self.assertEqual(result.returncode,1);self.assertFalse((home/'.cache/child').exists())
-        worker=self.worker();worker.write_text(worker.read_text().replace("runtime['home_guard']=protect_home(real_home)","runtime['home_guard']={'mechanism':'negative-control'}"))
+        worker=self.worker();worker.write_text(worker.read_text().replace("if not os.statvfs('/home/var').f_flag & os.ST_RDONLY:","if False:").replace("runtime['home_guard']=protect_home(real_home)","runtime['home_guard']={'mechanism':'negative-control'}"))
         meta=self.d/'negative.meta';meta.write_text('{}')
         env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
         env.pop('BB_JOB_ACTIVE',None)
@@ -130,7 +132,7 @@ sys.stdout.buffer.write(bytes(range(256)))
             if process.poll() is None:process.kill();process.communicate()
 
     def test_missing_guard_or_inherited_home_output_is_infra(self):
-        worker=self.worker();worker.write_text(worker.read_text().replace('abi=call(444,0,0,1)','raise OSError("unavailable control")'))
+        worker=self.worker();worker.write_text(worker.read_text().replace('real_home=real_home.resolve(strict=True)','raise OSError("unavailable control")'))
         meta=self.d/'unavailable.meta';meta.write_text('{}')
         env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
         env.pop('BB_JOB_ACTIVE',None)
@@ -147,8 +149,39 @@ sys.stdout.buffer.write(bytes(range(256)))
         path=self.real_home/'forged-active-marker'
         result,_=self.run_job([sys.executable,'-c',f'from pathlib import Path;Path({str(path)!r}).write_text("bad")'],extra={'BB_JOB_ACTIVE':'1'})
         # Nested execution reuses its owner's receipt; no new runtime is written.
-        self.assertEqual(result.returncode,1);self.assertIn(b'PermissionError',result.stderr)
+        self.assertEqual(result.returncode,1);self.assertIn(b'Read-only file system',result.stderr)
         self.assertFalse(path.exists())
+
+    def test_private_home_preserves_real_fuse_mount_and_no_new_privs_negative_control(self):
+        code='''import array,ctypes,os,socket,subprocess,tempfile
+from pathlib import Path
+assert 'NoNewPrivs:\\t0' in Path('/proc/self/status').read_text()
+mount=Path(tempfile.mkdtemp(dir=os.environ['TMPDIR']))
+a,b=socket.socketpair()
+try:
+ env={**os.environ,'_FUSE_COMMFD':str(b.fileno())}
+ child=subprocess.Popen(['/usr/bin/fusermount3','-o','rw,nosuid,nodev,fsname=gate-home-control','--',str(mount)],env=env,pass_fds=[b.fileno()],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+ b.close()
+ data,ancillary,_,_=a.recvmsg(1,socket.CMSG_SPACE(4))
+ out,err=child.communicate()
+ assert child.returncode==0,(child.returncode,err)
+ descriptors=array.array('i')
+ for level,kind,value in ancillary:
+  if level==socket.SOL_SOCKET and kind==socket.SCM_RIGHTS:descriptors.frombytes(value)
+ assert descriptors,'fusermount did not transfer its mounted FUSE device'
+ for descriptor in descriptors:os.close(descriptor)
+ subprocess.run(['/usr/bin/fusermount3','-u',str(mount)],check=True,capture_output=True)
+ print('FUSE_MOUNT_OK')
+finally:a.close();b.close()
+'''
+        result,runtime=self.run_job([sys.executable,'-c',code])
+        self.assertEqual(result.returncode,0,result.stderr.decode());self.assertEqual(result.stdout,b'FUSE_MOUNT_OK\n')
+        self.assertEqual(runtime['home_guard']['mechanism'],'private-read-only-mount')
+        # Old Landlock required no_new_privs, which suppresses fusermount's
+        # setuid transition. Run the identical real mount after setting it.
+        negative=code.replace("assert 'NoNewPrivs:\\t0' in Path('/proc/self/status').read_text()","assert ctypes.CDLL(None).prctl(38,1,0,0,0)==0")
+        result,_=self.run_job([sys.executable,'-c',negative])
+        self.assertNotEqual(result.returncode,0);self.assertIn(b'Operation not permitted',result.stderr)
 
     def test_home_backed_git_refuses_a_shared_namespace(self):
         repo=self.real_home/'repository';repo.mkdir()

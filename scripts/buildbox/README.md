@@ -41,12 +41,13 @@ Gate phases use that same lifetime. This supersedes persistent gate target
 caches. `/mnt/bb/sccache`, installed Cargo/rustup toolchains and
 `/mnt/bb/toolchains/cargo-xwin` persist. All wrapper diagnostics go to stderr;
 stdout is the child's byte stream. A startup cache failure is explicit but
-permits uncached execution. A Landlock ABI >= 3 write restriction protects all
-of real `/home/var`, inherited by every child, including nested build-slot.
+permits uncached execution. A recursive read-only bind mount protects all
+of real `/home/var` in a private mount namespace inherited by every child,
+including nested build-slot. Kernel mount flags are verified at both entry points.
 Only the job process tree is restricted; concurrent tenant writes cannot fail
 this job. No shared inventory or path exclusions remain. Unsupported kernels
 and writable inherited real-HOME stdio descriptors refuse execution as INFRA.
-The terminal receipt records the enforced guard and kernel ABI. Installed tools
+The terminal receipt records the enforced guard. Installed tools
 are readable, and Cargo uses writable `/mnt/bb/toolchains/cargo`. Provision
 toolchains and registry caches outside the job before qualification; job commands
 cannot install into the protected rustup directory. Buildbox gives each job
@@ -54,7 +55,10 @@ private Git refs/index/new objects and bind-mounts its .git pointer only inside
 its existing private worktree namespace. Shared mirror objects remain read-only
 alternates. The host worktree and pointer are unchanged; an unsafe host-namespace
 mount refuses execution. Other writable trees remain
-accessible. The policy sets no_new_privs; jobs cannot escalate through sudo.
+accessible. The guard preserves setuid `fusermount3`, required by native checkout
+tests; `no_new_privs` would disable that privilege transition and is refused.
+Each remote source copy includes the unique job identity, so a WSL restart and
+released client claim cannot reset another detached job's checkout.
 
 The remote wrapper archives declared `BUILD_SLOT_REMOTE_FETCH` outputs before
 target cleanup. The client extracts those archives and removes them after

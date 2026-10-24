@@ -6,6 +6,7 @@ import hashlib
 import fcntl
 import json
 import os
+import pwd
 import resource
 from pathlib import Path
 import shutil
@@ -43,51 +44,47 @@ def disk():
     return readings
 
 def protect_home(real_home):
-    """Deny writes below real HOME to this process and its descendants only."""
+    """Verify the inherited private read-only HOME mount, retaining setuid FUSE."""
     real_home=real_home.resolve(strict=True)
-    libc=ctypes.CDLL(None,use_errno=True)
-    def call(number,*args):
-        result=libc.syscall(ctypes.c_long(number),*args)
-        if result<0: raise OSError(ctypes.get_errno(),os.strerror(ctypes.get_errno()))
-        return result
-    # ABI 3 includes both truncate and cross-directory rename/link protection.
-    if os.uname().machine not in ['x86_64','aarch64']:
-        raise RuntimeError('unsupported Landlock architecture')
-    abi=call(444,0,0,1)
-    if abi<3:raise RuntimeError('real HOME guard requires Landlock ABI >= 3')
-    writes=sum(1<<bit for bit in [1,4,5,6,7,8,9,10,11,12,13,14])
-    class Ruleset(ctypes.Structure):_fields_=[('handled_access_fs',ctypes.c_uint64)]
-    class Rule(ctypes.Structure):
-        _pack_=1
-        _fields_=[('allowed_access',ctypes.c_uint64),('parent_fd',ctypes.c_int)]
-    attr=Ruleset(writes); rules=call(444,ctypes.byref(attr),ctypes.sizeof(attr),0)
-    try:
-        # Never grant a parent of HOME. Grant its other siblings at each
-        # ancestor; every present and future path inside HOME remains protected.
-        current=Path('/')
-        for part in real_home.parts[1:]:
-            for path in current.iterdir():
-                if path.name==part or path.is_symlink():continue
-                fd=os.open(path,os.O_PATH|os.O_NOFOLLOW|os.O_CLOEXEC)
-                try:
-                    rights=writes if stat.S_ISDIR(os.fstat(fd).st_mode) else writes & ((1<<1)|(1<<14))
-                    rule=Rule(rights,fd);call(445,rules,1,ctypes.byref(rule),0)
-                finally:os.close(fd)
-            current=current/part
-        # Only stdio reaches the payload. An already-open write descriptor
-        # bypasses open checks, so real-HOME outputs must be refused up front.
-        for fd in [0,1,2]:
-            try:
-                link=os.readlink(f'/proc/self/fd/{fd}')
-                if not link.startswith('/'):continue # pipe/socket, not a filesystem path
-                target=Path(link).resolve()
-                if target.is_relative_to(real_home) and fcntl.fcntl(fd,fcntl.F_GETFL)&os.O_ACCMODE!=os.O_RDONLY:
-                    raise RuntimeError('writable inherited real HOME descriptor '+str(fd))
-            except FileNotFoundError:pass
-        if libc.prctl(38,1,0,0,0):raise OSError(ctypes.get_errno(),'PR_SET_NO_NEW_PRIVS')
-        call(446,rules,0)
-    finally:os.close(rules)
-    return {'mechanism':'landlock','abi':abi,'real_home':str(real_home),'writable':False}
+    for fd in [0,1,2]:
+        try:
+            link=os.readlink(f'/proc/self/fd/{fd}')
+            if not link.startswith('/'):continue
+            target=Path(link).resolve()
+            if target.is_relative_to(real_home) and fcntl.fcntl(fd,fcntl.F_GETFL)&os.O_ACCMODE!=os.O_RDONLY:
+                raise RuntimeError('writable inherited real HOME descriptor '+str(fd))
+        except FileNotFoundError:pass
+    if not os.statvfs(real_home).f_flag & os.ST_RDONLY:
+        raise RuntimeError('real HOME requires a private read-only mount')
+    # Recursive read-only protects submounts too; a forged environment marker
+    # or a writable child mount must never qualify as the boundary.
+    mounts=[]
+    for line in Path('/proc/self/mountinfo').read_text().splitlines():
+        fields=line.split()
+        point=Path(__import__('re').sub(r'\\([0-7]{3})',lambda m:chr(int(m[1],8)),fields[4]))
+        if point==real_home or point.is_relative_to(real_home):
+            if 'ro' not in fields[5].split(','):raise RuntimeError('writable real HOME submount '+str(point))
+            mounts.append(str(point))
+    if str(real_home) not in mounts:raise RuntimeError('missing real HOME bind mount')
+    if 'NoNewPrivs:\t1' in Path('/proc/self/status').read_text():
+        raise RuntimeError('inherited no_new_privs disables required setuid FUSE')
+    return {'mechanism':'private-read-only-mount','real_home':str(real_home),'writable':False,'recursive':True}
+
+
+def mount_home_namespace():
+    """Called as root only inside a newly unshared mount namespace."""
+    if os.geteuid()!=0:raise RuntimeError('HOME namespace setup requires root')
+    if os.readlink('/proc/self/ns/mnt')==os.readlink('/proc/1/ns/mnt'):
+        raise RuntimeError('refusing real HOME mount in the host namespace')
+    subprocess.run(['mount','--rbind','/home/var','/home/var'],check=True)
+    class MountAttr(ctypes.Structure):
+        _fields_=[('attr_set',ctypes.c_uint64),('attr_clr',ctypes.c_uint64),('propagation',ctypes.c_uint64),('userns_fd',ctypes.c_uint64)]
+    if os.uname().machine not in ['x86_64','aarch64']:raise RuntimeError('unsupported mount_setattr architecture')
+    libc=ctypes.CDLL(None,use_errno=True);attr=MountAttr(1,0,0,0)
+    if libc.syscall(ctypes.c_long(442),ctypes.c_int(-100),ctypes.c_char_p(b'/home/var'),ctypes.c_uint(0x8000),ctypes.byref(attr),ctypes.sizeof(attr)):
+        raise OSError(ctypes.get_errno(),'recursive read-only HOME mount')
+    user=pwd.getpwnam('var')
+    os.setgroups(os.getgrouplist(user.pw_name,user.pw_gid));os.setgid(user.pw_gid);os.setuid(user.pw_uid)
 
 def git_base(source):
     for ref in ['refs/remotes/origin/main','refs/heads/main']:
@@ -225,12 +222,16 @@ def cost_receipt(env,server,started_cpu,started_cache_cpu,started_wall):
 def run(argv):
     meta=os.environ.get('BUILD_SLOT_RECEIPT_META')
     if not meta: raise RuntimeError('bb-job requires a terminal-receipt owner')
+    # The kernel mount flags, not a caller-supplied marker, decide whether a
+    # namespace is needed. No no_new_privs: fusermount3 must retain setuid.
+    if not os.statvfs('/home/var').f_flag & os.ST_RDONLY:
+        os.execvp('sudo',['sudo','-n','--preserve-env','unshare','--mount','--propagation','private',sys.executable,str(Path(__file__).resolve()),'home-namespace',*argv])
     compiler_job=Path(argv[0]).name=='cargo' or bool(json.loads(Path(meta).read_text()).get('gate_log'))
     # Nested build-slot reuses the enclosing job's home/admission/server, rather
     # than consuming a second tenant slot or changing the tested environment.
     if os.environ.get('BB_JOB_ACTIVE')=='1':
         # The marker alone is not proof: callers and pre-upgrade parents may
-        # supply it without an inherited Landlock domain.
+        # supply it without an inherited read-only mount.
         try:protect_home(Path('/home/var'))
         except (OSError,RuntimeError) as error:
             print('[buildbox] HOME guard INFRA: '+str(error),file=sys.stderr,flush=True)
@@ -394,7 +395,12 @@ def stop_job(file):
 
 
 if __name__=='__main__':
-    if sys.argv[1:2]==['cleanup']: cleanup_runtime(sys.argv[2])
+    if sys.argv[1:2]==['home-namespace']:
+        try:mount_home_namespace();result=run(sys.argv[2:])
+        except (OSError,RuntimeError,subprocess.SubprocessError) as error:
+            print('[buildbox] HOME guard INFRA: '+str(error),file=sys.stderr,flush=True);result=224
+        raise SystemExit(result)
+    elif sys.argv[1:2]==['cleanup']: cleanup_runtime(sys.argv[2])
     elif sys.argv[1:2]==['cleanup-outer']:print(json.dumps(cleanup_outer(sys.argv[2])))
     elif sys.argv[1:2]==['stop-job']:stop_job(sys.argv[2])
     else: raise SystemExit(run(sys.argv[1:]))

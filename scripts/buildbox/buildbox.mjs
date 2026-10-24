@@ -1220,7 +1220,11 @@ function mergeBase(co) {
   return /^[0-9a-f]{40}$/.test(b) ? b : '';
 }
 async function runIn(argv, t0, cwd, co, rel, key, tkey, id, base, ctx) {
-  const J = `/mnt/bb/jobs/${Date.now()}-${process.pid}`; const top = co.top; const R = REPOS[co.repo];
+  const J = `/mnt/bb/jobs/${Date.now()}-${process.pid}-${crypto.randomUUID().slice(0, 8)}`; const top = co.top; const R = REPOS[co.repo];
+  // A client-side flock vanishes on a WSL restart while the detached bb2 job
+  // remains alive. Every upload therefore owns a unique remote source copy;
+  // recovering a local claim can never reset/clean a running job's checkout.
+  key = sourceCopyKey(key, J);
   const logFile = ctx.logFile;
   Object.assign(ctx.meta, { key, tkey, job_id: J.slice(13), gate_log: process.env.BUILD_SLOT_GATE_LOG || null });
   atomic(ctx.metaFile, { ...JSON.parse(fs.readFileSync(ctx.metaFile, 'utf8')), ...ctx.meta });
@@ -1297,4 +1301,8 @@ async function runIn(argv, t0, cwd, co, rel, key, tkey, id, base, ctx) {
   if (COLD) sshRun(`rm -rf /mnt/bb/targets/${tkey}`, { timeout: 120000 });
 
   return rc;
+}
+
+function sourceCopyKey(key, jobPrefix) {
+  return `${key}-${path.basename(jobPrefix)}`;
 }

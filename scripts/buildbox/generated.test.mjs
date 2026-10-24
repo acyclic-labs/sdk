@@ -72,6 +72,43 @@ test('executor failure cannot inherit a successful Cargo payload verdict',()=>{
  }finally{fs.rmSync(cwd,{recursive:true,force:true});}
 });
 
+test('a restarted client cannot reuse a detached jobs source copy',()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'source-generation-'));
+ try{
+  const original=fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8');
+  fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  for(const negative of [false,true]){
+   const source=negative?original.replace('return `${key}-${path.basename(jobPrefix)}`;','return key;'):original;
+   fs.writeFileSync(path.join(cwd,'generator.mjs'),source+'\nexport { sourceCopyKey };\n');
+   const probe=`import {sourceCopyKey} from './generator.mjs';import assert from 'node:assert/strict';
+const key='pr-gate-fixture.0';const old=sourceCopyKey(key,'/mnt/bb/jobs/100-1-a');const next=sourceCopyKey(key,'/mnt/bb/jobs/101-1-b');
+assert.notEqual(old,next,'local claim reuse reset a detached remote checkout');assert.ok(!old.includes('/'));
+assert.equal(old,sourceCopyKey(key,'/mnt/bb/jobs/100-1-a'));
+`;
+   const result=spawnSync(process.execPath,['--input-type=module','-e',probe],{cwd,encoding:'utf8'});
+   assert.equal(result.status===0,!negative,result.stderr);
+  }
+  assert.match(original,/key = sourceCopyKey\(key, J\)/);
+  assert.match(original,/src = `\/mnt\/bb\/src\/\$\{key\}`/);
+ }finally{fs.rmSync(cwd,{recursive:true,force:true});}
+});
+
+test('a cut-off executor is INFRA before any target-specific or source verdict',()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'executor-cutoff-'));
+ try{
+  fs.mkdirSync(path.join(cwd,'.codex-fleet'));
+  const source=fs.readFileSync(path.join(here,'coordinator/pr-gate.sh'),'utf8');
+  const block=source.slice(source.indexOf('# An ended client stream'),source.indexOf('# A successful payload'));
+  assert.ok(block.includes('executor/stream ended before payload completion'));
+  assert.ok(source.indexOf(block)<source.indexOf('windows_reason='));
+  for(const [payload,negative,expected] of [[false,false,4],[true,false,0],[false,true,0]]){
+   const log=path.join(cwd,'gate.log');fs.writeFileSync(log,'test source_failure ... FAILED\n'+(payload?'GATE_DONE rc=101\n':''));
+   const result=spawnSync('bash',['-c',`rc=1;n=1;log=${log}\n${negative?'':block}\nexit 0\n`],{encoding:'utf8',env:{...process.env,HOME:cwd}});
+   assert.equal(result.status,expected,result.stdout+result.stderr);
+  }
+ }finally{fs.rmSync(cwd,{recursive:true,force:true});}
+});
+
 test('outer cleanup failure is INFRA and the former status handling is a negative control',()=>{
  const cwd=fs.mkdtempSync(path.join(tmpdir(),'outer-cleanup-status-'));
  try{
