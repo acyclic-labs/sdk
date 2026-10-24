@@ -126,7 +126,10 @@ pub fn excluded_native_names() -> Vec<std::ffi::OsString> {
         #[cfg(target_os = "linux")]
         {
             use std::os::unix::ffi::OsStrExt;
-            vec![portable, std::ffi::OsStr::from_bytes(b"unrelated-\xff").into()]
+            vec![
+                portable,
+                std::ffi::OsStr::from_bytes(b"unrelated-\xff").into(),
+            ]
         }
         #[cfg(not(target_os = "linux"))]
         {
