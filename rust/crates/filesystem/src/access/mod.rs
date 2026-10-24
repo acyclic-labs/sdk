@@ -31,7 +31,7 @@ pub use decision::{Decision, Denial, decide};
 pub use mount::MountMode;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-pub use trie::{PathTrie, PinnedPath, PreparedPath};
+pub use trie::{CompiledPolicy, PathTrie, PinnedPath, PreparedPath};
 
 /// Current policy encoding, stored in volume metadata rather than user files.
 pub const POLICY_SCHEMA_VERSION: u32 = 1;

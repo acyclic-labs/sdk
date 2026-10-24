@@ -48,22 +48,84 @@ pub(super) fn rule_matches(
     context: Context,
 ) -> bool {
     let selector = &rule.principal;
-    let conditions = &rule.conditions;
-    let trusted = principal.kind != PrincipalKind::Anonymous;
-    selector.kind.is_none_or(|kind| kind == principal.kind)
-        && selector
-            .id
-            .as_deref()
-            .is_none_or(|id| trusted && id == principal.id)
+    predicates_match(
+        Selector {
+            kind: selector.kind,
+            id: selector.id.as_deref(),
+            group: selector.group.as_deref(),
+            attributes: selector.attributes.iter(),
+        },
+        principal,
+        &rule.resource,
+        &rule.conditions,
+        resource,
+        context,
+    )
+}
+
+pub(super) enum Claim {
+    Group,
+    Role,
+    Tag,
+}
+
+/// Borrowed claims over either decoded maps or the cache's measured vectors.
+pub(super) trait Claims {
+    fn kind(&self) -> PrincipalKind;
+    fn id(&self) -> &str;
+    fn lineage(&self) -> &[String];
+    fn contains(&self, claim: Claim, value: &str) -> bool;
+    fn attribute(&self, key: &str, value: &str) -> bool;
+}
+
+impl Claims for Principal {
+    fn kind(&self) -> PrincipalKind {
+        self.kind
+    }
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn lineage(&self) -> &[String] {
+        &self.lineage
+    }
+    fn contains(&self, claim: Claim, value: &str) -> bool {
+        match claim {
+            Claim::Group => self.groups.contains(value),
+            Claim::Role => self.roles.contains(value),
+            Claim::Tag => self.tags.contains(value),
+        }
+    }
+    fn attribute(&self, key: &str, value: &str) -> bool {
+        self.attributes.get(key).is_some_and(|claim| claim == value)
+    }
+}
+
+pub(super) struct Selector<'a, I> {
+    pub kind: Option<PrincipalKind>,
+    pub id: Option<&'a str>,
+    pub group: Option<&'a str>,
+    pub attributes: I,
+}
+
+/// One predicate evaluator for parsed records and shared compiled records.
+pub(super) fn predicates_match<'a>(
+    mut selector: Selector<'_, impl Iterator<Item = (&'a String, &'a String)>>,
+    principal: &impl Claims,
+    pattern: &super::ResourcePattern,
+    conditions: &super::Conditions,
+    resource: Resource<'_>,
+    context: Context,
+) -> bool {
+    let trusted = principal.kind() != PrincipalKind::Anonymous;
+    selector.kind.is_none_or(|kind| kind == principal.kind())
+        && selector.id.is_none_or(|id| trusted && id == principal.id())
         && selector
             .group
-            .as_ref()
-            .is_none_or(|group| trusted && principal.groups.contains(group))
+            .is_none_or(|group| trusted && principal.contains(Claim::Group, group))
         && selector
             .attributes
-            .iter()
-            .all(|(key, value)| trusted && principal.attributes.get(key) == Some(value))
-        && rule.resource.matches_view(resource)
+            .all(|(key, value)| trusted && principal.attribute(key, value))
+        && pattern.matches_view(resource)
         && conditions
             .expires_at
             .is_none_or(|expiry| context.now < expiry)
@@ -71,23 +133,53 @@ pub(super) fn rule_matches(
             .generations
             .is_none_or(|range| range.contains(resource.generation))
         && conditions.relation.is_none_or(|relation| {
-            trusted && relation.matches(&principal.lineage, resource.lineage)
+            trusted && relation.matches(principal.lineage(), resource.lineage)
         })
         && conditions
             .role
             .as_ref()
-            .is_none_or(|role| trusted && principal.roles.contains(role))
+            .is_none_or(|role| trusted && principal.contains(Claim::Role, role))
         && conditions
             .tag
             .as_ref()
-            .is_none_or(|tag| trusted && principal.tags.contains(tag))
+            .is_none_or(|tag| trusted && principal.contains(Claim::Tag, tag))
         && conditions
             .approvals
             .is_none_or(|count| context.approvals >= count)
 }
 
-// This reducer is the single policy/capability decision algorithm. Both the
-// reference evaluator and compiled terminal states feed it match predicates.
+/// The policy intersection reducer shared by parsed and compiled rule records.
+pub(super) fn policy_layers<R, K: Copy>(
+    layers: impl IntoIterator<Item = impl IntoIterator<Item = R>>,
+    mut matching: impl FnMut(R) -> Option<(Effect, K)>,
+) -> (Option<K>, Option<Denial>) {
+    let mut first = None;
+    let mut all_layers = true;
+    let mut count = 0;
+    for layer in layers {
+        count += 1;
+        let mut allowed = false;
+        for rule in layer {
+            let Some((effect, id)) = matching(rule) else {
+                continue;
+            };
+            if effect == Effect::Deny {
+                return (Some(id), Some(Denial::Rule));
+            }
+            allowed = true;
+            first.get_or_insert(id);
+        }
+        all_layers &= allowed;
+    }
+    if count != 0 && all_layers {
+        (first, None)
+    } else {
+        (None, Some(Denial::NoAllow))
+    }
+}
+
+// Both the reference evaluator and compiled terminal states feed the same
+// policy intersection reducer, then intersect capability and history authority.
 pub(super) fn evaluate<'a>(
     policy: &'a Policy,
     capability: &Capability,
@@ -97,30 +189,17 @@ pub(super) fn evaluate<'a>(
     mut rule_matches: impl FnMut(&Rule) -> bool,
     mut grant_matches: impl FnMut(&super::Grant) -> bool,
 ) -> Decision<'a> {
-    let mut result = Decision::denied(policy.version, Denial::NoAllow);
-    let mut all_layers = !policy.layers.is_empty();
-    for layer in &policy.layers {
-        let mut allowed = false;
-        for rule in layer {
-            if !rule.actions.contains(&action) || !rule_matches(rule) {
-                continue;
-            }
-            if rule.effect == Effect::Deny {
-                return Decision {
-                    rule_id: Some(&rule.id),
-                    denial: Some(Denial::Rule),
-                    ..result
-                };
-            }
-            allowed = true;
-            if result.rule_id.is_none() {
-                result.rule_id = Some(&rule.id);
-            }
-        }
-        all_layers &= allowed;
-    }
-    if !all_layers {
-        result.rule_id = None;
+    let (rule_id, denial) = policy_layers(&policy.layers, |rule| {
+        (rule.actions.contains(&action) && rule_matches(rule))
+            .then_some((rule.effect, rule.id.as_str()))
+    });
+    let mut result = Decision {
+        allowed: false,
+        rule_id,
+        denial,
+        policy_version: policy.version,
+    };
+    if result.denial.is_some() {
         return result;
     }
     result.denial = if capability

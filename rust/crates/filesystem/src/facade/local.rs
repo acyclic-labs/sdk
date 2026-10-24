@@ -298,6 +298,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 path_index: crate::path_index::MemoryGenerationPathIndex::default(),
                 generation_positions: super::generation_cache::GenerationPositions::default(),
                 publication_proof: Mutex::default(),
+                policy_cache: super::policy_cache::PolicyCache::default(),
                 _local_root_lifecycle: lifecycle,
             }),
         })

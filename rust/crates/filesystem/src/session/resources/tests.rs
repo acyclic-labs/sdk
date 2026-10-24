@@ -75,6 +75,45 @@ async fn subscribe(
     )
 }
 #[tokio::test]
+async fn subscriptions_share_policy_program_across_data_head_changes() -> TestResult {
+    let (fs, streams, workspace) = fixture().await?;
+    let cancel = CancellationToken::new();
+    let mut checkout = workspace
+        .checkout(
+            crate::model::GenerationSelector::Head,
+            crate::model::CheckoutMode::read_only_pinned(),
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await?
+        .value;
+    let policy = checkout
+        .compiled_access_policy(WorkBudget::UNBOUNDED, &cancel)
+        .await?
+        .value;
+    let baseline = Arc::strong_count(&policy);
+    let mut follows = Vec::new();
+    for index in 0..3 {
+        workspace.write_text("/allowed", &index.to_string()).await?;
+        let prepared = subscribe(
+            fs.clone(),
+            streams.clone(),
+            workspace.id().volume_id(),
+            "allowed",
+        )
+        .await?;
+        let follow = prepared.open.await?;
+        follows.push((follow, prepared.revalidate, prepared.terminal));
+        // The old per-subscription compiler leaves the shared program's count
+        // unchanged. Each bound subscriber must instead retain that program.
+        assert_eq!(Arc::strong_count(&policy), baseline + follows.len());
+    }
+    drop(follows);
+    assert_eq!(Arc::strong_count(&policy), baseline);
+    Ok(())
+}
+
+#[tokio::test]
 async fn changes_follow_uses_indexed_grants_and_owner_deny_wins() -> TestResult {
     let (fs, streams, workspace) = fixture().await?;
     workspace.write_text("/allowed", "original").await?;

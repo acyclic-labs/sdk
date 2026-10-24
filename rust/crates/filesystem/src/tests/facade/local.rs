@@ -103,6 +103,7 @@ async fn local_root_lifecycle_outlives_provider_destruction()
         path_index: crate::path_index::MemoryGenerationPathIndex::default(),
         generation_positions: super::super::generation_cache::GenerationPositions::default(),
         publication_proof: Mutex::default(),
+        policy_cache: super::super::policy_cache::PolicyCache::default(),
         _local_root_lifecycle: Some(acyclic_native_runtime::OwnershipAnchor::new(ownership)),
     };
     let dropping = std::thread::spawn(move || drop(inner));
