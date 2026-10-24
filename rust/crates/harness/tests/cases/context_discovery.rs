@@ -479,7 +479,7 @@ async fn discovery_denies_authority_and_bounds_work_without_partial_success() ->
     let mut declaration = fixture.declaration();
     assert!(matches!(
         declaration.capture(fixture.reader.as_ref()).await,
-        Err(Error::Conflict(_))
+        Err(Error::Conflict(message)) if message == "discovered skill names are repeated"
     ));
     declaration.policy.skill_name = None;
     declaration.limits.entries = 1;
