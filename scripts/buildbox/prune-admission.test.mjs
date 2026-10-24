@@ -17,13 +17,27 @@ test('failed shared maintenance cannot refuse either independently admitted work
     const prepared=[];
     const result=await Promise.all(['bad','good'].map(async name=>{
       const notes=[];
-      await maintainSourceCopies('sdk',notes,async()=>({status:name==='bad'?224:0,stderr:Buffer.from('foreign-owned tomb')}));
+      await maintainSourceCopies('sdk',notes,async()=>({status:name==='bad'?224:0,stderr:Buffer.from(name==='bad'?'foreign-owned tomb':'')}));
       prepared.push(name);return notes;
     }));
     assert.deepEqual(prepared.sort(),['bad','good']);
     assert.match(result[0][0],/BB_WT_PRUNE_FAILED rc=224: foreign-owned tomb/);
     assert.deepEqual(result[1],[]);
     assert.match(diagnostics.join(''),/BB_WT_PRUNE_FAILED/);
+    const warning=[];
+    const marker='BB_WT_PRUNE_FAILED successful retirement had one undeletable copy';
+    await maintainSourceCopies('sdk',warning,async()=>({status:0,stderr:Buffer.from(marker)}));
+    assert.match(warning[0],/rc=0.*undeletable copy/);
+    assert.ok(diagnostics.some(line=>line.includes(marker)));
+    // Actual former success return drops the same warning; the assertion
+    // above must catch that omission even though admission still succeeds.
+    const mutant=source.replace("prune.status === 0 && !String(prune.stderr ?? '').trim()",'prune.status === 0');
+    assert.notEqual(mutant,source);
+    fs.writeFileSync(path.join(root,'old.mjs'),mutant+'\nexport {maintainSourceCopies};\n');
+    const old=await import(path.join(root,'old.mjs'));
+    const oldWarning=[];
+    await old.maintainSourceCopies('sdk',oldWarning,async()=>({status:0,stderr:Buffer.from(marker)}));
+    assert.deepEqual(oldWarning,[]);
     await maintainSourceCopies('sdk',[],async()=>{throw new Error('maintenance transport interrupted');});
     assert.match(diagnostics.join(''),/maintenance transport interrupted/);
     await maintainSourceCopies('cloud',[],async()=>{throw new Error('must not prune another repo');});
