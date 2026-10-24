@@ -3,14 +3,8 @@ use acyclic_grpc_observability::tests::Capture;
 use tracing::{Dispatch, instrument::WithSubscriber as _};
 use tracing_subscriber::layer::SubscriberExt as _;
 
-pub(crate) fn dispatch(capture: Capture) -> (Dispatch, Dispatch) {
-    // tracing-core's single-dispatcher fast path computes first-registration
-    // interest using the registering thread's current subscriber. An unrelated
-    // caller without a subscriber can therefore cache Never for our RPC callsite.
-    // Keep two dispatchers alive so registration considers all live subscribers.
-    let registration = Dispatch::new(tracing::subscriber::NoSubscriber::default());
-    let capture = Dispatch::new(tracing_subscriber::Registry::default().with(capture));
-    (registration, capture)
+pub(crate) fn dispatch(capture: Capture) -> Dispatch {
+    Dispatch::new(tracing_subscriber::Registry::default().with(capture))
 }
 
 pub(crate) fn isolate(test: &str) -> TestResult<bool> {
@@ -31,19 +25,19 @@ fn unobserved_first_registration_preserves_retry_capture() -> TestResult {
 }
 
 #[test]
-fn negative_control_single_dispatcher_loses_retry_capture() -> TestResult {
+fn capture_owns_registration_without_caller_guard() -> TestResult {
     isolated_registration(true)
 }
 
-fn isolated_registration(broken: bool) -> TestResult {
+fn isolated_registration(direct: bool) -> TestResult {
     const CHILD: &str = "ACYCLIC_RETRY_CAPTURE_REGISTRATION";
     const ASSERTION: &str = "unobserved first registration disabled retry capture";
-    let mode = if broken { "single" } else { "paired" };
+    let mode = if direct { "direct" } else { "factory" };
     if std::env::var(CHILD).as_deref() != Ok(mode) {
         // Fresh processes make the dependency's process-global callsite state
         // deterministic even when the parent libtest suite runs in parallel.
-        let test = if broken {
-            "negative_control_single_dispatcher_loses_retry_capture"
+        let test = if direct {
+            "capture_owns_registration_without_caller_guard"
         } else {
             "unobserved_first_registration_preserves_retry_capture"
         };
@@ -52,14 +46,8 @@ fn isolated_registration(broken: bool) -> TestResult {
             .output()?;
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        if broken {
-            assert!(!output.status.success(), "negative control passed");
-            assert!(stderr.contains(ASSERTION), "{stdout}\n{stderr}");
-            assert!(stderr.contains("left: 0"), "{stdout}\n{stderr}");
-        } else {
-            assert!(output.status.success(), "{stdout}\n{stderr}");
-            assert!(stdout.contains("1 passed; 0 failed"), "{stdout}\n{stderr}");
-        }
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(stdout.contains("1 passed; 0 failed"), "{stdout}\n{stderr}");
         return Ok(());
     }
 
@@ -67,14 +55,10 @@ fn isolated_registration(broken: bool) -> TestResult {
         .enable_all()
         .build()?;
     let captured = Capture::default();
-    let (_registration, subscriber) = if broken {
-        (
-            None,
-            Dispatch::new(tracing_subscriber::Registry::default().with(captured.clone())),
-        )
+    let subscriber = if direct {
+        Dispatch::new(tracing_subscriber::Registry::default().with(captured.clone()))
     } else {
-        let (registration, capture) = dispatch(captured.clone());
-        (Some(registration), capture)
+        dispatch(captured.clone())
     };
     runtime.block_on(async {
         let client = unconnected()?;

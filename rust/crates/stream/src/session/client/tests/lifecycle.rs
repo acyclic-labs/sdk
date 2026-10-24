@@ -138,7 +138,7 @@ fn traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop() ->
         return Ok(());
     }
     let capture = Capture::default();
-    let (_registration, subscriber) = retry_capture::dispatch(capture.clone());
+    let subscriber = retry_capture::dispatch(capture.clone());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -251,7 +251,7 @@ fn negative_control_reports_physical_failures_as_normal_closure() -> TestResult 
         return Ok(());
     }
     let capture = Capture::default();
-    let (_registration, subscriber) = retry_capture::dispatch(capture.clone());
+    let subscriber = retry_capture::dispatch(capture.clone());
     tracing::dispatcher::with_default(&subscriber, || {
         for attempt in 0..3 {
             let mut observation = Observation::session(attempt);

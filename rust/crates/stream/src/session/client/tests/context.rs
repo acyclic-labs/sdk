@@ -7,8 +7,8 @@ const CLOSE: &str = "the first request must close while its pool remains cached"
 fn run_context_case(observed_first: bool, retain_first: bool) -> TestResult {
     let first = Capture::default();
     let second = Capture::default();
-    let (_first_registration, first_dispatch) = retry_capture::dispatch(first.clone());
-    let (_second_registration, second_dispatch) = retry_capture::dispatch(second.clone());
+    let first_dispatch = retry_capture::dispatch(first.clone());
+    let second_dispatch = retry_capture::dispatch(second.clone());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -172,7 +172,7 @@ fn assert_overlap(capture: &Capture) {
 
 fn overlapping(fault: u8) -> TestResult {
     let capture = Capture::default();
-    let (_registration, subscriber) = retry_capture::dispatch(capture.clone());
+    let subscriber = retry_capture::dispatch(capture.clone());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -294,8 +294,8 @@ fn assert_reconnect_subscriber(first: &Capture, second: &Capture) {
 fn reconnect_before_removal(broken: bool) -> TestResult {
     let first = Capture::default();
     let second = Capture::default();
-    let (_a_registration, a_dispatch) = retry_capture::dispatch(first.clone());
-    let (_b_registration, b_dispatch) = retry_capture::dispatch(second.clone());
+    let a_dispatch = retry_capture::dispatch(first.clone());
+    let b_dispatch = retry_capture::dispatch(second.clone());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -384,7 +384,7 @@ impl Drop for DialDrop {
 
 async fn moved_owner_withdraws() -> TestResult {
     let capture = Capture::default();
-    let (_registration, subscriber) = retry_capture::dispatch(capture.clone());
+    let subscriber = retry_capture::dispatch(capture.clone());
     let memory = Arc::new(MemoryStream::default());
     append(&memory, "move", 1).await?;
     append(&memory, "stay", 1).await?;
@@ -496,7 +496,7 @@ fn cancelling_the_dial_origin_releases_its_span_while_b_waits_for_welcome() -> T
         return Ok(());
     }
     let capture = Capture::default();
-    let (_registration, subscriber) = retry_capture::dispatch(capture.clone());
+    let subscriber = retry_capture::dispatch(capture.clone());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -578,8 +578,8 @@ fn overlapping_subscribers_cannot_alias_equal_channel_span_ids() -> TestResult {
     }
     let first = Capture::default();
     let second = Capture::default();
-    let (_a_registration, a_dispatch) = retry_capture::dispatch(first.clone());
-    let (_b_registration, b_dispatch) = retry_capture::dispatch(second.clone());
+    let a_dispatch = retry_capture::dispatch(first.clone());
+    let b_dispatch = retry_capture::dispatch(second.clone());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;

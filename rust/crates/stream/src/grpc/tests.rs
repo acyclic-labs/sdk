@@ -420,7 +420,7 @@ async fn retry_attempts_record_independent_spans() -> TestResult {
     }
     use tracing::instrument::WithSubscriber as _;
     let captured = acyclic_grpc_observability::tests::Capture::default();
-    let (_registration, subscriber) = retry_capture::dispatch(captured.clone());
+    let subscriber = retry_capture::dispatch(captured.clone());
     async {
         let client = unconnected()?;
         let mut first = true;
@@ -602,7 +602,7 @@ async fn concurrent_retry_captures_keep_their_own_dispatcher() -> TestResult {
     let first = acyclic_grpc_observability::tests::Capture::default();
     let second = acyclic_grpc_observability::tests::Capture::default();
     let capture = |captured: acyclic_grpc_observability::tests::Capture| async move {
-        let (_registration, subscriber) = retry_capture::dispatch(captured);
+        let subscriber = retry_capture::dispatch(captured);
         async {
             let client = unconnected()?;
             let mut first = true;
