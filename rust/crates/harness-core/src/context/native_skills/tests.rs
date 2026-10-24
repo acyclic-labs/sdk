@@ -17,8 +17,12 @@ async fn retained_records_share_one_sync_on_the_native_io_service() -> Result<()
     {
         use std::os::unix::ffi::OsStrExt;
         for name in [b"unrelated-\xff".as_slice(), b"unrelated\\name"] {
-            std::fs::create_dir(root.path().join("skills").join(std::ffi::OsStr::from_bytes(name)))
-                .map_err(storage)?;
+            std::fs::create_dir(
+                root.path()
+                    .join("skills")
+                    .join(std::ffi::OsStr::from_bytes(name)),
+            )
+            .map_err(storage)?;
         }
     }
     std::fs::write(

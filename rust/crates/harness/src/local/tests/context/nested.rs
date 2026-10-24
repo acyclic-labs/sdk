@@ -20,8 +20,11 @@ async fn scoped_instructions(native: bool) -> Result<()> {
             use std::os::unix::ffi::OsStrExt;
             // Legal native siblings cannot name portable context sources.
             for name in [b"unrelated-\xff".as_slice(), b"unrelated\\name"] {
-                std::fs::write(directory.path().join(std::ffi::OsStr::from_bytes(name)), b"unrelated")
-                    .map_err(super::super::super::storage)?;
+                std::fs::write(
+                    directory.path().join(std::ffi::OsStr::from_bytes(name)),
+                    b"unrelated",
+                )
+                .map_err(super::super::super::storage)?;
             }
         }
         for path in PATHS {

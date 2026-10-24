@@ -593,7 +593,8 @@ impl DiscoverySource for UserCatalogSource<'_> {
             let scanned = u32::try_from(page.entries.len())
                 .map_err(|_| Error::Invalid("entry count overflow".into()))?;
             for entry in &page.entries {
-                let Some(name) = super::native_discovery::portable_name(&entry.name, self.work)? else {
+                let Some(name) = super::native_discovery::portable_name(&entry.name, self.work)?
+                else {
                     continue;
                 };
                 entries.push(crate::context::DiscoveryEntry {

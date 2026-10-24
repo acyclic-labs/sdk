@@ -86,12 +86,20 @@ async fn directory_adapters_share_order_revision_duplicate_and_progress_fences()
     let mut omitted = page(1, &[], None);
     omitted.scanned = 2;
     let mut work = DiscoveryWork::default();
-    work.list_source(&mut Pages([omitted].into()), "", None).await?;
-    assert_eq!(work.entries, 2, "opaque native names still consume the shared quota");
+    work.list_source(&mut Pages([omitted].into()), "", None)
+        .await?;
+    assert_eq!(
+        work.entries, 2,
+        "opaque native names still consume the shared quota"
+    );
     let mut understated = page(1, &["AGENTS.md"], None);
     understated.scanned = 0;
-    assert!(DiscoveryWork::default()
-        .list_source(&mut Pages([understated].into()), "", None).await.is_err());
+    assert!(
+        DiscoveryWork::default()
+            .list_source(&mut Pages([understated].into()), "", None)
+            .await
+            .is_err()
+    );
     Ok(())
 }
 

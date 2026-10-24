@@ -92,9 +92,7 @@ pub(crate) fn portable_name(
         ))) => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    if crate::conversation::validate_content_path(&text, &mut None).is_err()
-        || text.contains('/')
-    {
+    if crate::conversation::validate_content_path(&text, &mut None).is_err() || text.contains('/') {
         return Ok(None);
     }
     Ok(Some(text))
