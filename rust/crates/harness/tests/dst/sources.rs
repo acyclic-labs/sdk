@@ -49,8 +49,11 @@ const SOURCES: [&str; 24] = [
 ];
 
 /// Exact remaining direct sources: (file, source, count).
-const ALLOWED: [(&str, &str, usize); 12] = [
+const ALLOWED: [(&str, &str, usize); 13] = [
     // Seam fallbacks, reached only when no seeded scope is active.
+    // Both actor entrypoints draw through one seam; its negative control forbids
+    // reaching this full-128-bit host fallback while seeded entropy is installed.
+    ("actors/src/namespace/entropy.rs", "::new_v4", 2),
     ("harness-core/src/identity.rs", "::new_v4", 1),
     ("harness-core/src/identity.rs", "getrandom::fill", 1),
     ("filesystem/src/identity.rs", "::new_v4", 1),

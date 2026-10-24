@@ -5,6 +5,7 @@ use crate::{
 };
 use std::{future::Future, sync::Arc};
 use tokio::sync::{Mutex, watch};
+mod entropy;
 
 /// A namespace-scoped ID with optional name-construction provenance.
 #[derive(Clone, Debug)]
@@ -130,7 +131,7 @@ impl<T: Invoker> Namespace<T> {
     }
     /// Generate 128 random bits as lowercase hex, without creating an actor.
     pub fn new_unique_id(&self) -> Result<Id, Error> {
-        self.id(&random_id()?, false)
+        self.id(&entropy::random_id()?, false)
     }
     /// Reconstitute an ID only in the exact bound account and namespace.
     pub fn id_from_reference(&self, reference: ActorReference) -> Result<Id, Error> {
@@ -153,7 +154,7 @@ impl<T: Invoker> Namespace<T> {
             location_hint,
             authority: self.authority.clone(),
             binding_name: self.binding_name.clone(),
-            session: random_id()?,
+            session: entropy::random_id()?,
             sequence: Mutex::new(0),
             failed: watch::channel(false).0,
         })
@@ -162,21 +163,6 @@ impl<T: Invoker> Namespace<T> {
     pub fn get_by_name(&self, name: &str, location_hint: Option<String>) -> Result<Stub<T>, Error> {
         self.get(&self.id_from_name(name)?, location_hint)
     }
-}
-
-fn random_id() -> Result<String, Error> {
-    // UUID-v4 masks six bits. Select eight unmasked random bytes from each
-    // of two independent draws, retaining a full 128 random bits.
-    let left = uuid::Uuid::new_v4();
-    let right = uuid::Uuid::new_v4();
-    let mut bytes = Vec::with_capacity(16);
-    for value in [left.as_bytes(), right.as_bytes()] {
-        for index in [0, 1, 2, 3, 4, 5, 7, 9] {
-            bytes.push(*value.get(index).ok_or(Error::Scope)?);
-        }
-    }
-    let text: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-    Ok(text)
 }
 
 /// Ordered call admission and terminal failure state belong to each stub.
@@ -303,7 +289,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     #[derive(Default)]
-    struct Mock {
+    pub(super) struct Mock {
         calls: AtomicUsize,
         fail: AtomicBool,
         pending: AtomicBool,

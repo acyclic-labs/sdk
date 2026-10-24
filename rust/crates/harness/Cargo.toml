@@ -58,7 +58,7 @@ required-features = ["filesystem"]
 
 [features]
 tui = ["dep:acyclic-harness-tui", "acyclic-harness-tui/tui", "acyclic-harness-core/tui"]
-test-support = ["dep:tempfile", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-harness-search/test-support"]
+test-support = ["acyclic-actors/test-support", "dep:tempfile", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-harness-search/test-support"]
 model-checking = ["dep:loom", "dep:same-file", "dep:tempfile", "acyclic-fs/model-checking", "acyclic-harness-core/model-checking"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser", "acyclic-harness-core/browser"]
 # Native presentation only; this does not select providers or grant authority.
