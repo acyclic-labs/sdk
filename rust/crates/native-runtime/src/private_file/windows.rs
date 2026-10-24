@@ -234,6 +234,6 @@ fn check_security(file: &File, upgrade_inherited: bool) -> io::Result<bool> {
                 .is_ok())
         })();
         let _ = LocalFree(Some(HLOCAL(descriptor.0)));
-        Ok(check?)
+        check
     }
 }
