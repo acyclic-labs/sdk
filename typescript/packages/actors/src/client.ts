@@ -292,9 +292,8 @@ export async function validateDeploymentBinding(binding: import("./generated/sem
   for (const value of [binding.actorNamespace, binding.workerService]) {
     if (value !== undefined && typeof value !== "string") throw new TypeError("binding targets must be text");
   }
-  if (!(binding.targetAccount instanceof Uint8Array) && !Array.isArray(binding.targetAccount)) throw new TypeError("binding account must contain bytes");
-  if (!Array.from(binding.targetAccount).every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)) throw new TypeError("binding account must contain bytes");
-  const account = Uint8Array.from(binding.targetAccount);
+  if (!(binding.targetAccount instanceof Uint8Array)) throw new TypeError("binding account must be Uint8Array bytes");
+  const account = new Uint8Array(binding.targetAccount);
   const {name, capability, resource, actorNamespace, workerService} = binding;
   const wasm = await loadWasmModule();
   wasm.validateDeploymentBinding(name, capability, resource, account, actorNamespace, workerService);

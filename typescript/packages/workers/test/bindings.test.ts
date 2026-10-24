@@ -26,6 +26,7 @@ test("deployment declarations become scoped namespace and private service handle
     {...namespace,resource:"actors:/Other"}, {...namespace,targetAccount:new Uint8Array()},
     {...namespace,workerService:"worker"}, {...namespace,capability:""},
     {...service,workerService:"Upper"}, {...namespace,actorNamespace:undefined},
+    {...namespace,targetAccount:[256]}, {...namespace,targetAccount:[0.5]},
   ]) {
     await expect(materializeBindings([namespace, {...invalid,name:"BAD"}],authority)).rejects.toThrow();
   }

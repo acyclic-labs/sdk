@@ -11,8 +11,8 @@ export interface BindingAuthority {
 /** Materialize selected, host-admitted deployment declarations as typed env objects. */
 export async function materializeBindings(declarations: readonly semantic.Binding[], authority: BindingAuthority): Promise<Readonly<Record<string, DeploymentBinding>>> {
   declarations = declarations.map(binding => {
-    if (!(binding.targetAccount instanceof Uint8Array) && !Array.isArray(binding.targetAccount)) throw new TypeError("binding account must contain bytes");
-    return Object.freeze({ ...binding, targetAccount: Uint8Array.from(binding.targetAccount) });
+    if (!(binding.targetAccount instanceof Uint8Array)) throw new TypeError("binding account must be Uint8Array bytes");
+    return Object.freeze({ ...binding, targetAccount: new Uint8Array(binding.targetAccount) });
   });
   const names = new Set<string>();
   for (const binding of declarations) {
