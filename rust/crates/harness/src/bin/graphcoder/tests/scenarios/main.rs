@@ -1,4 +1,6 @@
 //! The shared scenarios through the shipped main thread and real HTTP transport.
+#[path = "../../../../../tests/support/schema/action.rs"]
+mod action_record;
 mod assertions;
 mod bindings;
 mod faults;
@@ -8,8 +10,6 @@ mod json_matchers;
 mod provider;
 #[path = "../../../../../tests/support/scenario_actions.rs"]
 mod scenario_actions;
-#[path = "../../../../../tests/support/schema/action.rs"]
-mod action_record;
 #[path = "../../../../../tests/support/scenario_data.rs"]
 mod scenario_data;
 mod wire;

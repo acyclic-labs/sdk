@@ -1,8 +1,8 @@
+pub use super::action_record::Action;
 use acyclic_harness::{
     Error, Result,
     task_volume::{ChildFile, Component, Control, FileKey, FileValue},
 };
-pub use super::action_record::Action;
 
 pub fn file(action: &Action) -> Result<FileValue> {
     if action.model.is_empty() || action.request == 0 {
