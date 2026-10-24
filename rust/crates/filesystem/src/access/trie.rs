@@ -710,7 +710,12 @@ impl PathTrie {
             .shared
             .as_ref()
             .and_then(|binding| binding.reachable.as_ref());
-        (0..self.state_count()).map(move |index| reachable.map_or(index, |states| states[index]))
+        let dense = if reachable.is_none() {
+            self.state_count()
+        } else {
+            0
+        };
+        reachable.into_iter().flatten().copied().chain(0..dense)
     }
 
     fn state_index(&self, state: usize) -> Option<usize> {
