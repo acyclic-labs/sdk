@@ -61,7 +61,7 @@ async fn child_view_projects_volumes_outside_itself() -> Result<()> {
     .await?;
     let operation = OperationId::new();
     let Admission::Accepted(RuntimeTask::Durable { task_id: child, .. }) =
-        harness.submit_to(operation, Some(parent), "child").await?
+        harness.submit_to(operation, Some(parent), "child")?.await?
     else {
         panic!("child admission")
     };

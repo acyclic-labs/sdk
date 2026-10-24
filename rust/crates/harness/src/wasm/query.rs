@@ -91,6 +91,7 @@ pub(super) struct QueryFileInfo<'a> {
     #[tsify(type = "bigint | null")]
     through_sequence: Option<u64>,
     segments: usize,
+    segment_sequences: &'a [u64],
 }
 
 pub(super) fn bytes<S: Serializer>(value: &&[u8], serializer: S) -> Result<S::Ok, S::Error> {
@@ -114,6 +115,7 @@ impl<'a> From<&'a HeadFile> for QueryFileInfo<'a> {
             length: file.length,
             through_sequence: file.through_sequence,
             segments: file.segments.len(),
+            segment_sequences: &file.segment_sequences,
         }
     }
 }

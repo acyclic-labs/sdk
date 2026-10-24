@@ -138,6 +138,10 @@ async fn cut<P: StreamProvider>(
 impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FileQuerySource
     for FilesystemFileQuery<P, O>
 {
+    fn retain(&self) -> Arc<dyn FileQuerySource> {
+        Arc::new(self.clone())
+    }
+
     fn observe_files(
         &self,
         query: Query,

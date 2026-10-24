@@ -5,12 +5,14 @@ fn viewport_model<const FULL: bool, const REFLOW: bool>(length: usize) {
     let source = [Line::raw("a".repeat(length))];
     let mut projection = WrappedLines::default();
     projection.update(&source, 0, 80);
+    projection.wrap_all();
     let revision = projection.revision();
     let mut search = TranscriptSearch::default();
     search.update(&projection, "a", 0, Style::default());
     WORK.with(|work| work.set((0, 0, 0)));
     crate::layout::BUILDS.with(|builds| builds.set(0));
     projection.update(&source, source.len(), 80);
+    projection.wrap_all();
     search.update(&projection, "A", 1, Style::default());
     if REFLOW {
         std::hint::black_box(Layout::new(&Editor::new(projection.text()), 80));

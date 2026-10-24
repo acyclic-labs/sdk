@@ -14,6 +14,7 @@ type Results = BTreeMap<String, Value>;
 
 fn head_file(key: FileKey, bytes: Vec<u8>) -> HeadFile {
     HeadFile {
+        segment_sequences: Vec::new(),
         key,
         channel: None,
         publication: None,

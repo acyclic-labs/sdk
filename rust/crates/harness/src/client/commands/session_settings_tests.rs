@@ -28,16 +28,29 @@ async fn model<const ALWAYS_SCAN: bool>(retained: usize) {
             session: component(session.session.to_string()).unwrap(),
             file: files::TaskFile::Request(component(n.to_string()).unwrap()),
         };
-        session
-            .files
-            .insert(key.clone(), files::FileValue::new(key, b"{}".to_vec()));
+        session.files.insert(
+            key.clone(),
+            StateFile::new(files::FileValue::new(key, b"{}".to_vec())),
+        );
     }
     let before = session.files.len();
     session.settings_visits = 0;
     for _ in 0..4 {
-        crate::client::scroll_tui(&mut session, [3], 1000)
-            .await
-            .unwrap();
+        crate::client::scroll_tui(&mut session, [3], 1000, |from, _| {
+            Some(crate::tui::TranscriptAnchor {
+                origin: Some(crate::tui::TranscriptOrigin {
+                    file: [41; 32],
+                    line: 0,
+                }),
+                position: crate::tui::RowPosition {
+                    line: from.map_or(1, |from| from.position.line + 1),
+                    row: 0,
+                },
+                ..Default::default()
+            })
+        })
+        .await
+        .unwrap();
         if ALWAYS_SCAN {
             session.load_task_settings_impl::<true>().await.unwrap();
         }
@@ -120,7 +133,7 @@ async fn scroll_cut<const CACHED: bool>(modal: bool, before_snapshot: bool) {
         .write_state(
             CommandFileRoot::Session,
             "layout.json",
-            &json!({"transcript_back":2}),
+            &json!({"transcript_top":scroll_anchor(2)}),
         )
         .await
         .unwrap();
@@ -128,9 +141,9 @@ async fn scroll_cut<const CACHED: bool>(modal: bool, before_snapshot: bool) {
         .await
         .unwrap();
     let layout = if modal {
-        json!({"open_view":"shortcuts", "view_back":20, "transcript_back":7, "peer":"retained"})
+        json!({"open_view":"shortcuts", "view_back":20, "transcript_top":scroll_anchor(7), "peer":"retained"})
     } else {
-        json!({"transcript_back":7, "peer":"retained"})
+        json!({"transcript_top":scroll_anchor(7), "peer":"retained"})
     };
     owner
         .write_state(CommandFileRoot::Session, "layout.json", &layout)
@@ -144,23 +157,34 @@ async fn scroll_cut<const CACHED: bool>(modal: bool, before_snapshot: bool) {
             .state(CommandFileRoot::Session, "layout.json")
             .unwrap()
             .unwrap();
-        cached["transcript_back"] = json!(crate::client::tui_scroll(&input).unwrap() + 3);
+        let from = crate::client::tui_anchor(&input).unwrap().unwrap();
+        cached["transcript_top"] = json!(scroll_anchor(from.position.line + 3));
         input
             .write_state(CommandFileRoot::Session, "layout.json", &cached)
             .await
             .expect("scroll must re-resolve at the new cut");
     } else {
         // The same shared entry point used by PageUp/wheel in GraphCoder.
-        crate::client::scroll_tui(&mut input, [5, -2], 100)
-            .await
-            .expect("scroll must re-resolve at the new cut");
+        crate::client::scroll_tui(&mut input, [5, -2], 100, |from, rows| {
+            Some(scroll_anchor(
+                from.unwrap()
+                    .position
+                    .line
+                    .saturating_add_signed(rows.saturating_neg()),
+            ))
+        })
+        .await
+        .expect("scroll must re-resolve at the new cut");
     }
     let actual = input
         .state(CommandFileRoot::Session, "layout.json")
         .unwrap()
         .unwrap();
     assert_eq!(actual["peer"], "retained");
-    assert_eq!(actual["transcript_back"], if modal { 7 } else { 10 });
+    assert_eq!(
+        actual["transcript_top"],
+        json!(scroll_anchor(if modal { 7 } else { 10 }))
+    );
     if modal {
         assert_eq!(actual["view_back"], 23);
     }
@@ -179,4 +203,15 @@ async fn scrolling_re_resolves_the_focused_layout_after_a_cut_change() {
 #[should_panic(expected = "scroll must re-resolve at the new cut")]
 async fn negative_control_cached_scroll_fails_on_an_advanced_cut() {
     scroll_cut::<true>(false, false).await;
+}
+
+fn scroll_anchor(line: usize) -> crate::tui::TranscriptAnchor {
+    crate::tui::TranscriptAnchor {
+        origin: Some(crate::tui::TranscriptOrigin {
+            file: [41; 32],
+            line: 0,
+        }),
+        position: crate::tui::RowPosition { line, row: 0 },
+        ..Default::default()
+    }
 }

@@ -33,7 +33,7 @@ async fn publication_cut(cut: usize, after: bool) -> Result<()> {
     let local = LocalHarness::open(config()?).await?;
     let target_operation = OperationId::new();
     local
-        .retain_settings(target_operation, &json!({"model":"selected-summary"}))
+        .retain_settings(target_operation, &json!({"model":"selected-summary"}))?
         .await?;
     let target = admitted(local.submit(target_operation, "original prompt").await?);
     let operation = OperationId::new();
@@ -241,7 +241,7 @@ async fn checkpoints_reject_stale_replay_pin_branches_and_continue_completed_tas
     local.compact(a, target, "retain A").await?;
     let (selected_a, checkpoint_a) = local.selected_checkpoint(target).await?.unwrap();
     assert!(
-        matches!(local.submit_to(target_operation, Some(target), "original prompt").await,
+        matches!(local.submit_to(target_operation, Some(target), "original prompt")?.await,
         Err(Error::Conflict(message)) if message == "task admission belongs to another conversation")
     );
     // Admission through the production prompt path creates a retained root
@@ -272,7 +272,7 @@ async fn checkpoints_reject_stale_replay_pin_branches_and_continue_completed_tas
             .is_none()
     );
     assert!(
-        matches!(local.submit_to(branch_operation, Some(branch), "changed parent").await,
+        matches!(local.submit_to(branch_operation, Some(branch), "changed parent")?.await,
         Err(Error::Conflict(message)) if message == "continuation belongs to another conversation")
     );
     let mut chunk = FileValue::new(

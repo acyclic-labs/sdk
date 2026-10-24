@@ -37,6 +37,7 @@ fn put(views: &mut ClientViews, file: ToolFile, bytes: Vec<u8>) {
 
 fn result_file(bytes: Vec<u8>) -> HeadFile {
     HeadFile {
+        segment_sequences: Vec::new(),
         key: FileKey::parse(".tasks/task/turns/0/tools/call/result.json").unwrap(),
         length: bytes.len() as u64,
         segments: vec![bytes.into()],

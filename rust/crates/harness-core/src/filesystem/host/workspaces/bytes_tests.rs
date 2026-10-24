@@ -214,3 +214,241 @@ async fn publication_case(payload: &[u8], prefix: usize, suffix: usize) -> Resul
     }
     Ok(())
 }
+
+fn retained_operation_bytes<Args, T>(_: impl FnOnce(Args) -> T) -> usize {
+    std::mem::size_of::<T>()
+}
+
+#[test]
+fn publication_boundaries_retain_only_owned_polling_handles() {
+    type Transaction = acyclic_fs::Transaction<MemoryAuthorityBackend, MemoryObjectBackend>;
+    let staging = retained_operation_bytes(
+        |(transaction, cancellation): (
+            &'static mut Transaction,
+            &'static acyclic_fs::CancellationToken,
+        )| {
+            Host::stage_unmeasured(
+                transaction,
+                &[],
+                false,
+                FilePublication::Replace(None),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                cancellation,
+            )
+        },
+    );
+    let publication = retained_operation_bytes(
+        |(host, workspace, key): (
+            &'static Host,
+            &'static WorkspaceRef,
+            &'static IdempotencyKey,
+        )| {
+            host.apply_generation_unmeasured(
+                workspace,
+                None,
+                &[],
+                key,
+                false,
+                FilePublication::Replace(None),
+            )
+        },
+    );
+    let content = retained_operation_bytes(
+        |(host, volume, grant, key): (
+            &'static Host,
+            &'static VolumeRef,
+            &'static ContentGrant,
+            &'static IdempotencyKey,
+        )| {
+            let input: &'static [u8] = b"";
+            host.put_content_impl(
+                volume,
+                grant,
+                "content",
+                input,
+                "text/plain",
+                "content",
+                0,
+                key,
+                None,
+                None,
+                None,
+                None,
+            )
+        },
+    );
+    eprintln!(
+        "publication retained bytes: staging={staging} publication={publication} content={content}"
+    );
+    assert!(
+        [staging, publication, content]
+            .into_iter()
+            .all(|bytes| bytes <= 512),
+        "publication embeds a concrete child operation in its caller"
+    );
+}
+
+#[test]
+fn workflow_commit_retains_only_its_owned_polling_handle() {
+    type Journal = crate::filesystem::FilesystemWorkflowJournal<
+        acyclic_stream::MemoryStream,
+        MemoryAuthorityBackend,
+        MemoryObjectBackend,
+    >;
+    let bytes = retained_operation_bytes(
+        |(journal, record, key): (
+            &'static Journal,
+            &'static crate::workflow::WorkflowRecord,
+            IdempotencyKey,
+        )| journal.commit_borrowed_with_io(0, key, record, None),
+    );
+    eprintln!("workflow commit retained bytes={bytes}");
+    assert!(
+        bytes <= 512,
+        "workflow embeds a concrete child operation in its caller"
+    );
+}
+
+#[test]
+fn transaction_operations_retain_only_owned_polling_handles() {
+    type Transaction = acyclic_fs::Transaction<MemoryAuthorityBackend, MemoryObjectBackend>;
+    type Input = (
+        &'static mut Transaction,
+        &'static acyclic_fs::CancellationToken,
+    );
+    let directory = retained_operation_bytes(|(transaction, cancellation): Input| {
+        unmeasured_workspace_operation(|| {
+            transaction.create_dir_all("/dir", acyclic_fs::WorkBudget::UNBOUNDED, cancellation)
+        })
+    });
+    let write = retained_operation_bytes(|(transaction, cancellation): Input| {
+        unmeasured_workspace_operation(|| {
+            transaction.write(
+                "/file",
+                acyclic_stream::OwnedBytes::new(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                cancellation,
+            )
+        })
+    });
+    let create = retained_operation_bytes(|(transaction, cancellation): Input| {
+        unmeasured_workspace_operation(|| {
+            transaction.create_file(
+                "/file",
+                acyclic_stream::OwnedBytes::new(),
+                acyclic_fs::kernel::FileMetadata::default(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                cancellation,
+            )
+        })
+    });
+    let remove = retained_operation_bytes(|(transaction, cancellation): Input| {
+        unmeasured_workspace_operation(|| {
+            transaction.remove("/file", acyclic_fs::WorkBudget::UNBOUNDED, cancellation)
+        })
+    });
+    #[cfg(not(target_arch = "wasm32"))]
+    let batch = retained_operation_bytes(|(transaction, cancellation): Input| {
+        unmeasured_workspace_operation(|| {
+            transaction.write_batch(&[], &[], acyclic_fs::WorkBudget::UNBOUNDED, cancellation)
+        })
+    });
+    #[cfg(not(target_arch = "wasm32"))]
+    let sizes = [directory, write, create, remove, batch];
+    #[cfg(target_arch = "wasm32")]
+    let sizes = [directory, write, create, remove];
+    eprintln!("transaction retained bytes: {sizes:?}");
+    assert!(
+        sizes.into_iter().all(|bytes| bytes <= 512),
+        "transaction staging embeds concrete SDK operations in its poll frame"
+    );
+}
+
+#[test]
+fn publication_children_retain_only_owned_polling_handles() {
+    type Workspace = acyclic_fs::Workspace<MemoryAuthorityBackend, MemoryObjectBackend>;
+    type Generation = acyclic_fs::Generation<MemoryAuthorityBackend, MemoryObjectBackend>;
+    type Transaction = acyclic_fs::Transaction<MemoryAuthorityBackend, MemoryObjectBackend>;
+    let authorization = retained_operation_bytes(
+        |(host, workspace, grant): (&'static Host, &'static Workspace, &'static ContentGrant)| {
+            host.authorize_content_write(workspace, grant, "file", false, None, None)
+        },
+    );
+    let retained_read = retained_operation_bytes(
+        |(host, generation, file): (&'static Host, &'static Generation, &'static FileRef)| {
+            host.read_retained_file(generation, file, 64, None)
+        },
+    );
+    let begin = retained_operation_bytes(
+        |(workspace, key, cancellation): (
+            &'static Workspace,
+            FilesystemKey,
+            &'static acyclic_fs::CancellationToken,
+        )| {
+            unmeasured_workspace_operation(|| {
+                workspace.begin_transaction(key, acyclic_fs::WorkBudget::UNBOUNDED, cancellation)
+            })
+        },
+    );
+    let begin_at = retained_operation_bytes(
+        |(workspace, generation, key, cancellation): (
+            &'static Workspace,
+            &'static Generation,
+            FilesystemKey,
+            &'static acyclic_fs::CancellationToken,
+        )| {
+            unmeasured_workspace_operation(|| {
+                workspace.begin_transaction_at(
+                    generation,
+                    key,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    cancellation,
+                )
+            })
+        },
+    );
+    let rebase = retained_operation_bytes(
+        |(transaction, cancellation): (
+            &'static mut Transaction,
+            &'static acyclic_fs::CancellationToken,
+        )| {
+            unmeasured_workspace_operation(|| {
+                transaction.rebase(1, acyclic_fs::WorkBudget::UNBOUNDED, cancellation)
+            })
+        },
+    );
+    let commit = retained_operation_bytes(
+        |(transaction, cancellation): (
+            &'static mut Transaction,
+            &'static acyclic_fs::CancellationToken,
+        )| {
+            unmeasured_workspace_operation(|| {
+                transaction.commit(
+                    None,
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    cancellation,
+                    |_| async {
+                        Ok::<_, acyclic_fs::OperationFailure<Error>>(acyclic_fs::OperationReceipt {
+                            value: (),
+                            work: acyclic_fs::WorkCounters::default(),
+                        })
+                    },
+                )
+            })
+        },
+    );
+    let sizes = [
+        authorization,
+        retained_read,
+        begin,
+        begin_at,
+        rebase,
+        commit,
+    ];
+    eprintln!("publication child retained bytes: {sizes:?}");
+    assert!(
+        sizes.into_iter().all(|bytes| bytes <= 512),
+        "publication embeds concrete validation or transaction lifecycle futures"
+    );
+}

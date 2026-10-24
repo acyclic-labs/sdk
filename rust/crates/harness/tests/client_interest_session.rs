@@ -52,8 +52,8 @@ async fn check_snapshot_follow(
         .unwrap();
     let mut agents = std::collections::BTreeMap::new();
     for id in 0..4 {
-        status::status(&provider, &format!("swarm/{id}"), false).await;
         status::member(&parent, &format!("{id}")).await;
+        status::status(&provider, &format!("swarm/{id}"), false).await;
         let volume = TaskVolume::open(provider.clone(), path(&format!("swarm/{id}/files")))
             .await
             .unwrap();

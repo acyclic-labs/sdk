@@ -94,36 +94,41 @@ impl LocalHarness {
         )
     }
 
-    async fn current_turn(&self) -> Result<(Option<Turn>, GenerationRef)> {
-        // A cancelled publisher's HEAD write is settled before HEAD is read.
-        wait_for_publication(&self.publication).await;
-        let generation = self
-            .files
-            .resolve(
-                &crate::filesystem::workspace_ref(
-                    self.journal.provider().clone(),
-                    &self.journal.storage_name(&mut None)?,
-                )?,
-                None,
-            )
-            .await?
-            .generation;
-        match self
-            .files
-            .read_private_path(
-                &self.journal,
-                &self.read_grant(&self.journal)?,
-                HEAD,
-                Some(&generation),
-                self.limits.file_bytes,
-                crate::conversation::ContentAccess::default(),
-            )
-            .await
-        {
-            Ok((_, bytes)) => Ok((Some(record::decode(&bytes).map_err(storage)?), generation)),
-            Err(Error::NotFound(_)) => Ok((None, generation)),
-            Err(error) => Err(error),
-        }
+    #[inline(never)]
+    fn current_turn<'a>(
+        &'a self,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, (Option<Turn>, GenerationRef)>> {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            // A cancelled publisher's HEAD write is settled before HEAD is read.
+            wait_for_publication(&self.publication).await;
+            let generation = self
+                .files
+                .resolve(
+                    &crate::filesystem::workspace_ref(
+                        self.journal.provider().clone(),
+                        &self.journal.storage_name(&mut None)?,
+                    )?,
+                    None,
+                )
+                .await?
+                .generation;
+            match self
+                .files
+                .read_private_path(
+                    &self.journal,
+                    &self.read_grant(&self.journal)?,
+                    HEAD,
+                    Some(&generation),
+                    self.limits.file_bytes,
+                    crate::conversation::ContentAccess::default(),
+                )
+                .await
+            {
+                Ok((_, bytes)) => Ok((Some(record::decode(&bytes).map_err(storage)?), generation)),
+                Err(Error::NotFound(_)) => Ok((None, generation)),
+                Err(error) => Err(error),
+            }
+        })
     }
 
     async fn head_is_terminal(&self, head: Option<&Turn>) -> Result<bool> {
@@ -163,34 +168,52 @@ impl LocalHarness {
         Ok(terminal)
     }
 
-    async fn admit_retained(
-        &self,
-        turn: &Turn,
-    ) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>> {
-        self.prepare_inheritance(crate::runtime::task_id_for_admission(turn.operation), None)
-            .await?;
-        let definition = self
-            .runtime
-            .harness()
-            .task::<serde_json::Value, crate::executor::TurnOutput>("acyclic.stock_turn@1")?;
-        self.runtime
-            .harness()
-            .admit(
-                turn.operation,
-                &definition,
-                serde_json::json!({"receive": turn.receive, "model": turn.model}),
-                None,
-            )
-            .await
+    #[inline(never)]
+    fn admit_retained<'a>(
+        &'a self,
+        turn: &'a Turn,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            Admission<RuntimeTask<crate::executor::TurnOutput>>,
+        >,
+    > {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            self.prepare_inheritance(crate::runtime::task_id_for_admission(turn.operation), None)
+                .await?;
+            let definition = self
+                .runtime
+                .harness()
+                .task::<serde_json::Value, crate::executor::TurnOutput>("acyclic.stock_turn@1")?;
+            self.runtime
+                .harness()
+                .admit(
+                    turn.operation,
+                    &definition,
+                    serde_json::json!({"receive": turn.receive, "model": turn.model}),
+                    None,
+                )
+                .await
+        })
     }
 
-    async fn publish_turn(
-        &self,
+    #[inline(never)]
+    fn publish_turn<'a>(
+        &'a self,
         turn: Turn,
         previous: Option<OperationId>,
-    ) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>> {
-        self.publish_turn_with(turn, previous, async |turn| self.admit_retained(turn).await)
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            Admission<RuntimeTask<crate::executor::TurnOutput>>,
+        >,
+    > {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            self.publish_turn_with(turn, previous, async |turn| {
+                self.admit_retained(turn)?.await
+            })
             .await
+        })
     }
 
     async fn publish_turn_with(
@@ -199,7 +222,7 @@ impl LocalHarness {
         previous: Option<OperationId>,
         admit: impl AsyncFnOnce(&Turn) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>>,
     ) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>> {
-        let (latest, generation) = self.current_turn().await?;
+        let (latest, generation) = self.current_turn()?.await?;
         if latest.as_ref().map(|turn| turn.operation) != previous {
             return Err(Error::Conflict("local admission head changed".into()));
         }
@@ -276,11 +299,11 @@ impl LocalHarness {
         task: TaskId,
     ) -> Result<RuntimeTask<crate::executor::TurnOutput>> {
         serialized(&self.admission, async || {
-            let (current, _) = self.current_turn().await?;
+            let (current, _) = self.current_turn()?.await?;
             let turn = current
                 .filter(|turn| crate::runtime::task_id_for_admission(turn.operation) == task)
                 .ok_or_else(|| Error::NotFound("current local request".into()))?;
-            let admission = self.admit_retained(&turn).await?;
+            let admission = self.admit_retained(&turn)?.await?;
             match admission {
                 Admission::Accepted(handle @ RuntimeTask::Durable { task_id, .. })
                     if task_id == task =>
@@ -298,72 +321,90 @@ impl LocalHarness {
         .await
     }
 
-    pub(super) async fn submit_turn(
-        &self,
+    #[inline(never)]
+    pub(super) fn submit_turn<'a>(
+        &'a self,
         operation: OperationId,
-        prompt: &str,
-    ) -> Result<(
-        Admission<RuntimeTask<crate::executor::TurnOutput>>,
-        Option<super::orphans::Driving<'_>>,
-    )> {
-        serialized(&self.admission, async || {
-            // Every accepted admission of this operation, retries included,
-            // hands this claim to its caller; refusal or cancellation drops it.
-            let claim = self.drivers.drive(operation);
-            let admission = self.admit_head(operation, prompt).await?;
-            let accepted = matches!(admission, Admission::Accepted(_));
-            Ok((admission, accepted.then_some(claim)))
+        prompt: &'a str,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            (
+                Admission<RuntimeTask<crate::executor::TurnOutput>>,
+                Option<super::orphans::Driving<'a>>,
+            ),
+        >,
+    > {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            serialized(&self.admission, async || {
+                // Every accepted admission of this operation, retries included,
+                // hands this claim to its caller; refusal or cancellation drops it.
+                let claim = self.drivers.drive(operation);
+                let admission = self.admit_head(operation, prompt)?.await?;
+                let accepted = matches!(admission, Admission::Accepted(_));
+                Ok((admission, accepted.then_some(claim)))
+            })
+            .await
         })
-        .await
     }
 
     // The caller holds the admission gate and a claim on `operation`.
-    async fn admit_head(
-        &self,
+    #[inline(never)]
+    fn admit_head<'a>(
+        &'a self,
         operation: OperationId,
-        prompt: &str,
-    ) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>> {
-        if let Some((task, _)) = self
-            .runtime
-            .harness()
-            .reconcile_admission(operation)
-            .await?
-        {
-            // Ordinary retries retain the same immutable request bytes too.
-            self.stage_turn(operation, prompt).await?;
-            let definition = self
+        prompt: &'a str,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            Admission<RuntimeTask<crate::executor::TurnOutput>>,
+        >,
+    > {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            if let Some((task, _)) = self
                 .runtime
                 .harness()
-                .task::<serde_json::Value, crate::executor::TurnOutput>("acyclic.stock_turn@1")?;
-            return Ok(Admission::Accepted(
-                self.runtime.harness().attach(task, &definition).await?,
-            ));
-        }
-        let (current, _) = self.current_turn().await?;
-        if let Some(turn) = &current
-            && turn.operation == operation
-        {
-            return self.admit_retained(turn).await;
-        }
-        let terminal = self.head_ready(current.as_ref(), true).await?;
-        if !can_admit(current.as_ref().map(|turn| turn.operation), None, terminal) {
-            return Ok(Admission::Rejected {
-                reason: "local agent already has an admitted turn".into(),
-            });
-        }
-        let (receive, model) = self.stage_turn(operation, prompt).await?;
-        self.publish_turn(
-            Turn {
-                operation,
-                root: operation,
-                automatic_turns: 0,
-                goal_revision: None,
-                receive,
-                model,
-            },
-            current.as_ref().map(|turn| turn.operation),
-        )
-        .await
+                .reconcile_admission(operation)
+                .await?
+            {
+                // Ordinary retries retain the same immutable request bytes too.
+                self.stage_turn(operation, prompt)?.await?;
+                let definition = self
+                    .runtime
+                    .harness()
+                    .task::<serde_json::Value, crate::executor::TurnOutput>(
+                        "acyclic.stock_turn@1",
+                    )?;
+                return Ok(Admission::Accepted(
+                    self.runtime.harness().attach(task, &definition).await?,
+                ));
+            }
+            let (current, _) = self.current_turn()?.await?;
+            if let Some(turn) = &current
+                && turn.operation == operation
+            {
+                return self.admit_retained(turn)?.await;
+            }
+            let terminal = self.head_ready(current.as_ref(), true).await?;
+            if !can_admit(current.as_ref().map(|turn| turn.operation), None, terminal) {
+                return Ok(Admission::Rejected {
+                    reason: "local agent already has an admitted turn".into(),
+                });
+            }
+            let (receive, model) = self.stage_turn(operation, prompt)?.await?;
+            self.publish_turn(
+                Turn {
+                    operation,
+                    root: operation,
+                    automatic_turns: 0,
+                    goal_revision: None,
+                    receive,
+                    model,
+                },
+                current.as_ref().map(|turn| turn.operation),
+            )?
+            .await
+        })
     }
 
     /// Publishes and admits the goal turn that follows a settled one, handing
@@ -388,7 +429,7 @@ impl LocalHarness {
 
     // The caller holds the admission gate.
     async fn next_goal_turn(&self, task: TaskId, root: OperationId) -> Result<Option<TaskId>> {
-        let (current, generation) = self.current_turn().await?;
+        let (current, generation) = self.current_turn()?.await?;
         let Some(current) = current else {
             return Ok(None);
         };
@@ -397,7 +438,7 @@ impl LocalHarness {
             // Replaying an older settle follows its already-published ordinary
             // request instead of consuming another continuation allowance.
             if current.root == root {
-                return admitted_task(self.admit_retained(&current).await?).map(Some);
+                return admitted_task(self.admit_retained(&current)?.await?).map(Some);
             }
             return Ok(None);
         }
@@ -430,7 +471,7 @@ impl LocalHarness {
                         model: inputs.1,
                     },
                     Some(current.operation),
-                )
+                )?
                 .await?,
             )
             .map(Some);
@@ -464,7 +505,7 @@ impl LocalHarness {
                     return Err(Error::GoalBlocked(unreachable));
                 };
                 let prompt = format!("Continue the active goal in {path}.\n\n{}", goal.markdown);
-                let (receive, model) = self.stage_turn(operation, &prompt).await?;
+                let (receive, model) = self.stage_turn(operation, &prompt)?.await?;
                 let admission = self
                     .publish_turn(
                         Turn {
@@ -476,7 +517,7 @@ impl LocalHarness {
                             model,
                         },
                         Some(current.operation),
-                    )
+                    )?
                     .await?;
                 admitted_task(admission).map(Some)
             }
@@ -603,7 +644,7 @@ impl LocalHarness {
     /// Closes quiescent native mounts before releasing their provider handles.
     /// An admitted unfinished turn must first settle or be recovered by its owner.
     pub async fn close(self) -> Result<()> {
-        let (head, _) = self.current_turn().await?;
+        let (head, _) = self.current_turn()?.await?;
         if !self.head_is_terminal(head.as_ref()).await? {
             return Err(Error::Conflict(
                 "cannot close an unfinished local turn".into(),
@@ -618,7 +659,7 @@ impl LocalHarness {
     /// unsettled one, and a test cannot use either to hide the other.
     #[cfg(test)]
     pub(crate) async fn disconnect_unfinished(self) -> Result<()> {
-        let (head, _) = self.current_turn().await?;
+        let (head, _) = self.current_turn()?.await?;
         if self.head_is_terminal(head.as_ref()).await? {
             return Err(Error::Conflict(
                 "a settled local turn must close, not disconnect".into(),
@@ -652,4 +693,64 @@ fn require_continuable_goal(goal: &GoalView) -> Result<()> {
         return Err(Error::GoalBlocked(GoalBlockedReason::Declared));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod polling_storage_tests {
+    use super::*;
+    fn retained<Args, T>(_: impl FnOnce(Args) -> T) -> usize {
+        std::mem::size_of::<T>()
+    }
+    #[test]
+    fn admission_boundaries_retain_only_owned_polling_handles() {
+        let measured = [
+            (
+                "submit_turn",
+                retained(
+                    |(local, text, _turn): (&'static LocalHarness, &'static str, &'static Turn)| {
+                        local.submit_turn(OperationId::from_bytes([1; 16]), text)
+                    },
+                ),
+            ),
+            (
+                "admit_head",
+                retained(
+                    |(local, text, _turn): (&'static LocalHarness, &'static str, &'static Turn)| {
+                        local.admit_head(OperationId::from_bytes([1; 16]), text)
+                    },
+                ),
+            ),
+            (
+                "current_turn",
+                retained(
+                    |(local, _text, _turn): (
+                        &'static LocalHarness,
+                        &'static str,
+                        &'static Turn,
+                    )| { local.current_turn() },
+                ),
+            ),
+            (
+                "admit_retained",
+                retained(
+                    |(local, _text, turn): (&'static LocalHarness, &'static str, &'static Turn)| {
+                        local.admit_retained(turn)
+                    },
+                ),
+            ),
+            (
+                "publish_turn",
+                retained(
+                    |(local, _text, turn): (&'static LocalHarness, &'static str, &'static Turn)| {
+                        local.publish_turn(turn.clone(), None)
+                    },
+                ),
+            ),
+        ];
+        eprintln!("admission retained bytes: {measured:?}");
+        assert!(
+            measured.into_iter().all(|(_, bytes)| bytes <= 512),
+            "admission embeds concrete child futures"
+        );
+    }
 }

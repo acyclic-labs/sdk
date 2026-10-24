@@ -115,3 +115,84 @@ proptest! {
         }
     }
 }
+
+fn evict_outcome(
+    retained: &str,
+    rebuild: bool,
+) -> (usize, acyclic_test_support::AllocationInfo, u128) {
+    let volume = futures::executor::block_on(TaskVolume::open(
+        Arc::new(MemoryStream::default()),
+        StreamPath::new("archive-prefix").unwrap(),
+    ))
+    .unwrap();
+    let snapshot = futures::executor::block_on(volume.snapshot(&Query::Root, 16)).unwrap();
+    let mut files = FileQueryView::from_snapshot(Query::Root, snapshot, 16, 1_000_000).unwrap();
+    let session = Component::new("s").unwrap();
+    let owner = OutputOwner::Session(session);
+    let mut archive = Archive::default();
+    let mut cost = acyclic_test_support::AllocationInfo::default();
+    let mut elapsed = 0;
+    for (index, text) in ["old", retained, "new"].iter().enumerate() {
+        let mut cursor = files.cursor().clone();
+        cursor.position += 1;
+        cursor.accepted = cursor.position;
+        cursor.durable = cursor.position;
+        files
+            .apply(crate::task_volume::Change {
+                cursor,
+                file: Some(FileValue::new(
+                    FileKey::parse(&format!(".sessions/s/executions/{index}/result.json")).unwrap(),
+                    serde_json::to_vec(
+                        &serde_json::json!({"sequence":index + 1,"ok":{"text":text}}),
+                    )
+                    .unwrap(),
+                )),
+                files: vec![],
+                removed: if index == 2 {
+                    vec![FileKey::parse(".sessions/s/executions/0/result.json").unwrap()]
+                } else {
+                    vec![]
+                },
+            })
+            .unwrap();
+        if rebuild {
+            archive = Archive::default();
+        }
+        archive.stream.work = 0;
+        let start = std::time::Instant::now();
+        cost = acyclic_test_support::measure(|| {
+            archive.update(Some((&files, owner.clone())));
+        });
+        elapsed = start.elapsed().as_micros();
+        let mut fresh = Archive::default();
+        fresh.update(Some((&files, owner.clone())));
+        assert_eq!(archive.rows(), fresh.rows());
+    }
+    (archive.stream.work, cost, elapsed)
+}
+#[test]
+fn archived_outcome_eviction_preserves_retained_markdown_without_reparse() {
+    for body in [
+        "retained ".repeat(100),
+        "```rust\nlet x=1;".into(),
+        "[ref]: /x\n\n[ref]".into(),
+        "".into(),
+    ] {
+        assert_eq!(evict_outcome(&body, false).0, 3);
+    }
+    assert!(evict_outcome(&"retained ".repeat(100), true).0 > 3);
+}
+#[test]
+#[ignore = "manual archived prefix measurement"]
+fn archive_prefix_measurement() {
+    for bytes in [1_000, 10_000, 50_000] {
+        let (parsed, cost, elapsed) = evict_outcome(&"x".repeat(bytes), false);
+        assert_eq!(parsed, 3);
+        eprintln!(
+            "CLIENT_ARCHIVE_PREFIX os={} retained_bytes={bytes} parsed_bytes={parsed} elapsed_us={elapsed} allocations={} allocated_bytes={}",
+            std::env::consts::OS,
+            cost.count_total,
+            cost.bytes_total
+        );
+    }
+}

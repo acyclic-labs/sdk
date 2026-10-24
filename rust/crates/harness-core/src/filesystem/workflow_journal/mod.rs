@@ -418,7 +418,7 @@ where
         }
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            self.commit_borrowed_with_io(expected_revision, idempotency_key, record, Some(&io))
+            self.commit_borrowed_with_io(expected_revision, idempotency_key, record, Some(&io))?
                 .await?;
             let custody = io.into_native_custody(0)?;
             Ok((record, custody))

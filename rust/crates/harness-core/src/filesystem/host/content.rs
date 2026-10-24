@@ -38,7 +38,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             expected_generation,
             ceiling,
             io,
-        )
+        )?
         .await
     }
 
@@ -106,7 +106,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             None,
             None,
             io,
-        )
+        )?
         .await
     }
 

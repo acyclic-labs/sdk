@@ -26,8 +26,8 @@ fn check(commands: &[u8], broken: bool) -> TestCaseResult {
         acyclic_stream::session::testing::authority(),
         Arc::new(Unpolled),
     );
-    let mut follows = Follows::new(session, Box::pin(futures::stream::pending()));
-    let root = StreamPath::new("swarm").unwrap();
+    let root = StreamPath::new("swarm").map_err(|error| TestCaseError::fail(error.to_string()))?;
+    let mut follows = Follows::new(session, &root, Box::pin(futures::stream::pending())).unwrap();
     let mut views = ClientViews::new(
         root.clone(),
         ClientViewLimits {
@@ -169,4 +169,68 @@ fn missing_retirement_mutant_is_rejected_and_shrinks() {
         Err(TestError::Fail(_, _))
     ));
     assert!(check(&[0, 0, 1, 0], true).is_err());
+}
+
+fn shared_sources(agents: usize, per_agent: bool) -> usize {
+    let session = Client::in_process(
+        Arc::new(acyclic_stream::MemoryStream::default()),
+        acyclic_stream::session::testing::authority(),
+        Arc::new(Unpolled),
+    );
+    let root = StreamPath::new("swarm").unwrap();
+    let demand = ClientInterests::from_layout(root.clone(), [], [], 0).unwrap();
+    let mut follows = Follows::new(session, &root, Box::pin(futures::stream::pending())).unwrap();
+    follows.status();
+    follows.status(); // Discovery replay must not register twice.
+    for id in 0..agents {
+        let agent = path(id);
+        follows.discover(&demand, agent.clone(), agents).unwrap();
+        if per_agent {
+            follows.source(Some(agent), true, Box::pin(futures::stream::pending()));
+        }
+    }
+    follows.sources.len()
+}
+
+#[test]
+fn one_shared_status_source_is_independent_of_population() {
+    for agents in [1, 100, 1_000, 10_000] {
+        assert_eq!(shared_sources(agents, false), 2);
+    }
+    // Mutation control: the previous per-agent source population violates the
+    // identical bound, even though it still has exactly one status per agent.
+    assert_ne!(shared_sources(100, true), 2);
+}
+
+#[test]
+#[ignore = "manual shared status admission measurement"]
+fn shared_status_measurement() {
+    for n in [100, 1_000, 10_000] {
+        let session = Client::in_process(
+            Arc::new(acyclic_stream::MemoryStream::default()),
+            acyclic_stream::session::testing::authority(),
+            Arc::new(Unpolled),
+        );
+        let root = StreamPath::new("swarm").unwrap();
+        let demand = ClientInterests::from_layout(root.clone(), [], [], 0).unwrap();
+        let mut follows =
+            Follows::new(session, &root, Box::pin(futures::stream::pending())).unwrap();
+        let agents: Vec<_> = (0..n).map(path).collect();
+        let start = std::time::Instant::now();
+        let cost = acyclic_test_support::measure(|| {
+            follows.status();
+            for agent in agents {
+                follows.discover(&demand, agent, n).unwrap();
+            }
+        });
+        eprintln!(
+            "CLIENT_SWARM os={} n={n} sources={} elapsed_us={} allocations={} allocated_bytes={}",
+            std::env::consts::OS,
+            follows.sources.len(),
+            start.elapsed().as_micros(),
+            cost.count_total,
+            cost.bytes_total
+        );
+        assert_eq!(follows.sources.len(), 2);
+    }
 }

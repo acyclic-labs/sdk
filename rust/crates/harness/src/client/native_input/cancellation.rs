@@ -11,6 +11,7 @@ use crate::{
     wire,
 };
 use acyclic_stream::*;
+use acyclic_test_support::boxed_future;
 use futures::{
     FutureExt,
     future::{BoxFuture, poll_fn},
@@ -94,7 +95,7 @@ fn model<const RETAIN: bool>(return_to_initial: bool) {
     // Lock order: gate only, released before provider I/O or waking the consumer.
     shuttle::check_dfs(
         move || {
-            shuttle::future::block_on(async {
+            shuttle::future::block_on(boxed_future(|| async {
                 // Only the consumer arms and retires this local provider hook.
                 // Concurrent release/wakeup state lives solely in the modeled
                 // gate below; no schedule can change this flag from elsewhere.
@@ -182,12 +183,15 @@ fn model<const RETAIN: bool>(return_to_initial: bool) {
                     CompletionFiles::observe(volume.as_ref(), &mut prompt, None, 128)
                         .await
                         .unwrap();
-                let mut observed = volume.observe(Query::Inputs, None, 128).await.unwrap();
-                client
-                    .views_mut()
-                    .query_snapshot(Query::Inputs, observed.snapshot.take().unwrap(), 128, 65536)
-                    .unwrap();
-                let mut documents = observed.changes;
+                let documents = crate::client::DocumentFiles::observe(
+                    volume.as_ref(),
+                    client.views_mut(),
+                    &[(Query::Inputs, 128)],
+                    65536,
+                )
+                .await
+                .unwrap();
+                let mut documents = documents;
                 let layout = FileKey::Ui {
                     directory: Component::new(format!("session-{session}")).unwrap(),
                     name: Component::new("layout.json").unwrap(),
@@ -281,7 +285,7 @@ fn model<const RETAIN: bool>(return_to_initial: bool) {
                     .is_none()
                 );
                 producer.join().unwrap();
-            });
+            }));
         },
         None,
     );

@@ -244,7 +244,7 @@ async fn oversized_current_hooks(explicit_override: bool) -> Result<()> {
     let harness = LocalHarness::open(config()?).await?;
     let operation = OperationId::new();
     let task = if explicit_override {
-        harness.stage_turn(operation, "retained prompt").await?;
+        harness.stage_turn(operation, "retained prompt")?.await?;
         None
     } else {
         Some(super::context::admitted(

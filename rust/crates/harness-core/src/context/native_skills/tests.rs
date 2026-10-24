@@ -41,13 +41,13 @@ async fn retained_records_share_one_sync_on_the_native_io_service() -> Result<()
         vec![root.path().join("skills")],
     )?;
     let skills = sources
-        .user_catalog(&mut crate::context::DiscoveryWork::default())
+        .user_catalog(&mut crate::context::DiscoveryWork::default())?
         .await?;
     assert_eq!(skills.len(), 2);
     let mut exhausted = DiscoveryWork::default();
     exhausted.entries = exhausted.limits.entries;
     assert!(matches!(
-        sources.user_catalog(&mut exhausted).await,
+        sources.user_catalog(&mut exhausted)?.await,
         Err(Error::Invalid(_))
     ));
     let mut narrow = DiscoveryWork {
@@ -58,7 +58,7 @@ async fn retained_records_share_one_sync_on_the_native_io_service() -> Result<()
         ..Default::default()
     };
     assert!(matches!(
-        sources.user_catalog(&mut narrow).await,
+        sources.user_catalog(&mut narrow)?.await,
         Err(Error::Invalid(_))
     ));
 

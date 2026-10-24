@@ -82,7 +82,7 @@ async fn fixture() -> Result<Fixture> {
         vec![home.path().into()],
     )?;
     let skills = sources
-        .user_catalog(&mut crate::context::DiscoveryWork::default())
+        .user_catalog(&mut crate::context::DiscoveryWork::default())?
         .await?;
     assert_eq!(skills.len(), 2);
     host = host.with_native_skills(sources.clone())?;

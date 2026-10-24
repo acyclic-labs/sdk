@@ -120,7 +120,7 @@ impl CheckoutPublisher {
                 if let Some(native) = native {
                     native.sync().await?;
                 } else if mount.view.source.is_none() {
-                    self.tools.capture((&self.tools.workspace, view), watcher, operation, 0, PublicationPermit::Unrestricted, None).await?;
+                    self.tools.capture((&self.tools.workspace, view), watcher, operation, 0, PublicationPermit::Unrestricted, None)?.await?;
                 }
             }
             self.tools.retain_diff_base(workspace, false).await?;
@@ -187,7 +187,7 @@ impl CheckoutPublisher {
             return self.observed(view, operation, file).await;
         }
         self.tools
-            .finish_owed_write(selected, watcher, PublicationPermit::Unrestricted)
+            .finish_owed_write(selected, watcher, PublicationPermit::Unrestricted)?
             .await?;
         self.observed(view, operation, file).await
     }

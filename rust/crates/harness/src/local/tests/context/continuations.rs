@@ -92,7 +92,7 @@ async fn case(bits: u8, bootstrap: &super::super::bootstrap::Bootstrap) -> Resul
     let operation = OperationId::new();
     let task = admitted(
         harness
-            .submit_to(operation, Some(parent), prompt(requested.0, requested.1))
+            .submit_to(operation, Some(parent), prompt(requested.0, requested.1))?
             .await?,
     )?;
     harness.resume(task).await?;
@@ -107,7 +107,7 @@ async fn case(bits: u8, bootstrap: &super::super::bootstrap::Bootstrap) -> Resul
     assert_eq!(
         admitted(
             harness
-                .submit_to(operation, Some(parent), prompt(!expected.0, !expected.1))
+                .submit_to(operation, Some(parent), prompt(!expected.0, !expected.1))?
                 .await?
         )?,
         task
@@ -125,7 +125,7 @@ async fn case(bits: u8, bootstrap: &super::super::bootstrap::Bootstrap) -> Resul
             prompt(requested.0, requested.1),
             old_manifest,
             harness.input_publisher()?.as_ref(),
-        )
+        )?
         .await?;
     harness.admit_turn(broken, None, receive, model).await?;
     harness.resume(broken_task).await?;
@@ -162,7 +162,7 @@ async fn child_guidance_ignores_compacted_summary_markers() -> Result<()> {
         .await?;
     let child = admitted(
         harness
-            .submit_to(OperationId::new(), Some(parent), "hello")
+            .submit_to(OperationId::new(), Some(parent), "hello")?
             .await?,
     )?;
     harness.resume(child).await?;
@@ -179,7 +179,7 @@ async fn child_guidance_ignores_compacted_summary_markers() -> Result<()> {
     let broken_task = crate::runtime::task_id_for_admission(broken);
     harness.prepare_inheritance(broken_task, None).await?;
     let prompt = harness.prompt_context(Some(child), "hello").await?;
-    let (receive, model) = harness.stage_turn(broken, &prompt).await?;
+    let (receive, model) = harness.stage_turn(broken, &prompt)?.await?;
     harness.admit_turn(broken, None, receive, model).await?;
     harness.resume(broken_task).await?;
     assert_eq!(guidance(&provider.request(2).unwrap()), (true, true));

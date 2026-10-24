@@ -1,22 +1,24 @@
 use acyclic_stream::{StreamProvider as _, wire};
-use prost::Message as _;
+
+fn publication(
+    agent: &str,
+    attention: bool,
+) -> Result<acyclic_stream::AppendRequest, Box<dyn std::error::Error>> {
+    let (root, _) = agent.rsplit_once('/').ok_or("status agent has no parent")?;
+    Ok(acyclic_harness::client::status_publication(
+        &acyclic_stream::StreamPath::new(root)?,
+        &acyclic_stream::StreamPath::new(agent)?,
+        wire::SessionLatestValue {
+            key: b"status".to_vec().into(),
+            value: b"running".to_vec().into(),
+            attention,
+        },
+    )?)
+}
 
 pub async fn status(provider: &acyclic_stream::MemoryStream, agent: &str, attention: bool) {
     provider
-        .append(acyclic_stream::AppendRequest {
-            path: acyclic_stream::StreamPath::new(format!("{agent}/status")).unwrap(),
-            records: vec![
-                wire::SessionLatestValue {
-                    key: b"status".to_vec().into(),
-                    value: b"running".to_vec().into(),
-                    attention,
-                }
-                .encode_to_vec()
-                .into(),
-            ],
-            if_tail: None,
-            idempotency_key: None,
-        })
+        .append(publication(agent, attention).unwrap())
         .await
         .unwrap();
 }

@@ -95,12 +95,13 @@ fn frame(selector: u8, data: &[u8]) {
             };
             let head = |segments: Vec<OwnedBytes>| HeadSnapshot {
                 files: vec![HeadFile {
+                    segment_sequences: Vec::new(),
                     key: key.clone(),
                     channel: None,
                     publication: None,
                     segments,
                     length: data.len() as u64,
-                    through_sequence: Some(data.len() as u64),
+                    through_sequence: None,
                 }],
                 generation,
                 cursor: cursor.clone(),

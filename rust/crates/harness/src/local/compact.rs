@@ -68,7 +68,7 @@ impl LocalHarness {
 
         let manifest = captured.boundary.manifest;
         let mut context = captured.context;
-        self.retain_settings(operation, &json!({"model":captured.boundary.model}))
+        self.retain_settings(operation, &json!({"model":captured.boundary.model}))?
             .await?;
         let model = self
             .command_model(Some(crate::runtime::task_id_for_admission(operation)))
@@ -129,7 +129,8 @@ impl LocalHarness {
             )?
             .await?
             .0;
-        self.finish_turn_inputs(operation, payload, publisher).await
+        self.finish_turn_inputs(operation, payload, publisher)?
+            .await
     }
 }
 

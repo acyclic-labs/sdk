@@ -21,7 +21,7 @@ async fn open(directory: &Path) -> Result<LocalHarness> {
 }
 async fn child(local: &LocalHarness, parent: Option<TaskId>) -> Result<TaskId> {
     match local
-        .submit_to(OperationId::new(), parent, "continue")
+        .submit_to(OperationId::new(), parent, "continue")?
         .await?
     {
         Admission::Accepted(RuntimeTask::Durable { task_id, .. }) => Ok(task_id),
@@ -177,7 +177,7 @@ async fn inherited_bindings_are_pinned_before_admission_and_survive_reopening() 
     let later = child(&local, Some(root)).await?;
     drop(local);
     let local = open(directory.path()).await?;
-    let admitted = local.submit_to(operation, Some(root), "continue").await?;
+    let admitted = local.submit_to(operation, Some(root), "continue")?.await?;
     assert!(
         matches!(admitted, Admission::Accepted(RuntimeTask::Durable {task_id, ..}) if task_id == pending)
     );
@@ -411,7 +411,7 @@ async fn retried_operation_cannot_change_its_prepared_parent_or_bypass_subtree_p
         )
         .await?;
     assert!(matches!(
-        local.submit_to(operation, Some(b), "continue").await,
+        local.submit_to(operation, Some(b), "continue")?.await,
         Err(Error::Conflict(_))
     ));
     assert!(matches!(
@@ -423,7 +423,7 @@ async fn retried_operation_cannot_change_its_prepared_parent_or_bypass_subtree_p
         Err(Error::NotFound(_))
     ));
     assert!(
-        matches!(local.submit_to(operation, Some(a), "continue").await?,
+        matches!(local.submit_to(operation, Some(a), "continue")?.await?,
         Admission::Accepted(RuntimeTask::Durable { task_id, .. }) if task_id == task)
     );
     assert_eq!(
@@ -439,7 +439,7 @@ async fn retried_operation_cannot_change_its_prepared_parent_or_bypass_subtree_p
     assert!(!local.command_has_ancestor(Some(task), b).await?);
     // The admitted operation remains bound to A on a later retry too.
     assert!(matches!(
-        local.submit_to(operation, Some(b), "continue").await,
+        local.submit_to(operation, Some(b), "continue")?.await,
         Err(Error::Conflict(_))
     ));
     Ok(())
@@ -568,7 +568,7 @@ proptest! {
             .build().unwrap().block_on(async {
                 let directory = tempfile::tempdir().map_err(storage)?;
                 let local = open(directory.path()).await?;
-                let (receive, model) = local.stage_turn(OperationId::new(), "input").await?;
+                let (receive, model) = local.stage_turn(OperationId::new(), "input")?.await?;
                 let publisher = local.input_publisher()?;
                 let reference = crate::filesystem::workspace_ref(
                     local.journal.provider().clone(), &local.journal.storage_name(&mut None)?,
@@ -577,7 +577,7 @@ proptest! {
                 let mut identities = HashSet::new();
                 for _ in 0..turns {
                     let (next, _) = local.finish_turn_inputs(OperationId::new(),
-                        model.payload.clone(), publisher.as_ref()).await?;
+                        model.payload.clone(), publisher.as_ref())?.await?;
                     assert_eq!(next.payload, receive.payload);
                     assert!(identities.insert(next.operation_id));
                 }
@@ -595,7 +595,7 @@ proptest! {
                     &format!("inputs/{operation}.receive.json"), bad.as_bytes(),
                     "application/json", "mailbox receive", crate::conversation::ContentAccess::default())?.await?;
                 assert!(matches!(local.finish_turn_inputs(operation,
-                    model.payload.clone(), publisher.as_ref()).await, Err(Error::Conflict(_))));
+                    model.payload.clone(), publisher.as_ref())?.await, Err(Error::Conflict(_))));
                 Ok::<_, Error>((before, after, old))
             }).unwrap();
         same_generation(&before, &after)?;
@@ -608,7 +608,7 @@ async fn legacy_receive_input_keeps_its_original_reference_on_retry_and_reopen()
     let directory = tempfile::tempdir().map_err(storage)?;
     let local = open(directory.path()).await?;
     let operation = OperationId::new();
-    let (receive, model) = local.stage_turn(operation, "input").await?;
+    let (receive, model) = local.stage_turn(operation, "input")?.await?;
     let publisher = local.input_publisher()?;
     let legacy = publisher
         .stage_once(
@@ -622,7 +622,7 @@ async fn legacy_receive_input_keeps_its_original_reference_on_retry_and_reopen()
         .await?
         .0;
     let (retried, _) = local
-        .finish_turn_inputs(operation, model.payload.clone(), publisher.as_ref())
+        .finish_turn_inputs(operation, model.payload.clone(), publisher.as_ref())?
         .await?;
     assert_eq!(retried.payload, legacy);
     assert_eq!(retried.operation_id, receive.operation_id);
@@ -630,7 +630,7 @@ async fn legacy_receive_input_keeps_its_original_reference_on_retry_and_reopen()
     drop(local);
     let local = open(directory.path()).await?;
     let (retried, _) = local
-        .finish_turn_inputs(operation, model.payload, local.input_publisher()?.as_ref())
+        .finish_turn_inputs(operation, model.payload, local.input_publisher()?.as_ref())?
         .await?;
     assert_eq!(retried.payload, legacy);
     assert_eq!(retried.operation_id, receive.operation_id);

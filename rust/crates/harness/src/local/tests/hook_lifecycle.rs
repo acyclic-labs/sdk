@@ -187,7 +187,7 @@ async fn queued_admissions_reconstruct_hook_authority_from_their_original_model_
         .await?
         .0;
     let (receive, model) = harness
-        .finish_turn_inputs(operation, payload, publisher.as_ref())
+        .finish_turn_inputs(operation, payload, publisher.as_ref())?
         .await?;
     let definition = harness
         .runtime

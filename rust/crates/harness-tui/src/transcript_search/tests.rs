@@ -1,3 +1,20 @@
+// Only eager oracle fixtures need a global row number. Production navigation
+// returns a typed source anchor and never computes an archived row rank.
+pub(super) fn selected_row(
+    view: &crate::TranscriptSearch,
+    wrapped: &crate::WrappedLines,
+    index: i64,
+) -> usize {
+    let anchor = view
+        .selected_anchor(wrapped, index)
+        .expect("selected source anchor");
+    wrapped
+        .ranges()
+        .iter()
+        .position(|range| wrapped.position_of(range.start) == anchor.position)
+        .expect("eager oracle retains every row")
+}
+
 use super::*;
 use proptest::prelude::*;
 fn settle(view: &mut TranscriptSearch, wrapped: &crate::WrappedLines) {
@@ -118,6 +135,7 @@ proptest! {
         let mut view = TranscriptSearch::default();
         let mut wrapped=crate::WrappedLines::default();
         wrapped.update(&source,0,width);
+    wrapped.wrap_all();
         view.update(&wrapped,&query,0,selection());
     settle(&mut view, &wrapped);
         prop_assert_eq!(view.count(),reference(&text,&query).len());
@@ -125,7 +143,7 @@ proptest! {
         let layout=crate::Layout::new(&crate::Editor::new(&text),usize::from(width));
         let expected: String=layout.rows.iter().flat_map(|row| &row.cells).map(|cell|cell.symbol.as_str()).collect();
         prop_assert_eq!(actual,expected);
-        if view.count()!=0 {prop_assert!(view.selected_row(&wrapped, -1)<wrapped.rows().len());}
+        if view.count()!=0 {prop_assert!(crate::transcript_search::tests::selected_row(&view, &wrapped, -1)<wrapped.rows().len());}
     }
 }
 
@@ -159,12 +177,19 @@ fn highlighted_ranges_cross_spans_and_preserve_markdown_styles() {
     ];
     let mut wrapped = crate::WrappedLines::default();
     wrapped.update(&source, 0, 80);
+    wrapped.wrap_all();
     view.update(&wrapped, "strasse", 0, selection());
     settle(&mut view, &wrapped);
     let painted_rows = painted(&view, &wrapped);
     assert_eq!(view.count(), 2);
-    assert_eq!(view.selected_row(&wrapped, -1), 1);
-    assert_eq!(view.selected_row(&wrapped, 2), 0);
+    assert_eq!(
+        crate::transcript_search::tests::selected_row(&view, &wrapped, -1),
+        1
+    );
+    assert_eq!(
+        crate::transcript_search::tests::selected_row(&view, &wrapped, 2),
+        0
+    );
     assert!(
         painted_rows
             .first()
@@ -194,10 +219,11 @@ fn highlighted_ranges_cross_spans_and_preserve_markdown_styles() {
         ["Straße", "STRASSE"]
     );
     wrapped.update(&source, 0, 3);
+    wrapped.wrap_all();
     view.update(&wrapped, "strasse", 0, selection());
     settle(&mut view, &wrapped);
     assert_eq!(view.count(), 2, "wrapping must not split the search needle");
-    assert!(view.selected_row(&wrapped, 1) > 0);
+    assert!(crate::transcript_search::tests::selected_row(&view, &wrapped, 1) > 0);
 }
 
 #[test]
@@ -247,6 +273,7 @@ fn clearing_highlights_restores_the_same_wrapped_rows() {
     ])];
     let mut wrapped = crate::WrappedLines::default();
     wrapped.update(&source, 0, 5);
+    wrapped.wrap_all();
     let ordinary = wrapped.rows().to_vec();
     let mut search = TranscriptSearch::default();
     search.update(&wrapped, "strasse", 0, selection());
@@ -270,6 +297,7 @@ fn partial_matches_preserve_every_style_boundary() {
     ])];
     let mut wrapped = crate::WrappedLines::default();
     wrapped.update(&source, 0, 80);
+    wrapped.wrap_all();
     let mut search = TranscriptSearch::default();
     search.update(&wrapped, "bc", 0, selection());
     settle(&mut search, &wrapped);
@@ -309,6 +337,7 @@ fn selected_theme_model<const INDEX: bool, const THEME: bool>() {
     };
     let mut wrapped = crate::WrappedLines::default();
     wrapped.update(&[Line::raw("one one")], 0, 80);
+    wrapped.wrap_all();
     let mut search = TranscriptSearch::default();
     let red = Style::default().fg(Color::Red);
     search.update(&wrapped, "one", 0, red);
@@ -351,8 +380,8 @@ fn selected_theme_model<const INDEX: bool, const THEME: bool>() {
             .contains(Modifier::REVERSED)
     );
     assert_eq!(
-        search.selected_row(&wrapped, 0),
-        search.selected_row(&wrapped, 1)
+        crate::transcript_search::tests::selected_row(&search, &wrapped, 0),
+        crate::transcript_search::tests::selected_row(&search, &wrapped, 1)
     );
     assert_eq!(search.position(1), 2);
     let blue = Style::default().fg(Color::Blue).bg(Color::Yellow);

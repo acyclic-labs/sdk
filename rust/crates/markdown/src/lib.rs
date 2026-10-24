@@ -30,8 +30,10 @@ pub use style::{Color, Line, Span, Style};
 /// Completed leaves and fence lines remain behind a parser checkpoint, including
 /// leaves inside containers. Reference changes parse only dependent blocks.
 #[derive(Default)]
+#[cfg_attr(test, derive(Clone))]
 pub struct Markdown {
     source: String,
+    append: Option<(usize, usize, usize)>,
     offset: usize,
     stable_lines: usize,
     visibility: visibility::Visibility,
@@ -72,6 +74,7 @@ struct Container {
     continuation: String,
 }
 
+#[cfg_attr(test, derive(Clone))]
 struct Cached {
     template: Template,
     state: render::Renderer,
@@ -134,6 +137,7 @@ impl Cached {
     }
 }
 
+#[cfg_attr(test, derive(Clone))]
 struct Fence {
     indented: bool,
     pending: String,
@@ -160,6 +164,7 @@ impl Markdown {
     /// A consumer can truncate its presentation there and replace the suffix
     /// from [`Self::lines`]. Empty deltas leave the presentation unchanged.
     pub fn push(&mut self, delta: &str) -> usize {
+        self.append = None;
         let old_len = self.visible_lines;
         if delta.is_empty() {
             return old_len;
@@ -185,10 +190,18 @@ impl Markdown {
                 if visible.is_empty() {
                     self.plain_spaces += appended.len();
                 } else {
+                    let span_index = line.spans.len().saturating_sub(1);
                     if let Some(span) = line.spans.last_mut() {
                         acyclic_markdown_work::record!(span_copy(
                             self.plain_spaces + visible.len()
                         ));
+                        if budget_line >= self.visible_lines.saturating_sub(1) {
+                            self.append = Some((
+                                self.visible_lines.saturating_sub(1),
+                                span_index,
+                                span.text.len(),
+                            ));
+                        }
                         #[cfg(test)]
                         {
                             work::copy(self.plain_spaces + visible.len());
@@ -248,10 +261,22 @@ impl Markdown {
         changed.min(self.visible_lines)
     }
 
+    /// The last push only appended bytes to this line and span, beginning at
+    /// the returned byte offset. Other edits require replacing the changed rows.
+    pub fn last_append(&self) -> Option<(usize, usize, usize)> {
+        self.append
+    }
+
     /// Current unwrapped lines. A partial delimiter remains visible until it
     /// forms valid Markdown; no input is hidden waiting for a future delta.
     pub fn lines(&self) -> &[Line] {
         self.lines.get(..self.visible_lines).unwrap_or_default()
+    }
+
+    /// Consume this completed Markdown entry without copying its rendered text.
+    pub fn into_lines(mut self) -> Vec<Line> {
+        self.lines.truncate(self.visible_lines);
+        self.lines
     }
 
     fn visible_end(&self, start: usize, end: usize, fallback: usize) -> usize {

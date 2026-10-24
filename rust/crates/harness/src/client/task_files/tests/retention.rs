@@ -249,3 +249,49 @@ proptest! {
         });
     }
 }
+
+#[tokio::test]
+#[ignore = "manual independent-turn eviction measurement"]
+async fn independent_turn_eviction_measurement() {
+    for bytes in [1000, 10000, 50000] {
+        let volume = TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("turn-eviction-measurement").unwrap(),
+        )
+        .await
+        .unwrap();
+        let task = crate::TaskId::from_bytes([89; 16]);
+        let owner = authority(task);
+        let mut client =
+            TaskFileClient::observe_query(&volume, &owner, query(task, 2), 2, 1_000_000)
+                .await
+                .unwrap();
+        let mut renderer = ClientRenderer::default();
+        let body = "plain text row\n".repeat(bytes / 15);
+        for turn in 0..3 {
+            let mut file = chunk(task, 0, body.as_bytes());
+            file.key = FileKey::Task {
+                task: Component::new(task.to_string()).unwrap(),
+                file: TaskFile::Chunk { turn, sequence: 0 },
+            };
+            volume
+                .append(volume.head().await.unwrap(), &file)
+                .await
+                .unwrap();
+            client.next_change().await.unwrap();
+            let start = std::time::Instant::now();
+            let allocated =
+                acyclic_test_support::measure(|| renderer.update(client.views(), &owner));
+            if turn == 2 {
+                eprintln!(
+                    "CLIENT_TURN_EVICTION os={} retained_segment_bytes={} elapsed_us={} allocations={} allocated_bytes={}",
+                    std::env::consts::OS,
+                    body.len(),
+                    start.elapsed().as_micros(),
+                    allocated.count_total,
+                    allocated.bytes_total
+                );
+            }
+        }
+    }
+}

@@ -53,11 +53,19 @@ pub fn parse_request(line: &str) -> Result<FileValue> {
 }
 /// Serialize the initial query and exact materialized-head snapshot.
 pub fn snapshot(query: &Query, head: &HeadSnapshot) -> Result<String> {
+    for file in &head.files {
+        file.validate_segments().map_err(super::query_error)?;
+    }
     encode(&(query, wire::Heads::from(head)))
 }
 /// Parse the first observation line.
 pub fn parse_snapshot(line: &str) -> Result<(Query, HeadSnapshot)> {
-    decode::<(Query, wire::Heads<'_>)>(line).map(|(query, head)| (query, head.into()))
+    let (query, head) = decode::<(Query, wire::Heads<'_>)>(line)?;
+    let head = HeadSnapshot::from(head);
+    for file in &head.files {
+        file.validate_segments().map_err(super::query_error)?;
+    }
+    Ok((query, head))
 }
 /// Serialize one cursor-follow publication.
 pub fn change(value: &Change) -> Result<String> {

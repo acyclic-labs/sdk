@@ -305,7 +305,7 @@ impl LocalHarness {
                             "Follow the received child request.",
                             narrowed.limits(),
                             Some(&project),
-                        )
+                        )?
                         .await?;
                     let inputs = vec![receive.payload.clone(), model.payload.clone(), manifest];
                     let definition = self

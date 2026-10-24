@@ -238,6 +238,7 @@ export const harnessModelSuites = {
     ["local::children::controller::stopping::models::", 1],
     ["client::file_submit::model::", 3],
     ["client::commands::session::init_models::", 7],
+    ["client::commands::session::scroll_models::", 2],
     ["client::commands::session::models::", 4],
     ["client::commands::control::models::", 8],
     ["client::commands::sources::models::", 2],

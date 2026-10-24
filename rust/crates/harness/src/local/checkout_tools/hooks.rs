@@ -161,7 +161,7 @@ impl CheckoutTools {
                         context.task().ordinary_journal_owner::<LocalStream>()?,
                         false,
                     )),
-                )
+                )?
                 .await?;
             }
             // Each blocking worker retains this guard through cancellation and
@@ -221,7 +221,7 @@ impl CheckoutTools {
                     context.task().ordinary_journal_owner::<LocalStream>()?,
                     true,
                 )),
-            )
+            )?
             .await?;
             owner.verify_owner(None)?.await?;
             result

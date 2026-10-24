@@ -1,5 +1,24 @@
 use super::*;
 
+type WorkspaceOperation<'a, T, E = WorkspaceError> = crate::conversation::BoundedContentFuture<
+    'a,
+    acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<T>, E>,
+>;
+
+// Keep SDK result/receipt mapping at each caller, while constructing its
+// concrete operation before the caller's poll frame is entered again.
+#[inline(never)]
+fn unmeasured_workspace_operation<'a, T: 'a, E: 'a, F>(
+    build: impl FnOnce() -> F,
+) -> Result<WorkspaceOperation<'a, T, E>>
+where
+    F: Future<Output = acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<T>, E>>
+        + acyclic_stream::ProviderTask
+        + 'a,
+{
+    crate::conversation::BoundedContentFuture::new(None, || futures::FutureExt::map(build(), Ok))
+}
+
 #[derive(Clone, Copy)]
 enum FilePublication<'a> {
     Replace(Option<&'a GenerationRef>),
@@ -221,219 +240,257 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         mutations: &[WorkspaceMutation],
         idempotency_key: &IdempotencyKey,
     ) -> Result<GenerationRef> {
-        let generation = crate::conversation::BoundedContentFuture::new(None, || {
-            self.apply_generation_unmeasured(
+        let generation = self
+            .apply_generation_unmeasured(
                 workspace,
                 expected_generation,
                 mutations,
                 idempotency_key,
                 true,
                 FilePublication::Replace(None),
-            )
-        })?
-        .await?;
+            )?
+            .await?;
         self.generation_ref_id(generation.id(), None)
     }
 
-    async fn apply_generation_unmeasured(
-        &self,
-        workspace: &WorkspaceRef,
-        expected_generation: Option<&GenerationRef>,
-        mutations: &[WorkspaceMutation],
-        idempotency_key: &IdempotencyKey,
+    fn apply_generation_unmeasured<'a>(
+        &'a self,
+        workspace: &'a WorkspaceRef,
+        expected_generation: Option<&'a GenerationRef>,
+        mutations: &'a [WorkspaceMutation],
+        idempotency_key: &'a IdempotencyKey,
         invalidate_metadata: bool,
-        publication: FilePublication<'_>,
-    ) -> Result<Generation<A, O>> {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::WorkBudget::UNBOUNDED;
-        let workspace = self.open(workspace, None).await?;
-        let key = filesystem_key(idempotency_key);
-        let mut transaction = match expected_generation {
-            Some(reference) => {
-                let generation = self.generation(&workspace, reference, None).await?;
-                workspace
-                    .begin_transaction_at(&generation, key, budget, &cancellation)
-                    .await
+        publication: FilePublication<'a>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
+        // Construction returns before polling this concrete publication graph.
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+            let workspace = self.open(workspace, None).await?;
+            let key = filesystem_key(idempotency_key);
+            let mut transaction = match expected_generation {
+                Some(reference) => {
+                    let generation = self.generation(&workspace, reference, None).await?;
+                    unmeasured_workspace_operation(|| {
+                        workspace.begin_transaction_at(&generation, key, budget, &cancellation)
+                    })?
+                    .await?
                     .map(|receipt| receipt.value)
                     .map_err(|failure| failure.error)
                     .map_err(map_error)?
-            }
-            None => workspace
-                .begin_transaction(key, budget, &cancellation)
-                .await
+                }
+                None => unmeasured_workspace_operation(|| {
+                    workspace.begin_transaction(key, budget, &cancellation)
+                })?
+                .await?
                 .map(|receipt| receipt.value)
                 .map_err(|failure| failure.error)
                 .map_err(map_error)?,
-        };
-        if let Some(fence) = publication.fence() {
-            transaction
-                .observe_policy_fence(fence, budget, &cancellation)
-                .await
+            };
+            if let Some(fence) = publication.fence() {
+                unmeasured_workspace_operation(|| {
+                    transaction.observe_policy_fence(fence, budget, &cancellation)
+                })?
+                .await?
                 .map_err(|failure| map_error(failure.error))?;
-        }
-        Self::stage_unmeasured(
-            &mut transaction,
-            mutations,
-            invalidate_metadata,
-            publication,
-            budget,
-            &cancellation,
-        )
-        .await?;
-        loop {
-            let committed = transaction
-                .commit(
-                    None,
-                    acyclic_fs::PublicationPermit::Unrestricted,
-                    budget,
-                    &cancellation,
-                    |_| async {
-                        require_publication_time(publication, None)
-                            .map_err(acyclic_fs::OperationFailure::before_work)?;
-                        Ok::<_, acyclic_fs::OperationFailure<Error>>(acyclic_fs::OperationReceipt {
-                            value: (),
-                            work: acyclic_fs::WorkCounters::default(),
-                        })
-                    },
-                )
-                .await
+            }
+            Self::stage_unmeasured(
+                &mut transaction,
+                mutations,
+                invalidate_metadata,
+                publication,
+                budget,
+                &cancellation,
+            )?
+            .await?;
+            loop {
+                let committed = unmeasured_workspace_operation(|| {
+                    transaction.commit(
+                        None,
+                        acyclic_fs::PublicationPermit::Unrestricted,
+                        budget,
+                        &cancellation,
+                        |_| async {
+                            require_publication_time(publication, None)
+                                .map_err(acyclic_fs::OperationFailure::before_work)?;
+                            Ok::<_, acyclic_fs::OperationFailure<Error>>(
+                                acyclic_fs::OperationReceipt {
+                                    value: (),
+                                    work: acyclic_fs::WorkCounters::default(),
+                                },
+                            )
+                        },
+                    )
+                })?
+                .await?
                 .map(|receipt| receipt.value)
                 .map_err(|failure| failure.error)?;
-            return match committed {
-                TransactionCommit::Committed(generation)
-                | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
-                TransactionCommit::Conflict { .. }
-                    if expected_generation.is_none()
-                        && publication
-                            .fence()
-                            .is_none_or(|fence| !fence.generation_sensitive()) =>
-                {
-                    // Reuse the original candidate only when the SDK proves its
-                    // exact observations and mutation dependencies still hold.
-                    match transaction
-                        .rebase(1, budget, &cancellation)
-                        .await
+                return match committed {
+                    TransactionCommit::Committed(generation)
+                    | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
+                    TransactionCommit::Conflict { .. }
+                        if expected_generation.is_none()
+                            && publication
+                                .fence()
+                                .is_none_or(|fence| !fence.generation_sensitive()) =>
+                    {
+                        // Reuse the original candidate only when the SDK proves its
+                        // exact observations and mutation dependencies still hold.
+                        match unmeasured_workspace_operation(|| {
+                            transaction.rebase(1, budget, &cancellation)
+                        })?
+                        .await?
                         .map(|receipt| receipt.value)
                         .map_err(|failure| map_error(failure.error))?
-                    {
-                        acyclic_fs::TransactionRebase::Rebased(_) => continue,
-                        acyclic_fs::TransactionRebase::Conflicted { .. } => {
-                            Err(Error::Conflict("workspace generation changed".into()))
+                        {
+                            acyclic_fs::TransactionRebase::Rebased(_) => continue,
+                            acyclic_fs::TransactionRebase::Conflicted { .. } => {
+                                Err(Error::Conflict("workspace generation changed".into()))
+                            }
                         }
                     }
-                }
-                TransactionCommit::Conflict { .. } => {
-                    Err(Error::Conflict("workspace generation changed".into()))
-                }
-                TransactionCommit::Fenced => {
-                    Err(Error::Conflict("workspace writer was fenced".into()))
-                }
-                TransactionCommit::IdempotencyConflict => Err(Error::Conflict(
-                    "filesystem idempotency key belongs to another mutation".into(),
-                )),
-            };
-        }
+                    TransactionCommit::Conflict { .. } => {
+                        Err(Error::Conflict("workspace generation changed".into()))
+                    }
+                    TransactionCommit::Fenced => {
+                        Err(Error::Conflict("workspace writer was fenced".into()))
+                    }
+                    TransactionCommit::IdempotencyConflict => Err(Error::Conflict(
+                        "filesystem idempotency key belongs to another mutation".into(),
+                    )),
+                };
+            }
+        })
     }
 
-    async fn stage_unmeasured(
+    async fn stage_mutation_unmeasured(
         transaction: &mut acyclic_fs::Transaction<A, O>,
-        mutations: &[WorkspaceMutation],
+        mutation: &WorkspaceMutation,
         invalidate_metadata: bool,
         publication: FilePublication<'_>,
         budget: acyclic_fs::WorkBudget,
         cancellation: &acyclic_fs::CancellationToken,
     ) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let batched = if !invalidate_metadata
-            && !matches!(publication, FilePublication::CreateOnly)
-            && mutations
-                .iter()
-                .all(|mutation| !matches!(mutation, WorkspaceMutation::Remove { .. }))
+        match mutation {
+            WorkspaceMutation::CreateDirectory { path } => {
+                unmeasured_workspace_operation(|| {
+                    transaction.create_dir_all(path, budget, cancellation)
+                })?
+                .await?
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .map_err(map_error)?;
+            }
+            WorkspaceMutation::PutFile { path, bytes } => {
+                match publication {
+                    FilePublication::Replace(_) | FilePublication::Authorized(..) => {
+                        unmeasured_workspace_operation(|| {
+                            transaction.write(path, bytes.clone(), budget, cancellation)
+                        })?
+                        .await?
+                        .map_err(|failure| map_error(failure.error))?
+                    }
+                    FilePublication::CreateOnly => unmeasured_workspace_operation(|| {
+                        transaction.create_file(
+                            path,
+                            bytes.clone(),
+                            acyclic_fs::kernel::FileMetadata::default(),
+                            budget,
+                            cancellation,
+                        )
+                    })?
+                    .await?
+                    .map_err(|failure| creation_error(failure.error, None))?,
+                };
+            }
+            WorkspaceMutation::Remove { path } => {
+                unmeasured_workspace_operation(|| transaction.remove(path, budget, cancellation))?
+                    .await?
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+                    .map_err(map_error)?;
+            }
+        }
+        // Raw mutations do not carry a descriptor or write publication.
+        // Invalidate the old index atomically, including same-byte writes.
+        // The content writer supplies its own metadata in this transaction.
+        if invalidate_metadata
+            && let WorkspaceMutation::PutFile { path, .. } | WorkspaceMutation::Remove { path } =
+                mutation
         {
-            let directories = mutations
-                .iter()
-                .filter_map(|mutation| match mutation {
-                    WorkspaceMutation::CreateDirectory { path } => Some(path.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            let files = mutations
-                .iter()
-                .filter_map(|mutation| match mutation {
-                    WorkspaceMutation::PutFile { path, bytes } => {
-                        Some((path.as_str(), bytes.clone()))
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            transaction
-                .write_batch(&directories, &files, budget, cancellation)
-                .await
-                .map_err(|failure| map_error(failure.error))?;
-            true
-        } else {
-            false
-        };
-        #[cfg(target_arch = "wasm32")]
-        let batched = false;
-        if !batched {
-            for mutation in mutations {
-                match mutation {
-                    WorkspaceMutation::CreateDirectory { path } => {
-                        transaction
-                            .create_dir_all(path, budget, cancellation)
-                            .await
-                            .map(|receipt| receipt.value)
-                            .map_err(|failure| failure.error)
-                            .map_err(map_error)?;
-                    }
-                    WorkspaceMutation::PutFile { path, bytes } => {
-                        match publication {
-                            FilePublication::Replace(_) | FilePublication::Authorized(..) => {
-                                transaction
-                                    .write(path, bytes.clone(), budget, cancellation)
-                                    .await
-                                    .map_err(|failure| map_error(failure.error))?
-                            }
-                            FilePublication::CreateOnly => transaction
-                                .create_file(
-                                    path,
-                                    bytes.clone(),
-                                    acyclic_fs::kernel::FileMetadata::default(),
-                                    budget,
-                                    cancellation,
-                                )
-                                .await
-                                .map_err(|failure| creation_error(failure.error, None))?,
-                        };
-                    }
-                    WorkspaceMutation::Remove { path } => {
-                        transaction
-                            .remove(path, budget, cancellation)
-                            .await
-                            .map(|receipt| receipt.value)
-                            .map_err(|failure| failure.error)
-                            .map_err(map_error)?;
-                    }
-                }
-                // Raw mutations do not carry a descriptor or write publication.
-                // Invalidate the old index atomically, including same-byte writes.
-                // The content writer supplies its own metadata in this transaction.
-                if invalidate_metadata
-                    && let WorkspaceMutation::PutFile { path, .. }
-                    | WorkspaceMutation::Remove { path } = mutation
-                {
-                    let metadata =
-                        content_metadata_path_io(path.trim_start_matches('/'), true, None)?;
-                    match transaction.remove(&metadata, budget, cancellation).await {
-                        Ok(_) => {}
-                        Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => {}
-                        Err(failure) => return Err(map_error(failure.error)),
-                    }
-                }
+            let metadata = content_metadata_path_io(path.trim_start_matches('/'), true, None)?;
+            match unmeasured_workspace_operation(|| {
+                transaction.remove(&metadata, budget, cancellation)
+            })?
+            .await?
+            {
+                Ok(_) => {}
+                Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => {}
+                Err(failure) => return Err(map_error(failure.error)),
             }
         }
         Ok(())
+    }
+
+    fn stage_unmeasured<'a>(
+        transaction: &'a mut acyclic_fs::Transaction<A, O>,
+        mutations: &'a [WorkspaceMutation],
+        invalidate_metadata: bool,
+        publication: FilePublication<'a>,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        // Construction returns before polling this concrete publication graph.
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            let batched = if !invalidate_metadata
+                && !matches!(publication, FilePublication::CreateOnly)
+                && mutations
+                    .iter()
+                    .all(|mutation| !matches!(mutation, WorkspaceMutation::Remove { .. }))
+            {
+                let directories = mutations
+                    .iter()
+                    .filter_map(|mutation| match mutation {
+                        WorkspaceMutation::CreateDirectory { path } => Some(path.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                let files = mutations
+                    .iter()
+                    .filter_map(|mutation| match mutation {
+                        WorkspaceMutation::PutFile { path, bytes } => {
+                            Some((path.as_str(), bytes.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                unmeasured_workspace_operation(|| {
+                    transaction.write_batch(&directories, &files, budget, cancellation)
+                })?
+                .await?
+                .map_err(|failure| map_error(failure.error))?;
+                true
+            } else {
+                false
+            };
+            #[cfg(target_arch = "wasm32")]
+            let batched = false;
+            if !batched {
+                for mutation in mutations {
+                    Self::stage_mutation_unmeasured(
+                        transaction,
+                        mutation,
+                        invalidate_metadata,
+                        publication,
+                        budget,
+                        cancellation,
+                    )
+                    .await?;
+                }
+            }
+            Ok(())
+        })
     }
 
     /// Resolves the current immutable head under the caller's work context.
@@ -623,7 +680,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     &key,
                     false,
                     publication,
-                )
+                )?
                 .await
             });
         };

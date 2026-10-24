@@ -265,7 +265,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .0
             .pin_version(version, &mut Some(&mut io.history_io()))?;
         let bytes = self
-            .read_retained_file(original, &recorded.0.0, request.maximum_bytes, Some(io))
+            .read_retained_file(original, &recorded.0.0, request.maximum_bytes, Some(io))?
             .await?;
         let hold = io.guard_bytes(&bytes)?;
         let bytes = (bytes, hold);

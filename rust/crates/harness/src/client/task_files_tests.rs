@@ -89,6 +89,7 @@ async fn composed_ui_uses_authorized_writes_and_cannot_claim_execution() {
         },
         10,
         100,
+        |_, _| unreachable!("submit does not navigate"),
     )
     .await
     .unwrap();
@@ -135,7 +136,7 @@ proptest! {
     #[test]
     fn document_binding_snapshot_follow_equals_reopen(events in prop::collection::vec((0u8..2, ".{0,20}"), 1..7), cut in 0usize..7) {
         use crate::{client::document_files, wire};
-        use futures::{StreamExt, FutureExt};
+        use futures::FutureExt;
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             let agent = AgentId::from_bytes([1;16]);
@@ -157,12 +158,13 @@ proptest! {
                 for _ in 0..2 {
                     let before = generation;
                     generation = files.write(generation, &FileValue::new(key.clone(), text.as_bytes().to_vec())).await.unwrap();
-                    let next = tokio::task::unconstrained(source.next()).now_or_never();
+                    let next = tokio::task::unconstrained(source.read_change()).now_or_never();
                     if generation == before {
                         prop_assert!(next.is_none());
                     } else {
-                        live.query_change(next.expect("accepted cut must be immediately followed").unwrap().unwrap()).unwrap();
-                        live.query_change(tokio::task::unconstrained(source.next()).now_or_never().expect("both query cursors must advance").unwrap().unwrap()).unwrap();
+                        source.apply_change(next.expect("accepted cut must be immediately followed").unwrap(), &mut live).unwrap();
+                        let next = tokio::task::unconstrained(source.read_change()).now_or_never().expect("both query cursors must advance").unwrap();
+                        source.apply_change(next, &mut live).unwrap();
                     }
                 }
             }

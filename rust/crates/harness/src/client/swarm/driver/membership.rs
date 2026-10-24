@@ -3,6 +3,32 @@ use super::*;
 use crate::task_volume::{ChangeStream, ChildFile, ChildStatus, FileKey};
 use futures::StreamExt as _;
 
+pub(super) async fn active<P: StreamProvider + ?Sized>(
+    parent: &TaskVolume<P>,
+    root: &StreamPath,
+    agent: &StreamPath,
+) -> Result<bool> {
+    let prefix = format!("{root}/");
+    let reference = agent
+        .as_str()
+        .strip_prefix(&prefix)
+        .ok_or_else(|| Error::Invalid("status agent lies outside swarm".into()))?;
+    let key = FileKey::Child {
+        reference: crate::task_volume::Component::new(reference)
+            .map_err(|error| Error::Invalid(error.to_string()))?,
+        file: ChildFile::Status,
+    };
+    let snapshot = parent
+        .snapshot(&crate::task_volume::Query::File(key), 1)
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    snapshot.files.first().map_or(Ok(false), |file| {
+        ChildStatus::parse(&file.bytes)
+            .map(|status| status.active())
+            .map_err(|error| Error::Invalid(error.to_string()))
+    })
+}
+
 pub(super) struct Membership {
     root: StreamPath,
     initial: std::collections::BTreeSet<StreamPath>,

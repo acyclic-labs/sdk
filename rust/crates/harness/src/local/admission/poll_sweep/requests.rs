@@ -97,7 +97,7 @@ pub(super) async fn check(harness: &Harness, fixture: &Fixture) -> Result<()> {
 
 async fn root_model_turn(harness: &Harness) -> Result<OperationId> {
     let root = harness
-        .current_turn()
+        .current_turn()?
         .await?
         .0
         .expect("retained root turn")

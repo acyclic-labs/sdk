@@ -49,7 +49,7 @@ fn frontier(source: &str, references: &crate::References) -> (OwnedEvents, Optio
             (event.into_static(), range)
         })
         .collect();
-    let events = paragraphs(source, &events);
+    let events = paragraphs(source, events);
     // Local definitions bypass the callback; a saturated parser budget may
     // suppress later attempts. Those frontiers still use scoped leaf rendering.
     let reusable = !local_definitions
@@ -106,20 +106,31 @@ pub(crate) fn scoped(
 // runs the same checkpoint boundaries as paragraphs in loose lists.
 pub(crate) fn paragraphs<'a>(
     source: &str,
-    events: &[(Event<'a>, Range<usize>)],
+    events: Vec<(Event<'a>, Range<usize>)>,
 ) -> Vec<(Event<'a>, Range<usize>)> {
-    let mut result = Vec::new();
+    // Only tight list items need synthesized paragraph boundaries. Keep the
+    // original allocation for ordinary leaves and potentially very wide tables.
+    if !events
+        .iter()
+        .any(|(event, _)| matches!(event, Event::Start(Tag::Item)))
+    {
+        return events;
+    }
+    let mut result = Vec::with_capacity(events.len());
     let mut stack = Vec::new();
-    let mut index = 0;
-    while let Some((event, range)) = events.get(index) {
-        if stack.last() == Some(&TagEnd::Item) && inline(event) {
-            let start = index;
-            while events.get(index).is_some_and(|(event, _)| inline(event)) {
-                index += 1;
+    let mut events = events.into_iter().peekable();
+    while let Some((event, range)) = events.next() {
+        if stack.last() == Some(&TagEnd::Item) && inline(&event) {
+            let paragraph = result.len();
+            let mut end = range.end;
+            result.push((Event::Start(Tag::Paragraph), range.clone()));
+            result.push((event, range.clone()));
+            while events.peek().is_some_and(|(event, _)| inline(event)) {
+                if let Some((event, range)) = events.next() {
+                    end = range.end;
+                    result.push((event, range));
+                }
             }
-            let mut end = events
-                .get(index.saturating_sub(1))
-                .map_or(range.end, |(_, range)| range.end);
             let suffix = source.get(end..).unwrap_or_default();
             let spaces = suffix
                 .bytes()
@@ -130,20 +141,20 @@ pub(crate) fn paragraphs<'a>(
                 end += 1;
             }
             let range = range.start..end;
-            result.push((Event::Start(Tag::Paragraph), range.clone()));
-            result.extend_from_slice(events.get(start..index).unwrap_or_default());
+            if let Some((_, opening)) = result.get_mut(paragraph) {
+                *opening = range.clone();
+            }
             result.push((Event::End(TagEnd::Paragraph), range));
             continue;
         }
-        match event {
+        match &event {
             Event::Start(tag) => stack.push(tag.to_end()),
             Event::End(_) => {
                 stack.pop();
             }
             _ => {}
         }
-        result.push((event.clone(), range.clone()));
-        index += 1;
+        result.push((event, range));
     }
     result
 }
@@ -213,5 +224,44 @@ impl FrontierReferences {
         cache.budget = interval;
         self.cost = self.cost.saturating_add(used);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalization_transfers_owned_events_without_copying_text() {
+        for source in [
+            "a sufficiently long owned paragraph without a list\n",
+            "- a sufficiently long owned paragraph inside a tight list\n- next\n",
+        ] {
+            let events: Vec<_> = Parser::new(source)
+                .into_offset_iter()
+                .map(|(event, range)| (event.into_static(), range))
+                .collect();
+            let allocation = events.as_ptr();
+            let text: Vec<_> = events
+                .iter()
+                .filter_map(|(event, _)| match event {
+                    Event::Text(text) if text.len() > 32 => Some(text.as_ptr()),
+                    _ => None,
+                })
+                .collect();
+            assert!(!text.is_empty());
+            let normalized = paragraphs(source, events);
+            if !source.starts_with('-') {
+                assert_eq!(normalized.as_ptr(), allocation);
+            }
+            let retained: Vec<_> = normalized
+                .iter()
+                .filter_map(|(event, _)| match event {
+                    Event::Text(text) if text.len() > 32 => Some(text.as_ptr()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(retained, text);
+        }
     }
 }

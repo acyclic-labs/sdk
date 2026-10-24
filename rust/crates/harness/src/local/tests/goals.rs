@@ -415,7 +415,7 @@ async fn local_goal_recovers_staged_input_before_reading_an_edited_goal() -> Res
         .stage_turn(
             continuation,
             "Continue the active goal in GOAL.md.\n\noriginal objective",
-        )
+        )?
         .await?;
     write_goal(&harness, "changed objective").await?;
     // Negative control: rebuilding from the edited file reproduces the old failure.
@@ -424,7 +424,7 @@ async fn local_goal_recovers_staged_input_before_reading_an_edited_goal() -> Res
             .stage_turn(
                 continuation,
                 "Continue the active goal in GOAL.md.\n\nchanged objective",
-            )
+            )?
             .await,
         Err(Error::Conflict(reason)) if reason.contains("upload identity belongs to a different request")
     ));
@@ -477,13 +477,13 @@ async fn local_goal_resuming_an_old_continuation_drives_its_pending_successor() 
     // Retained inputs must still recover even if the task view becomes unreachable.
     let first_operation = crate::goal::continuation_operation(task_id, root);
     harness
-        .stage_turn(first_operation, "first retained continuation")
+        .stage_turn(first_operation, "first retained continuation")?
         .await?;
     let first = harness.continue_goal(task_id, root).await?.unwrap().0;
     assert_eq!(harness.drive_turn(first, None).await?.text, "first");
     let second_operation = crate::goal::continuation_operation(task_id, first_operation);
     harness
-        .stage_turn(second_operation, "second retained continuation")
+        .stage_turn(second_operation, "second retained continuation")?
         .await?;
     let second = harness.continue_goal(first, root).await?.unwrap().0;
     // Negative control: the former wrapper used the resumed task as its root.

@@ -586,7 +586,7 @@ fn checkout_publication_preserves_caller_ceilings() {
                                     0,
                                     PublicationPermit::Unrestricted,
                                     None,
-                                )
+                                )?
                                 .await?;
                             let host = harness
                                 .files

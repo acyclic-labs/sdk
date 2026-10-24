@@ -24,14 +24,19 @@ pub(super) async fn run(case: SwarmCase) -> TestResult {
     run_with_fault(case, Fault::None, false).await.map(|_| ())
 }
 
-pub(super) async fn run_with_fault(
+pub(super) fn run_with_fault(
     case: SwarmCase,
     fault: Fault,
     paced: bool,
-) -> TestResult<serde_json::Value> {
-    super::stall::guarded(std::path::Path::new("swarm"), run_raw(case, fault, paced))
+) -> impl std::future::Future<Output = TestResult<serde_json::Value>> {
+    acyclic_test_support::boxed_future(move || async move {
+        super::stall::guarded(
+            std::path::Path::new("swarm"),
+            acyclic_test_support::boxed_future(|| run_raw(case, fault, paced)),
+        )
         .await
         .map_err(std::io::Error::other)?
+    })
 }
 
 async fn run_raw(case: SwarmCase, fault: Fault, paced: bool) -> TestResult<serde_json::Value> {
@@ -51,7 +56,6 @@ async fn run_raw(case: SwarmCase, fault: Fault, paced: bool) -> TestResult<serde
             .await?,
         );
         publish::chunk(&volume, 1, &case.turns[0][0]).await?;
-        publish::publish_status(&provider, id, publish::status(0, "idle", 1), false).await?;
         let status = acyclic_harness::task_volume::ChildStatus {
             task: acyclic_harness::TaskId::from_bytes([1; 16]),
             state: acyclic_harness::task_volume::ChildState::Running,
@@ -69,6 +73,7 @@ async fn run_raw(case: SwarmCase, fault: Fault, paced: bool) -> TestResult<serde
                 ),
             )
             .await?;
+        publish::publish_status(&provider, id, publish::status(0, "idle", 1), false).await?;
         volumes.push(volume);
     }
     let seeded = started.elapsed();

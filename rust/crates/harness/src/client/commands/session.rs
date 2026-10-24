@@ -26,11 +26,16 @@ mod init_models;
 mod input;
 #[path = "session_publish.rs"]
 mod publication;
+#[path = "session_resume.rs"]
+mod resume;
 #[cfg(all(test, acyclic_harness_loom, feature = "tui"))]
 #[path = "session_scroll_models.rs"]
 mod scroll_models;
+#[path = "session_state.rs"]
+mod state;
 #[path = "session_view.rs"]
 mod view;
+use state::StateFile;
 
 pub(crate) trait ComposerResolver: acyclic_stream::ProviderPlatform {
     fn resolve<'a>(
@@ -48,7 +53,8 @@ pub struct CommandSession<P: ?Sized> {
     changes: files::ChangeStream,
     next_change: Option<files::Change>,
     generation: files::Generation,
-    files: BTreeMap<files::FileKey, files::FileValue>,
+    cursor: files::Cursor,
+    files: BTreeMap<files::FileKey, StateFile>,
     pending: VecDeque<files::FileValue>,
     pending_session: usize,
     pending_tasks: BTreeMap<String, usize>,
@@ -147,32 +153,15 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         let snapshot = observed
             .snapshot
             .ok_or_else(|| Error::Conflict("command snapshot missing".into()))?;
-        let mut client = Self {
+        let mut client = Self::from_snapshot(
             volume,
             writer,
-            changes: observed.changes,
-            next_change: None,
-            generation: snapshot.generation,
-            files: BTreeMap::new(),
-            cleared_output: 0,
-            pending: VecDeque::new(),
-            pending_session: 0,
-            pending_tasks: BTreeMap::new(),
-            outputs: BTreeMap::new(),
-            activity_cursor: None,
-            catalog: CommandCatalog::builtins()?,
-            composer: None,
-            loaded_task: None,
-            observed_change: None,
-            #[cfg(test)]
-            settings_visits: 0,
             session,
             maximum_bytes,
             maximum_files,
-        };
-        for file in snapshot.files {
-            client.fold(file)?;
-        }
+            snapshot,
+            observed.changes,
+        )?;
         client.load_task_settings().await?;
         for (key, bytes) in [
             (
@@ -197,6 +186,45 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             ),
         ] {
             client.initialize_file::<true>(key, bytes).await?;
+        }
+        Ok(client)
+    }
+
+    fn from_snapshot(
+        volume: Arc<files::TaskVolume<P>>,
+        writer: Option<Arc<files::TaskFiles<P>>>,
+        session: uuid::Uuid,
+        maximum_bytes: u64,
+        maximum_files: usize,
+        snapshot: files::Snapshot,
+        changes: files::ChangeStream,
+    ) -> Result<Self> {
+        let mut client = Self {
+            volume,
+            writer,
+            changes,
+            next_change: None,
+            generation: snapshot.generation,
+            cursor: snapshot.cursor,
+            files: BTreeMap::new(),
+            cleared_output: 0,
+            pending: VecDeque::new(),
+            pending_session: 0,
+            pending_tasks: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+            activity_cursor: None,
+            catalog: CommandCatalog::builtins()?,
+            composer: None,
+            loaded_task: None,
+            observed_change: None,
+            #[cfg(test)]
+            settings_visits: 0,
+            session,
+            maximum_bytes,
+            maximum_files,
+        };
+        for file in snapshot.files {
+            client.fold(file)?;
         }
         Ok(client)
     }
@@ -271,7 +299,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     /// immutable clear outcome itself even after independent reopen.
     pub fn history_after(&self) -> Result<u64> {
         Ok(self
-            .state(CommandFileRoot::Session, "layout.json")?
+            .state_ref(CommandFileRoot::Session, "layout.json")?
             .and_then(|value| value.get("history_after").and_then(Value::as_u64))
             .unwrap_or(0)
             .max(self.cleared_output))
@@ -339,15 +367,23 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         root: CommandFileRoot,
         name: &str,
     ) -> Result<Option<&files::FileValue>> {
-        Ok(self.files.get(&self.state_key(root, name)?))
+        Ok(self
+            .files
+            .get(&self.state_key(root, name)?)
+            .map(|file| &file.value))
     }
 
     /// Read one ordinary UI/config file from the latest query cut.
     pub fn state(&self, root: CommandFileRoot, name: &str) -> Result<Option<Value>> {
-        let value: Option<Value> = self
+        self.state_ref(root, name).map(|value| value.cloned())
+    }
+
+    /// Borrow JSON parsed once for this exact accepted file revision.
+    pub fn state_ref(&self, root: CommandFileRoot, name: &str) -> Result<Option<&Value>> {
+        let value = self
             .files
             .get(&self.state_key(root, name)?)
-            .map(|file| serde_json::from_slice(&file.bytes).map_err(codec))
+            .map(StateFile::json)
             .transpose()?;
         if matches!(
             name,
@@ -434,8 +470,8 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     /// The selected task is persisted in the session layout, not the input loop.
     pub fn selected_task(&self) -> Result<Option<TaskId>> {
         let value = self
-            .state(CommandFileRoot::Session, "layout.json")?
-            .unwrap_or(Value::Null);
+            .state_ref(CommandFileRoot::Session, "layout.json")?
+            .unwrap_or(&Value::Null);
         match value.get("selected_task") {
             None | Some(Value::Null) => Ok(None),
             Some(Value::String(task)) => TaskId::parse(task).map(Some),
@@ -667,7 +703,13 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             self.pending.push_back(file.clone());
         }
         self.fold_pending_execution(&file.key);
-        self.files.insert(file.key.clone(), file);
+        if self
+            .files
+            .get(&file.key)
+            .is_none_or(|cached| cached.value != file)
+        {
+            self.files.insert(file.key.clone(), StateFile::new(file));
+        }
         if let Some(previous) = previous
             && previous != self.selected_task()?
         {
@@ -697,13 +739,17 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
 
     async fn advance_visible(&mut self) -> Result<bool> {
         if self.next_change.is_none() {
-            self.next_change = Some(
-                self.changes
-                    .next()
-                    .await
-                    .ok_or_else(|| Error::Conflict("command follow ended; reopen snapshot".into()))?
-                    .map_err(storage)?,
-            );
+            let next = if let Some(change) = self.changes.next().await {
+                change
+            } else {
+                if self.resume_follow().await? {
+                    return Ok(true);
+                }
+                self.changes.next().await.ok_or_else(|| {
+                    Error::Conflict("resumed command follow ended without progress".into())
+                })?
+            };
+            self.next_change = Some(next.map_err(storage)?);
         }
         let visible = match self
             .next_change
@@ -723,6 +769,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             position: change.cursor.position,
             commit: change.cursor.commit,
         };
+        self.cursor = change.cursor;
         Ok(visible)
     }
 
@@ -739,16 +786,9 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
 
     /// Query-derived exit flag used by native and renderer clients alike.
     pub fn exit_requested(&self) -> Result<bool> {
-        let key = self.state_key(CommandFileRoot::Session, "layout.json")?;
-        let value: Value = self
-            .files
-            .get(&key)
-            .map(|file| serde_json::from_slice(&file.bytes))
-            .transpose()
-            .map_err(codec)?
-            .unwrap_or(Value::Null);
-        Ok(value
-            .get("exit_requested")
+        Ok(self
+            .state_ref(CommandFileRoot::Session, "layout.json")?
+            .and_then(|value| value.get("exit_requested"))
             .and_then(Value::as_bool)
             .unwrap_or(false))
     }

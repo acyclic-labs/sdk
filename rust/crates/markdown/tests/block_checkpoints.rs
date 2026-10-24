@@ -137,39 +137,139 @@ fn list_indentation_and_padding_preserve_every_cut() {
     let workers = std::thread::available_parallelism()
         .map_or(1, usize::from)
         .min(16);
-    std::thread::scope(|scope| {
+    let work = std::thread::scope(|scope| {
+        let mut jobs = Vec::new();
         for batch in fixtures.chunks(fixtures.len().div_ceil(workers)) {
-            scope.spawn(move || {
+            jobs.push(scope.spawn(move || {
                 let sources: Vec<_> = batch.iter().map(String::as_str).collect();
-                check_rewrites(&sources);
-            });
+                check_rewrites(&sources)
+            }));
         }
+        jobs.into_iter()
+            .fold(RewriteWork::default(), |mut total, job| {
+                let work = job.join().unwrap();
+                total.initializations += work.initializations;
+                total.appends += work.appends;
+                total.assertions += work.assertions;
+                total.peak_snapshots += work.peak_snapshots;
+                total
+            })
     });
+    eprintln!("MARKDOWN_REWRITE_WORK {work:?}");
 }
 
-pub(super) fn check_rewrites(sources: &[&str]) {
+pub(super) fn check_rewrites(sources: &[&str]) -> RewriteWork {
+    check_rewrite_histories(sources, true)
+}
+
+#[derive(Debug, Default)]
+pub(super) struct RewriteWork {
+    initializations: usize,
+    appends: usize,
+    assertions: usize,
+    peak_snapshots: usize,
+}
+
+#[derive(Clone)]
+struct RewriteCheckpoint {
+    end: usize,
+    markdown: Markdown,
+    rows: Vec<Line>,
+}
+
+fn resume_checkpoint(
+    history: &mut Vec<RewriteCheckpoint>,
+    next_shared: usize,
+) -> RewriteCheckpoint {
+    if history.last().unwrap().end > next_shared {
+        history.pop().unwrap()
+    } else {
+        history.last().unwrap().clone()
+    }
+}
+
+#[test]
+fn rewrite_checkpoint_moves_storage_when_the_next_fixture_cannot_reuse_it() {
+    let mut markdown = Markdown::default();
+    markdown.push(&"owned parser checkpoint ".repeat(64));
+    let rows = markdown.lines().to_vec();
+    let source_storage = markdown.source.as_ptr();
+    let row_storage = rows.as_ptr();
+    let end = markdown.source.len();
+    let mut history = vec![RewriteCheckpoint {
+        end,
+        markdown,
+        rows,
+    }];
+    let checkpoint = resume_checkpoint(&mut history, 0);
+    assert!(
+        history.is_empty(),
+        "unused checkpoint retained a second owner"
+    );
+    assert_eq!(checkpoint.markdown.source.as_ptr(), source_storage);
+    assert_eq!(checkpoint.rows.as_ptr(), row_storage);
+
+    history.push(checkpoint);
+    let mut branch = resume_checkpoint(&mut history, end);
+    assert_eq!(history.len(), 1);
+    assert_ne!(branch.markdown.source.as_ptr(), source_storage);
+    branch.markdown.push("independent branch");
+    assert_eq!(history.first().unwrap().markdown.source.len(), end);
+}
+
+fn shared_prefix(left: &str, right: &str) -> usize {
+    let mut shared = left
+        .bytes()
+        .zip(right.bytes())
+        .take_while(|(a, b)| a == b)
+        .count();
+    while !right.is_char_boundary(shared) {
+        shared -= 1;
+    }
+    shared
+}
+
+fn check_rewrite_histories(sources: &[&str], reuse: bool) -> RewriteWork {
+    let mut sources = sources.to_vec();
+    sources.sort_unstable();
     let mut previous = String::new();
     let mut expected = Vec::new();
-    for source in sources {
-        let source = format!("retained archive\n\n{source}");
-        let shared = previous
-            .bytes()
-            .zip(source.bytes())
-            .take_while(|(a, b)| a == b)
-            .count();
+    // Keep only checkpoints belonging to the preceding fixture. Sorting makes
+    // equal append histories adjacent; no fixture or cut is removed. Immutable
+    // inline checkpoints can be shared, while each branch owns its other state.
+    let mut histories: Vec<Vec<RewriteCheckpoint>> = Vec::new();
+    let mut work = RewriteWork::default();
+    for (index, raw) in sources.iter().enumerate() {
+        let source = format!("retained archive\n\n{raw}");
+        let shared = shared_prefix(&previous, &source);
+        // A checkpoint is retained only when the next fixture can use it.
+        // In particular, single-fixture calls need no saved parser copies.
+        let next_shared = sources.get(index + 1).map_or(0, |next| {
+            shared_prefix(&source, &format!("retained archive\n\n{next}"))
+        });
         expected.truncate(shared + 1);
         for end in expected.len()..=source.len() {
             expected.push(source.get(..end).map(full_parse));
         }
+        histories.truncate(shared + 1);
+        histories.resize_with(source.len() + 1, Vec::new);
+        for history in &mut histories {
+            history.retain(|checkpoint| reuse && checkpoint.end <= shared);
+        }
         for cut in source.char_indices().map(|(index, _)| index) {
-            let mut markdown = Markdown::default();
-            markdown.push(source.get(..cut).unwrap());
-            let mut rows = markdown.lines().to_vec();
-            for character in source.get(cut..).unwrap().chars() {
-                let changed = markdown.push(&character.to_string());
-                rows.truncate(changed);
-                rows.extend_from_slice(markdown.lines().get(changed..).unwrap());
-                let end = markdown.source.len();
+            let history = histories.get_mut(cut).unwrap();
+            if history.is_empty() {
+                let mut markdown = Markdown::default();
+                markdown.push(source.get(..cut).unwrap());
+                work.initializations += 1;
+                let rows = markdown.lines().to_vec();
+                history.push(RewriteCheckpoint {
+                    end: cut,
+                    markdown,
+                    rows,
+                });
+            }
+            let check = |rows: &[Line], end: usize| {
                 assert_eq!(
                     rows,
                     expected
@@ -179,10 +279,93 @@ pub(super) fn check_rewrites(sources: &[&str]) {
                         .as_slice(),
                     "cut {cut}, end {end}: {source:?}"
                 );
+            };
+            // Repeat every original oracle assertion, including reused states.
+            for checkpoint in history.iter().skip(1) {
+                check(&checkpoint.rows, checkpoint.end);
+                work.assertions += 1;
             }
+            let checkpoint = resume_checkpoint(history, next_shared);
+            let mut markdown = checkpoint.markdown;
+            let mut rows = checkpoint.rows;
+            for character in source.get(checkpoint.end..).unwrap().chars() {
+                let changed = markdown.push(&character.to_string());
+                work.appends += 1;
+                rows.truncate(changed);
+                rows.extend_from_slice(markdown.lines().get(changed..).unwrap());
+                let end = markdown.source.len();
+                check(&rows, end);
+                work.assertions += 1;
+                if end <= next_shared {
+                    history.push(RewriteCheckpoint {
+                        end,
+                        markdown: markdown.clone(),
+                        rows: rows.clone(),
+                    });
+                }
+            }
+            history.retain(|checkpoint| checkpoint.end <= next_shared);
         }
+        work.peak_snapshots = work
+            .peak_snapshots
+            .max(histories.iter().map(Vec::len).sum());
         previous = source;
     }
+    work
+}
+
+fn assert_unique_rewrite_work(sources: &[&str], work: &RewriteWork) {
+    let mut initializations = HashSet::new();
+    let mut appends = HashSet::new();
+    let mut assertions = 0;
+    let mut longest = 0;
+    for source in sources {
+        let source = format!("retained archive\n\n{source}");
+        longest = longest.max(source.chars().count());
+        for cut in source.char_indices().map(|(index, _)| index) {
+            initializations.insert(source.get(..cut).unwrap().to_owned());
+            for (offset, character) in source.get(cut..).unwrap().char_indices() {
+                let end = cut + offset + character.len_utf8();
+                appends.insert((cut, source.get(..end).unwrap().to_owned()));
+                assertions += 1;
+            }
+        }
+    }
+    assert_eq!(
+        work.assertions, assertions,
+        "every cut/prefix oracle must run"
+    );
+    assert_eq!(
+        (work.initializations, work.appends),
+        (initializations.len(), appends.len()),
+        "identical append histories were parsed again"
+    );
+    assert!(work.peak_snapshots <= longest * (longest + 3) / 2);
+}
+
+#[test]
+fn rewrite_driver_reuses_histories_and_checks_every_original_case() {
+    let sources = [
+        "- € one\n  α\n\na",
+        "- € two\n  β\n\na",
+        "- € one\n  α\n\na",
+        "- €",
+    ];
+    let work = check_rewrites(&sources);
+    assert_unique_rewrite_work(&sources, &work);
+    assert!(work.appends < work.assertions / 2, "{work:?}");
+}
+
+#[test]
+#[should_panic(expected = "identical append histories were parsed again")]
+fn negative_control_reparsing_shared_histories_fails_the_same_work_bound() {
+    let sources = [
+        "- € one\n  α\n\na",
+        "- € two\n  β\n\na",
+        "- € one\n  α\n\na",
+        "- €",
+    ];
+    assert_unique_rewrite_work(&sources, &check_rewrite_histories(&sources, false));
 }
 
 pub(super) fn check_inline_cuts(sources: &[&str]) {

@@ -130,9 +130,11 @@ async fn scenario<const BOUND: bool>(row: &Value, rename: &str, remap: bool) {
             } else {
                 InputEffect::Host(Action::Voice)
             };
-            file_tui_input(&mut files, &NoFiles, effect, 20, 0)
-                .await
-                .unwrap();
+            file_tui_input(&mut files, &NoFiles, effect, 20, 0, |_, _| {
+                unreachable!("not a transcript action")
+            })
+            .await
+            .unwrap();
         }
         let enabled = step % 2 == 1;
         if let Some(setting) = row["setting"].as_str() {
@@ -189,9 +191,11 @@ async fn scenario<const BOUND: bool>(row: &Value, rename: &str, remap: bool) {
         CommandQuery::Details => crate::tui::AppAction::Details,
         _ => crate::tui::AppAction::Help,
     }));
-    file_tui_input(&mut files, &NoFiles, effect, 20, 0)
-        .await
-        .unwrap();
+    file_tui_input(&mut files, &NoFiles, effect, 20, 0, |_, _| {
+        unreachable!("not a transcript action")
+    })
+    .await
+    .unwrap();
     assert_eq!(
         files
             .state(CommandFileRoot::Config, "settings.json")

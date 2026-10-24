@@ -103,7 +103,7 @@ async fn first_request_contains_each_environment_fact_and_resume_never_rediscove
     let harness = LocalHarness::open(config).await?;
     let operation = OperationId::new();
     harness
-        .retain_settings(operation, &json!({"model": "selected-environment"}))
+        .retain_settings(operation, &json!({"model": "selected-environment"}))?
         .await?;
     let task = super::context::admitted(harness.submit(operation, "where are you?").await?)?;
     let (reference, manifest) = super::context::manifest(&harness, operation).await?;
@@ -213,14 +213,14 @@ async fn child_admission_records_its_inherited_selected_model() -> Result<()> {
     .await?;
     let operation = OperationId::new();
     harness
-        .retain_settings(operation, &json!({"model":"inherited-environment"}))
+        .retain_settings(operation, &json!({"model":"inherited-environment"}))?
         .await?;
     let parent = super::context::admitted(harness.submit(operation, "parent").await?)?;
     // Keep the parent live so the public parented route prepares inheritance
     // before constructing the child's first model request.
     let child = super::context::admitted(
         harness
-            .submit_to(OperationId::new(), Some(parent), "child")
+            .submit_to(OperationId::new(), Some(parent), "child")?
             .await?,
     )?;
     assert_eq!(harness.resume(child).await?.text, "child");

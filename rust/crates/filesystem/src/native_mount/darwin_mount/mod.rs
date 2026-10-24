@@ -29,10 +29,8 @@ const MAXIMUM_LOOKUP_CACHE_ENTRIES: usize = 65_536;
 const MAXIMUM_LISTING_RESTARTS: usize = 8;
 const MAXIMUM_VERIFIED_LABELS: usize = 4_096;
 const MAXIMUM_CALLBACK_BYTES: usize = i32::MAX as usize;
-const DISKUTIL_UNMOUNT_TIMEOUT: Duration = Duration::from_secs(4);
 const MOUNT_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(10);
 const MOUNT_LOOP_EXIT_TIMEOUT: Duration = Duration::from_secs(4);
-const DISKUTIL_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(2);
 const DIRECT_UNMOUNT_TIMEOUT: Duration = Duration::from_secs(3);
 #[cfg(test)]
 const REPLY_DELIVERY_SLACK: Duration = Duration::from_millis(100);

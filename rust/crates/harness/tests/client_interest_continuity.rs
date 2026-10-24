@@ -80,8 +80,8 @@ fn snapshot_cannot_be_spliced_into_recovered_history_at_the_same_position() {
         let recovered = TaskVolume::open(replacement.clone(), path("swarm/a/files"))
             .await
             .unwrap();
-        status::status(&replacement, "swarm/a", false).await;
         status::member(&parent, "a").await;
+        status::status(&replacement, "swarm/a", false).await;
         put(&old, ".tasks/t/status.json", b"old").await;
         put(&recovered, ".tasks/t/status.json", b"replaced").await;
         let cut = old.heads(&Query::Root, None, 2).await.unwrap().cursor;
@@ -172,20 +172,9 @@ fn standalone_watermarks_reach_status_and_content_without_another_data_frame() {
             .await
             .unwrap();
         put(&agent, "GOAL.md", b"before").await;
-        status::status(&provider, "swarm/a", false).await;
         status::member(&parent, "a").await;
-        let responses: runtime::ResponseMap = Arc::new(|source| {
-            Box::pin(source.flat_map(|item| {
-            let watermark = match &item {
-                Ok(frame) if matches!(&frame.body, Some(wire::session_frame::Body::Data(data)) if matches!(&data.item,
-                    Some(wire::session_data::Item::LatestValue(_) | wire::session_data::Item::Record(_)))) => {
-                    Some(Ok(wire::SessionFrame { body: Some(wire::session_frame::Body::Watermark(wire::SessionWatermark { after: None, preceding_commit_id: Default::default(), accepted: 9, durable: 9 })), ..frame.clone() }))
-                }
-                _ => None,
-            };
-            futures::stream::iter(std::iter::once(item).chain(watermark))
-        }))
-        });
+        status::status(&provider, "swarm/a", false).await;
+        let responses = watermark_responses();
         let (session, mut runner, _) = runtime::open(provider, Arc::new(|s| s), responses);
         let seen = RefCell::new(Vec::new());
         let data = RefCell::new(std::collections::BTreeSet::new());
@@ -204,27 +193,32 @@ fn standalone_watermarks_reach_status_and_content_without_another_data_frame() {
                 }
             },
             async |change| {
-                match change {
+                let mark = match change {
+                    SwarmChange::StatusWatermark(watermark) => Some((true, watermark)),
                     SwarmChange::Watermark {
                         agent,
                         overview,
                         watermark,
                     } => {
                         assert_eq!(agent, path("swarm/a"));
-                        assert_eq!((watermark.accepted, watermark.durable), (9, 9));
-                        assert!(
-                            data.borrow().contains(&overview),
-                            "watermark preceded the last record"
-                        );
-                        seen.borrow_mut().push(overview);
-                        if seen.borrow().len() == 2 {
-                            return Err(Error::Unsupported("complete".into()));
-                        }
+                        Some((overview, watermark))
                     }
                     SwarmChange::Data { overview, .. } => {
                         assert!(data.borrow_mut().insert(overview));
+                        None
                     }
-                    _ => {}
+                    _ => None,
+                };
+                if let Some((overview, watermark)) = mark {
+                    assert_eq!((watermark.accepted, watermark.durable), (9, 9));
+                    assert!(
+                        data.borrow().contains(&overview),
+                        "watermark preceded the last record"
+                    );
+                    seen.borrow_mut().push(overview);
+                    if seen.borrow().len() == 2 {
+                        return Err(Error::Unsupported("complete".into()));
+                    }
                 }
                 Ok(())
             },
@@ -254,4 +248,19 @@ fn standalone_watermarks_reach_status_and_content_without_another_data_frame() {
             })
             .unwrap();
     });
+}
+
+fn watermark_responses() -> runtime::ResponseMap {
+    Arc::new(|source| {
+        Box::pin(source.flat_map(|item| {
+    let watermark = match &item {
+        Ok(frame) if matches!(&frame.body, Some(wire::session_frame::Body::Data(data)) if matches!(&data.item,
+            Some(wire::session_data::Item::LatestValue(_) | wire::session_data::Item::Record(_)))) => {
+            Some(Ok(wire::SessionFrame { body: Some(wire::session_frame::Body::Watermark(wire::SessionWatermark { after: None, preceding_commit_id: Default::default(), accepted: 9, durable: 9 })), ..frame.clone() }))
+        }
+        _ => None,
+    };
+    futures::stream::iter(std::iter::once(item).chain(watermark))
+}))
+    })
 }

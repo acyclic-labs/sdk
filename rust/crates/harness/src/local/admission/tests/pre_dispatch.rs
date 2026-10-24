@@ -237,7 +237,7 @@ async fn every_pre_dispatch_site_is_a_failed_closable_turn() -> Result<()> {
             .await?
             .0;
         let (receive, model) = harness
-            .finish_turn_inputs(operation, payload, publisher.as_ref())
+            .finish_turn_inputs(operation, payload, publisher.as_ref())?
             .await?;
         drop(publisher);
         let task = admitted_task(
@@ -252,7 +252,7 @@ async fn every_pre_dispatch_site_is_a_failed_closable_turn() -> Result<()> {
                         model,
                     },
                     None,
-                )
+                )?
                 .await?,
         )?;
         let result = harness.resume(task).await;

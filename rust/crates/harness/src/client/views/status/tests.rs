@@ -151,3 +151,83 @@ fn negative_control_retiring_rows_without_refunding_fails_the_same_property() {
         "{result:?}"
     );
 }
+
+#[test]
+fn shared_watermark_progress_is_constant_work_and_clones_are_snapshots() {
+    let mut agents = Agents::default();
+    for id in 0..10_000 {
+        agents.discover(StreamPath::new(format!("swarm/a{id}")).unwrap());
+    }
+    let before = agents.clone();
+    let allocation = acyclic_test_support::measure(|| {
+        agents
+            .shared_watermark(&wire::SessionWatermark {
+                after: None,
+                preceding_commit_id: Default::default(),
+                accepted: 7,
+                durable: 5,
+            })
+            .unwrap();
+    });
+    assert_eq!(allocation.count_total, 0);
+    for status in agents.entries.values().map(|agent| &agent.status) {
+        assert_eq!(
+            status.watermarks(),
+            StreamWatermarks {
+                accepted: 7,
+                durable: 5
+            }
+        );
+    }
+    assert!(
+        before
+            .entries
+            .values()
+            .all(|agent| agent.status.watermarks().accepted == 0)
+    );
+    let snapshot = agents.entries.first_key_value().unwrap().1.status.clone();
+    let after = agents.clone();
+    agents
+        .shared_watermark(&wire::SessionWatermark {
+            after: None,
+            preceding_commit_id: Default::default(),
+            accepted: 9,
+            durable: 9,
+        })
+        .unwrap();
+    assert_eq!(snapshot.watermarks().accepted, 7);
+    assert_eq!(
+        after
+            .entries
+            .first_key_value()
+            .unwrap()
+            .1
+            .status
+            .watermarks()
+            .accepted,
+        7
+    );
+    assert!(
+        agents
+            .shared_watermark(&wire::SessionWatermark {
+                after: None,
+                preceding_commit_id: Default::default(),
+                accepted: 8,
+                durable: 8
+            })
+            .is_err()
+    );
+    assert_eq!(agents.shared.get().accepted, 9);
+    // Omitting the shared mark leaves all rows stale and fails the same oracle.
+    assert_ne!(
+        before
+            .entries
+            .first_key_value()
+            .unwrap()
+            .1
+            .status
+            .watermarks()
+            .accepted,
+        7
+    );
+}

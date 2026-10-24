@@ -152,7 +152,7 @@ async fn sweep_case(checkout: bool, cut: usize, after: bool, publications: usize
         calls: AtomicUsize::new(0),
     };
     assert!(
-        matches!(harness.stage_turn_with(operation, "prompt", &interrupted).await, Err(Error::Storage(message)) if message == "injected publication interruption")
+        matches!(harness.stage_turn_with(operation, "prompt", &interrupted)?.await, Err(Error::Storage(message)) if message == "injected publication interruption")
     );
     assert_eq!(interrupted.calls.load(Ordering::Relaxed), cut + 1);
     assert!(provider.requests().is_empty());

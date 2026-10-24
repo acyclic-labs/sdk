@@ -83,10 +83,11 @@ impl Cursor {
 }
 
 impl CheckoutTools {
-    pub(in crate::local) async fn capture(
-        &self,
-        selected: (&LocalWorkspace, &workspace::View),
-        slot: &mut Option<Cursor>,
+    #[inline(never)]
+    pub(in crate::local) fn capture<'a>(
+        &'a self,
+        selected: (&'a LocalWorkspace, &'a workspace::View),
+        slot: &'a mut Option<Cursor>,
         operation: OperationId,
         phase: u8,
         permit: PublicationPermit,
@@ -94,31 +95,33 @@ impl CheckoutTools {
             Arc<crate::durable_host::TaskJournalOwner<LocalStream>>,
             bool,
         )>,
-    ) -> Result<()> {
-        let (physical, view) = selected;
-        if let Some(mount) = &physical.mounted {
-            mount
-                .sync_with_permit(permit, &mount.native_work()?, move |_| {
-                    let owner = owner.clone();
-                    async move {
-                        if let Some((owner, settlement)) = owner {
-                            owner.verify(settlement, &mut None).await?;
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let (physical, view) = selected;
+            if let Some(mount) = &physical.mounted {
+                mount
+                    .sync_with_permit(permit, &mount.native_work()?, move |_| {
+                        let owner = owner.clone();
+                        async move {
+                            if let Some((owner, settlement)) = owner {
+                                owner.verify(settlement, &mut None).await?;
+                            }
+                            Ok::<(), Error>(())
                         }
-                        Ok::<(), Error>(())
-                    }
-                })
-                .await
-                .map_err(|failure| failure.cause)?;
-            if phase == 0 {
-                self.retain_diff_base(view.workspace(), false).await?;
+                    })
+                    .await
+                    .map_err(|failure| failure.cause)?;
+                if phase == 0 {
+                    self.retain_diff_base(view.workspace(), false).await?;
+                }
+                return Ok(());
             }
-            return Ok(());
-        }
-        // A file publication's physical write is owed a capture of its own.
-        // Finish it first, so this capture never records that write.
-        self.finish_owed_write(selected, slot, permit).await?;
-        self.capture_changes(selected, slot, operation, phase, permit)
-            .await
+            // A file publication's physical write is owed a capture of its own.
+            // Finish it first, so this capture never records that write.
+            self.finish_owed_write(selected, slot, permit)?.await?;
+            self.capture_changes(selected, slot, operation, phase, permit)?
+                .await
+        })
     }
 
     /// Records, before a file publication's physical write, that the write
@@ -136,7 +139,7 @@ impl CheckoutTools {
             return Ok(());
         }
         if current.is_some() {
-            self.finish_owed_write(selected, slot, PublicationPermit::Unrestricted)
+            self.finish_owed_write(selected, slot, PublicationPermit::Unrestricted)?
                 .await?;
         }
         reconciliation::replace_owed_write(physical, None, Some(owed)).await
@@ -145,124 +148,131 @@ impl CheckoutTools {
     /// Captures a file publication's physical write under the write's own
     /// operation while its staged generation is still the head, then clears
     /// the debt. Once the head has moved on nothing is left to capture.
-    pub(in crate::local) async fn finish_owed_write(
-        &self,
-        selected: (&LocalWorkspace, &workspace::View),
-        slot: &mut Option<Cursor>,
+    #[inline(never)]
+    pub(in crate::local) fn finish_owed_write<'a>(
+        &'a self,
+        selected: (&'a LocalWorkspace, &'a workspace::View),
+        slot: &'a mut Option<Cursor>,
         permit: PublicationPermit,
-    ) -> Result<()> {
-        let (physical, view) = selected;
-        let Some(owed) = reconciliation::owed_write(physical).await? else {
-            return Ok(());
-        };
-        let (operation, staged) = owed;
-        let head = view
-            .workspace()
-            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map_err(storage)?
-            .value;
-        if staged.workspace_id == view.workspace().id() && head.id() == staged.generation {
-            self.capture_changes(
-                selected,
-                slot,
-                OperationId::from_bytes(operation.into_bytes()),
-                1,
-                permit,
-            )
-            .await?;
-        }
-        reconciliation::replace_owed_write(physical, Some(owed), None).await
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let (physical, view) = selected;
+            let Some(owed) = reconciliation::owed_write(physical).await? else {
+                return Ok(());
+            };
+            let (operation, staged) = owed;
+            let head = view
+                .workspace()
+                .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await
+                .map_err(storage)?
+                .value;
+            if staged.workspace_id == view.workspace().id() && head.id() == staged.generation {
+                self.capture_changes(
+                    selected,
+                    slot,
+                    OperationId::from_bytes(operation.into_bytes()),
+                    1,
+                    permit,
+                )?
+                .await?;
+            }
+            reconciliation::replace_owed_write(physical, Some(owed), None).await
+        })
     }
 
-    async fn capture_changes(
-        &self,
-        selected: (&LocalWorkspace, &workspace::View),
-        slot: &mut Option<Cursor>,
+    #[inline(never)]
+    fn capture_changes<'a>(
+        &'a self,
+        selected: (&'a LocalWorkspace, &'a workspace::View),
+        slot: &'a mut Option<Cursor>,
         operation: OperationId,
         phase: u8,
         permit: PublicationPermit,
-    ) -> Result<()> {
-        let (physical, view) = selected;
-        let cancellation = CancellationToken::new();
-        let workspace = view.workspace();
-        let options = &self.capture_options;
-        let policy = &self.capture_policy;
-        // On failure discard the cursor: the next command must establish a new
-        // baseline rather than skip changes consumed before a failed commit.
-        // Registration alone has not imported a new native checkout. An SDK
-        // volume, however, was materialized from its authored generation: a
-        // redundant import would invalidate references pinned to that head.
-        let baseline = slot
-            .as_ref()
-            .is_none_or(|cursor| physical.import_source && cursor.initial.is_some());
-        let mut cursor = match slot.take() {
-            Some(cursor) => cursor,
-            None => Cursor::open(physical, &self.capture_policy)?,
-        };
-        if cursor.watcher.root_identity() != physical.identity {
-            return Err(Error::Unauthorized("checkout root was replaced".into()));
-        }
-        let mut checkout = workspace
-            .checkout(
-                GenerationSelector::Head,
-                CheckoutMode::tracking_transaction(),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map_err(storage)?
-            .value;
-        converge::capture(
-            &mut cursor,
-            &mut checkout,
-            physical,
-            (options, policy),
-            baseline,
-            &cancellation,
-        )
-        .await?;
-        if checkout.has_pending_mutations() {
-            let operation = capture_operation(operation, phase);
-            let committed = checkout
-                .commit(
-                    operation,
-                    None,
-                    None,
-                    None,
-                    permit,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let (physical, view) = selected;
+            let cancellation = CancellationToken::new();
+            let workspace = view.workspace();
+            let options = &self.capture_options;
+            let policy = &self.capture_policy;
+            // On failure discard the cursor: the next command must establish a new
+            // baseline rather than skip changes consumed before a failed commit.
+            // Registration alone has not imported a new native checkout. An SDK
+            // volume, however, was materialized from its authored generation: a
+            // redundant import would invalidate references pinned to that head.
+            let baseline = slot
+                .as_ref()
+                .is_none_or(|cursor| physical.import_source && cursor.initial.is_some());
+            let mut cursor = match slot.take() {
+                Some(cursor) => cursor,
+                None => Cursor::open(physical, &self.capture_policy)?,
+            };
+            if cursor.watcher.root_identity() != physical.identity {
+                return Err(Error::Unauthorized("checkout root was replaced".into()));
+            }
+            let mut checkout = workspace
+                .checkout(
+                    GenerationSelector::Head,
+                    CheckoutMode::tracking_transaction(),
                     WorkBudget::UNBOUNDED,
                     &cancellation,
-                    |_| {
-                        std::future::ready(
-                            Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                                acyclic_fs::OperationReceipt {
-                                    value: (),
-                                    work: WorkCounters::UNCHARGED,
-                                },
-                            ),
-                        )
-                    },
                 )
                 .await
                 .map_err(storage)?
                 .value;
-            if !matches!(
-                committed,
-                LivePublicationObservation::Committed { .. }
-                    | LivePublicationObservation::AlreadyCommitted { .. }
-            ) {
-                return Err(Error::Conflict(
-                    "checkout capture publication raced with another writer".into(),
-                ));
+            converge::capture(
+                &mut cursor,
+                &mut checkout,
+                physical,
+                (options, policy),
+                baseline,
+                &cancellation,
+            )?
+            .await?;
+            if checkout.has_pending_mutations() {
+                let operation = capture_operation(operation, phase);
+                let committed = checkout
+                    .commit(
+                        operation,
+                        None,
+                        None,
+                        None,
+                        permit,
+                        WorkBudget::UNBOUNDED,
+                        &cancellation,
+                        |_| {
+                            std::future::ready(Ok::<
+                                _,
+                                acyclic_fs::OperationFailure<acyclic_fs::FsError>,
+                            >(
+                                acyclic_fs::OperationReceipt {
+                                    value: (),
+                                    work: WorkCounters::UNCHARGED,
+                                },
+                            ))
+                        },
+                    )
+                    .await
+                    .map_err(storage)?
+                    .value;
+                if !matches!(
+                    committed,
+                    LivePublicationObservation::Committed { .. }
+                        | LivePublicationObservation::AlreadyCommitted { .. }
+                ) {
+                    return Err(Error::Conflict(
+                        "checkout capture publication raced with another writer".into(),
+                    ));
+                }
             }
-        }
-        if phase == 0 {
-            self.retain_diff_base(view.workspace(), cursor.unreadable_diff_source)
-                .await?;
-        }
-        *slot = Some(cursor);
-        Ok(())
+            if phase == 0 {
+                self.retain_diff_base(view.workspace(), cursor.unreadable_diff_source)
+                    .await?;
+            }
+            *slot = Some(cursor);
+            Ok(())
+        })
     }
 }
 

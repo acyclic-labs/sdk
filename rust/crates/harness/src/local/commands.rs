@@ -28,105 +28,125 @@ impl LocalHarness {
         resolution: CommandResolution,
         settings: &'a Value,
     ) -> BoxProviderFuture<'a, Result<Value>> {
-        // Cut the concrete admission/tool/compaction future graph here, before
-        // it becomes part of each client owner's dispatch future.
-        Box::pin(self.dispatch_effect(operation, target, resolution, settings))
+        // Select the operation before constructing its future. Unrelated
+        // command branches must never enter this owner's polling frame.
+        Box::pin(async move {
+            self.dispatch_effect(operation, target, resolution, settings)?
+                .await
+        })
     }
-    async fn dispatch_effect(
-        &self,
+    fn dispatch_effect<'a>(
+        &'a self,
         operation: OperationId,
         target: Option<TaskId>,
         resolution: CommandResolution,
-        settings: &Value,
-    ) -> Result<Value> {
+        settings: &'a Value,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Value>> {
+        use crate::conversation::BoundedContentFuture;
         match resolution {
             CommandResolution::Tool { tool, input } => {
-                self.direct_tool(operation, target, tool, input).await
+                BoundedContentFuture::new(None, || self.direct_tool(operation, target, tool, input))
             }
             resolution @ CommandResolution::Prompt { .. } => {
-                let text = self.retain_prompt_input(operation, resolution).await?;
-                self.queue_prompt(operation, target, &text, settings).await
+                BoundedContentFuture::new(None, || async move {
+                    let text = self.retain_prompt_input(operation, resolution).await?;
+                    self.queue_prompt(operation, target, &text, settings)?.await
+                })
             }
-            CommandResolution::Submit {
-                request: CommandRequest::Replace { message, text },
-            } => {
-                let original = crate::runtime::task_id_for_admission(message);
-                self.runtime.task_host().observe_admission(original).await?;
-                // Replacement is a new immutable branch; the original history
-                // remains available for replay and explicit transcript rewind.
-                let mut result = self.queue_prompt(operation, None, &text, settings).await?;
-                result["replaces"] = json!(message);
-                Ok(result)
-            }
-            CommandResolution::Submit {
-                request: CommandRequest::Cancel { task },
-            } => {
-                self.runtime.task_host().cancel(task).await?;
-                self.refresh_command_task(task).await?;
-                Ok(json!({"task": task, "cancel_requested": true}))
-            }
-            CommandResolution::Submit {
-                request: CommandRequest::New,
-            } => Ok(json!({"selected_task":null})),
-            CommandResolution::Submit {
-                request: CommandRequest::Delete,
-            } => self.delete_commands(Some(required(target)?)).await,
-            CommandResolution::Submit {
-                request: CommandRequest::ClearAll,
-            } => self.delete_commands(None).await,
-            CommandResolution::Submit {
-                request: CommandRequest::Export,
-            } => self.export(operation, target).await,
-            CommandResolution::Submit {
-                request: CommandRequest::Compact { instructions },
-            } => {
-                self.compact(operation, required(target)?, &instructions)
-                    .await
-            }
-            CommandResolution::Submit {
-                request: CommandRequest::Rewind,
-            } => self.rewind_checkpoint(operation, required(target)?).await,
             CommandResolution::Submit { request } => {
-                let (task, paused) = match request {
-                    CommandRequest::TogglePause => (Some(required(target)?), None),
-                    CommandRequest::Pause { scope } => (
-                        match scope {
-                            CommandTaskScope::All => None,
-                            _ => Some(required(target)?),
-                        },
-                        Some(true),
-                    ),
-                    CommandRequest::Resume { scope } => (
-                        match scope {
-                            CommandTaskScope::All => None,
-                            _ => Some(required(target)?),
-                        },
-                        Some(false),
-                    ),
-
-                    _ => {
-                        return Err(Error::Invalid(
-                            "presentation changes are applied before owner dispatch".into(),
-                        ));
-                    }
-                };
-                if let Some(task) = task {
-                    self.runtime.task_host().observe_admission(task).await?;
-                }
-                let paused = CommandControl::change_matching(
-                    &self.task_files.inner,
-                    task,
-                    |scope| Box::pin(self.command_has_ancestor(task, scope)),
-                    paused,
-                    self.limits.file_bytes,
-                )
-                .await?;
-                Ok(json!({"paused":paused,"scope":task}))
+                self.dispatch_submission(operation, target, request, settings)
             }
             _ => Err(Error::Invalid(
                 "renderer selection is not a harness request".into(),
             )),
         }
+    }
+    fn dispatch_submission<'a>(
+        &'a self,
+        operation: OperationId,
+        target: Option<TaskId>,
+        request: CommandRequest,
+        settings: &'a Value,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Value>> {
+        use crate::conversation::BoundedContentFuture;
+        match request {
+            CommandRequest::Replace { message, text } => {
+                BoundedContentFuture::new(None, || async move {
+                    let original = crate::runtime::task_id_for_admission(message);
+                    self.runtime.task_host().observe_admission(original).await?;
+                    let mut result = self.queue_prompt(operation, None, &text, settings)?.await?;
+                    result["replaces"] = json!(message);
+                    Ok(result)
+                })
+            }
+            CommandRequest::Cancel { task } => BoundedContentFuture::new(None, || async move {
+                self.runtime.task_host().cancel(task).await?;
+                self.refresh_command_task(task).await?;
+                Ok(json!({"task":task, "cancel_requested":true}))
+            }),
+            CommandRequest::New => {
+                BoundedContentFuture::new(None, || async { Ok(json!({"selected_task":null})) })
+            }
+            CommandRequest::Delete => BoundedContentFuture::new(None, || async move {
+                self.delete_commands(Some(required(target)?)).await
+            }),
+            CommandRequest::ClearAll => {
+                BoundedContentFuture::new(None, || self.delete_commands(None))
+            }
+            CommandRequest::Export => {
+                BoundedContentFuture::new(None, || self.export(operation, target))
+            }
+            CommandRequest::Compact { instructions } => {
+                BoundedContentFuture::new(None, || async move {
+                    self.compact(operation, required(target)?, &instructions)
+                        .await
+                })
+            }
+            CommandRequest::Rewind => BoundedContentFuture::new(None, || async move {
+                self.rewind_checkpoint(operation, required(target)?).await
+            }),
+            request => BoundedContentFuture::new(None, || self.command_controls(target, request)),
+        }
+    }
+    async fn command_controls(
+        &self,
+        target: Option<TaskId>,
+        request: CommandRequest,
+    ) -> Result<Value> {
+        let (task, paused) = match request {
+            CommandRequest::TogglePause => (Some(required(target)?), None),
+            CommandRequest::Pause { scope } => (
+                match scope {
+                    CommandTaskScope::All => None,
+                    _ => Some(required(target)?),
+                },
+                Some(true),
+            ),
+            CommandRequest::Resume { scope } => (
+                match scope {
+                    CommandTaskScope::All => None,
+                    _ => Some(required(target)?),
+                },
+                Some(false),
+            ),
+            _ => {
+                return Err(Error::Invalid(
+                    "presentation changes are applied before owner dispatch".into(),
+                ));
+            }
+        };
+        if let Some(task) = task {
+            self.runtime.task_host().observe_admission(task).await?;
+        }
+        let paused = CommandControl::change_matching(
+            &self.task_files.inner,
+            task,
+            |scope| Box::pin(self.command_has_ancestor(task, scope)),
+            paused,
+            self.limits.file_bytes,
+        )
+        .await?;
+        Ok(json!({"paused":paused,"scope":task}))
     }
     pub(super) async fn wait_command_control(&self, task: TaskId) -> Result<()> {
         CommandControl::wait_matching(
@@ -296,74 +316,80 @@ impl LocalHarness {
             }
         }
     }
-    async fn queue_prompt(
-        &self,
+    #[inline(never)]
+    fn queue_prompt<'a>(
+        &'a self,
         operation: OperationId,
         target: Option<TaskId>,
-        prompt: &str,
-        settings: &Value,
-    ) -> Result<Value> {
-        self.retain_prompt_input(
-            operation,
-            CommandResolution::Prompt {
-                text: prompt.into(),
-                source: None,
-                mentions: Vec::new(),
-            },
-        )
-        .await?;
-        self.retain_settings(operation, settings).await?;
-        let task = accepted(self.submit_to(operation, target, prompt).await?, operation)?;
-        self.refresh_command_task(task).await?;
-        Ok(json!({"task":task,"selected_task":task,"admission_operation":operation}))
+        prompt: &'a str,
+        settings: &'a Value,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Value>> {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            self.retain_prompt_input(
+                operation,
+                CommandResolution::Prompt {
+                    text: prompt.into(),
+                    source: None,
+                    mentions: Vec::new(),
+                },
+            )
+            .await?;
+            self.retain_settings(operation, settings)?.await?;
+            let task = accepted(self.submit_to(operation, target, prompt)?.await?, operation)?;
+            self.refresh_command_task(task).await?;
+            Ok(json!({"task":task,"selected_task":task,"admission_operation":operation}))
+        })
     }
-    pub(super) async fn retain_settings(
-        &self,
+    #[inline(never)]
+    pub(super) fn retain_settings<'a>(
+        &'a self,
         operation: OperationId,
-        settings: &Value,
-    ) -> Result<()> {
-        if !settings.is_object() {
-            return Err(Error::Invalid("settings must be an object".into()));
-        }
-        if settings.get("deleted").and_then(Value::as_bool) == Some(true) {
-            return Err(Error::Invalid("conversation was deleted".into()));
-        }
-        let bytes = serde_json::to_vec(settings).map_err(storage)?;
-        if bytes.len() as u64 > self.limits.file_bytes {
-            return Err(Error::Invalid("settings exceed file bound".into()));
-        }
-        let task = crate::runtime::task_id_for_admission(operation);
-        let key = FileKey::Ui {
-            directory: Component::new(format!("task-{task}")).map_err(storage)?,
-            name: Component::new("settings.json").map_err(storage)?,
-        };
-        // Publish the execution selection before admission can become runnable.
-        // Reconciliation keeps the first saved binding for this operation.
-        loop {
-            let snapshot = self
-                .task_files
-                .inner
-                .snapshot(&Query::File(key.clone()), 1)
-                .await
-                .map_err(storage)?;
-            if !snapshot.files.is_empty() {
-                break;
+        settings: &'a Value,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            if !settings.is_object() {
+                return Err(Error::Invalid("settings must be an object".into()));
             }
-            match self
-                .task_files
-                .inner
-                .create(
-                    snapshot.generation,
-                    &FileValue::new(key.clone(), bytes.clone()),
-                )
-                .await
-            {
-                Ok(_) => break,
-                Err(crate::task_volume::Error::Conflict(_)) => continue,
-                Err(error) => return Err(storage(error)),
+            if settings.get("deleted").and_then(Value::as_bool) == Some(true) {
+                return Err(Error::Invalid("conversation was deleted".into()));
             }
-        }
-        Ok(())
+            let bytes = serde_json::to_vec(settings).map_err(storage)?;
+            if bytes.len() as u64 > self.limits.file_bytes {
+                return Err(Error::Invalid("settings exceed file bound".into()));
+            }
+            let task = crate::runtime::task_id_for_admission(operation);
+            let key = FileKey::Ui {
+                directory: Component::new(format!("task-{task}")).map_err(storage)?,
+                name: Component::new("settings.json").map_err(storage)?,
+            };
+            // Publish the execution selection before admission can become runnable.
+            // Reconciliation keeps the first saved binding for this operation.
+            loop {
+                let snapshot = self
+                    .task_files
+                    .inner
+                    .snapshot(&Query::File(key.clone()), 1)
+                    .await
+                    .map_err(storage)?;
+                if !snapshot.files.is_empty() {
+                    break;
+                }
+                match self
+                    .task_files
+                    .inner
+                    .create(
+                        snapshot.generation,
+                        &FileValue::new(key.clone(), bytes.clone()),
+                    )
+                    .await
+                {
+                    Ok(_) => break,
+                    Err(crate::task_volume::Error::Conflict(_)) => continue,
+                    Err(error) => return Err(storage(error)),
+                }
+            }
+            Ok(())
+        })
     }
     async fn direct_tool(
         &self,
@@ -564,5 +590,76 @@ impl TaskCommandHost for CommandOwner<'_> {
                 .reconcile(context, fence, command, payload)
                 .await
         })
+    }
+}
+
+#[cfg(test)]
+mod dispatch_storage_tests {
+    use super::*;
+
+    fn retained_bytes<T>(_: impl FnOnce(&'static LocalHarness) -> T) -> usize {
+        std::mem::size_of::<T>()
+    }
+
+    #[test]
+    fn command_selection_retains_only_the_selected_operation() {
+        let bytes = retained_bytes(|local| {
+            local.dispatch_effect(
+                OperationId::from_bytes([1; 16]),
+                None,
+                CommandResolution::Tool {
+                    tool: CommandTool::Shell,
+                    input: Value::Null,
+                },
+                &Value::Null,
+            )
+        });
+        eprintln!("command dispatch retained bytes={bytes}");
+        assert!(
+            bytes <= 256,
+            "command selection retained every operation's future"
+        );
+    }
+}
+
+#[cfg(test)]
+mod polling_storage_tests {
+    use super::*;
+    fn retained<Args, T>(_: impl FnOnce(Args) -> T) -> usize {
+        std::mem::size_of::<T>()
+    }
+    #[test]
+    fn admission_boundaries_retain_only_owned_polling_handles() {
+        let measured = [
+            (
+                "queue_prompt",
+                retained(
+                    |(local, text, settings): (
+                        &'static LocalHarness,
+                        &'static str,
+                        &'static Value,
+                    )| {
+                        local.queue_prompt(OperationId::from_bytes([1; 16]), None, text, settings)
+                    },
+                ),
+            ),
+            (
+                "retain_settings",
+                retained(
+                    |(local, _text, settings): (
+                        &'static LocalHarness,
+                        &'static str,
+                        &'static Value,
+                    )| {
+                        local.retain_settings(OperationId::from_bytes([1; 16]), settings)
+                    },
+                ),
+            ),
+        ];
+        eprintln!("admission retained bytes: {measured:?}");
+        assert!(
+            measured.into_iter().all(|(_, bytes)| bytes <= 512),
+            "admission embeds concrete child futures"
+        );
     }
 }

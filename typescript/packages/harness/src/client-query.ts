@@ -47,3 +47,12 @@ export {
   type ChildStatus,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 export { ensureHarnessWasm as initializeClientQueries } from "./wasm-runtime.js";
+
+/** Key for a latest value on `<root>/status`; publish parent membership first. */
+export function swarmStatusKey(agent: string, key: Uint8Array): Uint8Array {
+  const prefix = new TextEncoder().encode(agent);
+  if (!agent || agent.includes("\0") || !key.length) throw new Error("Invalid swarm status identity");
+  const result = new Uint8Array(prefix.length + 1 + key.length);
+  result.set(prefix); result.set(key, prefix.length + 1);
+  return result;
+}

@@ -34,7 +34,7 @@ impl Bootstrap {
         let source = Root { directory, state };
         let harness = LocalHarness::open(config).await?;
         let agent = harness.signed.agent();
-        assert!(harness.current_turn().await?.0.is_none());
+        assert!(harness.current_turn()?.await?.0.is_none());
         drop(harness);
         Ok(Self {
             provider: Snapshot::capture(&source.directory.path().join("filesystem"))?,

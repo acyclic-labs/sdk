@@ -59,6 +59,7 @@ impl Reopen {
 }
 
 #[derive(Default)]
+#[cfg_attr(test, derive(Clone))]
 pub(super) struct Inline {
     pub(super) checkpoint: Rc<Checkpoint>,
     provisional: Option<Rc<Checkpoint>>,

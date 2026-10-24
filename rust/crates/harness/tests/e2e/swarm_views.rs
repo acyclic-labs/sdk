@@ -6,7 +6,7 @@ use super::{
 use acyclic_harness::{
     Error,
     client::{ClientViewHandle, QueryViewLimits, SwarmChange, query_verification::FileViews},
-    task_volume::{Change, FileValue, Generation, HeadFile, HeadSnapshot},
+    task_volume::{Change, Cursor, FileValue, Generation, HeadSnapshot},
 };
 use acyclic_stream::wire;
 use futures::channel::mpsc;
@@ -42,6 +42,24 @@ pub(super) struct State<'a> {
     full_records: usize,
     receipts: mpsc::UnboundedSender<Receipt>,
     status_receipts: Option<mpsc::UnboundedSender<Receipt>>,
+}
+
+// Preserve the canonical fold's complete segment metadata in the oracle.
+fn observed_snapshot(
+    views: &ClientViewHandle,
+    agent: &acyclic_stream::StreamPath,
+    cursor: Cursor,
+) -> acyclic_harness::Result<HeadSnapshot> {
+    views.read(|view| HeadSnapshot {
+        files: view.files(agent).cloned().collect(),
+        generation: Generation {
+            volume: cursor.volume,
+            epoch: cursor.epoch,
+            position: cursor.position,
+            commit: cursor.commit,
+        },
+        cursor,
+    })
 }
 
 impl<'a> State<'a> {
@@ -80,31 +98,10 @@ impl<'a> State<'a> {
     ) -> acyclic_harness::Result<Action> {
         let action = match update {
             SwarmChange::Agent { .. } | SwarmChange::Retired { .. } => Action::None,
-            SwarmChange::Snapshot { agent, cursor } => {
-                // Independent oracle uses the same canonical file fold. Only
-                // segment handles are cloned; production has a single cache.
-                let snapshot = views.read(|view| HeadSnapshot {
-                    files: view
-                        .files(&agent)
-                        .map(|file| HeadFile {
-                            publication: file.publication,
-                            channel: file.channel,
-                            key: file.key.clone(),
-                            segments: file.segments.clone(),
-                            length: file.length,
-                            through_sequence: file.through_sequence,
-                        })
-                        .collect(),
-                    generation: Generation {
-                        volume: cursor.volume,
-                        epoch: cursor.epoch,
-                        position: cursor.position,
-                        commit: cursor.commit,
-                    },
-                    cursor,
-                })?;
-                self.snapshot(publish::id(&agent)?, snapshot)?
-            }
+            SwarmChange::Snapshot { agent, cursor } => self.snapshot(
+                publish::id(&agent)?,
+                observed_snapshot(views, &agent, cursor)?,
+            )?,
             SwarmChange::Layout => {
                 let demand = views.read(|view| view.layout().clone())?;
                 let expected = &self.case.layouts[self.phase];
@@ -169,7 +166,7 @@ impl<'a> State<'a> {
                 }
                 Action::None
             }
-            SwarmChange::Watermark { .. } => Action::None,
+            SwarmChange::Watermark { .. } | SwarmChange::StatusWatermark(_) => Action::None,
         };
         if matches!(action, Action::None) && !self.waiting_layout && !self.complete {
             let needed = (self.phase + 1) * self.case.agents.div_ceil(self.case.attention_every);
@@ -398,9 +395,12 @@ impl<'a> State<'a> {
             )));
         }
         self.verify_prefix()?;
+        // All agents share one status cursor. Each phase publishes three
+        // statuses per agent plus attention, then settles agents in ID order.
+        let attention = self.case.agents.div_ceil(self.case.attention_every);
+        let phase_records = 3 * self.case.agents + attention;
         for id in 0..self.case.agents {
-            let expected = 1 + self.case.layouts.len() as u64
-                * (3 + u64::from(id % self.case.attention_every == 0));
+            let expected = (self.case.layouts.len() * phase_records + id + 1) as u64;
             if self.status_cursors[id] != expected {
                 return Err(Error::Invalid(
                     "overview omitted its final accepted cut".into(),

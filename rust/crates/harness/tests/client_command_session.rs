@@ -47,55 +47,70 @@ async fn publish(volume: &TaskVolume<MemoryStream>, path: &str, bytes: Vec<u8>) 
     feature = "test-support",
     unix
 ))]
-#[tokio::test]
-async fn published_shell_request_causes_a_real_tool_effect_and_does_not_replay() -> Result<()> {
-    use acyclic_harness::{LocalHarness, model::Model, test_support::ScriptedModelProvider};
-    let directory = crate::client_commands::client_local::Directory::new()
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    std::fs::create_dir(directory.path().join(".git")).unwrap();
-    let model = Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)?;
-    let provider = Arc::new(ScriptedModelProvider::new([]).with_context_capacity(
-        acyclic_harness::context::ModelContextCapacity {
-            context_tokens: 32_768,
-            output_tokens: Some(4096),
-        },
-    ));
-    let local = LocalHarness::open(crate::client_commands::client_local::config(
-        directory.path(),
-        (model, provider.clone()),
-    )?)
-    .await?;
-    let mut client = CommandSession::open_local(&local, session_id(), 32_768, 128).await?;
-    client
-        .submit("/SH printf hi >> effect.txt; printf hi", &DeniedReader)
-        .await?;
-    let request = client.next_request().await?;
-    let result = acyclic_harness::client::consume_local_command(&mut client, &local, &request)
-        .await?
-        .unwrap();
-    assert_eq!(result["stdout"], "hi");
-    assert_eq!(
-        std::fs::read(directory.path().join("effect.txt")).unwrap(),
-        b"hi"
-    );
-    assert!(provider.requests().is_empty());
-    assert!(
-        acyclic_harness::client::consume_local_command(&mut client, &local, &request)
+#[test]
+fn published_shell_request_causes_a_real_tool_effect_and_does_not_replay() -> Result<()> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| Error::Storage(error.to_string()))?
+        .block_on(acyclic_test_support::boxed_future(|| async {
+            use acyclic_harness::{
+                LocalHarness, model::Model, test_support::ScriptedModelProvider,
+            };
+            let directory = crate::client_commands::client_local::Directory::new()
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            std::fs::create_dir(directory.path().join(".git")).unwrap();
+            let model = Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)?;
+            let provider = Arc::new(ScriptedModelProvider::new([]).with_context_capacity(
+                acyclic_harness::context::ModelContextCapacity {
+                    context_tokens: 32_768,
+                    output_tokens: Some(4096),
+                },
+            ));
+            let config = crate::client_commands::client_local::config(
+                directory.path(),
+                (model, provider.clone()),
+            )?;
+            let local = acyclic_test_support::boxed_future(|| LocalHarness::open(config)).await?;
+            let mut client = CommandSession::open_local(&local, session_id(), 32_768, 128).await?;
+            client
+                .submit("/SH printf hi >> effect.txt; printf hi", &DeniedReader)
+                .await?;
+            let request = client.next_request().await?;
+            let result = acyclic_test_support::boxed_future(|| {
+                acyclic_harness::client::consume_local_command(&mut client, &local, &request)
+            })
             .await?
-            .is_none()
-    );
-    drop(client);
-    let mut reopened = CommandSession::open_local(&local, session_id(), 32_768, 128).await?;
-    assert!(
-        acyclic_harness::client::consume_local_command(&mut reopened, &local, &request)
-            .await?
-            .is_none()
-    );
-    assert_eq!(
-        std::fs::read(directory.path().join("effect.txt")).unwrap(),
-        b"hi"
-    );
-    Ok(())
+            .unwrap();
+            assert_eq!(result["stdout"], "hi");
+            assert_eq!(
+                std::fs::read(directory.path().join("effect.txt")).unwrap(),
+                b"hi"
+            );
+            assert!(provider.requests().is_empty());
+            assert!(
+                acyclic_test_support::boxed_future(|| {
+                    acyclic_harness::client::consume_local_command(&mut client, &local, &request)
+                })
+                .await?
+                .is_none()
+            );
+            drop(client);
+            let mut reopened =
+                CommandSession::open_local(&local, session_id(), 32_768, 128).await?;
+            assert!(
+                acyclic_test_support::boxed_future(|| {
+                    acyclic_harness::client::consume_local_command(&mut reopened, &local, &request)
+                })
+                .await?
+                .is_none()
+            );
+            assert_eq!(
+                std::fs::read(directory.path().join("effect.txt")).unwrap(),
+                b"hi"
+            );
+            Ok(())
+        }))
 }
 
 #[tokio::test]

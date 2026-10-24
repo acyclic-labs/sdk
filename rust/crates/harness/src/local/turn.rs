@@ -63,145 +63,159 @@ impl LocalHarness {
     pub fn commands(&self) -> Result<impl crate::filesystem::TaskCommandHost + '_> {
         Ok(commands::CommandOwner(self))
     }
-    pub(super) async fn submit_to(
-        &self,
+    #[inline(never)]
+    pub(super) fn submit_to<'a>(
+        &'a self,
         operation: OperationId,
         parent: Option<TaskId>,
-        prompt: &str,
-    ) -> Result<Admission<RuntimeTask<TurnOutput>>> {
-        let Some(parent) = parent else {
-            return self.submit(operation, prompt).await;
-        };
-        if prompt.is_empty() || prompt.len() as u64 > self.limits.file_bytes {
-            return Err(Error::Invalid(
-                "local prompt is empty or exceeds the file limit".into(),
-            ));
-        }
-        let task = crate::runtime::task_id_for_admission(operation);
-        // Routing, history capture, retention and admission share one hold of
-        // the admission gate, so a concurrent retry of this operation observes
-        // a finished admission instead of racing it.
-        super::routing::routed(
-            &self.admission,
-            async || {
-                if self.continuation_selection(task).await?.is_some() {
-                    return super::routing::route(parent, true, false, false, None);
-                }
-                let selected = compact::checkpoints::capture_selection(
-                    &self.task_files.inner,
-                    parent,
-                    self.limits.file_bytes,
-                )
-                .await?
-                .1
-                .is_some();
-                let settled = super::orphans::settled(
-                    self.runtime.task_host().outcome(parent).await?.as_ref(),
-                );
-                // An ordinary child of a live, unselected parent routes without
-                // its own admission: inheritance preparation checks that, and
-                // reading it here would add a read to every parented turn.
-                if !selected && !settled {
-                    return Ok(super::routing::Route::Child);
-                }
-                let existing = match self.runtime.task_host().observe_admission(task).await {
-                    Ok(record) => Some(record.parent),
-                    Err(Error::NotFound(_)) => None,
-                    Err(error) => return Err(error),
-                };
-                super::routing::route(parent, false, selected, settled, existing)
-            },
-            async |route| match route {
-                super::routing::Route::Continue { history } => {
-                    self.continue_conversation(operation, task, parent, history, prompt)
-                        .await
-                }
-                super::routing::Route::Child => {
-                    self.prepare_inheritance(task, Some(parent)).await?;
-                    let (receive, model) = self.stage_question(operation, task, prompt).await?;
-                    self.admit_turn(operation, Some(parent), receive, model)
-                        .await
-                }
-            },
-        )
-        .await
-    }
-    /// Admits a new root bound to the parent's selected checkpoint, capturing
-    /// the parent's whole history first when `history` asks for it. The caller
-    /// holds the admission gate.
-    async fn continue_conversation(
-        &self,
-        operation: OperationId,
-        task: TaskId,
-        parent: TaskId,
-        history: bool,
-        prompt: &str,
-    ) -> Result<Admission<RuntimeTask<TurnOutput>>> {
-        let (selected, through) = match self.continuation_selection(task).await? {
-            Some(selected) => {
-                let through = selected
-                    .continuation
-                    .as_ref()
-                    .ok_or_else(|| Error::Invalid("continuation lost parent history".into()))?
-                    .through
-                    .clone();
-                (selected, through)
+        prompt: &'a str,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Admission<RuntimeTask<TurnOutput>>>>
+    {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let Some(parent) = parent else {
+                return self.submit(operation, prompt).await;
+            };
+            if prompt.is_empty() || prompt.len() as u64 > self.limits.file_bytes {
+                return Err(Error::Invalid(
+                    "local prompt is empty or exceeds the file limit".into(),
+                ));
             }
-            None => {
-                let capture = async || {
-                    compact::checkpoints::capture_selection(
+            let task = crate::runtime::task_id_for_admission(operation);
+            // Routing, history capture, retention and admission share one hold of
+            // the admission gate, so a concurrent retry of this operation observes
+            // a finished admission instead of racing it.
+            super::routing::routed(
+                &self.admission,
+                async || {
+                    if self.continuation_selection(task).await?.is_some() {
+                        return super::routing::route(parent, true, false, false, None);
+                    }
+                    let selected = compact::checkpoints::capture_selection(
                         &self.task_files.inner,
                         parent,
                         self.limits.file_bytes,
                     )
-                    .await
-                };
-                let (mut cut, mut selected, _) = capture().await?;
-                // Captured under the gate, so a concurrent retry of
-                // this operation finds the checkpoint instead of
-                // capturing another history position.
-                if selected.is_none() && history {
-                    self.checkpoint_history(operation, parent).await?;
-                    (cut, selected, _) = capture().await?;
+                    .await?
+                    .1
+                    .is_some();
+                    let settled = super::orphans::settled(
+                        self.runtime.task_host().outcome(parent).await?.as_ref(),
+                    );
+                    // An ordinary child of a live, unselected parent routes without
+                    // its own admission: inheritance preparation checks that, and
+                    // reading it here would add a read to every parented turn.
+                    if !selected && !settled {
+                        return Ok(super::routing::Route::Child);
+                    }
+                    let existing = match self.runtime.task_host().observe_admission(task).await {
+                        Ok(record) => Some(record.parent),
+                        Err(Error::NotFound(_)) => None,
+                        Err(error) => return Err(error),
+                    };
+                    super::routing::route(parent, false, selected, settled, existing)
+                },
+                async |route| match route {
+                    super::routing::Route::Continue { history } => {
+                        self.continue_conversation(operation, task, parent, history, prompt)?
+                            .await
+                    }
+                    super::routing::Route::Child => {
+                        self.prepare_inheritance(task, Some(parent)).await?;
+                        let (receive, model) =
+                            self.stage_question(operation, task, prompt)?.await?;
+                        self.admit_turn(operation, Some(parent), receive, model)
+                            .await
+                    }
+                },
+            )
+            .await
+        })
+    }
+    /// Admits a new root bound to the parent's selected checkpoint, capturing
+    /// the parent's whole history first when `history` asks for it. The caller
+    /// holds the admission gate.
+    #[inline(never)]
+    fn continue_conversation<'a>(
+        &'a self,
+        operation: OperationId,
+        task: TaskId,
+        parent: TaskId,
+        history: bool,
+        prompt: &'a str,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Admission<RuntimeTask<TurnOutput>>>>
+    {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let (selected, through) = match self.continuation_selection(task).await? {
+                Some(selected) => {
+                    let through = selected
+                        .continuation
+                        .as_ref()
+                        .ok_or_else(|| Error::Invalid("continuation lost parent history".into()))?
+                        .through
+                        .clone();
+                    (selected, through)
                 }
-                let selected = selected
-                    .ok_or_else(|| Error::Conflict("continuation lost its checkpoint".into()))?;
-                let through = selected.through.clone().unwrap_or(cut.cursor);
-                (selected, through)
-            }
-        };
-        let (retained, _) = self
-            .retain_continuation(task, parent, selected, through, prompt)
-            .await?;
-        let prompt = &retained
-            .continuation
-            .as_ref()
-            .ok_or_else(|| Error::Invalid("continuation lost its prompt".into()))?
-            .prompt;
-        self.prepare_inheritance(task, None).await?;
-        let (receive, model) = match self.recover_turn_inputs(operation).await? {
-            Some(inputs) => inputs,
-            None => self.stage_question(operation, task, prompt).await?,
-        };
-        self.admit_turn(operation, None, receive, model).await
+                None => {
+                    let capture = async || {
+                        compact::checkpoints::capture_selection(
+                            &self.task_files.inner,
+                            parent,
+                            self.limits.file_bytes,
+                        )
+                        .await
+                    };
+                    let (mut cut, mut selected, _) = capture().await?;
+                    // Captured under the gate, so a concurrent retry of
+                    // this operation finds the checkpoint instead of
+                    // capturing another history position.
+                    if selected.is_none() && history {
+                        self.checkpoint_history(operation, parent).await?;
+                        (cut, selected, _) = capture().await?;
+                    }
+                    let selected = selected.ok_or_else(|| {
+                        Error::Conflict("continuation lost its checkpoint".into())
+                    })?;
+                    let through = selected.through.clone().unwrap_or(cut.cursor);
+                    (selected, through)
+                }
+            };
+            let (retained, _) = self
+                .retain_continuation(task, parent, selected, through, prompt)
+                .await?;
+            let prompt = &retained
+                .continuation
+                .as_ref()
+                .ok_or_else(|| Error::Invalid("continuation lost its prompt".into()))?
+                .prompt;
+            self.prepare_inheritance(task, None).await?;
+            let (receive, model) = match self.recover_turn_inputs(operation).await? {
+                Some(inputs) => inputs,
+                None => self.stage_question(operation, task, prompt)?.await?,
+            };
+            self.admit_turn(operation, None, receive, model).await
+        })
     }
     /// Stages a user question beneath a conversation. History retains its
     /// checkpoint; guidance is selected from the question alone, before any
     /// inherited or compacted history text is prepended, so earlier markers
     /// can never choose this admission's conventions.
-    async fn stage_question(
-        &self,
+    #[inline(never)]
+    fn stage_question<'a>(
+        &'a self,
         operation: OperationId,
         task: TaskId,
-        question: &str,
-    ) -> Result<(WorkflowCommand, WorkflowCommand)> {
-        let publisher = self.input_publisher()?;
-        let manifest = self
-            .turn_manifest(operation, question, publisher.as_ref())
-            .await?;
-        let prompt = self.prompt_context(Some(task), question).await?;
-        self.stage_bound_turn(operation, &prompt, manifest, publisher.as_ref())
-            .await
+        question: &'a str,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, (WorkflowCommand, WorkflowCommand)>>
+    {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let publisher = self.input_publisher()?;
+            let manifest = self
+                .turn_manifest(operation, question, publisher.as_ref())
+                .await?;
+            let prompt = self.prompt_context(Some(task), question).await?;
+            self.stage_bound_turn(operation, &prompt, manifest, publisher.as_ref())?
+                .await
+        })
     }
     // The caller holds the existing admission gate and prepares inheritance.
     pub(super) async fn admit_turn(
@@ -242,7 +256,7 @@ impl LocalHarness {
         operation: OperationId,
         prompt: &'a str,
     ) -> BoxProviderFuture<'a, Result<Admission<RuntimeTask<TurnOutput>>>> {
-        Box::pin(async move { Ok(self.submit_claimed(operation, prompt).await?.0) })
+        Box::pin(async move { Ok(self.submit_claimed(operation, prompt)?.await?.0) })
     }
 
     /// Holds the head admitted under `operation` for a caller that admits and
@@ -252,51 +266,67 @@ impl LocalHarness {
         super::admission::serialized(&self.admission, async || self.drivers.drive(operation)).await
     }
 
-    async fn submit_claimed(
-        &self,
+    #[inline(never)]
+    fn submit_claimed<'a>(
+        &'a self,
         operation: OperationId,
-        prompt: &str,
-    ) -> Result<(
-        Admission<RuntimeTask<TurnOutput>>,
-        Option<super::orphans::Driving<'_>>,
-    )> {
-        if prompt.is_empty() || prompt.len() as u64 > self.limits.file_bytes {
-            return Err(Error::Invalid(
-                "local prompt is empty or exceeds the file limit".into(),
-            ));
-        }
-        self.retain_prompt_input(
-            operation,
-            crate::client::CommandResolution::Prompt {
-                text: prompt.into(),
-                source: None,
-                mentions: Vec::new(),
-            },
-        )
-        .await?;
-        self.submit_turn(operation, prompt).await
-    }
-
-    pub(super) async fn stage_turn(
-        &self,
-        operation: OperationId,
-        prompt: &str,
-    ) -> Result<(WorkflowCommand, WorkflowCommand)> {
-        let publisher = self.input_publisher()?;
-        self.stage_turn_with(operation, prompt, publisher.as_ref())
-            .await
-    }
-
-    pub(super) async fn stage_turn_with(
-        &self,
-        operation: OperationId,
-        prompt: &str,
-        publisher: &dyn ContentPublisher,
-    ) -> Result<(WorkflowCommand, WorkflowCommand)> {
-        let (receive, model, _) = self
-            .stage_turn_with_output_using(operation, prompt, self.limits, None, publisher)
+        prompt: &'a str,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            (
+                Admission<RuntimeTask<TurnOutput>>,
+                Option<super::orphans::Driving<'a>>,
+            ),
+        >,
+    > {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            if prompt.is_empty() || prompt.len() as u64 > self.limits.file_bytes {
+                return Err(Error::Invalid(
+                    "local prompt is empty or exceeds the file limit".into(),
+                ));
+            }
+            self.retain_prompt_input(
+                operation,
+                crate::client::CommandResolution::Prompt {
+                    text: prompt.into(),
+                    source: None,
+                    mentions: Vec::new(),
+                },
+            )
             .await?;
-        Ok((receive, model))
+            self.submit_turn(operation, prompt)?.await
+        })
+    }
+
+    #[inline(never)]
+    pub(super) fn stage_turn<'a>(
+        &'a self,
+        operation: OperationId,
+        prompt: &'a str,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, (WorkflowCommand, WorkflowCommand)>>
+    {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let publisher = self.input_publisher()?;
+            self.stage_turn_with(operation, prompt, publisher.as_ref())?
+                .await
+        })
+    }
+
+    #[inline(never)]
+    pub(super) fn stage_turn_with<'a>(
+        &'a self,
+        operation: OperationId,
+        prompt: &'a str,
+        publisher: &'a dyn ContentPublisher,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, (WorkflowCommand, WorkflowCommand)>>
+    {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let (receive, model, _) = self
+                .stage_turn_with_output_using(operation, prompt, self.limits, None, publisher)?
+                .await?;
+            Ok((receive, model))
+        })
     }
 
     #[cfg(test)]
@@ -307,51 +337,73 @@ impl LocalHarness {
         limits: Limits,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         let (receive, model, _) = self
-            .stage_turn_with_output(operation, prompt, limits, None)
+            .stage_turn_with_output(operation, prompt, limits, None)?
             .await?;
         Ok((receive, model))
     }
 
-    pub(super) async fn stage_turn_with_output(
-        &self,
+    #[inline(never)]
+    pub(super) fn stage_turn_with_output<'a>(
+        &'a self,
         operation: OperationId,
-        prompt: &str,
+        prompt: &'a str,
         limits: Limits,
-        output: Option<&VolumeRef>,
-    ) -> Result<(
-        WorkflowCommand,
-        WorkflowCommand,
-        crate::conversation::FileRef,
-    )> {
-        let publisher = self.input_publisher_with_limit(limits.file_bytes)?;
-        self.stage_turn_with_output_using(operation, prompt, limits, output, publisher.as_ref())
-            .await
-    }
-
-    async fn stage_turn_with_output_using(
-        &self,
-        operation: OperationId,
-        prompt: &str,
-        limits: Limits,
-        output: Option<&VolumeRef>,
-        publisher: &dyn ContentPublisher,
-    ) -> Result<(
-        WorkflowCommand,
-        WorkflowCommand,
-        crate::conversation::FileRef,
-    )> {
-        let manifest = self.turn_manifest(operation, prompt, publisher).await?;
-        let (receive, model) = self
-            .stage_bound_turn_using(
+        output: Option<&'a VolumeRef>,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            (
+                WorkflowCommand,
+                WorkflowCommand,
+                crate::conversation::FileRef,
+            ),
+        >,
+    > {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let publisher = self.input_publisher_with_limit(limits.file_bytes)?;
+            self.stage_turn_with_output_using(
                 operation,
                 prompt,
                 limits,
                 output,
-                manifest.clone(),
-                publisher,
-            )
-            .await?;
-        Ok((receive, model, manifest))
+                publisher.as_ref(),
+            )?
+            .await
+        })
+    }
+
+    #[inline(never)]
+    fn stage_turn_with_output_using<'a>(
+        &'a self,
+        operation: OperationId,
+        prompt: &'a str,
+        limits: Limits,
+        output: Option<&'a VolumeRef>,
+        publisher: &'a dyn ContentPublisher,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            (
+                WorkflowCommand,
+                WorkflowCommand,
+                crate::conversation::FileRef,
+            ),
+        >,
+    > {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let manifest = self.turn_manifest(operation, prompt, publisher).await?;
+            let (receive, model) = self
+                .stage_bound_turn_using(
+                    operation,
+                    prompt,
+                    limits,
+                    output,
+                    manifest.clone(),
+                    publisher,
+                )?
+                .await?;
+            Ok((receive, model, manifest))
+        })
     }
 
     async fn turn_manifest(
@@ -363,68 +415,76 @@ impl LocalHarness {
         Ok(match &self.context_manifest {
             Some(reference) => reference.clone(),
             None => {
-                self.stage_context_manifest_with(operation, Some(prompt), publisher)
+                self.stage_context_manifest_with(operation, Some(prompt), publisher)?
                     .await?
             }
         })
     }
 
-    pub(super) async fn stage_bound_turn(
-        &self,
+    #[inline(never)]
+    pub(super) fn stage_bound_turn<'a>(
+        &'a self,
         operation: OperationId,
-        prompt: &str,
+        prompt: &'a str,
         manifest: crate::conversation::FileRef,
-        publisher: &dyn ContentPublisher,
-    ) -> Result<(WorkflowCommand, WorkflowCommand)> {
-        self.stage_bound_turn_using(operation, prompt, self.limits, None, manifest, publisher)
-            .await
+        publisher: &'a dyn ContentPublisher,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, (WorkflowCommand, WorkflowCommand)>>
+    {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            self.stage_bound_turn_using(operation, prompt, self.limits, None, manifest, publisher)?
+                .await
+        })
     }
 
-    async fn stage_bound_turn_using(
-        &self,
+    #[inline(never)]
+    fn stage_bound_turn_using<'a>(
+        &'a self,
         operation: OperationId,
-        prompt: &str,
+        prompt: &'a str,
         limits: Limits,
-        output: Option<&VolumeRef>,
+        output: Option<&'a VolumeRef>,
         manifest: crate::conversation::FileRef,
-        publisher: &dyn ContentPublisher,
-    ) -> Result<(WorkflowCommand, WorkflowCommand)> {
-        context::binding::retain(
-            &self.task_files.inner,
-            crate::runtime::task_id_for_admission(operation),
-            &manifest,
-            limits.file_bytes,
-        )
-        .await?;
-        let model = crate::filesystem::ModelTaskCommand {
-            summary_source: None,
-            context_manifest: manifest,
-            input: self
-                .turn_input_content(operation, prompt, publisher)
-                .await?,
-            selected_context: None,
-            max_steps: u32::try_from(limits.model_steps)
-                .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,
-            max_output_tokens: None,
-            mailbox_operation: None,
-            selected_output_volume: output.cloned(),
-        };
-        let bytes = serde_json::to_vec(&model).map_err(storage)?;
-        let payload = publisher
-            .stage_once(
-                operation,
-                &format!("inputs/{operation}.json"),
-                &bytes,
-                "application/json",
-                "model input",
-                crate::conversation::ContentAccess::default(),
-            )?
-            .await?
-            .0;
-        let (receive, model) = self
-            .finish_turn_inputs(operation, payload, publisher)
+        publisher: &'a dyn ContentPublisher,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, (WorkflowCommand, WorkflowCommand)>>
+    {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            context::binding::retain(
+                &self.task_files.inner,
+                crate::runtime::task_id_for_admission(operation),
+                &manifest,
+                limits.file_bytes,
+            )
             .await?;
-        Ok((receive, model))
+            let model = crate::filesystem::ModelTaskCommand {
+                summary_source: None,
+                context_manifest: manifest,
+                input: self
+                    .turn_input_content(operation, prompt, publisher)
+                    .await?,
+                selected_context: None,
+                max_steps: u32::try_from(limits.model_steps)
+                    .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,
+                max_output_tokens: None,
+                mailbox_operation: None,
+                selected_output_volume: output.cloned(),
+            };
+            let bytes = serde_json::to_vec(&model).map_err(storage)?;
+            let payload = publisher
+                .stage_once(
+                    operation,
+                    &format!("inputs/{operation}.json"),
+                    &bytes,
+                    "application/json",
+                    "model input",
+                    crate::conversation::ContentAccess::default(),
+                )?
+                .await?
+                .0;
+            let (receive, model) = self
+                .finish_turn_inputs(operation, payload, publisher)?
+                .await?;
+            Ok((receive, model))
+        })
     }
 
     pub(super) fn input_publisher(
@@ -467,75 +527,79 @@ impl LocalHarness {
                 "retained model input has another path".into(),
             ));
         }
-        self.finish_turn_inputs(operation, payload, publisher.as_ref())
+        self.finish_turn_inputs(operation, payload, publisher.as_ref())?
             .await
             .map(Some)
     }
 
-    pub(super) async fn finish_turn_inputs(
-        &self,
+    #[inline(never)]
+    pub(super) fn finish_turn_inputs<'a>(
+        &'a self,
         operation: OperationId,
         payload: crate::conversation::FileRef,
-        publisher: &dyn ContentPublisher,
-    ) -> Result<(WorkflowCommand, WorkflowCommand)> {
-        let model = WorkflowCommand {
-            operation_id: operation,
-            kind: crate::filesystem::MODEL_TASK_COMMAND_KIND.into(),
-            payload,
-        };
-        let receive_operation = receive_operation(operation);
-        // Older admissions retained one identical payload per turn. Keep their
-        // exact reference on retry; new commands share one immutable journal file.
-        let (retained, _) = publisher
-            .observe_staged_once(
-                receive_operation,
-                self.limits.file_bytes,
-                crate::conversation::ContentAccess::default(),
-            )?
-            .await?;
-        let payload = match retained {
-            Some(payload) => {
-                let descriptor = crate::conversation::FileDescriptor::from_bytes(
-                    b"{\"after\":0}",
-                    "application/json",
-                    &mut None,
-                )?;
-                if payload.path() != format!("inputs/{operation}.receive.json")
-                    || payload.descriptor() != &descriptor
-                    || payload.display_name() != "mailbox receive"
-                {
-                    return Err(Error::Conflict(
-                        "retained receive input has another identity".into(),
-                    ));
-                }
-                payload
-            }
-            None => {
-                let mut hash = blake3::Hasher::new();
-                hash.update(b"acyclic.local.mail-receive-input/v1\0");
-                hash.update(publisher.volume().storage_name(&mut None)?.as_bytes());
-                let identity = hash.finalize();
-                let mut bytes = [0; 16];
-                bytes.copy_from_slice(&identity.as_bytes()[..16]);
-                publisher
-                    .stage_once(
-                        OperationId::from_bytes(bytes),
-                        "inputs/mailbox-receive.json",
+        publisher: &'a dyn ContentPublisher,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, (WorkflowCommand, WorkflowCommand)>>
+    {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let model = WorkflowCommand {
+                operation_id: operation,
+                kind: crate::filesystem::MODEL_TASK_COMMAND_KIND.into(),
+                payload,
+            };
+            let receive_operation = receive_operation(operation);
+            // Older admissions retained one identical payload per turn. Keep their
+            // exact reference on retry; new commands share one immutable journal file.
+            let (retained, _) = publisher
+                .observe_staged_once(
+                    receive_operation,
+                    self.limits.file_bytes,
+                    crate::conversation::ContentAccess::default(),
+                )?
+                .await?;
+            let payload = match retained {
+                Some(payload) => {
+                    let descriptor = crate::conversation::FileDescriptor::from_bytes(
                         b"{\"after\":0}",
                         "application/json",
-                        "mailbox receive",
-                        crate::conversation::ContentAccess::default(),
-                    )?
-                    .await?
-                    .0
-            }
-        };
-        let receive = WorkflowCommand {
-            operation_id: receive_operation,
-            kind: crate::filesystem::MAIL_RECEIVE_TASK_COMMAND_KIND.into(),
-            payload,
-        };
-        Ok((receive, model))
+                        &mut None,
+                    )?;
+                    if payload.path() != format!("inputs/{operation}.receive.json")
+                        || payload.descriptor() != &descriptor
+                        || payload.display_name() != "mailbox receive"
+                    {
+                        return Err(Error::Conflict(
+                            "retained receive input has another identity".into(),
+                        ));
+                    }
+                    payload
+                }
+                None => {
+                    let mut hash = blake3::Hasher::new();
+                    hash.update(b"acyclic.local.mail-receive-input/v1\0");
+                    hash.update(publisher.volume().storage_name(&mut None)?.as_bytes());
+                    let identity = hash.finalize();
+                    let mut bytes = [0; 16];
+                    bytes.copy_from_slice(&identity.as_bytes()[..16]);
+                    publisher
+                        .stage_once(
+                            OperationId::from_bytes(bytes),
+                            "inputs/mailbox-receive.json",
+                            b"{\"after\":0}",
+                            "application/json",
+                            "mailbox receive",
+                            crate::conversation::ContentAccess::default(),
+                        )?
+                        .await?
+                        .0
+                }
+            };
+            let receive = WorkflowCommand {
+                operation_id: receive_operation,
+                kind: crate::filesystem::MAIL_RECEIVE_TASK_COMMAND_KIND.into(),
+                payload,
+            };
+            Ok((receive, model))
+        })
     }
 
     /// Runs a prompt through durable admission, the fenced worker and stock executor.
@@ -546,7 +610,7 @@ impl LocalHarness {
     pub(super) async fn run_as(&self, operation: OperationId, prompt: &str) -> Result<TurnOutput> {
         // The admission's claim is carried into driving, so cancelling this
         // future at any await leaves the head to the next prompt.
-        let (admission, claim) = Box::pin(self.submit_claimed(operation, prompt)).await?;
+        let (admission, claim) = self.submit_claimed(operation, prompt)?.await?;
         match admission {
             Admission::Accepted(RuntimeTask::Durable { task_id, .. }) => {
                 self.resume_claimed(task_id, claim).await
@@ -676,4 +740,215 @@ pub(super) fn receive_operation(operation: OperationId) -> OperationId {
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
     OperationId::from_bytes(bytes)
+}
+
+#[cfg(test)]
+mod polling_storage_tests {
+    use super::*;
+    fn retained<Args, T>(_: impl FnOnce(Args) -> T) -> usize {
+        std::mem::size_of::<T>()
+    }
+    #[test]
+    fn admission_boundaries_retain_only_owned_polling_handles() {
+        let measured = [
+            (
+                "submit_to",
+                retained(
+                    |(local, text, _publisher, _reference): (
+                        &'static LocalHarness,
+                        &'static str,
+                        &'static dyn ContentPublisher,
+                        &'static crate::conversation::FileRef,
+                    )| {
+                        local.submit_to(OperationId::from_bytes([1; 16]), None, text)
+                    },
+                ),
+            ),
+            (
+                "continue_conversation",
+                retained(
+                    |(local, text, _publisher, _reference): (
+                        &'static LocalHarness,
+                        &'static str,
+                        &'static dyn ContentPublisher,
+                        &'static crate::conversation::FileRef,
+                    )| {
+                        local.continue_conversation(
+                            OperationId::from_bytes([1; 16]),
+                            TaskId::from_bytes([2; 16]),
+                            TaskId::from_bytes([3; 16]),
+                            false,
+                            text,
+                        )
+                    },
+                ),
+            ),
+            (
+                "stage_question",
+                retained(
+                    |(local, text, _publisher, _reference): (
+                        &'static LocalHarness,
+                        &'static str,
+                        &'static dyn ContentPublisher,
+                        &'static crate::conversation::FileRef,
+                    )| {
+                        local.stage_question(
+                            OperationId::from_bytes([1; 16]),
+                            TaskId::from_bytes([2; 16]),
+                            text,
+                        )
+                    },
+                ),
+            ),
+            (
+                "submit_claimed",
+                retained(
+                    |(local, text, _publisher, _reference): (
+                        &'static LocalHarness,
+                        &'static str,
+                        &'static dyn ContentPublisher,
+                        &'static crate::conversation::FileRef,
+                    )| {
+                        local.submit_claimed(OperationId::from_bytes([1; 16]), text)
+                    },
+                ),
+            ),
+            (
+                "stage_turn",
+                retained(
+                    |(local, text, _publisher, _reference): (
+                        &'static LocalHarness,
+                        &'static str,
+                        &'static dyn ContentPublisher,
+                        &'static crate::conversation::FileRef,
+                    )| {
+                        local.stage_turn(OperationId::from_bytes([1; 16]), text)
+                    },
+                ),
+            ),
+            (
+                "stage_turn_with",
+                retained(
+                    |(local, text, publisher, _reference): (
+                        &'static LocalHarness,
+                        &'static str,
+                        &'static dyn ContentPublisher,
+                        &'static crate::conversation::FileRef,
+                    )| {
+                        local.stage_turn_with(OperationId::from_bytes([1; 16]), text, publisher)
+                    },
+                ),
+            ),
+            (
+                "stage_turn_with_output",
+                retained(
+                    |(local, text, _publisher, _reference): (
+                        &'static LocalHarness,
+                        &'static str,
+                        &'static dyn ContentPublisher,
+                        &'static crate::conversation::FileRef,
+                    )| {
+                        local.stage_turn_with_output(
+                            OperationId::from_bytes([1; 16]),
+                            text,
+                            Limits::default(),
+                            None,
+                        )
+                    },
+                ),
+            ),
+            (
+                "stage_turn_with_output_using",
+                retained(
+                    |(local, text, publisher, _reference): (
+                        &'static LocalHarness,
+                        &'static str,
+                        &'static dyn ContentPublisher,
+                        &'static crate::conversation::FileRef,
+                    )| {
+                        local.stage_turn_with_output_using(
+                            OperationId::from_bytes([1; 16]),
+                            text,
+                            Limits::default(),
+                            None,
+                            publisher,
+                        )
+                    },
+                ),
+            ),
+            (
+                "turn_manifest",
+                retained(
+                    |(local, text, publisher, _reference): (
+                        &'static LocalHarness,
+                        &'static str,
+                        &'static dyn ContentPublisher,
+                        &'static crate::conversation::FileRef,
+                    )| {
+                        local.turn_manifest(OperationId::from_bytes([1; 16]), text, publisher)
+                    },
+                ),
+            ),
+            (
+                "stage_bound_turn",
+                retained(
+                    |(local, text, publisher, reference): (
+                        &'static LocalHarness,
+                        &'static str,
+                        &'static dyn ContentPublisher,
+                        &'static crate::conversation::FileRef,
+                    )| {
+                        local.stage_bound_turn(
+                            OperationId::from_bytes([1; 16]),
+                            text,
+                            reference.clone(),
+                            publisher,
+                        )
+                    },
+                ),
+            ),
+            (
+                "stage_bound_turn_using",
+                retained(
+                    |(local, text, publisher, reference): (
+                        &'static LocalHarness,
+                        &'static str,
+                        &'static dyn ContentPublisher,
+                        &'static crate::conversation::FileRef,
+                    )| {
+                        local.stage_bound_turn_using(
+                            OperationId::from_bytes([1; 16]),
+                            text,
+                            Limits::default(),
+                            None,
+                            reference.clone(),
+                            publisher,
+                        )
+                    },
+                ),
+            ),
+            (
+                "finish_turn_inputs",
+                retained(
+                    |(local, _text, publisher, reference): (
+                        &'static LocalHarness,
+                        &'static str,
+                        &'static dyn ContentPublisher,
+                        &'static crate::conversation::FileRef,
+                    )| {
+                        local.finish_turn_inputs(
+                            OperationId::from_bytes([1; 16]),
+                            reference.clone(),
+                            publisher,
+                        )
+                    },
+                ),
+            ),
+        ];
+        eprintln!("admission retained bytes: {measured:?}");
+        assert!(
+            measured.into_iter().all(|(_, bytes)| bytes <= 512),
+            "admission embeds concrete child futures"
+        );
+    }
 }

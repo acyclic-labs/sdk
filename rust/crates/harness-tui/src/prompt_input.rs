@@ -32,6 +32,11 @@ pub enum InputEffect {
         /// Move to the preceding match instead of the following one.
         previous: bool,
     },
+    /// A source anchor selected by the transcript track; the host writes layout.json.
+    ScrollTo {
+        /// Resolved source position, or the live tail.
+        anchor: Option<crate::TranscriptAnchor>,
+    },
     /// Interrupt the active operation.
     Interrupt,
     /// Exit requested by double interrupt or Ctrl+D on an empty prompt.
@@ -55,6 +60,14 @@ struct MessageEdit {
     message: String,
     navigation: Navigation,
     draft: Editor,
+}
+
+// A mouse drag has exactly one owner; switching widgets cannot retain a
+// second, stale selection capture behind the active scrollbar drag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Drag {
+    Prompt,
+    Scrollbar,
 }
 
 /// Prompt controller over typed input events. IME commits always insert text,
@@ -92,7 +105,7 @@ pub struct PromptInput {
     search: Option<Search>,
     editing: Option<MessageEdit>,
     click: Option<(u16, u16, u64, u8)>,
-    pub(crate) dragging: bool,
+    pub(crate) drag: Option<Drag>,
     pub(crate) input_width: usize,
     last_activity: u64,
 }
@@ -674,7 +687,7 @@ impl PromptInput {
         now_ms: u64,
     ) -> Vec<InputEffect> {
         if event.kind == MouseEventKind::Up(MouseButton::Left) {
-            self.dragging = false;
+            self.drag = None;
             return vec![];
         }
         if !Self::reads_presented_viewport(&event) || area.width == 0 || area.height == 0 {
@@ -682,7 +695,8 @@ impl PromptInput {
         }
         let inside = area.contains((event.column, event.row).into());
         let down = event.kind == MouseEventKind::Down(MouseButton::Left);
-        let drag = event.kind == MouseEventKind::Drag(MouseButton::Left) && self.dragging;
+        let drag = event.kind == MouseEventKind::Drag(MouseButton::Left)
+            && self.drag == Some(Drag::Prompt);
         if !drag && !(down && inside) {
             return vec![];
         }
@@ -717,7 +731,7 @@ impl PromptInput {
                 })
                 .map_or(1, |(_, _, _, count)| count % 3 + 1);
             self.click = Some((event.column, event.row, now_ms, count));
-            self.dragging = true;
+            self.drag = Some(Drag::Prompt);
             match count {
                 _ if event.modifiers.contains(KeyModifiers::SHIFT) => {
                     self.editor.set_cursor(offset, true);

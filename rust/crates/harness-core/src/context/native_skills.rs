@@ -349,119 +349,128 @@ impl NativeSkills {
         Ok(Some(chunk.bytes))
     }
 
-    pub async fn catalog(
-        &self,
-        root: &Path,
-        view: &View,
-        bounds: &mut DiscoveryWork,
-    ) -> Result<Vec<SkillMetadata>> {
-        bounds.limits.validate()?;
-        let before = *bounds;
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let work = native_work(&cancellation)?;
-        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-            work: &work,
-            cancellation: &cancellation,
-        };
-        let cut = view.snapshot(&mut accounting).await?;
-        let mut cached = crate::sync::owned::lock_owned(self.cache.clone()).await;
-        if let Some((id, catalog)) = &*cached
-            && id == &cut.id
-            && let Some(skills) = catalog.reuse(bounds)?
-        {
-            return Ok(skills);
-        }
-        let mut skills = self.user_catalog(bounds).await?;
-        let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
-        let native = NativeDemandSource::open(
-            std::borrow::Cow::Borrowed(root),
-            config.profile,
-            config.limits,
-            Some(cut.source),
-            None,
-            &work,
-            &cancellation,
-        )
-        .await
-        .map_err(storage)?;
-        let mut records = RetainedBatch::default();
-        let mut scan = ProjectCatalog {
-            sources: self,
-            root,
-            directory: LazyDiscovery {
-                view,
-                cut,
+    #[inline(never)]
+    pub fn catalog<'a>(
+        &'a self,
+        root: &'a Path,
+        view: &'a View,
+        bounds: &'a mut DiscoveryWork,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<SkillMetadata>>> {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            bounds.limits.validate()?;
+            let before = *bounds;
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = native_work(&cancellation)?;
+            let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
                 work: &work,
-            },
-            native,
-            records: &mut records,
-        };
-        for directory in PROJECT_SKILL_ROOTS {
-            skills.extend(
-                discover_skills_from(&mut scan, directory, "SKILL.md", bounds, Some(&cut), true)
-                    .await?,
-            );
-        }
-        let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;
-        drop(scan);
-        records.publish(self.directory.clone()).await?;
-        *cached = Some((cut.id, catalog));
-        Ok(skills)
-    }
-
-    pub async fn user_catalog(&self, bounds: &mut DiscoveryWork) -> Result<Vec<SkillMetadata>> {
-        bounds.limits.validate()?;
-        let before = *bounds;
-        let mut cached = crate::sync::owned::lock_owned(self.users.clone()).await;
-        if let Some(catalog) = &*cached
-            && let Some(skills) = catalog.reuse(bounds)?
-        {
-            return Ok(skills);
-        }
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let work = native_work(&cancellation)?;
-        let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
-        let mut skills = Vec::new();
-        let mut roots = std::collections::HashSet::new();
-        let mut records = RetainedBatch::default();
-        for root in &self.user_roots {
-            let source = match NativeDemandSource::open(
+                cancellation: &cancellation,
+            };
+            let cut = view.snapshot(&mut accounting).await?;
+            let mut cached = crate::sync::owned::lock_owned(self.cache.clone()).await;
+            if let Some((id, catalog)) = &*cached
+                && id == &cut.id
+                && let Some(skills) = catalog.reuse(bounds)?
+            {
+                return Ok(skills);
+            }
+            let mut skills = self.user_catalog(bounds)?.await?;
+            let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
+            let native = NativeDemandSource::open(
                 std::borrow::Cow::Borrowed(root),
                 config.profile,
                 config.limits,
-                None,
+                Some(cut.source),
                 None,
                 &work,
                 &cancellation,
             )
             .await
-            {
-                Ok(source) => source,
-                Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                    continue;
-                }
-                Err(error) => return Err(storage(error)),
-            };
-            // Identity comes from the handle already opened by native I/O,
-            // so aliases collapse before any directory entries are scanned.
-            if !roots.insert(source.root_identity()) {
-                continue;
-            }
-            let mut scan = UserCatalogSource {
+            .map_err(storage)?;
+            let mut records = RetainedBatch::default();
+            let mut scan = ProjectCatalog {
                 sources: self,
-                source: &source,
                 root,
-                work: &work,
+                directory: LazyDiscovery {
+                    view,
+                    cut,
+                    work: &work,
+                },
+                native,
                 records: &mut records,
             };
-            skills.extend(
-                discover_skills_from(&mut scan, "", "SKILL.md", bounds, None, false).await?,
-            );
-        }
-        let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;
-        records.publish(self.directory.clone()).await?;
-        *cached = Some(catalog);
-        Ok(skills)
+            for directory in PROJECT_SKILL_ROOTS {
+                skills.extend(
+                    discover_skills_from(&mut scan, directory, "SKILL.md", bounds, Some(&cut), true)
+                        .await?,
+                );
+            }
+            let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;
+            drop(scan);
+            records.publish(self.directory.clone()).await?;
+            *cached = Some((cut.id, catalog));
+            Ok(skills)
+        })
+    }
+
+    #[inline(never)]
+    pub fn user_catalog<'a>(
+        &'a self,
+        bounds: &'a mut DiscoveryWork,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<SkillMetadata>>> {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            bounds.limits.validate()?;
+            let before = *bounds;
+            let mut cached = crate::sync::owned::lock_owned(self.users.clone()).await;
+            if let Some(catalog) = &*cached
+                && let Some(skills) = catalog.reuse(bounds)?
+            {
+                return Ok(skills);
+            }
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = native_work(&cancellation)?;
+            let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
+            let mut skills = Vec::new();
+            let mut roots = std::collections::HashSet::new();
+            let mut records = RetainedBatch::default();
+            for root in &self.user_roots {
+                let source = match NativeDemandSource::open(
+                    std::borrow::Cow::Borrowed(root),
+                    config.profile,
+                    config.limits,
+                    None,
+                    None,
+                    &work,
+                    &cancellation,
+                )
+                .await
+                {
+                    Ok(source) => source,
+                    Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                        continue;
+                    }
+                    Err(error) => return Err(storage(error)),
+                };
+                // Identity comes from the handle already opened by native I/O,
+                // so aliases collapse before any directory entries are scanned.
+                if !roots.insert(source.root_identity()) {
+                    continue;
+                }
+                let mut scan = UserCatalogSource {
+                    sources: self,
+                    source: &source,
+                    root,
+                    work: &work,
+                    records: &mut records,
+                };
+                skills.extend(
+                    discover_skills_from(&mut scan, "", "SKILL.md", bounds, None, false).await?,
+                );
+            }
+            let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;
+            records.publish(self.directory.clone()).await?;
+            *cached = Some(catalog);
+            Ok(skills)
+        })
     }
 }
 

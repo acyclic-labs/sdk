@@ -4,13 +4,28 @@ use crate::{
     task_volume::{Channel, FileKey, Query},
 };
 use acyclic_markdown::Markdown;
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
+
+struct SealedTurn {
+    turn: u64,
+    first: FileKey,
+    prefix: Option<(FileKey, usize, acyclic_stream::OwnedBytes)>,
+    end: usize,
+}
 
 /// Disposable parsing cache; all source bytes remain in ClientViews.
 #[derive(Default)]
 pub(super) struct StreamText {
+    origins: super::source_rows::SourceRows,
+    last_origin: [u8; 32],
     markdown: Markdown,
+    append: Option<(usize, usize, usize)>,
+    append_only: bool,
     stable: Vec<Line<'static>>,
+    sealed: VecDeque<SealedTurn>,
+    current_first: Option<FileKey>,
+    current_prefix: Option<(FileKey, usize, acyclic_stream::OwnedBytes)>,
+    dropped: usize,
     pending: [u8; 4],
     pending_len: usize,
     provisional_row: Option<usize>,
@@ -28,6 +43,9 @@ pub(super) struct StreamText {
     pub(super) work: usize,
 }
 impl StreamText {
+    pub(super) fn has_text(&self) -> bool {
+        self.first.is_some()
+    }
     fn offset(&self) -> usize {
         self.stable.len()
             + usize::from(
@@ -48,6 +66,23 @@ impl StreamText {
         }
         let before = self.len();
         let changed = self.markdown.push(text);
+        if !text.is_empty() && self.append_only {
+            if let Some((row, span, byte)) = self.markdown.last_append() {
+                let at = (self.offset() + row, span, byte);
+                if self
+                    .append
+                    .is_none_or(|previous| previous.0 == at.0 && previous.1 == at.1)
+                {
+                    self.append.get_or_insert(at);
+                } else {
+                    self.append_only = false;
+                    self.append = None;
+                }
+            } else {
+                self.append_only = false;
+                self.append = None;
+            }
+        }
         before.min(self.offset() + changed)
     }
     fn decode(&mut self, mut bytes: &[u8]) -> usize {
@@ -78,6 +113,10 @@ impl StreamText {
         changed
     }
     pub(super) fn push(&mut self, mut bytes: &[u8]) -> usize {
+        if self.pending_len != 0 || self.provisional_row.is_some() {
+            self.append_only = false;
+            self.append = None;
+        }
         let mut changed = self.provisional_row.take().unwrap_or_else(|| self.len());
         while self.pending_len != 0 && !bytes.is_empty() {
             let mut boundary = [0; 4];
@@ -95,34 +134,117 @@ impl StreamText {
         }
         changed
     }
-    pub(super) fn update(&mut self, task: &TaskQueryView<'_>, channel: Channel) -> usize {
-        if !self
-            .source
+    fn prefix_valid(&self, task: &TaskQueryView<'_>) -> bool {
+        self.first
             .as_ref()
-            .is_some_and(|source| Arc::ptr_eq(source, task.source))
-            || self
-                .first
-                .as_ref()
-                .is_some_and(|key| task.file(key).is_none())
-            || self.prefix.as_ref().is_some_and(|(key, index, bytes)| {
+            .is_none_or(|key| task.file(key).is_some())
+            && self.prefix.as_ref().is_none_or(|(key, index, bytes)| {
                 task.file(key)
                     .and_then(|file| file.segments.get(*index))
-                    .is_none_or(|current| {
-                        current.as_ptr() != bytes.as_ptr() || current.len() != bytes.len()
+                    .is_some_and(|current| {
+                        current.as_ptr() == bytes.as_ptr() && current.len() == bytes.len()
                     })
             })
-        {
+    }
+    // Completed turns have independent Markdown state. Discard their rows and
+    // checkpoints without feeding any retained bytes back through the parser.
+    // A partial turn eviction can change fences, lists or reference definitions
+    // throughout that turn and must be parsed from its new authoritative start.
+    fn discard_turns(&mut self, task: &TaskQueryView<'_>, channel: Channel) -> bool {
+        let mut through = 0;
+        while let Some(front) = self.sealed.front() {
+            let retained = task
+                .text_from(Some(&front.first))
+                .take_while(|text| text.turn == front.turn)
+                .any(|text| text.channel == channel);
+            if retained {
+                break;
+            }
+            if let Some(front) = self.sealed.pop_front() {
+                through = front.end;
+            }
+        }
+        if through == 0 {
+            return false;
+        }
+        self.dropped = self.discard_rows(through);
+        for sealed in &mut self.sealed {
+            sealed.end = sealed.end.saturating_sub(self.dropped);
+        }
+        if let Some(front) = self.sealed.front() {
+            self.first = Some(front.first.clone());
+            self.prefix = front.prefix.clone();
+        } else {
+            self.first = self.current_first.clone();
+            self.prefix = self.current_prefix.clone();
+        }
+        self.prefix_valid(task)
+    }
+    pub(super) fn discard_rows(&mut self, through: usize) -> usize {
+        if through == 0 {
+            return 0;
+        }
+        let separator = usize::from(through < self.len());
+        let removed = through + separator;
+        self.origins.discard(removed);
+        self.stable.drain(..removed.min(self.stable.len()));
+        self.provisional_row = self.provisional_row.map(|row| row.saturating_sub(removed));
+        removed
+    }
+    pub(super) fn dropped(&self) -> usize {
+        self.dropped
+    }
+    pub(super) fn origin(&self, line: usize) -> Option<crate::tui::TranscriptOrigin> {
+        self.origins.origin(line)
+    }
+    pub(super) fn resolve(&self, origin: crate::tui::TranscriptOrigin) -> Option<usize> {
+        self.origins.resolve(origin)
+    }
+    fn record_origin(&mut self, origin: [u8; 32], before: usize) {
+        self.origins.truncate(self.len());
+        let mut boundary = before.max(self.offset());
+        if self.last_origin != origin {
+            // A Markdown separator introduced between source blocks belongs to
+            // the preceding block. It disappears when that prefix is evicted.
+            while self
+                .markdown
+                .lines()
+                .get(boundary.saturating_sub(self.offset()))
+                .is_some_and(|line| line.spans.is_empty())
+                && boundary < self.len()
+            {
+                boundary += 1;
+            }
+        }
+        self.origins.extend_current(boundary);
+        self.origins.extend(origin, self.len());
+        self.last_origin = origin;
+    }
+    pub(super) fn update(&mut self, task: &TaskQueryView<'_>, channel: Channel) -> usize {
+        self.dropped = 0;
+        let same_source = self
+            .source
+            .as_ref()
+            .is_some_and(|source| Arc::ptr_eq(source, task.source));
+        if !same_source || (!self.prefix_valid(task) && !self.discard_turns(task, channel)) {
             *self = Self {
                 source: Some(task.source.clone()),
                 ..Self::default()
             };
         }
+        self.append = None;
+        self.append_only = self.provisional_row.is_none() && self.pending_len == 0;
         let mut changed = self.provisional_row.take().unwrap_or_else(|| self.len());
         let from = self.last.clone();
         for text in task
             .text_from(from.as_ref())
             .filter(|text| text.channel == channel)
         {
+            let origin = if self.last.as_ref() == Some(&text.file.key) {
+                self.last_origin
+            } else {
+                super::source_rows::identity(&text.file.key)
+            };
             let start = if self.last.as_ref() == Some(&text.file.key) {
                 self.segments
             } else {
@@ -134,16 +256,47 @@ impl StreamText {
             }
             if self.turn != Some(text.turn) && self.first.is_some() {
                 changed = changed.min(self.boundary());
+                if let (Some(turn), Some(first)) = (self.turn, self.current_first.take()) {
+                    self.sealed.push_back(SealedTurn {
+                        turn,
+                        first,
+                        prefix: self.current_prefix.take(),
+                        end: self.stable.len(),
+                    });
+                }
             }
             self.turn = Some(text.turn);
+            self.current_first
+                .get_or_insert_with(|| text.file.key.clone());
             for (index, segment) in text.file.segments.iter().enumerate().skip(start) {
+                let origin = text
+                    .file
+                    .segment_sequences
+                    .get(index)
+                    .map_or(origin, |sequence| {
+                        super::source_rows::identity(&FileKey::Task {
+                            task: task.task.clone(),
+                            file: crate::task_volume::TaskFile::Chunk {
+                                turn: text.turn,
+                                sequence: *sequence,
+                            },
+                        })
+                    });
                 if self.prefix.is_none() && !segment.is_empty() {
                     self.prefix = Some((text.file.key.clone(), index, segment.clone()));
                 }
+                if self.current_prefix.is_none() && !segment.is_empty() {
+                    self.current_prefix = Some((text.file.key.clone(), index, segment.clone()));
+                }
+                let before = self.len();
                 changed = changed.min(self.push(segment));
+                self.record_origin(origin, before);
             }
             self.first.get_or_insert_with(|| text.file.key.clone());
             self.last = Some(text.file.key.clone());
+            if text.file.segment_sequences.is_empty() {
+                self.last_origin = origin;
+            }
             self.segments = text.file.segments.len();
         }
         changed
@@ -210,7 +363,9 @@ impl StreamText {
                 if self.prefix.is_none() && !bytes.is_empty() {
                     self.prefix = Some((file.key.clone(), index, bytes.clone()));
                 }
+                let before = self.len();
                 changed = changed.min(self.push_tool(bytes));
+                self.record_origin(super::source_rows::identity(&file.key), before);
             }
             self.first.get_or_insert_with(|| file.key.clone());
             self.last = Some(file.key.clone());
@@ -220,6 +375,8 @@ impl StreamText {
     }
     /// Markdown blocks cannot extend across distinct model turns or outcomes.
     pub(super) fn boundary(&mut self) -> usize {
+        self.append = None;
+        self.append_only = false;
         let changed = self.provisional_row.take().unwrap_or_else(|| self.len());
         if self.pending_len != 0 {
             self.pending_len = 0;
@@ -229,7 +386,22 @@ impl StreamText {
             if !self.stable.is_empty() {
                 self.stable.push(Line::default());
             }
-            self.stable.extend(self.markdown.lines().iter().map(line));
+            let finished = std::mem::take(&mut self.markdown);
+            self.stable
+                .extend(finished.into_lines().into_iter().map(|row| {
+                    Line::from(
+                        row.spans
+                            .into_iter()
+                            .map(|span| {
+                                let text = match super::super::display_text(&span.text) {
+                                    std::borrow::Cow::Borrowed(_) => span.text,
+                                    std::borrow::Cow::Owned(text) => text,
+                                };
+                                super::Span::styled(text, super::style(span.style))
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                }));
         }
         self.markdown = Markdown::default();
         self.newline = false;
@@ -243,6 +415,42 @@ impl StreamText {
         self.stable.extend(rows);
         changed
     }
+    /// Borrow only the appended display suffix; replacement paths return None.
+    pub(super) fn append_delta(
+        &self,
+    ) -> Option<(usize, usize, std::borrow::Cow<'_, str>, super::Style)> {
+        if !self.append_only || self.pending_len != 0 {
+            return None;
+        }
+        let (row, span, byte) = self.append?;
+        let source = self
+            .markdown
+            .lines()
+            .get(row.checked_sub(self.offset())?)?
+            .spans
+            .get(span)?;
+        let text = super::super::display_text(source.text.get(byte..)?);
+        Some((row, span, text, super::style(source.style)))
+    }
+
+    pub(super) fn apply_rows(&mut self, target: &mut Vec<Line<'static>>, changed: usize) {
+        target.drain(..self.dropped.min(target.len()));
+        if let Some((row, span, text, _)) = self.append_delta()
+            && target.len() == self.len()
+            && row + 1 == target.len()
+            && let Some(line) = target.get_mut(row)
+            && span + 1 == line.spans.len()
+            && let Some(last) = line.spans.get_mut(span)
+        {
+            last.content.to_mut().push_str(&text);
+            return;
+        }
+        target.truncate(changed);
+        target.extend(self.rows(changed));
+        self.origins.truncate(target.len());
+        self.origins.extend(self.last_origin, target.len());
+    }
+
     pub(super) fn rows(&mut self, changed: usize) -> Vec<Line<'static>> {
         let mut rows: Vec<_> = self.stable.iter().skip(changed).cloned().collect();
         let offset = self.offset();

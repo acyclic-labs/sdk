@@ -5,6 +5,10 @@ use std::collections::BTreeMap;
 
 /// Snapshot/cursor-follow over canonical files, independent of their physical layout.
 pub trait FileQuerySource: ProviderPlatform {
+    /// Retains this exact authorized reader for reconnects, without opening
+    /// another volume or discarding its incremental index.
+    fn retain(&self) -> std::sync::Arc<dyn FileQuerySource>;
+
     /// Opens or resumes one bounded selection. A reset supplies a new snapshot.
     fn observe_files(
         &self,
@@ -16,6 +20,10 @@ pub trait FileQuerySource: ProviderPlatform {
 }
 
 impl<P: StreamProvider + ?Sized> FileQuerySource for TaskVolume<P> {
+    fn retain(&self) -> std::sync::Arc<dyn FileQuerySource> {
+        std::sync::Arc::new(self.clone())
+    }
+
     fn observe_files(
         &self,
         query: Query,

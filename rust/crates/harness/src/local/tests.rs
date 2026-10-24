@@ -42,14 +42,23 @@ use std::{
 };
 
 // Independent disk/credential fixtures must execute on workers, rather than
-// monopolize a current-thread join. Share the worker pool across both sweeps.
+// monopolize a current-thread join. Share four async workers across both sweeps;
+// deriving this width from host CPUs oversubscribes each concurrent proof job.
+// Blocking callers also await filesystem blocking work, so they cannot own all
+// of the runtime's blocking slots.
 pub(super) static WORKERS: std::sync::LazyLock<tokio::runtime::Runtime> =
     std::sync::LazyLock::new(|| {
         tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
             .enable_all()
             .build()
             .unwrap()
     });
+
+#[test]
+fn shared_proof_workers_have_a_host_independent_width() {
+    assert_eq!(WORKERS.metrics().num_workers(), 4);
+}
 
 fn scripted(turns: impl IntoIterator<Item = ScriptedTurn>) -> Arc<ScriptedModelProvider> {
     Arc::new(ScriptedModelProvider::new(turns).with_context_capacity(capacity()))

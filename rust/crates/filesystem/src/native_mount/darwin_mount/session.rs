@@ -33,7 +33,6 @@ impl DriverSessionResources {
             if control.controls_pending() {
                 return Err(NativeMountError::ControlPending);
             }
-            drop(control.diskutil.take());
             self.free(wait)?;
         }
         if let Some(packet) = retirement {

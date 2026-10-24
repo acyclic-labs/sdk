@@ -202,7 +202,7 @@ pub(super) async fn run(
             .await?
             .0;
         let inputs = harness
-            .finish_turn_inputs(OPERATION, payload, publisher.as_ref())
+            .finish_turn_inputs(OPERATION, payload, publisher.as_ref())?
             .await?;
         tracing::trace!(target: "acyclic_harness::read_profile", phase = "inputs:end");
         harness
@@ -216,7 +216,7 @@ pub(super) async fn run(
                     model: inputs.1,
                 },
                 None,
-            )
+            )?
             .await
     })
     .await?;

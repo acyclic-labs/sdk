@@ -30,7 +30,7 @@ impl Clock {
         SystemTime::now()
     }
 
-    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg(windows)]
     pub(super) fn instant(&self) -> std::time::Instant {
         #[cfg(feature = "test-support")]
         if let Some(clock) = &self.seeded {

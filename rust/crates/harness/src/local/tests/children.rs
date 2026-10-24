@@ -216,7 +216,7 @@ async fn child_request_prepares_a_replayable_lazy_fork_and_runs_under_its_origin
     .await?;
     let operation = OperationId::new();
     harness
-        .retain_settings(operation, &json!({"model":"spawn-environment"}))
+        .retain_settings(operation, &json!({"model":"spawn-environment"}))?
         .await?;
     let Admission::Accepted(crate::runtime::RuntimeTask::Durable {
         task_id: parent, ..

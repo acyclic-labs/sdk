@@ -59,7 +59,7 @@ impl LocalHarness {
                 )));
             }
             let view = selected.as_ref().unwrap_or_else(|| workspace.view());
-            return sources.catalog(&workspace.path, view, work).await;
+            return sources.catalog(&workspace.path, view, work)?.await;
         }
         let workspace = crate::filesystem::workspace_ref(
             self.project.provider().clone(),
@@ -86,7 +86,7 @@ impl LocalHarness {
         let mut skills = Vec::new();
         #[cfg(any(test, feature = "native-execution"))]
         if let Some(sources) = self.files.skill_sources(&self.journal)? {
-            skills = sources.user_catalog(work).await?;
+            skills = sources.user_catalog(work)?.await?;
         }
         for directory in PROJECT_ROOTS {
             let root = ContextRoot {

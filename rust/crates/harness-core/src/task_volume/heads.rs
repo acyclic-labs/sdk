@@ -17,10 +17,49 @@ pub struct HeadFile {
     pub publication: Option<crate::OperationId>,
     /// File content in order, without copying or reserializing accumulated text.
     pub segments: Vec<OwnedBytes>,
+    /// Original chunk identity for every materialized text segment.
+    pub segment_sequences: Vec<u64>,
     /// Total logical file length.
     pub length: u64,
     /// Last assistant chunk included in a text head.
     pub through_sequence: Option<u64>,
+}
+
+impl HeadFile {
+    /// Admit one complete payload/provenance closure before exposing a head.
+    pub fn validate_segments(&self) -> Result<()> {
+        let text = matches!(
+            self.key,
+            FileKey::Task {
+                file: TaskFile::TextHead { .. },
+                ..
+            }
+        );
+        if self.segments.is_empty()
+            || text != self.through_sequence.is_some()
+            || if self.through_sequence.is_some() {
+                self.segment_sequences.len() != self.segments.len()
+                    || self.segment_sequences.last().copied() != self.through_sequence
+                    || self
+                        .segment_sequences
+                        .windows(2)
+                        .any(|pair| pair.first() >= pair.get(1))
+            } else {
+                !self.segment_sequences.is_empty()
+            }
+        {
+            return Err(Error::InvalidSegment);
+        }
+        let length = self
+            .segments
+            .iter()
+            .try_fold(0u64, |sum, segment| sum.checked_add(segment.len() as u64))
+            .ok_or(Error::LimitExceeded)?;
+        if length != self.length {
+            return Err(Error::InvalidSegment);
+        }
+        Ok(())
+    }
 }
 
 /// Materialized files at one cut, usable for a tier transition followed from `cursor`.
@@ -71,6 +110,7 @@ impl Snapshot {
                 publication: file.publication,
                 channel: file.channel,
                 segments: Vec::new(),
+                segment_sequences: Vec::new(),
                 length: 0,
                 through_sequence: None,
             });
@@ -79,6 +119,7 @@ impl Snapshot {
                 .checked_add(file.bytes.len() as u64)
                 .ok_or(Error::LimitExceeded)?;
             head.through_sequence = sequence;
+            head.segment_sequences.extend(sequence);
             head.segments.push(file.bytes);
         }
         Ok(HeadSnapshot {

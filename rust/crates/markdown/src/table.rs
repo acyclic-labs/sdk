@@ -3,6 +3,7 @@ use pulldown_cmark::{Alignment, Event, Tag, TagEnd};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+#[cfg_attr(test, derive(Clone))]
 pub(crate) struct Table {
     pub(super) alignments: Vec<Alignment>,
     pub(super) rows: Vec<Vec<Line>>,

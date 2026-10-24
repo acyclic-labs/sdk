@@ -15,7 +15,7 @@
   "expect": {
     "text": "abcde",
     "wire": {
-      "status_follows": 10000,
+      "status_follows": 1,
       "statuses": 10000,
       "attention": 20
     }

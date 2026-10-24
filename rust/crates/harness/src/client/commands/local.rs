@@ -13,10 +13,7 @@ pub async fn consume_local_command<P: acyclic_stream::StreamProvider + ?Sized>(
     let settings = session.request_settings(request).await?;
     let result = session
         .consume(request, |operation, target, resolution| {
-            let future: acyclic_stream::BoxProviderFuture<'_, Result<serde_json::Value>> = Box::pin(
-                local.dispatch_configured_command(operation, target, resolution, &settings),
-            );
-            future
+            local.dispatch_configured_command(operation, target, resolution, &settings)
         })
         .await?;
     Ok(result)

@@ -77,7 +77,7 @@ async fn in_place_git_advances_switched_and_unswitched_mounts_once() -> Result<(
         eprintln!("counted mount case switched={switched}");
         let operation = OperationId::new();
         let Admission::Accepted(RuntimeTask::Durable { task_id: child, .. }) =
-            harness.submit_to(operation, Some(parent), "child").await?
+            harness.submit_to(operation, Some(parent), "child")?.await?
         else {
             panic!("child admission")
         };

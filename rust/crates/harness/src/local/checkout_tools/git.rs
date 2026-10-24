@@ -153,7 +153,7 @@ impl CheckoutTools {
                         context.task().ordinary_journal_owner::<LocalStream>()?,
                         false,
                     )),
-                )
+                )?
                 .await?;
             }
             crate::tools::git::run_with_guard(

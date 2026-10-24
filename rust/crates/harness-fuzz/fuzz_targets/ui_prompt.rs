@@ -1,7 +1,10 @@
 #![no_main]
 use acyclic_harness as harness;
 use acyclic_harness::{
-    client::{CommandFileRoot, CommandSession, PromptFiles, restore_tui_prompt, tui_scroll},
+    client::{
+        CommandFileRoot, CommandSession, PromptFiles, restore_tui_prompt, tui_anchor,
+        tui_modal_scroll,
+    },
     task_volume::{FileKey, Query, TaskVolume, Write},
     tui::{
         ClientRenderer, Editor, InputKeymap, PromptInput, WrappedLines,
@@ -83,6 +86,7 @@ fuzz_target!(|data: &[u8]| {
     let source = [Line::from(vec![Span::raw(text.as_ref())])];
     let mut wrapped = WrappedLines::default();
     wrapped.update(&source, 0, width);
+    wrapped.wrap_all();
     assert!(
         wrapped
             .rows()
@@ -111,6 +115,7 @@ fuzz_target!(|data: &[u8]| {
     );
     let mut split_wrapped = WrappedLines::default();
     split_wrapped.update(&split, 0, width);
+    split_wrapped.wrap_all();
     assert_eq!(wrapped.rows(), split_wrapped.rows());
     let mut fields = data.splitn(5, |byte| *byte == 0);
     let draft = fields.next().unwrap_or_default();
@@ -406,17 +411,35 @@ fuzz_target!(|data: &[u8]| {
                         }
                         let modal = value.get("open_view").and_then(serde_json::Value::as_str)
                             == Some("shortcuts");
-                        value
-                            .get(if modal {
-                                "view_back"
-                            } else {
-                                "transcript_back"
-                            })
-                            .map_or(Some(if modal { usize::MAX } else { 0 }), |value| {
+                        if modal {
+                            value.get("view_back").map_or(Some(usize::MAX), |value| {
                                 value.as_u64().and_then(|rows| usize::try_from(rows).ok())
                             })
+                        } else {
+                            Some(0)
+                        }
                     });
-                assert_eq!(tui_scroll(&files).ok(), expected);
+                assert_eq!(tui_modal_scroll(&files).ok(), expected);
+                let expected = serde_json::from_slice::<serde_json::Value>(bytes)
+                    .ok()
+                    .and_then(|value| {
+                        if !value.is_object() {
+                            return None;
+                        }
+                        value.get("transcript_top").map_or(Some(None), |value| {
+                            serde_json::from_value::<harness::tui::TranscriptAnchor>(value.clone())
+                                .ok()
+                                .map(Some)
+                        })
+                    });
+                assert_eq!(tui_anchor(&files).ok(), expected);
+                if let Some(Some(anchor)) = expected {
+                    let encoded = serde_json::to_vec(&anchor).unwrap();
+                    assert_eq!(
+                        serde_json::from_slice::<harness::tui::TranscriptAnchor>(&encoded).unwrap(),
+                        anchor
+                    );
+                }
             }
             let mut renderer = ClientRenderer::default();
             let result = renderer.screen_for(&files);

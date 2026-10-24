@@ -2,7 +2,7 @@ use acyclic_harness::{
     OperationId,
     client::{
         CommandFileRoot, CommandSession, InputBatch, file_tui_inputs, frame_due, input_burst,
-        scroll_tui, transcript_motion, tui_scroll,
+        scroll_tui, transcript_motion, tui_anchor,
     },
     task_volume::{Query, TaskVolume},
     tui::{
@@ -18,6 +18,35 @@ use std::sync::Arc;
 
 struct NoFiles;
 impl acyclic_harness::conversation::ContentResidencyVerifier for NoFiles {}
+
+// Independent physical-row model for the burst/file tests. Production resolves
+// these same motions through the renderer's cached source rows.
+fn move_model(
+    maximum: usize,
+) -> impl FnMut(
+    Option<acyclic_harness::tui::TranscriptAnchor>,
+    isize,
+) -> Option<acyclic_harness::tui::TranscriptAnchor> {
+    move |from, rows| {
+        let line = from
+            .map_or(maximum, |from| from.position.line)
+            .saturating_add_signed(rows)
+            .min(maximum);
+        (line < maximum).then_some(acyclic_harness::tui::TranscriptAnchor {
+            origin: Some(acyclic_harness::tui::TranscriptOrigin {
+                file: [41; 32],
+                line: 0,
+            }),
+            position: acyclic_harness::tui::RowPosition { line, row: 0 },
+            ..Default::default()
+        })
+    }
+}
+fn offset(files: &CommandSession<MemoryStream>, maximum: usize) -> usize {
+    tui_anchor(files)
+        .unwrap()
+        .map_or(0, |anchor| maximum.saturating_sub(anchor.position.line))
+}
 
 fn notch(up: bool) -> InputEvent {
     let kind = if up {
@@ -93,7 +122,9 @@ async fn drive_from(
     start: isize,
 ) -> (usize, u64, usize) {
     let (volume, mut files) = session("burst").await;
-    scroll_tui(&mut files, [start], 10_000).await.unwrap();
+    scroll_tui(&mut files, [start], 10_000, move_model(10_000))
+        .await
+        .unwrap();
     let before = position(&volume).await;
     let mut frames = 0;
     let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
@@ -111,9 +142,16 @@ async fn drive_from(
             } else {
                 input_burst(&mut batch, PAGE, &mut effects, route);
             }
-            file_tui_inputs(&mut files, &NoFiles, effects.drain(..), PAGE, 10_000)
-                .await
-                .unwrap();
+            file_tui_inputs(
+                &mut files,
+                &NoFiles,
+                effects.iter().cloned(),
+                PAGE,
+                10_000,
+                move_model(10_000),
+            )
+            .await
+            .unwrap();
             // The loop's next iteration presents only when `frame_due`.
             if mode != Mode::Loop || frame_due(&batch) {
                 terminal.draw(|_| frames += 1).unwrap();
@@ -121,7 +159,7 @@ async fn drive_from(
         }
     }
     let appended = position(&volume).await - before;
-    (frames, appended, tui_scroll(&files).unwrap())
+    (frames, appended, offset(&files, 10_000))
 }
 
 async fn drive(reads: Vec<Vec<InputEvent>>, coalesce: bool) -> (usize, u64, usize) {
@@ -456,23 +494,32 @@ fn negative_control_absorbing_a_pointer_uses_the_stale_prompt_viewport() {
 /// published one layout change per motion or one for the whole burst.
 async fn scrolled(start: usize, motions: &[isize], maximum: usize, burst: bool) -> (usize, u64) {
     let (volume, mut files) = session("bounds").await;
-    scroll_tui(&mut files, [isize::try_from(start).unwrap()], maximum)
-        .await
-        .unwrap();
+    scroll_tui(
+        &mut files,
+        [isize::try_from(start).unwrap()],
+        maximum,
+        move_model(maximum),
+    )
+    .await
+    .unwrap();
     let before = position(&volume).await;
     if burst {
-        scroll_tui(&mut files, motions.iter().copied(), maximum)
-            .await
-            .unwrap();
+        scroll_tui(
+            &mut files,
+            motions.iter().copied(),
+            maximum,
+            move_model(maximum),
+        )
+        .await
+        .unwrap();
     } else {
         for &rows in motions {
-            scroll_tui(&mut files, [rows], maximum).await.unwrap();
+            scroll_tui(&mut files, [rows], maximum, move_model(maximum))
+                .await
+                .unwrap();
         }
     }
-    (
-        tui_scroll(&files).unwrap(),
-        position(&volume).await - before,
-    )
+    (offset(&files, maximum), position(&volume).await - before)
 }
 
 #[test]
@@ -556,10 +603,10 @@ proptest::proptest! {
                 proptest::prop_assert_eq!(&effects, &vec![effect]);
                 let rows = effects.first().and_then(|effect| transcript_motion(effect, page)).unwrap();
                 let before = volume.snapshot(&Query::Root, 64).await.unwrap().generation;
-                scroll_tui(&mut files, [rows], maximum).await.unwrap();
+                scroll_tui(&mut files, [rows], maximum, move_model(maximum)).await.unwrap();
                 let previous = expected;
                 expected = if up { expected.saturating_add(step).min(maximum) } else { expected.saturating_sub(step) };
-                proptest::prop_assert_eq!(tui_scroll(&files).unwrap(), expected);
+                proptest::prop_assert_eq!(offset(&files, maximum), expected);
                 let appended = volume.snapshot(&Query::Root, 64).await.unwrap().generation.position - before.position;
                 if previous == expected {
                     proptest::prop_assert_eq!(appended, 0);
@@ -572,14 +619,14 @@ proptest::proptest! {
                 terminal.draw(|frame| { screen.render(frame, &input, &mut Viewport::default(), maximum - expected, 0); }).unwrap();
                 proptest::prop_assert!(super::screen_text(&terminal).contains(&format!("Transcript row {:03}", maximum - expected)), "selected transcript row is visible");
                 let reopened = CommandSession::open(volume.clone(), identity.parse().unwrap(), 65_536, 64).await.unwrap();
-                proptest::prop_assert_eq!(tui_scroll(&reopened).unwrap(), expected);
+                proptest::prop_assert_eq!(offset(&reopened, maximum), expected);
             }
             // Resize clamps stale offsets before the next movement.
-            scroll_tui(&mut files, [isize::MAX], 2).await.unwrap();
-            proptest::prop_assert_eq!(tui_scroll(&files).unwrap(), 2);
-            files.write_state(CommandFileRoot::Session, "layout.json", &serde_json::json!({"transcript_back":false})).await.unwrap();
+            scroll_tui(&mut files, [isize::MAX], 2, move_model(2)).await.unwrap();
+            proptest::prop_assert_eq!(offset(&files, 2), 2);
+            files.write_state(CommandFileRoot::Session, "layout.json", &serde_json::json!({"transcript_top":false})).await.unwrap();
             let before = volume.snapshot(&Query::Root, 64).await.unwrap().generation;
-            proptest::prop_assert!(scroll_tui(&mut files, [WHEEL_ROWS], maximum).await.is_err());
+            proptest::prop_assert!(scroll_tui(&mut files, [WHEEL_ROWS], maximum, move_model(maximum)).await.is_err());
             proptest::prop_assert_eq!(volume.snapshot(&Query::Root, 64).await.unwrap().generation, before);
             Ok(())
         })?;
@@ -644,7 +691,7 @@ fn assert_file_motion_allocations<const COLLECT: bool>() {
     for n in [32, 64] {
         let (_, mut files) = runtime.block_on(session("motion-allocations"));
         runtime.block_on(files.write_state(CommandFileRoot::Session,"layout.json",&serde_json::json!({
-            "transcript_back":1000,"selected_task":acyclic_harness::TaskId::from_bytes([41;16]).to_string()
+            "transcript_top":{"part":"answer","position":{"line":9000,"row":0},"origin":{"file":([41;32]),"line":0}},"selected_task":acyclic_harness::TaskId::from_bytes([41;16]).to_string()
         }))).unwrap();
         let mut input = PromptInput::default();
         let mut effects = Vec::new();
@@ -662,9 +709,10 @@ fn assert_file_motion_allocations<const COLLECT: bool>() {
                     .block_on(file_tui_inputs(
                         &mut files,
                         &NoFiles,
-                        motions.into_iter().map(InputEffect::Scroll),
+                        motions.iter().copied().map(InputEffect::Scroll),
                         PAGE,
                         10000,
+                        move_model(10000),
                     ))
                     .unwrap();
             } else {
@@ -672,17 +720,16 @@ fn assert_file_motion_allocations<const COLLECT: bool>() {
                     .block_on(file_tui_inputs(
                         &mut files,
                         &NoFiles,
-                        effects.drain(..),
+                        effects.iter().cloned(),
                         PAGE,
                         10000,
+                        move_model(10000),
                     ))
                     .unwrap();
             }
         });
-        assert_eq!(
-            tui_scroll(&files).unwrap(),
-            1000 + n * WHEEL_ROWS.unsigned_abs()
-        );
+        assert_eq!(offset(&files, 10000), 1000 + n * WHEEL_ROWS.unsigned_abs());
+        effects.clear();
         assert!(effects.is_empty());
         costs.push((measured.count_total, measured.bytes_total));
     }

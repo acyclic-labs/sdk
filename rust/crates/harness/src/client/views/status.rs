@@ -3,11 +3,31 @@ use acyclic_stream::StreamWatermarks;
 use bytes::Bytes;
 
 /// Exact latest values for one agent; the producer owns their schema.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub struct StatusView {
     after: Option<wire::SessionCursor>,
     watermarks: StreamWatermarks,
     values: BTreeMap<Bytes, StatusValue>,
+    shared: Option<Rc<std::cell::Cell<StreamWatermarks>>>,
+}
+
+impl PartialEq for StatusView {
+    fn eq(&self, other: &Self) -> bool {
+        self.after == other.after
+            && self.watermarks() == other.watermarks()
+            && self.values == other.values
+    }
+}
+
+impl Clone for StatusView {
+    fn clone(&self) -> Self {
+        Self {
+            after: self.after.clone(),
+            watermarks: self.watermarks(),
+            values: self.values.clone(),
+            shared: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -25,6 +45,7 @@ impl Default for StatusView {
                 durable: 0,
             },
             values: BTreeMap::new(),
+            shared: None,
         }
     }
 }
@@ -36,7 +57,14 @@ impl StatusView {
     }
     /// Accepted and confirmed durable status prefixes.
     pub fn watermarks(&self) -> StreamWatermarks {
-        self.watermarks
+        let shared = self
+            .shared
+            .as_ref()
+            .map_or(self.watermarks, |marks| marks.get());
+        StreamWatermarks {
+            accepted: self.watermarks.accepted.max(shared.accepted),
+            durable: self.watermarks.durable.max(shared.durable),
+        }
     }
     /// Latest values in stable key order, with producer-defined payloads.
     pub fn values(&self) -> impl Iterator<Item = &wire::SessionLatestValue> {
@@ -46,11 +74,42 @@ impl StatusView {
 
 // The only owner of status payloads and their aggregate quota. Callers cannot
 // mutate a row, replace its map key, or retire it separately from its charge.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub(super) struct Agents {
     entries: BTreeMap<StreamPath, AgentViews>,
     bytes: u64,
     values: usize,
+    shared: Rc<std::cell::Cell<StreamWatermarks>>,
+}
+
+impl Clone for Agents {
+    fn clone(&self) -> Self {
+        let shared = Rc::new(std::cell::Cell::new(self.shared.get()));
+        let mut entries = self.entries.clone();
+        for entry in entries.values_mut() {
+            entry.status.shared = Some(shared.clone());
+        }
+        Self {
+            entries,
+            bytes: self.bytes,
+            values: self.values,
+            shared,
+        }
+    }
+}
+
+impl Default for Agents {
+    fn default() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            bytes: 0,
+            values: 0,
+            shared: Rc::new(std::cell::Cell::new(StreamWatermarks {
+                accepted: 0,
+                durable: 0,
+            })),
+        }
+    }
 }
 
 fn size(value: &wire::SessionLatestValue, cursor: &wire::SessionCursor) -> Option<u64> {
@@ -79,7 +138,26 @@ impl Agents {
         self.entries.contains_key(agent)
     }
     pub(super) fn discover(&mut self, agent: StreamPath) {
-        self.entries.entry(agent).or_default();
+        let shared = self.shared_marks();
+        self.entries.entry(agent).or_default().status.shared = Some(shared);
+    }
+    fn shared_marks(&self) -> Rc<std::cell::Cell<StreamWatermarks>> {
+        self.shared.clone()
+    }
+    pub(super) fn shared_watermark(&mut self, mark: &wire::SessionWatermark) -> Result<()> {
+        let shared = self.shared_marks();
+        let old = shared.get();
+        if mark.durable > mark.accepted
+            || mark.accepted < old.accepted
+            || mark.durable < old.durable
+        {
+            return Err(Error::Invalid("status watermark regressed".into()));
+        }
+        shared.set(StreamWatermarks {
+            accepted: mark.accepted,
+            durable: mark.durable,
+        });
+        Ok(())
     }
     pub(super) fn files(
         &self,
@@ -123,7 +201,7 @@ impl Agents {
     ) -> Result<()> {
         let current = self
             .get(agent)
-            .map(|status| status.watermarks)
+            .map(StatusView::watermarks)
             .unwrap_or(StreamWatermarks {
                 accepted: 0,
                 durable: 0,
@@ -239,12 +317,14 @@ impl Reservation<'_> {
         value.key = compact.slice(..key_end);
         value.value = compact.slice(key_end..value_end);
         after.opaque = compact.slice(value_end..);
+        let shared = self.statuses.shared.clone();
         let status = &mut self
             .statuses
             .entries
             .entry(agent.clone())
             .or_default()
             .status;
+        status.shared = Some(shared);
         if status
             .after
             .as_ref()

@@ -77,6 +77,7 @@ fn allocation_model<const COPIES: bool, const FULL: bool>() {
         let text = "a".repeat(length);
         let mut projection = WrappedLines::default();
         projection.update(&[Line::raw(text.clone())], 0, 80);
+        projection.wrap_all();
         let mut search = acyclic_harness_tui::TranscriptSearch::default();
         search.project(&projection, true);
         let area = Rect::new(0, 0, 80, 1);
@@ -177,6 +178,7 @@ fn unicode_storage_model<const RESET: bool>(marks: usize, emoji: bool) {
     );
     let mut projection = WrappedLines::default();
     projection.update(&[Line::raw(text)], 0, 80);
+    projection.wrap_all();
     let mut search = TranscriptSearch::default();
     search.update(&projection, "x", 0, Default::default());
     search.prepare(&projection, 0, 1);
@@ -228,6 +230,7 @@ fn unchanged_unicode_terminal_draws_measure_unpatched_residual() {
     };
     let mut projection = WrappedLines::default();
     projection.update(&[Line::raw(format!("x{} 👨‍👩‍👧‍👦", "\u{301}".repeat(40)))], 0, 80);
+    projection.wrap_all();
     let mut search = TranscriptSearch::default();
     search.update(&projection, "x", 0, Default::default());
     search.prepare(&projection, 0, 1);

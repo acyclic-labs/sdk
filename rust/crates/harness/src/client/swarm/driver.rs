@@ -16,7 +16,8 @@ mod membership;
 mod snapshots;
 
 /// Client orchestration, using only the filesystem reader and Stream provider.
-/// Agent children have `status` and `files` streams. Platform session I/O owns
+/// Agent children have `files` streams; one root `status` stream multiplexes
+/// their opaque latest values. Platform session I/O owns
 /// connection placement, credit, acknowledgements and resume; this owns demand.
 pub struct SwarmClient {
     root: StreamPath,
@@ -50,7 +51,7 @@ impl SwarmClient {
     /// Follows file-derived demand through the caller's shared Streams session.
     /// Children already provides snapshot plus live follow across every hierarchy
     /// page, so discovery needs no second enumeration or harness channel map.
-    /// Status stays subscribed for every agent. Selected content starts from the
+    /// One status follow covers every agent. Selected content starts from the
     /// complete checked cursor returned by `heads`, and promotion retains it.
     /// A fatal source or renderer error ends this cache; reset from fresh queries.
     pub async fn follow<P, M, Q, QFut, F>(
@@ -75,35 +76,13 @@ impl SwarmClient {
         };
         // Registration precedes reading the layout. The platform owns the
         // hierarchy snapshot, live creation cursor, credit and reconnect fence.
-        let discovery = session
-            .subscribe(wire::SessionSubscription {
-                credential: 0,
-                filter: None,
-                channel: None,
-                resume: Some(wire::SessionCursor::default()),
-                kind: Some(wire::session_subscription::Kind::Children(
-                    wire::ChildrenRequest {
-                        parent: Some(self.root.as_str().into()),
-                        limit: acyclic_stream::MAX_ITEMS as u32,
-                    },
-                )),
-            })
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        let mut membership =
-            membership::Membership::observe(parent, session, self.root.clone(), self.limits.agents)
-                .await?;
-        let mut follows = follows::Follows::new(session.clone(), discovery);
-        let mut demand = ClientInterests::from_layout(self.root.clone(), [], [], 0)?;
+        let Sources {
+            mut membership,
+            mut follows,
+            mut demand,
+            mut files,
+        } = Sources::open(self.root, self.limits, files, parent, session).await?;
         let mut snapshots = snapshots::Snapshots::new(self.limits.selected);
-        let mut files = InterestFiles::observe(
-            files,
-            self.root,
-            self.limits.selected,
-            self.limits.layout_bytes,
-            self.limits.config_files,
-        )
-        .await?;
         loop {
             let admission = futures::select_biased! {
                 completed = snapshots.next().fuse() => {
@@ -145,17 +124,18 @@ impl SwarmClient {
                     let routed = routed.ok_or_else(|| Error::Storage("swarm follows ended".into()))?;
                     let frame = routed.frame.map_err(|error| Error::Storage(error.to_string()))?;
                     match (routed.agent, frame.body) {
+                        (None, Some(wire::session_frame::Body::Data(mut data))) if routed.overview => {
+                            let Some(agent) = status_member(parent, &demand, &mut membership, &follows, &mut data).await? else { continue; };
+                            admit_agent(agent.clone(), &demand, &mut follows, &mut snapshots, self.limits, &mut heads, &mut publish).await?;
+                            publish(SwarmUpdate::Data { agent, overview: true, data }).await?;
+                            None
+                        }
+                        (None, Some(wire::session_frame::Body::Watermark(watermark))) if routed.overview => {
+                            publish(SwarmUpdate::StatusWatermark(watermark)).await?;
+                            None
+                        }
                         (None, Some(wire::session_frame::Body::Data(data))) => {
-                            let Some(wire::session_data::Item::Child(child)) = data.item else {
-                                return Err(Error::Invalid("discovery received non-child data".into()));
-                            };
-                            let agent = StreamPath::new(child.path).map_err(|error| Error::Invalid(error.to_string()))?;
-                            // Stream subtrees retain archived history. Only the
-                            // parent membership files can admit or retire a row.
-                            if demand.tier(&agent).is_none() {
-                                return Err(Error::Invalid("discovered agent lies outside swarm".into()));
-                            }
-                            membership.discovered(&agent).then_some(agent)
+                            discovered(data, &demand, &mut follows, &mut membership)?
                         }
                         (Some(agent), Some(wire::session_frame::Body::Data(data))) => {
                             publish(SwarmUpdate::Data { agent, overview: routed.overview, data }).await?;
@@ -175,19 +155,145 @@ impl SwarmClient {
             // Snapshot children and live membership records share admission.
             // Both arrive through the credit-paced platform session above.
             if let Some(agent) = admission {
-                if follows.discover(&demand, agent.clone(), self.limits.agents)? {
-                    publish(SwarmUpdate::Agent {
-                        agent: agent.clone(),
-                    })
-                    .await?;
-                    if demand
-                        .tier(&agent)
-                        .is_some_and(|tier| tier != crate::client::InterestTier::Overview)
-                    {
-                        snapshots.start(agent.clone(), heads(agent, self.limits.snapshot_files))?;
-                    }
-                }
+                admit_agent(
+                    agent,
+                    &demand,
+                    &mut follows,
+                    &mut snapshots,
+                    self.limits,
+                    &mut heads,
+                    &mut publish,
+                )
+                .await?;
             }
         }
     }
+}
+
+fn discovered(
+    data: wire::SessionData,
+    demand: &ClientInterests,
+    follows: &mut follows::Follows,
+    membership: &mut membership::Membership,
+) -> Result<Option<StreamPath>> {
+    let Some(wire::session_data::Item::Child(child)) = data.item else {
+        return Err(Error::Invalid("discovery received non-child data".into()));
+    };
+    let agent = StreamPath::new(child.path).map_err(|error| Error::Invalid(error.to_string()))?;
+    if agent.as_str() == format!("{}/status", demand.root()) {
+        // Discovery fences shared-stream creation, even for an empty swarm.
+        follows.status();
+    }
+    if demand.tier(&agent).is_none() {
+        return Err(Error::Invalid("discovered agent lies outside swarm".into()));
+    }
+    Ok(membership.discovered(&agent).then_some(agent))
+}
+
+// Status and membership channels may arrive in either order. The parent
+// remains authoritative: archived status history never re-admits an agent.
+async fn status_member<P: StreamProvider + ?Sized>(
+    parent: &TaskVolume<P>,
+    demand: &ClientInterests,
+    membership: &mut membership::Membership,
+    follows: &follows::Follows,
+    data: &mut wire::SessionData,
+) -> Result<Option<StreamPath>> {
+    let agent = super::status_agent(data)?;
+    if agent == *demand.root() || demand.tier(&agent).is_none() {
+        return Err(Error::Invalid("status agent lies outside swarm".into()));
+    }
+    if !follows.contains(&agent)
+        && !membership.discovered(&agent)
+        && !membership::active(parent, demand.root(), &agent).await?
+    {
+        return Ok(None);
+    }
+    Ok(Some(agent))
+}
+
+struct Sources {
+    membership: membership::Membership,
+    follows: follows::Follows,
+    demand: ClientInterests,
+    files: InterestFiles,
+}
+impl Sources {
+    async fn open<P: StreamProvider + ?Sized, M: StreamProvider + ?Sized>(
+        root: StreamPath,
+        limits: SwarmClientLimits,
+        files: &TaskVolume<P>,
+        parent: &TaskVolume<M>,
+        session: &acyclic_stream::session::Client,
+    ) -> Result<Self> {
+        let discovery = discover(session, &root).await?;
+        let membership =
+            membership::Membership::observe(parent, session, root.clone(), limits.agents).await?;
+        let follows = follows::Follows::new(session.clone(), &root, discovery)?;
+        let demand = ClientInterests::from_layout(root.clone(), [], [], 0)?;
+        let files = InterestFiles::observe(
+            files,
+            root,
+            limits.selected,
+            limits.layout_bytes,
+            limits.config_files,
+        )
+        .await?;
+        Ok(Self {
+            membership,
+            follows,
+            demand,
+            files,
+        })
+    }
+}
+
+async fn discover(
+    session: &acyclic_stream::session::Client,
+    root: &StreamPath,
+) -> Result<follows::Frames> {
+    session
+        .subscribe(wire::SessionSubscription {
+            credential: 0,
+            filter: None,
+            channel: None,
+            resume: Some(wire::SessionCursor::default()),
+            kind: Some(wire::session_subscription::Kind::Children(
+                wire::ChildrenRequest {
+                    parent: Some(root.as_str().into()),
+                    limit: acyclic_stream::MAX_ITEMS as u32,
+                },
+            )),
+        })
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))
+}
+
+async fn admit_agent<'a, Q, QFut, F>(
+    agent: StreamPath,
+    demand: &ClientInterests,
+    follows: &mut follows::Follows,
+    snapshots: &mut snapshots::Snapshots<'a>,
+    limits: SwarmClientLimits,
+    heads: &mut Q,
+    publish: &mut F,
+) -> Result<()>
+where
+    Q: FnMut(StreamPath, usize) -> QFut,
+    QFut: Future<Output = crate::task_volume::Result<HeadSnapshot>> + 'a,
+    F: AsyncFnMut(SwarmUpdate) -> Result<()>,
+{
+    if follows.discover(demand, agent.clone(), limits.agents)? {
+        publish(SwarmUpdate::Agent {
+            agent: agent.clone(),
+        })
+        .await?;
+        if demand
+            .tier(&agent)
+            .is_some_and(|tier| tier != crate::client::InterestTier::Overview)
+        {
+            snapshots.start(agent.clone(), heads(agent, limits.snapshot_files))?;
+        }
+    }
+    Ok(())
 }

@@ -194,3 +194,29 @@ for (const payload of ["ab", "over quota", "a longer rejected value"]) {
 test("negative control: treating rejection as output failure prevents recovery", async () => {
   expect(await rejectedFrameRecovers("over quota", true)).toBe(false);
 });
+
+test("identical payloads retain distinct full-width source identities on reopen", async () => {
+  const f = await fixture();
+  try {
+    const sequences = [3n, 9007199254740993n];
+    const stop = deferred();
+    let delivered = 0;
+    const running = f.query.follow(() => {}, () => {
+      if (++delivered === sequences.length) stop.resolve();
+    }, stop.promise);
+    for (const sequence of sequences) await f.write(7n, sequence, "identical");
+    await running;
+    const assertOrigins = (files: ReturnType<typeof f.views.files>) => {
+      expect(files[0]!.segment_sequences).toEqual(sequences);
+    };
+    assertOrigins(f.views.files());
+    const reopened = await ClientQuery.open(f.volume, "Root", f.views.cursor(), limits);
+    const replay = reopened.views();
+    try {
+      assertOrigins(replay.files());
+      expect(replay.segments(text(7n))!.map(segment => decoder.decode(segment))).toEqual(["identical", "identical"]);
+      // The old head shape retained only its final sequence; the same oracle rejects it.
+      expect(() => assertOrigins([{ ...replay.files()[0]!, segment_sequences: [sequences[1]!] }])).toThrow();
+    } finally { replay.free(); reopened.free(); }
+  } finally { f.free(); }
+});

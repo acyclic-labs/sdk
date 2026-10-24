@@ -16,6 +16,7 @@ pub(crate) fn normalize(label: &str) -> Key {
 }
 
 #[derive(Default)]
+#[cfg_attr(test, derive(Clone))]
 pub(crate) struct References {
     pub(super) committed: HashMap<Key, Definition>,
     pub(super) pending: HashMap<Key, Definition>,
@@ -107,6 +108,7 @@ impl References {
 // are collected with every reference unresolved, so no resolved link can hide
 // an inner or following candidate. A changed definition parses each dependent
 // block once with the actual complete definition map.
+#[cfg_attr(test, derive(Clone))]
 pub(crate) struct Template {
     pub(super) source: String,
     paragraph: bool,

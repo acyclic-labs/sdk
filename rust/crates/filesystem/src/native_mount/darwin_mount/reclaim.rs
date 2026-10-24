@@ -44,55 +44,102 @@ fn same_mount(left: &libc::statfs, right: &libc::statfs) -> bool {
         && left.f_mntfromname == right.f_mntfromname
 }
 
-// Like ordinary mount retirement, startup recovery must use Disk Arbitration
-// when the mount owner cannot issue the privileged unmount syscall directly.
-// The caller retains the authenticated destination fence throughout this call.
-fn detach_stale_mount(mount: &libc::statfs) -> Result<(), NativeMountError> {
-    let destination = field(&mount.f_mntonname)?;
-    // SAFETY: the caller retains the terminated kernel name and exclusive fence.
+#[cfg(test)]
+std::thread_local! {
+    static DENIED_DIRECT_UNMOUNTS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn with_direct_unmount_denied<T>(operation: impl FnOnce() -> T) -> T {
+    struct Restore(Option<usize>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            DENIED_DIRECT_UNMOUNTS.set(self.0);
+        }
+    }
+    let _restore = Restore(DENIED_DIRECT_UNMOUNTS.replace(Some(0)));
+    let result = operation();
+    assert!(DENIED_DIRECT_UNMOUNTS.get().is_some_and(|count| count > 0));
+    result
+}
+
+fn direct_unmount(destination: &CStr) -> std::io::Result<()> {
+    #[cfg(test)]
+    if let Some(count) = DENIED_DIRECT_UNMOUNTS.get() {
+        DENIED_DIRECT_UNMOUNTS.set(Some(count + 1));
+        eprintln!("RECLAIM_DIRECT_UNMOUNT_DENIED errno=EPERM");
+        return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+    }
+    // SAFETY: destination borrows the terminated kernel mount name.
     if unsafe { libc::unmount(destination.as_ptr(), libc::MNT_FORCE) } == 0 {
-        return Ok(());
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
     }
-    let error = std::io::Error::last_os_error();
-    if error.raw_os_error() != Some(libc::EPERM) {
-        return Err(error.into());
+}
+
+unsafe extern "C" {
+    fn acyclic_fs_darwin_retire_mount(destination: *const c_char, dissent: *mut c_int) -> c_int;
+}
+
+// Every Darwin owner uses this same retirement mechanism. The lifecycle
+// adapter supplies its birth-paid operation reservation; bootstrap is outside
+// a callback invocation and calls the operations directly.
+type RetirementOperation = fn(&CStr) -> std::io::Result<()>;
+
+pub(super) fn retire_mount(
+    destination: &CStr,
+    mut attempt: impl FnMut(RetirementOperation, &CStr) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    match attempt(direct_unmount, destination) {
+        Err(error) if error.raw_os_error() == Some(libc::EPERM) => {
+            attempt(arbitration_unmount, destination)
+        }
+        result => result,
     }
-    // A failed direct attempt is no authority to detach a replacement mount.
+}
+
+// Disk Arbitration is the sole fallback after a denied unmount.
+// diskutil's StorageKit path discovery opens the dead NFS root and can block.
+// The caller retains the authenticated destination fence throughout this call.
+fn arbitration_unmount(destination: &CStr) -> std::io::Result<()> {
+    let mut dissent = 0;
+    // SAFETY: the cached mount record retains its terminated path. The bridge
+    // awaits the terminal callback before its storage or this fence can die.
+    let status = unsafe { acyclic_fs_darwin_retire_mount(destination.as_ptr(), &raw mut dissent) };
+    if dissent != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("Darwin mount retirement denied: {dissent:#x}"),
+        ));
+    }
+    if status != 0 {
+        return Err(std::io::Error::from_raw_os_error(status));
+    }
+    Ok(())
+}
+
+pub(super) fn detach_stale_mount(mount: &libc::statfs) -> Result<(), NativeMountError> {
+    // No operation may target a changed kernel identity. The destination
+    // fence excludes a replacing SDK owner until terminal completion.
     if !mount_table()?
         .iter()
         .any(|current| same_mount(mount, current))
     {
         return Ok(());
     }
-    let mut command = std::process::Command::new("/usr/sbin/diskutil");
-    command
-        .args([
-            std::ffi::OsStr::new("unmount"),
-            std::ffi::OsStr::new("force"),
-        ])
-        .arg(std::ffi::OsStr::from_bytes(destination.to_bytes()))
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    let mut tree = acyclic_native_runtime::ProcessTree::spawn(&mut command)?;
-    let clock = crate::native_mount::clock::Clock::capture();
-    let deadline = clock.instant() + DISKUTIL_UNMOUNT_TIMEOUT;
-    let status = loop {
-        if let Some(status) = tree.try_wait(None)? {
-            break status;
-        }
-        if clock.instant() >= deadline {
-            tree.terminate(None)?;
-            return Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into());
-        }
-        std::thread::sleep(STOP_POLL_INTERVAL);
-    };
-    tree.terminate(None)?;
-    if !status.success() {
-        return Err(NativeMountError::DriverExit {
-            operation: "Darwin stale mount retirement",
-            status,
-        });
+    retire_mount(field(&mount.f_mntonname)?, |operation, path| {
+        operation(path)
+    })?;
+    verify_detached(mount)
+}
+
+fn verify_detached(mount: &libc::statfs) -> Result<(), NativeMountError> {
+    if mount_table()?
+        .iter()
+        .any(|current| same_mount(mount, current))
+    {
+        return Err(std::io::Error::other("stale mount remained after retirement").into());
     }
     Ok(())
 }
@@ -101,6 +148,19 @@ fn detach_stale_mount(mount: &libc::statfs) -> Result<(), NativeMountError> {
 // is the durable SDK ownership record and its kernel lock is the process
 // liveness witness, including after SIGKILL and across PID reuse.
 pub(in crate::native_mount) fn reclaim_stale_mounts() -> Result<(), NativeMountError> {
+    reclaim_stale_mounts_with_retirement(detach_stale_mount)
+}
+
+#[cfg(test)]
+pub(super) fn reclaim_stale_mounts_direct_only() -> Result<(), NativeMountError> {
+    reclaim_stale_mounts_with_retirement(|mount| {
+        direct_unmount(field(&mount.f_mntonname)?).map_err(Into::into)
+    })
+}
+
+fn reclaim_stale_mounts_with_retirement(
+    retire: impl Fn(&libc::statfs) -> Result<(), NativeMountError>,
+) -> Result<(), NativeMountError> {
     // SAFETY: getuid has no preconditions.
     let uid = unsafe { libc::getuid() };
     for mount in mount_table()? {
@@ -138,13 +198,7 @@ pub(in crate::native_mount) fn reclaim_stale_mounts() -> Result<(), NativeMountE
         {
             continue;
         }
-        detach_stale_mount(&mount)?;
-        if mount_table()?
-            .iter()
-            .any(|current| same_mount(&mount, current))
-        {
-            return Err(std::io::Error::other("stale mount remained after retirement").into());
-        }
+        retire(&mount)?;
         // Keep the fence file: other processes may already hold its inode.
         drop(owner);
     }

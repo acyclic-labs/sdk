@@ -158,7 +158,7 @@ async fn run(tools: &CheckoutTools, slot: &mut Option<Cursor>) -> Result<()> {
             0,
             PublicationPermit::Unrestricted,
             None,
-        )
+        )?
         .await
 }
 
@@ -368,7 +368,7 @@ async fn replay_rescan_requirement_is_a_transition() -> Result<()> {
             &tools.workspace,
             (&tools.capture_options, &tools.capture_policy),
             &cancellation,
-        )
+        )?
         .await?
     );
     assert!(!checkout.has_pending_mutations());
@@ -419,7 +419,7 @@ async fn rescan_preserves_the_original_publication_fence() -> Result<()> {
         (&tools.capture_options, &tools.capture_policy),
         true,
         &cancellation,
-    )
+    )?
     .await?;
     let outcome = checkout
         .commit(
@@ -493,4 +493,46 @@ proptest::proptest! {
             harness.close().await
         }).unwrap();
     }
+}
+
+fn capture_operation_bytes<Args, T>(_: impl FnOnce(Args) -> T) -> usize {
+    std::mem::size_of::<T>()
+}
+
+#[test]
+fn capture_boundaries_retain_only_owned_polling_handles() {
+    type Inputs = (
+        &'static CheckoutTools,
+        (&'static LocalWorkspace, &'static workspace::View),
+        &'static mut Option<Cursor>,
+    );
+    let capture = capture_operation_bytes(|(tools, selected, slot): Inputs| {
+        tools.capture(
+            selected,
+            slot,
+            OperationId::from_bytes([1; 16]),
+            0,
+            PublicationPermit::Unrestricted,
+            None,
+        )
+    });
+    let owed = capture_operation_bytes(|(tools, selected, slot): Inputs| {
+        tools.finish_owed_write(selected, slot, PublicationPermit::Unrestricted)
+    });
+    let changes = capture_operation_bytes(|(tools, selected, slot): Inputs| {
+        tools.capture_changes(
+            selected,
+            slot,
+            OperationId::from_bytes([1; 16]),
+            0,
+            PublicationPermit::Unrestricted,
+        )
+    });
+    eprintln!("capture retained bytes: [{capture}, {owed}, {changes}]");
+    assert!(
+        [capture, owed, changes]
+            .into_iter()
+            .all(|bytes| bytes <= 512),
+        "capture embeds concrete owed-write and publication futures"
+    );
 }

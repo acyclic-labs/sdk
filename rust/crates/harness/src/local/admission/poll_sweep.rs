@@ -479,7 +479,7 @@ async fn case_with(
             Some(harness) => harness,
             None => fixture.open().await?,
         };
-        let current = reopened.current_turn().await?.0;
+        let current = reopened.current_turn()?.await?.0;
         let mut unadmitted = false;
         if let Some(current) = &current {
             let task = crate::runtime::task_id_for_admission(current.operation);
@@ -533,7 +533,7 @@ async fn case_with(
             let output = fixture.run(&reopened).await;
             (
                 crate::runtime::task_id_for_admission(
-                    reopened.current_turn().await?.0.unwrap().root,
+                    reopened.current_turn()?.await?.0.unwrap().root,
                 ),
                 output,
             )

@@ -55,7 +55,7 @@ fn race<const RETRY: bool>(before_seed: bool) {
                 .await
                 .unwrap();
             assert_eq!(
-                restored.files.get(&request.key),
+                restored.files.get(&request.key).map(|file| &file.value),
                 Some(&request),
                 "startup lost a request"
             );

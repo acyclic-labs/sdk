@@ -6,33 +6,39 @@ use selection::selection;
 mod fuzz_input;
 
 impl LocalHarness {
-    pub(super) async fn file_guidance(&self, prompt: &str) -> Result<(bool, bool)> {
-        let requested = selection(prompt, false, false);
-        if requested == (true, true) {
-            return Ok(requested);
-        }
-        // Both observations use the same canonical head. No goal body read,
-        // metadata decode or content allocation is needed to select guidance.
-        let workspace = crate::filesystem::workspace_ref(
-            self.scratch.provider().clone(),
-            &self.scratch.storage_name(&mut None)?,
-        )?;
-        let generation = self.files.resolve(&workspace, None).await?.generation;
-        let mut present = [requested.0, requested.1];
-        for (slot, (path, kind)) in present.iter_mut().zip([
-            ("/GOAL.md", acyclic_fs::kernel::FileKind::Regular),
-            ("/plans", acyclic_fs::kernel::FileKind::Directory),
-        ]) {
-            if *slot {
-                continue;
+    #[inline(never)]
+    pub(super) fn file_guidance<'a>(
+        &'a self,
+        prompt: &'a str,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, (bool, bool)>> {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let requested = selection(prompt, false, false);
+            if requested == (true, true) {
+                return Ok(requested);
             }
-            match self.files.stat(&workspace, Some(&generation), path).await {
-                Ok(stat) => *slot = stat.kind == kind,
-                Err(Error::NotFound(_)) => {}
-                Err(error) => return Err(error),
+            // Both observations use the same canonical head. No goal body read,
+            // metadata decode or content allocation is needed to select guidance.
+            let workspace = crate::filesystem::workspace_ref(
+                self.scratch.provider().clone(),
+                &self.scratch.storage_name(&mut None)?,
+            )?;
+            let generation = self.files.resolve(&workspace, None).await?.generation;
+            let mut present = [requested.0, requested.1];
+            for (slot, (path, kind)) in present.iter_mut().zip([
+                ("/GOAL.md", acyclic_fs::kernel::FileKind::Regular),
+                ("/plans", acyclic_fs::kernel::FileKind::Directory),
+            ]) {
+                if *slot {
+                    continue;
+                }
+                match self.files.stat(&workspace, Some(&generation), path).await {
+                    Ok(stat) => *slot = stat.kind == kind,
+                    Err(Error::NotFound(_)) => {}
+                    Err(error) => return Err(error),
+                }
             }
-        }
-        Ok((present[0], present[1]))
+            Ok((present[0], present[1]))
+        })
     }
 }
 

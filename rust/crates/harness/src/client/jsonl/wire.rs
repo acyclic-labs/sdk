@@ -179,6 +179,13 @@ impl From<GenerationForm> for Generation {
 /// head is borrowed; only a fragmented head is joined.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct SourceSegment {
+    sequence: u64,
+    length: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct Head<'a> {
     key: Cow<'a, FileKey>,
     channel: Option<Channel>,
@@ -186,6 +193,7 @@ pub(super) struct Head<'a> {
     #[serde(with = "bytes")]
     bytes: Cow<'a, [u8]>,
     through_sequence: Option<u64>,
+    source_segments: Vec<SourceSegment>,
 }
 
 impl<'a> From<&'a HeadFile> for Head<'a> {
@@ -195,6 +203,7 @@ impl<'a> From<&'a HeadFile> for Head<'a> {
             channel,
             publication,
             segments,
+            segment_sequences,
             length: _,
             through_sequence,
         } = file;
@@ -215,6 +224,15 @@ impl<'a> From<&'a HeadFile> for Head<'a> {
                 }
             },
             through_sequence: *through_sequence,
+            source_segments: segment_sequences
+                .iter()
+                .copied()
+                .zip(segments)
+                .map(|(sequence, segment)| SourceSegment {
+                    sequence,
+                    length: segment.len(),
+                })
+                .collect(),
         }
     }
 }
@@ -227,13 +245,42 @@ impl From<Head<'_>> for HeadFile {
             publication,
             bytes,
             through_sequence,
+            source_segments,
         } = file;
+        let bytes: acyclic_stream::OwnedBytes = bytes.into_owned().into();
+        let length = bytes.len() as u64;
+        let segment_sequences = source_segments
+            .iter()
+            .map(|segment| segment.sequence)
+            .collect();
+        let valid = source_segments
+            .iter()
+            .try_fold(0usize, |sum, segment| sum.checked_add(segment.length))
+            == Some(bytes.len());
+        let segments = if source_segments.is_empty() {
+            vec![bytes]
+        } else if valid {
+            let mut start = 0;
+            source_segments
+                .into_iter()
+                .map(|segment| {
+                    let end = start + segment.length;
+                    let segment = bytes.slice(start..end);
+                    start = end;
+                    segment
+                })
+                .collect()
+        } else {
+            // The shared snapshot admission rejects an invalid segment closure.
+            Vec::new()
+        };
         Self {
             key: key.into_owned(),
             channel,
             publication,
-            length: bytes.len() as u64,
-            segments: vec![bytes.into_owned().into()],
+            length,
+            segments,
+            segment_sequences,
             through_sequence,
         }
     }
@@ -329,6 +376,7 @@ mod tests {
 
     fn head(segments: &[&[u8]]) -> HeadFile {
         HeadFile {
+            segment_sequences: Vec::new(),
             key: FileKey::parse("commands/head.json").unwrap(),
             channel: None,
             publication: None,
@@ -364,5 +412,45 @@ mod tests {
         assert_eq!(allocated.count_total, 1);
         assert_eq!(allocated.bytes_total, payload.len() as u64);
         assert!(matches!(&wire.bytes, Cow::Owned(bytes) if *bytes == payload));
+    }
+
+    #[test]
+    fn text_head_round_trip_keeps_distinct_chunk_origins_for_identical_bytes() {
+        use crate::task_volume::{Channel, FileKey, TaskFile};
+        let mut file = head(&[b"same", b"same", b"same"]);
+        file.key = FileKey::Task {
+            task: crate::task_volume::Component::new("task").unwrap(),
+            file: TaskFile::TextHead {
+                turn: 7,
+                channel: Channel::Text,
+            },
+        };
+        file.segment_sequences = vec![3, 11, 19];
+        file.through_sequence = Some(19);
+        file.validate_segments().unwrap();
+        let encoded = serde_json::to_string(&Head::from(&file)).unwrap();
+        let decoded = HeadFile::from(serde_json::from_str::<Head<'_>>(&encoded).unwrap());
+        assert_eq!(decoded, file);
+        let mut old_join = decoded.clone();
+        old_join.segment_sequences.clear();
+        assert!(
+            old_join.validate_segments().is_err(),
+            "a joined head cannot discard chunk provenance"
+        );
+        old_join.through_sequence = None;
+        assert!(
+            old_join.validate_segments().is_err(),
+            "materialized text cannot masquerade as an ordinary file"
+        );
+        for sequences in [
+            vec![3, 11],
+            vec![3, 3, 19],
+            vec![3, 20, 19],
+            vec![3, 11, 18],
+        ] {
+            let mut invalid = decoded.clone();
+            invalid.segment_sequences = sequences;
+            assert!(invalid.validate_segments().is_err());
+        }
     }
 }

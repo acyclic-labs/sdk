@@ -24,6 +24,7 @@ fn wrapped_graphemes_keep_style_and_exact_width_has_no_cursor_row() {
     ])];
     let mut cache = WrappedLines::default();
     cache.update(&source, 0, 2);
+    cache.wrap_all();
     assert_eq!(text(cache.rows()), "e\u{301}界👩‍💻");
     assert_eq!(cache.rows().len(), 3);
     assert_eq!(
@@ -86,6 +87,7 @@ fn crlf_split_across_styles_is_one_line_break() {
     ])];
     let mut cache = WrappedLines::default();
     cache.update(&source, 0, 20);
+    cache.wrap_all();
     assert_eq!(cache.rows().len(), 2);
     assert_eq!(text(cache.rows()), "firstsecond");
     assert_eq!(
@@ -97,6 +99,7 @@ fn crlf_split_across_styles_is_one_line_break() {
         Some(Some(Color::Blue))
     );
     cache.update(&source, source.len(), 5);
+    cache.wrap_all();
     assert_eq!(
         cache.rows().len(),
         3,
@@ -120,8 +123,10 @@ proptest! {
             source.truncate(cut);
             source.push(Line::raw(pieces.concat()));
             cache.update(&source, cut, width);
+            cache.wrap_all();
             let mut replay = WrappedLines::default();
             replay.update(&source, 0, width);
+            replay.wrap_all();
             prop_assert_eq!(cache.rows(), replay.rows());
             prop_assert_eq!(text(cache.rows()), text(&source));
             prop_assert!(cache.rows().iter().all(|row| row.width() <= usize::from(width)));
@@ -146,7 +151,9 @@ proptest! {
         let mut whole = WrappedLines::default();
         let mut divided = WrappedLines::default();
         whole.update(&source, 0, width);
+        whole.wrap_all();
         divided.update(&split, 0, width);
+        divided.wrap_all();
         prop_assert_eq!(whole.rows(), divided.rows());
     }
 }

@@ -159,134 +159,141 @@ struct ShellCommand<'a> {
 }
 
 impl CheckoutTools {
-    async fn run_checkout_command(
-        &self,
+    #[inline(never)]
+    fn run_checkout_command<'a>(
+        &'a self,
         command: PreparedCommand,
-        context: &ToolContext,
-    ) -> Result<ToolResult> {
-        let PreparedCommand {
-            invocation,
-            shell,
-            fs,
-            request,
-            maximum,
-        } = command;
-        let result = serialized(&self.state, async |mut state| {
-            let owner = context.task().owned_mailbox.as_ref().ok_or_else(|| {
-                Error::Unauthorized("checkout command has no execution owner".into())
-            })?;
-            owner.verify_owner(None)?.await?;
-            let workspace = self.selected_workspace(&mut state, owner.as_ref()).await?;
-            let view = state
-                .active
-                .as_ref()
-                .unwrap_or_else(|| self.workspace.view());
-            self.require_command_access(
-                view.workspace(),
-                context.effective_scope().grants(),
-                invocation.name == "fs",
-            )
-            .await?;
-            if reconciliation::recover(&workspace, view, &|| async {
-                owner.verify_owner(None)?.await
-            })
-            .await?
-            {
-                state.watcher = None;
-            }
-            workspace::volumes::sync(&state.mounts).await?;
-            if let Some(parsed) = fs {
-                self.fs(parsed, context, &mut state, &workspace).await
-            } else {
-                self.shell_checkout(
-                    ShellCommand {
-                        invocation: &invocation,
-                        context,
-                        shell,
-                        request,
-                        maximum,
-                    },
-                    state,
-                    &workspace,
+        context: &'a ToolContext,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ToolResult>> {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let PreparedCommand {
+                invocation,
+                shell,
+                fs,
+                request,
+                maximum,
+            } = command;
+            let result = serialized(&self.state, async |mut state| {
+                let owner = context.task().owned_mailbox.as_ref().ok_or_else(|| {
+                    Error::Unauthorized("checkout command has no execution owner".into())
+                })?;
+                owner.verify_owner(None)?.await?;
+                let workspace = self.selected_workspace(&mut state, owner.as_ref()).await?;
+                let view = state
+                    .active
+                    .as_ref()
+                    .unwrap_or_else(|| self.workspace.view());
+                self.require_command_access(
+                    view.workspace(),
+                    context.effective_scope().grants(),
+                    invocation.name == "fs",
                 )
-                .await
-            }
-        })
-        .await;
-        #[cfg(test)]
-        if let Err(error) = &result {
-            eprintln!("checkout command {}: {error:?}", invocation.name);
-        }
-        result
-    }
-    async fn shell_checkout(
-        &self,
-        command: ShellCommand<'_>,
-        mut state: OwnedMutexGuard<State>,
-        workspace: &Arc<LocalWorkspace>,
-    ) -> Result<ToolResult> {
-        let ShellCommand {
-            invocation,
-            context,
-            shell,
-            request,
-            maximum,
-        } = command;
-        let State {
-            active, watcher, ..
-        } = &mut *state;
-        let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
-        self.capture(
-            (workspace, view),
-            watcher,
-            invocation.operation_id,
-            0,
-            PublicationPermit::Unrestricted,
-            Some((
-                context.task().ordinary_journal_owner::<LocalStream>()?,
-                false,
-            )),
-        )
-        .await?;
-        let input = shell.ok_or_else(|| Error::Invalid("shell input is absent".into()))?;
-        let files = output::Output::open(context, Arc::clone(&self.task_files), request).await?;
-        let mounts = Arc::clone(&state.mounts);
-        let publication = context.task().ordinary_journal_owner::<LocalStream>()?;
-        let (result, mut state, mut files) =
-            workspace::volumes::native_scope(&mounts, async |claims| {
-                let (result, state, files, claims) =
-                    self.shell(input, maximum, state, files, claims).await?;
-                if !result.as_ref().is_ok_and(|result| {
-                    result
-                        .value
-                        .get("stop")
-                        .is_none_or(|stop| stop.is_null() || stop["cleanup_completed"] == true)
-                }) {
-                    return Err(Error::Indeterminate(invocation.operation_id));
+                .await?;
+                if reconciliation::recover(&workspace, view, &|| async {
+                    owner.verify_owner(None)?.await
+                })
+                .await?
+                {
+                    state.watcher = None;
                 }
-                // Verify the journal owner before the scope publishes.
-                publication.verify(true, &mut None).await?;
-                Ok(((result, state, files), claims))
+                workspace::volumes::sync(&state.mounts).await?;
+                if let Some(parsed) = fs {
+                    self.fs(parsed, context, &mut state, &workspace).await
+                } else {
+                    self.shell_checkout(
+                        ShellCommand {
+                            invocation: &invocation,
+                            context,
+                            shell,
+                            request,
+                            maximum,
+                        },
+                        state,
+                        &workspace,
+                    )?
+                    .await
+                }
             })
+            .await;
+            #[cfg(test)]
+            if let Err(error) = &result {
+                eprintln!("checkout command {}: {error:?}", invocation.name);
+            }
+            result
+        })
+    }
+    #[inline(never)]
+    fn shell_checkout<'a>(
+        &'a self,
+        command: ShellCommand<'a>,
+        mut state: OwnedMutexGuard<State>,
+        workspace: &'a Arc<LocalWorkspace>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ToolResult>> {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let ShellCommand {
+                invocation,
+                context,
+                shell,
+                request,
+                maximum,
+            } = command;
+            let State {
+                active, watcher, ..
+            } = &mut *state;
+            let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
+            self.capture(
+                (workspace, view),
+                watcher,
+                invocation.operation_id,
+                0,
+                PublicationPermit::Unrestricted,
+                Some((
+                    context.task().ordinary_journal_owner::<LocalStream>()?,
+                    false,
+                )),
+            )?
             .await?;
-        let State {
-            active, watcher, ..
-        } = &mut *state;
-        let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
-        self.capture(
-            (workspace, view),
-            watcher,
-            invocation.operation_id,
-            1,
-            PublicationPermit::Unrestricted,
-            Some((Arc::clone(&publication), true)),
-        )
-        .await?;
-        publication.verify(true, &mut None).await?;
-        if let Ok(result) = &result {
-            files.finish(result).await?;
-        }
-        result
+            let input = shell.ok_or_else(|| Error::Invalid("shell input is absent".into()))?;
+            let files =
+                output::Output::open(context, Arc::clone(&self.task_files), request).await?;
+            let mounts = Arc::clone(&state.mounts);
+            let publication = context.task().ordinary_journal_owner::<LocalStream>()?;
+            let (result, mut state, mut files) =
+                workspace::volumes::native_scope(&mounts, async |claims| {
+                    let (result, state, files, claims) =
+                        self.shell(input, maximum, state, files, claims).await?;
+                    if !result.as_ref().is_ok_and(|result| {
+                        result
+                            .value
+                            .get("stop")
+                            .is_none_or(|stop| stop.is_null() || stop["cleanup_completed"] == true)
+                    }) {
+                        return Err(Error::Indeterminate(invocation.operation_id));
+                    }
+                    // Verify the journal owner before the scope publishes.
+                    publication.verify(true, &mut None).await?;
+                    Ok(((result, state, files), claims))
+                })
+                .await?;
+            let State {
+                active, watcher, ..
+            } = &mut *state;
+            let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
+            self.capture(
+                (workspace, view),
+                watcher,
+                invocation.operation_id,
+                1,
+                PublicationPermit::Unrestricted,
+                Some((Arc::clone(&publication), true)),
+            )?
+            .await?;
+            publication.verify(true, &mut None).await?;
+            if let Ok(result) = &result {
+                files.finish(result).await?;
+            }
+            result
+        })
     }
 }
 
@@ -434,7 +441,7 @@ impl ToolExecutor for CheckoutTools {
                     maximum,
                 },
                 context,
-            )
+            )?
             .await
         })
     }
@@ -449,5 +456,44 @@ impl ToolExecutor for CheckoutTools {
             // A dispatched process must never be launched again after a lost ack.
             Ok(None)
         })
+    }
+}
+
+#[cfg(test)]
+mod native_capture_storage_tests {
+    use super::*;
+    fn retained<Args, T>(_: impl FnOnce(Args) -> T) -> usize {
+        std::mem::size_of::<T>()
+    }
+    #[test]
+    fn capture_spine_retains_only_owned_polling_handles() {
+        let measured = [
+            (
+                "run_checkout_command",
+                retained(
+                    |(tools, command, context): (
+                        &'static CheckoutTools,
+                        PreparedCommand,
+                        &'static ToolContext,
+                    )| tools.run_checkout_command(command, context),
+                ),
+            ),
+            (
+                "shell_checkout",
+                retained(
+                    |(tools, command, state, workspace): (
+                        &'static CheckoutTools,
+                        ShellCommand<'static>,
+                        OwnedMutexGuard<State>,
+                        &'static Arc<LocalWorkspace>,
+                    )| tools.shell_checkout(command, state, workspace),
+                ),
+            ),
+        ];
+        eprintln!("capture spine retained bytes: {measured:?}");
+        assert!(
+            measured.into_iter().all(|(_, bytes)| bytes <= 512),
+            "capture spine embeds concrete child futures"
+        );
     }
 }

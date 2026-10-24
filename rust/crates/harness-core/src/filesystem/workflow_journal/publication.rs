@@ -107,7 +107,7 @@ where
                 None,
                 None,
                 io,
-            )
+            )?
             .await
     }
 
@@ -271,112 +271,12 @@ where
         Ok(Some(existing))
     }
 
-    pub(crate) async fn commit_with_io(
+    async fn resolve_commit_append(
         &self,
-        expected_revision: u64,
-        idempotency_key: IdempotencyKey,
-        record: WorkflowRecord,
-        io: Option<&PreparationIo>,
-    ) -> Result<WorkflowRecord> {
-        self.commit_borrowed_with_io(expected_revision, idempotency_key, &record, io)
-            .await?;
-        Ok(record)
-    }
-
-    pub(crate) async fn commit_borrowed_with_io(
-        &self,
-        expected_revision: u64,
-        idempotency_key: IdempotencyKey,
+        appended: Result<bool>,
         record: &WorkflowRecord,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        self.require_machine_io(io)?;
-        if let Some(io) = io {
-            io.check_cancellation()?;
-        }
-        if let Some(owner) = &self.owner {
-            self.verify_observation_owner(owner, false, io).await?;
-        }
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let (_admission, admission) = {
-            let admission = self.read_admission(io).await?.ok_or_else(|| {
-                Error::Conflict("workflow transition has no retained admission".into())
-            })?;
-            let held = io
-                .map(|io| io.guard_owned(io.owned_since(before)?))
-                .transpose()?;
-            (held, admission)
-        };
-        crate::workflow::validate_workflow_commit(expected_revision, &idempotency_key, record, io)?;
-        if let Some(owner) = &self.owner {
-            owner.validate_workflow_record(record, io)?;
-        }
-        {
-            let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-            let (history_hold, (revision, existing)) = {
-                let (revision, existing) =
-                    self.verified_history(&admission, record, true, io).await?;
-                let history_hold = io
-                    .map(|io| io.guard_owned(io.owned_since(before)?))
-                    .transpose()?;
-                (history_hold, (revision, existing))
-            };
-            if let Some(existing) = existing {
-                if existing != *record {
-                    return Err(Error::Conflict(
-                        "workflow operation identity is already bound".into(),
-                    ));
-                }
-                self.verify_command_payloads(&existing, io).await?;
-                drop(history_hold);
-                return Ok(());
-            }
-            if revision != expected_revision {
-                return Err(Error::Conflict(
-                    "workflow checkpoint revision is stale".into(),
-                ));
-            }
-        }
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        self.verify_command_payloads(record, io).await?;
-        let (_reference, reference) = {
-            let reference = self
-                .stage_payload(
-                    record,
-                    Some((record.prior.revision, record.operation_id)),
-                    io,
-                )
-                .await?;
-            let held = io
-                .map(|io| io.guard_owned(io.owned_since(before)?))
-                .transpose()?;
-            (held, reference)
-        };
-        {
-            let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-            let (_staged, staged) = {
-                let staged = self.read_record(&reference, false, false, io).await?;
-                let held = io
-                    .map(|io| io.guard_owned(io.owned_since(before)?))
-                    .transpose()?;
-                (held, staged)
-            };
-            if staged != *record {
-                return Err(Error::Conflict(
-                    "staged workflow record disagrees with its transition".into(),
-                ));
-            }
-        }
-        let appended = self
-            .append_reference(
-                &self.path,
-                idempotency_key.as_str(),
-                expected_revision,
-                record.operation_id,
-                &reference,
-                io,
-            )
-            .await;
         match appended {
             Ok(true) => Ok(()),
             Ok(false) => match self.reconcile(record, io).await? {
@@ -385,20 +285,138 @@ where
                     "workflow checkpoint or ownership changed".into(),
                 )),
             },
-            Err(Error::Indeterminate(_)) if self.owner.is_none() => match self
-                .reconcile(record, io)
-                .await
-            {
-                Ok(Some(_)) => Ok(()),
-                Ok(None) | Err(Error::Storage(_)) => Err(Error::Indeterminate(record.operation_id)),
-                #[cfg(not(target_arch = "wasm32"))]
-                Err(Error::NativeStream {
-                    source: StreamError::Unavailable,
-                    ..
-                }) => Err(Error::Indeterminate(record.operation_id)),
-                Err(error) => Err(error),
-            },
+            Err(Error::Indeterminate(_)) if self.owner.is_none() => {
+                match self.reconcile(record, io).await {
+                    Ok(Some(_)) => Ok(()),
+                    Ok(None) | Err(Error::Storage(_)) => {
+                        Err(Error::Indeterminate(record.operation_id))
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    Err(Error::NativeStream {
+                        source: StreamError::Unavailable,
+                        ..
+                    }) => Err(Error::Indeterminate(record.operation_id)),
+                    Err(error) => Err(error),
+                }
+            }
             Err(error) => Err(error),
         }
+    }
+
+    pub(crate) async fn commit_with_io(
+        &self,
+        expected_revision: u64,
+        idempotency_key: IdempotencyKey,
+        record: WorkflowRecord,
+        io: Option<&PreparationIo>,
+    ) -> Result<WorkflowRecord> {
+        self.commit_borrowed_with_io(expected_revision, idempotency_key, &record, io)?
+            .await?;
+        Ok(record)
+    }
+
+    #[inline(never)]
+    pub(crate) fn commit_borrowed_with_io<'a>(
+        &'a self,
+        expected_revision: u64,
+        idempotency_key: IdempotencyKey,
+        record: &'a WorkflowRecord,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            self.require_machine_io(io)?;
+            if let Some(io) = io {
+                io.check_cancellation()?;
+            }
+            if let Some(owner) = &self.owner {
+                self.verify_observation_owner(owner, false, io).await?;
+            }
+            let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+            let (_admission, admission) = {
+                let admission = self.read_admission(io).await?.ok_or_else(|| {
+                    Error::Conflict("workflow transition has no retained admission".into())
+                })?;
+                let held = io
+                    .map(|io| io.guard_owned(io.owned_since(before)?))
+                    .transpose()?;
+                (held, admission)
+            };
+            crate::workflow::validate_workflow_commit(
+                expected_revision,
+                &idempotency_key,
+                record,
+                io,
+            )?;
+            if let Some(owner) = &self.owner {
+                owner.validate_workflow_record(record, io)?;
+            }
+            {
+                let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+                let (history_hold, (revision, existing)) = {
+                    let (revision, existing) =
+                        self.verified_history(&admission, record, true, io).await?;
+                    let history_hold = io
+                        .map(|io| io.guard_owned(io.owned_since(before)?))
+                        .transpose()?;
+                    (history_hold, (revision, existing))
+                };
+                if let Some(existing) = existing {
+                    if existing != *record {
+                        return Err(Error::Conflict(
+                            "workflow operation identity is already bound".into(),
+                        ));
+                    }
+                    self.verify_command_payloads(&existing, io).await?;
+                    drop(history_hold);
+                    return Ok(());
+                }
+                if revision != expected_revision {
+                    return Err(Error::Conflict(
+                        "workflow checkpoint revision is stale".into(),
+                    ));
+                }
+            }
+            let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+            self.verify_command_payloads(record, io).await?;
+            let (_reference, reference) = {
+                let reference = self
+                    .stage_payload(
+                        record,
+                        Some((record.prior.revision, record.operation_id)),
+                        io,
+                    )
+                    .await?;
+                let held = io
+                    .map(|io| io.guard_owned(io.owned_since(before)?))
+                    .transpose()?;
+                (held, reference)
+            };
+            {
+                let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+                let (_staged, staged) = {
+                    let staged = self.read_record(&reference, false, false, io).await?;
+                    let held = io
+                        .map(|io| io.guard_owned(io.owned_since(before)?))
+                        .transpose()?;
+                    (held, staged)
+                };
+                if staged != *record {
+                    return Err(Error::Conflict(
+                        "staged workflow record disagrees with its transition".into(),
+                    ));
+                }
+            }
+            let appended = self
+                .append_reference(
+                    &self.path,
+                    idempotency_key.as_str(),
+                    expected_revision,
+                    record.operation_id,
+                    &reference,
+                    io,
+                )
+                .await;
+            self.resolve_commit_append(appended, record, io).await
+        })
     }
 }

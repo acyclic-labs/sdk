@@ -15,10 +15,10 @@ mod pre_dispatch;
 // timeout, sleep, background task, or timing assumption controls cancellation.
 async fn cancel_at_admission_await(harness: &LocalHarness, after_admission: bool) -> Result<Turn> {
     let operation = OperationId::new();
-    let inputs = harness.stage_turn(operation, "original input").await?;
+    let inputs = harness.stage_turn(operation, "original input")?.await?;
     let (signal, ready) = tokio::sync::oneshot::channel();
     let mut submission = Box::pin(serialized(&harness.admission, async || {
-        let previous = harness.current_turn().await?.0.map(|turn| turn.operation);
+        let previous = harness.current_turn()?.await?.0.map(|turn| turn.operation);
         harness
             .publish_turn_with(
                 Turn {
@@ -32,7 +32,7 @@ async fn cancel_at_admission_await(harness: &LocalHarness, after_admission: bool
                 previous,
                 async move |turn| {
                     if after_admission {
-                        admitted_task(harness.admit_retained(turn).await?)?;
+                        admitted_task(harness.admit_retained(turn)?.await?)?;
                     }
                     signal
                         .send(turn.clone())
@@ -103,7 +103,7 @@ async fn cancellation_at_each_head_admission_await_resumes_the_retained_input_on
             let harness =
                 LocalHarness::open(bootstrap.config(&directory, provider.clone())?).await?;
             assert_eq!(harness.signed.agent(), bootstrap.agent);
-            assert!(harness.current_turn().await?.0.is_none());
+            assert!(harness.current_turn()?.await?.0.is_none());
             assert!(provider.requests().is_empty());
             let Some(after_admission) = after_admission else {
                 unadmitted_request_head_does_not_block_a_new_run(&harness, &provider).await?;
@@ -129,7 +129,7 @@ async fn cancellation_at_each_head_admission_await_resumes_the_retained_input_on
             assert_eq!(harness.signed.agent(), bootstrap.agent);
             assert_eq!(harness.resume(task).await?.text, "done");
             assert_eq!(harness.resume(task).await?.text, "done");
-            assert_eq!(harness.current_turn().await?.0, Some(retained));
+            assert_eq!(harness.current_turn()?.await?.0, Some(retained));
             assert_request(&provider, 1, "original input");
             assert_eq!(provider.remaining(), 0);
             cases.push(Some(after_admission));

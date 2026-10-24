@@ -122,7 +122,7 @@ fn sequence_case(frozen: bool, bootstrap: &super::super::bootstrap::Bootstrap) -
                             prompt.clone()
                         };
                         let task =
-                            admitted(local.submit_to(operation, Some(parent), &retry).await?);
+                            admitted(local.submit_to(operation, Some(parent), &retry)?.await?);
                         local.resume(task).await?;
                         let request = &provider.request(index + 2).unwrap();
                         let text = serde_json::to_string(request)?;
@@ -163,7 +163,7 @@ fn sequence_case(frozen: bool, bootstrap: &super::super::bootstrap::Bootstrap) -
                             &broken,
                             checkpoint.boundary.manifest.clone(),
                             local.input_publisher()?.as_ref(),
-                        )
+                        )?
                         .await?;
                     local.admit_turn(operation, None, receive, model).await?;
                     local.resume(task).await?;
@@ -193,7 +193,7 @@ fn sequence_case(frozen: bool, bootstrap: &super::super::bootstrap::Bootstrap) -
                                 &format!("{broken}\nCurrent request: omitted rewind fence"),
                                 checkpoint.boundary.manifest,
                                 local.input_publisher()?.as_ref(),
-                            )
+                            )?
                             .await?;
                         local.admit_turn(operation, None, receive, model).await?;
                         local.resume(task).await?;
@@ -238,7 +238,7 @@ async fn active_child_inherits_only_checkpoint_references_and_the_pinned_model()
     let (selected, checkpoint) = local.selected_checkpoint(parent).await?.unwrap();
     let child = admitted(
         local
-            .submit_to(OperationId::new(), Some(parent), "child request")
+            .submit_to(OperationId::new(), Some(parent), "child request")?
             .await?,
     );
     assert_eq!(
@@ -319,8 +319,8 @@ async fn completed_turns_continue_one_conversation_without_compaction() -> Resul
     let captures = &super::super::super::compact::HISTORY_CAPTURES;
     captures.with(|captures| captures.set((0, 0)));
     let (raced, retried) = tokio::join!(
-        local.submit_to(second, Some(first), "SECOND_PROMPT"),
-        local.submit_to(second, Some(first), "SECOND_PROMPT"),
+        local.submit_to(second, Some(first), "SECOND_PROMPT")?,
+        local.submit_to(second, Some(first), "SECOND_PROMPT")?,
     );
     let continued = admitted(raced?);
     assert_eq!(admitted(retried?), continued);
@@ -335,7 +335,7 @@ async fn completed_turns_continue_one_conversation_without_compaction() -> Resul
     assert_eq!(
         admitted(
             local
-                .submit_to(second, Some(first), "SECOND_PROMPT")
+                .submit_to(second, Some(first), "SECOND_PROMPT")?
                 .await?
         ),
         continued
@@ -354,7 +354,7 @@ async fn completed_turns_continue_one_conversation_without_compaction() -> Resul
     // The interface selects each new turn, so the third prompt continues the second.
     let third = admitted(
         local
-            .submit_to(OperationId::new(), Some(continued), "THIRD_PROMPT")
+            .submit_to(OperationId::new(), Some(continued), "THIRD_PROMPT")?
             .await?,
     );
     assert_eq!(local.resume(third).await?.text, "THIRD_ANSWER");

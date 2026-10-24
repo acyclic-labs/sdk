@@ -21,7 +21,7 @@ pub use hypothesis::{Begin, Hypothesis, Provenance, View};
 mod kernel;
 pub use kernel::Client;
 mod document_files;
-pub use document_files::document_files;
+pub use document_files::{DocumentFiles, DocumentUpdate, document_files};
 mod views;
 pub use views::{ClientViewHandle, ClientViewLimits, ClientViews, StatusView, SwarmChange};
 mod headless;
@@ -73,7 +73,7 @@ mod swarm;
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 pub use swarm::SwarmClient;
-pub use swarm::{SwarmClientLimits, SwarmUpdate};
+pub use swarm::{SwarmClientLimits, SwarmUpdate, status_publication};
 mod file_views;
 pub use file_views::QueryViewLimits;
 mod query;
@@ -92,7 +92,9 @@ pub use file_error::FileClientError;
 pub(crate) use retry::submission_retry;
 mod offline;
 pub use offline::validate_offline_request;
+pub(crate) mod file_follow;
 mod query_subscription;
+pub use file_follow::FileUpdate;
 mod session_views;
 pub(crate) use file_views::FileViews;
 pub(crate) use query_subscription::{PublishError, QuerySubscription, query_error};
@@ -182,7 +184,9 @@ pub use prompt_files::PromptFiles;
 #[cfg(feature = "tui")]
 mod scroll_files;
 #[cfg(feature = "tui")]
-pub use scroll_files::{frame_due, input_burst, scroll_tui, transcript_motion, tui_scroll};
+pub use scroll_files::{
+    frame_due, input_burst, scroll_tui, transcript_motion, tui_anchor, tui_modal_scroll,
+};
 
 #[cfg(all(
     feature = "terminal",

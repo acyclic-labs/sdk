@@ -10,6 +10,7 @@ description = "Renderer-independent prompt editor and ratatui input widget"
 
 [features]
 default = []
+test-support = []
 tui = ["dep:ratatui", "dep:crossterm", "dep:vte", "dep:rustix", "dep:nix", "dep:signal-hook", "dep:acyclic-native-runtime", "dep:serde_json", "dep:image", "dep:shell-words", "dep:tempfile", "dep:arrayvec", "dep:caseless", "dep:memchr", "dep:serde"]
 
 [build-dependencies]

@@ -1,6 +1,9 @@
 use super::{TestResult, scenario, swarm, swarm_case::SwarmCase, swarm_wire::Fault};
 use proptest::prelude::*;
-use std::{collections::BTreeMap, time::Instant};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Instant,
+};
 
 type Work = BTreeMap<&'static str, u64>;
 
@@ -57,11 +60,11 @@ fn linear_counts(small: &Work, doubled: &Work) -> TestResult {
             return Err("paced delivery conflated or duplicated a provider record".into());
         }
     }
-    // The parent membership volume is one persistent root child, independent
+    // The parent membership volume is two persistent root children, independent
     // of agent count. Assert that exact overhead before comparing swarm work.
     for work in [small, doubled] {
-        if work["discovered_children"] != work["agents"] + 1 {
-            return Err("discovery must visit every agent and exactly one parent volume".into());
+        if work["discovered_children"] != work["agents"] + 2 {
+            return Err("discovery must visit every agent and exactly the parent volume and shared status stream".into());
         }
     }
     if doubled["agents"] != 2 * small["agents"]
@@ -89,11 +92,21 @@ fn linear(small: &Work, doubled: &Work) -> TestResult {
 #[test]
 fn one_and_two_thousand_agents_have_linear_work() -> TestResult {
     let started = Instant::now();
-    let small = measured(case(1_000, 100)?, Fault::None)?;
+    let small_case = case(1_000, 100)?;
+    // Count registrations across the actual viewport transitions, including
+    // re-selection. The load fixture selects more agents than the small case.
+    let mut previous = BTreeSet::new();
+    let mut expected_follows = 2; // One membership and one shared status follow.
+    for layout in &small_case.layouts {
+        let selected: BTreeSet<_> = layout.selected().collect();
+        expected_follows += selected.difference(&previous).count() as u64;
+        previous = selected;
+    }
+    let small = measured(small_case, Fault::None)?;
     let doubled = measured(case(2_000, 100)?, Fault::None)?;
     linear(&small, &doubled)?;
-    assert!(small["server_follows"] >= 1_000);
-    assert!(doubled["server_follows"] >= 2_000);
+    assert_eq!(small["server_follows"], expected_follows);
+    assert_eq!(doubled["server_follows"], expected_follows);
     println!(
         "swarm scaling: 1k={small:?} 2k={doubled:?}; elapsed={:?}",
         started.elapsed()

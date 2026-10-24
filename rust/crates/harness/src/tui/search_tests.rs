@@ -111,9 +111,11 @@ async fn scenario<const BOUND: bool, const BACKGROUND: bool>(query: &str) {
         vec![InputEffect::Host(Action::App(AppAction::Find))]
     );
     for effect in effects {
-        file_tui_input(&mut files, &NoFiles, effect, 20, 0)
-            .await
-            .unwrap();
+        file_tui_input(&mut files, &NoFiles, effect, 20, 0, |_, _| {
+            unreachable!("not a transcript action")
+        })
+        .await
+        .unwrap();
     }
     prompt.refresh(&files, &mut input).unwrap();
     assert!(input.transcript_search(), "search form must own the input");
@@ -132,9 +134,11 @@ async fn scenario<const BOUND: bool, const BACKGROUND: bool>(query: &str) {
         "search must navigate instead of submitting chat"
     );
     for effect in effects {
-        file_tui_input(&mut files, &NoFiles, effect, 20, 0)
-            .await
-            .unwrap();
+        file_tui_input(&mut files, &NoFiles, effect, 20, 0, |_, _| {
+            unreachable!("not a transcript action")
+        })
+        .await
+        .unwrap();
     }
     assert!(files.take_request().is_none());
     let first = paint(&mut renderer, &files, &input, 80);
@@ -198,15 +202,19 @@ async fn scenario<const BOUND: bool, const BACKGROUND: bool>(query: &str) {
     assert!(paint(&mut renderer, &reopened, &restored, 40).contains("2 matches"));
     let effects = input.key(KeyEvent::new(KeyCode::Enter, M::SHIFT), 4, 78);
     for effect in effects {
-        file_tui_input(&mut files, &NoFiles, effect, 20, 0)
-            .await
-            .unwrap();
+        file_tui_input(&mut files, &NoFiles, effect, 20, 0, |_, _| {
+            unreachable!("not a transcript action")
+        })
+        .await
+        .unwrap();
     }
     assert!(paint(&mut renderer, &files, &input, 80).contains("1/2 matches"));
     for effect in input.key(KeyEvent::new(KeyCode::Esc, M::NONE), 5, 78) {
-        file_tui_input(&mut files, &NoFiles, effect, 20, 0)
-            .await
-            .unwrap();
+        file_tui_input(&mut files, &NoFiles, effect, 20, 0, |_, _| {
+            unreachable!("not a transcript action")
+        })
+        .await
+        .unwrap();
     }
     prompt.save(&mut files, &mut input).await.unwrap();
     prompt.refresh(&files, &mut input).unwrap();
@@ -230,9 +238,11 @@ async fn scenario<const BOUND: bool, const BACKGROUND: bool>(query: &str) {
         );
     }
     for effect in input.key(KeyEvent::new(KeyCode::Enter, M::NONE), 6, 78) {
-        file_tui_input(&mut files, &NoFiles, effect, 20, 0)
-            .await
-            .unwrap();
+        file_tui_input(&mut files, &NoFiles, effect, 20, 0, |_, _| {
+            unreachable!("not a transcript action")
+        })
+        .await
+        .unwrap();
     }
     assert!(
         files.take_request().is_some(),
@@ -259,6 +269,7 @@ async fn scenario<const BOUND: bool, const BACKGROUND: bool>(query: &str) {
         InputEffect::Host(Action::App(AppAction::Find)),
         20,
         0,
+        |_, _| unreachable!("not a transcript action"),
     )
     .await
     .unwrap();
@@ -308,43 +319,86 @@ async fn enter_mid_count_keeps_the_selected_row_during_background_frames() {
         .await
         .unwrap(),
     );
-    let mut files = CommandSession::open(volume, uuid::Uuid::from_bytes([71; 16]), 65_536, 128)
+    let mut files = CommandSession::open(
+        volume.clone(),
+        uuid::Uuid::from_bytes([71; 16]),
+        65_536,
+        128,
+    )
+    .await
+    .unwrap();
+    let task = TaskId::from_bytes([72; 16]);
+    let owner = wire::Authority {
+        kind: wire::AggregateKind::Task as i32,
+        id: task.to_string(),
+    };
+    let mut chunk = FileValue::new(
+        FileKey::Task {
+            task: Component::new(task.to_string()).unwrap(),
+            file: TaskFile::Chunk {
+                turn: 0,
+                sequence: 0,
+            },
+        },
+        format!("```text\n{}```\n", "needle\n".repeat(6000)).into_bytes(),
+    );
+    chunk.channel = Some(Channel::Text);
+    volume
+        .append(volume.head().await.unwrap(), &chunk)
         .await
         .unwrap();
-    files.write_state(CommandFileRoot::Session,"layout.json",&serde_json::json!({"open_view":"find","view_input":"find","search_query":"needle","search_index":0,"history_after":3000})).await.unwrap();
-    let mut input = PromptInput::default();
-    PromptFiles::default().refresh(&files, &mut input).unwrap();
+    let client = TaskFileClient::observe(volume.as_ref(), &owner, 128, 65_536)
+        .await
+        .unwrap();
     let mut renderer = ClientRenderer::default();
-    renderer.transcript = (0..6000)
-        .map(|row| Line::raw(format!("row {row} needle")))
-        .collect();
+    renderer.update_files(&client, &owner);
+    let mut input = PromptInput::default();
+    renderer.layout(&files, &input, 80, 20).unwrap();
+    let anchor = renderer
+        .move_view(
+            Some(crate::tui::TranscriptAnchor {
+                part: crate::tui::TranscriptPart::Answer,
+                position: crate::tui::RowPosition { line: 3000, row: 0 },
+                origin: None,
+            }),
+            0,
+        )
+        .unwrap();
+    files.write_state(CommandFileRoot::Session,"layout.json",&serde_json::json!({"open_view":"find","view_input":"find","search_query":"needle","search_index":0,"transcript_top":anchor})).await.unwrap();
+    PromptFiles::default().refresh(&files, &mut input).unwrap();
     paint_frame(&mut renderer, &files, &input, 80);
     assert!(renderer.search.pending());
-    let expected = renderer
+    let initial = renderer
         .search
-        .selected_row(&renderer.wrapped_transcript, 0)
-        + 1;
+        .selected_anchor(&renderer.wrapped_transcript, 0)
+        .unwrap();
+    let mut expected = initial;
+    expected.position.line += 1;
     for effect in input.key(KeyEvent::new(KeyCode::Enter, M::NONE), 1, 78) {
-        file_tui_input(&mut files, &NoFiles, effect, 20, 0)
-            .await
-            .unwrap();
+        file_tui_input(&mut files, &NoFiles, effect, 20, 0, |_, _| {
+            unreachable!("not a transcript action")
+        })
+        .await
+        .unwrap();
     }
     for _ in 0..8 {
         paint_frame(&mut renderer, &files, &input, 80);
         assert_eq!(
             renderer
                 .search
-                .selected_row(&renderer.wrapped_transcript, 1),
-            expected,
+                .selected_anchor(&renderer.wrapped_transcript, 1),
+            Some(expected),
             "Enter must preserve its selected match across rebuilt viewports"
         );
         renderer.search_progress().await;
         assert!(renderer.search.pending());
     }
     for effect in input.key(KeyEvent::new(KeyCode::Enter, M::SHIFT), 1, 78) {
-        file_tui_input(&mut files, &NoFiles, effect, 20, 0)
-            .await
-            .unwrap();
+        file_tui_input(&mut files, &NoFiles, effect, 20, 0, |_, _| {
+            unreachable!("not a transcript action")
+        })
+        .await
+        .unwrap();
     }
     for _ in 0..4 {
         paint_frame(&mut renderer, &files, &input, 80);
@@ -352,8 +406,8 @@ async fn enter_mid_count_keeps_the_selected_row_during_background_frames() {
         assert_eq!(
             renderer
                 .search
-                .selected_row(&renderer.wrapped_transcript, 0),
-            expected - 1,
+                .selected_anchor(&renderer.wrapped_transcript, 0),
+            Some(initial),
             "Shift+Enter must return to the source match before the rebuilt viewport"
         );
     }
@@ -453,9 +507,10 @@ async fn tool_scenario<const OMIT_TOOLS: bool>(needle: &str, width: u16) {
             &renderer.wrapped_transcript,
             &renderer.wrapped_tools,
         );
-        let row = renderer.search.selected_row(rows, index);
-        assert!(
-            row >= renderer.wrapped_transcript.rows().len(),
+        let row = renderer.search.selected_anchor(rows, index).unwrap();
+        assert_eq!(
+            row.part,
+            super::super::TranscriptPart::Tools,
             "tool-only matches navigate into the tool tail"
         );
         selected.push(row);
