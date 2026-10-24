@@ -38,3 +38,10 @@ commands bypass build tickets centrally in bb-admit. They retain the same
 receipt and job HOME boundary. Callers need no tenant-specific copy of this
 policy. Wrapper executables (including script interpreters) are resolved at
 admission; an unavailable wrapper returns typed admission-INFRA (224).
+
+Admission records every caller resource limit (both soft and hard) before
+crossing the daemon boundary. The scope launcher restores that exact set as
+root before dropping to `var`, without a PAM session resetting it again. The
+HOME namespace repeats the restoration before its final privilege drop.
+There is no fixed nofile limit. Terminal runtime receipts record both the
+requested and execution limits; mismatches or malformed limits fail as INFRA.

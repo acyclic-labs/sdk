@@ -136,6 +136,9 @@ print('FIVE_WRITES_DENIED')
         worker=self.worker();worker.write_text(worker.read_text().replace('if not namespace_ready:','if False:').replace("runtime['home_guard']=protect_home(real_home)","runtime['home_guard']={'mechanism':'negative-control'}"))
         meta=self.d/'negative.meta';meta.write_text('{}')
         env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        # This mutant bypasses the constructor that normally captures limits.
+        from admission_policy import capture_limits, LIMIT_ENV
+        env[LIMIT_ENV]=json.dumps(capture_limits())
         env.pop('BB_JOB_ACTIVE',None)
         result=subprocess.run([sys.executable,str(worker),sys.executable,'-c',child],env=env,capture_output=True)
         self.assertEqual(result.returncode,0,result.stderr.decode());self.assertTrue((home/'.cache/child').exists())

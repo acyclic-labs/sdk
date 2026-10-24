@@ -5,6 +5,42 @@ import os
 from pathlib import Path
 import shutil
 import shlex
+import resource
+
+LIMIT_ENV = 'BB_CALLER_RLIMITS_JSON'
+# Preserve every resource exposed by this kernel/Python, including the five
+# environment-parity limits. Collapse aliases such as OFILE/NOFILE by number.
+LIMIT_NAMES = {number: name for name, number in sorted(vars(resource).items(), reverse=True)
+               if name.startswith('RLIMIT_') and name != 'RLIMIT_OFILE'}
+
+
+def capture_limits():
+    return {name: list(resource.getrlimit(number)) for number, name in LIMIT_NAMES.items()}
+
+
+def parse_limits(raw):
+    try:
+        value = json.loads(raw)
+        if not isinstance(value, dict) or value.keys() != capture_limits().keys(): raise ValueError('resource set')
+        for pair in value.values():
+            if not isinstance(pair, list) or len(pair) != 2: raise ValueError('pair')
+            if any(type(n) is not int or (n < 0 and n != resource.RLIM_INFINITY) for n in pair): raise ValueError('value')
+            soft, hard = pair
+            if hard != resource.RLIM_INFINITY and (soft == resource.RLIM_INFINITY or soft > hard): raise ValueError('order')
+        return value
+    except (ValueError, TypeError) as error:
+        raise RuntimeError('RLIMIT_INVALID admission-INFRA: '+str(error)) from error
+
+
+def restore_limits(raw):
+    requested = parse_limits(raw)
+    try:
+        for number, name in LIMIT_NAMES.items():
+            resource.setrlimit(number, requested[name])
+        if capture_limits() != requested: raise ValueError('resource limits changed')
+    except (OSError, ValueError) as error:
+        raise RuntimeError('RLIMIT_RESTORE admission-INFRA: '+str(error)) from error
+    return requested
 
 QUERIES = frozenset({'metadata', 'tree', 'locate-project', 'pkgid', 'verify-project', 'read-manifest'})
 
@@ -61,3 +97,23 @@ def resolve_wrapper(env, compiler=False, cwd=None):
             if not selected: raise RuntimeError('RUSTC_WRAPPER_INTERPRETER_MISSING admission-INFRA: ' + fields[1])
     env['RUSTC_WRAPPER'] = executable
     return {'path': executable, 'sha256': hashlib.sha256(data).hexdigest()}
+
+
+if __name__ == '__main__':
+    import sys
+    try:
+        if sys.argv[1:] == ['capture-limits']:
+            print(json.dumps(capture_limits(), separators=(',', ':')))
+        elif sys.argv[1:3] == ['exec-user', 'var'] and sys.argv[3:4] == ['--'] and len(sys.argv) > 4:
+            import pwd
+            # Do this after systemd/sudo and before setuid. runuser's PAM
+            # session can reset the limits again, so do not cross it afterward.
+            restore_limits(os.environ[LIMIT_ENV])
+            user = pwd.getpwnam('var')
+            os.setgroups(os.getgrouplist(user.pw_name, user.pw_gid))
+            os.setgid(user.pw_gid); os.setuid(user.pw_uid)
+            os.execvpe(sys.argv[4], sys.argv[4:], os.environ)
+        else: raise RuntimeError('invalid admission policy command')
+    except (OSError, RuntimeError, KeyError) as error:
+        print('[buildbox] '+str(error), file=sys.stderr)
+        raise SystemExit(224)

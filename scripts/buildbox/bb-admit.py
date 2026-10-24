@@ -19,7 +19,7 @@ import subprocess
 import sys
 import time
 import uuid
-from admission_policy import cargo_query, canonical_argv, resolve_wrapper
+from admission_policy import cargo_query, canonical_argv, resolve_wrapper, capture_limits, LIMIT_ENV
 
 ROOT = Path(os.environ.get('BB_ADMIT_ROOT', '/mnt/bb/admit'))
 SOCKET = ROOT/'admit.sock'
@@ -264,6 +264,9 @@ def serve():
 
 
 def client(args):
+    # A daemon may have been started by a caller with different limits. The
+    # ticket carries this caller's environment through that process boundary.
+    os.environ[LIMIT_ENV] = json.dumps(capture_limits())
     tier,tenant,sep,*argv=args
     if sep!='--' or not argv: raise ValueError('bb-admit <tier> <tenant> -- command ...')
     tier={'crit':0,'prio':0,'merge':1,'qual':1,'lane':2,'proof':3}.get(tier,int(tier) if tier.isdigit() else 2)

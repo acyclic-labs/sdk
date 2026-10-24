@@ -19,7 +19,7 @@ import tempfile
 import time
 import uuid
 import bb_target_store
-from admission_policy import resolve_wrapper
+from admission_policy import resolve_wrapper, capture_limits, restore_limits, LIMIT_ENV
 
 BIN=Path(__file__).parent
 NODE='/home/var/tools/node24/node-v24.3.0-linux-x64/bin/node'
@@ -118,6 +118,7 @@ def mount_home_namespace():
     # A cwd inherited from HOME still refers to the original writable mount.
     # Resolve it again through this namespace before starting any payload.
     os.chdir(os.getcwd())
+    restore_limits(os.environ[LIMIT_ENV])
     user=pwd.getpwnam('var')
     os.setgroups(os.getgrouplist(user.pw_name,user.pw_gid));os.setgid(user.pw_gid);os.setuid(user.pw_uid)
     # sudo's secure_path applies during privileged setup; restore the caller's
@@ -277,6 +278,8 @@ def run(argv,namespace_ready=False):
     # kernel namespace constructor. No environment marker can bypass it.
     # No no_new_privs: fusermount3 must retain setuid.
     if not namespace_ready:
+        if LIMIT_ENV not in os.environ or os.environ.get('BB_JOB_ACTIVE')=='1':
+            os.environ[LIMIT_ENV]=json.dumps(capture_limits())
         os.environ['BB_JOB_NAMESPACE_PATH']=os.environ.get('PATH','/usr/bin:/bin')
         os.execvp('sudo',['sudo','-n','--preserve-env','unshare','--mount','--propagation','private','--pid','--fork','--kill-child','--mount-proc',sys.executable,str(Path(__file__).resolve()),'home-namespace',*argv])
     compiler_job=Path(argv[0]).name=='cargo' or bool(json.loads(Path(meta).read_text()).get('gate_log'))
@@ -311,7 +314,7 @@ def run(argv,namespace_ready=False):
     admission=json.loads(admission_file.read_text()) if admission_file.exists() else {'tier':env.get('BB_ADMIT_TIER'),'tenant':env.get('BB_ADMIT_TENANT'),'wait_seconds':env.get('BB_ADMIT_WAIT_SECONDS'),'build_jobs':env.get('CARGO_BUILD_JOBS')}
     if admission.get('build_jobs'):env['CARGO_BUILD_JOBS']=str(admission['build_jobs'])
     runtime={'hermetic_home':str(job),'targets_policy':'job-owned','cache':'not-started','disk_free':disk(),
-             'admission':admission}
+             'admission':admission, 'caller_rlimits':json.loads(env[LIMIT_ENV]), 'exec_rlimits':capture_limits()}
     runtimefile=Path(meta+'.runtime'); atomic(runtimefile,runtime)
     server=None; child=None; rc=224; units=[]
     def interrupted(n,f):

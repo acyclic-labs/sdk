@@ -625,7 +625,6 @@ export CARGO_INCREMENTAL=0  # job-owned targets are deleted; use shared sccache 
 export TMPDIR="$BB_JOB_TMP" CARGO_TARGET_DIR="$BB_JOB_TARGET" CARGO_PROFILE_DEV_INCREMENTAL=false CARGO_PROFILE_TEST_INCREMENTAL=false CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \\
   SCCACHE_DIR=/mnt/bb/sccache SCCACHE_CACHE_SIZE=400G SCCACHE_IDLE_TIMEOUT=120 CARGO_NET_RETRY=5 CARGO_TERM_COLOR=\${CARGO_TERM_COLOR:-never}
 printf '[profile.default]\\nslow-timeout = { period = "60s", terminate-after = 10 }\\n' > /tmp/bb-nextest.toml  # = NEXTEST_TOOL, literal: bb-swap smokes this block verbatim
-ulimit -n 1048576 2>/dev/null || ulimit -n "$(ulimit -Hn)"
 ${testRunner()}${rustEnv}
 # Tests that read the checkout's git HEAD need a repository whose HEAD is the tree: a git-synced worktree is at the client's
 # commit already; uncommitted changes (and rsynced trees) are committed on top (ignored files stay out).
@@ -747,7 +746,7 @@ chmod go-w ${SH ? `/mnt/bb/targets ${SH} ` : ''}$T /mnt/bb /mnt/bb/home /mnt/bb/
 # scope to var, so jobs (local e2e's heap cgroups, via /home/var/bin/bbcg/systemd-run) can build cgroups inside the job.
 # Only a cgroup that is a bbjobs.slice scope is ever touched.
 S=; [ -e /etc/systemd/system/bbjobs.slice ] && S='systemd-run --scope -q --slice=bbjobs.slice -p Delegate=yes --'
-setsid sudo -n $S unshare -m --propagation private bash -c 'C=/sys/fs/cgroup$(sed -n s/^0:://p /proc/self/cgroup); case $C in /sys/fs/cgroup/bbjobs.slice/run-*.scope) { mkdir $C/job && echo $$ > $C/job/cgroup.procs && echo "+cpu +memory +pids" > $C/cgroup.subtree_control && chown var $C $C/cgroup.procs $C/cgroup.subtree_control $C/cgroup.threads && chown -R var $C/job; } || echo "[buildbox] job cgroup delegation failed" >&2;; esac; mount --bind ${src} /work/src && mount --bind '"$T"' /work/target && mount --bind ${TD}/.host-targets /mnt/bb/home/targets && mount --bind ${TD}/.host-src /mnt/bb/home/src && mount --bind ${J}.tmp /tmp && exec runuser -u var -- bash ${J}.sh' >> $J.out 2>> $J.err < /dev/null 8>&- &
+setsid sudo -n --preserve-env=BB_CALLER_RLIMITS_JSON $S unshare -m --propagation private bash -c 'C=/sys/fs/cgroup$(sed -n s/^0:://p /proc/self/cgroup); case $C in /sys/fs/cgroup/bbjobs.slice/run-*.scope) { mkdir $C/job && echo $$ > $C/job/cgroup.procs && echo "+cpu +memory +pids" > $C/cgroup.subtree_control && chown var $C $C/cgroup.procs $C/cgroup.subtree_control $C/cgroup.threads && chown -R var $C/job; } || echo "[buildbox] job cgroup delegation failed" >&2;; esac; mount --bind ${src} /work/src && mount --bind '"$T"' /work/target && mount --bind ${TD}/.host-targets /mnt/bb/home/targets && mount --bind ${TD}/.host-src /mnt/bb/home/src && mount --bind ${J}.tmp /tmp && exec python3 /home/var/bin/admission_policy.py exec-user var -- bash ${J}.sh' >> $J.out 2>> $J.err < /dev/null 8>&- &
 p=$!; echo $p > $J.pid
 node $J.receipt-tool.mjs job $J.receipt-meta.v2.json $p
 # Hang reaper (2026-10-18, crit-bslot): the job's scope cgroup must use 5 s of CPU per 10 min; a job under that (a deadlocked
