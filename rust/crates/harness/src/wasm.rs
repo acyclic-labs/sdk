@@ -266,6 +266,12 @@ enum WasmFileProjectionPolicy {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[tsify(from_wasm_abi, into_wasm_abi)]
 enum WasmModelContentPart {
+    Output {
+        block: crate::model::OutputBlock,
+    },
+    Reasoning {
+        block: crate::model::ReasoningBlock,
+    },
     Text {
         text: String,
     },
@@ -351,6 +357,12 @@ struct WasmModelRequestWire {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[tsify(from_wasm_abi, into_wasm_abi)]
 enum WasmModelEvent {
+    OutputBlock {
+        block: crate::model::OutputBlock,
+    },
+    ReasoningBlock {
+        block: crate::model::ReasoningBlock,
+    },
     Content {
         delta: String,
     },
@@ -365,6 +377,11 @@ enum WasmModelEvent {
         arguments: serde_json::Value,
     },
     Completed {
+        #[tsify(type = "WasmModelJsonValue")]
+        metadata: serde_json::Value,
+    },
+    Failed {
+        message: String,
         #[tsify(type = "WasmModelJsonValue")]
         metadata: serde_json::Value,
     },
@@ -717,7 +734,7 @@ export type WasmModelContentInput = string | WasmModelContentPartInput | readonl
 type WasmModelCamelEvent<Event extends WasmModelEvent> =
     Event extends { readonly kind: "tool_call"; readonly call_id: string }
         ? Omit<Event, "call_id" | "arguments"> & Readonly<{ callId: string; arguments: unknown }>
-        : Event extends { readonly kind: "completed" }
+        : Event extends { readonly kind: "completed" | "failed" }
             ? Omit<Event, "metadata"> & Readonly<{ metadata: unknown }>
         : Event;
 export type WasmModelEventInput = WasmModelCamelEvent<WasmModelEvent>;
@@ -2571,8 +2588,11 @@ pub fn admit_model_event(
             .checked_add(delta.len() as u64)
             .ok_or_else(|| JsValue::from_str("model output size overflow"))?,
         ModelEvent::Reasoning { .. }
+        | ModelEvent::ReasoningBlock { .. }
+        | ModelEvent::OutputBlock { .. }
         | ModelEvent::ToolCall { .. }
-        | ModelEvent::Completed { .. } => prior_text_bytes,
+        | ModelEvent::Completed { .. }
+        | ModelEvent::Failed { .. } => prior_text_bytes,
     };
     if text_bytes > limits.file_bytes {
         return Err(JsValue::from_str("assistant output exceeds file limit"));
@@ -2587,6 +2607,8 @@ pub fn admit_model_event(
         event: match event {
             ModelEvent::Content { delta } => WasmModelEvent::Content { delta },
             ModelEvent::Reasoning { delta } => WasmModelEvent::Reasoning { delta },
+            ModelEvent::ReasoningBlock { block } => WasmModelEvent::ReasoningBlock { block },
+            ModelEvent::OutputBlock { block } => WasmModelEvent::OutputBlock { block },
             ModelEvent::ToolCall {
                 call_id,
                 name,
@@ -2597,6 +2619,9 @@ pub fn admit_model_event(
                 arguments,
             },
             ModelEvent::Completed { metadata } => WasmModelEvent::Completed { metadata },
+            ModelEvent::Failed { message, metadata } => {
+                WasmModelEvent::Failed { message, metadata }
+            }
         },
         state,
     };

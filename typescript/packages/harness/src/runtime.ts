@@ -2316,6 +2316,8 @@ export class AgentHarness {
       const maxSteps = Math.min(this.scope.limits.maxSteps ?? this.limits.model_steps, this.limits.model_steps);
       for (let step = 0; step < maxSteps; step += 1) {
         const calls: Extract<ModelEvent, { kind: "tool_call" }>[] = [];
+        const assistantParts: Array<Extract<ModelContent, readonly unknown[]>[number]> = [];
+        let outputCalls: ReadonlyArray<{ call_id: string; name: string; arguments: unknown }> | undefined;
         let admission: ModelEventAdmissionState = { ...previousAdmission, count: 0, calls: [], completed: false };
         for await (const event of model.provider.generate({ model: model.identity, messages, tools: this.#modelToolDefinitions(), signal: context.signal })) {
           const admitted = this.contracts.admitModelEvent(event, this.limits, admission);
@@ -2326,14 +2328,34 @@ export class AgentHarness {
           }
           else if (admittedEvent.kind === "tool_call") {
             calls.push(admittedEvent);
+            assistantParts.push(admittedEvent);
+          }
+          else if (admittedEvent.kind === "reasoning_block") {
+            assistantParts.push({ kind: "reasoning", block: admittedEvent.block });
+          }
+          else if (admittedEvent.kind === "output_block") {
+            if (outputCalls !== undefined) throw new Error("multiple canonical output blocks");
+            outputCalls = admittedEvent.block.calls;
+            assistantParts.push({ kind: "output", block: admittedEvent.block });
           }
           else if (admittedEvent.kind === "completed") {
             receipts.push({ kind: "model-completed", metadata: admittedEvent.metadata });
           }
+          else if (admittedEvent.kind === "failed") {
+            throw new Error(admittedEvent.message);
+          }
         }
         if (!admission.completed) throw new Error("model attempt ended without completion");
+        if (outputCalls !== undefined && (outputCalls.length !== calls.length || outputCalls.some((call, index) => {
+          const actual = calls[index]!;
+          const expectedArguments = this.contracts.digestCanonicalJson(call.arguments);
+          const actualArguments = this.contracts.digestCanonicalJson(actual.arguments);
+          return call.call_id !== actual.callId || call.name !== actual.name
+            || !expectedArguments.every((byte, at) => byte === actualArguments[at]);
+        }))) throw new Error("canonical output tool calls do not match operational calls");
         previousAdmission = admission;
         if (calls.length === 0) return { text };
+        messages.push({ role: "assistant", content: assistantParts });
         for (const call of calls) {
           const toolOperationId = this.contracts.idFromDigest(this.contracts.digestCanonicalJson({
             domain: "harness:tool-call:v2", task_id: context.taskId, step,
@@ -2342,7 +2364,7 @@ export class AgentHarness {
           const value = await context.call(this.tool(call.name), call.arguments, toolOperationId, call.callId);
           const projection = await boundedToolValue(value, this.limits.render_bytes, this.contracts);
           receipts.push({ kind: "tool", step, callId: call.callId, name: call.name, arguments: call.arguments, value, projection });
-          messages.push({ role: "assistant", content: call }, { role: "tool", content: { kind: "tool_result", callId: call.callId, name: call.name, value: projection } });
+          messages.push({ role: "tool", content: { kind: "tool_result", callId: call.callId, name: call.name, value: projection } });
         }
       }
       throw new Error(`agent loop exceeded ${maxSteps} model steps`);

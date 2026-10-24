@@ -73,7 +73,7 @@ export type ModelRequest<ModelOptions = unknown, Content = ModelContent> =
 type PublicModelEvent<Event extends WasmModelEvent, Arguments, Metadata> =
   Event extends Readonly<{ kind: "tool_call" }>
     ? Readonly<Omit<Event, "call_id" | "arguments"> & { callId: string; arguments: Arguments }>
-    : Event extends Readonly<{ kind: "completed" }>
+    : Event extends Readonly<{ kind: "completed" | "failed" }>
       ? Readonly<Omit<Event, "metadata"> & { metadata: Metadata }>
       : Readonly<Event>;
 export type ModelEvent<Arguments = unknown, Metadata = unknown> =

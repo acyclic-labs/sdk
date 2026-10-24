@@ -5,6 +5,11 @@ use futures::{future::BoxFuture, stream::BoxStream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod reasoning;
+pub use reasoning::{ReasoningBlock, ReasoningKind, ReasoningOrigin, ReasoningOutcome};
+mod output;
+pub use output::{ModelToolCall, OutputBlock};
+
 /// Immutable provider-owned model selection; there is no global catalog.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Model {
@@ -152,6 +157,8 @@ impl ModelContent {
                         ));
                     }
                 }
+                ModelContentPart::Reasoning { block } => block.validate_limits(limits)?,
+                ModelContentPart::Output { block } => block.validate_limits(limits)?,
                 ModelContentPart::Text { .. } => {}
             }
         }
@@ -207,10 +214,20 @@ impl ModelContent {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ModelContentPart {
+    /// Ordered native assistant output, including non-text phases and tool declarations.
+    Output {
+        /// Canonical provider-owned output.
+        block: OutputBlock,
+    },
     /// Plain text.
     Text {
         /// Model-visible text.
         text: String,
+    },
+    /// Canonical reasoning in its original assistant-turn position.
+    Reasoning {
+        /// Exact canonical continuity and readable content.
+        block: ReasoningBlock,
     },
     /// Immutable file reference with an explicit byte-resolution policy.
     File {
@@ -270,6 +287,11 @@ pub struct ModelRequest {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ModelEvent {
+    /// Canonical completed output before its operational tool calls.
+    OutputBlock {
+        /// Exact ordered continuation and advertised calls.
+        block: OutputBlock,
+    },
     /// User-visible content fragment.
     Content {
         /// Incremental content.
@@ -279,6 +301,11 @@ pub enum ModelEvent {
     Reasoning {
         /// Incremental reasoning content.
         delta: String,
+    },
+    /// Completed canonical reasoning, retained in transcript order.
+    ReasoningBlock {
+        /// Exact canonical continuity and readable content.
+        block: ReasoningBlock,
     },
     /// Complete request to invoke one registered tool.
     ToolCall {
@@ -293,6 +320,15 @@ pub enum ModelEvent {
     /// Model completed this step.
     Completed {
         /// Provider-owned usage and finish metadata.
+        metadata: Value,
+    },
+    /// Model terminated unsuccessfully. This terminal observation is durable and must never
+    /// authorize tool execution or a successful turn, including during journal replay.
+    Failed {
+        /// Nonempty diagnostic, at most 4096 UTF-8 bytes. This failure is terminal,
+        /// including during recovery; it does not authorize redispatch.
+        message: String,
+        /// Provider-owned usage and failure metadata, retained even when generation fails.
         metadata: Value,
     },
 }

@@ -513,10 +513,13 @@ function wasmModelEventInput(event: ModelEvent): WasmModelEventInput {
     case "tool_call":
       return { ...event, callId: event.callId };
     case "completed":
+    case "failed":
       return event;
     case "content":
       return event;
     case "reasoning":
+    case "reasoning_block":
+    case "output_block":
       return event;
   }
 }

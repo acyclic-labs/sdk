@@ -1747,6 +1747,83 @@ describe("typed agent runtime", () => {
     expect(await (await runtime.attach(output.taskId)).result()).toMatchObject({ kind: "succeeded", value: { text: "done" } });
   });
 
+  test("terminal model failure never runs partial parallel calls or reports success", async () => {
+    let executions = 0;
+    const tool = defineTool<number, number>({ name: "echo", revision: "1", description: "echo", inputSchema: {}, outputSchema: {}, parseInput: parseNumber, parseOutput: parseNumber }, async (_context, input) => { executions++; return input; });
+    const runtime = Harness.builder(contracts).tool(tool).grant("tool:call:echo").model(testModel, {
+      async *generate() {
+        yield { kind: "content" as const, delta: "partial" };
+        yield { kind: "tool_call" as const, callId: "first", name: "echo", arguments: 1 };
+        yield { kind: "tool_call" as const, callId: "second", name: "echo", arguments: 2 };
+        yield { kind: "failed" as const, message: "model generation failed", metadata: { usage: { input_tokens: 11, output_tokens: 7 } } };
+      },
+      async reconcile() { throw new Error("failure must not retry"); },
+    }).build();
+    await expect(runtime.run("go")).rejects.toThrow("model generation failed");
+    expect(executions).toBe(0);
+  });
+
+  test("canonical reasoning and parallel calls remain ordered before tool outputs", async () => {
+    const block = (value: number) => ({ kind: "encrypted" as const, text: null,
+      origin: { provider: "openai-responses", model: "gpt-6.1-sol", credential_scope: Array(32).fill(7) },
+      continuity: [value, 0, 255], outcome: "preserved-opaque" as const });
+    let step = 0;
+    let observed: readonly ModelMessage[] = [];
+    const tool = defineTool<number, number>({ name: "echo", revision: "1", description: "echo", inputSchema: {}, outputSchema: {}, parseInput: parseNumber, parseOutput: parseNumber }, async (_context, input) => input);
+    const runtime = Harness.builder(contracts).tool(tool).grant("tool:call:echo").model(testModel, {
+      async *generate(request) {
+        if (step++ === 0) {
+          yield { kind: "reasoning_block" as const, block: block(1) };
+          yield { kind: "tool_call" as const, callId: "first", name: "echo", arguments: 1 };
+          yield { kind: "reasoning_block" as const, block: block(2) };
+          yield { kind: "tool_call" as const, callId: "second", name: "echo", arguments: 2 };
+        } else { observed = request.messages; yield { kind: "content" as const, delta: "done" }; }
+        yield { kind: "completed" as const, metadata: {} };
+      },
+      async reconcile() { return undefined; },
+    }).build();
+    expect((await runtime.run("go")).text).toBe("done");
+    expect(observed.slice(1)).toEqual([
+      { role: "assistant", content: [
+        { kind: "reasoning", block: block(1) },
+        { kind: "tool_call", callId: "first", name: "echo", arguments: 1 },
+        { kind: "reasoning", block: block(2) },
+        { kind: "tool_call", callId: "second", name: "echo", arguments: 2 },
+      ] },
+      { role: "tool", content: { kind: "tool_result", callId: "first", name: "echo", value: 1 } },
+      { role: "tool", content: { kind: "tool_result", callId: "second", name: "echo", value: 2 } },
+    ]);
+  });
+
+  test("completed output stays opaque and mismatched calls never execute", async () => {
+    for (const mismatch of [false, true]) {
+      let step = 0, executions = 0;
+      let observed: readonly ModelMessage[] = [];
+      const block = { origin: { provider: "fixture", model: "model", credential_scope: Array(32).fill(7) },
+        text: "commentary", continuity: [0, 1, 127, 255],
+        calls: [{ call_id: mismatch ? "wrong" : "call", name: "echo", arguments: 1 }] };
+      const tool = defineTool<number, number>({ name: "echo", revision: "1", description: "echo", inputSchema: {}, outputSchema: {}, parseInput: parseNumber, parseOutput: parseNumber }, async (_context, input) => { executions++; return input; });
+      const runtime = Harness.builder(contracts).tool(tool).grant("tool:call:echo").model(testModel, {
+        async *generate(request) {
+          if (step++ === 0) {
+            yield { kind: "content" as const, delta: "commentary" };
+            yield { kind: "output_block" as const, block };
+            yield { kind: "tool_call" as const, callId: "call", name: "echo", arguments: 1 };
+          } else { observed = request.messages; yield { kind: "content" as const, delta: "done" }; }
+          yield { kind: "completed" as const, metadata: {} };
+        }, async reconcile() { return undefined; },
+      }).build();
+      if (mismatch) {
+        await expect(runtime.run("go")).rejects.toThrow("do not match");
+        expect(executions).toBe(0);
+      } else {
+        expect((await runtime.run("go")).text).toBe("commentarydone");
+        expect(executions).toBe(1);
+        expect(observed[1]?.content).toEqual([{ kind: "output", block }, { kind: "tool_call", callId: "call", name: "echo", arguments: 1 }]);
+      }
+    }
+  });
+
   test("typed run input carries attachment refs into the model context", async () => {
     let observed: readonly ModelMessage[] = [];
     const file = {

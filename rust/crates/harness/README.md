@@ -2,6 +2,10 @@
 
 Rust-first, provider-neutral agent runtime. Harness owns typed conversation, task, effect, interaction, and fork semantics; providers own byte storage, history, execution checkpoints, and model-specific projection. A Rust future is not automatically a durable operation.
 
+Model providers distinguish a successful `ModelEvent::Completed` from a terminal `ModelEvent::Failed { message, metadata }`. Failures retain provider-owned usage and diagnostics in the durable journal. A failure diagnostic must be nonempty and no longer than 4096 UTF-8 bytes. The stock executor rejects a failed step before invoking any accumulated tools or producing a successful turn. Recovery observes the same recorded failure without redispatching the provider; callers must not turn a failure into `Completed` followed by a stream error.
+
+`OutputBlock` retains a provider's entire ordered completed output as opaque continuity, with scoped origin, a safe readable projection, and typed advertised calls. The stock executor journals it before tool results and verifies advertised call IDs, names, arguments and order against operational events before any tool runs, on fresh execution and replay. Origin adapters preserve native message phases and unknown fields rather than reconstructing a lossy text-only history. A complete output block cannot be mixed with detached canonical reasoning.
+
 `HarnessBuilder::limits` centralizes file size, path, attachment, direct-rendering, selected-history, model-step, per-step stream-event, and tool-call ceilings; `StreamAggregate::with_limits` applies content bounds before publishing a conversation message. Physical providers may impose tighter upload and rendering bounds.
 
 At event admission, the content resolver must return the exact bytes of every primary file, inline attachment, extension, and manifest member. Harness checks each pinned descriptor itself and decodes manifests from their canonical pinned bytes; a provider's metadata-only `verify` or pre-parsed `load_manifest` response cannot authorize publication. Uploads may remain staged after a failed admission, but no event is published with a dangling or substituted ref.
