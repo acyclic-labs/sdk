@@ -63,6 +63,7 @@
       "target": "Sessions, resume, rewind, Escape and diffs",
       "owner": "sessions (#1452)",
       "cases": [
+        "duplicate-skills",
         "jsonl-reopen",
         "pty-quit-resume",
         "pty-checkpoint-rewind",

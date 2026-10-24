@@ -1,0 +1,26 @@
+{
+  "id": "duplicate-skills",
+  "workspace": {
+    "kind": "plain",
+    "files": {
+      ".claude/skills/a/SKILL.md": "---\nname: repeated\ndescription: First declaration\n---\nFIRST BODY\n",
+      ".claude/skills/b/SKILL.md": "---\nname: repeated\ndescription: Second declaration\n---\nSECOND BODY\n"
+    }
+  },
+  "model": { "steps": [] },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "hello",
+      "exit": 1,
+      "stderr_contains": ["discovered skill names are repeated"]
+    },
+    {
+      "mode": "jsonl",
+      "operation": "00000000-0000-0000-0000-000000000002",
+      "text": "hello again",
+      "exit": 1
+    }
+  ],
+  "assert": { "requests": 0 }
+}
