@@ -47,6 +47,7 @@ class InstallTests(unittest.TestCase):
                 with self.assertRaises(OSError):subprocess.run([str(tool)],check=True)
 
     def test_failed_qualification_never_publishes(self):
+        self.assertIn('sccache-rustc',installer.TOOLS)
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
             tool=Path(temporary)/'tool';installer.publish(tool,b'original')
             with patch.object(installer.subprocess,'run',side_effect=subprocess.CalledProcessError(1,['test'])):

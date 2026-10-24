@@ -19,7 +19,7 @@ BIN = Path('/home/var/bin')
 NODE = '/home/var/tools/node24/node-v24.3.0-linux-x64/bin/node'
 # Dependencies precede consumers. Every replacement remains a complete file;
 # in-flight interpreters retain their old inode and loaded module generation.
-TOOLS = ['admission_policy.py', 'job_exports.py', 'bb_target_store.py', 'bb_cargo_cache.py',
+TOOLS = ['sccache-rustc', 'admission_policy.py', 'job_exports.py', 'bb_target_store.py', 'bb_cargo_cache.py',
          'prune-wt-sdk.py', 'buildbox-receipt.mjs', 'bb-job.py', 'bb-admit.py', 'bb-admit', 'build-slot', 'bb-install.py']
 
 
