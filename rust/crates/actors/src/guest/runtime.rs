@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// Maximum UTF-8 bytes in each admitted identity or opaque host handle.
+/// Maximum UTF-8 bytes in textual caller metadata and opaque host handles.
 pub const MAX_GUEST_METADATA_BYTES: usize = 1024;
 
 /// Invalid host metadata representation; never includes credential or handle values.
@@ -63,7 +63,7 @@ impl CallerCapability {
 #[non_exhaustive]
 pub struct AdmittedCaller {
     /// Owning account.
-    account_id: String,
+    account_id: Vec<u8>,
     /// Owning organization.
     org_id: String,
     /// Attested principal.
@@ -82,7 +82,7 @@ pub struct AdmittedCaller {
 
 impl AdmittedCaller {
     /// Owning account.
-    pub fn account_id(&self) -> &str {
+    pub fn account_id(&self) -> &[u8] {
         &self.account_id
     }
     /// Owning organization.
@@ -112,7 +112,7 @@ impl AdmittedCaller {
     /// Construct the host's admitted projection with a nonzero Unix-ms expiry.
     /// Authentication, audience and expiry-at-delivery checks remain host obligations.
     pub fn new(
-        account_id: String,
+        account_id: Vec<u8>,
         org_id: String,
         principal: String,
         credential_id: String,
@@ -145,7 +145,7 @@ impl AdmittedCaller {
     /// Full address for audience comparison; carries no authority.
     pub fn reference(&self) -> Result<crate::addressing::ActorReference, GuestMetadataError> {
         crate::addressing::ActorReference::new(
-            self.account_id.as_bytes(),
+            &self.account_id,
             self.namespace.as_bytes(),
             self.actor_id.as_bytes(),
         )
@@ -216,8 +216,7 @@ impl TryFrom<RawHandle> for RuntimeHandle {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawCaller {
-    #[serde(deserialize_with = "metadata_string")]
-    account_id: String,
+    account_id: Vec<u8>,
     #[serde(deserialize_with = "metadata_string")]
     org_id: String,
     #[serde(deserialize_with = "metadata_string")]
@@ -236,7 +235,6 @@ impl TryFrom<RawCaller> for AdmittedCaller {
     type Error = GuestMetadataError;
     fn try_from(raw: RawCaller) -> Result<Self, Self::Error> {
         for (value, field) in [
-            (&raw.account_id, "accountId"),
             (&raw.org_id, "orgId"),
             (&raw.principal, "principal"),
             (&raw.credential_id, "credentialId"),
@@ -244,12 +242,12 @@ impl TryFrom<RawCaller> for AdmittedCaller {
         ] {
             identity(value, field)?;
         }
-        crate::addressing::ActorReference::new(
-            raw.account_id.as_bytes(),
-            raw.namespace.as_bytes(),
-            raw.actor_id.as_bytes(),
-        )
-        .map_err(|_| GuestMetadataError("audience"))?;
+        crate::addressing::validate_account(&raw.account_id)
+            .map_err(|_| GuestMetadataError("accountId"))?;
+        crate::addressing::validate_actor_id(raw.namespace.as_bytes())
+            .map_err(|_| GuestMetadataError("namespace"))?;
+        crate::addressing::validate_actor_id(raw.actor_id.as_bytes())
+            .map_err(|_| GuestMetadataError("actorId"))?;
         let expiry = raw
             .expires_at_ms
             .parse::<u64>()
@@ -319,7 +317,7 @@ pub struct ActorRuntime {
     pub id: Option<String>,
     /// Account supplied by the host, separate from the existing local ID.
     #[ts(optional)]
-    pub account: Option<String>,
+    pub account: Option<Vec<u8>>,
     /// Exact namespace; absence maps to the reserved default namespace.
     #[ts(optional)]
     pub namespace: Option<String>,
@@ -350,7 +348,7 @@ impl ActorRuntime {
         match (&self.account, &self.id) {
             (None, None) if self.namespace.is_none() => Ok(None),
             (Some(account), Some(id)) => crate::addressing::ActorReference::new(
-                account.as_bytes(),
+                account,
                 self.namespace
                     .as_deref()
                     .unwrap_or(crate::addressing::DEFAULT_ACTOR_NAMESPACE)

@@ -1,3 +1,4 @@
+import { bindingResponse, bindingSignal, readBindingRequestBody } from "@acyclic-labs/actors";
 import { ResourceIdentity, validateResourceLabel } from "@acyclic-labs/auth/addressing";
 import type { ActorsClient, ActorsCallOptions } from "@acyclic-labs/actors";
 import type { semantic as Semantic } from "@acyclic-labs/actors";
@@ -22,8 +23,9 @@ export class WorkerServiceBinding {
   }
   async fetch(input: RequestInfo | URL, init?: RequestInit, options?: ActorsCallOptions): Promise<Response> {
     const request = new Request(input, init);
-    const result = await this.#transport.invokeWorker(this.#request(request.method, request.url, new Uint8Array(await request.arrayBuffer()), Array.from(request.headers, ([name, value]) => ({ name, value }))), options);
-    return new Response(Uint8Array.from(result.body), { status: result.status, headers: result.headers.map(h => [h.name, h.value]) });
+    const signal = bindingSignal(request,options?.signal);
+    const result = await this.#transport.invokeWorker(this.#request(request.method, request.url, await readBindingRequestBody(request,signal), Array.from(request.headers, ([name, value]) => ({ name, value }))), {...options,signal});
+    return bindingResponse(result,request.method);
   }
   async rpc(method: string, payload: Uint8Array, options?: ActorsCallOptions): Promise<Uint8Array> {
     if (typeof method !== "string" || method.length === 0) throw new TypeError("RPC method is required");

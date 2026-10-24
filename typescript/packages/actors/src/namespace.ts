@@ -1,3 +1,4 @@
+import { bindingResponse, bindingSignal, readBindingRequestBody } from "./binding-fetch.js";
 import { ActorReference, actorLocationHint } from "@acyclic-labs/auth/addressing";
 import type { ActorsClient, ActorsCallOptions } from "./client.js";
 import type * as Semantic from "./generated/semantic/actors/readonly.js";
@@ -5,25 +6,6 @@ import type * as Semantic from "./generated/semantic/actors/readonly.js";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const randomId = () => Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("");
-async function requestBody(request: Request, signal: AbortSignal): Promise<Uint8Array> {
-  if (!request.body) return new Uint8Array();
-  const reader = request.body.getReader(), chunks: Uint8Array[] = [];
-  const cancel = () => { void reader.cancel(signal.reason).catch(() => undefined); };
-  signal.addEventListener("abort", cancel, {once:true});
-  try {
-    signal.throwIfAborted();
-    let length = 0;
-    while (true) {
-      const {value,done} = await reader.read();
-      if (done) break;
-      chunks.push(value.slice()); length += value.byteLength;
-    }
-    signal.throwIfAborted();
-    const body = new Uint8Array(length); let offset = 0;
-    for (const chunk of chunks) { body.set(chunk,offset); offset += chunk.byteLength; }
-    return body;
-  } finally { signal.removeEventListener("abort",cancel); reader.releaseLock(); }
-}
 export type LocationHint = "wnam" | "enam" | "sam" | "weur" | "eeur" | "apac" | "oc" | "afr" | "me";
 export interface ActorGetOptions { readonly locationHint?: LocationHint; }
 export type ActorInvocationTransport = Pick<ActorsClient, "invokeActor">;
@@ -132,8 +114,8 @@ export class ActorStub {
   }
   async fetch(input: RequestInfo | URL, init?: RequestInit, options?: ActorsCallOptions): Promise<Response> {
     const request = new Request(input, init);
-    const result = await this.#call(async signal => this.#request(request.method, request.url, await requestBody(request,signal), Array.from(request.headers, ([name, value]) => ({ name, value }))), options);
-    return new Response(Uint8Array.from(result.body), { status: result.status, headers: result.headers.map(h => [h.name, h.value]) });
+    const result = await this.#call(async signal => this.#request(request.method, request.url, await readBindingRequestBody(request,signal), Array.from(request.headers, ([name, value]) => ({ name, value }))), {...options,signal:bindingSignal(request,options?.signal)});
+    return bindingResponse(result,request.method);
   }
   /** Named RPC payload bytes use the same namespace binding, never a public HTTP credential. */
   async rpc(method: string, payload: Uint8Array, options?: ActorsCallOptions): Promise<Uint8Array> {

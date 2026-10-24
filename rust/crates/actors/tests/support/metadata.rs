@@ -24,16 +24,34 @@ fn handle(value: &Value) -> bool {
             .and_then(Value::as_str)
             .is_some_and(text)
 }
-fn caller(value: &Value) -> bool {
-    ["accountId", "orgId", "principal", "credentialId", "actorId"]
+fn actor_name(value: &str) -> bool {
+    (1..=128).contains(&value.len())
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+}
+fn account(value: &Value) -> Option<Vec<u8>> {
+    let bytes = value
+        .as_array()?
         .iter()
-        .enumerate()
-        .all(|(index, name)| {
-            field(value, name, index)
-                .and_then(Value::as_str)
-                .is_some_and(text)
-        })
-        && field(value, "expiresAtMs", 5)
+        .map(|v| u8::try_from(v.as_u64()?).ok())
+        .collect::<Option<Vec<_>>>()?;
+    (!bytes.is_empty()).then_some(bytes)
+}
+fn caller(value: &Value) -> bool {
+    field(value, "accountId", 0).and_then(account).is_some()
+        && [("orgId", 1), ("principal", 2), ("credentialId", 3)]
+            .iter()
+            .all(|(name, index)| {
+                field(value, name, *index)
+                    .and_then(Value::as_str)
+                    .is_some_and(text)
+            })
+        && field(value, "actorId", 4)
+            .and_then(Value::as_str)
+            .is_some_and(actor_name)
+        && field(value, "namespace", 5).is_none_or(|v| v.as_str().is_some_and(actor_name))
+        && field(value, "expiresAtMs", 6)
             .and_then(Value::as_str)
             .is_some_and(|raw| {
                 raw.len() <= 20
@@ -41,7 +59,7 @@ fn caller(value: &Value) -> bool {
                         .parse::<u64>()
                         .is_ok_and(|n| n > 0 && n.to_string() == raw)
             })
-        && field(value, "capability", 6).is_none_or(|v| v.is_null() || handle(v))
+        && field(value, "capability", 7).is_none_or(|v| v.is_null() || handle(v))
 }
 
 pub fn check(input: &[u8]) {
@@ -67,32 +85,24 @@ pub fn check(input: &[u8]) {
         );
     }
     let fields = [
-        ("accountId", 0),
         ("orgId", 1),
         ("principal", 2),
         ("credentialId", 3),
         ("actorId", 4),
     ]
     .map(|(name, index)| field(&value, name, index).and_then(Value::as_str));
-    if let [
-        Some(account),
-        Some(org),
-        Some(principal),
-        Some(credential),
-        Some(actor),
-    ] = fields
-        && let Some(expiry) = field(&value, "expiresAtMs", 5)
+    if let [Some(org), Some(principal), Some(credential), Some(actor)] = fields
+        && let Some(account) = field(&value, "accountId", 0).and_then(account)
+        && let Some(expiry) = field(&value, "expiresAtMs", 6)
             .and_then(Value::as_str)
             .filter(|raw| raw.len() <= 20)
             .and_then(|raw| raw.parse::<u64>().ok())
     {
-        let expected = expiry > 0
-            && [account, org, principal, credential, actor]
-                .into_iter()
-                .all(text);
+        let expected =
+            actor_name(actor) && expiry > 0 && [org, principal, credential].into_iter().all(text);
         assert_eq!(
             AdmittedCaller::new(
-                account.into(),
+                account,
                 org.into(),
                 principal.into(),
                 credential.into(),

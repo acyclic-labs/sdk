@@ -94,3 +94,11 @@ test("native Erlang coverage matches every canonical method and streaming shape"
   assert.equal(receipt.unary_rpc_calls, methods.filter(method => !method.clientStreaming && !method.serverStreaming).length);
   assert.equal(receipt.server_streaming_rpc_calls, methods.filter(method => method.serverStreaming).length);
 });
+test("invalid scalar controls name real Rust-owned messages", () => {
+  const proto = readFileSync(new URL("../../../../../rust/crates/actors/proto/actors/v1/actors.proto", import.meta.url),"utf8");
+  const messages = new Set([...proto.matchAll(/^message\s+(\w+)/gm)].map(([,name]) => "acyclic_" + name.replace(/[A-Z]/g,(letter,index) => (index ? "_" : "") + letter.toLowerCase())));
+  const consumer = readFileSync(new URL("./fixtures/consumer/rpc_route_control.erl",import.meta.url),"utf8");
+  const admit = source => {for (const [,name] of source.matchAll(/reject\(actors_pb,(\w+),/g)) assert.ok(messages.has(name),`unknown scalar-control message ${name}`);};
+  admit(consumer);
+  assert.throws(() => admit(consumer.replace("acyclic_deployment_request","acyclic_deploy_namespace_request")),/unknown scalar-control message/);
+});

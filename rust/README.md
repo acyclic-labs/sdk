@@ -64,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         1024 * 1024,
     )?;
     let actor = actors.inspect_actor(&wire::InspectActorRequest {
-        actor_id: std::env::var("ACTOR_ID")?,
+        actor_id: std::env::var("ACTOR_ID")?, ..Default::default()
     }).await?;
     println!("{actor:?}");
     Ok(())
@@ -73,7 +73,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 ## Workers
 
-Cloud Workers are stateless Actors. This example publishes `worker.mjs` (a module exporting `default.fetch`, without an actor export), creates a deployment, invokes it and deletes it. The account must already own the `actors-code` Objects bucket.
+Workers are named script deployments, alongside actor namespace deployments. This example publishes `worker.mjs` (a module exporting `default.fetch`, without an actor export), deploys a named script, invokes it and deletes it. The account must already own the `actors-code` Objects bucket.
+
+Uses the canonical Objects and Actors contracts. Publication stores exact module bytes at `sha256/<digest>`. No mutation is automatically retried.
 
 ```rust,no_run
 use acyclic_actors::{http, wire};
@@ -87,15 +89,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let workers = Client::new(http::Client::new(&endpoint, &token, 1024 * 1024)?,
         HttpObjects::new(&endpoint, &token, 1024 * 1024, None)?, "actors-code".into());
     let digest = workers.publish(std::fs::read("worker.mjs")?.into(), "publish-worker".into()).await?;
-    let actor = workers.create(&wire::DeploymentRequest {
-        code_sha256: digest.to_vec(), home_region: "la".into(),
-        limits: Some(wire::ActorLimits { handler_timeout_millis: 30000, memory_bytes: 268435456, checkpoint_bytes: 1048576 }),
-        idempotency_key: "create-worker".into(), ..Default::default()
-    }).await?.actor.ok_or("create returned no deployment")?;
-    println!("{:?}", workers.invoke(&wire::InvokeActorRequest {
-        actor_id: actor.actor_id.clone(), method: "GET".into(), url: "/".into(), ..Default::default()
+    let deployment = workers.deploy(&wire::DeploymentRequest {
+        name: "example-worker".into(), code_sha256: digest.to_vec(),
+        worker_limits: Some(wire::WorkerLimits { timeout_millis: 30000, memory_bytes: 268435456, cpu_millis: 1048576 }),
+        idempotency_key: "deploy-worker".into(), ..Default::default()
+    }).await?.deployment.ok_or("deploy returned no deployment")?;
+    println!("{:?}", workers.invoke(&wire::InvokeWorkerRequest {
+        worker_name: deployment.name.clone(), method: "GET".into(), url: "/".into(), ..Default::default()
     }).await?);
-    workers.delete(&wire::DeleteAllRequest { actor_id: actor.actor_id, idempotency_key: "delete-worker".into() }).await?;
+    workers.delete(&wire::DeleteWorkerRequest { worker_name: deployment.name, idempotency_key: "delete-worker".into(), ..Default::default() }).await?;
     Ok(())
 }
 ```

@@ -292,7 +292,17 @@ mod tests {
         let client = http::Client::new(&format!("http://{address}"), "secret-token", 1024)?;
         assert!(matches!(
             client
-                .deploy_namespace(&wire::DeploymentRequest::default())
+                .deploy_namespace(&wire::DeploymentRequest {
+                    name: "tracing".into(),
+                    code_sha256: vec![1; 32],
+                    limits: Some(wire::ActorLimits {
+                        handler_timeout_millis: 1,
+                        memory_bytes: 1,
+                        checkpoint_bytes: 1
+                    }),
+                    idempotency_key: "tracing".into(),
+                    ..Default::default()
+                })
                 .await,
             Err(http::Error::Service { status: 503, .. })
         ));

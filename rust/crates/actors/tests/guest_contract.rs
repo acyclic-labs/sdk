@@ -34,7 +34,7 @@ proptest! {
             prop_assert_eq!(capability.handle(), value.as_str());
             prop_assert_eq!(capability.version(), version);
         }
-        let caller = AdmittedCaller::new(value.clone(), value.clone(), value.clone(), value.clone(), value.clone(), expiry);
+        let caller = AdmittedCaller::new(value.as_bytes().to_vec(), value.clone(), value.clone(), value.clone(), value.clone(), expiry);
         prop_assert_eq!(caller.is_ok(), valid && acyclic_actors::addressing::validate_actor_id(value.as_bytes()).is_ok() && expiry != 0);
         if let Ok(caller) = caller {
             prop_assert_eq!(caller.principal(), &value);
@@ -144,7 +144,7 @@ proptest! {
 fn downstream_host_constructs_context_without_serde() -> Result<(), Box<dyn std::error::Error>> {
     let capability = CallerCapability::new(1, "invocation-capability".into())?;
     let caller = AdmittedCaller::new(
-        "account".into(),
+        b"account".to_vec(),
         "org".into(),
         "principal".into(),
         "credential".into(),
@@ -169,12 +169,12 @@ fn downstream_host_constructs_context_without_serde() -> Result<(), Box<dyn std:
     for invalid in ["", " ", " leading", "trailing ", "nul\0", "line\nfeed"] {
         assert!(CallerCapability::new(1, invalid.into()).is_err());
         assert!(RuntimeHandle::new(1, invalid.into()).is_err());
-        for field in 0..5 {
+        for field in 1..5 {
             let mut fields = ["a", "o", "p", "c", "i"];
             *fields.get_mut(field).ok_or("caller field")? = invalid;
             assert!(
                 AdmittedCaller::new(
-                    fields[0].into(),
+                    fields[0].as_bytes().to_vec(),
                     fields[1].into(),
                     fields[2].into(),
                     fields[3].into(),
@@ -205,7 +205,7 @@ proptest! {
     #[test]
     fn admitted_caller_projection_accepts_extensions_and_round_trips(principal in ".{0,64}", handle in ".{0,64}", expiry in any::<u64>()) {
         let caller = serde_json::from_value::<AdmittedCaller>(serde_json::json!({
-            "accountId":"account", "orgId":"org", "principal":principal,
+            "accountId":[97,99,99,111,117,110,116], "orgId":"org", "principal":principal,
             "credentialId":"credential", "actorId":"actor", "expiresAtMs":expiry.to_string(),
             "capability":{"version":1,"handle":handle,"future":true}, "future":true
         }));
@@ -371,7 +371,7 @@ fn generated_authoring_contract_has_no_drift() -> Result<(), Box<dyn std::error:
 fn admitted_actor_audiences_include_namespace_and_legacy_default()
 -> Result<(), Box<dyn std::error::Error>> {
     let caller = AdmittedCaller::new(
-        "account".into(),
+        b"account".to_vec(),
         "org".into(),
         "principal".into(),
         "credential".into(),

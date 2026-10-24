@@ -54,6 +54,16 @@ function exhaustive(event: GuestEvent): string {
 }
 export const eventKind = exhaustive;
 function negative(context: GuestContext<Bindings>, state: GuestState<State>) {
+  if (context.actor.account) {
+    // @ts-expect-error runtime account identity is raw bytes, never text
+    const account: string = context.actor.account;
+    void account;
+  }
+  if (context.admittedIdentity) {
+    // @ts-expect-error admitted caller account identity is raw bytes, never text
+    const account: string = context.admittedIdentity.accountId;
+    void account;
+  }
   // @ts-expect-error undeclared bindings cannot be used
   context.env.database.query("select 1");
   // @ts-expect-error effect identity is required

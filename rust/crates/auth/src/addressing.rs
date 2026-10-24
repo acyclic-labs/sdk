@@ -185,7 +185,8 @@ impl ResourceIdentity {
     }
 }
 
-fn validate_account(bytes: &[u8]) -> Result<(), IdentityError> {
+/// Validate opaque nonempty account bytes without allocating or normalizing.
+pub fn validate_account(bytes: &[u8]) -> Result<(), IdentityError> {
     if bytes.is_empty() {
         return Err(IdentityError::EmptyAccount);
     }

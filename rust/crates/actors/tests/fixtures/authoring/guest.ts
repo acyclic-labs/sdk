@@ -264,7 +264,7 @@ export type AdmittedCaller = {
 /**
  * Owning account.
  */
-accountId: string,
+accountId: Array<number>,
 /**
  * Owning organization.
  */
@@ -310,7 +310,7 @@ id: string | null,
 /**
  * Account supplied by the host, separate from the existing local ID.
  */
-account?: string,
+account?: Array<number>,
 /**
  * Exact namespace; absence maps to the reserved default namespace.
  */

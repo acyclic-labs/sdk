@@ -6,13 +6,12 @@ import { createServer } from "node:http";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { create, fromJsonString, toJsonString } from "@bufbuild/protobuf";
-import { Code, ConnectError } from "@connectrpc/connect";
-import { connectNodeAdapter } from "@connectrpc/connect-node";
+import { Code, ConnectError, createClient } from "@connectrpc/connect";
+import { connectNodeAdapter, createGrpcTransport } from "@connectrpc/connect-node";
 import { ActorsService } from "../generated/proto/actors/v1/actors_pb.js";
 import { StreamService } from "../../stream/generated/proto/stream/v1/stream_pb.js";
 import { BucketsService, ObjectsService, MultipartService } from "../../objects/generated/proto/objects/v1/objects_pb.js";
 import { ActorsClient } from "../dist/index.js";
-import { createStreamGrpcClient } from "../../stream/dist/grpc.js";
 import { createObjectsV1GrpcClients } from "../../objects/dist/v1-grpc.js";
 
 const services = [ActorsService, StreamService, BucketsService, ObjectsService, MultipartService];
@@ -73,11 +72,19 @@ if (process.argv.includes("--client")) {
   const options = JSON.parse(configText);
   const objects = createObjectsV1GrpcClients(options);
   const actors = await actorsClient(options);
-  const clients = [actors, createStreamGrpcClient(options), objects.buckets, objects.objects, objects.multipart];
+  // This matrix qualifies every declared StreamService wire RPC. The public
+  // Stream follow/children adapters use StreamSessionService and are qualified
+  // separately by the Stream session tests, not a legacy RPC stand-in here.
+  const stream = createClient(StreamService,createGrpcTransport({baseUrl:options.endpoint,
+    nodeOptions:{ca:options.caCertificate},interceptors:[next => async request => {
+      request.header.set("authorization",`Bearer ${options.token}`);return next(request);
+    }]}));
+  const clients = [actors, stream, objects.buckets, objects.objects, objects.multipart];
   let count = 0;
   for (const [index, service] of services.entries()) {
     for (const method of service.methods) {
       const initializer = {};
+      if (service === StreamService) Object.assign(initializer,{path:"events",source:"events",destination:"fork",limit:1});
       if (["DeployNamespace", "DeployWorker"].includes(method.name)) Object.assign(initializer, {
         name: "example", codeSha256: new Uint8Array(32).fill(1),
         limits: { handlerTimeoutMillis: 1000n, memoryBytes: 1024n, checkpointBytes: 1024n }, idempotencyKey: "create-a",

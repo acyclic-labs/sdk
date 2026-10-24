@@ -58,3 +58,49 @@ test("binding admission snapshots caller bytes and scope before awaiting Rust", 
   const binding = env.OBJECTS as ActorNamespaceBinding;
   await binding.getByName("same").rpc("call",new Uint8Array());
 });
+
+// Exercise both public wrappers through the same Fetch contract controls.
+for (const kind of ["actor","worker"] as const) {
+  const handle = (transport: {invoke(request: semantic.InvokeActorRequest | semantic.InvokeWorkerRequest, options?: import("@acyclic-labs/actors").ActorsCallOptions): Promise<semantic.InvokeActorResponse>}) => kind === "actor"
+    ? new ActorNamespaceBinding(account,"ClassOne",{invokeActor:transport.invoke.bind(transport)},"OBJECTS").getByName("same")
+    : new WorkerServiceBinding(account,"worker",{invokeWorker:transport.invoke.bind(transport)},"SERVICE");
+  test(`${kind} fetch preserves bodyless statuses and HEAD responses`, async () => {
+    for (const status of [204,205,304,200]) {
+      const target = handle({async invoke() {return {status,headers:[],body:new Uint8Array()};}});
+      const response = await target.fetch("https://example.com/",{method:status === 200 ? "HEAD" : "GET"});
+      expect(response.status).toBe(status); expect(response.body).toBeNull(); expect(await response.text()).toBe("");
+    }
+  });
+  test(`${kind} fetch forwards Request, init and SDK cancellation to transport`, async () => {
+    for (const source of ["request","init","sdk","both"] as const) {
+      let entered!: () => void; const started = new Promise<void>(resolve => {entered = resolve;});
+      let received: AbortSignal | undefined, finish!: (reason: Error) => void;
+      const target = handle({async invoke(_request,options) {
+        received = options?.signal; entered();
+        return new Promise<never>((_resolve,reject) => {finish = reject;received?.addEventListener("abort",() => reject(received?.reason),{once:true});});
+      }});
+      const abort = new AbortController(), sdk = new AbortController();
+      const request = new Request("https://example.com/",source === "request" ? {signal:abort.signal} : {});
+      const pending = target.fetch(request,source === "init" || source === "both" ? {signal:abort.signal} : {},source === "sdk" || source === "both" ? {signal:source === "sdk" ? abort.signal : sdk.signal} : {});
+      const settled = pending.catch(error => error);
+      await started; abort.abort(new Error("cancelled"));
+      try { expect(received?.aborted).toBe(true); } finally { sdk.abort(new Error("cleanup")); finish(new Error("cleanup")); }
+      expect((await settled).message).toBe("cancelled");
+    }
+  });
+  test(`${kind} standard Fetch cancellation cancels a blocked body before transport`, async () => {
+    for (const source of ["request","init"] as const) {
+      let read!: () => void, controller!: ReadableStreamDefaultController<Uint8Array>, cancelled = 0, calls = 0;
+      const reading = new Promise<void>(resolve => {read = resolve;});
+      const body = new ReadableStream<Uint8Array>({start(value) {controller = value;},pull() {read();},cancel() {cancelled++;}},{highWaterMark:0});
+      const target = handle({async invoke() {calls++;return {status:200,body:new Uint8Array(),headers:[]};}});
+      const abort = new AbortController();
+      const init = {method:"POST",body,duplex:"half",signal:abort.signal} as RequestInit;
+      const pending = source === "request" ? target.fetch(new Request("https://example.com/",init)) : target.fetch("https://example.com/",init);
+      const settled = pending.then(() => "fulfilled",() => "rejected");
+      await reading; abort.abort(new Error("cancelled"));
+      try {expect(cancelled).toBe(1);expect(calls).toBe(0);} finally {if (!cancelled) controller.close();}
+      expect(await settled).toBe("rejected");
+    }
+  });
+}

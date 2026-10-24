@@ -12,7 +12,9 @@ that the live service already implements it.
 - Actors have the plain identity `(account, namespace, id)`. Namespaces and actor
   IDs are case-sensitive ASCII strings of 1–128 bytes in `[A-Za-z0-9-_.]`.
   Neither is hashed, Unicode-normalized, escaped or used as a hostname label.
-  Accounts retain the existing opaque nonempty byte representation.
+  Accounts retain the existing opaque nonempty byte representation. Runtime
+  actor.account and admitted caller accountId also carry bytes (JSON numeric
+  byte arrays), never UTF-8 text or a lossy rendering.
 - `__default` is reserved for existing account/id actors. An absent legacy
   namespace resolves to this exact value, retaining the existing persisted ID.
   Explicit namespace deployment cannot claim the reserved default namespace.

@@ -135,7 +135,7 @@ scalar_controls() ->
       Response=(stream_pb:decode_msg(<<>>,acyclic_append_response))#{outcome=>{Branch,Child}},
       Response=stream_pb:decode_msg(stream_pb:encode_msg(Response,acyclic_append_response),acyclic_append_response)
     end,[{committed,acyclic_append_receipt,tail,123},{conflict,acyclic_tail_conflict,actual_tail,456}]),
-    reject(actors_pb,acyclic_deploy_namespace_request,code_sha256),
+    reject(actors_pb,acyclic_deployment_request,code_sha256),
     reject(stream_pb,acyclic_append_request,if_tail).
 
 reject(Pb,Type,Field) ->

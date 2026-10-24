@@ -115,7 +115,7 @@ fn activation_rejects_same_local_id_in_another_admitted_namespace()
         finish: Semaphore::new(0),
     });
     let caller = AdmittedCaller::new(
-        "account".into(),
+        b"account".to_vec(),
         "org".into(),
         "principal".into(),
         "credential".into(),
@@ -124,7 +124,7 @@ fn activation_rejects_same_local_id_in_another_admitted_namespace()
     )?
     .with_namespace("ClassOne".into())?;
     let mut runtime = ActorRuntime::default();
-    runtime.account = Some("account".into());
+    runtime.account = Some(b"account".to_vec());
     runtime.id = Some("same".into());
     runtime.namespace = Some("ClassTwo".into());
     assert_eq!(runtime.id.as_deref(), Some(caller.actor_id())); // Old local comparison aliases.
@@ -140,5 +140,66 @@ fn activation_rejects_same_local_id_in_another_admitted_namespace()
         .admitted_identity(caller)
         .build();
     assert!(GuestActivation::new(definition(), None, context).is_ok());
+    Ok(())
+}
+
+#[test]
+fn opaque_account_runtime_and_caller_use_the_shared_actor_vectors()
+-> Result<(), Box<dyn std::error::Error>> {
+    let vectors: serde_json::Value = serde_json::from_str(include_str!(
+        "../../auth/tests/fixtures/resource-identity-v1.json"
+    ))?;
+    let decode = |value: &serde_json::Value| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let text = value.as_str().ok_or("hex field")?;
+        (0..text.len())
+            .step_by(2)
+            .map(|i| Ok(u8::from_str_radix(&text[i..i + 2], 16)?))
+            .collect()
+    };
+    for vector in vectors["actors"].as_array().ok_or("actor vectors")? {
+        let account = decode(&vector["account_hex"])?;
+        let namespace = String::from_utf8(decode(&vector["namespace_hex"])?)?;
+        let id = String::from_utf8(decode(&vector["id_hex"])?)?;
+        let mut runtime = ActorRuntime::default();
+        runtime.account = Some(account.clone());
+        runtime.namespace = Some(namespace.clone());
+        runtime.id = Some(id.clone());
+        let runtime: ActorRuntime = serde_json::from_slice(&serde_json::to_vec(&runtime)?)?;
+        let caller = AdmittedCaller::new(
+            account.clone(),
+            "org".into(),
+            "principal".into(),
+            "credential".into(),
+            id,
+            1,
+        )?
+        .with_namespace(namespace)?;
+        let caller: AdmittedCaller = serde_json::from_slice(&serde_json::to_vec(&caller)?)?;
+        let reference = runtime.reference()?.ok_or("actor reference")?;
+        assert_eq!(reference.encode(), decode(&vector["encoded_hex"])?);
+        assert_eq!(caller.reference()?, reference);
+        assert_eq!(caller.account_id(), account);
+        let signals = Arc::new(Signals {
+            restores: AtomicUsize::new(0),
+            entered: AtomicUsize::new(0),
+            finish: Semaphore::new(0),
+        });
+        let context = GuestContext::builder(signals.clone(), Box::new(|| 0))
+            .actor(runtime.clone())
+            .admitted_identity(caller.clone())
+            .build();
+        assert!(GuestActivation::new(definition(), None, context).is_ok());
+        assert_eq!(signals.restores.load(Ordering::SeqCst), 0);
+        // Negative control: treating account bytes as UTF-8 text loses opaque identities.
+        if std::str::from_utf8(&account).is_err() {
+            assert_ne!(String::from_utf8_lossy(&account).as_bytes(), account);
+            let mut raw = serde_json::to_value(&caller)?;
+            raw["accountId"] = serde_json::json!(String::from_utf8_lossy(&account));
+            assert!(serde_json::from_value::<AdmittedCaller>(raw).is_err());
+            let mut raw = serde_json::to_value(&runtime)?;
+            raw["account"] = serde_json::json!(String::from_utf8_lossy(&account));
+            assert!(serde_json::from_value::<ActorRuntime>(raw).is_err());
+        }
+    }
     Ok(())
 }
