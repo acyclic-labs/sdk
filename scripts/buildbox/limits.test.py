@@ -61,7 +61,8 @@ class LimitTests(unittest.TestCase):
         child = [sys.executable, str(HERE/'admission_policy.py'), 'exec-user', 'var', '--'] if restore else ['runuser', '-u', 'var', '--']
         # Print the exact requested shell control too, rather than comparing
         # only Python's view of the nofile limits.
-        probe = 'ulimit -Sn; ulimit -Hn; exec '+sys.executable+' -c '+__import__('shlex').quote(PROBE)
+        identity='import os,pwd;u=pwd.getpwuid(os.getuid());assert os.environ["USER"]==os.environ["LOGNAME"]==u.pw_name;'
+        probe = 'ulimit -Sn; ulimit -Hn; exec '+sys.executable+' -c '+__import__('shlex').quote(identity+PROBE)
         return subprocess.run(['sudo', '-n', '--preserve-env='+LIMIT_ENV, 'systemd-run', '--scope', '-q',
                                '--slice=bbjobs.slice', '--', *child, 'bash', '-c', probe],
                               env={**os.environ, LIMIT_ENV:json.dumps(limits)}, capture_output=True,

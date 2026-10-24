@@ -112,6 +112,10 @@ if __name__ == '__main__':
             user = pwd.getpwnam('var')
             os.setgroups(os.getgrouplist(user.pw_name, user.pw_gid))
             os.setgid(user.pw_gid); os.setuid(user.pw_uid)
+            # Match runuser's identity environment after replacing its PAM
+            # transition; do not leave sudo's root USER/LOGNAME in the job.
+            os.environ.update(USER=user.pw_name, LOGNAME=user.pw_name,
+                              HOME=user.pw_dir, SHELL=user.pw_shell)
             os.execvpe(sys.argv[4], sys.argv[4:], os.environ)
         else: raise RuntimeError('invalid admission policy command')
     except (OSError, RuntimeError, KeyError) as error:
