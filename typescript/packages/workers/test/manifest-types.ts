@@ -13,7 +13,7 @@ export function author(env: ActorEnv): Promise<void> {
   const plaintext: string = env.MODEL_KEY;
   return result;
 }
-export const actor: EntryRuntime["kind"] = "actor";
+export const actorNamespace: EntryRuntime["kind"] = "actorNamespace";
 // @ts-expect-error unknown execution products are rejected
 export const invalid: EntryRuntime["kind"] = "daemon";
 export type Manifest = DeploymentManifest;
