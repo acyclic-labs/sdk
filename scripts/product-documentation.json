@@ -1,4 +1,5 @@
 [
+  "docs/buildbox-install.md",
   "scripts/buildbox/README.md",
   "scripts/graphcoder-e2e/README.md",
   ".github/pull_request_template.md",

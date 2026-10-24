@@ -51,7 +51,9 @@ test('killed namespace descendants get receipts only after their registered oute
   fs.rmSync(terminal);
   const scope=JSON.parse(fs.readFileSync(child)).namespace_scope;
   fs.writeFileSync(parent+'.pid-namespaces',JSON.stringify(scope.registration_file)+'\n');
-  fs.writeFileSync(parent,JSON.stringify({receipt_file:terminal,namespace_custody:'pidns-v1',owner:{pid:process.pid,pid_namespace:fs.readlinkSync('/proc/self/ns/pid')},argv:[],admission_start:new Date().toISOString()}));
+  const stat=fs.readFileSync(`/proc/${process.pid}/stat`,'utf8').split(') ').pop().split(' ');
+  const identity=fs.readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim()+':'+stat[19];
+  fs.writeFileSync(parent,JSON.stringify({receipt_file:terminal,namespace_custody:'pidns-v1',owner:{pid:process.pid,identity,pid_namespace:fs.readlinkSync('/proc/self/ns/pid')},argv:[],admission_start:new Date().toISOString()}));
   run(module,`r.finish(${JSON.stringify(parent)},0,'command');`);
   assert.equal(fs.existsSync(childTerminal),true,JSON.stringify(fs.readdirSync(root).map(name=>[name,fs.readFileSync(path.join(root,name),'utf8')])));
   const receipt=JSON.parse(fs.readFileSync(childTerminal));
@@ -86,7 +88,7 @@ test('killed kernel writer releases custody and concurrent completions append on
  const {root,module}=fixture();
  try{
   const file=path.join(root,'meta.json'),receipt=file+'.terminal',ledger=path.join(root,'jobs.jsonl');
-  run(module,`r.atomic(${JSON.stringify(file)},{owner:{pid:process.pid,pid_namespace:r.pidNamespace()},receipt_file:${JSON.stringify(receipt)},ledger:${JSON.stringify(ledger)},argv:[],admission_start:new Date().toISOString()});`);
+  run(module,`r.atomic(${JSON.stringify(file)},{owner:{pid:process.pid,identity:r.processIdentity(process.pid),pid_namespace:r.pidNamespace()},receipt_file:${JSON.stringify(receipt)},ledger:${JSON.stringify(ledger)},argv:[],admission_start:new Date().toISOString()});`);
   const holder=spawn('flock',['--exclusive','--no-fork',receipt+'.writer-lock',process.execPath,'-e',"process.stdout.write('READY');setInterval(()=>{},1000)"],{stdio:['ignore','pipe','pipe']});
   await new Promise((resolve,reject)=>{holder.stdout.once('data',resolve);holder.once('error',reject);});
   const close=new Promise(resolve=>holder.once('close',resolve));holder.kill('SIGKILL');await close;
@@ -137,5 +139,19 @@ test('recovery classifies damaged historical records without failing unrelated w
   fs.writeFileSync(unvalidated,fs.readFileSync(module,'utf8').replace("if (!absolute(value.receipt_file)) return invalid('invalid-receipt-path');",''));
   const schema=run(unvalidated,`console.log(JSON.stringify(r.recoveryRecord(${JSON.stringify(root+'/invalid-path.receipt-meta.v2.json')})));`);
   assert.equal(JSON.parse(schema.stdout).kind,'valid','old missing schema admits an unusable receipt path');
+ } finally {fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('direct completion refuses a malformed terminal instead of returning a forged PASS',()=>{
+ const {root,module}=fixture();
+ try {
+  const file=root+'/job.receipt-meta.v2.json',receipt=root+'/terminal';
+  run(module,`r.atomic(${JSON.stringify(file)},{owner:{pid:process.pid,identity:r.processIdentity(process.pid),pid_namespace:r.pidNamespace()},argv:[],admission_start:new Date().toISOString(),receipt_file:${JSON.stringify(receipt)}});r.atomic(${JSON.stringify(receipt)},{exit_status:0});`);
+  const failed=spawnSync(process.execPath,[module,'finish',file,'101','command'],{encoding:'utf8'});
+  assert.notEqual(failed.status,0);assert.match(failed.stderr,/receipt terminal INFRA/);
+  const mutant=root+'/unchecked-terminal.mjs';
+  fs.writeFileSync(mutant,fs.readFileSync(module,'utf8').replace("if (result.kind !== 'valid') throw new Error(`receipt terminal INFRA: ${result.reason}: ${file}`);",'if (result.kind !== "valid") return read(file);'));
+  const old=spawnSync(process.execPath,[mutant,'finish',file,'101','command'],{encoding:'utf8'});
+  assert.equal(old.status,0,'old unchecked terminal falsely overrides failed command');
  } finally {fs.rmSync(root,{recursive:true,force:true});}
 });

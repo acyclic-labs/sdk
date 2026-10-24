@@ -540,7 +540,7 @@ finally:a.close();b.close()
             probe.write_text('''import {launchScript} from './generator.mjs';import fs from 'node:fs';
 const prefix=process.argv[2];
 const id={commit:'a'.repeat(40),tree:'b'.repeat(40),content:'c'.repeat(64),forced:[],autocrlf:'false',groups:'e30='};
-const script=launchScript('/mnt/bb/wt-sdk/fixture.0','sdk/fixture','.', ['true'],prefix,'','sdk','',id,60,true,{repo:'sdk',argv:['true'],pr_number:1415});
+const script=launchScript('/mnt/bb/wt-sdk/fixture.0','sdk/fixture','.', ['true'],prefix,'','sdk','',id,60,true,{repo:'sdk',argv:['true'],pr_number:1415,admission_start:new Date().toISOString()});
 const wrapped=[...script.matchAll(/echo ([A-Za-z0-9+/=]+) \\| base64 -d > \\$J\\.(sh|wrap|admitted)\\b/g)].find(m=>m[2]==='wrap');
 let body=Buffer.from(wrapped[1],'base64').toString();
 body=body.slice(0,body.indexOf('mkdir -p /mnt/bb/locks/wt-sdk')).replace('recover /mnt/bb/jobs','recover '+process.argv[3]);

@@ -85,6 +85,17 @@ export function processIdentity(pid) {
   } catch { return null; }
 }
 const read = f => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } };
+function requireMeta(file) {
+  const result = recoveryRecord(file);
+  if (result.kind !== 'valid') throw new Error(`receipt metadata INFRA: ${result.kind}:${result.reason}: ${file}`);
+  return result.value;
+}
+function completedReceipt(file) {
+  const result = recoveryRecord(file, 'terminal');
+  if (result.kind === 'missing') return null;
+  if (result.kind !== 'valid') throw new Error(`receipt terminal INFRA: ${result.reason}: ${file}`);
+  return result.value;
+}
 export function arm(file, meta, pid = process.pid) {
   const scope = namespaceRecord();
   atomic(file, { exec_start: null, toolchain: null, ...meta,
@@ -129,20 +140,20 @@ function kernelWriter(file, operation, value) {
   return JSON.parse(writer.stdout);
 }
 export function finish(metaFile, rc, category, extra = {}) {
-  const m = read(metaFile);
-  if (!m) throw new Error(`missing receipt metadata: ${metaFile}`);
-  if (fs.existsSync(m.receipt_file)) return read(m.receipt_file);
+  const m = requireMeta(metaFile), terminal = completedReceipt(m.receipt_file);
+  if (terminal) return terminal;
   return kernelWriter(m.receipt_file, 'locked-finish', {metaFile, rc, category, extra});
 }
 function finishLocked(metaFile, rc, category, extra = {}) {
-  const m = read(metaFile);
-  if (!m) throw new Error(`missing receipt metadata: ${metaFile}`);
+  const m = requireMeta(metaFile);
   const file = m.receipt_file;
-  if (fs.existsSync(file)) return read(file);
+  const terminal = completedReceipt(file);
+  if (terminal) return terminal;
   const foreignEnded = !canObserveOwner(m.owner) && category === 'interrupted' && endedNamespace(m);
   if (!canObserveOwner(m.owner) && !foreignEnded) return null;
   {
-    if (fs.existsSync(file)) return read(file);
+    const existing = completedReceipt(file);
+    if (existing) return existing;
     const runtimeFile = metaFile + '.runtime';
     let runtime, cleanupAllowed = true;
     if (!foreignEnded && m.side === 'bb2' && category !== 'command' && read(metaFile + '.job')) {
@@ -189,8 +200,10 @@ function finishLocked(metaFile, rc, category, extra = {}) {
       let children = '';
       try { children = fs.readFileSync(JSON.parse(entry) + '.children','utf8'); } catch {}
       for (const child of children.split('\n').filter(Boolean)) {
-        const childFile = JSON.parse(child), metadata = read(childFile);
-        if (metadata && endedNamespace(metadata)) finish(childFile,137,'interrupted',{reason:'enclosing PID namespace ended'});
+        let childFile;
+        try { childFile = JSON.parse(child); } catch { continue; }
+        const metadata = recoveryRecord(childFile);
+        if (metadata.kind === 'valid' && endedNamespace(metadata.value)) finish(childFile,137,'interrupted',{reason:'enclosing PID namespace ended'});
       }
     }
     return out;
@@ -211,11 +224,12 @@ function ledgerRecordLocked(ledger, out) {
   return true;
 }
 export async function watch(metaFile, interval = 1000) {
-  const m = read(metaFile);
-  if (!canObserveOwner(m?.owner)) return;
+  const parsed = recoveryRecord(metaFile);
+  if (parsed.kind !== 'valid' || !canObserveOwner(parsed.value.owner)) return;
+  const m = parsed.value;
   for (;;) {
     if (fs.existsSync(m.receipt_file)) {
-      if (m.ledger) ledgerRecord(m.ledger, read(m.receipt_file));
+      if (m.ledger) ledgerRecord(m.ledger, completedReceipt(m.receipt_file));
       return;
     }
     if (processIdentity(m.owner.pid) !== m.owner.identity) {
