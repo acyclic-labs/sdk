@@ -50,7 +50,11 @@ export async function pty(processes, binary, fixture, input, capture) {
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
   const frames = new TerminalFrames(screen), failures = new FailureHistory();
   const killSignal = process.platform === "win32" ? "SIGKILL" : "SIGUSR1";
-  const running = processes.start(program, args, { cwd: fixture.workspace, env: fixture.env, scopeKillSignal: killSignal });
+  const running = processes.start(program, args, {
+    cwd: fixture.workspace,
+    env: { ...fixture.env, TERM: "xterm-256color" },
+    scopeKillSignal: killSignal,
+  });
   screen.onData(data => running.child.stdin.write(data));
   let index = 0, failure;
   const snapshots = [];
