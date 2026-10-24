@@ -116,7 +116,8 @@ export async function exerciseDiscovery(engine, label, reopen) {
           const projected = await projectModelFile(part, {
             resolveFile: verifiedContentResolver(content, DEFAULT_LIMITS), maxResolvedBytes: 512,
           });
-          assert(projected === expected, "model file projection changed pinned instruction bytes");
+          const framed = `# AGENTS.md instructions for ${index === 0 ? "." : "src"}\n\n<INSTRUCTIONS>\n${expected}\n</INSTRUCTIONS>`;
+          assert(projected === framed, `model file projection changed pinned instruction bytes: ${JSON.stringify(projected)}`);
         }
         assert(admitted.includes("Inspect old files") && !admitted.includes("SECRET BODY"), "model metadata/body selection changed");
         yield { kind: "completed", metadata: {} };

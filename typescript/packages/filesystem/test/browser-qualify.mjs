@@ -46,6 +46,8 @@ const require = createRequire(import.meta.url);
 // work with both isolated and hoisted installs.
 const dependencyRoots = new Map([
   ["/stream/", resolve(root, "../stream")],
+  ["/actors/", resolve(root, "../actors")],
+  ["/auth/", resolve(root, "../auth")],
   ["/harness/node_modules/@bufbuild/protobuf/", resolve(require.resolve("@bufbuild/protobuf"), "../../..")],
   ["/harness/", resolve(root, "../harness")],
   ["/node_modules/@bufbuild/protobuf/", resolve(require.resolve("@bufbuild/protobuf"), "../../..")],
