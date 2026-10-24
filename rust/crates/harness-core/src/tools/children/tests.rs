@@ -561,7 +561,7 @@ proptest! {
                 prop_assert!(serde_json::from_value::<$ty>(encoded).is_err());
             }};
         }
-        round_trip!(SpawnInput { task: task.clone(), name: Some(agent.clone()), grants: Some(vec!["model:generate".into(), "tool:call:read".into()]) }, SpawnInput);
+        round_trip!(SpawnInput { role: Some("worker".into()), task: task.clone(), name: Some(agent.clone()), grants: Some(vec!["model:generate".into(), "tool:call:read".into()]) }, SpawnInput);
         round_trip!(SendInput { agent: agent.clone(), message: task }, SendInput);
         round_trip!(WaitInput { agents: vec![agent.clone()], mode: Some(if any_mode { WaitMode::Any } else { WaitMode::All }) }, WaitInput);
         round_trip!(ArchiveInput { agent }, ArchiveInput);

@@ -54,7 +54,7 @@ proptest! {
                     output_schema: json!({}), projection_schema: json!({}),
                 }]
             } else { vec![] };
-            let request = PreparedModelRequest::prepare(ModelRequest {
+            let request = PreparedModelRequest::prepare(ModelRequest { conversation_id: None,
                 model: provider.model().clone(), messages, tools, max_output_tokens: Some(64),
             }, Limits::default(), None).unwrap();
             let extra = crate::files::extra_bytes(&request.request().messages.last().unwrap().content, u64::MAX).unwrap();
@@ -73,6 +73,72 @@ proptest! {
 struct Reader {
     data: Vec<u8>,
     reads: AtomicUsize,
+}
+
+struct PendingReader {
+    data: Vec<u8>,
+    reads: AtomicUsize,
+    ready: tokio::sync::Semaphore,
+}
+
+impl ContentResidencyVerifier for PendingReader {
+    fn read<'a>(
+        &'a self,
+        _file: &'a FileRef,
+        _maximum: u64,
+        _ceiling: Option<&'a acyclic_harness::Capabilities>,
+        io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        BoundedContentFuture::new(io, || async move {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            self.ready.acquire().await.unwrap().forget();
+            Ok(self.data.clone().into())
+        })
+    }
+}
+
+#[tokio::test]
+async fn concurrent_count_and_generation_wait_for_one_verified_file_read() -> Result<()> {
+    let (mut provider, _) = provider(Adapter::Responses, 200);
+    let reader = Arc::new(PendingReader {
+        data: b"verified file".to_vec(),
+        reads: AtomicUsize::new(0),
+        ready: tokio::sync::Semaphore::new(0),
+    });
+    provider.files = crate::files::Files {
+        reader: Some(reader.clone()),
+        maximum_bytes: 4096,
+    };
+    let request = with_parts(
+        &provider,
+        vec![ModelContentPart::File {
+            file: file(&reader.data, "text/plain")?,
+            policy: FileProjectionPolicy::BoundedFull,
+        }],
+    )?;
+    let names = crate::tool_names::Names::new(request.request());
+    let origin = provider.reasoning_origin(provider.key.as_deref(), None);
+    let mut counting = Box::pin(crate::encoded::bodies(
+        &provider, &request, &names, &origin, None,
+    ));
+    let mut generation = Box::pin(crate::encoded::bodies(
+        &provider, &request, &names, &origin, None,
+    ));
+    assert!(futures::poll!(counting.as_mut()).is_pending());
+    assert!(futures::poll!(generation.as_mut()).is_pending());
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+    reader.ready.add_permits(1);
+    let std::task::Poll::Ready(counting) = futures::poll!(counting.as_mut()) else {
+        panic!("the released read must finish the first projection");
+    };
+    let counting = counting?;
+    let std::task::Poll::Ready(generation) = futures::poll!(generation.as_mut()) else {
+        panic!("the second projection must reuse the completed file verification");
+    };
+    let generation = generation?;
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+    assert_eq!(counting.generation.as_ptr(), generation.generation.as_ptr());
+    Ok(())
 }
 impl ContentResidencyVerifier for Reader {
     fn read<'a>(
@@ -108,6 +174,7 @@ fn with_parts(
 ) -> Result<PreparedModelRequest> {
     PreparedModelRequest::prepare(
         ModelRequest {
+            conversation_id: None,
             model: provider.model().clone(),
             messages: vec![ModelMessage {
                 role: ModelRole::User,
@@ -393,6 +460,7 @@ async fn tool_result_file_parts_preserve_order_and_custom_headers_reach_the_tran
     let result = crate::projection::body_with_files(
         &provider,
         &ModelRequest {
+            conversation_id: None,
             model: provider.model().clone(),
             tools: vec![],
             max_output_tokens: Some(64),

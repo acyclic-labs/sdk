@@ -1,7 +1,21 @@
 use super::*;
 
+/// Ordering declared by the trusted executor, independently of model arguments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolExecutionClass {
+    /// Reads may overlap other reads within one model step.
+    Read,
+    /// Effects and unknown implementations form an execution barrier.
+    Exclusive,
+}
+
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
+    /// Defaults to an execution barrier. Only effect-free implementations opt in.
+    fn execution_class(&self) -> ToolExecutionClass {
+        ToolExecutionClass::Exclusive
+    }
+
     /// Runs configured hooks inside this executor's selected, owner-fenced workspace.
     #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
     fn run_hooks<'a>(

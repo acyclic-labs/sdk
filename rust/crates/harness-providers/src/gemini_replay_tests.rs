@@ -281,7 +281,7 @@ async fn signed_answer_native_stream_keeps_exact_custody() -> Result<()> {
         }
     }
     crate::projection::gemini::assert_visible_replay(&events);
-    drop((events, holds));
+    drop((events, holds, prepared, provider));
     assert_eq!(work.live_allocation_bytes(), baseline);
     Ok(())
 }

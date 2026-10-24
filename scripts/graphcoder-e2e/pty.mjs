@@ -39,7 +39,9 @@ export async function pty(processes, binary, fixture, input, capture) {
   if (process.platform === "win32") {
     assert.ok(process.env.E2E_CONPTY_HOST, "cross-build the ConPTY host on bb2 and set E2E_CONPTY_HOST");
     program = process.env.E2E_CONPTY_HOST;
-    args = [binary, fixture.workspace, fixture.catalog, fixture.settings, "e2e/tiny", "8000", input.resume ? "resume" : "fresh"];
+    const modelOption = fixture.args.indexOf("--model");
+    const model = modelOption < 0 ? "" : fixture.args[modelOption + 1];
+    args = [binary, fixture.workspace, fixture.catalog, fixture.settings, model, "8000", input.resume ? "resume" : "fresh"];
   } else {
     // Python sets the controlling terminal on Linux and macOS and exposes a
     // kill signal targeting the executable, so wrapper death cannot fake SIGKILL.

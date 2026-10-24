@@ -1,0 +1,185 @@
+{
+  "id": "alloy-round-robin",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "selection": "mixed",
+  "catalog": {
+    "a": {
+      "adapter": "anthropic",
+      "authentication": "optional",
+      "base_url": "{{url}}",
+      "models": {
+        "tiny": {
+          "capacity": {
+            "context_tokens": 32768,
+            "output_tokens": 1024
+          },
+          "features": {
+            "tools": true,
+            "images": false
+          }
+        }
+      },
+      "token_counter": {
+        "path": "count",
+        "adapter": "anthropic",
+        "response_field": "input_tokens",
+        "framing_tokens": 0
+      },
+      "max_event_bytes": 4096
+    },
+    "b": {
+      "adapter": "responses",
+      "authentication": "optional",
+      "base_url": "{{url}}",
+      "models": {
+        "tiny": {
+          "capacity": {
+            "context_tokens": 65536,
+            "output_tokens": 2048
+          },
+          "features": {
+            "tools": true,
+            "images": false
+          }
+        }
+      },
+      "token_counter": {
+        "path": "count",
+        "adapter": "responses",
+        "response_field": "input_tokens",
+        "framing_tokens": 0
+      },
+      "max_event_bytes": 4096
+    },
+    "alloys": {
+      "mixed": {
+        "models": [
+          "a/tiny",
+          "b/tiny"
+        ],
+        "select": "round_robin"
+      }
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "path": "messages"
+        },
+        "tools": [
+          {
+            "id": "alloy_write",
+            "name": "write",
+            "arguments": {
+              "path": "alloy.txt",
+              "text": "before\n",
+              "display_name": "alloy.txt",
+              "media_type": "text/plain"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "path": "responses",
+          "tool_result": "file"
+        },
+        "tools": [
+          {
+            "id": "alloy_edit",
+            "name": "edit",
+            "arguments": {
+              "file": {
+                "$tool_result": "/file"
+              },
+              "old_text": "before",
+              "new_text": "after"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "path": "messages",
+          "tool_result": "file"
+        },
+        "tools": [
+          {
+            "id": "alloy_read",
+            "name": "read",
+            "arguments": {
+              "file": {
+                "$tool_result": "/file"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "path": "responses",
+          "tool_result": "after"
+        },
+        "text": [
+          "alloy done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "Run the alloy tool chain",
+      "answer": "alloy done"
+    }
+  ],
+  "assert": {
+    "requests": 4,
+    "generation_paths": [
+      "messages",
+      "responses",
+      "messages",
+      "responses"
+    ],
+    "files": {
+      "alloy.txt": "after\n"
+    },
+    "wire_contains": [
+      "a/tiny",
+      "b/tiny",
+      "members"
+    ],
+    "http": [
+      {
+        "path": "messages",
+        "body": {
+          "max_tokens": 1024
+        }
+      },
+      {
+        "path": "responses",
+        "body": {
+          "max_output_tokens": 1024
+        }
+      }
+    ],
+    "member_usage": {
+      "a/tiny": {
+        "usage": {
+          "output_tokens": 4,
+          "input_tokens": 128
+        }
+      },
+      "b/tiny": {
+        "usage": {
+          "output_tokens": 4,
+          "input_tokens": 128
+        }
+      }
+    }
+  }
+}

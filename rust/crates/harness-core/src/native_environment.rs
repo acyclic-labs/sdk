@@ -92,16 +92,45 @@ fn resolve(read: Read<'_>) -> Option<OsString> {
         #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
         Read::Home => dirs::home_dir().map(PathBuf::into_os_string),
         #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-        Read::State(None) => dirs::data_local_dir().map(PathBuf::into_os_string),
+        Read::State(None) => {
+            // Known Folder lookup does not honor LOCALAPPDATA supplied by a
+            // process owner. Resolve the explicit root at this same seam so
+            // an isolated native composition cannot escape to the OS profile.
+            #[cfg(windows)]
+            if let Some(directory) = explicit_state_root(std::env::var_os("LOCALAPPDATA")) {
+                return Some(directory);
+            }
+            dirs::data_local_dir().map(PathBuf::into_os_string)
+        }
         #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
         Read::State(Some(directory)) => Some(directory.as_os_str().to_owned()),
     }
+}
+
+#[cfg(all(
+    feature = "filesystem-local",
+    not(target_arch = "wasm32"),
+    any(windows, test)
+))]
+fn explicit_state_root(directory: Option<OsString>) -> Option<OsString> {
+    directory.filter(|directory| Path::new(directory).is_absolute())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[test]
+    fn explicit_state_root_requires_an_absolute_owner_selected_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let selected = directory.path().as_os_str().to_owned();
+        assert_eq!(explicit_state_root(Some(selected.clone())), Some(selected));
+        for rejected in [None, Some(OsString::new()), Some("relative/profile".into())] {
+            assert_eq!(explicit_state_root(rejected), None);
+        }
+    }
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(32))]
         #[test]

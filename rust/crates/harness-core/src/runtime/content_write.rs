@@ -162,13 +162,32 @@ impl TaskContext {
         bytes: &[u8],
         io: Option<&ContentIo>,
     ) -> Result<FileRef> {
+        self.stage_private_content_once(
+            summaries,
+            operation_id,
+            (path, "text/plain", "summary.txt"),
+            bytes,
+            io,
+        )
+        .await
+    }
+
+    pub(crate) async fn stage_private_content_once(
+        &self,
+        destination: PrivateSummaries<'_>,
+        operation_id: OperationId,
+        artifact: (&str, &str, &str),
+        bytes: &[u8],
+        io: Option<&ContentIo>,
+    ) -> Result<FileRef> {
+        let (path, media_type, display_name) = artifact;
         self.stage_bound_file(
-            Some(summaries.0),
+            Some(destination.0),
             operation_id,
             path,
             bytes,
-            "text/plain",
-            "summary.txt",
+            media_type,
+            display_name,
             ContentPublication::OperationBound,
             &self.scope,
             io,

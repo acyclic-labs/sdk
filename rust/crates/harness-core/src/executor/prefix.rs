@@ -29,7 +29,10 @@ impl StockExecution<'_> {
             .request
             .ok_or(Error::Indeterminate(input.operation_id))?;
         let mut request = crate::model::clone_request(prepared.request(), self.io)?;
-        if !retained.admission.completed
+        // A requested call prefix is complete when its ordered exchanges have
+        // settled, even while the provider is still streaming later calls.
+        // A whole batch additionally requires the provider's completion marker.
+        if (through_call.is_none() && !retained.admission.completed)
             || retained.admission.calls.is_empty()
             || through_call
                 .is_some_and(|id| !retained.admission.calls.iter().any(|call| call == id))

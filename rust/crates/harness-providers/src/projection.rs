@@ -131,6 +131,27 @@ pub(crate) fn body_with_files(
     .map_err(|_| invalid("cannot encode projected request"))
 }
 
+fn project_tools(
+    adapter: Adapter,
+    request: &ModelRequest,
+    names: &crate::tool_names::Names<'_>,
+) -> Result<Vec<Value>> {
+    let mut tools: Vec<Value> = request.tools.iter().map(|tool| { let name = names.wire(&tool.name)?; Ok(match adapter {
+        Adapter::Anthropic => json!({"name":name,"description":tool.description,"input_schema":tool.input_schema}),
+        Adapter::Responses => json!({"type":"function","name":name,"description":tool.description,
+            "parameters":tool.input_schema,"strict":false}),
+        Adapter::Chat => json!({"type":"function","function":{"name":name,
+            "description":tool.description,"parameters":tool.input_schema}}),
+        Adapter::Gemini => json!({"name":name,"description":tool.description,"parametersJsonSchema":tool.input_schema}),
+    }) }).collect::<Result<_>>()?;
+    if adapter == Adapter::Anthropic
+        && let Some(tool) = tools.last_mut()
+    {
+        tool["cache_control"] = json!({"type":"ephemeral"});
+    }
+    Ok(tools)
+}
+
 pub(crate) fn body_named<'a>(
     provider: &ResolvedModel,
     request: &'a ModelRequest,
@@ -143,15 +164,13 @@ pub(crate) fn body_named<'a>(
     let mut messages: Vec<Message<'a>> = Vec::new();
     let mut system = Vec::new();
     let mut gemini = gemini::Replay::default();
+    let mut in_prefix = true;
     for message in &request.messages {
+        in_prefix &= message.role == ModelRole::System;
+        let hoist = matches!(adapter, Adapter::Anthropic | Adapter::Gemini);
         #[cfg(not(target_arch = "wasm32"))]
-        if provider.codex_login.is_some() && message.role == ModelRole::System {
-            system.push(text_content(&message.content, files)?);
-            continue;
-        }
-        if message.role == ModelRole::System
-            && matches!(adapter, Adapter::Anthropic | Adapter::Gemini)
-        {
+        let hoist = hoist || provider.codex_login.is_some();
+        if in_prefix && hoist {
             system.push(text_content(&message.content, files)?);
         } else {
             for projected in project_message(
@@ -168,14 +187,7 @@ pub(crate) fn body_named<'a>(
         }
     }
     sequence::finish(adapter, &mut messages);
-    let tools: Vec<Value> = request.tools.iter().map(|tool| { let name = names.wire(&tool.name)?; Ok(match adapter {
-        Adapter::Anthropic => json!({"name":name,"description":tool.description,"input_schema":tool.input_schema}),
-        Adapter::Responses => json!({"type":"function","name":name,"description":tool.description,
-            "parameters":tool.input_schema,"strict":false}),
-        Adapter::Chat => json!({"type":"function","function":{"name":name,
-            "description":tool.description,"parameters":tool.input_schema}}),
-        Adapter::Gemini => json!({"name":name,"description":tool.description,"parametersJsonSchema":tool.input_schema}),
-    }) }).collect::<Result<_>>()?;
+    let tools = project_tools(adapter, request, names)?;
     system.retain(|text| !text.trim().is_empty());
     let max = request
         .max_output_tokens
@@ -197,6 +209,42 @@ pub(crate) fn body_named<'a>(
             model
         };
     map.insert("model".into(), json!(model));
+    // The retained conversation owns this routing key; model options cannot
+    // replace it or accidentally share one key across independent sessions.
+    map.remove("prompt_cache_key");
+    if matches!(adapter, Adapter::Responses | Adapter::Chat)
+        && let Some(conversation) = request.conversation_id
+    {
+        map.insert("prompt_cache_key".into(), json!(conversation.to_string()));
+    }
+    configure_body(provider, map, &system, &tools, max)?;
+    let fields = body
+        .as_object_mut()
+        .ok_or_else(|| invalid("invalid request body"))?;
+    let messages_field = match adapter {
+        Adapter::Responses => "input",
+        Adapter::Gemini => "contents",
+        _ => "messages",
+    };
+    // Options cannot override transcript projection or inject a second input path.
+    for name in ["messages", "input", "contents"] {
+        fields.remove(name);
+    }
+    Ok(Body {
+        fields: std::mem::take(fields),
+        messages_field,
+        messages,
+    })
+}
+
+fn configure_body(
+    provider: &ResolvedModel,
+    map: &mut serde_json::Map<String, Value>,
+    system: &[String],
+    tools: &[Value],
+    max: u32,
+) -> Result<()> {
+    let adapter = provider.config.adapter;
     match adapter {
         Adapter::Chat => {
             map.insert("stream".into(), json!(true));
@@ -239,7 +287,11 @@ pub(crate) fn body_named<'a>(
             map.insert("stream".into(), json!(true));
             map.insert("max_tokens".into(), json!(max));
             if !system.is_empty() {
-                map.insert("system".into(), json!(system.join("\n\n")));
+                map.insert(
+                    "system".into(),
+                    json!([{"type":"text", "text":system.join("\n\n"),
+                    "cache_control":{"type":"ephemeral"}}]),
+                );
             }
             if !tools.is_empty() {
                 map.insert("tools".into(), json!(tools));
@@ -264,23 +316,7 @@ pub(crate) fn body_named<'a>(
             }
         }
     }
-    let fields = body
-        .as_object_mut()
-        .ok_or_else(|| invalid("invalid request body"))?;
-    let messages_field = match adapter {
-        Adapter::Responses => "input",
-        Adapter::Gemini => "contents",
-        _ => "messages",
-    };
-    // Options cannot override transcript projection or inject a second input path.
-    for name in ["messages", "input", "contents"] {
-        fields.remove(name);
-    }
-    Ok(Body {
-        fields: std::mem::take(fields),
-        messages_field,
-        messages,
-    })
+    Ok(())
 }
 
 fn project_message<'a>(
@@ -313,33 +349,14 @@ fn project_message<'a>(
                 project_visible_text(adapter, role, text, &mut texts, &mut ordered, gemini);
             }
             ModelContentPart::File { file, policy } => {
-                if let acyclic_harness_core::model::FileProjectionPolicy::Native(policy) = policy {
-                    if role != "user" {
-                        return Err(invalid("native images require a user message"));
-                    }
-                    let image = image::part(
-                        adapter,
-                        file.descriptor().media_type(),
-                        policy,
-                        files.image()?,
-                    )?;
-                    if adapter == Adapter::Chat {
-                        ordered.extend(
-                            texts
-                                .drain(..)
-                                .map(|text| Item::Json(json!({"type":"text","text":text}))),
-                        );
-                    }
-                    ordered.push(Item::Json(image));
-                    continue;
-                }
-                project_text(
+                project_file(
                     adapter,
                     role,
-                    files.project(file, policy)?,
-                    &mut texts,
-                    &mut ordered,
-                );
+                    file,
+                    policy,
+                    files,
+                    (&mut texts, &mut ordered),
+                )?;
             }
             ModelContentPart::ToolCall(acyclic_harness_core::model::ToolCall {
                 call_id,
@@ -367,49 +384,15 @@ fn project_message<'a>(
                 }
             }
             ModelContentPart::Reasoning { block } => {
-                use crate::ProjectedReasoning;
-                match crate::project_reasoning(block, target) {
-                    ProjectedReasoning::Native { continuity, .. }
-                        if matches!(adapter, Adapter::Responses | Adapter::Anthropic) =>
-                    {
-                        // Invalid native shapes fall back to ordinary readable context.
-                        if let Some(raw) = native_reasoning::validated(adapter, continuity) {
-                            ordered.push(Item::Native(raw));
-                        } else if let Some(text) = block.text.as_deref() {
-                            project_text(
-                                adapter,
-                                role,
-                                foreign_text(&block.origin, text),
-                                &mut texts,
-                                &mut ordered,
-                            );
-                        }
-                    }
-                    ProjectedReasoning::Native { continuity, .. } if adapter == Adapter::Gemini => {
-                        if let Some(part) = gemini.native(
-                            continuity,
-                            block.outcome
-                                == acyclic_harness_core::model::ReasoningOutcome::SuppressedDisplay,
-                        ) {
-                            ordered.push(part);
-                        }
-                    }
-                    ProjectedReasoning::Native { .. } => {
-                        if let Some(text) = &block.text {
-                            chat_reasoning.push_str(text);
-                        }
-                    }
-                    ProjectedReasoning::Readable { text, origin, .. } => {
-                        project_text(
-                            adapter,
-                            role,
-                            foreign_text(origin, text),
-                            &mut texts,
-                            &mut ordered,
-                        );
-                    }
-                    ProjectedReasoning::Dropped { .. } => {}
-                }
+                project_reasoning_part(
+                    adapter,
+                    role,
+                    block,
+                    target,
+                    gemini,
+                    (&mut texts, &mut ordered),
+                    &mut chat_reasoning,
+                );
             }
             ModelContentPart::ToolResult {
                 call_id,
@@ -420,24 +403,7 @@ fn project_message<'a>(
                 let call_id = call_ids.wire(call_id)?;
                 let text = result_text(content, files)?;
                 let error = matches!(content, ToolResultContent::Error { .. });
-                let result = match adapter {
-                    Adapter::Anthropic if error => json!(
-                        {"type":"tool_result","tool_use_id":call_id,"content":text,"is_error":true}
-                    ),
-                    Adapter::Gemini if error => json!(
-                        {"functionResponse":{"id":call_id,"name":name,"response":{"error":text}}}
-                    ),
-                    Adapter::Anthropic => {
-                        json!({"type":"tool_result","tool_use_id":call_id,"content":text})
-                    }
-                    Adapter::Responses => {
-                        json!({"type":"function_call_output","call_id":call_id,"output":text})
-                    }
-                    Adapter::Chat => json!({"role":"tool","tool_call_id":call_id,"content":text}),
-                    Adapter::Gemini => {
-                        json!({"functionResponse":{"id":call_id,"name":name,"response":{"output":text}}})
-                    }
-                };
+                let result = project_result(adapter, &call_id, &name, &text, error);
                 if adapter == Adapter::Chat {
                     results.push(result);
                 } else {
@@ -446,6 +412,105 @@ fn project_message<'a>(
             }
         }
     }
+    finish_message(
+        adapter,
+        role,
+        &texts,
+        calls,
+        results,
+        ordered,
+        chat_reasoning,
+    )
+}
+
+fn project_file(
+    adapter: Adapter,
+    role: &str,
+    file: &acyclic_harness_core::conversation::FileRef,
+    policy: &acyclic_harness_core::model::FileProjectionPolicy,
+    files: &mut FileText,
+    (texts, ordered): (&mut Vec<String>, &mut Vec<Item<'_>>),
+) -> Result<()> {
+    if let acyclic_harness_core::model::FileProjectionPolicy::Native(policy) = policy {
+        if role != "user" {
+            return Err(invalid("native images require a user message"));
+        }
+        let image = image::part(
+            adapter,
+            file.descriptor().media_type(),
+            policy,
+            files.image()?,
+        )?;
+        if adapter == Adapter::Chat {
+            ordered.extend(
+                texts
+                    .drain(..)
+                    .map(|text| Item::Json(json!({"type":"text","text":text}))),
+            );
+        }
+        ordered.push(Item::Json(image));
+        return Ok(());
+    }
+    project_text(adapter, role, files.project(file, policy)?, texts, ordered);
+    Ok(())
+}
+
+fn project_reasoning_part<'a>(
+    adapter: Adapter,
+    role: &str,
+    block: &'a acyclic_harness_core::model::ReasoningBlock,
+    target: &acyclic_harness_core::model::ReasoningOrigin,
+    gemini: &mut gemini::Replay<'a>,
+    (texts, ordered): (&mut Vec<String>, &mut Vec<Item<'a>>),
+    chat_reasoning: &mut String,
+) {
+    use crate::ProjectedReasoning;
+    match crate::project_reasoning(block, target) {
+        ProjectedReasoning::Native { continuity, .. }
+            if matches!(adapter, Adapter::Responses | Adapter::Anthropic) =>
+        {
+            // Invalid native shapes fall back to ordinary readable context.
+            if let Some(raw) = native_reasoning::validated(adapter, continuity) {
+                ordered.push(Item::Native(raw));
+            } else if let Some(text) = block.text.as_deref() {
+                project_text(
+                    adapter,
+                    role,
+                    foreign_text(&block.origin, text),
+                    texts,
+                    ordered,
+                );
+            }
+        }
+        ProjectedReasoning::Native { continuity, .. } if adapter == Adapter::Gemini => {
+            if let Some(part) = gemini.native(
+                continuity,
+                block.outcome == acyclic_harness_core::model::ReasoningOutcome::SuppressedDisplay,
+            ) {
+                ordered.push(part);
+            }
+        }
+        ProjectedReasoning::Native { .. } => {
+            if let Some(text) = &block.text {
+                chat_reasoning.push_str(text);
+            }
+        }
+        ProjectedReasoning::Readable { text, origin, .. } => {
+            project_text(adapter, role, foreign_text(origin, text), texts, ordered);
+        }
+        ProjectedReasoning::Dropped { .. } => {}
+    }
+}
+
+fn finish_message<'a>(
+    adapter: Adapter,
+    role: &'static str,
+    texts: &[String],
+    calls: Vec<call::Call<'a>>,
+    results: Vec<Value>,
+    ordered: Vec<Item<'a>>,
+    chat_reasoning: String,
+) -> Result<Vec<Message<'a>>> {
     match adapter {
         Adapter::Chat => {
             let mut output = Vec::new();
@@ -478,7 +543,11 @@ fn project_message<'a>(
             Vec::new()
         } else {
             vec![Message::Anthropic {
-                role: if role == "tool" { "user" } else { role },
+                role: if role == "assistant" {
+                    "assistant"
+                } else {
+                    "user"
+                },
                 content: ordered,
             }]
         }),
@@ -535,6 +604,13 @@ fn project_text(
 
 fn result_text(content: &ToolResultContent, files: &mut FileText) -> Result<String> {
     match content {
+        ToolResultContent::Stored { file, preview } => {
+            let reference = files.project(
+                file,
+                &acyclic_harness_core::model::FileProjectionPolicy::Reference,
+            )?;
+            Ok(format!("{preview}\n{reference}"))
+        }
         ToolResultContent::Json { value } => {
             serde_json::to_string(value).map_err(|error| invalid(error.to_string()))
         }
@@ -571,4 +647,25 @@ fn foreign_text(origin: &acyclic_harness_core::model::ReasoningOrigin, text: &st
         "<prior-reasoning provider={:?} model={:?}>\n{text}\n</prior-reasoning>",
         origin.provider, origin.model
     )
+}
+
+fn project_result(adapter: Adapter, call_id: &str, name: &str, text: &str, error: bool) -> Value {
+    match adapter {
+        Adapter::Anthropic if error => json!(
+            {"type":"tool_result","tool_use_id":call_id,"content":text,"is_error":true}
+        ),
+        Adapter::Gemini if error => json!(
+            {"functionResponse":{"id":call_id,"name":name,"response":{"error":text}}}
+        ),
+        Adapter::Anthropic => {
+            json!({"type":"tool_result","tool_use_id":call_id,"content":text})
+        }
+        Adapter::Responses => {
+            json!({"type":"function_call_output","call_id":call_id,"output":text})
+        }
+        Adapter::Chat => json!({"role":"tool","tool_call_id":call_id,"content":text}),
+        Adapter::Gemini => {
+            json!({"functionResponse":{"id":call_id,"name":name,"response":{"output":text}}})
+        }
+    }
 }

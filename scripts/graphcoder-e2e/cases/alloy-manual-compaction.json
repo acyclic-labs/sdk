@@ -1,0 +1,151 @@
+{
+  "id": "alloy-manual-compaction",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "remember MANUAL_E2E_FACT"
+        },
+        "text": [
+          "MANUAL_E2E_FIRST"
+        ]
+      },
+      {
+        "when": {
+          "contains": "Summarize this conversation"
+        },
+        "text": [
+          "COMPACTED_E2E_FACT"
+        ]
+      },
+      {
+        "when": {
+          "user": "after compact",
+          "contains": "COMPACTED_E2E_FACT"
+        },
+        "text": [
+          "MANUAL_E2E_DONE"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "remember MANUAL_E2E_FACT"
+        },
+        {
+          "when": {
+            "contains": [
+              "MANUAL_E2E_FIRST",
+              "○"
+            ]
+          },
+          "prompt": "/compact preserve the fact"
+        },
+        {
+          "when": {
+            "contains": [
+              "MANUAL_E2E_FIRST",
+              "○"
+            ]
+          },
+          "prompt": "after compact",
+          "after_request": {
+            "path": "responses",
+            "step": 1
+          }
+        },
+        {
+          "when": {
+            "contains": [
+              "MANUAL_E2E_DONE",
+              "○"
+            ]
+          },
+          "send": "\u0004"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 3,
+    "last_model_contains": [
+      "COMPACTED_E2E_FACT"
+    ],
+    "last_model_absent": [
+      "MANUAL_E2E_FIRST"
+    ],
+    "generation_paths": [
+      "responses",
+      "responses",
+      "responses"
+    ]
+  },
+  "selection": null,
+  "catalog": {
+    "a": {
+      "adapter": "anthropic",
+      "authentication": "optional",
+      "base_url": "{{url}}",
+      "models": {
+        "tiny": {
+          "capacity": {
+            "context_tokens": 32768,
+            "output_tokens": 1024
+          },
+          "features": {
+            "tools": true,
+            "images": false
+          }
+        }
+      },
+      "token_counter": {
+        "path": "count",
+        "adapter": "anthropic",
+        "response_field": "input_tokens",
+        "framing_tokens": 0
+      },
+      "max_event_bytes": 4096
+    },
+    "b": {
+      "adapter": "responses",
+      "authentication": "optional",
+      "base_url": "{{url}}",
+      "models": {
+        "tiny": {
+          "capacity": {
+            "context_tokens": 65536,
+            "output_tokens": 2048
+          },
+          "features": {
+            "tools": true,
+            "images": false
+          }
+        }
+      },
+      "token_counter": {
+        "path": "count",
+        "adapter": "responses",
+        "response_field": "input_tokens",
+        "framing_tokens": 0
+      },
+      "max_event_bytes": 4096
+    }
+  },
+  "settings": {
+    ".codex/config.toml": "model = \"mixed\"\n[roles]\nroot = \"planner\"\nchild = \"worker\"\n[alloys.mixed]\nmodels = [\"a/tiny\", \"b/tiny\"]\n[alloys.mixed.select.per_role]\nroles = { planner = 1 }\nfallback = 0\n"
+  }
+}

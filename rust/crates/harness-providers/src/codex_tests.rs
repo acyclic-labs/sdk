@@ -5,6 +5,154 @@ use bytes::Bytes;
 use proptest::prelude::*;
 use std::sync::{Arc, Mutex};
 
+#[tokio::test]
+async fn rejection_is_retained_even_when_its_native_invocation_is_cancelled() -> Result<()> {
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+    let access = jwt(crate::codex::fixed_now().unix_timestamp() + 3600);
+    let (_root, login, transport) = fixture(&access, 503)?;
+    assert_eq!(login.bearer(&transport, None, None).await?.0, access);
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
+        &cancellation,
+    )
+    .map_err(|(cause, work)| acyclic_harness_core::Error::NativeConstruction { cause, work })?;
+    let mut custody = work.claim(0, 0, WorkCounters::UNCHARGED)?;
+    cancellation.cancel();
+    assert!(
+        login
+            .bearer(&transport, Some(&access), Some(&mut custody))
+            .await
+            .is_err()
+    );
+    assert!(
+        !matches!(&*login.bearer.read().unwrap(), BearerCache::Valid(_)),
+        "rejection must retire the bearer before any cancellable work"
+    );
+    assert!(
+        login.bearer(&transport, None, None).await.is_err(),
+        "a later invocation must not resurrect the rejected on-disk token"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn cached_bearers_need_no_file_or_refresh_lock_and_keep_original_native_custody() -> Result<()>
+{
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+    let access = jwt(crate::codex::fixed_now().unix_timestamp() + 3600);
+    let (root, login, transport) = fixture(&access, 200)?;
+    let work = NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
+        &CancellationToken::new(),
+    )
+    .map_err(|(cause, work)| acyclic_harness_core::Error::NativeConstruction { cause, work })?;
+    let mut custody = work.claim(0, 0, WorkCounters::UNCHARGED)?;
+    let baseline = work.receipt();
+    let allocation_baseline = work.live_allocation_bytes();
+    assert_eq!(
+        login.bearer(&transport, None, Some(&mut custody)).await?.0,
+        access
+    );
+    drop(custody);
+    assert!(work.receipt().backend_read_operations > baseline.backend_read_operations);
+    assert!(work.live_allocation_bytes() > allocation_baseline);
+    std::fs::remove_file(root.path().join("auth.json")).map_err(|_| invalid("fixture removal"))?;
+    // Hold the real refresh guard: polling the cached path must still finish.
+    let mut guarded = Box::pin(crate::refresh::serialized(&login.refresh, async {
+        futures::future::pending::<(Result<()>, Option<RefreshFailure>)>().await
+    }));
+    assert!(futures::poll!(&mut guarded).is_pending());
+    let before = work.receipt();
+    let mut custody = work.claim(0, 0, WorkCounters::UNCHARGED)?;
+    let mut cached = Box::pin(login.bearer(&transport, None, Some(&mut custody)));
+    let std::task::Poll::Ready(result) = futures::poll!(&mut cached) else {
+        panic!("cached bearer waited for the refresh lock");
+    };
+    assert_eq!(result?.0, access);
+    drop(cached);
+    drop(custody);
+    assert_eq!(
+        work.receipt().backend_read_operations,
+        before.backend_read_operations
+    );
+    assert_eq!(work.receipt().source_bytes_read, before.source_bytes_read);
+    drop(guarded);
+    drop(login);
+    assert_eq!(work.live_allocation_bytes(), allocation_baseline);
+    Ok(())
+}
+
+#[tokio::test]
+async fn cached_account_is_fenced_until_expiry_and_fresh_resolution_rebinds() -> Result<()> {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    let now = Arc::new(AtomicI64::new(crate::codex::fixed_now().unix_timestamp()));
+    let access = jwt(now.load(Ordering::SeqCst) + 3600);
+    let (root, login, transport) = fixture(&access, 200)?;
+    let clock = now.clone();
+    let login = login.with_clock(move || {
+        OffsetDateTime::from_unix_timestamp(clock.load(Ordering::SeqCst)).unwrap()
+    });
+    assert_eq!(
+        login.bearer(&transport, None, None).await?.1.as_deref(),
+        Some("account")
+    );
+    let mut changed = auth(&jwt(now.load(Ordering::SeqCst) + 7200));
+    *changed.pointer_mut("/tokens/account_id").unwrap() = json!("second-account");
+    std::fs::write(root.path().join("auth.json"), changed.to_string())
+        .map_err(|_| invalid("fixture write"))?;
+    assert_eq!(
+        login.bearer(&transport, None, None).await?.1.as_deref(),
+        Some("account")
+    );
+    assert_eq!(
+        login
+            .fresh()
+            .bearer(&transport, None, None)
+            .await?
+            .1
+            .as_deref(),
+        Some("second-account")
+    );
+    now.fetch_add(3300, Ordering::SeqCst);
+    assert!(matches!(
+        login.bearer(&transport, None, None).await,
+        Err(acyclic_harness_core::Error::Unauthorized(_))
+    ));
+    assert!(!matches!(
+        &*login.bearer.read().unwrap(),
+        BearerCache::Valid(_)
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejected_cache_is_evicted_and_concurrent_callers_share_one_replacement() -> Result<()> {
+    let access = jwt(crate::codex::fixed_now().unix_timestamp() + 3600);
+    let (_root, login, mut transport) = fixture(&access, 503)?;
+    login.bearer(&transport, None, None).await?;
+    assert!(login.bearer(&transport, Some(&access), None).await.is_err());
+    assert!(!matches!(
+        &*login.bearer.read().unwrap(),
+        BearerCache::Valid(_)
+    ));
+    // A later ordinary request must not resurrect the on-disk token rejected
+    // by the previous request, even when refreshing it failed.
+    assert!(login.bearer(&transport, None, None).await.is_err());
+    transport.status = 200;
+    // A successful replacement must be distinct from the rejected credential.
+    // Keep that invariant explicit rather than inheriting the fixture default.
+    let replacement = jwt(crate::codex::fixed_now().unix_timestamp() + 7200);
+    assert_ne!(replacement, access);
+    *transport.response.get_mut("access_token").unwrap() = json!(replacement);
+    let calls = (0..16).map(|_| login.bearer(&transport, Some(&access), None));
+    for result in futures::future::join_all(calls).await {
+        assert_eq!(result?.0, replacement);
+    }
+    assert_eq!(transport.sent.lock().unwrap().len(), 3);
+    Ok(())
+}
+
 struct Refresh {
     status: u16,
     response: Value,
@@ -181,14 +329,19 @@ async fn unauthorized_bearer_refreshes_once_and_retains_omitted_tokens() -> Resu
 }
 
 #[tokio::test]
-async fn refresh_retains_access_token_when_only_other_tokens_are_rotated() -> Result<()> {
+async fn refresh_never_reuses_a_rejected_access_token_when_only_other_tokens_rotate() -> Result<()>
+{
     let access = jwt(crate::codex::fixed_now().unix_timestamp() + 3600);
     let (root, login, mut transport) = fixture(&access, 200)?;
     transport.response = json!({"refresh_token":"rotated-refresh","id_token":"rotated-id"});
-    assert_eq!(
-        login.bearer(&transport, Some(&access), None).await?.0,
-        access
-    );
+    assert!(matches!(
+        login.bearer(&transport, Some(&access), None).await,
+        Err(acyclic_harness_core::Error::Unauthorized(_))
+    ));
+    assert!(!matches!(
+        &*login.bearer.read().unwrap(),
+        BearerCache::Valid(_)
+    ));
     let stored = crate::json(
         &std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?,
     )?;
@@ -266,6 +419,16 @@ proptest! {
     #[test]
     fn jwt_refresh_boundary_matches_the_signed_expiry(expiry in any::<i64>()) {
         prop_assert_eq!(needs_refresh(&auth(&jwt(expiry)), OffsetDateTime::UNIX_EPOCH), expiry <= 300);
+    }
+
+    #[test]
+    fn fallback_expiry_preserves_every_fractional_second(nanos in 0u32..1_000_000_000, offset in -1i64..=1) {
+        let refreshed = OffsetDateTime::UNIX_EPOCH.replace_nanosecond(nanos).unwrap();
+        let mut document = auth("opaque");
+        document["last_refresh"] = json!(refreshed.format(&Rfc3339).unwrap());
+        let boundary = refreshed + time::Duration::days(8);
+        let now = boundary + time::Duration::nanoseconds(offset);
+        prop_assert_eq!(needs_refresh(&document, now), offset >= 0);
     }
 
     #[test]
@@ -350,8 +513,8 @@ async fn injected_clock_drives_exact_expiry_boundaries_and_publication_time() ->
         if remaining <= 300 {
             let stored = crate::json(&std::fs::read(&login.path).unwrap())?;
             assert_eq!(
-                stored["last_refresh"],
-                crate::codex::fixed_now().format(&Rfc3339).unwrap()
+                stored.get("last_refresh").and_then(Value::as_str),
+                Some(crate::codex::fixed_now().format(&Rfc3339).unwrap().as_str())
             );
         }
     }

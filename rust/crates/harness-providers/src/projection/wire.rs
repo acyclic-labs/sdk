@@ -1,5 +1,8 @@
 use super::call::Call;
-use serde::{Serialize, ser::SerializeMap};
+use serde::{
+    Serialize,
+    ser::{SerializeMap, SerializeSeq},
+};
 use serde_json::{Map, Value, value::RawValue};
 
 /// Native payloads borrow transcript bytes until HTTP serialization completes.
@@ -41,6 +44,46 @@ pub(crate) struct Body<'a> {
     pub(super) messages_field: &'static str,
     pub(super) messages: Vec<Message<'a>>,
 }
+
+pub(crate) enum SystemKey {
+    Chat(String),
+    Responses(Value),
+}
+
+impl SystemKey {
+    pub(crate) fn owned_bytes(&self) -> acyclic_harness_core::Result<u64> {
+        match self {
+            Self::Chat(text) => Ok(text.capacity() as u64),
+            Self::Responses(value) => {
+                acyclic_harness_core::executor::json::json_value_logical_owned_bytes(value)
+            }
+        }
+    }
+}
+
+fn system_key<'a>(message: &'a Message<'_>) -> Option<SystemKeyRef<'a>> {
+    match message {
+        Message::Chat(chat)
+            if chat.role == "system"
+                && chat.tool_calls.is_empty()
+                && chat.reasoning_content.is_none() =>
+        {
+            chat.content.as_deref().map(SystemKeyRef::Chat)
+        }
+        Message::Item(Item::Json(value))
+            if value.get("type").and_then(Value::as_str) == Some("message")
+                && value.get("role").and_then(Value::as_str) == Some("system") =>
+        {
+            Some(SystemKeyRef::Responses(value))
+        }
+        _ => None,
+    }
+}
+
+enum SystemKeyRef<'a> {
+    Chat(&'a str),
+    Responses(&'a Value),
+}
 impl Serialize for Body<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         self.serialize_fields(serializer, None, None)
@@ -54,8 +97,59 @@ impl Body<'_> {
         include: Option<&[&str]>,
         model: Option<&str>,
     ) -> Result<S::Ok, S::Error> {
+        self.serialize_fields_prefix(serializer, include, model, None)
+    }
+
+    pub(crate) fn matches_system_prefix(&self, keys: &[SystemKey]) -> bool {
+        let mut actual = self.messages.iter().map_while(system_key);
+        keys.iter().all(|key| match (key, actual.next()) {
+            (SystemKey::Chat(a), Some(SystemKeyRef::Chat(b))) => a == b,
+            (SystemKey::Responses(a), Some(SystemKeyRef::Responses(b))) => a == b,
+            _ => false,
+        }) && actual.next().is_none()
+    }
+
+    pub(crate) fn encode_system_prefix(
+        &self,
+    ) -> Result<(Vec<SystemKey>, Vec<Box<RawValue>>), serde_json::Error> {
+        let mut keys = Vec::new();
+        let mut encoded = Vec::new();
+        for message in &self.messages {
+            let Some(key) = system_key(message) else {
+                break;
+            };
+            keys.push(match key {
+                SystemKeyRef::Chat(text) => SystemKey::Chat(text.to_owned()),
+                SystemKeyRef::Responses(value) => SystemKey::Responses(value.clone()),
+            });
+            encoded.push(serde_json::value::to_raw_value(message)?);
+        }
+        Ok((keys, encoded))
+    }
+
+    fn serialize_fields_prefix<S: serde::Serializer>(
+        &self,
+        serializer: S,
+        include: Option<&[&str]>,
+        model: Option<&str>,
+        chat_system: Option<&[Box<RawValue>]>,
+    ) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(None)?;
+        // Keep the reusable tool/instruction prefix before request controls.
+        for name in ["tools", "system", "instructions", "systemInstruction"] {
+            if let Some(value) = self.fields.get(name)
+                && include.is_none_or(|fields| fields.contains(&name))
+            {
+                map.serialize_entry(name, value)?;
+            }
+        }
         for (name, value) in &self.fields {
+            if matches!(
+                name.as_str(),
+                "tools" | "system" | "instructions" | "systemInstruction"
+            ) {
+                continue;
+            }
             if include.is_none_or(|fields| fields.contains(&name.as_str()))
                 && !(name == "model" && model.is_some())
             {
@@ -65,9 +159,120 @@ impl Body<'_> {
         if let Some(model) = model {
             map.serialize_entry("model", model)?;
         }
-        map.serialize_entry(self.messages_field, &self.messages)?;
+        if matches!(self.messages.first(), Some(Message::Anthropic { .. })) {
+            map.serialize_entry(self.messages_field, &CacheMessages(&self.messages))?;
+        } else if let Some(prefix) = chat_system {
+            map.serialize_entry(
+                self.messages_field,
+                &PrefixMessages(
+                    prefix,
+                    self.messages.get(prefix.len()..).ok_or_else(|| {
+                        <S::Error as serde::ser::Error>::custom(
+                            "encoded system prefix exceeds messages",
+                        )
+                    })?,
+                ),
+            )?;
+        } else {
+            map.serialize_entry(self.messages_field, &self.messages)?;
+        }
         map.end()
     }
+}
+
+pub(crate) struct WithChatPrefix<'a, 'b>(pub &'a Body<'b>, pub Option<&'a [Box<RawValue>]>);
+impl Serialize for WithChatPrefix<'_, '_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0
+            .serialize_fields_prefix(serializer, None, None, self.1)
+    }
+}
+
+struct PrefixMessages<'a, 'b>(&'a [Box<RawValue>], &'a [Message<'b>]);
+impl Serialize for PrefixMessages<'_, '_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut sequence = serializer.serialize_seq(Some(self.1.len() + self.0.len()))?;
+        for message in self.0 {
+            sequence.serialize_element(message)?;
+        }
+        for message in self.1 {
+            sequence.serialize_element(message)?;
+        }
+        sequence.end()
+    }
+}
+
+struct CacheMessages<'a, 'b>(&'a [Message<'b>]);
+impl Serialize for CacheMessages<'_, '_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let last = self.0.iter().rposition(|message| {
+            matches!(message,
+            Message::Anthropic { content, .. } if content.iter().any(cacheable))
+        });
+        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        for (index, message) in self.0.iter().enumerate() {
+            if Some(index) == last
+                && let Message::Anthropic { role, content } = message
+            {
+                #[derive(Serialize)]
+                struct Marked<'a, 'b> {
+                    role: &'a str,
+                    content: CacheContent<'a, 'b>,
+                }
+                sequence.serialize_element(&Marked {
+                    role,
+                    content: CacheContent(content),
+                })?;
+            } else {
+                sequence.serialize_element(message)?;
+            }
+        }
+        sequence.end()
+    }
+}
+
+fn cacheable(item: &Item<'_>) -> bool {
+    match item {
+        Item::Json(value) => !matches!(
+            value["type"].as_str(),
+            Some("thinking" | "redacted_thinking")
+        ),
+        Item::Call(_) => true,
+        // Signed reasoning bytes must remain untouched, and thinking cannot
+        // itself carry a breakpoint. Cache the preceding eligible block.
+        Item::Native(_) => false,
+    }
+}
+
+struct CacheContent<'a, 'b>(&'a [Item<'b>]);
+impl Serialize for CacheContent<'_, '_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let last = self.0.iter().rposition(cacheable);
+        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        for (index, item) in self.0.iter().enumerate() {
+            if Some(index) == last {
+                #[derive(Serialize)]
+                struct Marked<'a, 'b> {
+                    #[serde(flatten)]
+                    item: &'a Item<'b>,
+                    cache_control: Control,
+                }
+                sequence.serialize_element(&Marked {
+                    item,
+                    cache_control: Control { kind: "ephemeral" },
+                })?;
+            } else {
+                sequence.serialize_element(item)?;
+            }
+        }
+        sequence.end()
+    }
+}
+
+#[derive(Serialize)]
+struct Control {
+    #[serde(rename = "type")]
+    kind: &'static str,
 }
 
 #[cfg(test)]

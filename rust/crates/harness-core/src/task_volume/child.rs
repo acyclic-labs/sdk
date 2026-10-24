@@ -72,6 +72,8 @@ pub fn child_scope(
 /// Spawn request read from `agents/<ref>/request.md`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChildRequest {
+    /// Agent role used by model selection; omission uses the configured child role.
+    pub role: Option<String>,
     /// Markdown prompt, excluding the optional frontmatter.
     pub prompt: String,
     /// Model name within the parent's configured provider.
@@ -85,6 +87,7 @@ pub struct ChildRequest {
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RequestMetadata {
+    role: Option<String>,
     model: Option<String>,
     tools: Option<Vec<String>>,
     grants: Option<Vec<String>>,
@@ -124,6 +127,10 @@ impl ChildRequest {
             (RequestMetadata::default(), text)
         };
         if prompt.is_empty()
+            || metadata
+                .role
+                .as_deref()
+                .is_some_and(|role| role.trim().is_empty())
             || metadata.model.as_ref().is_some_and(String::is_empty)
             || metadata
                 .tools
@@ -137,6 +144,7 @@ impl ChildRequest {
             return Err(invalid());
         }
         Ok(Self {
+            role: metadata.role,
             prompt: prompt.into(),
             model: metadata.model,
             tools: metadata.tools,
@@ -148,6 +156,7 @@ impl ChildRequest {
     /// prompt even when that prompt itself begins with a frontmatter delimiter.
     pub fn encode(&self) -> Vec<u8> {
         if self.model.is_some()
+            || self.role.is_some()
             || self.tools.is_some()
             || self.grants.is_some()
             || self.prompt.starts_with("---\n")
@@ -156,7 +165,7 @@ impl ChildRequest {
             format!(
                 "---\n{}\n---\n{}",
                 serde_json::json!({
-                    "model":self.model,"tools":self.tools,"grants":self.grants,
+                    "role":self.role,"model":self.model,"tools":self.tools,"grants":self.grants,
                 }),
                 self.prompt
             )
@@ -355,6 +364,8 @@ mod tests {
             "tools: [[read]]",
             "tools: [read]\ncapabilities: [admin]",
             "model: ''",
+            "role: ' '",
+            "role: worker\nrole: root",
             "tools: ['']",
             "grants: ['']",
             "grants: [[read]]",
@@ -368,6 +379,7 @@ mod tests {
         }
         for prompt in ["---\nliteral prompt", "---\r\nliteral prompt"] {
             let request = ChildRequest {
+                role: None,
                 prompt: prompt.into(),
                 model: None,
                 tools: None,
@@ -443,7 +455,7 @@ mod tests {
             tools in prop::option::of(prop::collection::vec("[a-z]{1,10}", 0..8)),
             grants in prop::option::of(prop::collection::vec("[a-z:]{1,24}", 0..8)),
         ) {
-            let request = ChildRequest { prompt, model, tools, grants };
+            let request = ChildRequest { role: Some("worker".into()), prompt, model, tools, grants };
             let encoded = request.encode();
             prop_assert_eq!(ChildRequest::parse(&encoded, encoded.len() as u64).unwrap(), request);
             prop_assert!(ChildRequest::parse(&encoded, encoded.len() as u64 - 1).is_err());

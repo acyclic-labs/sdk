@@ -30,6 +30,7 @@ pub fn model_content_inventory(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct WasmModelRequestInput {
+    conversation_id: Option<crate::ConversationId>,
     model: crate::model::Model,
     messages: Vec<ModelMessage>,
     tools: Vec<WasmToolDefinitionInput>,
@@ -39,6 +40,7 @@ pub(super) struct WasmModelRequestInput {
 impl From<WasmModelRequestInput> for crate::model::ModelRequest {
     fn from(input: WasmModelRequestInput) -> Self {
         Self {
+            conversation_id: input.conversation_id,
             model: input.model,
             messages: input.messages,
             tools: input.tools.into_iter().map(ToolDefinition::from).collect(),

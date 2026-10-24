@@ -46,6 +46,7 @@ fn snapshot(cursor: Cursor, files: &BTreeMap<FileKey, Vec<u8>>) -> Snapshot {
 }
 fn request(provider: &str, name: &str, revision: &str, text: &str) -> Vec<u8> {
     serde_json::to_vec(&ModelRequest {
+        conversation_id: None,
         model: Model::new(
             provider.into(),
             name.into(),

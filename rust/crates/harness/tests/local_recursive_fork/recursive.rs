@@ -574,6 +574,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
         assert!(
             PreparedModelRequest::inherit(
                 ModelRequest {
+                    conversation_id: None,
                     model: model_request.request().model.clone(),
                     tools: model_request.request().tools.clone(),
                     max_output_tokens: Some(4096),

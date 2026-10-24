@@ -20,6 +20,11 @@ pub enum Authentication {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub struct ProviderSpec {
+    /// Nonsecret account or organization owning the API credential. Unknown
+    /// ownership cannot authorize native reasoning replay. Codex login supplies
+    /// its authenticated account instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
     /// Protocol dialect.
     pub adapter: Adapter,
     /// Credential policy supplied by the catalog, independent of its provider ID.

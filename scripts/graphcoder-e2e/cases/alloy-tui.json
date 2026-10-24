@@ -1,0 +1,134 @@
+{
+  "id": "alloy-tui",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "selection": "mixed",
+  "catalog": {
+    "a": {
+      "adapter": "anthropic",
+      "authentication": "optional",
+      "base_url": "{{url}}",
+      "models": {
+        "tiny": {
+          "capacity": {
+            "context_tokens": 32768,
+            "output_tokens": 1024
+          },
+          "features": {
+            "tools": true,
+            "images": false
+          }
+        }
+      },
+      "token_counter": {
+        "path": "count",
+        "adapter": "anthropic",
+        "response_field": "input_tokens",
+        "framing_tokens": 0
+      },
+      "max_event_bytes": 4096
+    },
+    "b": {
+      "adapter": "responses",
+      "authentication": "optional",
+      "base_url": "{{url}}",
+      "models": {
+        "tiny": {
+          "capacity": {
+            "context_tokens": 65536,
+            "output_tokens": 2048
+          },
+          "features": {
+            "tools": true,
+            "images": false
+          }
+        }
+      },
+      "token_counter": {
+        "path": "count",
+        "adapter": "responses",
+        "response_field": "input_tokens",
+        "framing_tokens": 0
+      },
+      "max_event_bytes": 4096
+    },
+    "alloys": {
+      "mixed": {
+        "models": [
+          "a/tiny",
+          "b/tiny"
+        ],
+        "select": "round_robin"
+      }
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "path": "messages"
+        },
+        "tools": [
+          {
+            "id": "retry_write",
+            "name": "write",
+            "arguments": {
+              "path": "retry.txt",
+              "text": "once",
+              "display_name": "retry.txt",
+              "media_type": "text/plain"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "path": "responses",
+          "tool_result": "file"
+        },
+        "text": [
+          "alloy tui done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "actions": [
+        {
+          "prompt": "Exercise both alloy members",
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          }
+        },
+        {
+          "send": "\u0004",
+          "when": {
+            "contains": [
+              "alloy tui done",
+              "a/tiny",
+              "b/tiny",
+              "○"
+            ]
+          }
+        }
+      ],
+      "mode": "pty"
+    }
+  ],
+  "assert": {
+    "generation_paths": [
+      "messages",
+      "responses"
+    ],
+    "files": {
+      "retry.txt": "once"
+    },
+    "requests": 2
+  }
+}

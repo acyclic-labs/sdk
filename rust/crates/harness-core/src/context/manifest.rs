@@ -14,7 +14,7 @@ mod binding;
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ContextManifest {
-    /// Declarative conventions pinned in this manifest file, before discovered instructions.
+    /// Per-turn conventions pinned in this manifest file, appended after history.
     #[serde(default)]
     pub conventions: Vec<String>,
     /// Environment snapshot gathered from the task binding at admission.
@@ -240,6 +240,7 @@ mod tests;
 struct ManifestStage {
     environment: Option<EnvironmentFacts>,
     context: Context,
+    late: Context,
     sources: Vec<FileRef>,
 }
 
@@ -264,13 +265,50 @@ impl ContextStage for ManifestStage {
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Context>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            selection::place_snapshot(
+            let context = selection::place_snapshot(
                 context,
                 &self.context,
                 ContextPlacement::Prepend,
                 limits,
                 io,
-            )
+            )?;
+            if self.late.messages.is_empty() {
+                Ok(context)
+            } else {
+                // Late facts belong immediately before the active input. Appending
+                // them after it also moves them past tool results on later steps.
+                // Prepend pays for the complete composition and updated input
+                // marker, then rotate the admitted messages without allocating.
+                let index = context
+                    .current_input_index
+                    .map_or(context.messages.len(), |i| i as usize);
+                let count = self.late.messages.len();
+                let mut context = selection::place_snapshot(
+                    context,
+                    &self.late,
+                    ContextPlacement::Prepend,
+                    limits,
+                    io,
+                )?;
+                crate::executor::with_history_io(io, |work| {
+                    let bytes = (index + count) as u64 * std::mem::size_of::<ModelMessage>() as u64;
+                    if let Some(work) = work.as_deref_mut() {
+                        work.admit_copy(bytes)?;
+                    }
+                    context
+                        .messages
+                        .get_mut(..index + count)
+                        .ok_or_else(|| {
+                            Error::Invalid("late context placement exceeds admitted history".into())
+                        })?
+                        .rotate_left(count);
+                    if let Some(work) = work.as_deref_mut() {
+                        work.copy_bytes(bytes)?;
+                    }
+                    Ok::<(), Error>(())
+                })?;
+                Ok(context)
+            }
         })
     }
 
@@ -281,12 +319,13 @@ impl ContextStage for ManifestStage {
     fn project_optional(
         &self,
         context: &Context,
+        prefix_messages: usize,
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<Option<ContextInsertion>> {
-        self.environment
-            .as_ref()
-            .map_or(Ok(None), |facts| facts.project(context, limits, io))
+        self.environment.as_ref().map_or(Ok(None), |facts| {
+            facts.project(context, prefix_messages, limits, io)
+        })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

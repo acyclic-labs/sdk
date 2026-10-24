@@ -12,7 +12,7 @@ proptest! {
         input in ".{1,128}", delta in ".{1,128}", tokens in 1u64..100_000,
         output in 0u64..u64::MAX,
     ) {
-        let mut request = ModelRequest {
+        let mut request = ModelRequest { conversation_id: None,
             model: Model::new("openai".into(), "fixture".into(), "1".into(), json!({})).unwrap(),
             messages: Vec::new(), tools: Vec::new(), max_output_tokens: None,
         };

@@ -8,6 +8,11 @@ pub(crate) struct NativeStockExecutor {
 }
 
 impl NativeStockExecutor {
+    /// Retains the role owned by this command without copying its string.
+    pub(crate) fn with_role(mut self, role: Option<String>) -> Self {
+        self.stock = self.stock.with_role(role);
+        self
+    }
     /// Consumes the command's funded registry; its original PreparationIo retains
     /// that custody until this executor is dropped. Copies the remaining configuration.
     pub(crate) fn new(
@@ -112,6 +117,12 @@ impl NativeStockExecutor {
     /// Refuses fresh effects on the same configuration and retained journal.
     pub(crate) fn into_reconciliation(mut self) -> Self {
         self.stock.reconciliation_only = true;
+        self
+    }
+
+    /// Carries the command's retained conversation on the original ledger.
+    pub(crate) fn with_conversation_id(mut self, conversation: crate::ConversationId) -> Self {
+        self.stock = self.stock.with_conversation_id(conversation);
         self
     }
 

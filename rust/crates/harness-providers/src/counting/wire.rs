@@ -63,6 +63,7 @@ pub(crate) fn endpoint(base: &str, model: &str, spec: &TokenCounterSpec) -> Resu
 /// Both native admission and browser preparation borrow the same projected input.
 #[derive(Serialize)]
 #[serde(untagged)]
+#[cfg(test)]
 pub(crate) enum CountBody<'a, 'b> {
     Direct(CountInput<'a, 'b>),
     Gemini {
@@ -71,12 +72,14 @@ pub(crate) enum CountBody<'a, 'b> {
     },
 }
 
+#[cfg(test)]
 pub(crate) struct CountInput<'a, 'b> {
     generation: &'a crate::projection::wire::Body<'b>,
     model: &'a str,
     adapter: Adapter,
 }
 
+#[cfg(test)]
 pub(crate) fn body<'a, 'b>(
     generation: &'a crate::projection::wire::Body<'b>,
     model: &'a str,
@@ -101,6 +104,7 @@ pub(crate) fn body<'a, 'b>(
     }
 }
 
+#[cfg(test)]
 impl Serialize for CountInput<'_, '_> {
     fn serialize<S: serde::Serializer>(
         &self,
@@ -155,6 +159,55 @@ pub(crate) fn fields(adapter: Adapter) -> &'static [&'static str] {
         ],
         Adapter::Gemini => &[],
     }
+}
+
+/// Reuses the already encoded payloads. Only the count envelope is serialized;
+/// strings, schemas, images and reasoning are copied as exact JSON slices.
+pub(crate) fn encoded_body(generation: &[u8], model: &str, adapter: Adapter) -> Result<Vec<u8>> {
+    struct Input<'a> {
+        fields: std::collections::BTreeMap<&'a str, &'a serde_json::value::RawValue>,
+        model: &'a str,
+        adapter: Adapter,
+    }
+    impl Serialize for Input<'_> {
+        fn serialize<S: serde::Serializer>(
+            &self,
+            serializer: S,
+        ) -> std::result::Result<S::Ok, S::Error> {
+            use serde::ser::SerializeMap as _;
+            let mut map = serializer.serialize_map(None)?;
+            for (name, value) in &self.fields {
+                if self.adapter == Adapter::Gemini {
+                    if *name != "model" {
+                        map.serialize_entry(name, value)?;
+                    }
+                } else if fields(self.adapter).contains(name) {
+                    map.serialize_entry(name, value)?;
+                }
+            }
+            if self.adapter == Adapter::Gemini {
+                map.serialize_entry("model", &format!("models/{}", self.model))?;
+            }
+            map.end()
+        }
+    }
+    #[derive(Serialize)]
+    struct Gemini<'a> {
+        #[serde(rename = "generateContentRequest")]
+        request: Input<'a>,
+    }
+    let input = Input {
+        fields: serde_json::from_slice(generation)
+            .map_err(|_| invalid("invalid encoded generation request"))?,
+        model,
+        adapter,
+    };
+    let result = if adapter == Adapter::Gemini {
+        serde_json::to_vec(&Gemini { request: input })
+    } else {
+        serde_json::to_vec(&input)
+    };
+    result.map_err(|_| invalid("token count envelope encoding failed"))
 }
 
 pub(crate) fn response(bytes: &[u8], spec: &TokenCounterSpec) -> Result<u64> {

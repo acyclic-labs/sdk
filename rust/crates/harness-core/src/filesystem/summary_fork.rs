@@ -142,6 +142,10 @@ fn rewritten_context(
             match part {
                 ModelContentPart::File { file, policy } => replace_file(file, policy)?,
                 ModelContentPart::ToolResult {
+                    content: ToolResultContent::Stored { file, .. },
+                    ..
+                } => replace(file)?,
+                ModelContentPart::ToolResult {
                     content: ToolResultContent::Parts { parts },
                     ..
                 } => {

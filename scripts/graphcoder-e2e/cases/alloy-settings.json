@@ -1,0 +1,97 @@
+{
+  "id": "alloy-settings",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "selection": null,
+  "settings": {
+    ".codex/config.toml": "model = \"mixed\"\n[roles]\nroot = \"planner\"\nchild = \"worker\"\n[alloys.mixed]\nmodels = [\"a/tiny\", \"b/tiny\"]\n[alloys.mixed.select.per_role]\nroles = { planner = 1 }\nfallback = 0\n"
+  },
+  "catalog": {
+    "a": {
+      "adapter": "anthropic",
+      "authentication": "optional",
+      "base_url": "{{url}}",
+      "models": {
+        "tiny": {
+          "capacity": {
+            "context_tokens": 32768,
+            "output_tokens": 1024
+          },
+          "features": {
+            "tools": true,
+            "images": false
+          }
+        }
+      },
+      "token_counter": {
+        "path": "count",
+        "adapter": "anthropic",
+        "response_field": "input_tokens",
+        "framing_tokens": 0
+      },
+      "max_event_bytes": 4096
+    },
+    "b": {
+      "adapter": "responses",
+      "authentication": "optional",
+      "base_url": "{{url}}",
+      "models": {
+        "tiny": {
+          "capacity": {
+            "context_tokens": 65536,
+            "output_tokens": 2048
+          },
+          "features": {
+            "tools": true,
+            "images": false
+          }
+        }
+      },
+      "token_counter": {
+        "path": "count",
+        "adapter": "responses",
+        "response_field": "input_tokens",
+        "framing_tokens": 0
+      },
+      "max_event_bytes": 4096
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "path": "responses"
+        },
+        "text": [
+          "settings alloy done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "Use the configured planner",
+      "answer": "settings alloy done"
+    }
+  ],
+  "assert": {
+    "requests": 1,
+    "generation_paths": [
+      "responses"
+    ],
+    "wire_contains": [
+      "b/tiny"
+    ],
+    "member_usage": {
+      "b/tiny": {
+        "usage": {
+          "output_tokens": 2,
+          "input_tokens": 64
+        }
+      }
+    }
+  }
+}

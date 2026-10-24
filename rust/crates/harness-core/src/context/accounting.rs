@@ -166,7 +166,7 @@ mod tests {
             text in ".{0,256}", actual in 0u64..1_000_000,
             fixed in proptest::num::u32::ANY, message in proptest::num::u32::ANY,
         ) {
-            let request = PreparedModelRequest::prepare(ModelRequest {
+            let request = PreparedModelRequest::prepare(ModelRequest { conversation_id: None,
                 model: Model::new("fixture".into(), "dense".into(), "1".into(), serde_json::json!({})).unwrap(),
                 messages: vec![ModelMessage { role: ModelRole::User, content: ModelContent::Text(text) }],
                 tools: Vec::new(), max_output_tokens: Some(1),
@@ -183,6 +183,7 @@ mod tests {
     #[test]
     fn accounting_binds_content_model_and_message_dimensions() -> Result<()> {
         let request = ModelRequest {
+            conversation_id: None,
             model: Model::new(
                 "provider".into(),
                 "model".into(),

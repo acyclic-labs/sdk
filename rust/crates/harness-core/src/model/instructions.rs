@@ -308,6 +308,7 @@ mod tests {
         let (messages, total) = fixture([6000, 6000], [true, true]);
         assert!(total > 10_000);
         let request = ModelRequest {
+            conversation_id: None,
             model: Model::new(
                 "synthetic".into(),
                 "budget".into(),

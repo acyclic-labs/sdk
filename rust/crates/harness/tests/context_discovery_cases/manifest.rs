@@ -115,10 +115,7 @@ async fn assert_request(
             .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(manifest.conventions, conventions);
     assert!(conventions[1].contains("plans/<id>.md"));
-    for (message, expected) in request.messages.iter().zip(&conventions) {
-        assert_eq!(message.role, ModelRole::System);
-        assert_eq!(message.content, ModelContent::Text(expected.clone()));
-    }
+    assert_conventions_before_input(&request.messages, &conventions);
     let text = serde_json::to_string(request).map_err(|e| Error::Invalid(e.to_string()))?;
     assert!(text.contains("SELECTED BODY"));
     assert!(!text.contains("UNSELECTED BODY"));
@@ -126,7 +123,6 @@ async fn assert_request(
     for ((message, pinned), (path, expected)) in request
         .messages
         .iter()
-        .skip(manifest.conventions.len())
         .zip(&manifest.discovery.instructions)
         .zip(INSTRUCTIONS)
     {
@@ -183,33 +179,7 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
         .put("skills/a/SKILL.md", b"replacement body", "replace-skill")
         .await?;
 
-    let counted = CountingReader {
-        inner: reader.as_ref(),
-        reads: AtomicUsize::new(0),
-    };
-    let (selected, stage) =
-        ContextManifest::bind(reference.clone(), &counted, tools()?, limits).await?;
-    assert_eq!(counted.reads.load(Ordering::Relaxed), 1);
-    assert_eq!(selected.definitions(None)?, manifest.tools);
-    let input = ContextInput {
-        input: ModelContent::Text("inspect".into()),
-        selected_context: None,
-        step: 0,
-        prior_messages: Vec::new(),
-    };
-    let rendered = ContextPipeline::new([stage])
-        .run(&input, limits, None)
-        .await?;
-    assert_eq!(rendered.metadata.get("context.manifest"), Some(&reference));
-    assert_eq!(
-        rendered.current_input_index,
-        Some(u32::try_from(6 + manifest.conventions.len()).expect("bounded message count"))
-    );
-    assert_eq!(
-        rendered.messages.last().map(|message| message.role),
-        Some(ModelRole::User)
-    );
-    assert_eq!(counted.reads.load(Ordering::Relaxed), 1);
+    assert_cached_binding(&reference, &manifest, reader.as_ref(), limits).await?;
 
     let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
         "Done".into(),
@@ -261,6 +231,44 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
     Ok(())
 }
 
+async fn assert_cached_binding(
+    reference: &acyclic_harness::conversation::FileRef,
+    manifest: &ContextManifest,
+    reader: &dyn ContentResidencyVerifier,
+    limits: Limits,
+) -> Result<()> {
+    let counted = CountingReader {
+        inner: reader,
+        reads: AtomicUsize::new(0),
+    };
+    let (selected, stage) =
+        ContextManifest::bind((*reference).clone(), &counted, tools()?, limits).await?;
+    assert_eq!(counted.reads.load(Ordering::Relaxed), 1);
+    assert_eq!(selected.definitions(None)?, manifest.tools);
+    let input = ContextInput {
+        input: ModelContent::Text("inspect".into()),
+        selected_context: None,
+        step: 0,
+        prior_messages: Vec::new(),
+    };
+    let rendered = ContextPipeline::new([stage])
+        .run(&input, limits, None)
+        .await?;
+    assert_eq!(rendered.metadata.get("context.manifest"), Some(reference));
+    let current = assert_conventions_before_input(&rendered.messages, &manifest.conventions);
+    assert_eq!(
+        rendered.current_input_index,
+        Some(u32::try_from(current).unwrap())
+    );
+    assert_eq!(
+        rendered.messages.last().map(|message| message.role),
+        Some(ModelRole::User)
+    );
+    assert_eq!(counted.reads.load(Ordering::Relaxed), 1);
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn skill_order_is_explicit_and_cached_and_empty_tools_allow_sampling() -> Result<()> {
     let fixture = Fixture::new().await?;
@@ -302,8 +310,9 @@ async fn skill_order_is_explicit_and_cached_and_empty_tools_allow_sampling() -> 
                 None,
             )
             .await?;
-        let offset = manifest.conventions.len();
-        for (message, name) in context.messages[5 + offset..7 + offset]
+        let current = assert_conventions_before_input(&context.messages, &manifest.conventions);
+        let skills_end = current - manifest.conventions.len();
+        for (message, name) in context.messages[skills_end - 2..skills_end]
             .iter()
             .zip(["hidden", "inspect"])
         {
@@ -314,7 +323,7 @@ async fn skill_order_is_explicit_and_cached_and_empty_tools_allow_sampling() -> 
         }
         assert_eq!(
             context.current_input_index,
-            Some(u32::try_from(7 + offset).expect("bounded message count"))
+            Some(u32::try_from(current).unwrap())
         );
         assert_eq!(counted.reads.load(Ordering::Relaxed), 2);
     }
@@ -343,6 +352,53 @@ async fn skill_order_is_explicit_and_cached_and_empty_tools_allow_sampling() -> 
         None,
     )?;
     Ok(())
+}
+
+fn assert_conventions_before_input(
+    messages: &[acyclic_harness::model::ModelMessage],
+    conventions: &[String],
+) -> usize {
+    let current = messages
+        .iter()
+        .position(|message| {
+            message.role == ModelRole::User
+                && message.content == ModelContent::Text("inspect".into())
+        })
+        .expect("the admitted input must remain present");
+    assert!(
+        current >= conventions.len(),
+        "conventions must precede the active input"
+    );
+    for (message, expected) in messages[current - conventions.len()..current]
+        .iter()
+        .zip(conventions)
+    {
+        assert_eq!(message.role, ModelRole::User);
+        assert_eq!(
+            message.content,
+            ModelContent::Text(expected.clone()),
+            "conventions must immediately precede the active input"
+        );
+    }
+    current
+}
+
+#[test]
+#[should_panic(expected = "conventions must precede the active input")]
+fn conventions_after_input_negative_control() {
+    use acyclic_harness::model::ModelMessage;
+    let conventions = vec!["recorded convention".into()];
+    let messages = vec![
+        ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Text("inspect".into()),
+        },
+        ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Text("recorded convention".into()),
+        },
+    ];
+    assert_conventions_before_input(&messages, &conventions);
 }
 
 #[tokio::test]

@@ -996,3 +996,60 @@ fn a_lost_delivery_requires_a_rescan_until_one_completes() -> Result<(), Box<dyn
     assert!(watch.confirmable()?);
     Ok(())
 }
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn access_notifications_are_metadata_only_and_do_not_feed_back()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let file = directory.path().join("file");
+    std::fs::write(&file, b"unchanged")?;
+    // Exercise the held, demand-registered capture watcher. The recursive
+    // notify adapter has no bounded fence and deliberately requires a rescan.
+    let mut watch = NativeWatch::open(directory.path(), measured_watch_options())?;
+    watch.begin_rescan()?;
+    watch.finish_rescan()?;
+    std::fs::File::options()
+        .write(true)
+        .open(&file)?
+        .set_times(std::fs::FileTimes::new().set_accessed(std::time::UNIX_EPOCH))?;
+    watch.fence(std::time::Duration::from_secs(1))?;
+    let cancellation = CancellationToken::new();
+    let batch = watch.poll(64, WorkBudget::UNBOUNDED, &cancellation)?.value;
+    let WatchBatch::Changes { changes, .. } = batch else {
+        return Err(
+            format!("access mutation unexpectedly invalidated the watcher: {batch:?}").into(),
+        );
+    };
+    assert!(matches!(
+        changes.as_slice(),
+        [WatchChange::MetadataChanged(_)]
+    ));
+    // Metadata-only capture uses stat, which cannot generate another access
+    // notification. Reading the directory itself must not invalidate its root.
+    let _ = std::fs::metadata(&file)?;
+    let _ = std::fs::read_dir(directory.path())?.collect::<Result<Vec<_>, _>>()?;
+    watch.fence(std::time::Duration::from_secs(1))?;
+    assert!(matches!(
+        watch.poll(64, WorkBudget::UNBOUNDED, &cancellation)?.value,
+        WatchBatch::Changes { changes, .. } if changes.is_empty()
+    ));
+    // A same-length content mutation remains a content hint even when the
+    // caller restores both timestamps. Metadata hints cannot hide this channel.
+    let before = std::fs::metadata(&file)?;
+    std::fs::write(&file, b"different")?;
+    std::fs::File::options()
+        .write(true)
+        .open(&file)?
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(before.modified()?)
+                .set_accessed(before.accessed()?),
+        )?;
+    watch.fence(std::time::Duration::from_secs(1))?;
+    assert!(matches!(
+        watch.poll(64, WorkBudget::UNBOUNDED, &cancellation)?.value,
+        WatchBatch::Changes { changes, .. } if changes.iter().any(|change| matches!(change, WatchChange::Modified(_)))
+    ));
+    Ok(())
+}

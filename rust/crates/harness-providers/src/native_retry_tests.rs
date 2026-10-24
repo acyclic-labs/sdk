@@ -119,7 +119,7 @@ proptest! {
             assert_eq!(transport.native.load(Ordering::SeqCst), if reject_timer { retries.min(1) } else { retries });
             assert_eq!(transport.sent.load(Ordering::SeqCst), if reject_timer && retries > 0 { 1 } else { retries + 1 });
             assert_eq!(result.is_ok(), failures == 0 || (!reject_timer && failures <= usize::from(attempts)));
-            drop(result);
+            drop((result, request, provider));
             assert_eq!(work.live_allocation_bytes(), baseline);
             // Negative control: the former retry path allocates a portable timer with no claim.
             let allocated = acyclic_test_support::measure(|| {

@@ -101,7 +101,8 @@ async fn writerless_summary_negative_control_dispatches_when_resolution_is_defer
     // Recreate the old ordering: enter the internal summary session (whose
     // compaction is Disabled), dispatch, and only then resolve the writer.
     let mut execution = StockExecution::ordinary(&executor);
-    execution.summary = Some((ContextPipeline::default(), Some(64)));
+    let pipeline = ContextPipeline::default();
+    execution.summary = Some((&pipeline, Some(64)));
     let input = TurnInput {
         operation_id: operation,
         input: ModelContent::Text("summarize".into()),

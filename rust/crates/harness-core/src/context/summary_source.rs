@@ -69,6 +69,8 @@ pub struct SummarySelection {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SummaryContinuation {
+    /// Original conversation identity, retained across checkpoint replacement.
+    pub conversation_id: crate::ConversationId,
     /// Completed conversation whose subsequent turns are retained.
     pub parent: TaskId,
     /// Exclusive parent turns cut at admission.
@@ -201,7 +203,7 @@ pub mod checkpoint_fixture {
             cp.boundary.frozen = frozen;
             cp.boundary.model = text.clone();
             let key = FileKey::parse(".tasks/task/context/compaction-test/manifest.json").unwrap();
-            let selected = SummarySelection {continuation:continuation.then(||SummaryContinuation {parent:TaskId::from_bytes([2;16]),through:cursor.clone(),frozen,prompt:text.clone()}),checkpoint:key,selected_at:fence,through:frozen.then_some(cursor)};
+            let selected = SummarySelection {continuation:continuation.then(||SummaryContinuation {conversation_id:crate::ConversationId::from_bytes([1;16]),parent:TaskId::from_bytes([2;16]),through:cursor.clone(),frozen,prompt:text.clone()}),checkpoint:key,selected_at:fence,through:frozen.then_some(cursor)};
             cp.boundary.previous = predecessor.then(||*blake3::hash(&serde_json::to_vec(&selected).unwrap()).as_bytes());
             let mut context = Context::default();
             context.messages.push(crate::model::ModelMessage {role:crate::model::ModelRole::User,

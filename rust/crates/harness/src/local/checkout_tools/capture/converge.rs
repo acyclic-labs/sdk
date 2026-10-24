@@ -149,6 +149,25 @@ pub(super) async fn capture(
             continue;
         }
         if drain(cursor, checkout, physical, configuration, cancellation).await? {
+            // FSEvents ordering cookies fence only events the kernel emits.
+            // An access-only fsetattrlist does not emit one, so inspect recorded
+            // metadata without reading bodies and erasing the access edit.
+            #[cfg(target_os = "macos")]
+            {
+                acyclic_fs::capture_recorded_metadata(
+                    checkout,
+                    configuration.0,
+                    configuration.1,
+                    WorkBudget::UNBOUNDED,
+                    cancellation,
+                )
+                .await
+                .map_err(storage)?;
+                if !drain(cursor, checkout, physical, configuration, cancellation).await? {
+                    baseline = true;
+                    continue;
+                }
+            }
             return Ok(());
         }
         baseline = true;

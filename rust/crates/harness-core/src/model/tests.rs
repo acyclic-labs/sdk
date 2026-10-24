@@ -30,6 +30,7 @@ fn tool_call_constructor_preserves_the_existing_wire_shape_and_defaults_metadata
 
 fn request() -> Result<ModelRequest> {
     Ok(ModelRequest {
+        conversation_id: None,
         model: Model::new("mock".into(), "exact".into(), "pinned".into(), json!({}))?,
         messages: vec![ModelMessage {
             role: ModelRole::User,
@@ -586,4 +587,13 @@ fn pinned_request_fuzz_seed_is_a_valid_exact_exchange() -> Result<()> {
         &request
     );
     Ok(())
+}
+
+#[test]
+fn retained_tool_files_do_not_expand_every_result_slot() {
+    let compact = std::mem::size_of::<ToolResultContent>();
+    let inline = std::mem::size_of::<(crate::conversation::FileRef, String)>();
+    assert!(compact < std::mem::size_of::<crate::conversation::FileRef>());
+    // The former inline representation fails the same slot bound.
+    assert!(inline >= std::mem::size_of::<crate::conversation::FileRef>());
 }

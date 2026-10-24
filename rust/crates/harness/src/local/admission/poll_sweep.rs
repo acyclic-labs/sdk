@@ -231,6 +231,8 @@ impl Fixture {
         tracing::trace!(target: "acyclic_harness::read_profile", phase = "open:runtime");
         let compact = matches!(self.scenario, Scenario::Compaction);
         Ok(LocalHarness {
+            root_role: "root".into(),
+            child_role: "child".into(),
             task_files,
             files: files.clone(),
             runtime,

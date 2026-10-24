@@ -39,9 +39,22 @@ def prune(root,mirror,locks,max_age=43200,max_count=128,active=None,now=None):
     removed=[];held=[]
     with (locks/'prune.lock').open('a') as global_lock:
         fcntl.flock(global_lock,fcntl.LOCK_EX)
+        # Retirement is a namespace, not a decoration on a source identity.
+        # Both live and retired copies keep the original <source>.lock lease;
+        # no filename grows during a failed removal or a later invocation.
+        retirement=root/'.prune'
+        if retirement.is_symlink():raise ValueError('unsafe retirement namespace')
+        retirement.mkdir(exist_ok=True)
         groups={}
-        for p in root.iterdir():
-            if p.is_dir() and not p.is_symlink():groups.setdefault(p.name.removesuffix('.prep'),[]).append(p)
+        for parent in [retirement,root]:
+            for p in parent.iterdir():
+                if p==retirement or not p.is_dir() or p.is_symlink():continue
+                if p.name.startswith('.prune-'):
+                    # Abandoned historical tombs have no reusable source name.
+                    # Retire under their existing short, separate identity.
+                    name=p.name.removeprefix('.prune-')
+                else:name=p.name.removesuffix('.prep')
+                groups.setdefault(name,[]).append(p)
         rows=[]
         for name,paths in groups.items():
             metadata=mirror/'worktrees'/name
@@ -52,7 +65,8 @@ def prune(root,mirror,locks,max_age=43200,max_count=128,active=None,now=None):
             for file in [metadata/'index',metadata/'HEAD']:
                 try:stamps.append(file.stat().st_mtime)
                 except FileNotFoundError:pass
-            rows.append((max(stamps),name,paths))
+            retiring=any(p.parent==retirement or p.name.startswith('.prune-') for p in paths)
+            rows.append((float('-inf') if retiring else max(stamps),name,paths))
         count=len(rows)
         for used,name,paths in sorted(rows):
             if now-used<=max_age and count<=max_count:continue
@@ -62,13 +76,19 @@ def prune(root,mirror,locks,max_age=43200,max_count=128,active=None,now=None):
                 if any(source==str(p) or source.startswith(str(p)+'/') for source in active for p in paths):
                     held.append(name);continue
                 for p in paths:
-                    # Only immediate, resolved children can be renamed/deleted.
-                    if p.parent!=root or p.resolve().parent!=root:raise ValueError('unsafe source path')
-                    tomb=root/('.prune-'+p.name+'-'+str(os.getpid()))
-                    try:p.rename(tomb)
-                    except FileNotFoundError:continue
+                    # Namespace traversal is bounded to these two owned parents.
+                    if p.parent not in [root,retirement] or p.resolve().parent!=p.parent:
+                        raise ValueError('unsafe source path')
+                    tomb=p if p.name.startswith('.prune-') else retirement/p.name
+                    if p!=tomb:
+                        # A failed prior generation is drained under the same
+                        # original lease before another copy can retire here.
+                        if tomb.exists():remove_tree(tomb)
+                        try:p.rename(tomb)
+                        except FileNotFoundError:continue
                     remove_tree(tomb)
                 count-=1;removed.append(name)
+        if not any(retirement.iterdir()):retirement.rmdir()
         return {'removed':removed,'remaining':count,'held':held,'over_cap':count>max_count}
 
 if __name__=='__main__':

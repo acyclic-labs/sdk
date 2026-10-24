@@ -471,10 +471,7 @@ async fn mention_bytes_are_cumulative_and_duplicate_paths_read_once() -> Result<
 
 #[tokio::test]
 async fn resolved_mentions_attach_to_the_stock_model_input_at_the_pinned_revision() -> Result<()> {
-    use acyclic_harness::{
-        filesystem::ModelTaskCommand,
-        model::{FileProjectionPolicy, ModelContent, ModelContentPart},
-    };
+    use acyclic_harness::model::{FileProjectionPolicy, ModelContent, ModelContentPart};
     let fixture = Fixture::new(&[
         (".claude/commands/read.md", "Read $ARGUMENTS"),
         ("a.txt", "before"),
@@ -556,23 +553,7 @@ async fn resolved_mentions_attach_to_the_stock_model_input_at_the_pinned_revisio
         }
         // Submit uses the existing command schema, retaining immutable refs rather
         // than copying file bodies into a second prompt format.
-        let command = ModelTaskCommand {
-            context_manifest: source.read(fixture.reader.as_ref(), 1024).await?.0,
-            summary_source: None,
-            input: content,
-            selected_context: None,
-            max_steps: 1,
-            max_output_tokens: None,
-            mailbox_operation: None,
-            selected_output_volume: None,
-        };
-        let encoded = serde_json::to_vec(&command).unwrap();
-        let submitted: ModelTaskCommand = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(submitted, command);
-        submitted.input.validate_user_input(&mut None)?;
-        submitted
-            .input
-            .validate_limits(Default::default(), &mut None)?;
+        assert_submitted_input(content, source.read(fixture.reader.as_ref(), 1024).await?.0)?;
     }
     for input in ["/diff", "/compact now", "/model provider/model", ""] {
         assert!(
@@ -590,5 +571,34 @@ async fn resolved_mentions_attach_to_the_stock_model_input_at_the_pinned_revisio
             "{input}"
         );
     }
+    Ok(())
+}
+
+fn assert_submitted_input(
+    input: acyclic_harness::model::ModelContent,
+    context_manifest: acyclic_harness::conversation::FileRef,
+) -> Result<()> {
+    use acyclic_harness::filesystem::ModelTaskCommand;
+    let command = ModelTaskCommand {
+        conversation_id: None,
+        role: None,
+        context_manifest,
+        summary_source: None,
+        input,
+        selected_context: None,
+        max_steps: 1,
+        max_output_tokens: None,
+        mailbox_operation: None,
+        selected_output_volume: None,
+    };
+    let encoded = serde_json::to_vec(&command)
+        .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
+    let submitted: ModelTaskCommand = serde_json::from_slice(&encoded)
+        .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
+    assert_eq!(submitted, command);
+    submitted.input.validate_user_input(&mut None)?;
+    submitted
+        .input
+        .validate_limits(Default::default(), &mut None)?;
     Ok(())
 }

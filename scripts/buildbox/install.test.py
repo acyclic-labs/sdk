@@ -14,7 +14,32 @@ spec=importlib.util.spec_from_file_location('installer',HERE/'bb-install.py')
 installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installer)
 
 
+def privileged_python(*arguments,namespace=False):
+    prefix=['sudo','-n']
+    if namespace:prefix+=['unshare','--mount','--propagation','private']
+    # Privileged imports must never leave root-owned bytecode in lane sources.
+    return [*prefix,'python3','-B',*arguments]
+
+
 class InstallTests(unittest.TestCase):
+    def test_privileged_import_cannot_leave_root_owned_source_cache(self):
+        with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+            root=Path(temporary);module=root/'module.py';module.write_text('VALUE=42\n')
+            driver=('import importlib.util,sys;'
+                    's=importlib.util.spec_from_file_location("fixture",sys.argv[1]);'
+                    'm=importlib.util.module_from_spec(s);s.loader.exec_module(m);'
+                    'assert m.VALUE==42')
+            subprocess.run(privileged_python('-c',driver,str(module)),check=True)
+            self.assertFalse((root/'__pycache__').exists())
+            # The same fresh-source import without the shared flag creates a
+            # root-owned directory that the lane cleaner cannot chmod/remove.
+            former=privileged_python('-c',driver,str(module));former.remove('-B')
+            try:
+                subprocess.run(former,check=True)
+                cache=root/'__pycache__';self.assertEqual(cache.stat().st_uid,0)
+                with self.assertRaises(PermissionError):cache.chmod(0o700)
+            finally:
+                subprocess.run(privileged_python('-c','import shutil,sys;shutil.rmtree(sys.argv[1])',str(root/'__pycache__')),check=True)
     def test_fifty_concurrent_exec_jobs_see_complete_generations(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
             tool=Path(temporary)/'tool'
@@ -59,7 +84,7 @@ class InstallTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
             tool=Path(temporary)/'tool'
             script='from pathlib import Path;import sys,os;p=Path(sys.argv[1]);p.write_bytes(b"qualified");os.chown(p,0,0);p.chmod(0o555)'
-            subprocess.run(['sudo','-n','python3','-c',script,str(tool)],check=True)
+            subprocess.run(privileged_python('-c',script,str(tool)),check=True)
             with self.assertRaises(PermissionError):tool.write_bytes(b'partial')
             self.assertEqual(tool.read_bytes(),b'qualified')
             # The former var-owned mode admits exactly the same write.
@@ -83,13 +108,13 @@ subprocess.run(['runuser','-u','var','--','python3','-c',probe,str(alias)],check
 assert (alias/'tool').read_text()=='updated'
 '''
             try:
-                subprocess.run(['sudo','-n','unshare','--mount','--propagation','private','python3','-c',driver,str(HERE/'bb-install.py'),str(alias),str(store)],check=True)
+                subprocess.run(privileged_python('-c',driver,str(HERE/'bb-install.py'),str(alias),str(store),namespace=True),check=True)
                 # The old unmounted root-owned entry is still movable from a
                 # writable parent: ownership of files alone is insufficient.
                 alias.rename(root/'old-replaced');self.assertTrue((root/'old-replaced/tool').exists())
             finally:
-                subprocess.run(['sudo','-n','python3','-c','import shutil,sys;shutil.rmtree(sys.argv[1],ignore_errors=True)',str(store)],check=True)
-                subprocess.run(['sudo','-n','python3','-c','import os,sys;from pathlib import Path;[(os.chown(p,int(sys.argv[2]),int(sys.argv[3]))) for p in Path(sys.argv[1]).iterdir() if p.is_dir()]',str(root),str(os.getuid()),str(os.getgid())],check=True)
+                subprocess.run(privileged_python('-c','import shutil,sys;shutil.rmtree(sys.argv[1],ignore_errors=True)',str(store)),check=True)
+                subprocess.run(privileged_python('-c','import os,sys;from pathlib import Path;[(os.chown(p,int(sys.argv[2]),int(sys.argv[3]))) for p in Path(sys.argv[1]).iterdir() if p.is_dir()]',str(root),str(os.getuid()),str(os.getgid())),check=True)
 
 
 if __name__=='__main__':unittest.main()

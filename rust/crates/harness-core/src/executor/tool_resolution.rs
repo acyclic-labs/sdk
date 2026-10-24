@@ -119,6 +119,7 @@ impl StockExecution<'_> {
         reason: ToolFailureKind,
         cause: ToolFailureCause,
     ) -> Result<crate::model::ToolResultContent> {
+        let _order = self.journal_order.mutex().lock().await;
         let (tail, current) = self
             .tool_records(journal, operation_id, step, call_id)
             .await?;

@@ -1,12 +1,11 @@
 use super::{TestResult, provider_case::ProviderCase, providers, scenario_data};
 use acyclic_harness::model::ModelEvent;
 use proptest::prelude::*;
-use std::path::Path;
 
 proptest! {
     #[test]
     fn recorded_provider_case_codec_and_exact_event_oracle(text in ".{0,48}", position in 0usize..4, protocol in prop::sample::select(vec!["anthropic", "responses", "chat", "gemini"])) {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+        let root = super::scenario_root();
         let mut value = scenario_data::load_value(&root, &root.join(format!("providers/{protocol}/text.json"))).map_err(TestCaseError::fail)?;
         let object = value.as_object_mut().ok_or_else(|| TestCaseError::fail("case"))?;
         object.remove("driver");
@@ -65,7 +64,7 @@ proptest! {
 
 #[test]
 fn provider_case_rejects_ignored_fields_zero_chunks_and_unused_response_shapes() -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let root = super::scenario_root();
     let mut value = scenario_data::load_value(&root, &root.join("providers/chat/text.json"))?;
     value.as_object_mut().ok_or("case")?.remove("driver");
     let case: ProviderCase = serde_json::from_value(value.clone())?;

@@ -444,6 +444,7 @@ async fn put(volume: &TaskVolume<MemoryStream>, path: &str, bytes: &[u8]) {
 fn request(name: &str) -> Vec<u8> {
     use acyclic_harness::model::{Model, ModelContent, ModelMessage, ModelRequest, ModelRole};
     serde_json::to_vec(&ModelRequest {
+        conversation_id: None,
         model: Model::new(
             "scripted".into(),
             name.into(),

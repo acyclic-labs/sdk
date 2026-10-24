@@ -74,6 +74,10 @@ impl ModelContentPart {
 impl ToolResultContent {
     pub(super) fn payload_bytes(&self) -> Result<u64> {
         match self {
+            Self::Stored { file, preview } => add(
+                add(size_of::<FileRef>() as u64, file.logical_owned_bytes()?)?,
+                preview.capacity() as u64,
+            ),
             Self::Json { value } => crate::executor::json::json_value_logical_owned_bytes(value),
             Self::Parts { parts } => parts.iter().try_fold(
                 slots(parts.capacity(), size_of::<ModelDataPart>())?,

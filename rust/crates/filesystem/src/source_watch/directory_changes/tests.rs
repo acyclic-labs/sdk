@@ -261,6 +261,7 @@ mod original {
                     true,
                     &mut observer_work,
                 )?;
+                assert!(child.access.is_none(), "child duplicated the root channel");
                 assert!(
                     child
                         .delivery()
@@ -296,6 +297,47 @@ mod original {
                 child.stop_accepted_cleanup()?;
                 source.stop_accepted_cleanup()?;
             }
+        }
+        Ok(())
+    }
+    #[test]
+    fn capture_channels_keep_distinct_filters_and_retire_from_their_birth_credit() -> TestResult {
+        for access_first in [false, true] {
+            let (_root, held) = held()?;
+            let origin = birth(budget(), &CancellationToken::new());
+            let mut work = crate::NativeMaterializationWork::from_meter(origin.clone());
+            let delivery = Arc::new(Delivery::new(Arc::new(Quiet), &mut work)?);
+            let watch = NativeSourceWatch::open_capture_watch(
+                held.as_handle(),
+                delivery,
+                true,
+                false,
+                &mut work,
+            )?;
+            let access = watch
+                .access
+                .as_ref()
+                .ok_or("capture access channel is missing")?;
+            assert!(!watch.shared.delivery.access_only);
+            assert!(access.shared.delivery.access_only);
+            assert!(access.shared.recursive);
+            assert_ne!(
+                watch.shared.directory.load(Ordering::Acquire),
+                access.shared.directory.load(Ordering::Acquire)
+            );
+            let before = origin.with_original_leaf(|work| work.work);
+            if access_first {
+                access.stop_accepted_cleanup()?;
+                assert!(
+                    !watch.is_stopped(),
+                    "one retired channel cannot retire the pair"
+                );
+            }
+            watch.stop_accepted_cleanup()?;
+            assert!(watch.is_stopped());
+            assert_retired(&watch.shared);
+            assert_retired(&access.shared);
+            no_growth(&origin, before, budget());
         }
         Ok(())
     }

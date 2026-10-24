@@ -3,6 +3,71 @@ use acyclic_stream::{MemoryStream, StreamPath};
 use proptest::prelude::*;
 
 #[tokio::test]
+async fn a_settled_prompt_already_has_its_selected_task() {
+    use futures::StreamExt as _;
+    let volume = Arc::new(
+        files::TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("selection-before-answer").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let session = uuid::Uuid::from_bytes([1; 16]);
+    let task = TaskId::from_bytes([2; 16]);
+    let mut commands = CommandSession::open(volume.clone(), session, 65536, 128)
+        .await
+        .unwrap();
+    let operation = commands
+        .publish_resolution(CommandResolution::Prompt {
+            text: "hello".into(),
+            source: None,
+            mentions: Vec::new(),
+        })
+        .await
+        .unwrap();
+    let request = commands.next_request().await.unwrap();
+    let mut observed = volume
+        .observe(
+            files::Query::CommandSession {
+                session: component(session.to_string()).unwrap(),
+                recent: 32,
+            },
+            None,
+            128,
+        )
+        .await
+        .unwrap();
+    commands
+        .consume(&request, |_, _, _| async {
+            Ok(json!({"text":"done", "task":task, "selected_task":task}))
+        })
+        .await
+        .unwrap();
+    let mut selected = false;
+    while let Some(change) = observed.changes.next().await {
+        let change = change.unwrap();
+        for file in change.file.into_iter().chain(change.files) {
+            match &file.key {
+                files::FileKey::Ui { name, .. } if name.as_str() == "layout.json" => {
+                    let value: Value = serde_json::from_slice(&file.bytes).unwrap();
+                    selected = value["selected_task"] == json!(task);
+                }
+                files::FileKey::Session {
+                    file: files::TaskFile::ExecutionResult(id),
+                    ..
+                } if files::command_query::identity(id).is_some_and(|(_, id)| id == operation) => {
+                    assert!(selected, "settlement must follow durable task selection");
+                    return;
+                }
+                _ => {}
+            }
+        }
+    }
+    panic!("command follow ended before settlement");
+}
+
+#[tokio::test]
 async fn clear_outcome_hides_itself_and_prior_output_after_reopen() {
     clear_boundary::<true>().await;
 }

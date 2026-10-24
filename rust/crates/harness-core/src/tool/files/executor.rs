@@ -255,6 +255,14 @@ impl FileTool {
 }
 
 impl ToolExecutor for FileTool {
+    fn execution_class(&self) -> crate::tool::ToolExecutionClass {
+        if self.is_read() {
+            crate::tool::ToolExecutionClass::Read
+        } else {
+            crate::tool::ToolExecutionClass::Exclusive
+        }
+    }
+
     fn authorize(
         &self,
         scope: Option<&RuntimeScope>,

@@ -50,6 +50,8 @@ mod native_retry_tests;
 pub(crate) mod native_tests;
 #[path = "input/portable_projection_tests.rs"]
 mod portable_projection_tests;
+#[path = "prefix_stability_tests.rs"]
+mod prefix_stability_tests;
 #[path = "tool_name_tests.rs"]
 pub(crate) mod tool_name_tests;
 #[path = "transport_tests.rs"]
@@ -222,7 +224,7 @@ async fn portable_chat_arguments_are_emitted_unchanged() {
     assert_eq!(call.arguments, arguments);
 }
 
-struct Script {
+pub(super) struct Script {
     adapter: Adapter,
     status: u16,
     sent: Mutex<Vec<HttpRequest>>,
@@ -278,7 +280,7 @@ fn fixture_count(request: &HttpRequest) -> Option<HttpResponse> {
     })
 }
 
-fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
+pub(super) fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
     let script = Arc::new(Script {
         adapter,
         status,
@@ -295,6 +297,7 @@ pub(super) fn provider_with(
 ) -> ResolvedModel {
     ResolvedModel {
         files: crate::files::Files::default(),
+        prefix_cache: std::sync::Arc::default(),
         estimator: std::sync::Arc::new(crate::accounting::TokenEstimator::new(adapter)),
         model: Model {
             provider: "fixture".into(),
@@ -303,6 +306,7 @@ pub(super) fn provider_with(
             options: json!({}),
         },
         config: Arc::new(ProviderSpec {
+            account_id: Some("fixture-account".into()),
             adapter,
             authentication: Authentication::ApiKey,
             base_url: base_url.into(),
@@ -334,6 +338,7 @@ pub(super) fn provider_with(
 pub(super) fn request(provider: &ResolvedModel) -> Result<(PreparedModelRequest, ModelDispatch)> {
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
+            conversation_id: None,
             model: provider.model.clone(),
             messages: vec![
                 ModelMessage {
@@ -425,7 +430,7 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
         match adapter {
             Adapter::Anthropic => {
                 assert!(sent[0].url.ends_with("/messages"));
-                assert_eq!(body["system"], "system");
+                assert_eq!(body["system"][0]["text"], "system");
                 assert_eq!(body["max_tokens"], 64);
                 assert_eq!(sent[0].headers["x-api-key"], "scripted-key");
                 assert!(!sent[0].headers.contains_key("authorization"));
@@ -484,6 +489,7 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
     let (_, script) = provider(Adapter::Chat, 200);
     let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), script);
     let mut config = ProviderSpec {
+        account_id: None,
         adapter: Adapter::Chat,
         authentication: Authentication::Optional,
         base_url: "https://example.test/v1".into(),
@@ -561,6 +567,7 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
         };
         let is_error = matches!(content, ToolResultContent::Error { .. });
         let request = ModelRequest {
+            conversation_id: None,
             model: provider.model.clone(),
             max_output_tokens: Some(64),
             tools: vec![tool],
@@ -615,58 +622,7 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
                 * 3
                 >= sent[0].body.len() as u64
         );
-        match adapter {
-            Adapter::Chat => {
-                assert_eq!(body["messages"][1]["tool_calls"][0]["id"], "call");
-                assert_eq!(
-                    body["messages"][1]["tool_calls"][0]["function"]["arguments"],
-                    "{\"value\":1}"
-                );
-                assert_eq!(body["messages"][2]["tool_call_id"], "call");
-                assert_eq!(body["messages"][2]["content"], expected);
-                assert_eq!(body["tools"][0]["function"]["parameters"]["type"], "object");
-            }
-            Adapter::Anthropic => {
-                assert_eq!(body["messages"][1]["content"][0]["id"], "call");
-                assert_eq!(body["messages"][2]["content"][0]["tool_use_id"], "call");
-                assert_eq!(body["messages"][2]["role"], "user");
-                assert_eq!(body["messages"][2]["content"][0]["content"], expected);
-                assert_eq!(
-                    body["messages"][2]["content"][0]["is_error"],
-                    if is_error { json!(true) } else { Value::Null }
-                );
-                assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
-            }
-            Adapter::Responses => {
-                assert_eq!(body["input"][1]["call_id"], "call");
-                assert_eq!(body["input"][2]["type"], "function_call_output");
-                assert_eq!(body["input"][2]["call_id"], "call");
-                assert_eq!(body["input"][2]["output"], expected);
-                assert_eq!(body["tools"][0]["parameters"]["type"], "object");
-            }
-            Adapter::Gemini => {
-                assert_eq!(
-                    body["contents"][1]["parts"][0]["functionCall"]["id"],
-                    "call"
-                );
-                assert_eq!(
-                    body["contents"][2]["parts"][0]["functionResponse"]["id"],
-                    "call"
-                );
-                assert_eq!(
-                    body["contents"][2]["parts"][0]["functionResponse"]["response"],
-                    if is_error {
-                        json!({"error": expected})
-                    } else {
-                        json!({"output": expected})
-                    }
-                );
-                assert_eq!(
-                    body["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"]["type"],
-                    "object"
-                );
-            }
-        }
+        assert_tool_history(adapter, &body, expected, is_error);
     }
     Ok(())
 }
@@ -743,3 +699,58 @@ mod files;
 
 #[path = "catalog_capacity_tests.rs"]
 mod catalog_capacity_tests;
+
+fn assert_tool_history(adapter: Adapter, body: &Value, expected: &str, is_error: bool) {
+    match adapter {
+        Adapter::Chat => {
+            assert_eq!(body["messages"][1]["tool_calls"][0]["id"], "call");
+            assert_eq!(
+                body["messages"][1]["tool_calls"][0]["function"]["arguments"],
+                "{\"value\":1}"
+            );
+            assert_eq!(body["messages"][2]["tool_call_id"], "call");
+            assert_eq!(body["messages"][2]["content"], expected);
+            assert_eq!(body["tools"][0]["function"]["parameters"]["type"], "object");
+        }
+        Adapter::Anthropic => {
+            assert_eq!(body["messages"][1]["content"][0]["id"], "call");
+            assert_eq!(body["messages"][2]["content"][0]["tool_use_id"], "call");
+            assert_eq!(body["messages"][2]["role"], "user");
+            assert_eq!(body["messages"][2]["content"][0]["content"], expected);
+            assert_eq!(
+                body["messages"][2]["content"][0]["is_error"],
+                if is_error { json!(true) } else { Value::Null }
+            );
+            assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
+        }
+        Adapter::Responses => {
+            assert_eq!(body["input"][1]["call_id"], "call");
+            assert_eq!(body["input"][2]["type"], "function_call_output");
+            assert_eq!(body["input"][2]["call_id"], "call");
+            assert_eq!(body["input"][2]["output"], expected);
+            assert_eq!(body["tools"][0]["parameters"]["type"], "object");
+        }
+        Adapter::Gemini => {
+            assert_eq!(
+                body["contents"][1]["parts"][0]["functionCall"]["id"],
+                "call"
+            );
+            assert_eq!(
+                body["contents"][2]["parts"][0]["functionResponse"]["id"],
+                "call"
+            );
+            assert_eq!(
+                body["contents"][2]["parts"][0]["functionResponse"]["response"],
+                if is_error {
+                    json!({"error": expected})
+                } else {
+                    json!({"output": expected})
+                }
+            );
+            assert_eq!(
+                body["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"]["type"],
+                "object"
+            );
+        }
+    }
+}

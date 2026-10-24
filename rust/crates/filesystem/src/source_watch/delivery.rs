@@ -12,6 +12,8 @@ impl Delivery {
         Ok(Self {
             #[cfg(windows)]
             read_authority: None,
+            #[cfg(windows)]
+            access_only: false,
             sink,
             exact: AtomicBool::new(true),
             budget,

@@ -177,6 +177,7 @@ static SPAWN: ToolSpec = ToolSpec {
         Ok(
             json!({"type":"object","required":["task"],"additionalProperties":false,
         "properties":{"task":{"type":"string"},"name":{"type":["string","null"]},
+        "role":{"type":["string","null"]},
         "grants":{"type":["array","null"],"items":{"type":"string"},
         "description":"Capability subset; keep model:generate and mail:read"}}}),
         )

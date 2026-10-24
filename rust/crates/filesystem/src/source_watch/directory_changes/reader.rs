@@ -74,13 +74,17 @@ impl Shared {
                 buffer.as_mut_ptr().cast(),
                 u32::try_from(BUFFER_BYTES).map_err(|_| DemandError::InvalidRequest)?,
                 self.recursive,
-                FILE_NOTIFY_CHANGE_FILE_NAME
-                    | FILE_NOTIFY_CHANGE_DIR_NAME
-                    | FILE_NOTIFY_CHANGE_ATTRIBUTES
-                    | FILE_NOTIFY_CHANGE_SIZE
-                    | FILE_NOTIFY_CHANGE_LAST_WRITE
-                    | FILE_NOTIFY_CHANGE_CREATION
-                    | FILE_NOTIFY_CHANGE_SECURITY,
+                if self.delivery.access_only {
+                    FILE_NOTIFY_CHANGE_LAST_ACCESS
+                } else {
+                    FILE_NOTIFY_CHANGE_FILE_NAME
+                        | FILE_NOTIFY_CHANGE_DIR_NAME
+                        | FILE_NOTIFY_CHANGE_ATTRIBUTES
+                        | FILE_NOTIFY_CHANGE_SIZE
+                        | FILE_NOTIFY_CHANGE_LAST_WRITE
+                        | FILE_NOTIFY_CHANGE_CREATION
+                        | FILE_NOTIFY_CHANGE_SECURITY
+                },
                 None,
                 Some(&raw mut *reads.overlapped),
                 None,
@@ -190,7 +194,14 @@ impl Shared {
                     None
                 };
                 let changes = [
-                    HostChangeWide::Path { action, path },
+                    HostChangeWide::Path {
+                        action: if self.delivery.access_only {
+                            super::super::ACCESS_METADATA_ACTION
+                        } else {
+                            action
+                        },
+                        path,
+                    },
                     HostChangeWide::File(file.unwrap_or(0)),
                 ];
                 let delivered = if file.is_some() {
@@ -201,7 +212,14 @@ impl Shared {
                 if let Some((_, _, to, _)) = paired {
                     work.started_io(ITEM)?;
                     let pair = [
-                        HostChangeWide::Path { action, path },
+                        HostChangeWide::Path {
+                            action: if self.delivery.access_only {
+                                super::super::ACCESS_METADATA_ACTION
+                            } else {
+                                action
+                            },
+                            path,
+                        },
                         HostChangeWide::Path {
                             action: 5,
                             path: to,
@@ -269,6 +287,12 @@ impl NativeSourceWatch {
         if self.shared.stopping.load(Ordering::Acquire) {
             return Err(io::Error::from(io::ErrorKind::BrokenPipe).into());
         }
+        let started = Instant::now();
+        if let Some(access) = &self.access {
+            if !access.fence_with_work(timeout, work)? {
+                return Ok(false);
+            }
+        }
         self.shared.delivery.take_failure(work)?;
         if timeout.is_zero() {
             self.shared
@@ -276,7 +300,6 @@ impl NativeSourceWatch {
                 .deliver_wide(&[HostChangeWide::Everything], work)?;
             return Ok(false);
         }
-        let started = Instant::now();
         let mut reads = self.shared.lock_reads();
         let result = (|| {
             if reads.pending {

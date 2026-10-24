@@ -8,7 +8,7 @@ use std::{
     fs::File,
     io::{Read as _, Write as _},
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{OnceLock, RwLock},
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 #[path = "credential_io.rs"]
@@ -24,8 +24,23 @@ const MAX_AUTH_BYTES: u64 = 1024 * 1024;
 pub struct CodexLogin {
     path: PathBuf,
     account: OnceLock<Option<blake3::Hash>>,
+    bearer: RwLock<BearerCache>,
     refresh: crate::sync::Arc<crate::refresh::Refresh<RefreshFailure>>,
     clock: std::sync::Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
+}
+
+struct CachedBearer {
+    access: String,
+    fingerprint: blake3::Hash,
+    account: Option<String>,
+    refresh_at: i128,
+    _custody: Option<NativeAllocation>,
+}
+
+enum BearerCache {
+    Empty,
+    Valid(CachedBearer),
+    Rejected(blake3::Hash),
 }
 
 #[derive(Clone, Copy)]
@@ -154,6 +169,7 @@ impl CodexLogin {
         Self {
             path,
             account: OnceLock::new(),
+            bearer: RwLock::new(BearerCache::Empty),
             refresh: crate::sync::Arc::new(crate::refresh::Refresh::new()),
             clock: std::sync::Arc::new(OffsetDateTime::now_utc),
         }
@@ -172,6 +188,7 @@ impl CodexLogin {
         Self {
             path: self.path.clone(),
             account: OnceLock::new(),
+            bearer: RwLock::new(BearerCache::Empty),
             refresh: self.refresh.clone(),
             clock: self.clock.clone(),
         }
@@ -201,12 +218,23 @@ impl CodexLogin {
         rejected: Option<&str>,
         custody: Option<&mut NativeAllocation>,
     ) -> Result<(String, Option<String>)> {
-        let mut io = CredentialIo::new(custody)?;
+        let mut io = CredentialIo::for_cache(custody);
+        let cached = self.cached_bearer(rejected, &mut io);
+        if let Some(bearer) = io.checked(cached)? {
+            return Ok(bearer);
+        }
         let result = crate::refresh::serialized(&self.refresh, async {
             let mut failure = None;
-            let result = self
-                .refresh_bearer(transport, rejected, &mut io, &mut failure)
-                .await;
+            let result = async {
+                // A caller ahead of us may have refreshed while we waited.
+                if let Some(bearer) = self.cached_bearer(rejected, &mut io)? {
+                    return Ok(bearer);
+                }
+                io.prepare_refresh()?;
+                self.refresh_bearer(transport, rejected, &mut io, &mut failure)
+                    .await
+            }
+            .await;
             (result, failure)
         })
         .await;
@@ -215,6 +243,106 @@ impl CodexLogin {
             Err(failure) => Err(failure.error(&mut io)?),
         };
         io.checked(result)
+    }
+
+    fn cached_bearer(
+        &self,
+        rejected: Option<&str>,
+        io: &mut CredentialIo<'_>,
+    ) -> Result<Option<(String, Option<String>)>> {
+        let now = (self.clock)().unix_timestamp_nanos();
+        {
+            let cached = self
+                .bearer
+                .read()
+                .map_err(|_| invalid("Codex bearer cache poisoned"))?;
+            if let BearerCache::Valid(cached) = &*cached
+                && cached.refresh_at > now
+                && rejected != Some(cached.access.as_str())
+            {
+                return Ok(Some((
+                    io.string(&cached.access)?,
+                    cached
+                        .account
+                        .as_deref()
+                        .map(|account| io.string(account))
+                        .transpose()?,
+                )));
+            }
+        }
+        // Rejected or expired tokens cannot become a fallback after refresh fails.
+        // Release their original allocation outside the lock.
+        let retired = {
+            let mut cached = self
+                .bearer
+                .write()
+                .map_err(|_| invalid("Codex bearer cache poisoned"))?;
+            let replacement = match &*cached {
+                BearerCache::Valid(cached) if rejected == Some(cached.access.as_str()) => {
+                    Some(BearerCache::Rejected(cached.fingerprint))
+                }
+                BearerCache::Valid(cached) if cached.refresh_at <= now => Some(BearerCache::Empty),
+                BearerCache::Empty if rejected.is_some() => Some(BearerCache::Rejected(
+                    io.fingerprint(rejected.unwrap_or_default())?,
+                )),
+                _ => None,
+            };
+            replacement.map(|replacement| std::mem::replace(&mut *cached, replacement))
+        };
+        drop(retired);
+        Ok(None)
+    }
+
+    fn access_rejected(&self, access: &str, io: &CredentialIo<'_>) -> Result<bool> {
+        let cached = self
+            .bearer
+            .read()
+            .map_err(|_| invalid("Codex bearer cache poisoned"))?;
+        match &*cached {
+            BearerCache::Rejected(hash) => Ok(*hash == io.fingerprint(access)?),
+            _ => Ok(false),
+        }
+    }
+
+    fn cache_bearer(
+        &self,
+        auth: &Value,
+        rejected: Option<&str>,
+        io: &mut CredentialIo<'_>,
+    ) -> Result<(String, Option<String>)> {
+        let access = io.string(token(auth, "access_token")?)?;
+        if rejected == Some(access.as_str()) || self.access_rejected(&access, io)? {
+            return Err(acyclic_harness_core::Error::Unauthorized(
+                "Codex refresh retained a rejected access token; sign in again".into(),
+            ));
+        }
+        let account = auth["tokens"]["account_id"]
+            .as_str()
+            .map(|account| io.string(account))
+            .transpose()?;
+        if let Some(refresh_at) = refresh_at(auth) {
+            let bytes = std::mem::size_of::<CachedBearer>() as u64
+                + access.len() as u64
+                + account.as_ref().map_or(0, |account| account.len() as u64);
+            let fingerprint = io.fingerprint(&access)?;
+            let custody = io.retain_cache(bytes)?;
+            let cached = CachedBearer {
+                access: access.clone(),
+                fingerprint,
+                account: account.clone(),
+                refresh_at,
+                _custody: custody,
+            };
+            let retired = std::mem::replace(
+                &mut *self
+                    .bearer
+                    .write()
+                    .map_err(|_| invalid("Codex bearer cache poisoned"))?,
+                BearerCache::Valid(cached),
+            );
+            drop(retired);
+        }
+        Ok((access, account))
     }
 
     async fn refresh_bearer(
@@ -228,7 +356,8 @@ impl CodexLogin {
         self.check_account(&auth)?;
         for attempt in 0..2 {
             let access = token(&auth, "access_token")?;
-            let force = rejected.is_some_and(|rejected| rejected == access);
+            let force = rejected.is_some_and(|rejected| rejected == access)
+                || self.access_rejected(access, io)?;
             if !force && !needs_refresh(&auth, (self.clock)()) {
                 break;
             }
@@ -293,12 +422,7 @@ impl CodexLogin {
             self.check_account(&auth)?;
             break;
         }
-        let access = io.string(token(&auth, "access_token")?)?;
-        let account = auth["tokens"]["account_id"]
-            .as_str()
-            .map(|account| io.string(account))
-            .transpose()?;
-        Ok((access, account))
+        self.cache_bearer(&auth, rejected, io)
     }
 
     fn check_account(&self, auth: &Value) -> Result<()> {
@@ -371,6 +495,10 @@ fn token<'a>(auth: &'a Value, field: &str) -> Result<&'a str> {
 }
 
 pub(crate) fn needs_refresh(auth: &Value, now: OffsetDateTime) -> bool {
+    refresh_at(auth).is_none_or(|refresh_at| refresh_at <= now.unix_timestamp_nanos())
+}
+
+fn refresh_at(auth: &Value) -> Option<i128> {
     #[derive(serde::Deserialize)]
     struct Claims {
         exp: Option<i64>,
@@ -382,12 +510,12 @@ pub(crate) fn needs_refresh(auth: &Value, now: OffsetDateTime) -> bool {
         .and_then(|payload| serde_json::from_slice::<Claims>(&payload).ok())
         .and_then(|claims| claims.exp);
     if let Some(expiry) = expiry {
-        return expiry <= now.unix_timestamp().saturating_add(300);
+        return Some((i128::from(expiry) - 300) * 1_000_000_000);
     }
     auth["last_refresh"]
         .as_str()
         .and_then(|date| OffsetDateTime::parse(date, &Rfc3339).ok())
-        .is_none_or(|last| now - last >= time::Duration::days(8))
+        .map(|last| last.unix_timestamp_nanos() + time::Duration::days(8).whole_nanoseconds())
 }
 
 fn load(path: &Path, io: &mut CredentialIo<'_>) -> Result<(Vec<u8>, Value)> {

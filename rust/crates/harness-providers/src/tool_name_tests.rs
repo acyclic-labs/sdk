@@ -348,6 +348,7 @@ async fn every_adapter_restores_streamed_builtin_calls_with_native_custody() -> 
         }
         drop(stream);
         assert!(found);
+        drop((prepared, provider));
         assert_eq!(work.live_allocation_bytes(), baseline);
     }
     Ok(())

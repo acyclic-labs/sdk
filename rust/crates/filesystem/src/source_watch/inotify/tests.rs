@@ -1037,6 +1037,26 @@ fn counted(root: &Path) -> Result<(NativeSourceWatch, Arc<Counted>), Box<dyn std
     Ok((watch, counted))
 }
 
+#[test]
+fn demand_reads_do_not_invalidate_their_own_source() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let file = root.path().join("file");
+    std::fs::write(&file, b"unchanged")?;
+    let (watch, changes) = counted(root.path())?;
+    std::fs::File::open(&file)?
+        .set_times(std::fs::FileTimes::new().set_accessed(std::time::UNIX_EPOCH))?;
+    watch.fence()?;
+    assert_eq!(changes.0.load(Ordering::Acquire), 0);
+    assert_eq!(std::fs::read(&file)?, b"unchanged");
+    watch.fence()?;
+    assert_eq!(changes.0.load(Ordering::Acquire), 0);
+    // The same watch must still invalidate authored content changes.
+    std::fs::write(&file, b"changed")?;
+    watch.fence()?;
+    assert!(changes.0.load(Ordering::Acquire) > 0);
+    Ok(())
+}
+
 /// Waits until `done` holds, or fails after a deadline.
 fn eventually(what: &str, done: impl Fn() -> bool) -> Result<(), Box<dyn std::error::Error>> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);

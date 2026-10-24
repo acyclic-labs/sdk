@@ -95,6 +95,7 @@ impl StockExecution<'_> {
             None
         };
         let projection = ResponseProjection {
+            model: crate::model::clone_model(self.model(), self.io)?,
             context: projection,
             canonical,
             checkpoint: None,

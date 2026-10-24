@@ -89,14 +89,15 @@ async function execute(test, gitOrigin) {
     const provider = { adapter: test.adapter ?? "responses", authentication: "optional", base_url: `http://127.0.0.1:${port}/${test.id}/v1`,
       models: { tiny: { capacity: test.capacity ?? { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: true } } }, max_event_bytes: 65536,
       token_counter: { path: "count", adapter: test.adapter ?? "responses", response_field: "input_tokens", framing_tokens: 0 } };
-    await json(fixture.catalog, { e2e: provider });
+    await json(fixture.catalog, expand(test.catalog ?? { e2e: provider }, fixture));
     fixture.env.E2E_MOCK_URL = `http://127.0.0.1:${port}/${test.id}/v1`;
     fixture.env.ACYCLIC_TEST_SOURCE_ROOT = resolve(directory, "../..");
     fixture.requests = events.seen.filter(event => event.case === test.id);
     fixture.onRequest = listener => events.subscribe(event => {
       if (event.case === test.id) { fixture.requests.push(event); listener(event); }
     });
-    fixture.args = ["--workspace", fixture.workspace, "--settings-root", fixture.settings, "--catalog", fixture.catalog, "--model", "e2e/tiny"];
+    fixture.args = ["--workspace", fixture.workspace, "--settings-root", fixture.settings, "--catalog", fixture.catalog,
+      ...(test.selection === null ? [] : ["--model", test.selection ?? "e2e/tiny"])];
     const operation = "00000000-0000-0000-0000-000000000001";
     for (const raw of test.inputs) {
       const input = expand(raw, fixture);
@@ -134,6 +135,7 @@ async function execute(test, gitOrigin) {
         const outcome = outcomes(frames, op).at(-1);
         assert.equal(outcome?.completion, "completed", JSON.stringify(outcome));
         if (input.answer !== undefined) assert.equal(outcome.ok.text, input.answer);
+        if (test.assert.member_usage) assert.ok(subset(outcome.ok.metadata?.members, test.assert.member_usage), `per-member final usage differs: ${JSON.stringify(outcome.ok.metadata)}`);
       }
     }
     // Check while the mock's held response is still open. Killing the mock

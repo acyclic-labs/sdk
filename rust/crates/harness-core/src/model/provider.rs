@@ -52,6 +52,17 @@ pub struct ModelDispatch {
     pub request_digest: [u8; 32],
 }
 
+/// Durable inputs to a deterministic per-step model policy.
+#[derive(Clone, Copy, Debug)]
+pub struct ModelTurn<'a> {
+    /// Identity retained by the execution journal.
+    pub operation_id: OperationId,
+    /// Persisted zero-based model step.
+    pub ordinal: u64,
+    /// Agent role retained in the admitted command.
+    pub role: &'a str,
+}
+
 /// Concrete stream box admitted before invoking its builder.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub struct NativeModelStream<'a> {
@@ -139,6 +150,42 @@ fn unsupported() -> Error {
 
 /// Replaceable streaming model provider.
 pub trait ModelProvider: acyclic_stream::ProviderPlatform {
+    /// Selects a borrowed immutable model before request preparation. A selection
+    /// must depend only on these durable inputs, never on mutable request counts.
+    fn model_for_turn<'a>(
+        &'a self,
+        fallback: &'a Model,
+        _: ModelTurn<'_>,
+        _: crate::NativeWork<'_>,
+    ) -> Result<&'a Model> {
+        Ok(fallback)
+    }
+
+    /// Validates a recorded member without running the selection policy again.
+    fn recorded_model<'a>(
+        &'a self,
+        fallback: &'a Model,
+        recorded: &Model,
+        work: crate::NativeWork<'_>,
+    ) -> Result<&'a Model> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = work {
+            work.remaining()?;
+            if fallback != recorded {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "recorded model differs from the bound selection",
+                });
+            }
+        }
+        let _ = work;
+        if fallback != recorded {
+            return Err(Error::Invalid(
+                "recorded model differs from the bound selection".into(),
+            ));
+        }
+        Ok(fallback)
+    }
     /// Binds the composition's authenticated reader for file-backed model input.
     /// Providers that consume canonical file references directly need no rebinding.
     fn bind_content(
@@ -164,6 +211,15 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
                 "selected model token counting is unavailable".into(),
             ))
         })
+    }
+    /// Counts a policy-bound preflight before a durable turn selects a member.
+    /// Composite providers return an upper bound across their possible members.
+    fn count_policy_tokens<'a>(
+        &'a self,
+        request: &'a PreparedModelRequest,
+        _: Limits,
+    ) -> BoxFuture<'a, Result<crate::context::ModelTokenCount>> {
+        self.count_tokens(request)
     }
     /// Starts one request and emits ordered events.
     fn generate<'a>(

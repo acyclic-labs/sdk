@@ -1365,3 +1365,6 @@ async fn another_write_before_recovery_leaves_the_interrupted_capture_its_own() 
     );
     Ok(())
 }
+
+#[path = "postimage_tests.rs"]
+mod postimages;

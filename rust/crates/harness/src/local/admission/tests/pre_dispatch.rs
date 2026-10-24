@@ -119,6 +119,8 @@ async fn every_pre_dispatch_site_is_a_failed_closable_turn() -> Result<()> {
         )
         .await?;
         let mut command = ModelTaskCommand {
+            conversation_id: None,
+            role: None,
             context_manifest: reference.clone(),
             summary_source: None,
             input: ModelContent::Text(if matches!(case, Case::Projection) {

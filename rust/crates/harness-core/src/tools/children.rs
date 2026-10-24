@@ -25,6 +25,58 @@ pub(crate) fn family(name: &str) -> bool {
 
 pub(super) struct Executor(pub &'static str);
 
+fn prepare_spawn(
+    invocation: ToolInvocation,
+    context: &ToolContext,
+    limits: Limits,
+) -> Result<(Component, Vec<u8>)> {
+    let input: SpawnInput = serde_json::from_value(invocation.arguments).map_err(invalid)?;
+    if input.task.is_empty() {
+        return Err(invalid("child task is empty"));
+    }
+    crate::task_volume::child_scope(context.effective_scope(), None, input.grants.as_deref())?;
+    let reference = component(
+        input
+            .name
+            .unwrap_or_else(|| invocation.operation_id.to_string()),
+    )?;
+    let request = ChildRequest {
+        role: input.role,
+        prompt: input.task,
+        model: None,
+        tools: None,
+        grants: input.grants,
+    };
+    let bytes = request.encode();
+    ChildRequest::parse(&bytes, limits.file_bytes)?;
+    Ok((reference, bytes))
+}
+
+async fn send<P: StreamProvider + ?Sized>(
+    files: &TaskFiles<P>,
+    invocation: ToolInvocation,
+    limits: Limits,
+    owner: Option<&dyn crate::runtime::OwnedTaskMailbox>,
+    reconcile: bool,
+) -> Result<Option<Value>> {
+    let input: SendInput = serde_json::from_value(invocation.arguments).map_err(invalid)?;
+    if input.message.is_empty() {
+        return Err(invalid("child message is empty"));
+    }
+    let reference = component(input.agent)?;
+    let file = FileValue::new(
+        FileKey::Child {
+            reference: reference.clone(),
+            file: ChildFile::Inbox(component(invocation.operation_id.to_string())?),
+        },
+        input.message.into_bytes(),
+    );
+    if !files::write(files, &reference, file, limits, owner, reconcile).await? {
+        return Ok(None);
+    }
+    Ok(Some(json!({"agent":reference,"queued":true})))
+}
+
 impl Executor {
     async fn run(
         &self,
@@ -43,86 +95,22 @@ impl Executor {
         let cancellation = None;
         let files = bound_files(&context).await?;
         let value = match self.0 {
-            "spawn" => {
-                let input: SpawnInput =
-                    serde_json::from_value(invocation.arguments).map_err(invalid)?;
-                if input.task.is_empty() {
-                    return Err(invalid("child task is empty"));
-                }
-                crate::task_volume::child_scope(
-                    context.effective_scope(),
-                    None,
-                    input.grants.as_deref(),
-                )?;
-                let reference = component(
-                    input
-                        .name
-                        .unwrap_or_else(|| invocation.operation_id.to_string()),
-                )?;
-                let request = ChildRequest {
-                    prompt: input.task,
-                    model: None,
-                    tools: None,
-                    grants: input.grants,
-                };
-                let bytes = request.encode();
-                ChildRequest::parse(&bytes, limits.file_bytes)?;
-                if !files::write(
-                    files.as_ref(),
-                    &reference,
-                    FileValue::new(
-                        FileKey::Child {
-                            reference: reference.clone(),
-                            file: ChildFile::Request,
-                        },
-                        bytes,
-                    ),
-                    limits,
-                    owner,
-                    reconcile,
-                )
-                .await?
-                {
-                    return Ok(None);
-                }
-                if cancellable(
-                    files::follow(files.as_ref(), &reference, limits, !reconcile, false),
-                    cancellation,
-                )
-                .await?
-                .is_none()
-                {
-                    return Ok(None);
-                }
-                json!({"agent":reference})
-            }
-            "send" => {
-                let input: SendInput =
-                    serde_json::from_value(invocation.arguments).map_err(invalid)?;
-                if input.message.is_empty() {
-                    return Err(invalid("child message is empty"));
-                }
-                let reference = component(input.agent)?;
-                if !files::write(
-                    files.as_ref(),
-                    &reference,
-                    FileValue::new(
-                        FileKey::Child {
-                            reference: reference.clone(),
-                            file: ChildFile::Inbox(component(invocation.operation_id.to_string())?),
-                        },
-                        input.message.into_bytes(),
-                    ),
-                    limits,
-                    owner,
-                    reconcile,
-                )
-                .await?
-                {
-                    return Ok(None);
-                }
-                json!({"agent":reference,"queued":true})
-            }
+            "spawn" => match spawn(
+                files.as_ref(),
+                invocation,
+                &context,
+                limits,
+                (owner, reconcile, cancellation),
+            )
+            .await?
+            {
+                Some(value) => value,
+                None => return Ok(None),
+            },
+            "send" => match send(files.as_ref(), invocation, limits, owner, reconcile).await? {
+                Some(value) => value,
+                None => return Ok(None),
+            },
             "wait" => {
                 let input: WaitInput =
                     serde_json::from_value(invocation.arguments).map_err(invalid)?;
@@ -349,3 +337,45 @@ fn storage(error: impl std::fmt::Display) -> Error {
 #[cfg(test)]
 #[cfg(not(acyclic_harness_loom))]
 mod tests;
+
+async fn spawn<P: StreamProvider + ?Sized>(
+    files: &TaskFiles<P>,
+    invocation: ToolInvocation,
+    context: &ToolContext,
+    limits: Limits,
+    (owner, reconcile, cancellation): (
+        Option<&dyn crate::runtime::OwnedTaskMailbox>,
+        bool,
+        Option<&acyclic_fs::CancellationToken>,
+    ),
+) -> Result<Option<Value>> {
+    let (reference, bytes) = prepare_spawn(invocation, context, limits)?;
+    if !files::write(
+        files,
+        &reference,
+        FileValue::new(
+            FileKey::Child {
+                reference: reference.clone(),
+                file: ChildFile::Request,
+            },
+            bytes,
+        ),
+        limits,
+        owner,
+        reconcile,
+    )
+    .await?
+    {
+        return Ok(None);
+    }
+    if cancellable(
+        files::follow(files, &reference, limits, !reconcile, false),
+        cancellation,
+    )
+    .await?
+    .is_none()
+    {
+        return Ok(None);
+    }
+    Ok(Some(json!({"agent":reference})))
+}

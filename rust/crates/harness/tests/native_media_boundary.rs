@@ -463,6 +463,10 @@ impl ModelProvider for MockAdapter {
                                         }
                                     }
                                 }
+                                ToolResultContent::Stored { file, preview } => {
+                                    parts.push(CapturedPart::Json(serde_json::to_value(file).map_err(|error| Error::Invalid(error.to_string()))?));
+                                    parts.push(CapturedPart::Text(preview.clone()));
+                                }
                                 ToolResultContent::Error { message, .. } => {
                                     parts.push(CapturedPart::Text(message.clone()));
                                 }

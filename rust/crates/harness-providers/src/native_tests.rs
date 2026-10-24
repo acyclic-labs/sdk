@@ -160,6 +160,12 @@ async fn native_callbacks_stream_tools_usage_and_release_original_custody() -> R
             );
         }
         assert_eq!(fixture.sent.load(Ordering::SeqCst), 1);
+        assert!(
+            work.live_allocation_bytes() > before,
+            "request retains its wire memo"
+        );
+        drop(request);
+        drop(provider);
         assert_eq!(work.live_allocation_bytes(), before, "{adapter:?}");
     }
     Ok(())
@@ -207,6 +213,7 @@ async fn native_cancellation_wakes_pending_headers_and_pending_body() -> Result<
         }
         .await;
         assert!(result.is_err());
+        drop((request, provider));
         assert_eq!(work.live_allocation_bytes(), baseline);
     }
     Ok(())
@@ -238,7 +245,7 @@ async fn native_protocol_errors_keep_diagnostic_custody_and_reject_before_http_w
         );
         drop(error);
     }
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    // The request and provider retain the admitted encoded prefix until retirement.
     let transport = Arc::new(Fixture::new(CHAT));
     provider.transport =
         crate::deadline::Bounded::new(transport.clone(), crate::TimeoutSpec::DEFAULT);
@@ -261,6 +268,8 @@ async fn native_protocol_errors_keep_diagnostic_custody_and_reject_before_http_w
     .await;
     assert!(result.is_err());
     assert_eq!(transport.sent.load(Ordering::SeqCst), 0);
+    drop((request, provider));
+    assert_eq!(work.live_allocation_bytes(), baseline);
     Ok(())
 }
 
@@ -296,7 +305,7 @@ async fn native_counting_cancels_in_flight_http_and_returns_all_custody() -> Res
             ..
         })
     ));
-    drop(result);
+    drop((result, request, provider));
     assert_eq!(work.live_allocation_bytes(), baseline);
     Ok(())
 }
@@ -331,6 +340,7 @@ mod source_accounting {
                 while let Some(event) = stream.next().await { drop(event.unwrap()); }
             });
             prop_assert_eq!(work.receipt().source_bytes_read, expected);
+            drop((request, provider));
             prop_assert_eq!(work.live_allocation_bytes(), baseline);
         }
     }

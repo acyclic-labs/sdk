@@ -28,7 +28,7 @@ schema!(EVENT_PAYLOAD => EventPayload, "kind", ["interaction_resolved" => 1, "fo
 schema!(SNAPSHOT => Snapshot, "", [], ["events" => EVENTS : 0, "projection" => PROJECTION : 0], []);
 schema!(CONTEXT => Context, "", [], ["messages" => MESSAGES : 0], []);
 schema!(SUMMARY_SOURCE => SummarySource, "", [], ["context" => CONTEXT : 0], []);
-schema!(RESPONSE_PROJECTION => ResponseProjection, "", [], ["context" => CONTEXT : 0], []);
+schema!(RESPONSE_PROJECTION => ResponseProjection, "", [], ["context" => CONTEXT : 0, "model" => MODEL : 0], []);
 schema!(MODEL_EVENT => ModelEvent, "kind", ["tool_call" => 1, "completed" => 2], ["arguments" => ROOT : 1, "metadata" => ROOT : 3], []);
 schema!(MODEL_REQUEST => ModelRequest, "", [], ["model" => MODEL : 0, "messages" => MESSAGES : 0, "tools" => TOOLS : 0], []);
 schema!(MODEL_CONTENT_PART => ModelContentPart, "kind", ["tool_call" => 1, "tool_result" => 2], ["arguments" => ROOT : 1, "metadata" => ROOT : 1, "content" => TOOL_RESULT_CONTENT : 2], []);

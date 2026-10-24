@@ -75,6 +75,8 @@ async fn ordinary_and_native_share_one_retry_budget_for_headers_and_preoutput_ss
                         }
                     }
                 }
+                drop(events);
+                drop(request);
             } else {
                 let mut events = provider.generate(request, dispatch);
                 while let Some(event) = events.next().await {
@@ -95,16 +97,14 @@ async fn ordinary_and_native_share_one_retry_budget_for_headers_and_preoutput_ss
                 );
             }
             drop(error);
-            let mut requests = server.requests.lock().unwrap();
-            assert_eq!(requests.len(), expected, "native={native}");
-            if expected == 3 {
-                assert_eq!(requests[0].body, requests[2].body);
-                assert_eq!(
-                    requests[2].headers["authorization"],
-                    "Bearer rotated-access"
-                );
+            {
+                let mut requests = server.requests.lock().unwrap();
+                check_recovery_requests(&requests, expected, native);
+                requests.clear();
             }
-            requests.clear();
+            // Prepared encodings, static prefixes and a valid bearer belong to
+            // their request/provider owners. They remain funded until retirement.
+            drop(provider);
             assert_eq!(work.live_allocation_bytes(), baseline);
         }
     }
@@ -204,7 +204,21 @@ async fn cancellation_during_authentication_recovery_releases_the_guard_and_all_
                 .expect_err("cancelled recovery");
             assert!(error.to_string().contains("cancel"));
         }
+        // Cancellation drains transient work; immutable caches have separate owners.
+        drop(request);
+        drop(provider);
         assert_eq!(work.live_allocation_bytes(), baseline);
     }
     Ok(())
+}
+
+fn check_recovery_requests(requests: &[HttpRequest], expected: usize, native: bool) {
+    assert_eq!(requests.len(), expected, "native={native}");
+    if expected == 3 {
+        assert_eq!(requests[0].body, requests[2].body);
+        assert_eq!(
+            requests[2].headers["authorization"],
+            "Bearer rotated-access"
+        );
+    }
 }

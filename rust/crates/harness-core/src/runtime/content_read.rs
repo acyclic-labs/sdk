@@ -265,6 +265,17 @@ impl TaskContext {
         .await
     }
 
+    /// A reference exposes identity only. Reading its body remains a separate
+    /// authenticated operation, so admission never loads an omitted output.
+    pub(crate) fn authorize_file_reference(
+        &self,
+        file: &FileRef,
+        io: Option<&ContentIo>,
+    ) -> Result<()> {
+        self.authorize_file_read(file, &self.scope, self.scope.grants(), io)?;
+        Ok(())
+    }
+
     pub(super) async fn read_bound_range(
         &self,
         file: &FileRef,

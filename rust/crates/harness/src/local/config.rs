@@ -42,6 +42,8 @@ pub struct LocalHarnessConfig {
     /// Test-owned state root, retained by every store opened in it.
     pub(super) test_state: Option<acyclic_native_runtime::OwnershipAnchor>,
     pub(super) model: (Model, Arc<dyn ModelProvider>),
+    pub(super) root_role: String,
+    pub(super) child_role: String,
     pub(super) context_manifest: Option<crate::conversation::FileRef>,
     pub(super) tools: Vec<Tool>,
     pub(super) default_tools: bool,
@@ -84,6 +86,8 @@ impl LocalHarnessConfig {
             hermetic: false,
             test_state: None,
             model,
+            root_role: "root".into(),
+            child_role: "child".into(),
             context_manifest: None,
             tools: Vec::new(),
             default_tools: true,
@@ -109,6 +113,17 @@ impl LocalHarnessConfig {
             #[cfg(any(test, feature = "native-execution"))]
             environment_platform: crate::native_environment::PlatformPolicy::Native,
         }
+    }
+    /// Sets roles retained in each root or child model command at admission.
+    pub fn agent_roles(mut self, root: String, child: String) -> Result<Self> {
+        if root.trim().is_empty() || child.trim().is_empty() {
+            return Err(Error::Invalid(
+                "agent roles must be nonempty strings".into(),
+            ));
+        }
+        self.root_role = root;
+        self.child_role = child;
+        Ok(self)
     }
     /// Opens an existing volume in the local filesystem directory passed to `new`.
     #[must_use]

@@ -95,7 +95,7 @@ where
             let messages: Vec<_> = output
                 .into_iter()
                 .map(|text| ModelMessage {
-                    role: ModelRole::System,
+                    role: ModelRole::User,
                     content: ModelContent::Text(text),
                 })
                 .collect();
@@ -112,16 +112,16 @@ where
                         messages,
                         ..Default::default()
                     }),
-                    ContextPlacement::Prepend,
+                    ContextPlacement::Append,
                 )));
             }
         }
         if stages.is_empty() {
             return Ok(PromptHooks::Ready(pipeline, Some(bound)));
         }
-        // Prepending stages in reverse retains prompt-event message order.
+        // Append changing context after pinned instructions and history in event order.
         let mut pipeline = pipeline;
-        for stage in stages.into_iter().rev() {
+        for stage in stages {
             pipeline = pipeline.with(stage);
         }
         Ok(PromptHooks::Ready(pipeline, Some(bound)))

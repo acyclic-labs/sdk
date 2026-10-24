@@ -90,106 +90,135 @@ async fn encrypted_reasoning_survives_login_refresh_and_durable_tool_followup() 
                     assert_eq!(count.input_tokens, provider.codex_count.count(&prepared)?);
                     assert!(count.input_tokens >= 8);
                 }
-                let mut events = Vec::new();
-                let mut holds = Vec::new();
-                if native {
-                    let mut stream = provider
-                        .generate_with_native_work(&prepared, dispatch, &work)?
-                        .await?;
-                    while let Some(event) = stream.next().await {
-                        let (event, hold) = event?;
-                        events.push(event);
-                        holds.push(hold);
-                    }
-                } else {
-                    events = provider.generate(prepared, dispatch).try_collect().await?;
-                }
+                let (events, holds) =
+                    reasoning_events(&provider, prepared, dispatch, native, &work).await?;
                 if step == 0 {
-                    let events: Vec<ModelEvent> =
-                        serde_json::from_slice(&serde_json::to_vec(&events).expect("saved events"))
-                            .expect("replayed events");
-                    let parts: Vec<_> = events
-                        .into_iter()
-                        .filter_map(|event| match event {
-                            ModelEvent::ReasoningBlock { block } => {
-                                assert_eq!(block.continuity, continuity.as_bytes());
-                                assert_eq!(block.text.as_deref(), readable);
-                                Some(ModelContentPart::Reasoning { block })
-                            }
-                            ModelEvent::ToolCall(call) => Some(ModelContentPart::ToolCall(call)),
-                            _ => None,
-                        })
-                        .collect();
-                    assert!(matches!(
-                        &parts[..],
-                        [
-                            ModelContentPart::Reasoning { .. },
-                            ModelContentPart::ToolCall(_)
-                        ]
-                    ));
-                    request.messages.push(ModelMessage {
-                        role: ModelRole::Assistant,
-                        content: ModelContent::Parts(parts),
-                    });
-                    request.messages.push(ModelMessage {
-                        role: ModelRole::Tool,
-                        content: ModelContent::Part(ModelContentPart::ToolResult {
-                            call_id: dispatch.tool_call_id(0),
-                            name: "echo".into(),
-                            content: ToolResultContent::Json {
-                                value: json!({"ok":true}),
-                            },
-                        }),
-                    });
+                    retain_reasoning_events(&events, &mut request, dispatch, continuity, readable);
                 } else {
                     assert!(matches!(events.last(), Some(ModelEvent::Completed { .. })));
                 }
                 drop(holds);
             }
             let mut requests = server.requests.lock().expect("recorded requests");
-            assert_eq!(requests.len(), 4);
-            for request in requests
-                .iter()
-                .filter(|request| request.url.ends_with("/responses"))
-            {
-                let body = crate::json(&request.body)?;
-                assert_eq!(body["instructions"], "system");
-                assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
-                assert_eq!(body["store"], false);
-                assert!(
-                    body["input"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .all(|item| item["role"] != "system")
-                );
-            }
-            for index in [1, 3] {
-                assert!(
-                    requests[index]
-                        .url
-                        .starts_with("https://chatgpt.com/backend-api/codex/")
-                );
-                assert!(
-                    requests[index]
-                        .body
-                        .windows(continuity.len())
-                        .any(|bytes| bytes == continuity.as_bytes()),
-                    "native bytes survive the request serializer"
-                );
-                let body = crate::json(&requests[index].body)?;
-                assert_eq!(body["input"][1], crate::json(continuity.as_bytes())?);
-                assert_eq!(body["input"][2]["type"], "function_call");
-                assert_eq!(body["input"][3]["type"], "function_call_output");
-            }
-            assert_eq!(requests[1].body, requests[3].body);
-            assert_eq!(
-                requests[3].headers["authorization"],
-                "Bearer rotated-access"
-            );
+            check_reasoning_requests(&requests, continuity)?;
             requests.clear();
+            drop(requests);
+            drop(provider);
             assert_eq!(work.live_allocation_bytes(), baseline);
         }
     }
+    Ok(())
+}
+
+async fn reasoning_events(
+    provider: &ResolvedModel,
+    prepared: PreparedModelRequest,
+    dispatch: acyclic_harness_core::model::ModelDispatch,
+    native: bool,
+    work: &NativeMaterializationWork,
+) -> Result<(Vec<ModelEvent>, Vec<acyclic_fs::NativeAllocation>)> {
+    let mut events = Vec::new();
+    let mut holds = Vec::new();
+    if native {
+        let mut stream = provider
+            .generate_with_native_work(&prepared, dispatch, work)?
+            .await?;
+        while let Some(event) = stream.next().await {
+            let (event, hold) = event?;
+            events.push(event);
+            holds.push(hold);
+        }
+    } else {
+        events = provider.generate(prepared, dispatch).try_collect().await?;
+    }
+    Ok((events, holds))
+}
+
+fn retain_reasoning_events(
+    events: &[ModelEvent],
+    request: &mut acyclic_harness_core::model::ModelRequest,
+    dispatch: acyclic_harness_core::model::ModelDispatch,
+    continuity: &str,
+    readable: Option<&str>,
+) {
+    let events: Vec<ModelEvent> =
+        serde_json::from_slice(&serde_json::to_vec(events).expect("saved events"))
+            .expect("replayed events");
+    let parts: Vec<_> = events
+        .into_iter()
+        .filter_map(|event| match event {
+            ModelEvent::ReasoningBlock { block } => {
+                assert_eq!(block.continuity, continuity.as_bytes());
+                assert_eq!(block.text.as_deref(), readable);
+                Some(ModelContentPart::Reasoning { block })
+            }
+            ModelEvent::ToolCall(call) => Some(ModelContentPart::ToolCall(call)),
+            _ => None,
+        })
+        .collect();
+    assert!(matches!(
+        &parts[..],
+        [
+            ModelContentPart::Reasoning { .. },
+            ModelContentPart::ToolCall(_)
+        ]
+    ));
+    request.messages.push(ModelMessage {
+        role: ModelRole::Assistant,
+        content: ModelContent::Parts(parts),
+    });
+    request.messages.push(ModelMessage {
+        role: ModelRole::Tool,
+        content: ModelContent::Part(ModelContentPart::ToolResult {
+            call_id: dispatch.tool_call_id(0),
+            name: "echo".into(),
+            content: ToolResultContent::Json {
+                value: json!({"ok":true}),
+            },
+        }),
+    });
+}
+
+fn check_reasoning_requests(requests: &[HttpRequest], continuity: &str) -> Result<()> {
+    assert_eq!(requests.len(), 4);
+    for request in requests
+        .iter()
+        .filter(|request| request.url.ends_with("/responses"))
+    {
+        let body = crate::json(&request.body)?;
+        assert_eq!(body["instructions"], "system");
+        assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+        assert_eq!(body["store"], false);
+        assert!(
+            body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| item["role"] != "system")
+        );
+    }
+    for index in [1, 3] {
+        assert!(
+            requests[index]
+                .url
+                .starts_with("https://chatgpt.com/backend-api/codex/")
+        );
+        assert!(
+            requests[index]
+                .body
+                .windows(continuity.len())
+                .any(|bytes| bytes == continuity.as_bytes()),
+            "native bytes survive the request serializer"
+        );
+        let body = crate::json(&requests[index].body)?;
+        assert_eq!(body["input"][1], crate::json(continuity.as_bytes())?);
+        assert_eq!(body["input"][2]["type"], "function_call");
+        assert_eq!(body["input"][3]["type"], "function_call_output");
+    }
+    assert_eq!(requests[1].body, requests[3].body);
+    assert_eq!(
+        requests[3].headers["authorization"],
+        "Bearer rotated-access"
+    );
     Ok(())
 }

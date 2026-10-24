@@ -140,6 +140,12 @@ pub struct TaskObserveCommand {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelTaskCommand {
+    /// Agent role retained at admission for deterministic member selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// Retained logical conversation, independent of a turn's task or operation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<crate::ConversationId>,
     /// Provider-neutral user input, subject to retained task file grants.
     pub input: ModelContent,
     /// Exact immutable manifest file retained with this admitted command.

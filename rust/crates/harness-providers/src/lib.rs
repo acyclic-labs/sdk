@@ -33,12 +33,16 @@ mod credentials;
 mod deadline;
 mod diagnostic;
 mod dispatch;
+mod encoded;
+mod encoded_prefix;
 mod files;
 #[cfg(test)]
 mod fixtures;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
 pub mod fuzzing;
 mod http;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod identity_tests;
 mod input;
 pub use input::validate_input;
 #[cfg(not(target_arch = "wasm32"))]

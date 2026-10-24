@@ -18,10 +18,11 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Storage::FileSystem::{
     FILE_LIST_DIRECTORY, FILE_NOTIFY_CHANGE_ATTRIBUTES, FILE_NOTIFY_CHANGE_CREATION,
-    FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE,
-    FILE_NOTIFY_CHANGE_SECURITY, FILE_NOTIFY_CHANGE_SIZE, FILE_NOTIFY_EXTENDED_INFORMATION,
-    FILE_NOTIFY_INFORMATION, FILE_SHARE_READ, FILE_SHARE_WRITE, ReadDirectoryChangesExW,
-    ReadDirectoryNotifyExtendedInformation, ReadDirectoryNotifyInformation,
+    FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_ACCESS,
+    FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SECURITY, FILE_NOTIFY_CHANGE_SIZE,
+    FILE_NOTIFY_EXTENDED_INFORMATION, FILE_NOTIFY_INFORMATION, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    ReadDirectoryChangesExW, ReadDirectoryNotifyExtendedInformation,
+    ReadDirectoryNotifyInformation,
 };
 use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Threading::{
@@ -60,6 +61,7 @@ const fn io_work(reads: u64, writes: u64) -> WorkCounters {
 
 pub(crate) struct NativeSourceWatch {
     shared: Arc<Shared>,
+    access: Option<Box<Self>>,
 }
 struct Shared {
     directory: AtomicPtr<std::ffi::c_void>,
@@ -134,11 +136,22 @@ impl NativeSourceWatch {
     pub(crate) fn delivery(&self) -> &Delivery {
         &self.shared.delivery
     }
+    pub(super) fn access_is_exact(&self) -> bool {
+        self.access.as_ref().is_none_or(|access| access.is_exact())
+    }
     pub(crate) fn is_stopped(&self) -> bool {
         self.shared.stop_completed.load(Ordering::Acquire)
+            && self
+                .access
+                .as_ref()
+                .is_none_or(|access| access.is_stopped())
     }
     pub(crate) fn platform_owned_bytes(&self) -> u64 {
-        super::arc_control_bytes::<Shared>()
+        self.access.as_ref().map_or(0, |access| {
+            size_of::<Self>() as u64
+                + access.platform_owned_bytes()
+                + super::arc_control_bytes::<Delivery>()
+        }) + super::arc_control_bytes::<Shared>()
             + size_of::<OVERLAPPED>() as u64
             + if self.shared.buffer_owned.load(Ordering::Acquire) {
                 BUFFER_BYTES

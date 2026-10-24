@@ -12,6 +12,30 @@ pub(super) async fn capture_observed_paths_from_root<
     baseline: Option<&NativeViewBaseline>,
     meter: &NativeMaterializationWork,
 ) -> Result<CaptureReceipt, CaptureError> {
+    capture_observed_metadata_or_content(
+        checkout,
+        observed,
+        batch_size,
+        maximum_extent_spans,
+        source_root,
+        (baseline, CaptureIntent::Complete),
+        meter,
+    )
+    .await
+}
+
+pub(super) async fn capture_observed_metadata_or_content<
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+>(
+    checkout: &mut Checkout<A, O>,
+    observed: (Vec<Option<HostStat>>, Vec<NamespacePath>),
+    batch_size: usize,
+    maximum_extent_spans: u32,
+    source_root: &HostRoot,
+    (baseline, intent): (Option<&NativeViewBaseline>, CaptureIntent),
+    meter: &NativeMaterializationWork,
+) -> Result<CaptureReceipt, CaptureError> {
     let states = lookup_capture_states(checkout, observed, batch_size, meter).await?;
     let bytes = vector_bytes(&states);
     let count = states.len();
@@ -27,11 +51,7 @@ pub(super) async fn capture_observed_paths_from_root<
     };
     for (index, (observation, path, current)) in states.into_iter().enumerate() {
         batch
-            .prepare(
-                checkout,
-                (observation, path, current),
-                CaptureIntent::Complete,
-            )
+            .prepare(checkout, (observation, path, current), intent)
             .await?;
         if (index + 1) % batch_size == 0 && index + 1 < count {
             apply_capture_transaction(checkout, std::mem::take(&mut batch.mutations), meter)
@@ -235,7 +255,8 @@ impl CaptureBatch<'_> {
         metadata: HostStat,
     ) -> Result<(), CaptureError> {
         let host_kind = host_kind(&metadata)?;
-        let linked_regular = host_kind == FileKind::Regular
+        let linked_regular = intent != CaptureIntent::MetadataOnly
+            && host_kind == FileKind::Regular
             && checkout.volume_config().hard_links
             && metadata.nlink() > 1;
         if linked_regular {
@@ -325,6 +346,15 @@ impl CaptureBatch<'_> {
             )?;
             true
         };
+        self.finish_present(changed, linked_path, &metadata)
+    }
+
+    fn finish_present(
+        &mut self,
+        changed: bool,
+        linked_path: Option<NamespacePath>,
+        metadata: &HostStat,
+    ) -> Result<(), CaptureError> {
         if changed {
             self.receipt.changed_paths = checked_increment(self.receipt.changed_paths)?;
         }

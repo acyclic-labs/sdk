@@ -76,6 +76,8 @@ pub struct LocalHarness {
     verifier: AuthorityVerifier,
     signed: Scope,
     model: Model,
+    root_role: String,
+    child_role: String,
     /// Unbound: each model command binds it to its executing task's reader.
     provider: Arc<dyn ModelProvider>,
     context_manifest: Option<crate::conversation::FileRef>,

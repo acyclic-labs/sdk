@@ -62,6 +62,7 @@ async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> TestResult {
     for (step, expected) in case.expect.events.iter().enumerate() {
         let request = PreparedModelRequest::prepare(
             ModelRequest {
+                conversation_id: None,
                 model: provider.model().clone(),
                 messages: vec![ModelMessage {
                     role: ModelRole::User,

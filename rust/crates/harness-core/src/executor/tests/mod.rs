@@ -724,6 +724,8 @@ impl crate::context::ContextStage for OnceStage {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+mod capacity_bound;
 mod compaction;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod compaction_resolution;
@@ -738,9 +740,11 @@ mod recovery;
 mod replay;
 #[cfg(not(target_arch = "wasm32"))]
 mod request_ownership;
+mod stream_tools;
 #[cfg(feature = "filesystem")]
 mod summary_authorization;
 mod summary_file;
+mod summary_role;
 #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
 mod tool_hooks;
 #[cfg(not(target_arch = "wasm32"))]

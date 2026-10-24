@@ -78,6 +78,61 @@ struct CountResponse {
     body: &'static [u8],
     empty_chunks: usize,
 }
+
+struct ConfigurableCounter(std::sync::atomic::AtomicU64);
+
+impl HttpTransport for ConfigurableCounter {
+    fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, ()> {
+        crate::fixtures::delay(wait)
+    }
+    fn now(&self) -> std::time::Duration {
+        crate::fixtures::now()
+    }
+    fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
+        let tokens = self.0.load(std::sync::atomic::Ordering::SeqCst);
+        let body = Bytes::from(
+            json!({"input_tokens":tokens,"totalTokens":tokens,"count":tokens}).to_string(),
+        );
+        Box::pin(async move {
+            Ok(HttpResponse {
+                status: 200,
+                body: Box::pin(futures::stream::iter([Ok(body)])),
+                retry_after: None,
+            })
+        })
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn prior_usage_and_a_small_suffix_cannot_authorize_an_unbounded_counter(
+        prior in 1u64..16, suffix in ".{1,32}", actual in 8_192u64..1_000_000,
+    ) {
+        for (adapter, _) in fixtures() {
+            let (mut provider, _) = provider(adapter, 200);
+            let transport = Arc::new(ConfigurableCounter(std::sync::atomic::AtomicU64::new(prior)));
+            provider.transport = crate::deadline::Bounded::new(transport.clone(), crate::TimeoutSpec::DEFAULT);
+            let (original, _) = request(&provider).unwrap();
+            let before = futures::executor::block_on(provider.count_tokens(&original)).unwrap();
+            prop_assert_eq!(before.input_tokens, prior);
+            provider.estimator.observe(original.bytes().len(),
+                &json!({"usage":{"input_tokens":prior,"prompt_tokens":prior,"promptTokenCount":prior}}));
+            let mut input = original.request().clone();
+            input.messages.push(ModelMessage { role: ModelRole::User, content: ModelContent::Text(suffix.clone()) });
+            let changed = PreparedModelRequest::prepare(input, Limits::default(), None).unwrap();
+            // This endpoint contract permits arbitrary tokenization of the suffix.
+            // Identical old usage cannot constrain the next verified total.
+            transport.0.store(actual, std::sync::atomic::Ordering::SeqCst);
+            let after = futures::executor::block_on(provider.count_tokens(&changed)).unwrap();
+            let estimated = u64::from(after.fixed_tokens) + after.message_tokens.iter().map(|n| u64::from(*n)).sum::<u64>();
+            prop_assert!(estimated < actual, "the last-usage estimate is below the valid endpoint result");
+            prop_assert_eq!(after.input_tokens, actual);
+            prop_assert_eq!(after.request_digest, changed.request_digest());
+            prop_assert_ne!(before.request_digest, after.request_digest);
+        }
+    }
+}
 impl HttpTransport for CountResponse {
     fn delay(&self, wait: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
         crate::fixtures::delay(wait)

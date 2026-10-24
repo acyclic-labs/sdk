@@ -356,6 +356,8 @@ impl Opening {
             verifier,
             signed,
             model: self.config.model.0,
+            root_role: self.config.root_role,
+            child_role: self.config.child_role,
             provider: self.config.model.1,
             context_manifest: self.config.context_manifest,
             skill_cache: context::skills::cache(),

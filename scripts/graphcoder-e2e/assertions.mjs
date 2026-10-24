@@ -40,6 +40,16 @@ export function requests(test, records) {
   const generations = records.filter(record => ["responses", "messages", "chat/completions"].includes(record.path)
     || /^models\/[^/]+:streamGenerateContent(?:\?alt=sse)?$/.test(record.path));
   assert.equal(generations.length, test.assert.requests, "generation count");
+  if (test.assert.generation_paths) assert.deepEqual(generations.map(record => record.path), test.assert.generation_paths, "member serving each generation");
+  if (test.assert.generation_counts) {
+    const counts = Object.create(null);
+    for (const { path } of generations) counts[path] = (counts[path] ?? 0) + 1;
+    assert.deepEqual({ ...counts }, test.assert.generation_counts, "weighted member counts");
+  }
+  if (test.assert.generation_period) {
+    const period = test.assert.generation_period;
+    assert.ok(generations.every((record, index) => record.path === generations[index % period].path), "durable weighted cycle");
+  }
   const expected = test.assert.steps ?? test.model.steps.map((_, index) => index);
   assert.deepEqual(records.filter(record => record.step !== null).map(record => record.step).sort((a,b) => a-b), [...expected].sort((a,b) => a-b), "each expected script step consumed exactly once");
   assert.ok(records.every(record => record.status !== 409), "unmatched model request");

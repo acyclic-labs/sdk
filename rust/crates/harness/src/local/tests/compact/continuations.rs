@@ -55,6 +55,7 @@ fn sequence_case(frozen: bool, bootstrap: &super::super::bootstrap::Bootstrap) -
                     prop_assert_eq!(local.signed.agent(), bootstrap.agent);
                     prop_assert!(provider.request_count() == 0);
                     let mut parent = admitted(local.submit(OperationId::new(), "original").await?);
+                    let conversation_id = crate::ConversationId::from_bytes(parent.into_bytes());
                     if !frozen {
                         local.resume(parent).await?;
                     }
@@ -144,6 +145,12 @@ fn sequence_case(frozen: bool, bootstrap: &super::super::bootstrap::Bootstrap) -
                             .await?;
                         prop_assert_eq!(inherited.files[0].bytes.as_ref(), b"null");
                         parent = task;
+                        prop_assert!(
+                            provider
+                                .requests()
+                                .iter()
+                                .all(|request| request.conversation_id == Some(conversation_id))
+                        );
                         // Discard every in-memory binding between completed prompts.
                         local.close().await?;
                         local = LocalHarness::open(config()?).await?;
@@ -317,7 +324,7 @@ async fn completed_turns_continue_one_conversation_without_compaction() -> Resul
     // under the admission gate, and agree on one admission. Before, both
     // captured outside it at once and could stage different positions.
     let captures = &super::super::super::compact::HISTORY_CAPTURES;
-    captures.with(|captures| captures.set((0, 0)));
+    captures.with(|captures| *captures.lock().unwrap() = (0, 0));
     let (raced, retried) = tokio::join!(
         local.submit_to(second, Some(first), "SECOND_PROMPT"),
         local.submit_to(second, Some(first), "SECOND_PROMPT"),
@@ -325,7 +332,7 @@ async fn completed_turns_continue_one_conversation_without_compaction() -> Resul
     let continued = admitted(raced?);
     assert_eq!(admitted(retried?), continued);
     assert_eq!(
-        captures.with(std::cell::Cell::get),
+        captures.with(|captures| *captures.lock().unwrap()),
         (0, 1),
         "history captures overlapped outside the admission gate"
     );
@@ -360,6 +367,21 @@ async fn completed_turns_continue_one_conversation_without_compaction() -> Resul
     assert_eq!(local.resume(third).await?.text, "THIRD_ANSWER");
     let requests = provider.requests();
     assert_eq!(requests.len(), 3);
+    let identity = crate::ConversationId::from_bytes(first.into_bytes());
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.conversation_id == Some(identity))
+    );
+    // Negative control: deriving the identity from each new task loses the root.
+    assert_ne!(
+        identity,
+        crate::ConversationId::from_bytes(continued.into_bytes())
+    );
+    assert_ne!(
+        identity,
+        crate::ConversationId::from_bytes(third.into_bytes())
+    );
     let history = |index: usize| serde_json::to_string(&requests[index]).unwrap();
     for (index, retained) in [
         &["FIRST_PROMPT", "FIRST_ANSWER", "SECOND_PROMPT"][..],

@@ -48,6 +48,7 @@ pub(super) struct TaskRows {
     state: serde_json::Value,
     completions: Vec<HeadFile>,
     usage: serde_json::Value,
+    members: Vec<Line<'static>>,
     owner: AnswerOwner,
     details: bool,
 }
@@ -91,15 +92,100 @@ impl TaskRows {
         }
     }
     pub(super) fn notices(&self) -> Vec<Line<'static>> {
-        self.state["reason"]
-            .as_str()
-            .map(|text| vec![Line::raw(text.escape_debug().to_string())])
-            .unwrap_or_default()
+        let mut rows = self.members.clone();
+        if let Some(text) = self.state["reason"].as_str() {
+            rows.push(Line::raw(text.escape_debug().to_string()));
+        }
+        rows
     }
     #[cfg(test)]
     pub(super) fn work(&self) -> usize {
         self.stream.work + self.reasoning.work + self.fallback.work()
     }
+    fn update_completions(&mut self, task: &TaskQueryView<'_>) {
+        let completions: Vec<_> = task.completions().map(|(_, file)| file).collect();
+        if !self.completions.iter().eq(completions.iter().copied()) {
+            self.usage = serde_json::Value::Null;
+            self.members.clear();
+            for (step, file) in task.completions() {
+                if let Some(value) = metadata(file)
+                    && let Some(member) = value.get("member").and_then(serde_json::Value::as_str)
+                {
+                    self.members
+                        .push(Line::raw(format!("Turn {step}: {}", member.escape_debug())));
+                }
+            }
+            for value in completions.iter().filter_map(|file| metadata(file)) {
+                if let Err(error) = crate::model::accumulate_usage(&mut self.usage, value) {
+                    self.usage = serde_json::json!({"error":error.to_string()});
+                    break;
+                }
+            }
+            self.completions = completions.into_iter().cloned().collect();
+        }
+    }
+
+    fn update_tools(
+        &mut self,
+        task: &TaskQueryView<'_>,
+        details: bool,
+        details_changed: bool,
+    ) -> bool {
+        let mut retained = std::collections::BTreeSet::new();
+        let mut tool_changed = false;
+        for tool in task.tools() {
+            let key = (tool.turn, tool.call.clone());
+            retained.insert(key.clone());
+            let cached = self.tools.entry(key).or_default();
+            let stdout = cached.stdout.update_tool(&tool, false, 20);
+            let stderr = cached
+                .stderr
+                .update_tool(&tool, true, 20 - cached.stdout.tool_lines());
+            let request = tool.request();
+            let result = tool.result();
+            let streamed = tool.stdout().next().is_some() || tool.stderr().next().is_some();
+            let metadata_changed =
+                cached.request.as_ref() != request || cached.result.as_ref() != result;
+            if metadata_changed
+                || details_changed
+                || cached.streamed != streamed
+                || stdout < cached.out.len()
+                || cached.stdout.len() != cached.out.len()
+                || stderr < cached.err.len()
+                || cached.stderr.len() != cached.err.len()
+                || cached.rows.is_empty()
+            {
+                cached.out.truncate(stdout);
+                cached.out.extend(cached.stdout.rows(stdout));
+                cached.err.truncate(stderr);
+                cached.err.extend(cached.stderr.rows(stderr));
+                if metadata_changed || cached.rows.is_empty() {
+                    cached.rows.clear();
+                    cached.rows.push(tool::heading(request, result, tool.call));
+                } else {
+                    cached.rows.truncate(1);
+                }
+                if details {
+                    if streamed {
+                        cached
+                            .rows
+                            .extend(cached.out.iter().chain(&cached.err).take(20).cloned());
+                    } else {
+                        cached.rows.extend(tool::result_rows(result));
+                    }
+                }
+                cached.request = request.cloned();
+                cached.result = result.cloned();
+                cached.streamed = streamed;
+                tool_changed = true;
+            }
+        }
+        let previous = self.tools.len();
+        self.tools.retain(|key, _| retained.contains(key));
+        tool_changed |= previous != self.tools.len();
+        tool_changed
+    }
+
     pub(super) fn update(
         &mut self,
         task: Option<TaskQueryView<'_>>,
@@ -155,69 +241,8 @@ impl TaskRows {
             self.state = status.and_then(metadata).unwrap_or_default();
             self.status = status.cloned();
         }
-        let completions: Vec<_> = task.completions().map(|(_, file)| file).collect();
-        if !self.completions.iter().eq(completions.iter().copied()) {
-            self.usage = serde_json::Value::Null;
-            for value in completions.iter().filter_map(|file| metadata(file)) {
-                if let Err(error) = crate::model::accumulate_usage(&mut self.usage, value) {
-                    self.usage = serde_json::json!({"error":error.to_string()});
-                    break;
-                }
-            }
-            self.completions = completions.into_iter().cloned().collect();
-        }
-        let mut retained = std::collections::BTreeSet::new();
-        let mut tool_changed = false;
-        for tool in task.tools() {
-            let key = (tool.turn, tool.call.clone());
-            retained.insert(key.clone());
-            let cached = self.tools.entry(key).or_default();
-            let stdout = cached.stdout.update_tool(&tool, false, 20);
-            let stderr = cached
-                .stderr
-                .update_tool(&tool, true, 20 - cached.stdout.tool_lines());
-            let request = tool.request();
-            let result = tool.result();
-            let streamed = tool.stdout().next().is_some() || tool.stderr().next().is_some();
-            let metadata_changed =
-                cached.request.as_ref() != request || cached.result.as_ref() != result;
-            if metadata_changed
-                || details_changed
-                || cached.streamed != streamed
-                || stdout < cached.out.len()
-                || cached.stdout.len() != cached.out.len()
-                || stderr < cached.err.len()
-                || cached.stderr.len() != cached.err.len()
-                || cached.rows.is_empty()
-            {
-                cached.out.truncate(stdout);
-                cached.out.extend(cached.stdout.rows(stdout));
-                cached.err.truncate(stderr);
-                cached.err.extend(cached.stderr.rows(stderr));
-                if metadata_changed || cached.rows.is_empty() {
-                    cached.rows.clear();
-                    cached.rows.push(tool::heading(request, result, tool.call));
-                } else {
-                    cached.rows.truncate(1);
-                }
-                if details {
-                    if streamed {
-                        cached
-                            .rows
-                            .extend(cached.out.iter().chain(&cached.err).take(20).cloned());
-                    } else {
-                        cached.rows.extend(tool::result_rows(result));
-                    }
-                }
-                cached.request = request.cloned();
-                cached.result = result.cloned();
-                cached.streamed = streamed;
-                tool_changed = true;
-            }
-        }
-        let previous = self.tools.len();
-        self.tools.retain(|key, _| retained.contains(key));
-        tool_changed |= previous != self.tools.len();
+        self.update_completions(&task);
+        let tool_changed = self.update_tools(&task, details, details_changed);
         let streamed = task.text().any(|text| text.channel == Channel::Text);
         // Command text is a fallback only when the canonical task has no chunks
         // and no followed session transcript already projects those outputs.
@@ -260,3 +285,6 @@ impl TaskRows {
         changed
     }
 }
+
+#[cfg(test)]
+mod alloy_tests;

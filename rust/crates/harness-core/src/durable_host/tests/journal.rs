@@ -376,6 +376,7 @@ async fn b17_seventy_event_replay_and_completion() -> Result<()> {
     let attempt = OperationId::from_bytes([2; 16]);
     let request = crate::model::PreparedModelRequest::prepare(
         crate::model::ModelRequest {
+            conversation_id: None,
             model: crate::model::Model::new(
                 "synthetic".into(),
                 "journal".into(),

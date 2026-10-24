@@ -286,6 +286,7 @@ async fn headless(base_url: String, silence: Silence) -> Result<Run> {
     registry.register(
         "loopback".into(),
         ProviderSpec {
+            account_id: None,
             adapter: Adapter::Responses,
             authentication: Authentication::Optional,
             base_url,

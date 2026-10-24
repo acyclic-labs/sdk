@@ -29,12 +29,17 @@ impl HttpTransport for Routing {
                 .split('/')
                 .nth(3)
                 .ok_or_else(|| invalid("fixture route"))?;
-            let fixtures: serde_json::Value =
-                serde_json::from_str(include_str!("fixtures/alloy-turns.json")).unwrap();
-            let body = fixtures[name]
-                .as_str()
-                .ok_or_else(|| invalid("fixture route"))?
-                .to_owned();
+            let body = if request.url.ends_with("/count") {
+                let tokens = if name == "responses" { 512 } else { 128 };
+                json!({"input_tokens":tokens}).to_string()
+            } else {
+                let fixtures: serde_json::Value =
+                    serde_json::from_str(include_str!("fixtures/alloy-turns.json")).unwrap();
+                fixtures[name]
+                    .as_str()
+                    .ok_or_else(|| invalid("fixture route"))?
+                    .to_owned()
+            };
             self.sent.lock().unwrap().push(request);
             Ok(HttpResponse {
                 retry_after: None,
@@ -55,6 +60,7 @@ fn registry(capacities: &[u32]) -> (Registry, Arc<Routing>) {
             .register(
                 (*name).into(),
                 ProviderSpec {
+                    account_id: Some("fixture-alloy-account".into()),
                     adapter: *adapter,
                     authentication: Authentication::Optional,
                     base_url: format!("http://localhost/{name}"),
@@ -109,6 +115,108 @@ fn required() -> ModelFeatures {
         tools: true,
         images: true,
     }
+}
+
+#[tokio::test]
+async fn alloy_preflight_counts_every_member_and_binds_the_maximum_to_the_policy() -> Result<()> {
+    let (registry, transport) = registry(&[8192, 4096, 16384, 32768]);
+    let alloy = registry.resolve_alloy(spec(AlloySelection::First), required())?;
+    let limits = Limits::default();
+    let request = PreparedModelRequest::prepare(
+        ModelRequest {
+            conversation_id: None,
+            model: alloy.model().clone(),
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("preflight".into()),
+            }],
+            tools: Vec::new(),
+            max_output_tokens: Some(64),
+        },
+        limits,
+        None,
+    )?;
+    let count = alloy.count_policy_tokens(&request, limits).await?;
+    assert_eq!(count.validate(&request, &mut None)?, 512);
+    let requests = transport.sent.lock().unwrap();
+    assert_eq!(requests.len(), MEMBERS.len());
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.url.ends_with("/count"))
+    );
+    Ok(())
+}
+
+#[test]
+fn named_alloy_catalog_is_admitted_atomically_with_its_default() -> Result<()> {
+    let (mut registry, _) = registry(&[8192, 4096, 16384, 32768]);
+    let fixture = tempfile::tempdir().map_err(|error| invalid(error.to_string()))?;
+    let path = fixture.path().join("catalog.json");
+    let write = |document: serde_json::Value| -> Result<()> {
+        let bytes = serde_json::to_vec(&document).map_err(|error| invalid(error.to_string()))?;
+        std::fs::write(&path, bytes).map_err(|error| invalid(error.to_string()))
+    };
+    write(serde_json::json!({
+        "alloys": {"mixed": spec(AlloySelection::RoundRobin)},
+        "default_model": "mixed"
+    }))?;
+    registry.load_catalog(&path)?;
+    assert_eq!(registry.default_model(), "mixed");
+    write(serde_json::json!({
+        "alloys": {"mixed": {"models": ["absent/model"], "select": "first"}},
+        "default_model": "mixed"
+    }))?;
+    assert!(registry.load_catalog(&path).is_err());
+    assert_eq!(registry.default_model(), "mixed");
+    assert_eq!(
+        registry.alloys().get("mixed"),
+        Some(&spec(AlloySelection::RoundRobin))
+    );
+    let mut provider = registry
+        .catalog()
+        .get("anthropic")
+        .ok_or_else(|| invalid("fixture provider absent"))?
+        .as_ref()
+        .clone();
+    provider.models.clear();
+    assert!(registry.register("anthropic".into(), provider).is_err());
+    assert!(
+        registry
+            .catalog()
+            .get("anthropic")
+            .is_some_and(|provider| provider.models.contains_key("fixture"))
+    );
+    std::fs::write(&path, br#"{"alloys":{"mixed":{"models":["anthropic/fixture"],"select":"first"},"mixed":{"models":["responses/fixture"],"select":"first"}}}"#).map_err(|error| invalid(error.to_string()))?;
+    assert!(
+        registry
+            .load_catalog(&path)
+            .is_err_and(|error| error.to_string().contains("duplicate alloy name"))
+    );
+    assert_eq!(
+        registry.alloys().get("mixed"),
+        Some(&spec(AlloySelection::RoundRobin))
+    );
+    Ok(())
+}
+
+#[test]
+fn alloy_catalog_keywords_cannot_be_registered_as_providers() -> Result<()> {
+    let (mut registry, _) = registry(&[8192, 4096, 16384, 32768]);
+    let provider = registry
+        .catalog()
+        .get("anthropic")
+        .ok_or_else(|| invalid("fixture provider absent"))?
+        .as_ref()
+        .clone();
+    for name in ["alloys", "default_model"] {
+        assert!(
+            registry.register(name.into(), provider.clone()).is_err(),
+            "catalog keyword admitted as provider: {name}"
+        );
+        assert!(!registry.catalog().contains_key(name));
+    }
+    Ok(())
 }
 
 #[test]
@@ -299,10 +407,29 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
         content: ModelContent::Text("work".into()),
     }];
     let mut ids = std::collections::BTreeSet::new();
+    let mut usage = serde_json::Value::Null;
     for ordinal in 0..5 {
-        let provider = alloy.select(turn(ordinal));
-        assert_eq!(provider.model().provider, MEMBERS[(ordinal % 4) as usize].0);
+        let key = turn(ordinal);
+        let selected = alloy.model_for_turn(
+            alloy.model(),
+            acyclic_harness_core::model::ModelTurn {
+                operation_id: key.operation_id,
+                ordinal,
+                role: key.role,
+            },
+            None,
+        )?;
+        assert_eq!(
+            alloy.recorded_model(alloy.model(), selected, None)?,
+            selected
+        );
+        let provider = alloy.select(key);
+        assert_eq!(
+            Some(provider.model().provider.as_str()),
+            MEMBERS.get((ordinal % 4) as usize).map(|member| member.0)
+        );
         let request = ModelRequest {
+            conversation_id: None,
             model: provider.model().clone(),
             messages: history.clone(),
             tools: vec![acyclic_harness_core::tool::ToolDefinition {
@@ -349,7 +476,7 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
             step: ordinal as u32,
             request_digest: prepared.request_digest(),
         };
-        let events = provider
+        let events = alloy
             .generate(prepared, dispatch)
             .try_collect::<Vec<_>>()
             .await?;
@@ -359,52 +486,16 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
             assert_eq!(captured.body.as_ref(), body.as_slice());
             assert_foreign_wire(&captured.body, provider.config.adapter, ordinal);
         }
-        let replay: Vec<ModelEvent> =
-            serde_json::from_slice(&serde_json::to_vec(&events).unwrap()).unwrap();
-        assert_eq!(events, replay);
-        let mut results = Vec::new();
-        let mut calls = 0;
-        let mut reasoning = 0;
-        for event in replay {
-            let part = match event {
-                ModelEvent::ReasoningBlock { block } => {
-                    reasoning += 1;
-                    ModelContentPart::Reasoning { block }
-                }
-                ModelEvent::ToolCall(call) => {
-                    calls += 1;
-                    assert!(
-                        ids.insert(call.call_id.clone()),
-                        "provider ID reused across alloy turns"
-                    );
-                    results.push(ModelMessage {
-                        role: ModelRole::Tool,
-                        content: ModelContent::Part(ModelContentPart::ToolResult {
-                            call_id: call.call_id.clone(),
-                            name: call.name.clone(),
-                            content: ToolResultContent::Json {
-                                value: json!({"ok":true}),
-                            },
-                        }),
-                    });
-                    ModelContentPart::ToolCall(call)
-                }
-                _ => continue,
-            };
-            history.push(ModelMessage {
-                role: ModelRole::Assistant,
-                content: ModelContent::Part(part),
-            });
-        }
-        assert_eq!(calls, 1);
-        assert!(reasoning > 0);
-        history.extend(results);
-        history.push(ModelMessage {
-            role: ModelRole::User,
-            content: ModelContent::Text("continue".into()),
-        });
+        retain_alloy_events(&events, selected, &mut history, &mut ids, &mut usage)?;
     }
     assert_eq!(transport.sent.lock().unwrap().len(), 5);
+    assert_eq!(
+        usage
+            .get("members")
+            .and_then(Value::as_object)
+            .map(serde_json::Map::len),
+        Some(4)
+    );
     Ok(())
 }
 
@@ -496,4 +587,72 @@ fn negative_control_dropped_foreign_readable_reasoning_is_detected_on_the_wire()
 fn negative_control_forwarded_foreign_opaque_reasoning_is_detected_on_the_wire() {
     let body = serde_json::to_vec(&json!({"input":[{"role":"assistant","content":"<prior-reasoning provider=\"anthropic\">\nreadable-anthropic-marker\n</prior-reasoning>"}], "forged_native":{"signature":"opaque-anthropic-signature"}})).unwrap();
     assert_foreign_wire(&body, Adapter::Responses, 1);
+}
+
+fn retain_alloy_events(
+    events: &[ModelEvent],
+    selected: &Model,
+    history: &mut Vec<ModelMessage>,
+    ids: &mut std::collections::BTreeSet<String>,
+    usage: &mut Value,
+) -> Result<()> {
+    let replay: Vec<ModelEvent> = serde_json::from_slice(
+        &serde_json::to_vec(events).map_err(|_| invalid("saved alloy events"))?,
+    )
+    .map_err(|_| invalid("replayed alloy events"))?;
+    assert_eq!(events, replay);
+    let mut results = Vec::new();
+    let mut calls = 0;
+    let mut reasoning = 0;
+    for event in replay {
+        let part = match event {
+            ModelEvent::ReasoningBlock { block } => {
+                reasoning += 1;
+                ModelContentPart::Reasoning { block }
+            }
+            ModelEvent::ToolCall(call) => {
+                calls += 1;
+                assert!(
+                    ids.insert(call.call_id.clone()),
+                    "provider ID reused across alloy turns"
+                );
+                results.push(ModelMessage {
+                    role: ModelRole::Tool,
+                    content: ModelContent::Part(ModelContentPart::ToolResult {
+                        call_id: call.call_id.clone(),
+                        name: call.name.clone(),
+                        content: ToolResultContent::Json {
+                            value: json!({"ok":true}),
+                        },
+                    }),
+                });
+                ModelContentPart::ToolCall(call)
+            }
+            ModelEvent::Completed { metadata } => {
+                let member = format!("{}/{}", selected.provider, selected.name);
+                assert_eq!(metadata.get("member"), Some(&json!(member)));
+                assert!(
+                    metadata
+                        .get("members")
+                        .and_then(|members| members.get(&member))
+                        .is_some()
+                );
+                acyclic_harness_core::model::accumulate_usage(usage, metadata)?;
+                continue;
+            }
+            _ => continue,
+        };
+        history.push(ModelMessage {
+            role: ModelRole::Assistant,
+            content: ModelContent::Part(part),
+        });
+    }
+    assert_eq!(calls, 1);
+    assert!(reasoning > 0);
+    history.extend(results);
+    history.push(ModelMessage {
+        role: ModelRole::User,
+        content: ModelContent::Text("continue".into()),
+    });
+    Ok(())
 }

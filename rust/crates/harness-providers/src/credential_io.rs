@@ -9,9 +9,33 @@ pub(super) struct CredentialIo<'a> {
 }
 
 impl<'a> CredentialIo<'a> {
+    pub fn for_cache(custody: Option<&'a mut NativeAllocation>) -> Self {
+        Self { custody }
+    }
+
+    pub fn prepare_refresh(&mut self) -> Result<()> {
+        self.claim(8192, 16, WorkCounters::UNCHARGED)
+    }
+
+    pub fn retain_cache(&self, bytes: u64) -> Result<Option<NativeAllocation>> {
+        Ok(self
+            .work()
+            .map(|work| {
+                work.claim(
+                    bytes,
+                    3,
+                    WorkCounters {
+                        bytes_copied: bytes,
+                        ..WorkCounters::UNCHARGED
+                    },
+                )
+            })
+            .transpose()?)
+    }
+
     pub fn new(custody: Option<&'a mut NativeAllocation>) -> Result<Self> {
         let mut io = Self { custody };
-        io.claim(8192, 16, WorkCounters::UNCHARGED)?;
+        io.prepare_refresh()?;
         Ok(io)
     }
 
@@ -24,6 +48,14 @@ impl<'a> CredentialIo<'a> {
             work.charge(counters)?;
         }
         Ok(())
+    }
+
+    pub fn fingerprint(&self, text: &str) -> Result<blake3::Hash> {
+        self.charge(WorkCounters {
+            bytes_hashed: text.len() as u64,
+            ..WorkCounters::UNCHARGED
+        })?;
+        Ok(blake3::hash(text.as_bytes()))
     }
 
     pub fn claim(&mut self, bytes: u64, operations: u64, counters: WorkCounters) -> Result<()> {

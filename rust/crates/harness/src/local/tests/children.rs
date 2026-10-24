@@ -682,6 +682,7 @@ async fn child_file_admission_replays_under_the_parent_lease_and_shared_depth_li
         .task_context(parent, LeaseFence::from(&lease.reservation))
         .await?;
     let request = ChildRequest {
+        role: None,
         prompt: "reader".into(),
         model: None,
         tools: Some(vec!["read".into(), "spawn".into()]),

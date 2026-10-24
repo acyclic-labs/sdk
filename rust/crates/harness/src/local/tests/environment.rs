@@ -31,12 +31,16 @@ fn git(root: &Path, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-fn system_text(request: &crate::model::ModelRequest) -> String {
+fn environment_text(request: &crate::model::ModelRequest) -> String {
     request
         .messages
         .iter()
         .filter_map(|message| match &message.content {
-            ModelContent::Text(text) if message.role == ModelRole::System => Some(text.as_str()),
+            ModelContent::Text(text)
+                if message.role == ModelRole::User && text.starts_with("<environment_context>") =>
+            {
+                Some(text.as_str())
+            }
             _ => None,
         })
         .collect::<Vec<_>>()
@@ -79,7 +83,7 @@ async fn first_request_contains_each_environment_fact_and_resume_never_rediscove
             .with_token_counter(move |request| {
                 observed.fetch_add(1, Ordering::SeqCst);
                 assert_eq!(request.request().model.name, "selected-environment");
-                let text = system_text(request.request());
+                let text = environment_text(request.request());
                 for fact in &expected {
                     assert!(text.contains(fact), "missing {fact}: {text}");
                 }
@@ -111,7 +115,7 @@ async fn first_request_contains_each_environment_fact_and_resume_never_rediscove
     assert_eq!(harness.environment_reads.load(Ordering::SeqCst), 1);
     assert_eq!(harness.stage_context_manifest(operation).await?, reference);
     assert_eq!(harness.environment_reads.load(Ordering::SeqCst), 1);
-    drop(harness);
+    harness.disconnect_unfinished().await?;
     git(
         root,
         &["checkout", "--quiet", "-b", "changed-after-admission"],
@@ -170,7 +174,7 @@ async fn volume_binding_does_not_claim_a_native_checkout_environment() -> Result
     let harness =
         LocalHarness::open(volume_config(directory.path(), project, provider.clone())?).await?;
     assert_eq!(harness.run("hello").await?.text, "done");
-    assert!(!system_text(&provider.requests()[0]).contains("<environment_context>"));
+    assert!(!environment_text(&provider.requests()[0]).contains("<environment_context>"));
     assert_eq!(harness.environment_reads.load(Ordering::SeqCst), 0);
     harness.close().await
 }
@@ -188,9 +192,10 @@ async fn child_admission_records_its_inherited_selected_model() -> Result<()> {
                 observed.fetch_add(1, Ordering::SeqCst);
                 assert_eq!(request.request().model.name, "inherited-environment");
                 assert!(
-                    system_text(request.request()).contains("<model>inherited-environment</model>")
+                    environment_text(request.request())
+                        .contains("<model>inherited-environment</model>")
                 );
-                let text = system_text(request.request());
+                let text = environment_text(request.request());
                 assert!(
                     !text.contains("<cwd>"),
                     "parent cwd leaked into child: {text}"
@@ -268,7 +273,7 @@ async fn logical_git_switch_never_retains_the_physical_branch_summary() -> Resul
     assert!(selected.is_some(), "logical branch did not switch");
     assert_eq!(harness.run("next").await?.text, "next");
     let requests = provider.requests();
-    let environment = system_text(requests.last().unwrap());
+    let environment = environment_text(requests.last().unwrap());
     assert!(
         !environment.contains("<git_status>"),
         "physical Git leaked into the selected view: {environment}"

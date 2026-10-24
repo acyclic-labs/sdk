@@ -15,6 +15,7 @@ fn counted_specification(mask: u8, counted: bool) -> ProviderSpec {
     let base = crate::catalog::default_catalog()["openai"].clone();
     let model = base.models.values().next().unwrap().clone();
     ProviderSpec {
+        account_id: None,
         authentication: Authentication::Optional,
         token_counter: counted.then(|| crate::TokenCounterSpec {
             path: "count".into(),

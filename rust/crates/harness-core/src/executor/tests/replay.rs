@@ -148,6 +148,7 @@ async fn stock_prefix_reaches_provider_and_is_pinned_by_replay() -> Result<()> {
     let model = Model::new("example".into(), "model".into(), "1".into(), Value::Null)?;
     let root = crate::model::PreparedModelRequest::prepare(
         ModelRequest {
+            conversation_id: None,
             model: model.clone(),
             messages: vec![ModelMessage {
                 role: ModelRole::User,
@@ -601,6 +602,7 @@ mod prepared_request_reuse_properties {
             content: current,
         });
         let expected = ModelRequest {
+            conversation_id: None,
             model,
             messages: expected_messages,
             tools: Vec::new(),
@@ -676,6 +678,7 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
         )?;
         let root = crate::model::PreparedModelRequest::prepare(
             ModelRequest {
+                conversation_id: None,
                 model: model.clone(),
                 messages: vec![ModelMessage {
                     role: ModelRole::User,
@@ -758,11 +761,11 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
         let request = &requests[0];
         assert!(request.messages.starts_with(&root.request().messages));
         assert_eq!(
-            request.messages[1 + usize::from(expect_environment)].content,
+            request.messages.last().unwrap().content,
             ModelContent::Text("required convention".into())
         );
         assert_eq!(
-            request.messages.last().unwrap().content,
+            request.messages[1 + usize::from(expect_environment)].content,
             ModelContent::Text("child task".into())
         );
         assert!(request.messages.len() <= message_limit);

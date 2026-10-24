@@ -19,7 +19,7 @@ async fn model_text_and_shell_output_share_the_same_turn_after_reopen() -> Resul
                 json!({"command": if cfg!(windows) { "[Console]::Write('shell-output')" } else { "printf shell-output" }}),
             ))),
             ScriptedEvent::Event(ModelEvent::Completed {
-                metadata: Value::Null,
+                metadata: json!({"member":"a/tiny","members":{"a/tiny":{"usage":{"input_tokens":64}}}}),
             }),
         ]),
         ScriptedTurn::Text("done".into()),
@@ -56,6 +56,18 @@ async fn model_text_and_shell_output_share_the_same_turn_after_reopen() -> Resul
         .expect("canonical model text");
     let query = Query::Turn { task, turn };
     let selected = harness.task_files().inner.snapshot(&query, 32).await?;
+    let completion = selected
+        .files
+        .iter()
+        .find(|value| {
+            matches!(&value.key,
+        FileKey::Task { file: TaskFile::Completion(actual), .. } if *actual == turn)
+        })
+        .expect("each model step publishes completion metadata beside its chunks");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&completion.bytes).unwrap()["member"],
+        "a/tiny"
+    );
     for file in [
         crate::task_volume::ToolFile::Request,
         crate::task_volume::ToolFile::Stdout(0),

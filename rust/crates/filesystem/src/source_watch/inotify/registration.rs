@@ -289,7 +289,7 @@ impl Shared {
             work.with_original_leaf(|work| work.started_io(READ))?;
             // Through the held root rather than a newly resolved root name.
             hub::hub()?
-                .add(self, &path, WATCHED, hub::Interest::All)
+                .add(self, &path, self.watched_mask(), hub::Interest::All)
                 .map_err(DemandError::from)
         })();
         work.release(bytes)?;

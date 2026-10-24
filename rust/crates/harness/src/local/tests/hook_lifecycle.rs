@@ -164,6 +164,8 @@ async fn queued_admissions_reconstruct_hook_authority_from_their_original_model_
     // LocalHarness context pointer has been published by stage_bound_turn.
     let manifest = harness.stage_context_manifest(operation).await?;
     let command = crate::filesystem::ModelTaskCommand {
+        conversation_id: None,
+        role: None,
         input: crate::model::ModelContent::Text("queued before hook dispatch".into()),
         context_manifest: manifest.clone(),
         summary_source: None,

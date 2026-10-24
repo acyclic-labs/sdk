@@ -80,7 +80,34 @@ impl StockExecution<'_> {
                 (&compaction, &reference),
             )
             .await?;
-        let (compacted, request) = if checkpoint.is_some() {
+        let (compacted, request) = self
+            .prepare_compacted_request(input, step, compacted, checkpoint.is_some())
+            .await?;
+        let compacted = ResponseProjection {
+            model: projection.model,
+            context: compacted,
+            canonical: projection.canonical,
+            checkpoint,
+        };
+        self.finish_compaction(
+            journal,
+            (input, step),
+            compacted,
+            compaction,
+            accounting.capacity,
+            request,
+        )
+        .await
+    }
+
+    async fn prepare_compacted_request(
+        &self,
+        input: &TurnInput,
+        step: u32,
+        compacted: crate::context::Context,
+        has_checkpoint: bool,
+    ) -> Result<(crate::context::Context, crate::model::PreparedModelRequest)> {
+        let (compacted, request) = if has_checkpoint {
             let context_input = ContextInput::copy_for_turn(input, step, &[], self.io)?;
             let (mut compacted, request) = self
                 .prepare_transformed_request(&context_input, compacted)
@@ -98,20 +125,7 @@ impl StockExecution<'_> {
             )?;
             (compacted, request)
         };
-        let compacted = ResponseProjection {
-            context: compacted,
-            canonical: projection.canonical,
-            checkpoint,
-        };
-        self.finish_compaction(
-            journal,
-            (input, step),
-            compacted,
-            compaction,
-            accounting.capacity,
-            request,
-        )
-        .await
+        Ok((compacted, request))
     }
 
     async fn summary_budget(

@@ -108,6 +108,9 @@ pub(crate) enum HostChange {
 }
 
 #[cfg(windows)]
+pub(crate) const ACCESS_METADATA_ACTION: u32 = 0x8000_0000;
+
+#[cfg(windows)]
 pub(crate) enum HostChangeWide<'a> {
     Path { action: u32, path: &'a [u16] },
     File(u64),
@@ -200,6 +203,8 @@ pub(crate) enum CallbackWork {
 pub(crate) struct Delivery {
     #[cfg(windows)]
     read_authority: Option<Arc<Delivery>>,
+    #[cfg(windows)]
+    access_only: bool,
     sink: Arc<dyn HostChangeSink>,
     exact: AtomicBool,
     budget: crate::performance::WorkBudget,

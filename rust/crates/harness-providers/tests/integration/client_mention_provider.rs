@@ -59,6 +59,7 @@ fn scripted_registry(
     registry.register(
         "scripted".into(),
         ProviderSpec {
+            account_id: None,
             adapter: Adapter::Responses,
             authentication: Authentication::Optional,
             base_url: "https://scripted.invalid/v1".into(),
@@ -154,6 +155,7 @@ async fn scenario(
     let provider = scripted_registry(fixture.reader.clone(), sent)?.resolve("scripted/model")?;
     let request = PreparedModelRequest::prepare(
         ModelRequest {
+            conversation_id: None,
             model: provider.model().clone(),
             messages: vec![ModelMessage {
                 role: ModelRole::User,

@@ -101,6 +101,7 @@ async fn canonical_consumers(adapter: &str) -> TestResult {
     };
     let request = PreparedModelRequest::prepare(
         ModelRequest {
+            conversation_id: None,
             model: provider.model().clone(),
             messages: vec![ModelMessage {
                 role: ModelRole::User,

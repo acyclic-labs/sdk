@@ -9,7 +9,7 @@ proptest! {
         texts in prop::collection::vec(prop::collection::vec(any::<char>(), 0..512), 1..8),
         output in 1u32..=u32::MAX,
     ) {
-        let request = ModelRequest {
+        let request = ModelRequest { conversation_id: None,
             model: Model::new("scripted".into(), "test".into(), "1".into(), Value::Null).unwrap(),
             messages: texts.into_iter().map(|text| ModelMessage {
                 role: ModelRole::User,

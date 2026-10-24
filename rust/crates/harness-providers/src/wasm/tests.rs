@@ -128,6 +128,7 @@ fn request(
     let model = provider.provider.model().clone();
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
+            conversation_id: None,
             model,
             messages: vec![ModelMessage {
                 role: ModelRole::User,
@@ -296,6 +297,7 @@ async fn browser_reader_is_verified_for_counting_and_generation() -> Result<(), 
     ).map_err(error)?;
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
+            conversation_id: None,
             model: provider.provider.model().clone(),
             messages: vec![ModelMessage {
                 role: ModelRole::User,

@@ -10,7 +10,7 @@ impl StockExecution<'_> {
         let blocked = output.take_block_reason();
         for text in blocked.into_iter().chain(output.additional_context) {
             let message = ModelMessage {
-                role: ModelRole::System,
+                role: ModelRole::User,
                 content: ModelContent::Text(text),
             };
             message

@@ -137,6 +137,7 @@ fn fixture_registry(endpoint: String) -> Result<Registry> {
     registry.register(
         "fixture".into(),
         ProviderSpec {
+            account_id: None,
             adapter: Adapter::Responses,
             authentication: Authentication::Optional,
             base_url: endpoint,

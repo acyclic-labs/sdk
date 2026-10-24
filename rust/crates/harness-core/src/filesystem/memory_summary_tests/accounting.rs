@@ -77,7 +77,7 @@ proptest! {
     ) {
         let (messages, mut expected): (Vec<_>, Vec<_>) = messages.into_iter().unzip();
         let provider = summary_model(0);
-        let mut request = ModelRequest {
+        let mut request = ModelRequest { conversation_id: None,
             model: Model::new("test".into(), "summary".into(), "1".into(), json!({})).unwrap(),
             messages,
             tools: Vec::new(),

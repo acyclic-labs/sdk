@@ -166,24 +166,7 @@ impl ResumableMachine for OneCommand {
 
 #[tokio::test]
 async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<()> {
-    for (adapter, response) in [
-        (
-            Adapter::Chat,
-            "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1}}\n\ndata: [DONE]\n\n",
-        ),
-        (
-            Adapter::Anthropic,
-            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5}}}\n\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\ndata: {\"type\":\"message_stop\"}\n\n",
-        ),
-        (
-            Adapter::Responses,
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"done\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n",
-        ),
-        (
-            Adapter::Gemini,
-            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"done\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":1}}\n\n",
-        ),
-    ] {
+    for (adapter, response) in stock_responses() {
         let transport = Arc::new(Fixture::new(response));
         let provider = if adapter == Adapter::Responses {
             let mut registry = Registry::with_transport(
@@ -231,6 +214,16 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
     policy: CompactionPolicy,
     filesystem: acyclic_fs::Fs<acyclic_fs::MemoryAuthorityBackend, O>,
 ) -> Result<acyclic_harness_core::Outcome<serde_json::Value>> {
+    run_stock_input(provider, adapter, policy, filesystem, "question".into()).await
+}
+
+pub(super) async fn run_stock_input<O: acyclic_fs::AsyncObjectStore + 'static>(
+    provider: crate::ResolvedModel,
+    adapter: Adapter,
+    policy: CompactionPolicy,
+    filesystem: acyclic_fs::Fs<acyclic_fs::MemoryAuthorityBackend, O>,
+    input: String,
+) -> Result<acyclic_harness_core::Outcome<serde_json::Value>> {
     let model = provider.model().clone();
     let stages = Arc::new(probe::Stages::default());
     let provider = Arc::new(probe::Probe {
@@ -257,21 +250,7 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
             id: "owner".into(),
         },
     );
-    let signed = issuer.issue(
-        "owner",
-        &Capabilities::new([
-            "operation:declare".into(),
-            "operation:observe".into(),
-            "operation:cancel".into(),
-            "task:spawn:model@1".into(),
-            "model:generate".into(),
-            volume.capability(VolumeOperation::Read, &mut None)?,
-            volume.capability(VolumeOperation::Write, &mut None)?,
-        ]),
-        Some(agent),
-        None,
-        &mut None,
-    )?;
+    let signed = stock_scope(&issuer, &volume, agent)?;
     let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?;
     let work = work(&CancellationToken::new())?;
     let io = PreparationIo::from_native_work(&work)?;
@@ -284,44 +263,7 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
         65_536,
         None,
     )?;
-    let command = ModelTaskCommand {
-        summary_source: None,
-        context_manifest: ContextManifest::default()
-            .publish(
-                payloads.as_ref(),
-                OperationId::from_bytes([10; 16]),
-                "manifest.json",
-                Limits::default(),
-            )
-            .await?,
-        input: ModelContent::Text("question".into()),
-        selected_context: None,
-        max_steps: 1,
-        max_output_tokens: None,
-        selected_output_volume: None,
-        mailbox_operation: None,
-    };
-    let payload = payloads
-        .stage(
-            operation,
-            "command",
-            &serde_json::to_vec(&command).expect("command fixture"),
-            None,
-        )?
-        .await?;
-    let machine = Arc::new(OneCommand {
-        identity: MachineIdentity {
-            name: "model".into(),
-            version: "1".into(),
-            digest: [48; 32],
-        },
-        schema: json!({"type":"boolean"}),
-        command: WorkflowCommand {
-            operation_id: OperationId::from_bytes([3; 16]),
-            kind: MODEL_TASK_COMMAND_KIND.into(),
-            payload,
-        },
-    });
+    let machine = stock_machine(payloads.as_ref(), operation, input).await?;
     let mut tasks = TaskRegistry::default();
     tasks.register(
         TaskDefinition::<serde_json::Value, serde_json::Value>::resumable(
@@ -362,6 +304,81 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
     )
     .await?;
     let opened = work.receipt().items_examined;
+    execute_stock(
+        &runtime,
+        &tasks,
+        (operation, model, provider, policy),
+        &work,
+        &io,
+        (adapter, stages.as_ref(), opened),
+    )
+    .await
+}
+
+async fn stock_machine<O: acyclic_fs::AsyncObjectStore + 'static>(
+    payloads: &FilesystemContentPublisher<acyclic_fs::MemoryAuthorityBackend, O>,
+    operation: OperationId,
+    input: String,
+) -> Result<Arc<OneCommand>> {
+    let command = ModelTaskCommand {
+        conversation_id: None,
+        role: None,
+        summary_source: None,
+        context_manifest: ContextManifest::default()
+            .publish(
+                payloads,
+                OperationId::from_bytes([10; 16]),
+                "manifest.json",
+                Limits::default(),
+            )
+            .await?,
+        input: ModelContent::Text(input),
+        selected_context: None,
+        max_steps: 1,
+        max_output_tokens: None,
+        selected_output_volume: None,
+        mailbox_operation: None,
+    };
+    let payload = payloads
+        .stage(
+            operation,
+            "command",
+            &serde_json::to_vec(&command).expect("command fixture"),
+            None,
+        )?
+        .await?;
+    let machine = Arc::new(OneCommand {
+        identity: MachineIdentity {
+            name: "model".into(),
+            version: "1".into(),
+            digest: [48; 32],
+        },
+        schema: json!({"type":"boolean"}),
+        command: WorkflowCommand {
+            operation_id: OperationId::from_bytes([3; 16]),
+            kind: MODEL_TASK_COMMAND_KIND.into(),
+            payload,
+        },
+    });
+    Ok(machine)
+}
+
+async fn execute_stock<
+    P: acyclic_stream::StreamProvider + 'static,
+    O: acyclic_fs::AsyncObjectStore + 'static,
+>(
+    runtime: &FilesystemTaskRuntime<P, acyclic_fs::MemoryAuthorityBackend, O>,
+    tasks: &TaskRegistry,
+    (operation, model, provider, policy): (
+        OperationId,
+        acyclic_harness_core::model::Model,
+        Arc<probe::Probe>,
+        CompactionPolicy,
+    ),
+    work: &NativeMaterializationWork,
+    io: &PreparationIo,
+    (adapter, stages, opened): (Adapter, &probe::Stages, u64),
+) -> Result<acyclic_harness_core::Outcome<serde_json::Value>> {
     let definition =
         tasks.get_version::<serde_json::Value, serde_json::Value>("model", "1", None)?;
     assert!(matches!(
@@ -372,7 +389,7 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
         Admission::Accepted(_)
     ));
     let admitted = work.receipt().items_examined;
-    let mut history = HistoryWork::new(PreparationIo::from_native_work(&work)?);
+    let mut history = HistoryWork::new(PreparationIo::from_native_work(work)?);
     history.retain_owned(
         std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>()) as u64,
     )?;
@@ -394,10 +411,10 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
     let recovery = history.into_custody()?;
     let commands = runtime
         .commands()
-        .with_model(&model, provider, &policy, Some(&io))?;
+        .with_model(&model, provider, &policy, Some(io))?;
     let leased = work.receipt().items_examined;
     let result = runtime
-        .resume_task_with_native_work(lease, recovery, &commands, 2, &work)
+        .resume_task_with_native_work(lease, recovery, &commands, 2, work)
         .await;
     eprintln!(
         "{adapter:?} items: open={opened}, admission={}, lease={}, run={}, provider={stages:?}",
@@ -418,7 +435,7 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
         .outcome(task)
         .await?
         .expect("a completed task has an outcome");
-    assert!(custody.work().shares_allocation_context(&work));
+    assert!(custody.work().shares_allocation_context(work));
     eprintln!(
         "{adapter:?} total_items={} remaining_items={}",
         work.receipt().items_examined,
@@ -426,3 +443,49 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
     );
     Ok(outcome)
 }
+
+fn stock_scope(
+    issuer: &AuthorityIssuer,
+    volume: &VolumeRef,
+    agent: AgentId,
+) -> Result<acyclic_harness_core::core::Scope> {
+    issuer.issue(
+        "owner",
+        &Capabilities::new([
+            "operation:declare".into(),
+            "operation:observe".into(),
+            "operation:cancel".into(),
+            "task:spawn:model@1".into(),
+            "model:generate".into(),
+            volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.capability(VolumeOperation::Write, &mut None)?,
+        ]),
+        Some(agent),
+        None,
+        &mut None,
+    )
+}
+
+fn stock_responses() -> [(Adapter, &'static str); 4] {
+    [
+        (
+            Adapter::Chat,
+            "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1}}\n\ndata: [DONE]\n\n",
+        ),
+        (
+            Adapter::Anthropic,
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5}}}\n\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\ndata: {\"type\":\"message_stop\"}\n\n",
+        ),
+        (
+            Adapter::Responses,
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"done\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n",
+        ),
+        (
+            Adapter::Gemini,
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"done\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":1}}\n\n",
+        ),
+    ]
+}
+
+#[path = "native_capacity_tests.rs"]
+mod capacity;

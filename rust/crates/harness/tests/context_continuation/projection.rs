@@ -277,6 +277,7 @@ pub(super) async fn large_context_payload_preserves_instruction_and_typed_tool_e
     assert_eq!(reader.revision(1).await?.context, source);
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
+            conversation_id: None,
             model: Model::new(
                 "synthetic".into(),
                 "typed-payload".into(),

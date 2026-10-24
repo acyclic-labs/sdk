@@ -4,6 +4,10 @@ use serde::Deserialize;
 struct ModelSettings {
     model: Option<String>,
     model_provider: Option<String>,
+    #[serde(default)]
+    alloys: std::collections::BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    roles: super::ModelRoles,
 }
 
 struct Selection<'a> {
@@ -42,10 +46,30 @@ fn normalize(settings: &ModelSettings) -> Result<Option<Selection<'_>>, String> 
     Ok(Some(Selection { provider, name }))
 }
 
-pub(super) fn parse(bytes: &[u8]) -> Result<Option<String>, String> {
+pub(super) fn parse_configuration(
+    bytes: &[u8],
+    known_alloy: impl Fn(&str) -> bool,
+) -> Result<super::ModelConfiguration, String> {
     let text = std::str::from_utf8(bytes).map_err(|error| error.to_string())?;
     let settings: ModelSettings = toml::from_str(text).map_err(|error| error.to_string())?;
-    Ok(normalize(&settings)?.map(|selection| format!("{}/{}", selection.provider, selection.name)))
+    if settings.roles.root.trim().is_empty() || settings.roles.child.trim().is_empty() {
+        return Err("agent roles must be nonempty strings".into());
+    }
+    let selection = match settings.model.as_deref() {
+        Some(model)
+            if settings.model_provider.is_none()
+                && (settings.alloys.contains_key(model) || known_alloy(model)) =>
+        {
+            Some(model.to_owned())
+        }
+        _ => normalize(&settings)?
+            .map(|selection| format!("{}/{}", selection.provider, selection.name)),
+    };
+    Ok(super::ModelConfiguration {
+        selection,
+        alloys: settings.alloys,
+        roles: settings.roles,
+    })
 }
 
 #[cfg(test)]

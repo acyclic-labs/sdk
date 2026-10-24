@@ -174,6 +174,13 @@ where
         self
     }
 
+    /// Binds every model step to the command's retained conversation.
+    #[must_use]
+    pub fn with_conversation_id(mut self, conversation: crate::ConversationId) -> Self {
+        self.executor = self.executor.with_conversation_id(conversation);
+        self
+    }
+
     /// Sets the output token budget without replacing task ownership or its journal.
     pub fn with_max_output_tokens(mut self, maximum: u32) -> Result<Self> {
         self.executor = self.executor.with_max_output_tokens(maximum)?;
@@ -182,6 +189,11 @@ where
 
     pub(crate) fn with_summary_source(mut self, source: Option<Box<FileRef>>) -> Self {
         self.executor = self.executor.with_summary_source(source);
+        self
+    }
+
+    pub(crate) fn with_role(mut self, role: Option<String>) -> Self {
+        self.executor = self.executor.with_role(role);
         self
     }
 

@@ -22,7 +22,7 @@ pub(crate) fn generate(
         let names = crate::tool_names::Names::new(request.request());
         let auth = authenticate(provider, #[cfg(not(target_arch = "wasm32"))] None).await?;
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
-        let body = bytes::Bytes::from(encode(provider,&request,&names,None,&origin).await?);
+        let body = crate::encoded::bodies(provider, &request, &names, &origin, None).await?.generation;
         let mut events = generate_encoded(provider, &request, dispatch, body, auth, names);
         while let Some(event) = events.next().await { yield event?; }
     })
@@ -46,7 +46,7 @@ pub(crate) fn generate_encoded<'a>(
         let mut redelivery = crate::retry::Redelivery::new(provider.config.retry, dispatch);
         let mut output = false;
         loop {
-            let (failure, retry_after) = match send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref()).await {
+            let (failure, retry_after) = match send(provider, body.clone(), dispatch, request.request().conversation_id, auth.0.as_deref(), auth.1.as_deref()).await {
                 Err(error) => (Some(error), None),
                 Ok(response) if !(200..300).contains(&response.status) => {
                     let retry_after = response.retry_after;
@@ -112,6 +112,7 @@ pub(crate) async fn send(
     provider: &ResolvedModel,
     body: bytes::Bytes,
     dispatch: ModelDispatch,
+    conversation: Option<acyclic_harness_core::ConversationId>,
     key: Option<&str>,
     account: Option<&str>,
 ) -> Result<HttpResponse> {
@@ -119,13 +120,14 @@ pub(crate) async fn send(
         .transport
         .send(HttpRequest {
             url: projection::endpoint(provider)?,
-            headers: request_headers(provider, dispatch, key, account),
+            headers: request_headers(provider, dispatch, conversation, key, account),
             body,
         })
         .await?;
     Ok(response)
 }
 
+#[cfg(any(test, feature = "fuzzing"))]
 pub(crate) async fn encode(
     provider: &ResolvedModel,
     request: &PreparedModelRequest,
@@ -141,6 +143,7 @@ pub(crate) async fn encode(
 pub(crate) fn request_headers(
     provider: &ResolvedModel,
     dispatch: ModelDispatch,
+    conversation: Option<acyclic_harness_core::ConversationId>,
     key: Option<&str>,
     account: Option<&str>,
 ) -> BTreeMap<String, String> {
@@ -149,8 +152,12 @@ pub(crate) fn request_headers(
     let headers = {
         let mut headers = headers;
         if provider.codex_login.is_some() {
-            headers.insert("session-id".into(), dispatch.operation_id.to_string());
-            headers.insert("thread-id".into(), dispatch.operation_id.to_string());
+            headers.remove("session-id");
+            headers.remove("thread-id");
+            if let Some(conversation) = conversation {
+                headers.insert("session-id".into(), conversation.to_string());
+                headers.insert("thread-id".into(), conversation.to_string());
+            }
             headers.insert(
                 "x-client-request-id".into(),
                 format!("{}-{}", dispatch.operation_id, dispatch.step),
@@ -158,7 +165,7 @@ pub(crate) fn request_headers(
         }
         headers
     };
-    let _ = dispatch;
+    let _ = (dispatch, conversation);
     headers
 }
 

@@ -7,6 +7,7 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
     let mut registry =
         Registry::with_transport(Credentials::explicit(BTreeMap::new()), script.clone());
     let mut spec = ProviderSpec {
+        account_id: None,
         adapter: Adapter::Chat,
         authentication: Authentication::Optional,
         base_url: "http://127.0.0.1:1234/v1".into(),

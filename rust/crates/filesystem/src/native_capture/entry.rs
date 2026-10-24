@@ -602,6 +602,104 @@ async fn collect_captured_checkout_roots<A: AsyncAuthorityStore, O: AsyncObjectS
     Ok(())
 }
 
+/// Captures metadata of every eligible recorded path without reading unchanged
+/// regular file payloads. A watcher must separately fence content and namespace changes.
+/// This also observes explicit access-time edits on hosts that do not emit an
+/// event for those edits.
+pub async fn capture_recorded_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    options: &CaptureOptions,
+    policy: &CapturePolicy,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
+    capture_recorded_with_intent(
+        checkout,
+        options,
+        policy,
+        budget,
+        cancellation,
+        CaptureIntent::MetadataOnly,
+    )
+    .await
+}
+
+pub(super) async fn capture_recorded_with_intent<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    options: &CaptureOptions,
+    policy: &CapturePolicy,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    intent: CaptureIntent,
+) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
+    let native = capture_work(budget, cancellation)?;
+    if options.maximum_paths == 0 || options.maximum_extent_spans == 0 {
+        return Err(OperationFailure::new(
+            CaptureError::InvalidOptions,
+            native.receipt(),
+        ));
+    }
+    let mut candidate = checkout
+        .private_candidate(
+            &mut crate::kernel::KernelAccounting::native(&native, cancellation),
+            cancellation,
+        )
+        .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
+    let scope = CaptureWorkScope::new(&native)?;
+    let result = async {
+        let meter = &scope.native;
+        let source_root = open_source_root(options, meter)?;
+        let limits = candidate.volume_config().limits;
+        let root = NamespacePath::new(Vec::new(), limits)?;
+        let maximum =
+            usize::try_from(options.maximum_paths).map_err(|_| CaptureError::InvalidOptions)?;
+        let mut paths = Vec::new();
+        collect_checkout_subtree_paths(
+            &mut candidate,
+            limits,
+            root,
+            policy,
+            maximum,
+            &mut paths,
+            meter,
+        )
+        .await?;
+        let paths_bytes = vector_bytes(&paths);
+        let mut recorded = capture_vec(paths.len(), meter)?;
+        capture_charge(
+            meter,
+            WorkCounters {
+                items_examined: paths.len() as u64,
+                ..WorkCounters::UNCHARGED
+            },
+        )?;
+        for (path, ()) in paths {
+            recorded.push(path);
+        }
+        meter
+            .clone()
+            .release(paths_bytes)
+            .map_err(capture_demand_error)?;
+        let observed = observe_unique_paths(recorded, &source_root, meter)?;
+        super::reconcile::capture_observed_metadata_or_content(
+            &mut candidate,
+            observed,
+            usize::MAX,
+            options.maximum_extent_spans,
+            &source_root,
+            (None, intent),
+            meter,
+        )
+        .await
+    }
+    .await;
+    let receipt = capture_scope_result(scope, result)?;
+    cancellation
+        .commit_if_live(|| *checkout = candidate)
+        .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
+    Ok(receipt)
+}
+
 /// Captures a complete eligible baseline into one atomic candidate.
 pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,

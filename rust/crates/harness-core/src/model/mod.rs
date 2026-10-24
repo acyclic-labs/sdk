@@ -21,8 +21,7 @@ mod preparation;
 mod provider;
 mod reasoning;
 mod request;
-#[cfg(any(feature = "filesystem", feature = "tui"))]
-mod usage;
+pub(crate) mod usage;
 #[cfg(any(feature = "filesystem", feature = "tui"))]
 #[doc(hidden)]
 pub use usage::accumulate_usage;
@@ -52,7 +51,7 @@ pub(crate) use preparation::{
 };
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use provider::NativeModelStream;
-pub use provider::{ModelDispatch, ModelEvent, ModelProvider};
+pub use provider::{ModelDispatch, ModelEvent, ModelProvider, ModelTurn};
 pub use reasoning::{ReasoningBlock, ReasoningKind, ReasoningOrigin, ReasoningOutcome};
 pub use request::{ModelRequest, PreparedModelRequest};
 pub use tool_call::ToolCall;

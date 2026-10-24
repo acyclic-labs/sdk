@@ -92,10 +92,12 @@ impl StockExecution<'_> {
         #[derive(Serialize)]
         struct Request<'a> {
             executor: &'static str,
+            conversation_id: Option<crate::ConversationId>,
             #[serde(skip_serializing_if = "Option::is_none")]
             summary_source: Option<&'a FileRef>,
             input: &'a TurnInput,
             model: &'a Model,
+            role: Option<&'a str>,
             max_output_tokens: Option<u32>,
             context: &'a [Value],
             tools: &'a [crate::tool::ToolDefinition],
@@ -125,10 +127,12 @@ impl StockExecution<'_> {
         });
         preparation_digest(
             &Request {
-                executor: "acyclic.stock.v7",
+                executor: "acyclic.stock.v9",
+                conversation_id: self.conversation_id(),
                 summary_source: self.stock.summary_source.as_deref(),
                 input,
                 model: &self.stock.model,
+                role: self.stock.role.as_deref(),
                 max_output_tokens: self.output_tokens(),
                 context: &contracts,
                 tools: &tools,

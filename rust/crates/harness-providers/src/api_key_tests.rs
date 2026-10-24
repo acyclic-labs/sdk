@@ -108,51 +108,8 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
         let transport = Arc::new(Responses {
             sent: AtomicUsize::new(0),
         });
-        let mut registry = Registry::with_transport(
-            Credentials::explicit(BTreeMap::from([(
-                "openai".into(),
-                "fixture-api-key".into(),
-            )])),
-            transport.clone(),
-        );
-        let builtin = registry.resolve("openai/gpt-6-luna")?;
-        let capacity = builtin.context_capacity(builtin.model())?;
-        assert_eq!(capacity.context_tokens, 272_000);
-        assert_eq!(capacity.output_tokens, None);
-        assert!(
-            registry.resolve("openai/unregistered-model").is_err(),
-            "unregistered context capacity is never guessed"
-        );
-        let file = tempfile::NamedTempFile::new().map_err(|_| invalid("fixture catalog"))?;
-        std::fs::write(file.path(), include_str!("fixtures/luna-catalog.json"))
-            .map_err(|_| invalid("fixture catalog"))?;
-        registry.load_catalog(file.path())?;
-        let provider = registry
-            .resolve_with_options("openai/gpt-6-luna", json!({"reasoning":{"effort":"low"}}))?;
-        assert_eq!(
-            provider.context_capacity(provider.model())?.context_tokens,
-            8192
-        );
-        assert_eq!(
-            provider.context_capacity(provider.model())?.output_tokens,
-            Some(1024)
-        );
-        let mut request = ModelRequest {
-            model: provider.model().clone(),
-            messages: vec![ModelMessage {
-                role: ModelRole::User,
-                content: ModelContent::Text("Run echo".into()),
-            }],
-            tools: vec![acyclic_harness_core::tool::ToolDefinition {
-                name: "echo".into(),
-                revision: "1".into(),
-                description: "Echo".into(),
-                input_schema: json!({"type":"object","properties":{"value":{"type":"integer"}},"required":["value"]}),
-                output_schema: json!({"type":"object"}),
-                projection_schema: json!({"type":"object"}),
-            }],
-            max_output_tokens: Some(64),
-        };
+        let provider = configured_provider(&transport)?;
+        let mut request = api_request(&provider);
         let operation_id = acyclic_harness_core::OperationId::new();
         let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
         let baseline = work.live_allocation_bytes();
@@ -240,7 +197,61 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
             drop(custody);
         }
         assert_eq!(transport.sent.load(Ordering::SeqCst), 2);
+        drop(provider);
         assert_eq!(work.live_allocation_bytes(), baseline);
     }
     Ok(())
+}
+
+fn configured_provider(transport: &Arc<Responses>) -> Result<ResolvedModel> {
+    let mut registry = Registry::with_transport(
+        Credentials::explicit(BTreeMap::from([(
+            "openai".into(),
+            "fixture-api-key".into(),
+        )])),
+        transport.clone(),
+    );
+    let builtin = registry.resolve("openai/gpt-6-luna")?;
+    let capacity = builtin.context_capacity(builtin.model())?;
+    assert_eq!(capacity.context_tokens, 272_000);
+    assert_eq!(capacity.output_tokens, None);
+    assert!(
+        registry.resolve("openai/unregistered-model").is_err(),
+        "unregistered context capacity is never guessed"
+    );
+    let file = tempfile::NamedTempFile::new().map_err(|_| invalid("fixture catalog"))?;
+    std::fs::write(file.path(), include_str!("fixtures/luna-catalog.json"))
+        .map_err(|_| invalid("fixture catalog"))?;
+    registry.load_catalog(file.path())?;
+    let provider = registry
+        .resolve_with_options("openai/gpt-6-luna", json!({"reasoning":{"effort":"low"}}))?;
+    assert_eq!(
+        provider.context_capacity(provider.model())?.context_tokens,
+        8192
+    );
+    assert_eq!(
+        provider.context_capacity(provider.model())?.output_tokens,
+        Some(1024)
+    );
+    Ok(provider)
+}
+
+fn api_request(provider: &ResolvedModel) -> ModelRequest {
+    ModelRequest {
+        conversation_id: None,
+        model: provider.model().clone(),
+        messages: vec![ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Text("Run echo".into()),
+        }],
+        tools: vec![acyclic_harness_core::tool::ToolDefinition {
+            name: "echo".into(),
+            revision: "1".into(),
+            description: "Echo".into(),
+            input_schema: json!({"type":"object","properties":{"value":{"type":"integer"}},"required":["value"]}),
+            output_schema: json!({"type":"object"}),
+            projection_schema: json!({"type":"object"}),
+        }],
+        max_output_tokens: Some(64),
+    }
 }

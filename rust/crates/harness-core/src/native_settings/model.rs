@@ -3,17 +3,32 @@ use super::*;
 impl SettingsConfig {
     /// Reads the user-configured model from this snapshot's explicit Codex root.
     pub fn configured_model(&self) -> Result<Option<String>> {
-        let path = self.codex_home.join("config.toml");
-        let file = match std::fs::File::open(&path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(Error::process_io(error)),
+        Ok(self.configured_models(|_| false)?.selection)
+    }
+
+    /// Reads named policies, role defaults and model selection from one bounded file.
+    pub fn configured_models(
+        &self,
+        known_alloy: impl Fn(&str) -> bool,
+    ) -> Result<ModelConfiguration> {
+        let Some(bytes) = self.model_document()? else {
+            return Ok(ModelConfiguration::default());
         };
+        super::model_selection::parse_configuration(&bytes, known_alloy)
+            .map_err(|error| Error::Invalid(format!("settings model: {error}")))
+    }
+
+    fn model_document(&self) -> Result<Option<Vec<u8>>> {
         if self.maximum_file_bytes == 0 || self.maximum_file_bytes == u64::MAX {
             return Err(Error::Invalid(
                 "settings require a finite positive byte bound".into(),
             ));
         }
+        let file = match std::fs::File::open(self.codex_home.join("config.toml")) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(Error::process_io(error)),
+        };
         let mut bytes = Vec::new();
         file.take(self.maximum_file_bytes + 1)
             .read_to_end(&mut bytes)
@@ -23,8 +38,7 @@ impl SettingsConfig {
                 "settings file exceeds its read bound".into(),
             ));
         }
-        super::model_selection::parse(&bytes)
-            .map_err(|error| Error::Invalid(format!("settings model: {error}")))
+        Ok(Some(bytes))
     }
 }
 
@@ -56,9 +70,9 @@ mod tests {
         fn model_selection_round_trips_quoted_settings(model in ".{0,64}", provider in ".{0,24}") {
             let document = BTreeMap::from([("model", model.as_str()), ("model_provider", provider.as_str())]);
             let encoded = toml::to_string(&document).unwrap();
-            if let Ok(Some(selection)) = super::super::model_selection::parse(encoded.as_bytes()) {
+            if let Ok(ModelConfiguration { selection: Some(selection), .. }) = super::super::model_selection::parse_configuration(encoded.as_bytes(), |_| false) {
                 let canonical = toml::to_string(&BTreeMap::from([("model", selection.as_str())])).unwrap();
-                prop_assert_eq!(super::super::model_selection::parse(canonical.as_bytes()).unwrap(), Some(selection));
+                prop_assert_eq!(super::super::model_selection::parse_configuration(canonical.as_bytes(), |_| false).unwrap().selection, Some(selection));
             }
         }
     }

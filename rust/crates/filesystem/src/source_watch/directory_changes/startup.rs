@@ -8,6 +8,57 @@ impl NativeSourceWatch {
     ) -> Result<Self, DemandError> {
         Self::open_watch(root.directory_handle(), delivery, true, None, true, work)
     }
+    /// Separate filters preserve the cause of a notification. In particular, an
+    /// access stamp can never turn into a content read and feed itself back.
+    pub(crate) fn open_capture_watch<W: SourceDemandReadWork>(
+        root: std::os::windows::io::BorrowedHandle<'_>,
+        delivery: Arc<Delivery>,
+        complete: bool,
+        recursive: bool,
+        work: &mut W,
+    ) -> Result<Self, DemandError> {
+        let carrier = delivery.prepare_startup_failure(work)?;
+        let mut watch = Self::open_watch(
+            root,
+            Arc::clone(&delivery),
+            false,
+            Some(complete),
+            recursive,
+            work,
+        )?;
+        let bytes = size_of::<Self>() as u64;
+        let mut backing_claimed = false;
+        let result = (|| {
+            work.claim_allocation(bytes, 1, WorkCounters::UNCHARGED)?;
+            backing_claimed = true;
+            watch.shared.ownership.retain(bytes, work)?;
+            let mut access = Delivery::new(Arc::clone(&delivery.sink), work)?;
+            access.read_authority = Some(Arc::clone(&delivery));
+            access.access_only = true;
+            let access = access.start(work, |access, work| {
+                // One recursive metadata channel covers every admitted child;
+                // child content registrations retain their original cost.
+                Self::open_watch(root, access, false, Some(complete), true, work)
+            })?;
+            watch.access = Some(Box::new(access));
+            Ok(())
+        })();
+        if backing_claimed && !work.is_native_original() {
+            work.release(bytes)?;
+        }
+        match result {
+            Ok(()) => Ok(watch),
+            Err(error) => {
+                let cleanup = watch.stop(work, true, None);
+                if !watch.is_stopped() {
+                    if let Some(carrier) = carrier {
+                        return Err(carrier.retain_failed_platform(error, watch));
+                    }
+                }
+                cleanup.and(Err(error))
+            }
+        }
+    }
     #[allow(
         clippy::too_many_lines,
         reason = "This state transition keeps admission, effects and resource retirement in one frame."
@@ -120,6 +171,7 @@ impl NativeSourceWatch {
             state.reading_changed.notify_all();
             Ok(Self {
                 shared: shared.take().ok_or(DemandError::NativeWorkUnavailable)?,
+                access: None,
             })
         })();
         if !native {
@@ -131,7 +183,10 @@ impl NativeSourceWatch {
             Err(error) => match shared {
                 None => Err(error),
                 Some(shared) => {
-                    let failed = Self { shared };
+                    let failed = Self {
+                        shared,
+                        access: None,
+                    };
                     let cleanup = failed.stop(work, true, None);
                     if !failed.is_stopped() {
                         if !native {

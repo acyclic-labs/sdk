@@ -41,10 +41,18 @@ mod stall;
 
 #[tokio::test]
 async fn provider_scenarios() -> TestResult {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let root = scenario_root();
     let mut paths = Vec::new();
     scenario_data::discover(&root, &mut paths)?;
     paths.sort();
+    if let Some(filter) = std::env::var_os("E2E_FILTER") {
+        let filter = filter.to_string_lossy();
+        paths.retain(|path| {
+            path.to_string_lossy()
+                .replace('\\', "/")
+                .contains(filter.as_ref())
+        });
+    }
     assert!(!paths.is_empty());
     for path in paths {
         let mut value = scenario_data::load_value(&root, &path)?;
@@ -57,4 +65,8 @@ async fn provider_scenarios() -> TestResult {
         println!("PASS {}", path.strip_prefix(&root)?.display());
     }
     Ok(())
+}
+
+fn scenario_root() -> std::path::PathBuf {
+    acyclic_test_support::source_path("rust/crates/harness-providers").join("tests/scenarios")
 }

@@ -161,16 +161,22 @@ impl ReqwestTransport {
     }
     /// Creates the platform transport. Credentials are never forwarded across redirects.
     pub fn new() -> Result<Self> {
-        let builder = reqwest::Client::builder();
-        #[cfg(not(target_arch = "wasm32"))]
-        let builder = builder
-            .redirect(reqwest::redirect::Policy::none())
-            .retry(reqwest::retry::never());
+        let builder = Self::client_builder();
         Ok(Self(builder.build().map_err(|_| {
             super::invalid("HTTP client initialization failed")
         })?))
     }
+
+    fn client_builder() -> reqwest::ClientBuilder {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+    }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "http/http2_tests.rs"]
+mod http2_tests;
 
 /// Classifies a send or body error by its source chain, keeping only the root cause's text: the
 /// outer layers name the URL, which can carry credentials.

@@ -1,0 +1,142 @@
+{
+  "id": "alloy-retry",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "selection": "mixed",
+  "catalog": {
+    "a": {
+      "adapter": "anthropic",
+      "authentication": "optional",
+      "base_url": "{{url}}",
+      "models": {
+        "tiny": {
+          "capacity": {
+            "context_tokens": 32768,
+            "output_tokens": 1024
+          },
+          "features": {
+            "tools": true,
+            "images": false
+          }
+        }
+      },
+      "token_counter": {
+        "path": "count",
+        "adapter": "anthropic",
+        "response_field": "input_tokens",
+        "framing_tokens": 0
+      },
+      "max_event_bytes": 4096
+    },
+    "b": {
+      "adapter": "responses",
+      "authentication": "optional",
+      "base_url": "{{url}}",
+      "models": {
+        "tiny": {
+          "capacity": {
+            "context_tokens": 65536,
+            "output_tokens": 2048
+          },
+          "features": {
+            "tools": true,
+            "images": false
+          }
+        }
+      },
+      "token_counter": {
+        "path": "count",
+        "adapter": "responses",
+        "response_field": "input_tokens",
+        "framing_tokens": 0
+      },
+      "max_event_bytes": 4096
+    },
+    "alloys": {
+      "mixed": {
+        "models": [
+          "a/tiny",
+          "b/tiny"
+        ],
+        "select": "round_robin"
+      }
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "path": "messages"
+        },
+        "status": 429,
+        "json": {
+          "error": "retry fixture"
+        }
+      },
+      {
+        "when": {
+          "path": "messages"
+        },
+        "tools": [
+          {
+            "id": "retry_write",
+            "name": "write",
+            "arguments": {
+              "path": "retry.txt",
+              "text": "once",
+              "display_name": "retry.txt",
+              "media_type": "text/plain"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "path": "responses",
+          "tool_result": "file"
+        },
+        "text": [
+          "retry done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "Keep the selected member during retry",
+      "answer": "retry done"
+    }
+  ],
+  "assert": {
+    "requests": 3,
+    "generation_paths": [
+      "messages",
+      "messages",
+      "responses"
+    ],
+    "files": {
+      "retry.txt": "once"
+    },
+    "wire_contains": [
+      "a/tiny",
+      "b/tiny"
+    ],
+    "member_usage": {
+      "a/tiny": {
+        "usage": {
+          "output_tokens": 2,
+          "input_tokens": 64
+        }
+      },
+      "b/tiny": {
+        "usage": {
+          "output_tokens": 2,
+          "input_tokens": 64
+        }
+      }
+    }
+  }
+}

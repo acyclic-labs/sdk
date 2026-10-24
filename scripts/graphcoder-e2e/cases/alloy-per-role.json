@@ -1,0 +1,167 @@
+{
+  "id": "alloy-per-role",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "selection": "roles",
+  "catalog": {
+    "a": {
+      "adapter": "anthropic",
+      "authentication": "optional",
+      "base_url": "{{url}}",
+      "models": {
+        "tiny": {
+          "capacity": {
+            "context_tokens": 32768,
+            "output_tokens": 1024
+          },
+          "features": {
+            "tools": true,
+            "images": false
+          }
+        }
+      },
+      "token_counter": {
+        "path": "count",
+        "adapter": "anthropic",
+        "response_field": "input_tokens",
+        "framing_tokens": 0
+      },
+      "max_event_bytes": 4096
+    },
+    "b": {
+      "adapter": "responses",
+      "authentication": "optional",
+      "base_url": "{{url}}",
+      "models": {
+        "tiny": {
+          "capacity": {
+            "context_tokens": 65536,
+            "output_tokens": 2048
+          },
+          "features": {
+            "tools": true,
+            "images": false
+          }
+        }
+      },
+      "token_counter": {
+        "path": "count",
+        "adapter": "responses",
+        "response_field": "input_tokens",
+        "framing_tokens": 0
+      },
+      "max_event_bytes": 4096
+    },
+    "alloys": {
+      "roles": {
+        "models": [
+          "a/tiny",
+          "b/tiny"
+        ],
+        "select": {
+          "per_role": {
+            "roles": {
+              "root": 0,
+              "worker": 1
+            },
+            "fallback": 0
+          }
+        }
+      }
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "path": "messages",
+          "user": "ALLOY_PARENT"
+        },
+        "tools": [
+          {
+            "id": "spawn",
+            "name": "spawn",
+            "arguments": {
+              "name": "worker",
+              "role": "worker",
+              "task": "ALLOY_CHILD"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "path": "responses",
+          "user": "ALLOY_CHILD"
+        },
+        "text": [
+          "child alloy done"
+        ]
+      },
+      {
+        "when": {
+          "path": "messages",
+          "user": "ALLOY_PARENT",
+          "tool_result": "worker"
+        },
+        "tools": [
+          {
+            "id": "wait",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "worker"
+              ],
+              "mode": "all"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "path": "messages",
+          "user": "ALLOY_PARENT",
+          "tool_result": "child alloy done"
+        },
+        "text": [
+          "role alloy done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "ALLOY_PARENT",
+      "answer": "role alloy done"
+    }
+  ],
+  "assert": {
+    "requests": 4,
+    "wire_contains": [
+      "a/tiny"
+    ],
+    "generation_counts": {
+      "messages": 3,
+      "responses": 1
+    },
+    "http": [
+      {
+        "path": "responses",
+        "body": {
+          "model": "tiny"
+        }
+      }
+    ],
+    "member_usage": {
+      "a/tiny": {
+        "usage": {
+          "output_tokens": 6,
+          "input_tokens": 192
+        }
+      }
+    }
+  }
+}

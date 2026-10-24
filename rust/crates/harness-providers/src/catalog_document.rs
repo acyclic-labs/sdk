@@ -1,4 +1,4 @@
-use crate::ProviderSpec;
+use crate::{AlloySpec, ProviderSpec};
 use serde::{
     Deserialize, Serialize,
     de::{MapAccess, Visitor},
@@ -9,6 +9,8 @@ use std::{collections::BTreeMap, fmt};
 pub(crate) struct CatalogDocument {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub alloys: BTreeMap<String, AlloySpec>,
     #[serde(flatten)]
     pub providers: BTreeMap<String, ProviderSpec>,
 }
@@ -24,14 +26,23 @@ impl<'de> Deserialize<'de> for CatalogDocument {
             fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
                 let mut document = CatalogDocument {
                     default_model: None,
+                    alloys: BTreeMap::new(),
                     providers: BTreeMap::new(),
                 };
+                let mut alloys_seen = false;
                 while let Some(key) = map.next_key::<String>()? {
                     if key == "default_model" {
                         if document.default_model.is_some() {
                             return Err(serde::de::Error::duplicate_field("default_model"));
                         }
                         document.default_model = Some(map.next_value()?);
+                    } else if key == "alloys" {
+                        if alloys_seen {
+                            return Err(serde::de::Error::duplicate_field("alloys"));
+                        }
+                        alloys_seen = true;
+                        let UniqueAlloys(alloys) = map.next_value()?;
+                        document.alloys = alloys;
                     } else {
                         if document.providers.contains_key(&key) {
                             return Err(serde::de::Error::custom("duplicate provider"));
@@ -43,6 +54,31 @@ impl<'de> Deserialize<'de> for CatalogDocument {
             }
         }
         decoder.deserialize_map(CatalogVisitor)
+    }
+}
+
+struct UniqueAlloys(BTreeMap<String, AlloySpec>);
+
+impl<'de> Deserialize<'de> for UniqueAlloys {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        struct Policies;
+        impl<'de> Visitor<'de> for Policies {
+            type Value = UniqueAlloys;
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("unique named alloy policies")
+            }
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut policies = BTreeMap::new();
+                while let Some(name) = map.next_key::<String>()? {
+                    if policies.contains_key(&name) {
+                        return Err(serde::de::Error::custom("duplicate alloy name"));
+                    }
+                    policies.insert(name, map.next_value()?);
+                }
+                Ok(UniqueAlloys(policies))
+            }
+        }
+        decoder.deserialize_map(Policies)
     }
 }
 

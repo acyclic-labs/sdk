@@ -112,7 +112,8 @@ pub(crate) use entry::capture_paths_batched;
 pub(crate) use entry::capture_subtrees_with_native_work;
 pub use entry::{
     HeldRoot, SearchRoot, capture_baseline, capture_held_paths, capture_paths,
-    capture_root_identity, capture_subtree, file_identity, hold_root, hold_search_root,
+    capture_recorded_metadata, capture_root_identity, capture_subtree, file_identity, hold_root,
+    hold_search_root,
 };
 #[cfg(feature = "native-mount")]
 pub(crate) use model::MAX_NATIVE_EXACT_CAPTURE_PATHS;
@@ -122,3 +123,6 @@ pub(crate) use names::namespace_to_host_path_with_work;
 pub use names::{host_path_to_namespace, namespace_to_host_path};
 #[cfg(windows)]
 pub(crate) use names::{namespace_component_wide, namespace_host_units_with_work};
+
+#[cfg(all(test, feature = "memory", not(acyclic_fs_loom)))]
+mod hard_link_regression;

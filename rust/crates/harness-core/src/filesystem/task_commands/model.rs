@@ -19,6 +19,8 @@ struct ModelExecution<P, A, O> {
 }
 
 struct ModelExecutionInput {
+    conversation_id: crate::ConversationId,
+    role: Option<String>,
     input: ModelContent,
     selected_context: Option<SelectedModelContext>,
     max_steps: u32,
@@ -174,6 +176,10 @@ where
             ModelExecution {
                 context,
                 command: ModelExecutionInput {
+                    conversation_id: command.conversation_id.unwrap_or_else(|| {
+                        crate::ConversationId::from_bytes(admission.task_id().into_bytes())
+                    }),
+                    role: command.role,
                     input: command.input,
                     selected_context: command.selected_context,
                     max_steps: command.max_steps,
@@ -214,6 +220,13 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<ModelTaskCommand> {
         let command: ModelTaskCommand = mail::decode_command(payload, io)?;
+        if command
+            .role
+            .as_deref()
+            .is_some_and(|role| role.trim().is_empty())
+        {
+            return Err(boundary(io, ErrorCode::Invalid, "agent role is empty"));
+        }
         self.model.as_ref().ok_or_else(|| {
             boundary(
                 io,
@@ -339,7 +352,9 @@ where
             })?
             .await?
             .with_compaction_policy(compaction.clone())
-            .with_summary_source(command.summary_source);
+            .with_summary_source(command.summary_source)
+            .with_conversation_id(command.conversation_id)
+            .with_role(command.role);
             #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
             let execution = execution.with_hooks(hooks);
             let execution = match command.max_output_tokens {
@@ -442,7 +457,9 @@ where
                 compaction,
                 command.max_output_tokens,
             )?
-            .with_summary_source(command.summary_source);
+            .with_summary_source(command.summary_source)
+            .with_conversation_id(command.conversation_id)
+            .with_role(command.role);
         let executor = if reconciliation_only {
             executor.into_reconciliation()
         } else {

@@ -1,0 +1,147 @@
+{
+  "id": "alloy-resume",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "selection": "mixed",
+  "catalog": {
+    "a": {
+      "adapter": "anthropic",
+      "authentication": "optional",
+      "base_url": "{{url}}",
+      "models": {
+        "tiny": {
+          "capacity": {
+            "context_tokens": 32768,
+            "output_tokens": 1024
+          },
+          "features": {
+            "tools": true,
+            "images": false
+          }
+        }
+      },
+      "token_counter": {
+        "path": "count",
+        "adapter": "anthropic",
+        "response_field": "input_tokens",
+        "framing_tokens": 0
+      },
+      "max_event_bytes": 4096
+    },
+    "b": {
+      "adapter": "responses",
+      "authentication": "optional",
+      "base_url": "{{url}}",
+      "models": {
+        "tiny": {
+          "capacity": {
+            "context_tokens": 65536,
+            "output_tokens": 2048
+          },
+          "features": {
+            "tools": true,
+            "images": false
+          }
+        }
+      },
+      "token_counter": {
+        "path": "count",
+        "adapter": "responses",
+        "response_field": "input_tokens",
+        "framing_tokens": 0
+      },
+      "max_event_bytes": 4096
+    },
+    "alloys": {
+      "mixed": {
+        "models": [
+          "a/tiny",
+          "b/tiny"
+        ],
+        "select": "round_robin"
+      }
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "path": "messages"
+        },
+        "hold": true
+      },
+      {
+        "when": {
+          "path": "messages"
+        },
+        "tools": [
+          {
+            "id": "alloy_write",
+            "name": "write",
+            "arguments": {
+              "path": "alloy.txt",
+              "text": "once\n",
+              "display_name": "alloy.txt",
+              "media_type": "text/plain"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "path": "responses",
+          "tool_result": "file"
+        },
+        "text": [
+          "alloy resumed"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "Resume the alloy",
+      "kill_on": {
+        "path": "messages",
+        "step": 0
+      }
+    },
+    {
+      "mode": "headless",
+      "text": "Resume the alloy",
+      "answer": "alloy resumed"
+    }
+  ],
+  "assert": {
+    "requests": 3,
+    "generation_paths": [
+      "messages",
+      "messages",
+      "responses"
+    ],
+    "files": {
+      "alloy.txt": "once\n"
+    },
+    "wire_contains": [
+      "a/tiny",
+      "b/tiny"
+    ],
+    "member_usage": {
+      "a/tiny": {
+        "usage": {
+          "output_tokens": 2,
+          "input_tokens": 64
+        }
+      },
+      "b/tiny": {
+        "usage": {
+          "output_tokens": 2,
+          "input_tokens": 64
+        }
+      }
+    }
+  }
+}

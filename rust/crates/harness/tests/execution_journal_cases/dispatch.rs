@@ -87,6 +87,7 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
     assert!(journal_a.replay(paged, 0, 64, None)?.await?.is_empty());
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
+            conversation_id: None,
             model: Model::new("fixture".into(), "paged".into(), "1".into(), Value::Null)?,
             messages: vec![ModelMessage {
                 role: ModelRole::User,

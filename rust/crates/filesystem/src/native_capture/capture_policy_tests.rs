@@ -140,7 +140,8 @@ async fn derived_stamps_alone_never_make_a_new_version() -> Result<(), Box<dyn s
         .read_metadata(record.file_id, &work, &cancellation)
         .await?;
 
-    // Setting the access time advances it as a read does and, on Unix, advances the status-change time as an unrepresented named attribute does.
+    // Advance the access time as a read does. Some hosts leave ctime unchanged
+    // for an access-only edit, so the negative control compares actual metadata.
     let captured = std::fs::metadata(&file)?;
     let accessed = captured.accessed()? + std::time::Duration::from_secs(3_600);
     std::fs::File::options()
@@ -150,15 +151,12 @@ async fn derived_stamps_alone_never_make_a_new_version() -> Result<(), Box<dyn s
     // Negative control: the host stamps now differ from the recorded ones, so whole-record equality alone would stage the file again.
     let accessed_ns = i64::try_from(accessed.duration_since(std::time::UNIX_EPOCH)?.as_nanos())?;
     assert_ne!(prior.accessed_ns, MetadataField::Value(accessed_ns));
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt as _;
-        let changed = std::fs::metadata(&file)?;
-        assert_ne!(
-            prior.changed_ns,
-            MetadataField::Value(changed.ctime() * 1_000_000_000 + changed.ctime_nsec())
-        );
-    }
+    let held = HostRoot::open(source.path(), &mut crate::native_host::ordinary_work())
+        .map_err(crate::native_host::ordinary_error)?;
+    assert_ne!(
+        prior,
+        capture_metadata(&test_host_stat(&held, Path::new("README.md"))?)
+    );
     let mut unchanged = rescan(&initial)?;
     let receipt = capture_subtrees_with_native_work(
         &mut unchanged,
@@ -227,6 +225,97 @@ async fn derived_stamps_alone_never_make_a_new_version() -> Result<(), Box<dyn s
     .await?;
     assert_eq!(receipt.value.changed_paths, 1);
     assert_ne!(touched.root(), rescan(&initial)?.root());
+    Ok(())
+}
+
+#[tokio::test]
+async fn recorded_metadata_capture_retains_backdated_access_without_reading_the_body()
+-> Result<(), Box<dyn std::error::Error>> {
+    assert_recorded_metadata_capture(false).await
+}
+
+#[tokio::test]
+#[should_panic(expected = "metadata capture must not read file bodies")]
+async fn recorded_metadata_negative_control_detects_complete_body_capture() {
+    assert_recorded_metadata_capture(true).await.unwrap();
+}
+
+async fn assert_recorded_metadata_capture(
+    complete: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let source = tempfile::tempdir()?;
+    let file = source.path().join("file");
+    std::fs::write(&file, b"body")?;
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| cause)?;
+    let mut checkout = native_checkout(&work)
+        .await
+        .map_err(|error| format!("create capture fixture: {error:?}"))?;
+    let options = options(source.path(), 8)?;
+    let policy = CapturePolicy::default();
+    capture_baseline(
+        &mut checkout,
+        &options,
+        &policy,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await
+    .map_err(|error| format!("capture initial baseline: {error:?}"))?;
+    std::fs::File::options()
+        .write(true)
+        .open(&file)?
+        .set_times(std::fs::FileTimes::new().set_accessed(std::time::UNIX_EPOCH))?;
+    let receipt = if complete {
+        super::entry::capture_recorded_with_intent(
+            &mut checkout,
+            &options,
+            &policy,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            CaptureIntent::Complete,
+        )
+        .await
+        .map_err(|error| format!("capture complete metadata control: {error:?}"))?
+    } else {
+        capture_recorded_metadata(
+            &mut checkout,
+            &options,
+            &policy,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(|error| format!("capture recorded metadata: {error:?}"))?
+    };
+    assert_eq!(
+        receipt.value.staged_file_bytes, 0,
+        "metadata capture must not read file bodies"
+    );
+    assert_eq!(receipt.value.changed_paths, 1);
+    assert_eq!(std::fs::metadata(&file)?.accessed()?, std::time::UNIX_EPOCH);
+    let path = path("/file")?;
+    // Capture replaced the candidate and its original accounting scope. The old
+    // native ledger must not be used to observe the replacement's dependencies.
+    assert!(matches!(
+        checkout
+            .lookup_batch_no_follow(std::slice::from_ref(&path), &work, &cancellation)
+            .await,
+        Err(crate::FsError::NativeKernel(
+            crate::NativeTreeMaterializationError::InvalidLayout
+        ))
+    ));
+    let lookup = checkout
+        .lookup_no_follow(&path, WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(|error| format!("lookup captured file: {error:?}"))?;
+    let record = lookup.value.record.ok_or("file disappeared")?;
+    let metadata = checkout
+        .read_metadata(record.file_id, WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(|error| format!("read captured metadata: {error:?}"))?;
+    assert_eq!(metadata.value.accessed_ns, MetadataField::Value(0));
     Ok(())
 }
 

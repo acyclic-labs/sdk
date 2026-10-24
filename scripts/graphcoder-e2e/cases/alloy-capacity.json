@@ -1,0 +1,82 @@
+{
+  "id": "alloy-capacity",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "selection": "bounded",
+  "catalog": {
+    "a": {
+      "adapter": "anthropic",
+      "authentication": "optional",
+      "base_url": "{{url}}",
+      "models": {
+        "tiny": {
+          "capacity": {
+            "context_tokens": 65536,
+            "output_tokens": 2048
+          },
+          "features": {
+            "tools": true,
+            "images": false
+          }
+        }
+      },
+      "token_counter": {
+        "path": "count",
+        "adapter": "anthropic",
+        "response_field": "input_tokens",
+        "framing_tokens": 0
+      },
+      "max_event_bytes": 4096
+    },
+    "b": {
+      "adapter": "responses",
+      "authentication": "optional",
+      "base_url": "{{url}}",
+      "models": {
+        "tiny": {
+          "capacity": {
+            "context_tokens": 2048,
+            "output_tokens": 256
+          },
+          "features": {
+            "tools": true,
+            "images": false
+          }
+        }
+      },
+      "token_counter": {
+        "path": "count",
+        "adapter": "responses",
+        "response_field": "input_tokens",
+        "framing_tokens": 0
+      },
+      "max_event_bytes": 4096
+    },
+    "alloys": {
+      "bounded": {
+        "models": [
+          "a/tiny",
+          "b/tiny"
+        ],
+        "select": "first"
+      }
+    }
+  },
+  "model": {
+    "input_tokens": 2048,
+    "steps": []
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "Respect the smallest capacity",
+      "exit": 1,
+      "stderr_contains": ["compaction budgets exceed selected model capacity"]
+    }
+  ],
+  "assert": {
+    "requests": 0
+  }
+}

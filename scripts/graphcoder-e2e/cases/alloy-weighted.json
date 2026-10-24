@@ -1,0 +1,202 @@
+{
+  "id": "alloy-weighted",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "selection": "mixed",
+  "catalog": {
+    "a": {
+      "adapter": "anthropic",
+      "authentication": "optional",
+      "base_url": "{{url}}",
+      "models": {
+        "tiny": {
+          "capacity": {
+            "context_tokens": 32768,
+            "output_tokens": 1024
+          },
+          "features": {
+            "tools": true,
+            "images": false
+          }
+        }
+      },
+      "token_counter": {
+        "path": "count",
+        "adapter": "anthropic",
+        "response_field": "input_tokens",
+        "framing_tokens": 0
+      },
+      "max_event_bytes": 4096
+    },
+    "b": {
+      "adapter": "responses",
+      "authentication": "optional",
+      "base_url": "{{url}}",
+      "models": {
+        "tiny": {
+          "capacity": {
+            "context_tokens": 65536,
+            "output_tokens": 2048
+          },
+          "features": {
+            "tools": true,
+            "images": false
+          }
+        }
+      },
+      "token_counter": {
+        "path": "count",
+        "adapter": "responses",
+        "response_field": "input_tokens",
+        "framing_tokens": 0
+      },
+      "max_event_bytes": 4096
+    },
+    "alloys": {
+      "mixed": {
+        "models": [
+          "a/tiny",
+          "b/tiny"
+        ],
+        "select": {
+          "weighted": {
+            "weights": [
+              2,
+              1
+            ]
+          }
+        }
+      }
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "tools": [
+          {
+            "id": "weighted_0",
+            "name": "write",
+            "arguments": {
+              "path": "weighted-0.txt",
+              "text": "0",
+              "display_name": "weighted-0.txt",
+              "media_type": "text/plain"
+            }
+          }
+        ]
+      },
+      {
+        "tools": [
+          {
+            "id": "weighted_1",
+            "name": "write",
+            "arguments": {
+              "path": "weighted-1.txt",
+              "text": "1",
+              "display_name": "weighted-1.txt",
+              "media_type": "text/plain"
+            }
+          }
+        ]
+      },
+      {
+        "tools": [
+          {
+            "id": "weighted_2",
+            "name": "write",
+            "arguments": {
+              "path": "weighted-2.txt",
+              "text": "2",
+              "display_name": "weighted-2.txt",
+              "media_type": "text/plain"
+            }
+          }
+        ]
+      },
+      {
+        "tools": [
+          {
+            "id": "weighted_3",
+            "name": "write",
+            "arguments": {
+              "path": "weighted-3.txt",
+              "text": "3",
+              "display_name": "weighted-3.txt",
+              "media_type": "text/plain"
+            }
+          }
+        ]
+      },
+      {
+        "tools": [
+          {
+            "id": "weighted_4",
+            "name": "write",
+            "arguments": {
+              "path": "weighted-4.txt",
+              "text": "4",
+              "display_name": "weighted-4.txt",
+              "media_type": "text/plain"
+            }
+          }
+        ]
+      },
+      {
+        "text": [
+          "weighted done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "Weighted fixed operation",
+      "answer": "weighted done"
+    }
+  ],
+  "assert": {
+    "requests": 6,
+    "generation_paths": [
+      "messages",
+      "messages",
+      "responses",
+      "messages",
+      "messages",
+      "responses"
+    ],
+    "generation_counts": {
+      "messages": 4,
+      "responses": 2
+    },
+    "generation_period": 3,
+    "files": {
+      "weighted-0.txt": "0",
+      "weighted-1.txt": "1",
+      "weighted-2.txt": "2",
+      "weighted-3.txt": "3",
+      "weighted-4.txt": "4"
+    },
+    "wire_contains": [
+      "a/tiny",
+      "b/tiny",
+      "members"
+    ],
+    "member_usage": {
+      "a/tiny": {
+        "usage": {
+          "output_tokens": 8,
+          "input_tokens": 256
+        }
+      },
+      "b/tiny": {
+        "usage": {
+          "output_tokens": 4,
+          "input_tokens": 128
+        }
+      }
+    }
+  }
+}

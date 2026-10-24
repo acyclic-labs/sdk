@@ -40,6 +40,9 @@ impl NativeSourceWatch {
         if !retiring {
             work.check()?;
         }
+        if let Some(access) = &self.access {
+            access.stop(work, retiring, wait)?;
+        }
         self.shared.delivery.ensure_stop_available()?;
         check_wait(wait)?;
         if self.is_stopped() {
@@ -174,7 +177,7 @@ impl NativeSourceWatch {
 
 impl Drop for NativeSourceWatch {
     fn drop(&mut self) {
-        if self.is_stopped() {
+        if self.shared.stop_completed.load(Ordering::Acquire) {
             return;
         }
         if self.shared.delivery.original.is_none() {

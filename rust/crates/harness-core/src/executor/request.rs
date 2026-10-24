@@ -216,6 +216,7 @@ impl StockExecution<'_> {
             0
         };
         context.messages = std::mem::take(&mut request.messages);
+        self.demote_stored_tool_outputs(&mut context)?;
         self.context_pipeline().project_optional(
             &mut context,
             prefix_count,
@@ -274,7 +275,8 @@ impl StockExecution<'_> {
             }
         }
         Ok(ModelRequest {
-            model: crate::model::clone_model(&self.stock.model, self.io)?,
+            conversation_id: self.conversation_id(),
+            model: crate::model::clone_model(self.model(), self.io)?,
             messages,
             tools: if tools_required {
                 stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)?
@@ -282,6 +284,15 @@ impl StockExecution<'_> {
                 Vec::new()
             },
             max_output_tokens: self.output_budget()?,
+        })
+    }
+
+    pub(super) fn conversation_id(&self) -> Option<crate::ConversationId> {
+        self.stock.conversation_id.or_else(|| {
+            self.stock
+                .task
+                .as_ref()
+                .map(|(_, task, _)| crate::ConversationId::from_bytes(task.into_bytes()))
         })
     }
 }

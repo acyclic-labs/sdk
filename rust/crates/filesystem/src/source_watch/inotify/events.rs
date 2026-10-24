@@ -258,6 +258,14 @@ impl Shared {
                     & (REBINDING
                         | libc::IN_MODIFY
                         | libc::IN_ATTRIB
+                        // Linux reports futimens(atime, UTIME_OMIT) as access,
+                        // just like a read. Only the capture consumer observes
+                        // it; demand readers must not invalidate themselves.
+                        | if self.delivery.events.is_some() {
+                            libc::IN_ACCESS
+                        } else {
+                            0
+                        }
                         | if self.delivery.events.is_none() {
                             libc::IN_CLOSE_WRITE
                         } else {

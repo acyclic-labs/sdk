@@ -126,9 +126,12 @@ pub trait ContextStage: acyclic_stream::ProviderPlatform {
     }
     /// Reads the final context and offers one optional message for insertion.
     /// Required messages, inherited prefixes and input markers stay immutable.
+    /// `prefix_messages` counts inherited messages; insertion positions are local
+    /// to the suffix after that prefix.
     fn project_optional(
         &self,
         _context: &Context,
+        _prefix_messages: usize,
         _limits: Limits,
         _io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<ContextInsertion>> {
@@ -415,7 +418,9 @@ impl ContextPipeline {
             ..limits
         };
         for stage in self.0.iter().filter(|stage| stage.has_optional()) {
-            if let Some(insertion) = stage.project_optional(context, optional_limits, io)? {
+            if let Some(insertion) =
+                stage.project_optional(context, prefix_messages, optional_limits, io)?
+            {
                 insertion.insert(context, prefix_messages, io)?;
             }
             validate_projected_context(context, limits, io)?;

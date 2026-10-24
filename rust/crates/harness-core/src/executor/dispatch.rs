@@ -14,19 +14,41 @@ impl StockExecution<'_> {
         purpose: ModelPurpose,
         phase: &mut DispatchPhase,
     ) -> Result<Vec<ModelEvent>> {
-        let cancellation = journal.model_cancellation();
-        let execution: acyclic_stream::BoxProviderFuture<'_, Result<Vec<ModelEvent>>> = Box::pin(
-            self.dispatch_model_step(journal, input, step, prior_messages, purpose, phase),
-        );
-        match futures::future::select(cancellation, execution).await {
-            Either::Left((result, _)) => {
+        let cancellation =
+            super::stream_tools::ModelCancellation::new(journal.model_cancellation());
+        let cancelled = std::pin::pin!(cancellation.wait());
+        let active = std::sync::atomic::AtomicBool::new(false);
+        let stopped = std::sync::atomic::AtomicBool::new(false);
+        let control = super::stream_tools::StreamControl {
+            active: &active,
+            stop: &stopped,
+            cancellation: &cancellation,
+        };
+        let execution: acyclic_stream::BoxProviderFuture<'_, Result<Vec<ModelEvent>>> =
+            Box::pin(self.dispatch_model_step(
+                journal,
+                input,
+                step,
+                prior_messages,
+                (purpose, control, phase),
+            ));
+        let outcome = match futures::future::select(cancelled, execution).await {
+            Either::Left((result, execution)) => {
+                if active.load(std::sync::atomic::Ordering::Acquire) {
+                    stopped.store(true, std::sync::atomic::Ordering::Release);
+                    // The stream owner drains every admitted tool before returning.
+                    // Before stream admission there are no tool effects to retain.
+                    let _drained = execution.await;
+                }
                 result?;
                 Err(Error::InteractionRejected(
                     crate::InteractionRejection::Cancelled,
                 ))
             }
             Either::Right((result, _)) => result,
-        }
+        };
+        cancellation.finish()?;
+        outcome
     }
 
     /// Replays or resolves one model step.
@@ -36,9 +58,13 @@ impl StockExecution<'_> {
         input: &TurnInput,
         step: u32,
         prior_messages: &[ModelMessage],
-        purpose: ModelPurpose,
-        phase: &mut DispatchPhase,
+        turn: (
+            ModelPurpose,
+            super::stream_tools::StreamControl<'_, '_>,
+            &mut DispatchPhase,
+        ),
     ) -> Result<Vec<ModelEvent>> {
+        let (purpose, control, phase) = turn;
         let io = self.io;
         self.require_model_producer().await?;
         let RetainedModelStep {
@@ -124,11 +150,14 @@ impl StockExecution<'_> {
             let generated = attempt.generate(self.stock.provider.as_ref(), request, dispatch);
             Either::Right(generated)
         };
+        control
+            .active
+            .store(true, std::sync::atomic::Ordering::Release);
         let observed = self
             .record_model_events(
                 journal,
                 input.operation_id,
-                (step, purpose, purpose_key),
+                (step, purpose, purpose_key, control),
                 replayed,
                 &mut admission,
                 stream,
@@ -211,8 +240,10 @@ impl StockExecution<'_> {
         let (step, prior_messages, purpose) = turn;
         let request = match retained_request {
             Some(recorded) => {
+                let selected = self.recorded_model(&recorded.request().model)?;
                 if purpose == ModelPurpose::Summary
                     && self
+                        .for_model(selected)
                         .prepare_request(input, step, prior_messages)
                         .await?
                         .request_digest()
@@ -228,7 +259,12 @@ impl StockExecution<'_> {
                 self.prepared_response(journal, input, step, prior_messages, phase)
                     .await?
             }
-            None => self.prepare_request(input, step, prior_messages).await?,
+            None => {
+                let selected = self.selected_for_turn(input, step)?;
+                self.for_model(selected)
+                    .prepare_request(input, step, prior_messages)
+                    .await?
+            }
         };
         self.verify_model_request_content(journal, &request).await?;
         Ok(request)
@@ -398,67 +434,58 @@ impl StockExecution<'_> {
         &self,
         journal: &dyn ExecutionJournal,
         operation_id: OperationId,
-        turn: (u32, ModelPurpose, &str),
+        turn: (
+            u32,
+            ModelPurpose,
+            &str,
+            super::stream_tools::StreamControl<'_, '_>,
+        ),
         mut observed: Vec<ModelEvent>,
         admission: &mut ModelEventAdmission,
         stream: impl futures::Stream<Item = Result<ModelEvent>> + Unpin,
     ) -> Result<Vec<ModelEvent>> {
-        let (step, purpose, purpose_key) = turn;
+        use std::{pin::Pin, task::Poll};
+        enum Next {
+            Event(Option<Result<ModelEvent>>),
+            Cancelled,
+        }
+        let (step, purpose, purpose_key, control) = turn;
         let io = self.io;
-        {
-            let mut stream = stream;
+        let mut stream = stream;
+        let mut cancelled = std::pin::pin!(self.stream_cancellation(control.cancellation));
+        // Every first poll of a tool passes the same cancellation boundary,
+        // including polls while a model record is being appended.
+        let mut tools = super::stream_tools::StreamTools::new(control.stop, cancelled.as_mut());
+        let outcome = async {
             loop {
-                #[cfg(feature = "filesystem")]
-                let next = if let Some(cancellation) = self
-                    .original_context()
-                    .and_then(crate::runtime::TaskContext::invocation_cancellation)
-                {
-                    let next = {
-                        let cancelled = std::pin::pin!(cancellation.cancelled());
-                        let event = std::pin::pin!(stream.next());
-                        match futures::future::select(cancelled, event).await {
-                            Either::Left(_) => None,
-                            Either::Right((event, _)) => Some(event),
-                        }
-                    };
-                    match next {
-                        Some(event) => event,
-                        None => {
-                            drop(stream);
-                            if !admission.completed {
-                                let key = with_history_io(io, |work| {
-                                    preparation_format(
-                                        format_args!("{purpose_key}:{step}:stopped"),
-                                        work,
-                                    )
-                                })?;
-                                journal
-                                    .append(
-                                        operation_id,
-                                        &key,
-                                        &ExecutionEvent::ModelStopped { step, purpose },
-                                        io,
-                                    )?
-                                    .await?;
-                            }
-                            return Err(Error::InteractionRejected(
-                                crate::InteractionRejection::Cancelled,
-                            ));
-                        }
+                let next = futures::future::poll_fn(|cx| {
+                    tools.poll(cx);
+                    if control.stop.load(std::sync::atomic::Ordering::Acquire) {
+                        return Poll::Ready(Next::Cancelled);
                     }
-                } else {
-                    stream.next().await
+                    Pin::new(&mut stream).poll_next(cx).map(Next::Event)
+                })
+                .await;
+                let event = match next {
+                    Next::Cancelled => {
+                        tools.stop();
+                        if !admission.completed {
+                            tools
+                                .during(self.persist_model_stopped(
+                                    journal,
+                                    operation_id,
+                                    (step, purpose, purpose_key),
+                                ))
+                                .await?;
+                        }
+                        return Err(Error::InteractionRejected(
+                            crate::InteractionRejection::Cancelled,
+                        ));
+                    }
+                    Next::Event(None) => break,
+                    Next::Event(Some(event)) => event?,
                 };
-                #[cfg(not(feature = "filesystem"))]
-                let next = stream.next().await;
-                let Some(event) = next else {
-                    break;
-                };
-                let event = event?;
                 let index = observed.len();
-                let key = with_history_io(io, |work| {
-                    preparation_format(format_args!("{purpose_key}:{step}:{index}"), work)
-                })?;
                 stock_vec_push(&mut observed, event, io)?;
                 let event = observed.last().ok_or_else(|| {
                     stock_boundary(
@@ -468,22 +495,110 @@ impl StockExecution<'_> {
                     )
                 })?;
                 admission.observe(event, self.stock.limits, io)?;
-                let reference = stage_json(journal, operation_id, &key, event, io).await?;
-                journal
-                    .append(
+                tools
+                    .during(self.persist_model_event(
+                        journal,
                         operation_id,
-                        &key,
-                        &ExecutionEvent::Model {
-                            step,
-                            purpose,
-                            event: reference,
-                        },
-                        io,
-                    )?
+                        (step, purpose, purpose_key),
+                        index,
+                        event,
+                    ))
                     .await?;
+                if self.stream_tools
+                    && purpose == ModelPurpose::Response
+                    && let ModelEvent::ToolCall(call) = event
+                {
+                    tools.admit(self, journal, operation_id, step, call)?;
+                }
             }
+            Ok(())
+        }
+        .await;
+        // Drop the provider stream first, then settle owned calls even on EOF,
+        // malformed events, transport failure, or cancellation.
+        drop(stream);
+        if outcome.is_err() {
+            tools.stop();
+        }
+        let stopped = tools.drain().await?;
+        outcome?;
+        if stopped {
+            return Err(Error::InteractionRejected(
+                crate::InteractionRejection::Cancelled,
+            ));
         }
         Ok(observed)
+    }
+    async fn stream_cancellation(
+        &self,
+        cancellation: &super::stream_tools::ModelCancellation<'_>,
+    ) -> Result<()> {
+        #[cfg(feature = "filesystem")]
+        let native_cancellation = self
+            .original_context()
+            .and_then(crate::runtime::TaskContext::invocation_cancellation);
+        let native = std::pin::pin!(async {
+            #[cfg(feature = "filesystem")]
+            match native_cancellation {
+                Some(cancellation) => cancellation.cancelled().await,
+                None => futures::future::pending::<()>().await,
+            }
+            #[cfg(not(feature = "filesystem"))]
+            futures::future::pending::<()>().await;
+            Ok::<(), Error>(())
+        });
+        match futures::future::select(std::pin::pin!(cancellation.wait()), native).await {
+            Either::Left((result, _)) | Either::Right((result, _)) => result,
+        }
+    }
+
+    async fn persist_model_stopped(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation: OperationId,
+        turn: (u32, ModelPurpose, &str),
+    ) -> Result<()> {
+        let (step, purpose, purpose_key) = turn;
+        let key = with_history_io(self.io, |work| {
+            preparation_format(format_args!("{purpose_key}:{step}:stopped"), work)
+        })?;
+        let _order = self.journal_order.mutex().lock().await;
+        journal
+            .append(
+                operation,
+                &key,
+                &ExecutionEvent::ModelStopped { step, purpose },
+                self.io,
+            )?
+            .await
+    }
+
+    async fn persist_model_event(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation: OperationId,
+        turn: (u32, ModelPurpose, &str),
+        index: usize,
+        event: &ModelEvent,
+    ) -> Result<()> {
+        let (step, purpose, purpose_key) = turn;
+        let key = with_history_io(self.io, |work| {
+            preparation_format(format_args!("{purpose_key}:{step}:{index}"), work)
+        })?;
+        let reference = stage_json(journal, operation, &key, event, self.io).await?;
+        let _order = self.journal_order.mutex().lock().await;
+        journal
+            .append(
+                operation,
+                &key,
+                &ExecutionEvent::Model {
+                    step,
+                    purpose,
+                    event: reference,
+                },
+                self.io,
+            )?
+            .await
     }
 
     async fn require_model_producer(&self) -> Result<()> {

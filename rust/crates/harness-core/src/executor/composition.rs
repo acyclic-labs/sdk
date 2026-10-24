@@ -16,7 +16,9 @@ impl StockExecutor {
         tools: ToolRegistry,
     ) -> Self {
         Self {
+            conversation_id: None,
             model,
+            role: None,
             summary_source: None,
             max_output_tokens: None,
             provider,
@@ -34,6 +36,20 @@ impl StockExecutor {
             compaction: None,
             reconciliation_only: false,
         }
+    }
+
+    /// Binds the admitted agent role to deterministic model selection.
+    #[must_use]
+    pub fn with_role(mut self, role: Option<String>) -> Self {
+        self.role = role;
+        self
+    }
+
+    /// Binds model steps and their summaries to one retained conversation.
+    #[must_use]
+    pub fn with_conversation_id(mut self, conversation: crate::ConversationId) -> Self {
+        self.conversation_id = Some(conversation);
+        self
     }
 
     /// Sets the caller's output token budget for each model request.

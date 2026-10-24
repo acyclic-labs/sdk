@@ -111,7 +111,12 @@ impl NativeSourceWatch {
                 .and_then(|path| std::ffi::CStr::from_bytes_with_nul(path).ok())
                 .ok_or(DemandError::InvalidRequest)?;
             work.started_io(READ)?;
-            let descriptor = hub.add(initialized, root_path, WATCHED, hub::Interest::All)?;
+            let descriptor = hub.add(
+                initialized,
+                root_path,
+                initialized.watched_mask(),
+                hub::Interest::All,
+            )?;
             watches.push((PathBuf::new(), descriptor));
             initialized.root.store(
                 root.take()

@@ -120,6 +120,7 @@ impl TaskContext {
                 bound.min(self.scope.limits().model_steps)
             });
         let request = ModelRequest {
+            conversation_id: None,
             model: binding.model.clone(),
             messages,
             tools,

@@ -165,6 +165,41 @@ impl NativeMaterializationWork {
     pub fn shares_ledger(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.state, &other.state)
     }
+    /// Whether retained materializations have exactly the same authority and accounting scope.
+    pub fn shares_materialization_scope(&self, other: &Self) -> bool {
+        // Exhaustive destructuring makes adding an unchecked scope field a compile error.
+        let Self {
+            state,
+            resource,
+            capture_origin,
+            invocation,
+            window,
+            recheck_items,
+            #[cfg(feature = "native-mount")]
+            execution,
+        } = self;
+        fn same<T>(a: &Option<Arc<T>>, b: &Option<Arc<T>>) -> bool {
+            match (a, b) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+        }
+        let capture = match (capture_origin, &other.capture_origin) {
+            (Some(a), Some(b)) => std::sync::Weak::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        let common = Arc::ptr_eq(state, &other.state)
+            && same(resource, &other.resource)
+            && same(invocation, &other.invocation)
+            && same(window, &other.window)
+            && capture
+            && *recheck_items == other.recheck_items;
+        #[cfg(feature = "native-mount")]
+        let common = common && same(execution, &other.execution);
+        common
+    }
     pub(crate) fn shares_resource_allowance(&self, other: &Self) -> bool {
         match (&self.resource, &other.resource) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),

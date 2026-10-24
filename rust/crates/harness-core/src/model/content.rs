@@ -111,6 +111,14 @@ pub enum ModelDataPart {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ToolResultContent {
+    /// Bounded preview of a complete result retained in the task's readable private volume.
+    Stored {
+        /// Immutable full projection; this reference never expands into the model request.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
+        file: Box<FileRef>,
+        /// UTF-8 head and tail, or empty once history has demoted this to a reference.
+        preview: String,
+    },
     /// JSON projection.
     Json {
         /// Schema-defined JSON value.
@@ -239,6 +247,10 @@ impl ModelContent {
         self.parts().iter().flat_map(|part| {
             let direct = match part {
                 ModelContentPart::File { file, policy } => Some((file, policy)),
+                ModelContentPart::ToolResult {
+                    content: ToolResultContent::Stored { file, .. },
+                    ..
+                } => Some((file.as_ref(), &FileProjectionPolicy::Reference)),
                 _ => None,
             };
             let data = match part {
@@ -296,6 +308,12 @@ impl ToolResultContent {
     ) -> Result<()> {
         history_step(work, 1)?;
         limits.validate(work)?;
+        if let Self::Stored { file, preview } = self {
+            limits.validate_file(file, work)?;
+            if preview.len() > crate::executor::TOOL_OUTPUT_PREVIEW_BYTES {
+                return Err(invalid(work, "stored tool preview exceeds its fixed bound"));
+            }
+        }
         if let Self::Parts { parts } = self {
             if parts.len() > limits.attachments.saturating_add(1) {
                 return Err(invalid(work, "tool result exceeds attachment limit"));

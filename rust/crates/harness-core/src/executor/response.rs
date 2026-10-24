@@ -55,6 +55,7 @@ impl StockExecution<'_> {
             )
         };
         let projection = ResponseProjection {
+            model: crate::model::clone_model(self.model(), self.io)?,
             context: projection,
             canonical,
             checkpoint: None,
@@ -137,12 +138,14 @@ impl StockExecution<'_> {
                 "response projection was prepared more than once",
             ));
         }
-        let (mut projection, accounting, prepared) = match first {
+        let (projection, accounting, prepared) = match first {
             None => {
                 if self.stock.reconciliation_only {
                     return Err(Error::Indeterminate(input.operation_id));
                 }
-                self.capture_response(journal, input, step, prior_messages, tail)
+                let selected = self.selected_for_turn(input, step)?;
+                self.for_model(selected)
+                    .capture_response(journal, input, step, prior_messages, tail)
                     .await?
             }
             Some((reference, accounting)) => (
@@ -158,6 +161,30 @@ impl StockExecution<'_> {
                 None,
             ),
         };
+        let selected = self.recorded_model(&projection.model)?;
+        self.for_model(selected)
+            .finish_prepared_response(
+                journal,
+                (input, step),
+                projection,
+                accounting,
+                prepared,
+                (&records, phase),
+            )
+            .await
+    }
+
+    async fn finish_prepared_response(
+        &self,
+        journal: &dyn ExecutionJournal,
+        turn: (&TurnInput, u32),
+        mut projection: ResponseProjection,
+        accounting: Option<ContextAccounting>,
+        prepared: Option<crate::model::PreparedModelRequest>,
+        retained: (&[ExecutionRecord], &mut DispatchPhase),
+    ) -> Result<crate::model::PreparedModelRequest> {
+        let (records, phase) = retained;
+        let (input, step) = turn;
         // Fresh projections were validated before their exact request was
         // encoded. Retained projections still cross the storage boundary.
         if prepared.is_none() {
@@ -200,7 +227,7 @@ impl StockExecution<'_> {
             (input, step),
             (projection, accounting),
             prepared,
-            &records,
+            records,
             phase,
         )
         .await
@@ -246,7 +273,7 @@ impl StockExecution<'_> {
                 self.stock.limits,
                 self.io,
             )?;
-            if retained.canonical != projection.canonical {
+            if retained.canonical != projection.canonical || retained.model != projection.model {
                 return Err(stock_boundary(
                     self.io,
                     crate::wire::ErrorCode::Storage,

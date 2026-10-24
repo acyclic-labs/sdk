@@ -24,6 +24,7 @@ fn provider() -> HostModel {
 fn prepared(revision: &str) -> Result<PreparedModelRequest> {
     PreparedModelRequest::prepare(
         ModelRequest {
+            conversation_id: None,
             model: Model::new(
                 "accounting".into(),
                 "model".into(),

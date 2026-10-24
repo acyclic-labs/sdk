@@ -68,6 +68,7 @@ impl EnvironmentFacts {
     pub(super) fn project(
         &self,
         context: &Context,
+        prefix_messages: usize,
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<Option<ContextInsertion>> {
@@ -80,7 +81,7 @@ impl EnvironmentFacts {
         let mut bodies = u64::MAX;
         crate::model::reserve_instruction_bodies(&context.messages, &mut bodies, io)?;
         let wrapper = ModelMessage {
-            role: ModelRole::System,
+            role: ModelRole::User,
             content: ModelContent::Text(String::new()),
         };
         let wrapper = crate::executor::with_history_io(io, |work| {
@@ -138,9 +139,12 @@ impl EnvironmentFacts {
             )
         })?;
         Ok(Some(ContextInsertion {
-            local_index: 0,
+            local_index: context
+                .current_input_index
+                .map_or(context.messages.len(), |index| index as usize)
+                .saturating_sub(prefix_messages),
             message: ModelMessage {
-                role: ModelRole::System,
+                role: ModelRole::User,
                 content: ModelContent::Text(text),
             },
         }))
@@ -217,6 +221,36 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn environment_preserves_inherited_static_and_history_prefix() -> Result<()> {
+        let message = |value: &str| ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Text(value.into()),
+        };
+        let prefix = vec![message("inherited"), message("pinned"), message("history")];
+        for date in ["2026-10-23", "2026-10-24"] {
+            let mut context = Context {
+                messages: prefix.clone(),
+                current_input_index: Some(3),
+                ..Context::default()
+            };
+            context.messages.push(message("current"));
+            let mut environment = facts("/bound".into());
+            environment.current_date = date.into();
+            let insertion = environment
+                .project(&context, 1, Limits::default(), None)?
+                .ok_or_else(|| crate::Error::Invalid("fixture environment was omitted".into()))?;
+            insertion.insert(&mut context, 1, None)?;
+            assert!(context.messages.starts_with(&prefix));
+            assert_eq!(context.current_input_index, Some(4));
+            assert_eq!(
+                context.messages.get(3).map(|message| message.role),
+                Some(ModelRole::User)
+            );
+        }
+        Ok(())
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(32))]
         #[test]
@@ -228,7 +262,7 @@ mod tests {
                 current_input_index: Some(0), ..Default::default()
             };
             let limits = Limits { render_bytes: budget, context_messages: messages, ..Limits::default() };
-            if let Some(insertion) = facts(cwd).project(&context, limits, None)? {
+            if let Some(insertion) = facts(cwd).project(&context, 0, limits, None)? {
                 insertion.insert(&mut context, 0, None)?;
                 prop_assert_eq!(context.current_input_index, Some(1));
                 prop_assert!(crate::contract::canonical_json_bytes(&context)?.len() as u64 <= budget);

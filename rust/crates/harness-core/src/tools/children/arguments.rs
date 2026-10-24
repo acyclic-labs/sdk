@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SpawnInput {
+    /// Optional agent role; omission uses the host's configured child role.
+    pub role: Option<String>,
     /// Task instructions for the child.
     pub task: String,
     /// Optional child name, scoped to this parent.

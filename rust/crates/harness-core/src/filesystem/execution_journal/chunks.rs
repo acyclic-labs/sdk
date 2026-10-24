@@ -2,6 +2,11 @@
 use super::*;
 use crate::task_volume::{Channel, Component, FileKey, FileValue, TaskFile};
 
+struct ModelPayload {
+    channel: Option<Channel>,
+    bytes: acyclic_stream::OwnedBytes,
+}
+
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
     P: StreamProvider,
@@ -48,11 +53,12 @@ where
         let Some(model) = self.verify_event_refs_with_io(event, io).await? else {
             return Ok(());
         };
-        let (channel, delta) = match model {
-            ModelEvent::Content { delta } => (Channel::Text, delta),
-            ModelEvent::Reasoning { delta } => (Channel::Reasoning, delta),
-            _ => return Ok(()),
+        let Some(ModelPayload { channel, bytes }) =
+            model_payload(model, io, self.maximum_payload_bytes)?
+        else {
+            return Ok(());
         };
+        let _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
         let sequence = key
             .rsplit(':')
             .next()
@@ -77,10 +83,14 @@ where
             publication: None,
             key: FileKey::Task {
                 task,
-                file: TaskFile::Chunk { turn, sequence },
+                file: if channel.is_none() {
+                    TaskFile::Completion(turn)
+                } else {
+                    TaskFile::Chunk { turn, sequence }
+                },
             },
-            channel: Some(channel),
-            bytes: delta.into_bytes().into(),
+            channel,
+            bytes,
         };
         loop {
             let head = files.inner.head().await?;
@@ -95,4 +105,26 @@ where
             }
         }
     }
+}
+
+fn model_payload(
+    model: ModelEvent,
+    io: Option<&PreparationIo>,
+    maximum_bytes: u64,
+) -> Result<Option<ModelPayload>> {
+    let (channel, bytes) = match model {
+        ModelEvent::Content { delta } => (Some(Channel::Text), delta.into_bytes().into()),
+        ModelEvent::Reasoning { delta } => (Some(Channel::Reasoning), delta.into_bytes().into()),
+        ModelEvent::Completed { metadata } => (
+            None,
+            match io {
+                Some(io) => io.encode(&metadata, maximum_bytes, true)?,
+                None => serde_json::to_vec(&metadata)
+                    .map_err(|error| Error::Invalid(error.to_string()))?
+                    .into(),
+            },
+        ),
+        _ => return Ok(None),
+    };
+    Ok(Some(ModelPayload { channel, bytes }))
 }

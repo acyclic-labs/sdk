@@ -175,10 +175,23 @@ impl std::ops::DerefMut for ReadingGuard<'_> {
 }
 
 impl Shared {
+    fn watched_mask(&self) -> u32 {
+        WATCHED
+            | if self.delivery.events.is_some() {
+                libc::IN_ACCESS
+            } else {
+                0
+            }
+    }
+
     /// Locks the read cursor, waiting for its holder.
     fn reading(&self) -> ReadingGuard<'_> {
         ReadingGuard {
-            raw: self.reading.raw.lock().unwrap_or_else(PoisonError::into_inner),
+            raw: self
+                .reading
+                .raw
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
             _served: OwedService(self),
         }
     }

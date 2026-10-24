@@ -109,7 +109,7 @@ proptest::proptest! {
     #[test]
     fn request_check_rejects_replaced_and_missing_prompts(replacement in "[a-z]{0,40}") {
         let model = Model::new("scripted".into(), "test".into(), "1".into(), serde_json::Value::Null).unwrap();
-        let mut request = ModelRequest {
+        let mut request = ModelRequest { conversation_id: None,
             model,
             messages: vec![crate::model::ModelMessage { role: ModelRole::User, content: ModelContent::Text(PROMPT.into()) }],
             tools: vec![],

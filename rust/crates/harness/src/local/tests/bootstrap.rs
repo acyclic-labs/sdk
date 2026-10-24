@@ -1,4 +1,4 @@
-//! Share immutable empty-volume bytes, never live providers or effect ledgers.
+//! Share immutable closed-volume bytes, never live providers or effect ledgers.
 use super::super::admission::snapshot::Snapshot;
 use super::*;
 
@@ -19,7 +19,27 @@ impl Bootstrap {
         )
         .await?;
         let agent = harness.signed.agent();
-        drop(harness);
+        harness.close().await?;
+        Self::capture(source, project, agent)
+    }
+
+    /// Consume and close the only live host before copying its durable bytes.
+    pub async fn checkpoint(
+        &self,
+        directory: tempfile::TempDir,
+        harness: LocalHarness,
+    ) -> Result<Self> {
+        assert_eq!(harness.project(), &self.project);
+        assert_eq!(harness.signed.agent(), self.agent);
+        harness.close().await?;
+        Self::capture(directory, self.project.clone(), self.agent)
+    }
+
+    fn capture(
+        source: tempfile::TempDir,
+        project: VolumeRef,
+        agent: Option<crate::AgentId>,
+    ) -> Result<Self> {
         Ok(Self {
             filesystem: Snapshot::capture(&source.path().join("filesystem"))?,
             state: Snapshot::capture(

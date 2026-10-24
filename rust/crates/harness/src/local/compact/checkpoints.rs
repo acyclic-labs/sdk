@@ -122,6 +122,20 @@ pub(in crate::local) async fn capture_selection<P: StreamProvider + ?Sized>(
 }
 
 impl LocalHarness {
+    pub(in crate::local) async fn conversation_id(
+        &self,
+        task: TaskId,
+    ) -> Result<crate::ConversationId> {
+        Ok(self
+            .continuation_selection(task)
+            .await?
+            .and_then(|selection| selection.continuation)
+            .map_or_else(
+                || crate::ConversationId::from_bytes(task.into_bytes()),
+                |turn| turn.conversation_id,
+            ))
+    }
+
     #[cfg(test)]
     pub(in crate::local) async fn selected_checkpoint(
         &self,
@@ -165,6 +179,7 @@ impl LocalHarness {
         prompt: &str,
     ) -> Result<(SummarySelection, SummaryCheckpoint)> {
         value.continuation = Some(crate::context::SummaryContinuation {
+            conversation_id: self.conversation_id(parent).await?,
             parent,
             through,
             frozen: value.through.is_some(),

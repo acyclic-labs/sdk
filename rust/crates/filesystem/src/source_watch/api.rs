@@ -37,11 +37,10 @@ impl NativeSourceWatch {
         work: &mut W,
     ) -> Result<Self, DemandError> {
         Delivery::new(sink, work)?.start(work, |delivery, work| {
-            Self::open_watch(
+            Self::open_capture_watch(
                 directory.directory_handle(),
                 delivery,
-                false,
-                Some(complete),
+                complete,
                 recursive,
                 work,
             )
@@ -85,6 +84,8 @@ impl NativeSourceWatch {
         // discovering a directory cannot replace it with a metadata-only leaf.
         delivery.read_authority = Some(self.read_authority());
         delivery.start(work, |delivery, work| {
+            // The root's recursive access channel already covers this subtree.
+            // A child needs only its individually admitted content channel.
             Self::open_watch(
                 directory.as_handle(),
                 delivery,
@@ -124,6 +125,10 @@ impl NativeSourceWatch {
 
     /// Whether every change still reaches the sink.
     pub(crate) fn is_exact(&self) -> bool {
+        #[cfg(windows)]
+        if !self.access_is_exact() {
+            return false;
+        }
         self.delivery().is_exact()
     }
 }

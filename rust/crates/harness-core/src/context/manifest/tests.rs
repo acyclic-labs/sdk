@@ -81,6 +81,8 @@ proptest! {
             "manifest.json".into(), &mut None,
         )?;
         let command = crate::filesystem::ModelTaskCommand {
+            conversation_id: None,
+            role: None,
             summary_source: summary.then(|| Box::new(reference.clone())),
             context_manifest: reference.clone(), input: ModelContent::Text(text),
             selected_context: None, max_steps: 1, max_output_tokens: None,
@@ -209,6 +211,55 @@ fn malformed_manifests_fail_before_any_binding() {
 }
 
 #[tokio::test]
+async fn conventions_follow_history_and_precede_active_input_and_tool_results() -> Result<()> {
+    let message = |text: &str| ModelMessage {
+        role: ModelRole::User,
+        content: ModelContent::Text(text.into()),
+    };
+    let stage = ManifestStage {
+        environment: None,
+        sources: Vec::new(),
+        context: Context {
+            messages: vec![message("pinned")],
+            ..Default::default()
+        },
+        late: Context {
+            messages: vec![message("changing facts")],
+            ..Default::default()
+        },
+    };
+    let input = ContextInput {
+        input: ModelContent::Text("active input".into()),
+        selected_context: None,
+        step: 1,
+        prior_messages: Vec::new(),
+    };
+    let base = Context {
+        messages: vec![
+            message("history"),
+            message("active input"),
+            message("tool result"),
+        ],
+        current_input_index: Some(1),
+        ..Default::default()
+    };
+    let result = stage.apply(&input, base, Limits::default(), None)?.await?;
+    assert_eq!(result.current_input_index, Some(3));
+    assert_eq!(
+        result.messages,
+        [
+            "pinned",
+            "history",
+            "changing facts",
+            "active input",
+            "tool result"
+        ]
+        .map(message)
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn optional_environment_joins_after_all_required_stages_on_public_pipeline_routes()
 -> Result<()> {
     let required = Context {
@@ -221,6 +272,7 @@ async fn optional_environment_joins_after_all_required_stages_on_public_pipeline
     let pipeline = ContextPipeline::new([
         Arc::new(ManifestStage {
             context: Context::default(),
+            late: Context::default(),
             sources: Vec::new(),
             environment: Some(EnvironmentFacts {
                 cwd: Some("/bound".into()),
@@ -251,12 +303,12 @@ async fn optional_environment_joins_after_all_required_stages_on_public_pipeline
         assert_eq!(run.messages.len(), message_limit);
         assert_eq!(run.current_input_index, Some(current_input_index));
         assert_eq!(
-            run.messages[message_limit - 2].content,
+            run.messages[0].content,
             ModelContent::Text("required".into())
         );
         if message_limit == 3 {
             assert!(
-                matches!(&run.messages[0].content, ModelContent::Text(text) if text.starts_with("<environment_context>"))
+                matches!(&run.messages[1].content, ModelContent::Text(text) if text.starts_with("<environment_context>"))
             );
         }
     }

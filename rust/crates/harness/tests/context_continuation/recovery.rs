@@ -336,6 +336,7 @@ pub(super) async fn local_journal_admits_compaction_only_after_one_settled_summa
     );
     let request = PreparedModelRequest::prepare(
         ModelRequest {
+            conversation_id: None,
             model: Model::new(
                 "synthetic".into(),
                 "journal-test".into(),

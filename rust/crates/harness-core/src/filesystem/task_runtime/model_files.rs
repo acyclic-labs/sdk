@@ -6,24 +6,9 @@ pub(super) async fn verify_native_model_files(
     content: &crate::model::ModelContent,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
-    use crate::model::{ModelContentPart, ModelDataPart, ToolResultContent};
-    for part in content.parts() {
-        match part {
-            ModelContentPart::File { file, policy } => {
-                verify_native_model_file(context, file, policy, work).await?;
-            }
-            ModelContentPart::ToolResult {
-                content: ToolResultContent::Parts { parts },
-                ..
-            } => {
-                for part in parts {
-                    if let ModelDataPart::File { file, policy } = part {
-                        verify_native_model_file(context, file, policy, work).await?;
-                    }
-                }
-            }
-            _ => {}
-        }
+    // Keep every direct and nested reference behind one authority check.
+    for (file, policy) in content.file_parts() {
+        verify_native_model_file(context, file, policy, work).await?;
     }
     Ok(())
 }
@@ -35,6 +20,12 @@ pub(super) async fn verify_native_model_file(
     policy: &crate::model::FileProjectionPolicy,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
+    if matches!(policy, crate::model::FileProjectionPolicy::Reference) {
+        return context.authorize_file_reference(
+            file,
+            Some(&crate::executor::PreparationIo::from_native_work(work)?),
+        );
+    }
     let body = context
         .read_file(
             file,

@@ -134,7 +134,7 @@ async fn instruction_review_loopback_scope_budget_and_read_deduplication() {
                 source: acyclic_harness::model::InstructionIdentity::new(agents.volume().clone(), agents.path().into()).unwrap(),
             };
             let context = projected(vec![captured, claude.clone().into()], Context { messages, ..Context::default() }).await;
-            let request = PreparedModelRequest::prepare(ModelRequest { model: provider.model().clone(),
+            let request = PreparedModelRequest::prepare(ModelRequest { conversation_id: None, model: provider.model().clone(),
                 messages: context.messages, tools: vec![acyclic_harness::tool::ToolDefinition {
                     name: "read".into(), revision: "1".into(), description: "Read".into(),
                     input_schema: json!({}), output_schema: json!({}), projection_schema: json!({}),
@@ -159,7 +159,7 @@ async fn instruction_review_loopback_scope_budget_and_read_deduplication() {
         assert!(acyclic_harness::model::InstructionSource::new(&claude).framed_bytes().unwrap() <= bound);
         let before = reader.0.load(Ordering::SeqCst);
         let limited = provider.bind_content(reader.clone(), bound).unwrap();
-        let request = PreparedModelRequest::prepare(ModelRequest { model: provider.model().clone(),
+        let request = PreparedModelRequest::prepare(ModelRequest { conversation_id: None, model: provider.model().clone(),
             messages: context.messages, tools: vec![], max_output_tokens: Some(64) }, Limits::default(), None).unwrap();
         let dispatch = ModelDispatch { operation_id: OperationId::new(), step: 0, request_digest: request.request_digest() };
         assert!(limited.generate(request, dispatch).try_collect::<Vec<_>>().await.is_err());
