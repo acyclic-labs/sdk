@@ -125,7 +125,7 @@ pub fn excluded_native_names() -> Vec<std::ffi::OsString> {
         // APFS requires valid Unicode at creation; Linux admits raw byte names.
         #[cfg(target_os = "linux")]
         {
-            use std::os::unix::ffi::OsStringExt;
+            use std::os::unix::ffi::OsStrExt;
             vec![portable, std::ffi::OsStr::from_bytes(b"unrelated-\xff").into()]
         }
         #[cfg(not(target_os = "linux"))]

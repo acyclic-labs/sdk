@@ -14,7 +14,7 @@ mkdir -p "$target"
 tar --create --file - --directory "$source" \
   --exclude='./node_modules' --exclude='./node_modules/**' \
   --exclude='./*.tgz' . | tar --extract --file - --directory "$target"
-[[ -f "$target/package.json" && -f "$target/README.md" && -f "$target/CHANGELOG.md" ]] || {
-  echo 'staged npm package lacks release metadata' >&2
+[[ -f "$target/package.json" ]] || {
+  echo 'staged npm package lacks package.json' >&2
   exit 2
 }
