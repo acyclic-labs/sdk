@@ -15,7 +15,7 @@ pub(in crate::core::authority) fn record(
     let capability = verify_trusted(&*trust, audience, scope, timestamp, work)?;
     let (attributes, _) = scope_facts(&capability, false)?;
     let name = resource(audience)?;
-    let signer = signer(id, runtime.seed(), timestamp, &name, None)?;
+    let signer = signer(id, &runtime.workload, timestamp, &name, None)?;
     let receipt = RuntimeAdmission::new(&signer, &*trust, timestamp)
         .record(
             &capability,

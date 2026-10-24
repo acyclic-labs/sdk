@@ -41,8 +41,23 @@ fn unauthorized(error: impl std::fmt::Display) -> Error {
 pub(super) fn now() -> u64 {
     acyclic_stream::UnixMillisClock::now_unix_millis(&acyclic_stream::SystemUnixMillisClock) / 1000
 }
-fn key(seed: &[u8; 32], domain: &str) -> SigningKey {
-    SigningKey::from_bytes(&blake3::derive_key(domain, seed))
+// Prepared keys stay inside runtime custody. Issuance borrows this owner;
+// neither a verifier nor an admitted workload receives its root keys.
+pub(super) struct RuntimeKeys {
+    environment: SigningKey,
+    account: SigningKey,
+    runtime: SigningKey,
+}
+
+impl RuntimeKeys {
+    pub(super) fn new(seed: &[u8; 32]) -> Self {
+        let key = |domain| runtime_signing::prepare_key(&blake3::derive_key(domain, seed));
+        Self {
+            environment: key("acyclic.harness.environment.v1"),
+            account: key("acyclic.harness.account.v1"),
+            runtime: key("acyclic.harness.runtime.v1"),
+        }
+    }
 }
 fn entropy() -> [u8; 32] {
     let mut bytes = [0; 32];
@@ -61,20 +76,12 @@ fn resource(audience: &Authority) -> Result<String> {
     };
     Ok(format!("harness:/{kind}/{}", audience.id))
 }
-pub(super) fn trust(id: &str, seed: &[u8; 32]) -> Snapshot {
+pub(super) fn trust(id: &str, keys: &RuntimeKeys) -> Snapshot {
     Snapshot {
         environment: "local-harness".into(),
-        environment_keys: vec![
-            key(seed, "acyclic.harness.environment.v1")
-                .verifying_key()
-                .to_bytes(),
-        ],
+        environment_keys: vec![keys.environment.verifying_key().to_bytes()],
         account: id.into(),
-        issuer_keys: vec![
-            key(seed, "acyclic.harness.account.v1")
-                .verifying_key()
-                .to_bytes(),
-        ],
+        issuer_keys: vec![keys.account.verifying_key().to_bytes()],
         minimum_key_epoch: 1,
         revoked_key_ids: Default::default(),
         revoked_block_ids: Default::default(),
@@ -100,14 +107,14 @@ fn signature(domain: &[u8], claims: &impl Message, signer: &SigningKey) -> Vec<u
 }
 fn signer(
     id: &str,
-    seed: &[u8; 32],
+    keys: &RuntimeKeys,
     timestamp: u64,
     name: &str,
     parent: Option<&VerifiedCapability>,
 ) -> Result<CertifiedSigner> {
-    let environment = key(seed, "acyclic.harness.environment.v1");
-    let account = key(seed, "acyclic.harness.account.v1");
-    let leaf = key(seed, "acyclic.harness.runtime.v1");
+    let environment = &keys.environment;
+    let account = &keys.account;
+    let leaf = &keys.runtime;
     let birth = Birth {
         account_id: id.into(),
         environment: "local-harness".into(),
@@ -161,7 +168,7 @@ fn signer(
             signature: signature(
                 acyclic_auth::BIRTH_DOMAIN,
                 &BirthProto::from(birth.clone()),
-                &environment,
+                environment,
             ),
             birth,
         },
@@ -169,12 +176,12 @@ fn signer(
             signature: signature(
                 acyclic_auth::KEY_DOMAIN,
                 &CertifiedKeyProto::from(certified.clone()),
-                &account,
+                account,
             ),
             key: certified,
         }],
     };
-    CertifiedSigner::new(certificates, leaf).map_err(unauthorized)
+    CertifiedSigner::new(certificates, leaf.clone()).map_err(unauthorized)
 }
 fn claims(scope: &Scope, index: usize) -> Result<Caveat> {
     Ok(Caveat {
@@ -216,25 +223,31 @@ pub(super) fn issue(
     }
     let timestamp = now();
     let name = resource(&issuer.audience)?;
-    let capability = signer(&issuer.id, issuer.runtime.seed(), timestamp, &name, parent)?
-        .mint(
-            vec![
-                claims(scope, 0)?,
-                Caveat {
-                    kind: CaveatKind::Grants(grant(&name)),
-                },
-                Caveat {
-                    kind: CaveatKind::Audience(ResourcePattern {
-                        name,
-                        prefix: false,
-                    }),
-                },
-            ],
-            SigningKey::from_bytes(&entropy()),
-            &issuer.public_workload_trust()?,
-            timestamp,
-        )
-        .map_err(unauthorized)?;
+    let capability = signer(
+        &issuer.id,
+        &issuer.runtime.workload,
+        timestamp,
+        &name,
+        parent,
+    )?
+    .mint(
+        vec![
+            claims(scope, 0)?,
+            Caveat {
+                kind: CaveatKind::Grants(grant(&name)),
+            },
+            Caveat {
+                kind: CaveatKind::Audience(ResourcePattern {
+                    name,
+                    prefix: false,
+                }),
+            },
+        ],
+        SigningKey::from_bytes(&entropy()),
+        &issuer.public_workload_trust()?,
+        timestamp,
+    )
+    .map_err(unauthorized)?;
     retain(scope, &capability, work)
 }
 pub(super) fn append(

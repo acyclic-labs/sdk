@@ -4,28 +4,35 @@ use ed25519_dalek::{Signer, SigningKey};
 use std::sync::{Arc, Weak};
 
 pub(super) struct RuntimeSigner {
-    seed: zeroize::Zeroizing<[u8; 32]>,
+    metadata: SigningKey,
+    pub(super) workload: workload::RuntimeKeys,
     pub(super) public: Arc<PublicAuthority>,
 }
+
+#[cfg(test)]
+#[derive(Debug, PartialEq)]
+struct KeyPreparation;
+
+pub(super) fn prepare_key(bytes: &[u8; 32]) -> SigningKey {
+    #[cfg(test)]
+    acyclic_test_support::differential::record(KeyPreparation);
+    SigningKey::from_bytes(bytes)
+}
+
 impl RuntimeSigner {
     pub(super) fn new(id: &str, seed: [u8; 32]) -> Self {
-        let key = SigningKey::from_bytes(&blake3::derive_key("acyclic.harness.metadata.v1", &seed));
+        let seed = zeroize::Zeroizing::new(seed);
+        let metadata = prepare_key(&blake3::derive_key("acyclic.harness.metadata.v1", &seed));
+        let workload = workload::RuntimeKeys::new(&seed);
+        let public = Arc::new(PublicAuthority {
+            trust: std::sync::RwLock::new(workload::trust(id, &workload)),
+            metadata_key: metadata.verifying_key().to_bytes(),
+        });
         Self {
-            seed: zeroize::Zeroizing::new(seed),
-            public: Arc::new(PublicAuthority {
-                trust: std::sync::RwLock::new(workload::trust(id, &seed)),
-                metadata_key: key.verifying_key().to_bytes(),
-            }),
+            metadata,
+            workload,
+            public,
         }
-    }
-    pub(super) fn seed(&self) -> &[u8; 32] {
-        &self.seed
-    }
-    fn metadata_signer(&self) -> SigningKey {
-        SigningKey::from_bytes(&blake3::derive_key(
-            "acyclic.harness.metadata.v1",
-            self.seed(),
-        ))
     }
 }
 
@@ -51,7 +58,7 @@ impl AdmissionPort {
             .ok_or_else(|| Error::Unauthorized("runtime signing custody is closed".into()))
     }
     pub(super) fn sign(&self, digest: &[u8; 32]) -> Result<[u8; 64]> {
-        Ok(self.runtime()?.metadata_signer().sign(digest).to_bytes())
+        Ok(self.runtime()?.metadata.sign(digest).to_bytes())
     }
     pub(super) fn record(
         &self,
@@ -65,6 +72,10 @@ impl AdmissionPort {
         workload::record(&runtime, id, audience, scope, payload, work)
     }
 }
+
+#[cfg(test)]
+#[path = "runtime_key_tests.rs"]
+mod key_tests;
 
 #[cfg(test)]
 mod tests {
