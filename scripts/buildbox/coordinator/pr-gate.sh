@@ -57,7 +57,14 @@ if [ ! -s "$W/.gate-tests-packages" ]; then
   printf '%s
 ' 'GATE_EMPTY no changed Cargo inputs' 'GATE_DONE rc=0' >> "$log"; rc=0
 else
-  (cd "$W" && BUILD_SLOT_TIER=merge WSLENV=BUILD_SLOT_TIER pwsh -NoProfile -File Q:/lanes/bs.ps1 "${box_env[@]}" --env BUILD_SLOT_TIER=merge --env BUILD_SLOT_PR="$n" --env BUILD_SLOT_PHASE=pr-gate --env BUILD_SLOT_GATE_PREPARATION_SECONDS="$preparation_seconds" --env BUILD_SLOT_LABEL=pr-gate --env BUILD_SLOT_GATE_LOG="$log" bash .gate-checks.sh $skips) >> "$log" 2>&1; rc=$?
+  # Windows native stdout/stderr can reopen a redirected file at separate
+  # positions. Give them a pipe; tee alone owns the append descriptor.
+  (cd "$W" && BUILD_SLOT_TIER=merge WSLENV=BUILD_SLOT_TIER pwsh -NoProfile -File Q:/lanes/bs.ps1 "${box_env[@]}" --env BUILD_SLOT_TIER=merge --env BUILD_SLOT_PR="$n" --env BUILD_SLOT_PHASE=pr-gate --env BUILD_SLOT_GATE_PREPARATION_SECONDS="$preparation_seconds" --env BUILD_SLOT_LABEL=pr-gate --env BUILD_SLOT_GATE_LOG="$log" bash .gate-checks.sh $skips) 2>&1 | tee -a "$log" >/dev/null
+  capture_status=("${PIPESTATUS[@]}"); rc=${capture_status[0]}
+  if [ "${capture_status[1]}" != 0 ]; then
+    echo 'error: GATE_RUNNER_INFRA coordinator log writer failed' >> "$log"
+    rc=224
+  fi
 fi
 echo "GATE_PR_WALL seconds=$((SECONDS-gate_started)) remote_rc=$rc" >> "$log"
 if grep -aq '^BB_DISK_LOW ' "$log"; then
@@ -81,8 +88,10 @@ if ! grep -aq '^GATE_DONE rc=' "$log"; then
   exit 4
 fi
 # A successful payload cannot hide a failed executor/export/cleanup boundary.
-if [ "$rc" != 0 ] && grep -aq '^GATE_DONE rc=0$' "$log"; then
-  v="INFRA #$n: executor exited rc=$rc after successful payload; inspect wrapper stderr log=$log"
+payloads=$(grep -acE '^GATE_DONE rc=-?[0-9]+$' "$log")
+payload_rc=$(sed -nE 's/^GATE_DONE rc=(-?[0-9]+)$/\1/p' "$log")
+if [ "$rc" = 224 ] || [ "$payloads" != 1 ] || [ "$payload_rc" != "$rc" ]; then
+  v="INFRA #$n: executor exited rc=$rc with payload rc=${payload_rc:-absent}; inspect wrapper stderr log=$log"
   echo "GATE $v"; echo "$(date -u +%FT%T.000Z) pr-gate GATE_INFRA ${v#* }" >> ~/.codex-fleet/alerts.log
   exit 4
 fi

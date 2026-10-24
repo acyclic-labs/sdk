@@ -62,7 +62,7 @@ test('executor failure cannot inherit a successful Cargo payload verdict',()=>{
   const source=fs.readFileSync(path.join(here,'coordinator/pr-gate.sh'),'utf8');
   const block=source.slice(source.indexOf('# A successful payload'),source.indexOf('# A new strict target'));
   assert.ok(block.includes('executor exited rc='));
-  for(const [remote,payload,negative,expected] of [[1,0,false,4],[224,0,false,4],[101,101,false,0],[0,0,false,0],[1,0,true,0]]){
+  for(const [remote,payload,negative,expected] of [[1,0,false,4],[224,0,false,4],[224,101,false,4],[1,101,false,4],[-9,101,false,4],[101,101,false,0],[0,0,false,0],[1,0,true,0]]){
    const log=path.join(cwd,'gate.log');fs.writeFileSync(log,`GATE_DONE rc=${payload}\n`);
    const script=`rc=${remote};n=1;log=${log}\n${negative?'':block}\nexit 0\n`;
    const result=spawnSync('bash',['-c',script],{encoding:'utf8',env:{...process.env,HOME:cwd}});
@@ -108,6 +108,54 @@ test('a cut-off executor is INFRA before any target-specific or source verdict',
    const result=spawnSync('bash',['-c',`rc=1;n=1;log=${log}\n${negative?'':block}\nexit 0\n`],{encoding:'utf8',env:{...process.env,HOME:cwd}});
    assert.equal(result.status,expected,result.stdout+result.stderr);
   }
+ }finally{fs.rmSync(cwd,{recursive:true,force:true});}
+});
+
+test('gate capture has one log writer and preserves child status and both streams',()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'gate-capture-'));
+ try{
+  const fixture=path.join(cwd,'streams.py');
+  fs.writeFileSync(fixture,`import os,sys\nout=os.open('/proc/self/fd/1',os.O_WRONLY)\nerr=os.open('/proc/self/fd/2',os.O_WRONLY)\nos.write(out,b'CHILD\\n'*100)\nos.write(err,b'DIAGNOSTIC\\n'*100)\nsys.exit(17)\n`);
+  for(const name of ['pr-gate.sh','main-gate.sh']){
+   const source=fs.readFileSync(path.join(here,'coordinator',name),'utf8');
+   const start=source.indexOf('(cd ');const tail=source.slice(start);
+   const marker=tail.indexOf('capture_status=');
+   // Execute the production pipeline and status handling with only the
+   // Windows dispatch command substituted by the independent-fd fixture.
+   assert.match(tail.split('\n')[0],/2>&1 \| tee/);
+   const closing=/\n[ \t]+fi(?:\r?\n|$)/.exec(tail.slice(marker));assert.ok(closing);
+   const capture=tail.slice(0,marker+closing.index+closing[0].length);
+   const actual=capture.replace(/^.*\) 2>&1 \|/m,`python3 ${fixture} 2>&1 |`);
+   assert.ok(actual.includes('capture_status=("${PIPESTATUS[@]}")'));
+   const log=path.join(cwd,name+'.log');
+   const result=spawnSync('bash',['-c',`log=${log}\n${actual}\nexit "$rc"`],{encoding:'utf8'});
+   assert.equal(result.status,17,result.stdout+result.stderr);
+   const text=fs.readFileSync(log,'utf8');assert.equal(text,'CHILD\n'.repeat(100)+'DIAGNOSTIC\n'.repeat(100));
+  }
+  const direct=path.join(cwd,'direct.log');
+  const result=spawnSync('bash',['-c',`python3 ${fixture} >${direct} 2>&1`],{encoding:'utf8'});
+  assert.equal(result.status,17);assert.notEqual(fs.readFileSync(direct,'utf8'),'CHILD\n'.repeat(100)+'DIAGNOSTIC\n'.repeat(100));
+ }finally{fs.rmSync(cwd,{recursive:true,force:true});}
+});
+
+test('main holds incomplete or mismatched executions without source verdicts or retrying',()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'main-executor-'));
+ try{
+  fs.mkdirSync(path.join(cwd,'.codex-fleet'));fs.mkdirSync(path.join(cwd,'infra'));
+  const source=fs.readFileSync(path.join(here,'coordinator/main-gate.sh'),'utf8');
+  const block=source.slice(source.indexOf('    completed='),source.indexOf('    mv -f "$log" "$L/wide/$tip.log"'));
+  assert.ok(block.includes('last=$tip; sleep 300; continue'));
+  for(const [rc,text,infra] of [[0,'GATE_DONE rc=0\n',false],[101,'GATE_DONE rc=101\n',false],[1,'test partial ... ok\n',true],[-9,'GATE_DONE rc=0\n',true],[0,'GATE_DONE rc=0\nGATE_DONE rc=0\n',true],[101,'[buildbox] HOME guard INFRA: missing\nGATE_DONE rc=101\n',true],[224,'BB_DISK_LOW preparation-INFRA: insufficient free space\n',true]]){
+   const log=path.join(cwd,'running.log');fs.writeFileSync(log,text);
+   const result=spawnSync('bash',['-c',`log=${log};L=${cwd};tip=abcdef123;rc=${rc};sleep(){ :; };for attempt in 1;do\n${block}\necho SOURCE_VERDICT;done`],{encoding:'utf8',env:{...process.env,HOME:cwd}});
+   assert.equal(result.status,0,result.stderr);assert.equal(result.stdout.includes('SOURCE_VERDICT'),!infra);
+   assert.equal(fs.existsSync(log),!infra);
+   if(infra)assert.match(fs.readFileSync(path.join(cwd,'.codex-fleet/alerts.log'),'utf8'),/MAIN_WIDE INFRA/);
+  }
+  const log=path.join(cwd,'negative.log');fs.writeFileSync(log,'partial\n');
+  const unguarded=block.replace(/if \[ "\$completed"[^\n]+; then/,'if false; then');assert.notEqual(unguarded,block);
+  const negative=spawnSync('bash',['-c',`log=${log};L=${cwd};tip=abcdef123;rc=1;sleep(){ :; };for attempt in 1;do\n${unguarded}\necho SOURCE_VERDICT;done`],{encoding:'utf8',env:{...process.env,HOME:cwd}});
+  assert.match(negative.stdout,/SOURCE_VERDICT/); // former path reports a partial run as source evidence
  }finally{fs.rmSync(cwd,{recursive:true,force:true});}
 });
 

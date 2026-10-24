@@ -74,6 +74,7 @@ def protect_home(real_home):
 def mount_home_namespace():
     """Called as root only inside a newly unshared mount namespace."""
     if os.geteuid()!=0:raise RuntimeError('HOME namespace setup requires root')
+    user_path=os.environ.pop('BB_JOB_NAMESPACE_PATH')
     if os.readlink('/proc/self/ns/mnt')==os.readlink('/proc/1/ns/mnt'):
         raise RuntimeError('refusing real HOME mount in the host namespace')
     subprocess.run(['mount','--rbind','/home/var','/home/var'],check=True)
@@ -85,6 +86,9 @@ def mount_home_namespace():
         raise OSError(ctypes.get_errno(),'recursive read-only HOME mount')
     user=pwd.getpwnam('var')
     os.setgroups(os.getgrouplist(user.pw_name,user.pw_gid));os.setgid(user.pw_gid);os.setuid(user.pw_uid)
+    # sudo's secure_path applies during privileged setup; restore the caller's
+    # toolchain PATH only after dropping privileges, before payload/receipt probes.
+    os.environ['PATH']=user_path
 
 def git_base(source):
     for ref in ['refs/remotes/origin/main','refs/heads/main']:
@@ -228,6 +232,7 @@ def run(argv):
     # The kernel mount flags, not a caller-supplied marker, decide whether a
     # namespace is needed. No no_new_privs: fusermount3 must retain setuid.
     if not os.statvfs('/home/var').f_flag & os.ST_RDONLY:
+        os.environ['BB_JOB_NAMESPACE_PATH']=os.environ.get('PATH','/usr/bin:/bin')
         os.execvp('sudo',['sudo','-n','--preserve-env','unshare','--mount','--propagation','private',sys.executable,str(Path(__file__).resolve()),'home-namespace',*argv])
     compiler_job=Path(argv[0]).name=='cargo' or bool(json.loads(Path(meta).read_text()).get('gate_log'))
     # Nested build-slot reuses the enclosing job's home/admission/server, rather

@@ -75,6 +75,17 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.stdout,b'1\n')
         self.assertEqual(json.loads(Path(str(meta)+'.runtime').read_text())['cache'],'disabled')
 
+    def test_namespace_restores_toolchain_path_after_sudo_secure_path(self):
+        wanted='/home/var/.cargo/bin:/usr/bin:/bin:/mnt/bb/path-fixture'
+        result,_=self.run_job([sys.executable,'-c',f'import os,subprocess;assert os.environ["PATH"]=={wanted!r};r=subprocess.run(["rustc","-vV"],capture_output=True);assert r.returncode==0,r.stderr;assert b"host: x86_64-unknown-linux-gnu" in r.stdout'],extra={'PATH':wanted})
+        self.assertEqual(result.returncode,0,result.stderr.decode())
+        worker=self.worker();worker.write_text(worker.read_text().replace("os.environ['PATH']=user_path","pass # former sudo secure_path leak"))
+        meta=self.d/'path-negative.meta';meta.write_text('{}')
+        env={**os.environ,'PATH':wanted,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        env.pop('BB_JOB_ACTIVE',None)
+        result=subprocess.run([sys.executable,str(worker),sys.executable,'-c',f'import os;assert os.environ["PATH"]=={wanted!r}'],env=env,capture_output=True)
+        self.assertNotEqual(result.returncode,0);self.assertIn(b'AssertionError',result.stderr)
+
     def test_stdout_bytes_modes_targets_and_xwin_cache(self):
         code='''import os,stat,sys
 from pathlib import Path
@@ -427,7 +438,9 @@ finally:a.close();b.close()
 
     def test_killed_job_receipt_cleans_ephemeral_targets(self):
         worker=self.worker();receipt=self.d/'receipt.mjs';receipts=self.d/'receipts'
-        source=(HERE/'buildbox-receipt.mjs').read_text().replace('/home/var/bin/bb-job.py',str(worker)).replace("const dir = '/mnt/bb/jobs'",f'const dir = {str(receipts)!r}')
+        # Match the generated-wrapper control's injected watcher cadence. The
+        # assertion waits for the actual terminal receipt, never a timed PASS.
+        source=(HERE/'buildbox-receipt.mjs').read_text().replace('/home/var/bin/bb-job.py',str(worker)).replace("const dir = '/mnt/bb/jobs'",f'const dir = {str(receipts)!r}').replace('interval = 1000','interval = 20')
         receipt.write_text(source);(self.d/'buildbox-receipt.mjs').write_text(source)
         env={**os.environ,'BUILD_SLOT_DEFER_EXEC':'1','BUILD_SLOT_LABEL':'gate-speed-r19-kill-control'}
         env.pop('BB_JOB_ACTIVE',None);env.pop('BUILD_SLOT_EXEC_IN_PAYLOAD',None)
