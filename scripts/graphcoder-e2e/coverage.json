@@ -61,7 +61,7 @@
     },
     "A7": {
       "target": "Sessions, resume, rewind, Escape and diffs",
-      "owner": "sessions (#1445)",
+      "owner": "sessions (#1452)",
       "cases": [
         "jsonl-reopen",
         "pty-quit-resume",
@@ -138,7 +138,7 @@
     },
     "A14": {
       "target": "Configured web search",
-      "owner": "sessions (#1445)",
+      "owner": "sessions (#1452)",
       "cases": [
         "web-search",
         "web-search-refusal",
@@ -147,7 +147,7 @@
     },
     "A15": {
       "target": "Provider support and terminal outcomes",
-      "owner": "providers / sessions (#1445)",
+      "owner": "providers / sessions (#1452)",
       "cases": [
         "text-responses",
         "text-chat",
@@ -164,7 +164,7 @@
     },
     "A16": {
       "target": "JSONL and authoritative final answer/exit",
-      "owner": "sessions (#1445)",
+      "owner": "sessions (#1452)",
       "cases": [
         "jsonl-input",
         "jsonl-malformed",
