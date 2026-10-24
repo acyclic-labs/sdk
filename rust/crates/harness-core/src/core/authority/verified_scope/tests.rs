@@ -216,3 +216,101 @@ fn compact_evidence_funds_every_allocation_before_conversion() -> Result<()> {
     assert_eq!(io.owned_bytes()?, 0);
     Ok(())
 }
+
+#[cfg(feature = "filesystem")]
+#[test]
+fn authority_metadata_copies_release_every_partial_allocation() -> Result<()> {
+    let (issuer, verifier, _scope, _volume) = fixture()?;
+    let first = issuer.id.len() as u64;
+    let total = first + issuer.audience.id.len() as u64;
+    for entry in 0..3 {
+        let mut successes = 0;
+        for operations in 0..=2 {
+            for bytes in [0, first - 1, first, total - 1, total, 1_000_000] {
+                let cancellation = acyclic_fs::CancellationToken::new();
+                let mut budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+                budget.allocation_operations = operations;
+                budget.peak_allocation_bytes = bytes;
+                let io = crate::executor::PreparationIo::from_budget(budget, &cancellation)?;
+                let mut observer = io.history_io();
+                let mut work = Some(&mut observer as &mut dyn HistoryIo);
+                let result = match entry {
+                    0 => issuer
+                        .copy(&mut work)
+                        .map(|copy| (copy.id.capacity() + copy.audience.id.capacity()) as u64),
+                    1 => issuer
+                        .verifier(&mut work)
+                        .and_then(|copy| copy.logical_owned_bytes()),
+                    _ => verifier
+                        .copy(&mut work)
+                        .and_then(|copy| copy.logical_owned_bytes()),
+                };
+                match result {
+                    Ok(owned) => {
+                        successes += 1;
+                        assert_eq!(operations, 2);
+                        assert!(bytes >= total);
+                        assert_eq!(io.owned_bytes()?, owned);
+                    }
+                    Err(error) => {
+                        drop(error);
+                        assert_eq!(
+                            io.owned_bytes()?,
+                            0,
+                            "partial authority metadata copy leaked retained custody: entry={entry} operations={operations} bytes={bytes}"
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            successes, 2,
+            "metadata copies never reached both complete budgets"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "filesystem")]
+#[test]
+fn grant_construction_releases_custody_at_every_allocation_failure() -> Result<()> {
+    let (_issuer, verifier, scope, volume) = fixture()?;
+    let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let probe = crate::executor::PreparationIo::from_budget(budget, &cancellation)?;
+    let grant = ContentGrant::verify(
+        &verifier,
+        &scope,
+        &volume,
+        VolumeOperation::Read,
+        u64::MAX,
+        &mut Some(&mut probe.history_io()),
+    )?;
+    assert_eq!(probe.owned_bytes()?, grant.logical_owned_bytes()?);
+    let required = budget.allocation_operations - probe.remaining()?.allocation_operations;
+    assert!(required > 3, "grant did not reach the metadata copies");
+    for operations in 0..required {
+        let mut limited = budget;
+        limited.allocation_operations = operations;
+        let io = crate::executor::PreparationIo::from_budget(limited, &cancellation)?;
+        let result = ContentGrant::verify(
+            &verifier,
+            &scope,
+            &volume,
+            VolumeOperation::Read,
+            u64::MAX,
+            &mut Some(&mut io.history_io()),
+        );
+        assert!(
+            result.is_err(),
+            "allocation failure was not exercised: {operations}"
+        );
+        drop(result);
+        assert_eq!(
+            io.owned_bytes()?,
+            0,
+            "partial grant allocation leaked retained custody: operations={operations}"
+        );
+    }
+    Ok(())
+}

@@ -696,15 +696,18 @@ impl AuthorityVerifier {
 
     /// Copies the verifier using the caller's ledger.
     pub fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
-        match work.as_deref_mut() {
-            Some(work) => Ok(Self {
-                id: work.clone_text(&self.id)?,
-                public: self.public.clone(),
-                admission: self.admission.clone(),
-                audience: work.clone_authority(&self.audience)?,
-            }),
-            None => Ok(self.clone()),
+        if work.is_none() {
+            return Ok(self.clone());
         }
+        let mut quota = CodecQuota::new(work, 0)?;
+        let copied = Self {
+            id: copying::copy_text(&self.id, &mut quota)?,
+            public: self.public.clone(),
+            admission: self.admission.clone(),
+            audience: copying::copy_authority(&self.audience, &mut quota)?,
+        };
+        quota.transfer();
+        Ok(copied)
     }
 
     /// Verifies issuer identity and the complete immutable grant.
