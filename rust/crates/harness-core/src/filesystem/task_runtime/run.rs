@@ -367,7 +367,7 @@ where
                             Some(&crate::filesystem::PreparationIo::from_native_custody(
                                 custody,
                             )),
-                        )
+                        )?
                         .await?
                 } else if let Some(io) = io {
                     let work = io.original_native_work().ok_or(Error::NativeBoundary {
@@ -404,7 +404,7 @@ where
                             Some(&crate::filesystem::PreparationIo::from_native_custody(
                                 custody,
                             )),
-                        )
+                        )?
                         .await?
                 } else {
                     session
@@ -413,7 +413,7 @@ where
                             IdempotencyKey::new(format!("task-step:{revision}"))?,
                             input,
                             None,
-                        )
+                        )?
                         .await?
                 };
                 #[cfg(target_arch = "wasm32")]
@@ -423,7 +423,7 @@ where
                         IdempotencyKey::new(format!("task-step:{revision}"))?,
                         input,
                         None,
-                    )
+                    )?
                     .await?;
                 next_transition = (Some(stepped.0), stepped.1);
                 advanced += 1;

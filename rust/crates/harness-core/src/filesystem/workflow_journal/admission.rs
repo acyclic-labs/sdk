@@ -43,118 +43,122 @@ where
         Ok(true)
     }
 
-    pub(crate) async fn read_admission(
-        &self,
-        io: Option<&PreparationIo>,
-    ) -> Result<Option<WorkflowAdmission>> {
-        if let Some(owner) = self
-            .owner
-            .as_ref()
-            .filter(|owner| owner.workflow_admission().operation_id == owner.operation_id())
-        {
-            self.verify_observation_owner(owner, true, io).await?;
-            let admission = owner.workflow_admission().copy(io)?;
-            admission.validate(io)?;
-            return Ok(Some(admission));
-        }
-        let reject = |code, reason| observation_boundary(io, code, reason);
-        let (_path, path) = {
-            let path = crate::executor::with_history_io(io, |work| {
-                crate::executor::preparation_format(
-                    format_args!("harness/v2/workflow-admissions/{}", self.id()),
-                    work,
-                )
-            })?;
-            let held = io
-                .map(|io| io.guard_owned(path.capacity() as u64))
-                .transpose()?;
-            (held, path)
-        };
-        let (_stream_path, stream) = Self::observation_stream(&self.stream, &path, io)?;
-        let mut history = io.map(PreparationIo::history_io);
-        let mut work = history.as_mut().map(|io| io as &mut dyn HistoryIo);
-        let mut entries = match crate::store::operations::read_records(
-            &self.stream,
-            stream.path(),
-            0,
-            2,
-            &mut work,
-        )
-        .await?
-        {
-            Ok(entries) => entries,
-            Err(StreamError::NotFound) => {
-                if let Some(io) = io {
-                    io.check_cancellation()?;
-                }
-                return Ok(None);
+    #[inline(never)]
+    pub(crate) fn read_admission<'a>(
+        &'a self,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<WorkflowAdmission>>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            if let Some(owner) = self
+                .owner
+                .as_ref()
+                .filter(|owner| owner.workflow_admission().operation_id == owner.operation_id())
+            {
+                self.verify_observation_owner(owner, true, io).await?;
+                let admission = owner.workflow_admission().copy(io)?;
+                admission.validate(io)?;
+                return Ok(Some(admission));
             }
-            Err(error) => return Err(Self::observation_stream_error(io, error)),
-        };
-        let Some((_entry, entry)) = Self::next_observation_record(&mut entries, io).await? else {
-            return Ok(None);
-        };
-        if Self::next_observation_record(&mut entries, io)
-            .await?
-            .is_some()
-        {
-            return Err(reject(
-                crate::wire::ErrorCode::Storage,
-                "workflow admission stream is invalid",
-            ));
-        }
-        if entry.sequence != 0 {
-            return Err(reject(
-                crate::wire::ErrorCode::Storage,
-                "workflow admission sequence is invalid",
-            ));
-        }
-        let (_reference_hold, reference) = {
-            let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
-            let reference: FileRef = crate::filesystem::decode_record(&entry.value, io)?;
-            let held = match (io, reference_before) {
-                (Some(io), Some(before)) => Some(io.guard_owned(io.owned_since(before)?)?),
-                _ => None,
+            let reject = |code, reason| observation_boundary(io, code, reason);
+            let (_path, path) = {
+                let path = crate::executor::with_history_io(io, |work| {
+                    crate::executor::preparation_format(
+                        format_args!("harness/v2/workflow-admissions/{}", self.id()),
+                        work,
+                    )
+                })?;
+                let held = io
+                    .map(|io| io.guard_owned(path.capacity() as u64))
+                    .transpose()?;
+                (held, path)
             };
-            (held, reference)
-        };
-        let (_expected_path, expected_path) = {
-            let expected_path = crate::executor::with_history_io(io, |work| {
-                crate::executor::preparation_format(
-                    format_args!(".system/workflows/{}/admission.json", self.id()),
-                    work,
-                )
-            })?;
-            let held = io
-                .map(|io| io.guard_owned(expected_path.capacity() as u64))
-                .transpose()?;
-            (held, expected_path)
-        };
-        if reference.volume() != &self.volume
-            || reference.path() != expected_path
-            || reference.descriptor().media_type() != "application/json"
-        {
-            return Err(reject(
-                crate::wire::ErrorCode::Unauthorized,
-                "workflow admission belongs to another volume",
-            ));
-        }
-        let _bytes;
-        let bytes = self.read_bound_content(&reference, io).await?;
-        _bytes = external_read_hold(&bytes, io)?;
-        let admission: WorkflowAdmission = crate::filesystem::decode_record(&bytes, io)?;
-        admission.validate(io)?;
-        if self
-            .owner
-            .as_ref()
-            .is_some_and(|owner| owner.workflow_admission() != &admission)
-        {
-            return Err(reject(
-                crate::wire::ErrorCode::Conflict,
-                "workflow differs from retained task admission",
-            ));
-        }
-        Ok(Some(admission))
+            let (_stream_path, stream) = Self::observation_stream(&self.stream, &path, io)?;
+            let mut history = io.map(PreparationIo::history_io);
+            let mut work = history.as_mut().map(|io| io as &mut dyn HistoryIo);
+            let mut entries = match crate::store::operations::read_records(
+                &self.stream,
+                stream.path(),
+                0,
+                2,
+                &mut work,
+            )
+            .await?
+            {
+                Ok(entries) => entries,
+                Err(StreamError::NotFound) => {
+                    if let Some(io) = io {
+                        io.check_cancellation()?;
+                    }
+                    return Ok(None);
+                }
+                Err(error) => return Err(Self::observation_stream_error(io, error)),
+            };
+            let Some((_entry, entry)) = Self::next_observation_record(&mut entries, io).await?
+            else {
+                return Ok(None);
+            };
+            if Self::next_observation_record(&mut entries, io)
+                .await?
+                .is_some()
+            {
+                return Err(reject(
+                    crate::wire::ErrorCode::Storage,
+                    "workflow admission stream is invalid",
+                ));
+            }
+            if entry.sequence != 0 {
+                return Err(reject(
+                    crate::wire::ErrorCode::Storage,
+                    "workflow admission sequence is invalid",
+                ));
+            }
+            let (_reference_hold, reference) = {
+                let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
+                let reference: FileRef = crate::filesystem::decode_record(&entry.value, io)?;
+                let held = match (io, reference_before) {
+                    (Some(io), Some(before)) => Some(io.guard_owned(io.owned_since(before)?)?),
+                    _ => None,
+                };
+                (held, reference)
+            };
+            let (_expected_path, expected_path) = {
+                let expected_path = crate::executor::with_history_io(io, |work| {
+                    crate::executor::preparation_format(
+                        format_args!(".system/workflows/{}/admission.json", self.id()),
+                        work,
+                    )
+                })?;
+                let held = io
+                    .map(|io| io.guard_owned(expected_path.capacity() as u64))
+                    .transpose()?;
+                (held, expected_path)
+            };
+            if reference.volume() != &self.volume
+                || reference.path() != expected_path
+                || reference.descriptor().media_type() != "application/json"
+            {
+                return Err(reject(
+                    crate::wire::ErrorCode::Unauthorized,
+                    "workflow admission belongs to another volume",
+                ));
+            }
+            let _bytes;
+            let bytes = self.read_bound_content(&reference, io).await?;
+            _bytes = external_read_hold(&bytes, io)?;
+            let admission: WorkflowAdmission = crate::filesystem::decode_record(&bytes, io)?;
+            admission.validate(io)?;
+            if self
+                .owner
+                .as_ref()
+                .is_some_and(|owner| owner.workflow_admission() != &admission)
+            {
+                return Err(reject(
+                    crate::wire::ErrorCode::Conflict,
+                    "workflow differs from retained task admission",
+                ));
+            }
+            Ok(Some(admission))
+        })
     }
 
     pub(crate) async fn admit_with_io(
@@ -177,7 +181,7 @@ where
                 return Ok(admission);
             }
         }
-        if let Some(existing) = self.read_admission(io).await? {
+        if let Some(existing) = self.read_admission(io)?.await? {
             return if existing == admission {
                 Ok(existing)
             } else {
@@ -193,7 +197,7 @@ where
         }
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let (_reference, reference) = {
-            let reference = self.stage_payload(&admission, None, io).await?;
+            let reference = self.stage_payload(&admission, None, io)?.await?;
             let held = io
                 .map(|io| io.guard_owned(io.owned_since(before)?))
                 .transpose()?;
@@ -241,7 +245,7 @@ where
                 admission.operation_id,
                 &reference,
                 io,
-            )
+            )?
             .await;
         match appended {
             Ok(true) => return Ok(admission),
@@ -249,7 +253,7 @@ where
             Ok(false) | Err(Error::Conflict(_) | Error::Indeterminate(_)) => {}
             Err(error) => return Err(error),
         }
-        match self.read_admission(io).await {
+        match self.read_admission(io)?.await {
             Ok(Some(existing)) if existing == admission => Ok(existing),
             Ok(Some(_)) => Err(Error::Conflict(
                 "workflow admission identity is already bound".into(),

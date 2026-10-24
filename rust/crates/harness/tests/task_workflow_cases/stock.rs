@@ -621,7 +621,7 @@ pub(super) async fn stock_restart_with_publication_fault(
                         IdempotencyKey::new("invalid-output")?,
                         json!("bad"),
                         None
-                    )
+                    )?
                     .await
                     .is_err()
             );
@@ -629,7 +629,7 @@ pub(super) async fn stock_restart_with_publication_fault(
         }
         assert_eq!(
             session
-                .step(step, IdempotencyKey::new("suspend")?, Value::Null, None)
+                .step(step, IdempotencyKey::new("suspend")?, Value::Null, None)?
                 .await?
                 .0
                 .status,
@@ -639,7 +639,7 @@ pub(super) async fn stock_restart_with_publication_fault(
         assert_eq!(journal.replay(0, 64, None)?.await?.0.len(), 1);
         assert!(
             session
-                .step(step, IdempotencyKey::new("suspend")?, json!(9), None)
+                .step(step, IdempotencyKey::new("suspend")?, json!(9), None)?
                 .await
                 .is_err()
         );
@@ -652,7 +652,7 @@ pub(super) async fn stock_restart_with_publication_fault(
                         IdempotencyKey::new("complete")?,
                         json!(7),
                         None
-                    )
+                    )?
                     .await?
                     .0
                     .status,
@@ -678,7 +678,7 @@ pub(super) async fn stock_restart_with_publication_fault(
                         IdempotencyKey::new("complete")?,
                         json!(7),
                         None
-                    )
+                    )?
                     .await
                     .is_err()
             );

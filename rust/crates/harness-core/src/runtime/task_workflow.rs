@@ -203,51 +203,85 @@ impl ResumableTaskSession {
     }
 
     /// Commits one owner-checked transition and its outbox using the caller's IO.
-    pub async fn step(
-        &mut self,
+    #[inline(never)]
+    pub fn step<'a>(
+        &'a mut self,
         operation: OperationId,
         key: crate::IdempotencyKey,
         input: Value,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(MachineTransition, crate::NativeCustody)> {
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<'a, (MachineTransition, crate::NativeCustody)>,
+    > {
         let native = task_original_work(io)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = native {
             self.require_native_session(work)?;
         }
-        match &self.owner {
-            Some(owner) => owner.verify_owner(io)?.await?,
-            None => {
-                self.host
-                    .verify_dispatch_owner(self.task_id, &self.fence, io)?
-                    .await?;
+
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            match &self.owner {
+                Some(owner) => owner.verify_owner(io)?.await?,
+                None => {
+                    self.host
+                        .verify_dispatch_owner(self.task_id, &self.fence, io)?
+                        .await?;
+                }
             }
+            let schema = self.definition.output_schema();
+            let check =
+                |transition: &MachineTransition| validate_task_transition(schema, transition, io);
+            let transition = match native {
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                Some(work) => {
+                    let (value, custody) = self
+                        .workflow
+                        .step_checked_with_native_work(operation, key, input, work, check)
+                        .await?;
+                    (value, Some(custody))
+                }
+                _ => (
+                    self.workflow.step(operation, key, input, check).await?,
+                    None,
+                ),
+            };
+            match &self.owner {
+                Some(owner) => owner.verify_owner(io)?.await?,
+                None => {
+                    self.host
+                        .verify_dispatch_owner(self.task_id, &self.fence, io)?
+                        .await?;
+                }
+            }
+            Ok(transition)
+        })
+    }
+}
+
+#[cfg(test)]
+mod polling_graph_storage_tests {
+    #[test]
+    fn workflow_step_retains_only_its_owned_polling_handle() {
+        fn retained<Args, T>(_: impl FnOnce(Args) -> T) -> usize {
+            std::mem::size_of::<T>()
         }
-        let schema = self.definition.output_schema();
-        let check =
-            |transition: &MachineTransition| validate_task_transition(schema, transition, io);
-        let transition = match native {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Some(work) => {
-                let (value, custody) = self
-                    .workflow
-                    .step_checked_with_native_work(operation, key, input, work, check)
-                    .await?;
-                (value, Some(custody))
-            }
-            _ => (
-                self.workflow.step(operation, key, input, check).await?,
-                None,
-            ),
-        };
-        match &self.owner {
-            Some(owner) => owner.verify_owner(io)?.await?,
-            None => {
-                self.host
-                    .verify_dispatch_owner(self.task_id, &self.fence, io)?
-                    .await?;
-            }
-        }
-        Ok(transition)
+        let bytes = retained(
+            |(session, key): (
+                &'static mut super::ResumableTaskSession,
+                crate::IdempotencyKey,
+            )| {
+                session.step(
+                    crate::OperationId::from_bytes([1; 16]),
+                    key,
+                    serde_json::Value::Null,
+                    None,
+                )
+            },
+        );
+        eprintln!("workflow step retained bytes={bytes}");
+        assert!(
+            bytes <= 512,
+            "workflow step embeds a concrete polling graph"
+        );
     }
 }

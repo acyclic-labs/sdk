@@ -331,7 +331,7 @@ where
                     self.verify_observation_owner(owner, true, Some(&io))
                         .await?;
                 }
-                let admission = self.read_admission(Some(&io)).await?;
+                let admission = self.read_admission(Some(&io))?.await?;
                 if let Some(owner) = &self.owner {
                     self.verify_observation_owner(owner, true, Some(&io))
                         .await?;
@@ -343,7 +343,7 @@ where
         }
         let _ = io;
         Ok(HistoryContentFuture::Ordinary {
-            future: Box::pin(async move { Ok((self.read_admission(None).await?, None)) }),
+            future: Box::pin(async move { Ok((self.read_admission(None)?.await?, None)) }),
             frame_bytes: 0,
         })
     }
@@ -379,7 +379,7 @@ where
                         .await?;
                 }
                 let records = self
-                    .replay_records(after, maximum, true, true, Some(&io))
+                    .replay_records(after, maximum, true, true, Some(&io))?
                     .await?;
                 if let Some(owner) = &self.owner {
                     self.verify_observation_owner(owner, true, Some(&io))
@@ -395,7 +395,7 @@ where
         Ok(HistoryContentFuture::Ordinary {
             future: traced(span, async move {
                 Ok((
-                    self.replay_records(after, maximum, true, true, None)
+                    self.replay_records(after, maximum, true, true, None)?
                         .await?,
                     None,
                 ))
