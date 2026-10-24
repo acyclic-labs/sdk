@@ -157,7 +157,7 @@ mod tests {
                         &json!({"selected_task":task,"open_view":form,"view_input":form}),
                     )
                     .await?;
-                #[cfg(feature = "terminal")]
+                #[cfg(all(feature = "tui", feature = "terminal"))]
                 if form == "feedback" {
                     use crate::tui::{
                         ClientRenderer, PromptInput, Viewport,

@@ -31,7 +31,7 @@ impl LocalHarness {
 
     /// Bind the selected checkout's retained baseline and exact immutable query.
     /// Waiting for its baseline file does not capture or mutate the checkout.
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     pub async fn project_diff(
         &self,
         budget: acyclic_fs::WorkBudget,
