@@ -108,8 +108,9 @@ while :; do
   # is a set, and admissions concurrent with this snapshot remain pending.
   active=$(mktemp "$L/active.XXXXXXXX") || exit 1
   queue take pending held-pending > "$active" || exit 6
-  candidates=()
+  candidates=(); claimed=()
   for p in $(tr -d '\r' < "$active" | sort -un); do
+    claimed+=("$p")
     grep -qx "$p" "$T/merge-hold.txt" 2>/dev/null && continue
     candidates+=("$p")
   done
@@ -133,6 +134,12 @@ while :; do
         gate_group "${batch[@]}"
       fi
     fi
+  fi
+  # Custody survives a failed queue operation or killed drain. A later claim
+  # includes active members; acknowledge only after all dispatch outcomes are
+  # retained. Concurrent admissions remain in their own pending queue.
+  if [ "$preparation_infra" = 0 ] && [ "$api_infra" = 0 ]; then
+    queue ack active "${claimed[@]}" || preparation_infra=1
   fi
   rmdir "$L/.lock"; trap - EXIT
   # Local metadata failures are held for explicit coordinator recovery. They

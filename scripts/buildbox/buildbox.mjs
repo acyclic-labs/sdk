@@ -1225,8 +1225,10 @@ async function maintainSourceCopies(repo, notes, run = sshRun) {
   if (repo !== 'sdk') return;
   try {
     const prune = await run('/home/var/bin/prune-wt-sdk.sh', { timeout: 120000 });
-    if (prune.status === 0 && !String(prune.stderr ?? '').trim()) return;
-    const reason = `BB_WT_PRUNE_FAILED rc=${prune.status}: ${String(prune.stderr).slice(-500)}`;
+    const diagnostic = String(prune.stderr ?? '').trim();
+    const warnings = diagnostic.split(/\r?\n/).filter(line => /^BB_WT_PRUNE_FAILED(?:\s|$)/u.test(line));
+    if (prune.status === 0 && warnings.length === 0) return;
+    const reason = `BB_WT_PRUNE_FAILED rc=${prune.status}: ${prune.status === 0 ? warnings.join('\n') : diagnostic}`;
     notes.push(reason); say(reason);
   } catch (error) {
     const reason = `BB_WT_PRUNE_FAILED ${error.message}`;

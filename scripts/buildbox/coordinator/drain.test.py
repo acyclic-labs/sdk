@@ -57,6 +57,7 @@ exit 0
         self.assertEqual(good['runs'].splitlines(), ['1 2 3', '2 3', '1'])
         self.assertEqual(good['merged'].splitlines(), ['2 3', '1'])
         self.assertEqual(good['pending.txt'], '')
+        self.assertEqual(good['active.txt'], '')
         old, _ = self.run_drain(body, negative=True, onepass=True)
         self.assertNotIn('1', old['runs'].splitlines())
         self.assertIn('1', old['pending.txt'].split())
@@ -91,6 +92,7 @@ exit 0
         good, _ = self.run_drain(body, pending='1\n2\n')
         self.assertEqual(good['runs'].splitlines(), ['1 2', '2'])
         self.assertEqual(good['pending.txt'].split(), ['1', '2'])
+        self.assertEqual(good['active.txt'].split(), ['1', '2'])
 
     def test_impossible_solo_batch_collision_holds_instead_of_looping(self):
         good, text = self.run_drain('echo 1 > "$GATE_STATE/.conflict"; exit 7\n', pending='1\n')
