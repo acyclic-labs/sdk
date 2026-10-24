@@ -53,8 +53,12 @@ test("compiler artifact discovery rejects identity substitution and partial comp
     assert.throws(build, /duplicate Rust contract artifact/);
     put("artifacts.jsonl", "{not JSON\n");
     assert.throws(build, SyntaxError);
-    put("build", 'process.exit(7);');
-    assert.throws(build, /Rust contract command failed with status 7/);
+    put("build", 'console.log(JSON.stringify({reason:"compiler-message",message:{rendered:"fixture compiler diagnostic"}})); process.exit(7);');
+    assert.throws(build, error => {
+      assert.match(error.message, /Rust contract command failed with status 7/);
+      assert.match(error.message, /fixture compiler diagnostic/);
+      return true;
+    });
     assert.equal(readFileSync(join(root, "beta-contract"), "utf8"), "stale bytes");
     assert.throws(() => buildContractTargets(root, [], process.execPath), /target set is empty/);
   } finally {

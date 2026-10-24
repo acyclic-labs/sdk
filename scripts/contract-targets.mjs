@@ -18,7 +18,11 @@ export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_
     report[`${phase}_ms`] = performance.now() - started;
     saveProgress();
     if (result.error) throw result.error;
-    if (result.status !== 0) throw new Error(`Rust contract command failed with status ${result.status ?? "unknown"}`);
+    if (result.status !== 0) {
+      // Cargo's JSON diagnostics are on stdout, so discarding a failed capture
+      // would erase the compiler error while retaining only its exit status.
+      throw new Error(`Rust contract command failed with status ${result.status ?? "unknown"}\n${result.stdout}`);
+    }
     return result.stdout;
   };
   const manifest = ["--manifest-path", join(root, "Cargo.toml"), "--locked"];
