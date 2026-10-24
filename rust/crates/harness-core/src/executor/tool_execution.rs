@@ -536,13 +536,7 @@ impl StockExecution<'_> {
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
         {
             match self
-                .complete_with_post_hook::<true>(
-                    journal,
-                    identity,
-                    invocation,
-                    result,
-                    &projection,
-                )
+                .complete_with_post_hook::<true>(journal, identity, invocation, result, &projection)
                 .await?
             {
                 Ok(feedback) => self.append_hook_context(_hook_context, feedback)?,

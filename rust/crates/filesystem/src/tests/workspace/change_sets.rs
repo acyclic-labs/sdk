@@ -131,7 +131,10 @@ async fn small_directory_move_does_not_materialize_unrelated_file_records()
     let [expanded, full_scan]: [crate::WorkCounters; 2] = observed
         .try_into()
         .map_err(|_| "missing expanded and full-scan work controls")?;
-    assert!(expanded.items_examined < full_scan.items_examined, "{expanded:?} {full_scan:?}");
+    assert!(
+        expanded.items_examined < full_scan.items_examined,
+        "{expanded:?} {full_scan:?}"
+    );
     assert!(
         expanded.peak_allocation_bytes < full_scan.peak_allocation_bytes,
         "{expanded:?} {full_scan:?}"
