@@ -108,7 +108,8 @@ impl LocalHarness {
             }
             #[cfg(any(test, feature = "hooks"))]
             let hooks =
-                crate::native_settings::NativeSettings::load_hooks(Arc::clone(&self.settings)).await?;
+                crate::native_settings::NativeSettings::load_hooks(Arc::clone(&self.settings))
+                    .await?;
             #[cfg(any(test, feature = "hooks"))]
             let hook_configuration = if hooks.is_empty() {
                 None
@@ -342,7 +343,10 @@ mod tests {
         );
         #[cfg(feature = "native-execution")]
         let users = retained_operation_bytes(
-            |(sources, work): (&'static crate::context::native_skills::NativeSkills, &'static mut crate::context::DiscoveryWork)| sources.user_catalog(work),
+            |(sources, work): (
+                &'static crate::context::native_skills::NativeSkills,
+                &'static mut crate::context::DiscoveryWork,
+            )| sources.user_catalog(work),
         );
         #[cfg(feature = "native-execution")]
         let sizes = [manifest, catalog, users];

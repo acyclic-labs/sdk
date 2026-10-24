@@ -400,8 +400,15 @@ impl NativeSkills {
             };
             for directory in PROJECT_SKILL_ROOTS {
                 skills.extend(
-                    discover_skills_from(&mut scan, directory, "SKILL.md", bounds, Some(&cut), true)
-                        .await?,
+                    discover_skills_from(
+                        &mut scan,
+                        directory,
+                        "SKILL.md",
+                        bounds,
+                        Some(&cut),
+                        true,
+                    )
+                    .await?,
                 );
             }
             let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;

@@ -192,7 +192,6 @@ fn follow_diff(
     )
 }
 
-
 /// The presentation boundary shared by the executable and its file-backed Rig.
 /// Only successful device output advances the remembered transcript position.
 pub(super) fn present<P: tui::term::Present>(
