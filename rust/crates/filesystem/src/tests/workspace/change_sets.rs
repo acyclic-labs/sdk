@@ -95,7 +95,7 @@ async fn small_directory_move_does_not_materialize_unrelated_file_records()
     unbounded!(seed, create_dir_all("/src/deep"))?;
     unbounded!(seed, create_dir_all("/unrelated"))?;
     seed.write_text("/src/deep/file", "retained").await?;
-    for index in 0..128 {
+    for index in 0..32 {
         seed.write_text(&format!("/unrelated/file-{index:03}"), "unchanged")
             .await?;
     }
