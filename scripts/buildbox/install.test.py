@@ -75,9 +75,11 @@ from pathlib import Path
 s=importlib.util.spec_from_file_location('installer',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 alias=Path(sys.argv[2]);store=Path(sys.argv[3]);os.chown(alias,0,0);m.secure_bin(alias,store,False)
 m.secure_bin(alias,store,False) # repeated publication preserves the pinned entry
+assert os.statvfs(alias).f_flag & os.ST_RDONLY
+m.publish(store/'tool',b'updated');assert (alias/'tool').read_bytes()==b'updated'
 probe="from pathlib import Path;import sys,errno;p=Path(sys.argv[1]);\\ntry:p.rename(p.with_name('replaced'))\\nexcept OSError as e:assert e.errno==errno.EBUSY\\nelse:raise AssertionError('tool entry replaced')"
 subprocess.run(['runuser','-u','var','--','python3','-c',probe,str(alias)],check=True)
-assert (alias/'tool').read_text()=='original'
+assert (alias/'tool').read_text()=='updated'
 '''
             try:
                 subprocess.run(['sudo','-n','unshare','--mount','--propagation','private','python3','-c',driver,str(HERE/'bb-install.py'),str(alias),str(store)],check=True)

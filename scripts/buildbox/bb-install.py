@@ -45,13 +45,20 @@ def secure_bin(alias=BIN, store=Path('/opt/buildbox/bin'), persistent=True):
                 if (Path(directory)/name).is_symlink():raise ValueError('tool alias symlink refused')
             for name in files:publish(destination/name,(Path(directory)/name).read_bytes())
         if persistent:
-            unit=b'[Unit]\nDescription=Qualified buildbox tool entry point\n[Mount]\nWhat=/opt/buildbox/bin\nWhere=/home/var/bin\nType=none\nOptions=bind\n[Install]\nWantedBy=local-fs.target\n'
+            unit=b'[Unit]\nDescription=Qualified buildbox tool entry point\n[Mount]\nWhat=/opt/buildbox/bin\nWhere=/home/var/bin\nType=none\nOptions=bind,ro\n[Install]\nWantedBy=local-fs.target\n'
             publish('/etc/systemd/system/home-var-bin.mount',unit,0o644)
             subprocess.run(['systemctl','daemon-reload'],check=True)
             subprocess.run(['systemctl','enable','--now','home-var-bin.mount'],check=True)
         else:subprocess.run(['mount','--bind',str(store),str(alias)],check=True)
     if (alias.stat().st_dev,alias.stat().st_ino)!=(store.stat().st_dev,store.stat().st_ino):
         raise PermissionError('tool entry point is not pinned to its canonical store')
+    subprocess.run(['mount','-o','remount,bind,ro',str(alias)],check=True)
+    # Refresh persistence even when upgrading an already pinned entry.
+    if persistent:
+        unit=Path('/etc/systemd/system/home-var-bin.mount')
+        publish(unit,unit.read_bytes().replace(b'Options=bind\n',b'Options=bind,ro\n'),0o644)
+        subprocess.run(['systemctl','daemon-reload'],check=True)
+    return store
 
 
 def publish(destination, data, mode=0o555):
@@ -122,20 +129,19 @@ def publish_candidate(candidate):
     with open('/mnt/bb/locks/bb-install.lock', 'a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         BIN.mkdir(exist_ok=True)
-        os.chown(BIN, 0, 0); BIN.chmod(0o755)
-        secure_bin()
+        store=secure_bin()
         for name, data in payload.items():
-            destination=BIN/name; backup=BIN/(name+'.bak-gatespeed')
+            destination=store/name; backup=store/(name+'.bak-gatespeed')
             if destination.exists() and not backup.exists():publish(backup,destination.read_bytes())
             publish(destination,data)
         # Existing launchers also cross this privilege boundary; var can
         # execute, but cannot truncate, unlink or replace a tool directly.
-        for directory, dirs, files in os.walk(BIN, followlinks=False):
+        for directory, dirs, files in os.walk(store, followlinks=False):
             os.chown(directory, 0, 0); Path(directory).chmod(0o755)
             for name in files:
                 file=Path(directory)/name
                 if not file.is_symlink():os.chown(file,0,0);file.chmod(0o555)
-        publish(BIN/'installed-tools.json',json.dumps({'schema_version':1,'sha256':hashes}).encode(),0o444)
+        publish(store/'installed-tools.json',json.dumps({'schema_version':1,'sha256':hashes}).encode(),0o444)
     return hashes
 
 

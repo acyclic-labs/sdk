@@ -17,7 +17,8 @@ renames it and flushes the directory. Failed qualification changes no tool.
 are root-owned and unwritable by the job/lane account; direct writes fail.
 The canonical store is `/opt/buildbox/bin`, below protected root parents.
 `home-var-bin.mount` pins the legacy `/home/var/bin` entry to that store, so a
-lane cannot rename it through its writable HOME parent. The mount is enabled
+lane cannot rename it through its writable HOME parent. The entry is read-only;
+publication writes through the protected canonical store. The mount is enabled
 at boot. The installer verifies that the entry and store have the same inode.
 Do not use sudo to bypass this boundary. The installer is the only privileged
 publication path. Existing jobs keep their running interpreter/inode.
