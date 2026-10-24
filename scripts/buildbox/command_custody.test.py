@@ -25,13 +25,15 @@ class CommandCustodyTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='command-custody-', dir='/mnt/bb/tmp')
         self.d = Path(self.temp.name)
-        shutil.copyfile(HERE / 'bb_target_store.py', self.d / 'bb_target_store.py')
+        # The production worker imports sibling modules. Stage that complete
+        # bundle once so new production imports cannot strand isolated workers.
+        for dependency in HERE.glob('*.py'):
+            shutil.copyfile(dependency, self.d / dependency.name)
 
     def tearDown(self):
         self.temp.cleanup()
 
     def module(self, negative=False):
-        shutil.copyfile(HERE / 'bb_target_store.py', self.d / 'bb_target_store.py')
         source = (HERE / 'bb-job.py').read_text()
         if negative:
             boundary = 'start_new_session=True)'
@@ -40,6 +42,26 @@ class CommandCustodyTests(unittest.TestCase):
         path = self.d / ('negative.py' if negative else 'worker.py')
         path.write_text(source)
         return path
+
+    def test_isolated_worker_owns_its_complete_module_bundle(self):
+        worker = self.module()
+        for dependency in HERE.glob('*.py'):
+            self.assertEqual((self.d / dependency.name).read_bytes(), dependency.read_bytes())
+        code = '''import importlib.util,sys
+from pathlib import Path
+sys.path.insert(0,str(Path(sys.argv[1]).parent))
+spec=importlib.util.spec_from_file_location('isolated_worker',sys.argv[1])
+module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+'''
+        command = [sys.executable, '-I', '-c', code, str(worker)]
+        result = subprocess.run(command, cwd=self.d, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        # Restore the former incomplete staging, independently of the parent
+        # process's import path, and require its actual import failure.
+        (self.d / 'admission_policy.py').unlink()
+        result = subprocess.run(command, cwd=self.d, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"No module named 'admission_policy'", result.stderr)
 
     def custody_case(self, interrupted, negative=False):
         fifo = self.d / 'release'
@@ -287,8 +309,6 @@ print('retired',flush=True)
                         for descriptor in descriptors:os.close(descriptor)
 
     def worker(self,negative=False,cleanup_failure=False,custody_negative=False,export_negative=False):
-        shutil.copyfile(HERE/'job_exports.py',self.d/'job_exports.py')
-        shutil.copyfile(HERE/'bb_target_store.py',self.d/'bb_target_store.py')
         source=(HERE/'bb-job.py').read_text()
         source=source.replace("'disk_free':disk()", "'disk_free':[{'path':'fixture','free_percent':50}]")
         if negative:source=source.replace("file=sys.stderr,flush=True", "flush=True")
