@@ -3,44 +3,13 @@
 use super::{
     NativeBlockCloneAccelerationEvidence, NativeSparseAccelerationEvidence,
     NativeStorageAccelerationError, NativeStorageAccelerationEvidence,
+    probe_directory::ProbeDirectory,
 };
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
-use std::path::{Path, PathBuf};
-
-struct ProbeDirectory(PathBuf);
-
-impl ProbeDirectory {
-    fn create(root: &Path) -> Result<Self, std::io::Error> {
-        use std::time::UNIX_EPOCH;
-
-        let nonce = crate::native_mount::clock::Clock::capture()
-            .now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(std::io::Error::other)?
-            .as_nanos();
-        let path = root.join(format!(
-            ".acyclic-fs-storage-acceleration-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&path)?;
-        Ok(Self(path))
-    }
-
-    fn remove(self) -> Result<(), std::io::Error> {
-        std::fs::remove_dir_all(&self.0)?;
-        std::mem::forget(self);
-        Ok(())
-    }
-}
-
-impl Drop for ProbeDirectory {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+use std::path::Path;
 
 pub(super) fn probe(
     root: &Path,
@@ -58,8 +27,8 @@ pub(super) fn probe(
             "probe length exceeds 1 MiB",
         ));
     }
-    let sparse = sparse_probe(&directory.0, bytes)?;
-    let block_clone = block_clone_probe(&directory.0, bytes)?;
+    let sparse = sparse_probe(directory.path(), bytes)?;
+    let block_clone = block_clone_probe(directory.path(), bytes)?;
     directory.remove()?;
     Ok(NativeStorageAccelerationEvidence {
         sparse,

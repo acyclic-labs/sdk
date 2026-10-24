@@ -156,6 +156,7 @@ use runtime::invoke;
 pub(super) use runtime::{CallbackRuntime, PreparedCallbackWait};
 mod source_io;
 pub use source_io::NativeSourceIoLease;
+include!("file_callbacks.rs");
 include!("detached.rs");
 include!("attached.rs");
 include!("checkout.rs");

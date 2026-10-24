@@ -3,57 +3,14 @@
 use super::{
     NativeBlockCloneAccelerationEvidence, NativeSparseAccelerationEvidence,
     NativeStorageAccelerationError, NativeStorageAccelerationEvidence,
+    probe_directory::ProbeDirectory,
 };
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
-use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
-
-struct ProbeDirectory(PathBuf);
-
-impl ProbeDirectory {
-    fn create(root: &Path) -> Result<Self, NativeStorageAccelerationError> {
-        let nonce = crate::native_mount::clock::Clock::capture()
-            .now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(std::io::Error::other)?
-            .as_nanos();
-        let path = root.join(format!(
-            ".acyclic-fs-storage-acceleration-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&path)?;
-        Ok(Self(path))
-    }
-
-    fn path(&self, name: &str) -> PathBuf {
-        self.0.join(name)
-    }
-
-    fn remove(self) -> Result<(), NativeStorageAccelerationError> {
-        for name in ["sparse.bin", "clone-source.bin", "clone-target.bin"] {
-            let path = self.path(name);
-            if path.exists() {
-                std::fs::remove_file(path)?;
-            }
-        }
-        std::fs::remove_dir(&self.0)?;
-        std::mem::forget(self);
-        Ok(())
-    }
-}
-
-impl Drop for ProbeDirectory {
-    fn drop(&mut self) {
-        for name in ["sparse.bin", "clone-source.bin", "clone-target.bin"] {
-            let _ = std::fs::remove_file(self.path(name));
-        }
-        let _ = std::fs::remove_dir(&self.0);
-    }
-}
+use std::path::Path;
 
 fn probe_bytes(allocation_unit_bytes: u64) -> Result<u64, NativeStorageAccelerationError> {
     let bytes = allocation_unit_bytes
@@ -78,7 +35,7 @@ fn sparse_probe(
         .create_new(true)
         .read(true)
         .write(true)
-        .open(directory.path("sparse.bin"))?;
+        .open(directory.path().join("sparse.bin"))?;
     file.set_len(logical_bytes)?;
     let edge = [0xA5_u8; 4_096];
     file.write_all(&edge)?;
@@ -119,8 +76,8 @@ fn block_clone_probe(
     directory: &ProbeDirectory,
     cloned_bytes: u64,
 ) -> Result<NativeBlockCloneAccelerationEvidence, NativeStorageAccelerationError> {
-    let source_path = directory.path("clone-source.bin");
-    let target_path = directory.path("clone-target.bin");
+    let source_path = directory.path().join("clone-source.bin");
+    let target_path = directory.path().join("clone-target.bin");
     let mut source = OpenOptions::new()
         .create_new(true)
         .read(true)

@@ -84,44 +84,12 @@ pub fn probe_native_storage_accelerations(
     probe_platform(root, capabilities.allocation_unit_bytes)
 }
 
-#[cfg(windows)]
-struct ProbeDirectory(std::path::PathBuf);
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+#[path = "storage_probe_directory.rs"]
+mod probe_directory;
 
 #[cfg(windows)]
-impl ProbeDirectory {
-    fn create(root: &Path) -> Result<Self, std::io::Error> {
-        use std::time::UNIX_EPOCH;
-
-        let nonce = crate::native_mount::clock::Clock::capture()
-            .now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(std::io::Error::other)?
-            .as_nanos();
-        let path = root.join(format!(
-            ".acyclic-fs-storage-acceleration-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&path)?;
-        Ok(Self(path))
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-
-    fn remove(self) -> Result<(), std::io::Error> {
-        std::fs::remove_dir_all(&self.0)?;
-        std::mem::forget(self);
-        Ok(())
-    }
-}
-
-#[cfg(windows)]
-impl Drop for ProbeDirectory {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+use probe_directory::ProbeDirectory;
 
 #[cfg(windows)]
 #[allow(
