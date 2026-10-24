@@ -24,7 +24,10 @@ use crate::{
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
-use acyclic_stream::{AppendOutcome, IdempotencyKey as StreamKey, StreamError, StreamProvider};
+#[cfg(test)]
+use acyclic_stream::{AppendOutcome, IdempotencyKey as StreamKey};
+use acyclic_stream::{StreamError, StreamProvider};
+#[cfg(test)]
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
@@ -34,11 +37,21 @@ mod conversation;
 mod approval_files;
 mod cancellation;
 mod canonical;
+mod checkpoint;
+mod checkpoint_maps;
 mod chunks;
 mod configuration;
 mod content;
+mod durability;
+#[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod durability_tests;
+mod indexed_publication;
+#[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
+mod inline_tests;
 mod interactions;
+mod latest_response;
 mod observations;
+mod persistent_index;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod publication_future_tests;
@@ -46,20 +59,29 @@ mod replay;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod replay_capacity_tests;
+#[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
+mod request_segments_tests;
 mod router;
 mod selected;
+mod step_index;
 mod summary;
 mod summary_authorization;
 #[cfg(test)]
 mod summary_authorization_tests;
+mod summary_cache;
+mod summary_map;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod test_support;
 #[cfg(test)]
 mod tests;
 mod traits;
 use selected::JournalSelectedResolver;
 use summary::*;
+use summary_cache::SummaryCache;
 
-/// Durable, ref-only journal for one exact agent-private volume.
+/// Durable observations and private payload references for one exact agent-private volume.
 pub struct FilesystemExecutionJournal<P, A, O> {
+    cache_identity: crate::executor::ExecutionJournalCacheId,
     stream: Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
@@ -71,7 +93,7 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     interactions: Option<FilesystemInteractionHost<P, A, O>>,
     owner: Option<(TaskJournalOwner<P>, OperationId)>,
     execution: Option<(OperationId, OperationId)>,
-    verified: tokio::sync::Mutex<ExecutionSummary>,
+    verified: tokio::sync::Mutex<SummaryCache>,
     conversation_projection: tokio::sync::Mutex<Option<StreamAggregate<P>>>,
     history_read_limits: Option<crate::store::HistoryReadLimits>,
     task_files: Option<Arc<crate::task_volume::TaskFiles<P>>>,

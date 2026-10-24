@@ -325,10 +325,7 @@ async fn every_adapter_restores_streamed_builtin_calls_with_native_custody() -> 
             request_digest: prepared.request_digest(),
             ..parser_dispatch()
         };
-        let ordinary: Vec<_> = provider
-            .generate(prepared.clone(), dispatch)
-            .try_collect()
-            .await?;
+        let ordinary: Vec<_> = provider.generate(&prepared, dispatch).try_collect().await?;
         assert!(ordinary.iter().any(
             |event| matches!(event, ModelEvent::ToolCall(call) if call.name == "acyclic.read_file")
         ));
@@ -415,7 +412,7 @@ async fn an_invalid_alias_rejects_the_complete_batch_before_publication() -> Res
         request_digest: prepared.request_digest(),
         ..parser_dispatch()
     };
-    let mut ordinary = provider.generate(prepared.clone(), dispatch);
+    let mut ordinary = provider.generate(&prepared, dispatch);
     assert!(ordinary.next().await.unwrap().is_err());
     assert!(ordinary.next().await.is_none());
     let work = native_tests::work(&acyclic_fs::CancellationToken::new())?;
@@ -461,7 +458,7 @@ async fn canonical_name_expansion_obeys_the_aggregate_parser_bound() -> Result<(
         request_digest: prepared.request_digest(),
         ..parser_dispatch()
     };
-    let mut ordinary = provider.generate(prepared.clone(), dispatch);
+    let mut ordinary = provider.generate(&prepared, dispatch);
     let error = ordinary.next().await.unwrap().unwrap_err();
     assert!(error.to_string().contains("aggregate"));
     let work = native_tests::work(&acyclic_fs::CancellationToken::new())?;

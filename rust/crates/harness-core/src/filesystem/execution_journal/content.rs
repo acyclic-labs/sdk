@@ -157,6 +157,12 @@ where
                 io,
             )
             .await;
+        #[cfg(feature = "test-support")]
+        if result.is_ok() {
+            tracing::trace!(target: "acyclic_harness::journal_work",
+                payload_stages = 1_u64, payload_stage_bytes = bytes.len() as u64,
+                "execution payload published");
+        }
         drop(grant);
         drop(grant_hold);
         result
@@ -191,11 +197,44 @@ where
         if io.is_none() {
             reference.validate(&mut None)?;
         }
-        self.host
+        let bytes = self
+            .host
             .read_pinned_receipt_io(reference, self.maximum_payload_bytes, io)
             .await?
             .retain()
-            .await
+            .await?;
+        #[cfg(feature = "test-support")]
+        tracing::trace!(target: "acyclic_harness::journal_work",
+            payload_loads = 1_u64, payload_load_bytes = bytes.len() as u64,
+            "execution payload loaded");
+        Ok(bytes)
+    }
+
+    pub(super) fn authorize_inline_event(
+        &self,
+        event: &str,
+        operation: VolumeOperation,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        if event.len() as u64 > self.inline_model_event_bytes() {
+            return Err(canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "inline model observation exceeds its bound",
+            ));
+        }
+        crate::executor::with_history_io(io, |work| {
+            ContentGrant::authorize_volume(
+                &self.verifier,
+                &self.scope,
+                &self.volume,
+                operation,
+                io.map(|io| io.remaining().map(|budget| budget.bytes_encoded))
+                    .transpose()?
+                    .unwrap_or(u64::MAX),
+                work,
+            )
+        })
     }
 
     pub(super) async fn verify_event_refs_with_io(
@@ -233,10 +272,22 @@ where
                     result, projection, ..
                 } => [Some(result), Some(projection), None],
                 ExecutionEvent::Started { .. }
+                | ExecutionEvent::ModelInline { .. }
                 | ExecutionEvent::ModelStopped { .. }
                 | ExecutionEvent::ToolFailed { .. } => [None, None, None],
             };
-            let mut model = None;
+            let mut model = match event {
+                ExecutionEvent::ModelInline { event, .. } => {
+                    self.authorize_inline_event(event, VolumeOperation::Read, io)?;
+                    Some(crate::executor::retain_preparation(decode_json::<
+                        ModelEvent,
+                    >(
+                        event.as_bytes(),
+                        io,
+                    )?)?)
+                }
+                _ => None,
+            };
             for reference in refs.into_iter().flatten() {
                 let _bytes_hold;
                 crate::model::charge_items(io, 1)?;
@@ -252,8 +303,32 @@ where
                         .as_ref()
                         .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
                     let before = io.map(PreparationIo::owned_bytes).transpose()?;
+                    if reference.descriptor().media_type()
+                        == crate::executor::transcript::REQUEST_MEDIA
+                    {
+                        let scope = crate::filesystem::PreparationScope::new(io)?;
+                        let manifest = crate::executor::retain_preparation(decode_json::<
+                            crate::executor::transcript::RequestManifest,
+                        >(
+                            bytes, scope.io()
+                        )?)?;
+                        if manifest.authenticates(
+                            &self.verifier,
+                            limits,
+                            *request_digest,
+                            scope.io(),
+                        )? {
+                            continue;
+                        }
+                    }
                     let _prepared_hold;
-                    let prepared = crate::model::PreparedModelRequest::decode(bytes, limits, io)?;
+                    let prepared = if reference.descriptor().media_type()
+                        == crate::executor::transcript::REQUEST_MEDIA
+                    {
+                        crate::executor::load_model_request(self, reference, limits, io).await?
+                    } else {
+                        crate::model::PreparedModelRequest::decode(bytes, limits, io)?
+                    };
                     _prepared_hold = match (io, before) {
                         (Some(io), Some(before)) => Some(io.guard_owned(io.owned_since(before)?)?),
                         _ => None,

@@ -28,7 +28,10 @@ pub(crate) struct Work {
 #[cfg(not(target_arch = "wasm32"))]
 impl Work {
     pub(crate) fn new(meter: Arc<dyn NativeReadMeter>) -> std::io::Result<Arc<Self>> {
-        let allocation = ReadAllocation::new(&meter, std::mem::size_of::<Self>())?;
+        let allocation = ReadAllocation::new(
+            &meter,
+            acyclic_native_runtime::arc_allocation_bytes::<Self>(),
+        )?;
         Ok(Arc::new(Self {
             meter,
             error: std::sync::Mutex::new(None),
@@ -276,35 +279,7 @@ impl MemoryStream {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn commit_hash_bytes(request: &CommitRequest) -> u64 {
-    let path_bytes = |path: &StreamPath| 8 + path.as_str().len() as u64;
-    let record_bytes =
-        |records: &[AppendRecord]| 8 + records.iter().map(AppendRecord::hash_bytes).sum::<u64>();
-    b"acyclic.stream.request.v1\0".len() as u64
-        + b"commit".len() as u64
-        + request
-            .conditions
-            .iter()
-            .map(|condition| match condition {
-                CommitCondition::Head { path, .. } => 1 + path_bytes(path) + 8 + 32,
-                CommitCondition::Tail { path, .. } => 1 + path_bytes(path) + 8,
-                CommitCondition::Absent { path } => 1 + path_bytes(path),
-            })
-            .sum::<u64>()
-        + request
-            .mutations
-            .iter()
-            .map(|mutation| match mutation {
-                CommitMutation::Append { path, records } => {
-                    1 + path_bytes(path) + record_bytes(records)
-                }
-                CommitMutation::Fork {
-                    source,
-                    destination,
-                    records,
-                    ..
-                } => 1 + path_bytes(source) + path_bytes(destination) + 8 + record_bytes(records),
-            })
-            .sum::<u64>()
+    crate::request::commit_hash_bytes(request)
 }
 
 #[cfg(not(target_arch = "wasm32"))]

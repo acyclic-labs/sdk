@@ -1,6 +1,7 @@
 use super::*;
 
-// Original factories from 3d2f72e2a; no candidate preparation code is called.
+// Original preparation factories from 3d2f72e2a. Both sides use the current
+// persistence codec, while context transformation and admission stay independent.
 impl StockExecution<'_> {
     pub(super) async fn transform_projection_original(
         &self,
@@ -98,15 +99,30 @@ impl StockExecution<'_> {
             context: projection,
             canonical,
             checkpoint: None,
+            working: None,
         };
         let projection_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}"), work)
         })?;
-        let reference = stage_json(
+        // Keep the former independent preparation algorithm while publishing
+        // through the current shared transcript codec on both sides.
+        let stored_request = crate::model::PreparedModelRequest::prepare(
+            self.request_from_context(&projection.context)?,
+            self.stock.limits,
+            self.io,
+        )?;
+        let request_key = with_history_io(self.io, |work| {
+            preparation_format(format_args!("model:{step}:request"), work)
+        })?;
+        let stored_request = self
+            .stage_response_request(journal, input, step, &request_key, &stored_request)
+            .await?;
+        let reference = transcript::stage_projection(
             journal,
             input.operation_id,
             &projection_key,
             &projection,
+            &stored_request,
             self.io,
         )
         .await?;
@@ -186,7 +202,8 @@ impl StockExecution<'_> {
             }
             Some((reference, accounting)) => (
                 retain_preparation(
-                    load_json::<ResponseProjection>(journal, reference, self.io).await?,
+                    load_response_projection(journal, reference, self.stock.limits, self.io)
+                        .await?,
                 )?,
                 match accounting {
                     Some(reference) => Some(retain_preparation(
@@ -287,11 +304,12 @@ impl StockExecution<'_> {
                 if !message_pressure && !token_pressure {
                     return Ok(prepared);
                 }
+                let pre_stage = projection.canonical.is_some();
                 self.compact_response(
                     journal,
-                    (input, step),
+                    (input, step, 0),
                     (projection, accounting),
-                    source,
+                    (source, pre_stage),
                     policy,
                     &mut DispatchPhase::new(),
                 )

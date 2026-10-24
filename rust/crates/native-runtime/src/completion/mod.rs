@@ -193,19 +193,14 @@ impl<T> Future for NativeCompletion<T> {
             && let Some(payload) = state.panic.take()
         {
             let waker = state.waker.take();
-            let charge = state.take_charge();
             drop(state);
-            drop((waker, charge));
+            drop(waker);
             this.resume_panic(payload);
         }
         let result = state.poll_result(context.waker());
-        // The observer retires the state's charge when it takes the result:
-        // the worker may still hold its reference for a moment after
-        // publishing. An abandoned observer leaves the charge in the state,
-        // where the worker's last reference retires it.
-        let charge = result.is_ready().then(|| state.take_charge()).flatten();
+        // Result publication does not retire the allocation. A worker or
+        // another completion owner may still hold this shared state.
         drop(state);
-        drop(charge);
         result
     }
 }

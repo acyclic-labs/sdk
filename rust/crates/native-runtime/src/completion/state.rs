@@ -33,20 +33,16 @@ impl<T> Default for CompletionState<T> {
 }
 
 impl<T> CompletionState<T> {
-    /// Moves the state's charge to the observer, which retires it after
-    /// releasing the lock.
-    pub(crate) fn take_charge(&mut self) -> Option<ReadAllocation> {
-        #[cfg(all(test, acyclic_native_runtime_loom))]
-        if self.broken_charge {
-            return None;
-        }
-        self._allocation.take()
-    }
-
     pub(crate) fn poll_result(&mut self, waker: &Waker) -> Poll<io::Result<T>> {
         if !self.task_pending
             && let Some(result) = self.result.take()
         {
+            #[cfg(all(test, acyclic_native_runtime_loom))]
+            if self.broken_charge {
+                // Negative control: the old observer-side refund left live
+                // shared state without its original allocation owner.
+                self._allocation.take();
+            }
             return Poll::Ready(result);
         }
         if !self

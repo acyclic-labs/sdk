@@ -11,4 +11,13 @@ mod path_work;
 mod read_hint;
 
 #[cfg(not(target_arch = "wasm32"))]
+mod history_index;
+
+#[cfg(not(target_arch = "wasm32"))]
 mod native;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod work_custody;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod commit_index;

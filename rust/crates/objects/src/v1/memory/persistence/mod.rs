@@ -56,6 +56,7 @@ pub(super) struct Journal {
     fault_checkpoint: std::sync::atomic::AtomicU64,
 }
 
+mod changes;
 mod checkpoint;
 mod delta;
 mod inline;
@@ -70,6 +71,7 @@ mod tests;
 #[cfg(test)]
 pub(super) mod work;
 
+use changes::*;
 use delta::*;
 pub(crate) use opening::open;
 use protocol::*;

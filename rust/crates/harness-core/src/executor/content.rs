@@ -142,8 +142,40 @@ impl StockExecution<'_> {
     pub(super) async fn verify_model_request_content(
         &self,
         journal: &dyn ExecutionJournal,
-        request: &crate::model::PreparedModelRequest,
+        request: &mut crate::model::PreparedModelRequest,
     ) -> Result<()> {
+        if journal.has_file_bound_model_verification()
+            && let Some(identity) = journal.cache_identity()
+        {
+            let admission = request.take_content_admission(self.content_admission, identity);
+            let suffix = request
+                .request()
+                .messages
+                .get(admission.verified_messages()..)
+                .ok_or_else(|| {
+                    stock_boundary(
+                        self.io,
+                        crate::wire::ErrorCode::Invalid,
+                        "model content admission exceeds its immutable prefix",
+                    )
+                })?;
+            let contents = admission
+                .previous_files(request, self.io)?
+                .chain(suffix.iter().map(|message| &message.content));
+            verify_model_contents_scoped(
+                journal,
+                contents,
+                self.stock.limits,
+                self.original_context()
+                    .map(crate::runtime::TaskContext::scope),
+                self.io,
+                self.original_context(),
+            )
+            .await?;
+            let admission = admission.extend(request, self.io)?;
+            request.retain_content_admission(admission);
+            return Ok(());
+        }
         verify_model_contents_scoped(
             journal,
             request

@@ -216,10 +216,8 @@ fn broken_terminal_accounting_is_detected() {
     terminal(true, Fault::Accounting);
 }
 
-/// The worker publishes and then drops its reference to the shared state; the
-/// observer can take the result in between. The state's charge must already
-/// be retired when the observer returns, so a caller that sees the result
-/// sees its whole budget back.
+/// Result observation and abandonment race the worker's final shared release.
+/// Every remaining state owner must retain the original physical funding.
 fn charge(drop_observer: bool, broken: bool) {
     let schedules = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let early = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -230,20 +228,25 @@ fn charge(drop_observer: bool, broken: bool) {
         let meter = Arc::new(crate::tests::ReadBudgetMeter::new(1, 0));
         let observed: Arc<dyn crate::NativeReadMeter> = meter.clone();
         let mut task = run_blocking_io(|| 17, Some((observed, false))).unwrap();
-        task.state.as_ref().unwrap().lock().unwrap().broken_charge = broken;
+        let state = task.state.as_ref().unwrap().clone();
+        let funded = {
+            let mut state = state.lock().unwrap();
+            state.broken_charge = broken;
+            state._allocation.as_ref().unwrap().bytes()
+        };
         assert_ne!(meter.memory.load(Ordering::SeqCst), 0);
         let job = task.pending.take().unwrap();
         let worker = thread::spawn(move || wake_capacity_waiter(job.run()));
         if drop_observer {
-            // Abandoned: the charge stays with the state, and the worker's
-            // last reference retires it.
             drop(task);
             worker.join().unwrap();
             assert_eq!(
                 meter.memory.load(Ordering::SeqCst),
-                0,
-                "abandoned charge leaked"
+                funded,
+                "abandoned shared state lost its funding"
             );
+            drop(state);
+            assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
             return;
         }
         let flag = Arc::new(Woken(AtomicUsize::new(0)));
@@ -264,14 +267,16 @@ fn charge(drop_observer: bool, broken: bool) {
             }
         }
         drop(task);
-        assert_eq!(
-            meter.memory.load(Ordering::SeqCst),
-            0,
-            "charge outlived its observer"
+        assert!(
+            meter.memory.load(Ordering::SeqCst) >= funded,
+            "live shared state lost its funding"
         );
         if let Some(worker) = worker {
             worker.join().unwrap();
         }
+        assert_eq!(meter.memory.load(Ordering::SeqCst), funded);
+        drop(state);
+        assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
     });
     if !drop_observer {
         assert_ne!(
@@ -287,21 +292,20 @@ fn charge(drop_observer: bool, broken: bool) {
 }
 
 #[test]
-fn observer_retires_the_state_charge_before_the_worker_lets_go() {
+fn shared_state_funding_survives_observation_and_worker_release() {
     charge(false, false);
     charge(true, false);
 }
 
 #[test]
-#[should_panic(expected = "charge outlived its observer")]
-fn a_charge_left_on_the_shared_state_is_detected() {
+#[should_panic(expected = "live shared state lost its funding")]
+fn premature_shared_state_refund_is_detected() {
     charge(false, true);
 }
 
 /// A metered submission waits for capacity while the worker's release
-/// notifier holds its waiter node. When the owner is admitted or cancels, its
-/// node's charge must be back in the meter before it returns, whether or not
-/// the notifier has let go of the node yet.
+/// notifier holds its waiter node. Admission and cancellation unlink the node
+/// without refunding memory still owned by that notifier.
 fn waiter_charge(cancel: bool, broken: bool) {
     let schedules = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let explored = schedules.clone();
@@ -329,17 +333,21 @@ fn waiter_charge(cancel: bool, broken: bool) {
         let flag = Arc::new(Woken(AtomicUsize::new(0)));
         let waker = Waker::from(flag);
         let cx = std::task::Context::from_waker(&waker);
-        let before = meter.memory.load(Ordering::SeqCst);
         assert!(
             crate::workers::poll_submission_with(&workers, &mut pending, &mut waiter, &cx)
                 .is_pending()
         );
-        assert!(waiter.is_some());
-        assert_ne!(
-            meter.memory.load(Ordering::SeqCst),
-            before,
-            "waiter uncharged"
-        );
+        let retained = waiter.as_ref().unwrap().clone();
+        let funded = retained
+            .state
+            .lock()
+            .unwrap()
+            ._allocation
+            .as_ref()
+            .unwrap()
+            .bytes();
+        let registered = meter.memory.load(Ordering::SeqCst);
+        assert!(registered >= funded && funded > 0, "waiter uncharged");
 
         let released = workers.admission.clone();
         let receiving = receiver.clone();
@@ -360,16 +368,23 @@ fn waiter_charge(cancel: bool, broken: bool) {
         // Checked before the notifier is joined: it may still hold the node.
         assert_eq!(
             meter.memory.load(Ordering::SeqCst),
-            before,
-            "waiter charge outlived its owner"
+            registered,
+            "live shared waiter lost its funding"
         );
         notifier.join().unwrap();
+        drop(retained);
+        assert_eq!(meter.memory.load(Ordering::SeqCst), registered - funded);
         let admission = workers.admission.lock().unwrap();
         assert_eq!(admission.waiter_count, 0);
         assert_eq!(admission.queued_jobs, usize::from(!cancel));
         drop(admission);
+        if !cancel {
+            let accepted = crate::workers::receive_job(&receiver, &workers.admission).unwrap();
+            wake_capacity_waiter(accepted.run());
+        }
         drop(pending);
         drop(task);
+        assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
     });
     eprintln!(
         "waiter charge schedules (cancel={cancel}): {}",
@@ -378,19 +393,74 @@ fn waiter_charge(cancel: bool, broken: bool) {
 }
 
 #[test]
-fn admitted_or_cancelled_waiters_retire_their_charge_before_the_notifier() {
+fn shared_waiter_funding_survives_admission_and_cancellation() {
     waiter_charge(false, false);
     waiter_charge(true, false);
 }
 
 #[test]
-#[should_panic(expected = "waiter charge outlived its owner")]
-fn an_admitted_waiter_charge_left_on_its_node_is_detected() {
+#[should_panic(expected = "live shared waiter lost its funding")]
+fn premature_admitted_waiter_refund_is_detected() {
     waiter_charge(false, true);
 }
 
 #[test]
-#[should_panic(expected = "waiter charge outlived its owner")]
-fn a_cancelled_waiter_charge_left_on_its_node_is_detected() {
+#[should_panic(expected = "live shared waiter lost its funding")]
+fn premature_cancelled_waiter_refund_is_detected() {
     waiter_charge(true, true);
+}
+
+fn release_broadcast(head_only: bool) {
+    // Prove broadcast without cancellation's independent successor wake too.
+    // Otherwise a negative control can accidentally borrow that second path.
+    for cancel in [None, Some(0), Some(1), Some(2)] {
+        loom::model(move || {
+            let (sender, _receiver) = crate::sync::mpsc::sync_channel(1);
+            let workers = NativeWorkers::single(sender, AdmissionState::new());
+            let flags = std::array::from_fn::<_, 3, _>(|_| Arc::new(Woken(AtomicUsize::new(0))));
+            let nodes = flags.each_ref().map(|flag| {
+                workers
+                    .admission
+                    .lock()
+                    .unwrap()
+                    .register(&Waker::from(flag.clone()), None)
+            });
+            workers.admission.lock().unwrap().queued_jobs = 1;
+            workers.admission.lock().unwrap().broken_broadcast = head_only;
+            let admission = workers.admission.clone();
+            let notifier = thread::spawn(move || crate::notify_capacity_released(&admission));
+            if let Some(cancel) = cancel {
+                crate::remove_capacity_waiter(&workers, Some(nodes[cancel].clone()));
+            }
+            notifier.join().unwrap();
+            // Observe the entire broadcast before cleanup: unlinking an
+            // earlier node wakes its successor and would mask a lost wake.
+            for (index, flag) in flags.iter().enumerate() {
+                if Some(index) != cancel {
+                    assert_ne!(
+                        flag.0.load(Ordering::SeqCst),
+                        0,
+                        "capacity broadcast lost a live waiter"
+                    );
+                }
+            }
+            for (index, node) in nodes.into_iter().enumerate() {
+                if Some(index) != cancel {
+                    crate::remove_capacity_waiter(&workers, Some(node));
+                }
+            }
+            assert_eq!(workers.admission.lock().unwrap().waiter_count, 0);
+        });
+    }
+}
+
+#[test]
+fn release_broadcast_reaches_every_waiter_across_concurrent_cancellation() {
+    release_broadcast(false);
+}
+
+#[test]
+#[should_panic(expected = "capacity broadcast lost a live waiter")]
+fn head_only_capacity_wake_is_detected() {
+    release_broadcast(true);
 }

@@ -3,6 +3,10 @@ use crate::{
     IdempotencyKey, MAX_RECORD_BYTES, OwnedBytes, RecordHeaders, StreamError, StreamPath,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "record_header_tests/native.rs"]
+mod native;
+
 fn body(key: &'static [u8], attribute: &'static [u8]) -> Result<AppendRecord, StreamError> {
     Ok(AppendRecord {
         value: OwnedBytes::from_static(b"same body"),
@@ -28,7 +32,11 @@ fn indexed_headers_share_the_value_payload_bound() -> Result<(), StreamError> {
         idempotency_key: None,
     };
     crate::request::append_digest(&request)?;
-    request.records.first_mut().ok_or(StreamError::Unavailable)?.value = vec![0; MAX_RECORD_BYTES].into();
+    request
+        .records
+        .first_mut()
+        .ok_or(StreamError::Unavailable)?
+        .value = vec![0; MAX_RECORD_BYTES].into();
     assert_eq!(
         crate::request::append_digest(&request),
         Err(StreamError::LimitExceeded)

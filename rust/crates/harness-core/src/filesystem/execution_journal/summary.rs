@@ -1,17 +1,27 @@
+use super::summary_map::SummaryMap;
 use super::*;
 
 #[cfg(test)]
 #[cfg(not(acyclic_harness_loom))]
-mod tests;
+pub(super) mod tests;
 
 #[derive(Default)]
 pub(super) struct ExecutionSummary {
     pub(super) operation: Option<OperationId>,
     pub(super) tail: u64,
-    pub(super) retries: BTreeMap<[u8; 32], (u64, [u8; 32])>,
-    pub(super) contexts: BTreeMap<u32, bool>,
-    pub(super) models: BTreeMap<(u32, crate::executor::ModelPurpose), Option<ModelEventAdmission>>,
-    pub(super) tools: BTreeMap<(u32, [u8; 32]), bool>,
+    pub(super) retries: SummaryMap<[u8; 32], (u64, [u8; 32])>,
+    pub(super) contexts: SummaryMap<u32, bool>,
+    pub(super) models:
+        SummaryMap<(u32, crate::executor::ModelPurpose), Option<ModelEventAdmission>>,
+    pub(super) tools: SummaryMap<(u32, [u8; 32]), bool>,
+    pub(super) pending_dispatches: u64,
+    pub(super) latest_response: Option<u32>,
+    pub(super) model_dispatched: bool,
+    pub(super) recovery: Option<checkpoint::Recovery>,
+    pub(super) pages: persistent_index::NodeCache,
+    pub(super) scratch: Option<persistent_index::Scratch>,
+    pub(super) partial: bool,
+    pub(super) pending_steps: step_index::Pending,
 }
 
 impl ExecutionSummary {
@@ -42,21 +52,21 @@ impl ExecutionSummary {
             }
             ExecutionEvent::ContextPrepared { step, .. } => {
                 self.tail > 0
-                    && !self.contexts.contains_key(step)
+                    && !self.contexts.contains_key(step, io)?
                     && !self
                         .models
-                        .contains_key(&(*step, crate::executor::ModelPurpose::Response))
+                        .contains_key(&(*step, crate::executor::ModelPurpose::Response), io)?
             }
             ExecutionEvent::ContextCompacted { step, .. } => {
-                self.contexts.get(step) == Some(&false)
+                self.contexts.get(step, io)? == Some(&false)
                     && matches!(
                         self.models
-                            .get(&(*step, crate::executor::ModelPurpose::Summary)),
+                            .get(&(*step, crate::executor::ModelPurpose::Summary), io)?,
                         Some(None)
                     )
                     && !self
                         .models
-                        .contains_key(&(*step, crate::executor::ModelPurpose::Response))
+                        .contains_key(&(*step, crate::executor::ModelPurpose::Response), io)?
             }
             ExecutionEvent::ModelStarted {
                 step,
@@ -66,24 +76,25 @@ impl ExecutionSummary {
             } => {
                 self.tail > 0
                     && *request_digest != [0; 32]
-                    && !self.models.contains_key(&(*step, *purpose))
+                    && !self.models.contains_key(&(*step, *purpose), io)?
             }
             ExecutionEvent::Model { step, purpose, .. }
+            | ExecutionEvent::ModelInline { step, purpose, .. }
             | ExecutionEvent::ModelStopped { step, purpose } => self
                 .models
-                .get(&(*step, *purpose))
+                .get(&(*step, *purpose), io)?
                 .is_some_and(Option::is_some),
             ExecutionEvent::ToolStarted { step, call_id, .. } => {
                 self.tail > 0 && !call_id.is_empty() && {
                     let key = *blake3::hash(call_id.as_bytes()).as_bytes();
                     tool_key = Some(key);
-                    !self.tools.contains_key(&(*step, key))
+                    !self.tools.contains_key(&(*step, key), io)?
                 }
             }
             ExecutionEvent::ToolCompleted { step, call_id, .. } => {
                 let key = *blake3::hash(call_id.as_bytes()).as_bytes();
                 tool_key = Some(key);
-                self.tools.get(&(*step, key)) == Some(&false)
+                self.tools.get(&(*step, key), io)? == Some(&false)
             }
             // The length check short-circuits first, so the scan is bounded.
             ExecutionEvent::ToolFailed {
@@ -95,7 +106,7 @@ impl ExecutionSummary {
                 let key = *blake3::hash(call_id.as_bytes()).as_bytes();
                 tool_key = Some(key);
                 // A refusal settles a call with no start; any other failure follows one.
-                let recorded = self.tools.get(&(*step, key));
+                let recorded = self.tools.get(&(*step, key), io)?;
                 self.tail > 0
                     && !call_id.is_empty()
                     && cause.is_canonical()
@@ -131,9 +142,11 @@ impl ExecutionSummary {
             io.check_cancellation()?;
         }
         self.require_next(event, io)?;
-        if let ExecutionEvent::Model { step, purpose, .. } = event {
+        if let ExecutionEvent::Model { step, purpose, .. }
+        | ExecutionEvent::ModelInline { step, purpose, .. } = event
+        {
             self.models
-                .get(&(*step, *purpose))
+                .get(&(*step, *purpose), io)?
                 .and_then(Option::as_ref)
                 .ok_or_else(|| {
                     canonical_boundary(
@@ -165,17 +178,13 @@ impl ExecutionSummary {
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         let key = crate::model::hash_bytes(record.idempotency_key.as_bytes(), io)?;
-        if record.sequence != self.tail + 1
-            || record.idempotency_key.is_empty()
-            || self.retries.contains_key(&key)
-        {
+        if record.idempotency_key.is_empty() {
             return Err(canonical_boundary(
                 io,
                 crate::wire::ErrorCode::Conflict,
                 "execution journal sequence or retry identity is invalid",
             ));
         }
-        let tool_key = self.require_next(&record.event, io)?;
         #[cfg(not(target_arch = "wasm32"))]
         let recheck = io
             .and_then(PreparationIo::original_native_work)
@@ -188,43 +197,70 @@ impl ExecutionSummary {
         let digest = crate::executor::with_history_io(digest_io, |work| {
             crate::executor::json::canonical_json_digest(&record.event, limits.file_bytes, work)
         })?;
-        if let Some(io) = io {
-            let extra = match &record.event {
-                ExecutionEvent::ContextPrepared { .. } => std::mem::size_of::<(u32, bool)>(),
-                ExecutionEvent::ModelStarted { .. } => std::mem::size_of::<(
-                    (u32, crate::executor::ModelPurpose),
-                    Option<ModelEventAdmission>,
-                )>(),
-                ExecutionEvent::ToolStarted { step, .. }
-                | ExecutionEvent::ToolCompleted { step, .. }
-                | ExecutionEvent::ToolFailed { step, .. }
-                    if tool_key.is_some_and(|key| !self.tools.contains_key(&(*step, key))) =>
-                {
-                    std::mem::size_of::<((u32, [u8; 32]), bool)>()
-                }
-                _ => 0,
-            };
-            io.retain_owned((std::mem::size_of::<([u8; 32], (u64, [u8; 32]))>() + extra) as u64)?;
+        self.accept_verified(
+            (record.sequence, key, digest),
+            &record.event,
+            model,
+            limits,
+            io,
+        )
+    }
+
+    /// Applies an authenticated observation without encoding or loading its payload again.
+    pub(super) fn accept_verified(
+        &mut self,
+        (sequence, key, digest): (u64, [u8; 32], [u8; 32]),
+        event: &ExecutionEvent,
+        model: Option<&ModelEvent>,
+        limits: Limits,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        if self.tail.checked_add(1) != Some(sequence) || self.retries.contains_key(&key, io)? {
+            return Err(canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Conflict,
+                "execution journal sequence or retry identity is invalid",
+            ));
         }
-        match &record.event {
+        let tool_key = self.require_next(event, io)?;
+        match event {
             ExecutionEvent::ContextPrepared { step, .. } => {
-                self.contexts.insert(*step, false);
+                self.contexts.insert(*step, false, io)?;
             }
             ExecutionEvent::ContextCompacted { step, .. } => {
-                self.contexts.insert(*step, true);
+                self.contexts.insert(*step, true, io)?;
             }
             ExecutionEvent::ModelStarted { step, purpose, .. } => {
+                self.pending_dispatches =
+                    self.pending_dispatches.checked_add(1).ok_or_else(|| {
+                        canonical_boundary(
+                            io,
+                            crate::wire::ErrorCode::Invalid,
+                            "pending dispatch count overflows",
+                        )
+                    })?;
                 self.models
-                    .insert((*step, *purpose), Some(ModelEventAdmission::default()));
+                    .insert((*step, *purpose), Some(ModelEventAdmission::default()), io)?;
+                self.model_dispatched = true;
+                if *purpose == crate::executor::ModelPurpose::Response {
+                    self.latest_response = Some(
+                        self.latest_response
+                            .map_or(*step, |previous| previous.max(*step)),
+                    );
+                }
             }
-            ExecutionEvent::Model { step, purpose, .. } => {
-                let state = self.models.get_mut(&(*step, *purpose)).ok_or_else(|| {
-                    canonical_boundary(
-                        io,
-                        crate::wire::ErrorCode::Storage,
-                        "model dispatch is missing",
-                    )
-                })?;
+            ExecutionEvent::Model { step, purpose, .. }
+            | ExecutionEvent::ModelInline { step, purpose, .. } => {
+                let state = self
+                    .models
+                    .get_mut(&(*step, *purpose), io)?
+                    .ok_or_else(|| {
+                        canonical_boundary(
+                            io,
+                            crate::wire::ErrorCode::Storage,
+                            "model dispatch is missing",
+                        )
+                    })?;
                 let admission = state.as_mut().ok_or_else(|| {
                     canonical_boundary(
                         io,
@@ -244,21 +280,64 @@ impl ExecutionSummary {
                     io,
                 )?;
                 if admission.completed {
-                    *state = None;
+                    release_model(state, io)?;
+                    self.pending_dispatches =
+                        self.pending_dispatches.checked_sub(1).ok_or_else(|| {
+                            canonical_boundary(
+                                io,
+                                crate::wire::ErrorCode::Storage,
+                                "pending dispatch count underflows",
+                            )
+                        })?;
                 }
             }
             ExecutionEvent::ModelStopped { step, purpose } => {
-                *self.models.get_mut(&(*step, *purpose)).ok_or_else(|| {
-                    canonical_boundary(
-                        io,
-                        crate::wire::ErrorCode::Storage,
-                        "stopped model has no dispatch",
-                    )
-                })? = None;
+                let state = self
+                    .models
+                    .get_mut(&(*step, *purpose), io)?
+                    .ok_or_else(|| {
+                        canonical_boundary(
+                            io,
+                            crate::wire::ErrorCode::Storage,
+                            "stopped model has no dispatch",
+                        )
+                    })?;
+                release_model(state, io)?;
+                self.pending_dispatches =
+                    self.pending_dispatches.checked_sub(1).ok_or_else(|| {
+                        canonical_boundary(
+                            io,
+                            crate::wire::ErrorCode::Storage,
+                            "pending dispatch count underflows",
+                        )
+                    })?;
             }
             ExecutionEvent::ToolStarted { step, .. }
             | ExecutionEvent::ToolCompleted { step, .. }
             | ExecutionEvent::ToolFailed { step, .. } => {
+                match event {
+                    ExecutionEvent::ToolStarted { .. } => {
+                        self.pending_dispatches =
+                            self.pending_dispatches.checked_add(1).ok_or_else(|| {
+                                canonical_boundary(
+                                    io,
+                                    crate::wire::ErrorCode::Invalid,
+                                    "pending dispatch count overflows",
+                                )
+                            })?;
+                    }
+                    ExecutionEvent::ToolFailed { reason, .. } if reason.precedes_dispatch() => {}
+                    _ => {
+                        self.pending_dispatches =
+                            self.pending_dispatches.checked_sub(1).ok_or_else(|| {
+                                canonical_boundary(
+                                    io,
+                                    crate::wire::ErrorCode::Storage,
+                                    "pending dispatch count underflows",
+                                )
+                            })?;
+                    }
+                }
                 self.tools.insert(
                     (
                         *step,
@@ -270,31 +349,64 @@ impl ExecutionSummary {
                             )
                         })?,
                     ),
-                    !matches!(record.event, ExecutionEvent::ToolStarted { .. }),
-                );
+                    !matches!(event, ExecutionEvent::ToolStarted { .. }),
+                    io,
+                )?;
             }
             ExecutionEvent::Started { .. } => {}
         }
-        self.retries.insert(key, (record.sequence, digest));
-        self.tail = record.sequence;
+        self.retries.insert(key, (sequence, digest), io)?;
+        self.pending_steps.push(
+            sequence,
+            key,
+            digest,
+            event.step(),
+            tool_key.map(|key| (key, !matches!(event, ExecutionEvent::ToolStarted { .. }))),
+            io,
+        )?;
+        self.tail = sequence;
         Ok(())
     }
 
     pub(super) fn quiescent(&self, io: Option<&PreparationIo>) -> Result<bool> {
-        for model in self.models.values() {
-            crate::model::charge_items(io, 1)?;
-            if model.is_some() {
-                return Ok(false);
-            }
-        }
-        for settled in self.tools.values() {
-            crate::model::charge_items(io, 1)?;
-            if !settled {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        crate::model::charge_items(io, 1)?;
+        Ok(self.pending_dispatches == 0)
     }
+}
+
+fn release_model(
+    state: &mut Option<ModelEventAdmission>,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
+    let bytes = if let Some(admission) = state {
+        let inline = admission
+            .calls
+            .capacity()
+            .checked_mul(std::mem::size_of::<String>())
+            .ok_or_else(|| {
+                canonical_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "model admission ownership overflows",
+                )
+            })? as u64;
+        admission.calls.iter().try_fold(inline, |bytes, call| {
+            bytes.checked_add(call.capacity() as u64).ok_or_else(|| {
+                canonical_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "model admission ownership overflows",
+                )
+            })
+        })?
+    } else {
+        0
+    };
+    *state = None;
+    if let Some(io) = io {
+        io.release(bytes)?;
+    }
+    Ok(())
 }
 
 pub(super) const OBSERVATION_VERSION: u32 = 2;
@@ -310,6 +422,17 @@ pub(super) struct Observation {
 }
 
 impl PreparationRecord for Observation {
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        // The conservative admission also funds serde's transient buffers.
+        // Release those after each decode, before retaining the next record.
+        crate::core::owned_sum([
+            std::mem::size_of::<Self>() as u64,
+            self.retry_digest.capacity() as u64,
+            self.event.payload_bytes(None)?,
+        ])
+        .map(Some)
+    }
+
     fn diagnostic_label_bytes() -> u64 {
         const PRIVATE_LABEL_BYTES: u64 = {
             let labels = [
@@ -327,6 +450,7 @@ impl PreparationRecord for Observation {
                 "model_started",
                 "model_stopped",
                 "model",
+                "model_inline",
                 "tool_started",
                 "tool_completed",
                 "tool_failed",

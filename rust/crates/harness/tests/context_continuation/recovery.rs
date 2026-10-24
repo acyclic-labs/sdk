@@ -291,8 +291,46 @@ pub(super) async fn local_journal_admits_compaction_only_after_one_settled_summa
     let storage = MemoryHarnessStorage::new(AgentId::new(), 131_072).await?;
     let journal = storage.journal();
     let operation = OperationId::new();
+    let request = PreparedModelRequest::prepare(
+        ModelRequest {
+            model: Model::new(
+                "synthetic".into(),
+                "journal-test".into(),
+                "1".into(),
+                serde_json::json!({}),
+            )?,
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("source".into()),
+            }],
+            tools: Vec::new(),
+            max_output_tokens: Some(32),
+        },
+        Limits::default(),
+        None,
+    )?;
+    let request_ref = journal
+        .stage(
+            operation,
+            "summary-request",
+            &request.bytes(),
+            "application/json",
+            None,
+        )?
+        .await?;
+    let projection_bytes = serde_json::to_vec(&serde_json::json!({
+        "canonical": null, "checkpoint": null, "current_input_index": 0,
+        "metadata": {}, "request": request_ref,
+    }))
+    .map_err(|error| Error::Invalid(error.to_string()))?;
     let context = journal
-        .stage(operation, "temporal-context", b"{\"canonical\":null,\"checkpoint\":null,\"context\":{\"current_input_index\":0,\"messages\":[{\"content\":{\"kind\":\"text\",\"text\":\"source\"},\"role\":\"user\"}],\"metadata\":{}}}", "application/json", None)?
+        .stage(
+            operation,
+            "temporal-context",
+            &projection_bytes,
+            "application/json",
+            None,
+        )?
         .await?;
     let compacted = ExecutionEvent::ContextCompacted {
         step: 0,
@@ -334,33 +372,6 @@ pub(super) async fn local_journal_admits_compaction_only_after_one_settled_summa
             .await
             .is_err()
     );
-    let request = PreparedModelRequest::prepare(
-        ModelRequest {
-            model: Model::new(
-                "synthetic".into(),
-                "journal-test".into(),
-                "1".into(),
-                serde_json::json!({}),
-            )?,
-            messages: vec![ModelMessage {
-                role: ModelRole::User,
-                content: ModelContent::Text("source".into()),
-            }],
-            tools: Vec::new(),
-            max_output_tokens: Some(32),
-        },
-        Limits::default(),
-        None,
-    )?;
-    let request_ref = journal
-        .stage(
-            operation,
-            "summary-request",
-            &request.bytes(),
-            "application/json",
-            None,
-        )?
-        .await?;
     journal
         .append(
             operation,

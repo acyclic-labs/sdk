@@ -54,8 +54,10 @@ pub use fork_preparer::bounded_io::UploadRecord;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use fork_preparer::bounded_io::native_decoded;
 pub(crate) use fork_preparer::bounded_io::{
-    DecodeReservation, preparation_slot_bytes, retain_decoded,
+    DecodeReservation, file_map_owned_bytes, preparation_file_record_slot_bytes,
+    preparation_slot_bytes, retain_decoded,
 };
+pub(crate) use fork_preparer_io::PreparationScope;
 use fork_preparer_io::decode_record;
 mod summary_fork;
 pub use fork_preparer::{FilesystemForkPreparer, FilesystemResourceCreationProvider};
@@ -81,7 +83,11 @@ pub use root_source::FsRootProjectSourceProvider;
 mod native_execution;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub(crate) use native_execution::NativePreparationCompletionTemplate;
-#[cfg(all(fuzzing, feature = "native-execution", not(target_arch = "wasm32")))]
+#[cfg(all(
+    any(fuzzing, feature = "test-support"),
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 pub use native_execution::{fuzz_native_preparation_intent, fuzz_native_preparation_journal};
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 #[doc(hidden)]

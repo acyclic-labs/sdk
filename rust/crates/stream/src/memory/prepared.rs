@@ -1,8 +1,10 @@
 use super::*;
 use crate::NativeProviderFuture;
 use acyclic_native_runtime::{
-    NativeByteReservation, NativeOperationKind, NativeOperationReservation,
+    NativeByteReservation, NativeCodecReservation, NativeCodecWork, NativeOperationKind,
+    NativeOperationReservation,
 };
+use sha2::Digest as _;
 
 struct CapacityReservation {
     counters: Arc<crate::query_sync::SyncMutex<(usize, usize)>>,
@@ -27,6 +29,8 @@ pub(crate) struct PreparedCommit {
     conflicts: [(Vec<CommitConflict>, Allocation); 2],
     capacity: Option<CapacityReservation>,
     probes: ReplayProbes,
+    codec: NativeCodecReservation<Arc<dyn acyclic_native_runtime::NativeReadMeter>>,
+    headers: crate::record_headers::PreparedHeaders,
 }
 
 impl MemoryStream {
@@ -44,42 +48,17 @@ impl MemoryStream {
         let expected = prepared_tail(&mut request, maximum)?;
         let work = self.work.as_ref().ok_or(StreamError::Unavailable)?;
         let input = self.request_claim(&request)?;
-        let maximum_hash = commit_hash_bytes(&request) + maximum as u64;
+        let maximum_hash = prepared_hash_bytes(&request, maximum);
+        let headers = work.record(crate::record_headers::PreparedHeaders::new(
+            &work.meter,
+            maximum,
+        ))?;
         let mut state = self.state.write().await;
-        let capacity =
-            if let Some(stored) = self.replay(&state, request.idempotency_key.as_bytes())? {
-                if !matches!(stored.result, IdempotencyOutcome::Commit(_)) {
-                    return Err(StreamError::IdempotencyMismatch);
-                }
-                None
-            } else {
-                for condition in &request.conditions {
-                    if !state.paths.contains_key(condition_path(condition)) {
-                        return Err(StreamError::NotFound);
-                    }
-                    if self.condition_conflict(&state, condition)?.is_some() {
-                        return Err(StreamError::OutOfRange);
-                    }
-                }
-                admit_replay(&state, Some(&request.idempotency_key), self.limits)?;
-                reserve_commit(&state, self.limits)?;
-                reserve_records(&state, 1, maximum, self.limits)?;
-                let counters = Arc::clone(&state.reserved);
-                {
-                    let mut held = counters
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    held.0 += 1;
-                    held.1 += maximum;
-                }
-                Some(CapacityReservation {
-                    counters,
-                    bytes: maximum,
-                })
-            };
+        let capacity = self.reserve_prepared_capacity(&state, &request, maximum)?;
         self.reserve_retained(&mut state)?;
         // The tree can grow up to the admitted replay limit while this completion is pending.
-        let probes = self.reserve_replay_probes(2 * self.maximum_replay_height() + 16)?;
+        let mut probes = self.reserve_replay_probes(2 * self.maximum_replay_height() + 16)?;
+        self.reserve_commit_index(&mut probes)?;
         let mut plan = self.plan_commit(&mut state, &request, CommitId::default(), 0)?;
         for value in [&mut plan.result, &mut plan.cached] {
             let append = append_mut(value);
@@ -114,6 +93,15 @@ impl MemoryStream {
             prototype,
             recovery_conflicts,
         )?;
+        let codec = work.record(NativeCodecReservation::new(
+            Arc::clone(&work.meter),
+            NativeCodecWork {
+                copied: (3 * std::mem::size_of::<Record>())
+                    .max(4 * std::mem::size_of::<CommitConflict>()) as u64,
+                hashed: maximum_hash + identity_bytes(),
+                ..NativeCodecWork::default()
+            },
+        ))?;
         work.record(work.meter.check())?;
         Ok((
             PreparedCommit {
@@ -124,10 +112,49 @@ impl MemoryStream {
                 conflicts: [conflict, (cached_conflicts, conflict_claim)],
                 capacity,
                 probes,
+                codec,
+                headers,
             },
             recovery,
         ))
     }
+    fn reserve_prepared_capacity(
+        &self,
+        state: &State,
+        request: &CommitRequest,
+        maximum: usize,
+    ) -> Result<Option<CapacityReservation>, StreamError> {
+        if let Some(stored) = self.replay(state, request.idempotency_key.as_bytes())? {
+            if !matches!(stored.result, IdempotencyOutcome::Commit(_)) {
+                return Err(StreamError::IdempotencyMismatch);
+            }
+            return Ok(None);
+        }
+        for condition in &request.conditions {
+            if !state.paths.contains_key(condition_path(condition)) {
+                return Err(StreamError::NotFound);
+            }
+            if self.condition_conflict(state, condition)?.is_some() {
+                return Err(StreamError::OutOfRange);
+            }
+        }
+        admit_replay(state, Some(&request.idempotency_key), self.limits)?;
+        reserve_commit(state, self.limits)?;
+        reserve_records(state, 1, maximum, self.limits)?;
+        let counters = Arc::clone(&state.reserved);
+        {
+            let mut held = counters
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            held.0 += 1;
+            held.1 += maximum;
+        }
+        Ok(Some(CapacityReservation {
+            counters,
+            bytes: maximum,
+        }))
+    }
+
     fn prepare_recovery(
         &self,
         recovery_key: IdempotencyKey,
@@ -149,15 +176,14 @@ impl MemoryStream {
             NativeOperationKind::Read,
             maximum,
         ))?;
-        work.record(meter.admit_codec(
-            0,
-            3 * std::mem::size_of::<Record>() as u64,
-            maximum_hash + identity_bytes(),
-        ))?;
-        work.record(meter.admit_codec(
-            0,
-            2 * std::mem::size_of::<CommitConflict>() as u64,
-            maximum_hash,
+        let mut codec = work.record(NativeCodecReservation::new(
+            Arc::clone(&meter),
+            NativeCodecWork {
+                copied: std::mem::size_of::<Record>().max(2 * std::mem::size_of::<CommitConflict>())
+                    as u64,
+                hashed: maximum_hash,
+                ..NativeCodecWork::default()
+            },
         ))?;
         let state = Arc::clone(&self.state);
         let mut probes = self.reserve_replay_probes(self.maximum_replay_height() + 8)?;
@@ -182,9 +208,9 @@ impl MemoryStream {
                 observed = observed
                     .take()
                     .or(bytes.record(envelope_payload_bytes(&value)).err());
-                observed = observed.take().or(recovery_meter
-                    .record_codec(0, copied_bytes(&value), 0)
-                    .err());
+                observed = observed
+                    .take()
+                    .or(record_codec(&mut codec, copied_bytes(&value), 0).err());
                 if let CommitOutcome::Committed(_) = &value {
                     let append = append(&value);
                     let (digest, hashed) = digest(
@@ -207,7 +233,7 @@ impl MemoryStream {
                     );
                     observed = observed
                         .take()
-                        .or(recovery_meter.record_codec(0, 0, hashed).err());
+                        .or(record_codec(&mut codec, 0, hashed).err());
                     if digest != stored.digest {
                         return Err(StreamError::IdempotencyMismatch);
                     }
@@ -248,9 +274,9 @@ impl PreparedCommit {
                 .as_ref()
                 .ok_or(StreamError::Unavailable)?,
         );
-        body.headers = work.record(body.headers.bind_native(&work.meter))?;
+        body.headers = work.record(self.headers.finish(&body.headers))?;
         let (digest, hashed) = digest(&self.conditions, &append(&self.plan.result).path, &body);
-        let _ = work.record(work.meter.record_codec(0, 0, hashed));
+        let _ = work.record(record_codec(&mut self.codec, 0, hashed));
         let mut state = self.provider.state.write().await;
         let [(mut conflicts, output_claim), (mut cached, resident)] = self.conflicts;
         let result = (|| {
@@ -268,7 +294,7 @@ impl PreparedCommit {
                     (self.plan.result, self.plan.output_claim),
                     (conflicts, output_claim),
                 )?;
-                let _ = work.record(work.meter.record_codec(0, copied_bytes(&result.0), 0));
+                let _ = work.record(record_codec(&mut self.codec, copied_bytes(&result.0), 0));
                 return Ok(result);
             }
             if self
@@ -293,17 +319,15 @@ impl PreparedCommit {
             self.provider.publish(bytes, || {
                 if conflicts.is_empty() {
                     let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
-                    let time = state.last_committed_at_micros.max(
-                        self.provider
-                            .commit_clock
-                            .now_unix_millis()
-                            .saturating_mul(1_000),
+                    let time = crate::preparation::committed_time(
+                        state.last_committed_at_micros,
+                        self.provider.commit_clock.now_unix_millis(),
                     );
                     let id = commit_identity(decision, digest);
                     bind_body(&mut self.plan, body)?;
                     self.plan.bind(id, time)?;
-                    let _ = work.record(work.meter.record_codec(
-                        0,
+                    let _ = work.record(record_codec(
+                        &mut self.codec,
                         3 * std::mem::size_of::<Record>() as u64,
                         identity_bytes(),
                     ));
@@ -316,7 +340,7 @@ impl PreparedCommit {
                     )
                 } else {
                     let value = CommitOutcome::Conflict(conflicts);
-                    let _ = work.record(work.meter.record_codec(0, 2 * copied_bytes(&value), 0));
+                    let _ = work.record(record_codec(&mut self.codec, 2 * copied_bytes(&value), 0));
                     retain(
                         &mut state,
                         &mut || self.provider.record_replay_probe(&mut self.probes),
@@ -337,6 +361,27 @@ impl PreparedCommit {
             .take();
         result
     }
+}
+
+fn record_codec(
+    reservation: &mut NativeCodecReservation<Arc<dyn acyclic_native_runtime::NativeReadMeter>>,
+    copied: u64,
+    hashed: u64,
+) -> std::io::Result<()> {
+    reservation.record(NativeCodecWork {
+        copied,
+        hashed,
+        ..NativeCodecWork::default()
+    })
+}
+
+fn prepared_hash_bytes(request: &CommitRequest, maximum: usize) -> u64 {
+    // Header payload is included in `maximum`; its canonical length words
+    // are additional digest input, even for empty keys and attribute values.
+    commit_hash_bytes(request)
+        + maximum as u64
+        + 8 * crate::MAX_RECORD_KEYS as u64
+        + 16 * crate::MAX_RECORD_ATTRIBUTES as u64
 }
 
 fn bind_body(plan: &mut CommitPlan, body: crate::AppendRecord) -> Result<(), StreamError> {

@@ -16,7 +16,7 @@ pub(super) fn generation_namespace_from_selection(
 }
 
 /// Exercises the production staging selector and its exact path round trip.
-#[cfg(any(test, fuzzing))]
+#[cfg(any(test, fuzzing, feature = "test-support"))]
 #[doc(hidden)]
 pub fn verify_native_staging_selection(input: &str) {
     let config = crate::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);

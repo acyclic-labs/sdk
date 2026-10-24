@@ -6,7 +6,9 @@ use serde_json::Value;
 mod admission;
 mod arrays;
 mod identity;
+mod sequence;
 pub(crate) use identity::borrowed_json_digest;
+pub(crate) use sequence::canonical_sequence_digests;
 #[cfg(test)]
 mod item_budget_tests;
 mod records;
@@ -18,9 +20,10 @@ pub use identity::{
 /// Nesting accepted by saved preparation-record readers.
 pub(crate) const RECORD_MAXIMUM_DEPTH: u32 = 128;
 mod diagnostics;
+#[cfg(feature = "filesystem")]
+pub(crate) use diagnostics::json_typed_diagnostic_source_owned_bytes;
 pub(crate) use diagnostics::{
-    audited_serde_diagnostic_bytes, json_decode_owned_bytes,
-    json_typed_diagnostic_source_owned_bytes, snapshot_json_admission,
+    audited_serde_diagnostic_bytes, json_decode_owned_bytes, snapshot_json_admission,
 };
 pub use diagnostics::{
     json_typed_diagnostic_owned_bytes, preparation_serde_diagnostic_label_bytes,

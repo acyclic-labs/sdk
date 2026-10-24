@@ -74,11 +74,19 @@ pub fn registration_race(broken: bool, create_parent: bool) {
         let (probe, wake) = probe();
         let polling = thread::spawn(move || {
             let mut children = children;
+            crate::snapshot::model::capture(false);
             let first = children.as_mut().poll_next(&mut Context::from_waker(&wake));
-            (children, first)
+            let workers = crate::snapshot::model::take_pending();
+            (children, first, workers)
         });
         append(&provider, "agents/new").expect("publication");
-        let (mut children, first) = polling.join().expect("poller");
+        let (mut children, first, workers) = polling.join().expect("poller");
+        // A contended snapshot is transferred to the executor. It may not have
+        // run when the consumer poll returns. Settle that independent read
+        // before checking notification, without polling the consumer again.
+        for worker in workers {
+            crate::snapshot::park(worker);
+        }
         let result = if first.is_pending() {
             assert!(
                 probe.0.load(Ordering::SeqCst) > 0,
@@ -93,6 +101,44 @@ pub fn registration_race(broken: bool, create_parent: bool) {
         };
         assert_eq!(
             result.expect("ended").expect("child").path.as_str(),
+            "agents/new"
+        );
+    });
+}
+
+/// A pending consumer can legitimately await its not-yet-polled snapshot job.
+/// The old oracle checked for a wake before allowing that job to run.
+pub fn executor_handoff(premature_oracle: bool) {
+    loom::model(move || {
+        let provider = MemoryStream::default();
+        let mut children = block_on(provider.children(request())).expect("children");
+        let held = block_on(provider.state.write());
+        let (probe, wake) = probe();
+        crate::snapshot::model::capture(false);
+        assert!(
+            children
+                .as_mut()
+                .poll_next(&mut Context::from_waker(&wake))
+                .is_pending()
+        );
+        let worker = crate::snapshot::model::take();
+        assert_eq!(probe.0.load(Ordering::SeqCst), 0);
+        drop(held);
+        append(&provider, "agents/new").expect("publication");
+        if premature_oracle {
+            assert!(
+                probe.0.load(Ordering::SeqCst) > 0,
+                "snapshot executor has not run"
+            );
+        }
+        crate::snapshot::park(worker);
+        assert!(probe.0.load(Ordering::SeqCst) > 0);
+        assert_eq!(
+            block_on(children.next())
+                .expect("ended")
+                .expect("child")
+                .path
+                .as_str(),
             "agents/new"
         );
     });

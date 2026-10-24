@@ -146,6 +146,10 @@ pub trait ContextStage: acyclic_stream::ProviderPlatform {
 pub struct ContextPipeline(Vec<Arc<dyn ContextStage>>);
 
 impl ContextPipeline {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     pub(crate) fn has_optional(&self) -> bool {
         self.0.iter().any(|stage| stage.has_optional())
     }

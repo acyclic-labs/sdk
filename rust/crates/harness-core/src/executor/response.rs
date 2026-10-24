@@ -1,20 +1,23 @@
 use super::*;
 
+mod compaction_source;
+
 impl StockExecution<'_> {
-    pub(super) async fn capture_response(
+    async fn prepare_response_context(
         &self,
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
         prior_messages: &[ModelMessage],
-        tail: u64,
-    ) -> Result<(
-        ResponseProjection,
-        Option<ContextAccounting>,
-        Option<crate::model::PreparedModelRequest>,
-    )> {
-        let base = self
-            .canonical_base(journal, input, step, prior_messages)
+    ) -> Result<(ResponseProjection, crate::model::PreparedModelRequest)> {
+        if let Some(continued) = self
+            .continue_response_request(journal, input, step, prior_messages)
+            .await?
+        {
+            return Ok(continued);
+        }
+        let (context_input, base, working) = self
+            .response_base(journal, input, step, prior_messages)
             .await?;
         let canonical = if step == 0 && input.selected_context.is_some() {
             Some(
@@ -30,43 +33,58 @@ impl StockExecution<'_> {
         } else {
             None
         };
-        let context_input = ContextInput::copy_for_turn(input, step, prior_messages, self.io)?;
-        let (projection, accounting, prepared) = if let Some(capacity) = self.model_capacity()? {
-            let (mut projection, prepared) = self
-                .prepare_transformed_request(&context_input, base)
-                .await?;
+        let (context, prepared) = self
+            .prepare_transformed_request(&context_input, base)
+            .await?;
+        Ok((
+            ResponseProjection {
+                context,
+                canonical,
+                checkpoint: None,
+                working,
+            },
+            prepared,
+        ))
+    }
+
+    pub(super) async fn capture_response(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        prior_messages: &[ModelMessage],
+        tail: u64,
+    ) -> Result<(
+        ResponseProjection,
+        Option<ContextAccounting>,
+        crate::model::PreparedModelRequest,
+    )> {
+        let (projection, prepared) = self
+            .prepare_response_context(journal, input, step, prior_messages)
+            .await?;
+        let accounting = if let Some(capacity) = self.model_capacity()? {
             let count =
                 stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io).await?;
             with_history_io(self.io, |work| count.validate(&prepared, work))?;
-            if self.io.is_none() {
-                projection.messages =
-                    crate::model::clone_messages(&prepared.request().messages, self.io)?;
-            }
-            (
-                projection,
-                Some(ContextAccounting { capacity, count }),
-                Some(prepared),
-            )
+            Some(ContextAccounting { capacity, count })
         } else {
-            (
-                self.transform_projection(&context_input, base).await?,
-                None,
-                None,
-            )
-        };
-        let projection = ResponseProjection {
-            context: projection,
-            canonical,
-            checkpoint: None,
+            None
         };
         let projection_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}"), work)
         })?;
-        let reference = stage_json(
+        let request_key = with_history_io(self.io, |work| {
+            preparation_format(format_args!("model:{step}:request"), work)
+        })?;
+        let request = self
+            .stage_response_request(journal, input, step, &request_key, &prepared)
+            .await?;
+        let reference = transcript::stage_projection(
             journal,
             input.operation_id,
             &projection_key,
             &projection,
+            &request,
             self.io,
         )
         .await?;
@@ -137,7 +155,7 @@ impl StockExecution<'_> {
                 "response projection was prepared more than once",
             ));
         }
-        let (mut projection, accounting, prepared) = match first {
+        let (projection, accounting, prepared) = match first {
             None => {
                 if self.stock.reconciliation_only {
                     return Err(Error::Indeterminate(input.operation_id));
@@ -145,28 +163,26 @@ impl StockExecution<'_> {
                 self.capture_response(journal, input, step, prior_messages, tail)
                     .await?
             }
-            Some((reference, accounting)) => (
-                retain_preparation(
-                    load_json::<ResponseProjection>(journal, reference, self.io).await?,
-                )?,
-                match accounting {
+            Some((reference, accounting)) => {
+                let (projection, prepared) = retain_preparation(
+                    transcript::load_prepared_projection(
+                        journal,
+                        reference,
+                        self.stock.limits,
+                        self.io,
+                    )
+                    .await?,
+                )?;
+                self.validate_response_request(&prepared)?;
+                let accounting = match accounting {
                     Some(reference) => Some(retain_preparation(
                         load_json::<ContextAccounting>(journal, reference, self.io).await?,
                     )?),
                     None => None,
-                },
-                None,
-            ),
+                };
+                (projection, accounting, prepared)
+            }
         };
-        // Fresh projections were validated before their exact request was
-        // encoded. Retained projections still cross the storage boundary.
-        if prepared.is_none() {
-            crate::context::validate_projected_context(
-                &projection.context,
-                self.stock.limits,
-                self.io,
-            )?;
-        }
         if projection.checkpoint.is_some() {
             return Err(stock_boundary(
                 self.io,
@@ -181,23 +197,9 @@ impl StockExecution<'_> {
                 "prepared response projection differs from its request",
             ));
         }
-        let prepared = match prepared {
-            Some(prepared) => prepared,
-            None => {
-                let request = if matches!(
-                    self.compaction_policy()?,
-                    crate::context::CompactionPolicy::Disabled
-                ) {
-                    self.request_taking_context(&mut projection.context)?
-                } else {
-                    self.request_from_context(&projection.context)?
-                };
-                crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io)?
-            }
-        };
         self.resolve_response_accounting(
             journal,
-            (input, step),
+            (input, step, prior_messages),
             (projection, accounting),
             prepared,
             &records,
@@ -232,9 +234,13 @@ impl StockExecution<'_> {
             ));
         }
         if let Some((retained, proof, final_accounting)) = first {
-            let mut retained = retain_preparation(
-                load_json::<ResponseProjection>(journal, retained, self.io).await?,
+            let (mut retained, request) = retain_preparation(
+                transcript::load_prepared_projection(journal, retained, self.stock.limits, self.io)
+                    .await?,
             )?;
+            self.validate_response_request(&request)?;
+            retained.context.messages =
+                crate::model::clone_messages(&request.request().messages, self.io)?;
             let proof = retain_preparation(
                 load_json::<crate::context::CompactionReference>(journal, proof, self.io).await?,
             )?;
@@ -253,8 +259,14 @@ impl StockExecution<'_> {
                     "compacted canonical source changed",
                 ));
             }
-            self.validate_compacted_checkpoint(journal, input, projection, &retained, &proof)
-                .await?;
+            self.validate_compacted_checkpoint(
+                journal,
+                (input, step),
+                projection,
+                &retained,
+                &proof,
+            )
+            .await?;
             let crate::context::CompactionPolicy::Threshold(policy) = self.compaction_policy()?
             else {
                 return Err(stock_boundary(
@@ -275,11 +287,6 @@ impl StockExecution<'_> {
                     "compacted context differs from its admission",
                 ));
             }
-            let request = crate::model::PreparedModelRequest::prepare(
-                self.request_taking_context(&mut retained.context)?,
-                self.stock.limits,
-                self.io,
-            )?;
             if policy.needs_compaction(
                 final_accounting.capacity,
                 with_history_io(self.io, |work| {
@@ -300,14 +307,14 @@ impl StockExecution<'_> {
     async fn resolve_response_accounting(
         &self,
         journal: &dyn ExecutionJournal,
-        turn: (&TurnInput, u32),
+        turn: (&TurnInput, u32, &[ModelMessage]),
         captured: (ResponseProjection, Option<ContextAccounting>),
         prepared: crate::model::PreparedModelRequest,
         records: &[ExecutionRecord],
         phase: &mut DispatchPhase,
     ) -> Result<crate::model::PreparedModelRequest> {
-        let (input, step) = turn;
-        let (projection, accounting) = captured;
+        let (input, step, prior_messages) = turn;
+        let (mut projection, accounting) = captured;
         match (self.compaction_policy()?, accounting) {
             (crate::context::CompactionPolicy::Disabled, None) => Ok(prepared),
             (crate::context::CompactionPolicy::Threshold(policy), Some(accounting)) => {
@@ -320,6 +327,14 @@ impl StockExecution<'_> {
                 }
                 let input_tokens =
                     with_history_io(self.io, |work| accounting.count.validate(&prepared, work))?;
+                let compacted = records.iter().any(|record| {
+                    matches!(record.event,
+                    ExecutionEvent::ContextCompacted { step: recorded, .. } if recorded == step)
+                });
+                if compacted {
+                    projection.context.messages =
+                        crate::model::clone_messages(&prepared.request().messages, self.io)?;
+                }
                 if let Some(retained) = self
                     .retained_compacted_response(journal, input, step, &projection, records)
                     .await?
@@ -328,16 +343,17 @@ impl StockExecution<'_> {
                 }
                 let token_pressure = policy.needs_compaction(accounting.capacity, input_tokens)?;
                 let possible_message_pressure = projection.canonical.is_some()
-                    && projection.context.messages.len() > self.compaction_message_limit(true, 0);
+                    && prepared.request().messages.len() > self.compaction_message_limit(true, 0);
                 if !possible_message_pressure && !token_pressure {
                     return Ok(prepared);
                 }
-                let source = match &projection.canonical {
-                    Some(reference) => retain_preparation(
-                        load_json::<crate::context::Context>(journal, reference, self.io).await?,
-                    )?,
-                    None => crate::context::copy_context(&projection.context, self.io)?,
-                };
+                if !compacted {
+                    projection.context.messages =
+                        crate::model::clone_messages(&prepared.request().messages, self.io)?;
+                }
+                let (source, pre_stage) = self
+                    .response_compaction_source(journal, turn, &projection, &accounting, policy)
+                    .await?;
                 let stage_messages = projection
                     .context
                     .messages
@@ -351,9 +367,9 @@ impl StockExecution<'_> {
                 }
                 self.compact_response(
                     journal,
-                    (input, step),
+                    (input, step, prior_messages.len()),
                     (projection, accounting),
-                    source,
+                    (source, pre_stage),
                     policy,
                     phase,
                 )
@@ -370,11 +386,21 @@ impl StockExecution<'_> {
     async fn validate_compacted_checkpoint(
         &self,
         journal: &dyn ExecutionJournal,
-        input: &TurnInput,
+        turn: (&TurnInput, u32),
         projection: &ResponseProjection,
         retained: &ResponseProjection,
         proof: &crate::context::CompactionReference,
     ) -> Result<()> {
+        let (input, step) = turn;
+        let working_changed = retained.working != projection.working;
+        if working_changed {
+            let reference = retained
+                .working
+                .as_ref()
+                .ok_or_else(|| self.invalid_working_cut())?;
+            self.validate_compacted_working_cut(journal, input, step, reference, proof)
+                .await?;
+        }
         if let Some(checkpoint) = &retained.checkpoint {
             let envelope = retain_preparation(
                 load_json::<crate::context::CanonicalContextCheckpoint>(
@@ -411,12 +437,14 @@ impl StockExecution<'_> {
                     "compacted canonical source has no checkpoint",
                 ));
             }
-            crate::context::validate_compaction(
-                proof,
-                &projection.context,
-                &retained.context,
-                self.io,
-            )?;
+            if !working_changed {
+                crate::context::validate_compaction(
+                    proof,
+                    &projection.context,
+                    &retained.context,
+                    self.io,
+                )?;
+            }
         }
         Ok(())
     }

@@ -101,36 +101,17 @@ impl MemoryStream {
         commit_id: CommitId,
         time: u64,
     ) -> Result<(Vec<CommittedMutation>, Allocation), StreamError> {
-        let (mut facts, mut allocation) = self.vector(source.len())?;
-        for mutation in source {
-            let (start, bodies) = match mutation {
-                CommitMutation::Append { path, records } => {
-                    (state.paths.get(path).map_or(0, |path| path.tail), records)
-                }
-                CommitMutation::Fork {
-                    at_tail, records, ..
-                } => (*at_tail, records),
-            };
-            let (records, claim) = self.records(bodies, start, commit_id, time)?;
-            self.absorb(&mut allocation, claim)?;
-            facts.push(match mutation {
-                CommitMutation::Append { path, .. } => CommittedMutation::Append(
-                    crate::preparation::append_fact(path.clone(), start, records)?,
-                ),
-                CommitMutation::Fork {
-                    source,
-                    destination,
-                    at_tail,
-                    ..
-                } => CommittedMutation::Fork(CommittedFork {
-                    source: source.clone(),
-                    destination: destination.clone(),
-                    forked_at: *at_tail,
-                    tail: start + records.len() as u64,
-                    records,
-                }),
-            });
-        }
+        let (output, mut allocation) = self.vector(source.len())?;
+        let facts = crate::preparation::facts(
+            source,
+            |path| Ok(state.paths.get(path).map(|path| path.tail)),
+            |start, bodies| {
+                let (records, claim) = self.records(bodies, start, commit_id, time)?;
+                self.absorb(&mut allocation, claim)?;
+                Ok(records)
+            },
+            output,
+        )?;
         Ok((facts, allocation))
     }
     fn histories(
@@ -155,16 +136,21 @@ impl MemoryStream {
                 .paths
                 .get(&append.path)
                 .and_then(|path| path.history.clone()),
-            CommittedMutation::Fork(fork) => Some(Arc::new(History::Prefix {
-                source: state
+            CommittedMutation::Fork(fork) => {
+                let source = state
                     .paths
                     .get(&fork.source)
                     .ok_or(StreamError::NotFound)?
                     .history
-                    .clone(),
-                tail: fork.forked_at,
-                _allocation: self.allocate(std::mem::size_of::<History>())?,
-            })),
+                    .clone();
+                let jump = self.history_jump(source.as_ref(), fork.forked_at)?;
+                Some(Arc::new(History::Prefix {
+                    source,
+                    jump,
+                    tail: fork.forked_at,
+                    _allocation: self.allocate(std::mem::size_of::<History>())?,
+                }))
+            }
         };
         let source = fact_records(fact);
         if source.is_empty() {
@@ -194,11 +180,34 @@ impl MemoryStream {
             records,
             _allocation: claim,
         });
+        let jump = self.history_jump(
+            parent.as_ref(),
+            records
+                .records
+                .first()
+                .ok_or(StreamError::Unavailable)?
+                .sequence,
+        )?;
         Ok(Arc::new(History::Batch {
             parent,
+            jump,
             records,
             _allocation: self.allocate(std::mem::size_of::<History>())?,
         }))
+    }
+
+    fn history_jump(
+        &self,
+        parent: Option<&Arc<History>>,
+        boundary: u64,
+    ) -> Result<HistoryJump, StreamError> {
+        HistoryJump::new(parent, boundary, || {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = &self.work {
+                work.record(inspect(&work.meter, || ()))?;
+            }
+            Ok(())
+        })
     }
 
     fn paths<'a>(
@@ -342,9 +351,10 @@ impl MemoryStream {
         }
         drop((conflicts, output_claim));
         crate::preparation::authority(&request, |path| {
-            state.paths.get(path).map(|path| path.tail)
+            Ok(state.paths.get(path).map(|path| path.tail))
         })?;
         reserve_coordinated(state, &request, self.limits)?;
+        self.reserve_commit_index(&mut probes)?;
         let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
@@ -359,9 +369,10 @@ impl MemoryStream {
         let mut plan = self.plan_commit(state, &request, commit_id, 0)?;
         self.publish(envelope_payload_bytes(&plan.result), || {
             check_deadline()?;
-            let time = state
-                .last_committed_at_micros
-                .max(self.commit_clock.now_unix_millis().saturating_mul(1_000));
+            let time = crate::preparation::committed_time(
+                state.last_committed_at_micros,
+                self.commit_clock.now_unix_millis(),
+            );
             plan.bind(commit_id, time)?;
             plan.publish(
                 state,
@@ -389,33 +400,9 @@ impl MemoryStream {
     ) -> Result<Option<CommitConflict>, StreamError> {
         let path = condition_path(condition);
         let actual = state.paths.get(path).map(|path| path.tail);
-        Ok(match condition {
-            CommitCondition::Tail { expected, .. } | CommitCondition::Head { expected, .. }
-                if actual != Some(*expected) =>
-            {
-                Some(CommitConflict::Tail {
-                    path: path.clone(),
-                    expected: *expected,
-                    actual,
-                })
-            }
-            CommitCondition::Absent { .. } if actual.is_some() => {
-                Some(CommitConflict::Exists { path: path.clone() })
-            }
-            CommitCondition::Head { commit_id, .. } => {
-                #[cfg(all(acyclic_loom, feature = "local"))]
-                if crate::verification::fault_is(crate::verification::Fault::IgnoreHead) {
-                    return Ok(None);
-                }
-                let stream = state.paths.get(path).ok_or(StreamError::Unavailable)?;
-                let actual = self.preceding_commit(stream)?;
-                (actual != *commit_id).then(|| CommitConflict::Head {
-                    path: path.clone(),
-                    expected: *commit_id,
-                    actual,
-                })
-            }
-            _ => None,
+        crate::preparation::condition_conflict(condition, actual, || {
+            let stream = state.paths.get(path).ok_or(StreamError::Unavailable)?;
+            self.preceding_commit(stream)
         })
     }
 

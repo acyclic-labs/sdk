@@ -1,6 +1,9 @@
+mod codec_ledger;
 pub(crate) mod trace;
 
-use acyclic_native_runtime::{NativeOperationKind, NativeReadMeter};
+use codec_ledger::CodecLedger;
+
+use acyclic_native_runtime::{NativeCodecWork, NativeOperationKind, NativeReadMeter};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -19,6 +22,7 @@ pub(crate) struct Meter {
     pub(crate) check_on_record: bool,
     pub(crate) deny_allocation: AtomicBool,
     pub(crate) deny_durability: AtomicBool,
+    pub(crate) deny_codec: AtomicBool,
     pub(crate) cancel_on_write: AtomicBool,
     pub(crate) cancel_on_copy: AtomicBool,
     pub(crate) cancel_on_durability: AtomicBool,
@@ -42,6 +46,9 @@ pub(crate) struct Meter {
     pub(crate) pending_write_operations: AtomicU64,
     pub(crate) pending_durability: AtomicU64,
     pub(crate) copied: AtomicU64,
+    pub(crate) encoded: AtomicU64,
+    pub(crate) codec_limit: NativeCodecWork,
+    pub(crate) pending_codec: CodecLedger,
     pub(crate) examined: AtomicU64,
     pub(crate) examination_limit: AtomicU64,
     pub(crate) pending_examination: AtomicU64,
@@ -56,6 +63,7 @@ impl Default for Meter {
             check_on_record: false,
             deny_allocation: AtomicBool::new(false),
             deny_durability: AtomicBool::new(false),
+            deny_codec: AtomicBool::new(false),
             cancel_on_write: AtomicBool::new(false),
             cancel_on_copy: AtomicBool::new(false),
             cancel_on_durability: AtomicBool::new(false),
@@ -80,6 +88,13 @@ impl Default for Meter {
             pending_write_operations: AtomicU64::new(0),
             pending_durability: AtomicU64::new(0),
             copied: AtomicU64::new(0),
+            encoded: AtomicU64::new(0),
+            codec_limit: NativeCodecWork {
+                encoded: u64::MAX,
+                copied: u64::MAX,
+                hashed: u64::MAX,
+            },
+            pending_codec: CodecLedger::default(),
             examined: AtomicU64::new(0),
             examination_limit: AtomicU64::new(u64::MAX),
             pending_examination: AtomicU64::new(0),
@@ -92,6 +107,44 @@ impl Default for Meter {
 }
 
 impl Meter {
+    fn codec_available(
+        &self,
+        pending: &NativeCodecWork,
+        maximum: NativeCodecWork,
+    ) -> std::io::Result<()> {
+        if self.deny_codec.load(Ordering::SeqCst) {
+            return Err(Self::denial("codec"));
+        }
+        for (used, pending, maximum, limit) in [
+            (
+                self.encoded.load(Ordering::SeqCst),
+                pending.encoded,
+                maximum.encoded,
+                self.codec_limit.encoded,
+            ),
+            (
+                self.copied.load(Ordering::SeqCst),
+                pending.copied,
+                maximum.copied,
+                self.codec_limit.copied,
+            ),
+            (
+                self.hashed.load(Ordering::SeqCst),
+                pending.hashed,
+                maximum.hashed,
+                self.codec_limit.hashed,
+            ),
+        ] {
+            if used
+                .checked_add(pending)
+                .and_then(|n| n.checked_add(maximum))
+                .is_none_or(|n| n > limit)
+            {
+                return Err(Self::denial("codec"));
+            }
+        }
+        Ok(())
+    }
     // Native memory-provider tests use the same metered request contract.
     pub(crate) fn local() -> Self {
         Self {
@@ -109,7 +162,11 @@ impl Meter {
     fn denial(reason: &'static str) -> std::io::Error {
         std::io::Error::other(NativeDenial(reason))
     }
+    pub(crate) fn withheld_codec(&self) -> NativeCodecWork {
+        *self.pending_codec.lock().unwrap()
+    }
     pub(crate) fn assert_refunded(&self) {
+        assert_eq!(self.withheld_codec(), NativeCodecWork::default());
         for held in [
             &self.pending_examination,
             &self.pending_read,
@@ -292,10 +349,51 @@ impl NativeReadMeter for Meter {
     }
     fn admit_codec(&self, encoded: u64, copied: u64, hashed: u64) -> std::io::Result<()> {
         trace::record("admit_codec", encoded, copied, hashed);
-        self.check()
+        self.check()?;
+        let pending = self
+            .pending_codec
+            .lock()
+            .map_err(|_| std::io::ErrorKind::Other)?;
+        self.codec_available(
+            &pending,
+            NativeCodecWork {
+                encoded,
+                copied,
+                hashed,
+            },
+        )
+    }
+    fn reserve_codec(&self, maximum: NativeCodecWork) -> std::io::Result<()> {
+        self.check()?;
+        let mut pending = self
+            .pending_codec
+            .lock()
+            .map_err(|_| std::io::ErrorKind::Other)?;
+        self.codec_available(&pending, maximum)?;
+        pending.encoded += maximum.encoded;
+        pending.copied += maximum.copied;
+        pending.hashed += maximum.hashed;
+        Ok(())
+    }
+    fn cancel_reserved_codec(&self, unused: NativeCodecWork) {
+        let mut pending = self.pending_codec.lock().unwrap();
+        pending.encoded = pending.encoded.checked_sub(unused.encoded).unwrap();
+        pending.copied = pending.copied.checked_sub(unused.copied).unwrap();
+        pending.hashed = pending.hashed.checked_sub(unused.hashed).unwrap();
+    }
+    fn record_reserved_codec(&self, actual: NativeCodecWork) -> std::io::Result<()> {
+        let mut pending = self
+            .pending_codec
+            .lock()
+            .map_err(|_| std::io::ErrorKind::Other)?;
+        pending.encoded = pending.encoded.checked_sub(actual.encoded).unwrap();
+        pending.copied = pending.copied.checked_sub(actual.copied).unwrap();
+        pending.hashed = pending.hashed.checked_sub(actual.hashed).unwrap();
+        self.record_codec(actual.encoded, actual.copied, actual.hashed)
     }
     fn record_codec(&self, encoded: u64, copied: u64, hashed: u64) -> std::io::Result<()> {
         trace::record("record_codec", encoded, copied, hashed);
+        self.encoded.fetch_add(encoded, Ordering::SeqCst);
         self.copied.fetch_add(copied, Ordering::SeqCst);
         self.hashed.fetch_add(hashed, Ordering::SeqCst);
         if copied != 0 && self.cancel_on_copy.swap(false, Ordering::SeqCst) {
@@ -390,7 +488,9 @@ impl NativeReadMeter for Meter {
         self.recorded()
     }
     fn admit_write(&self, _: usize) -> std::io::Result<()> {
-        self.check()
+        self.check()?;
+        self.write_operations.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
     fn record_write(&self, bytes: usize) -> std::io::Result<()> {
         self.write_bytes.fetch_add(bytes as u64, Ordering::SeqCst);

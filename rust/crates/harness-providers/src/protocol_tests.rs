@@ -36,7 +36,7 @@ async fn token_estimates_start_at_two_bytes_and_only_tighten_per_resolved_model(
             Some(bytes.div_ceil(2) as u32)
         );
         provider
-            .generate(prepared.clone(), dispatch)
+            .generate(&prepared, dispatch)
             .try_collect::<Vec<_>>()
             .await?;
         let calibrated = total(&projection::plan(&provider, &prepared, 512)?);
@@ -48,7 +48,7 @@ async fn token_estimates_start_at_two_bytes_and_only_tighten_per_resolved_model(
         // differ with framing and are not verified admission token counts.
         assert!(provider.estimator.tokens(bytes).expect("wire estimate") >= 512);
         provider
-            .generate(prepared.clone(), dispatch)
+            .generate(&prepared, dispatch)
             .try_collect::<Vec<_>>()
             .await?;
         assert_eq!(
@@ -123,7 +123,7 @@ async fn http_status_classes_are_distinct_and_refusals_carry_only_a_bounded_exce
             let (provider, script) = provider(adapter, status);
             let (prepared, dispatch) = request(&provider)?;
             let error = provider
-                .generate(prepared, dispatch)
+                .generate(&prepared, dispatch)
                 .try_collect::<Vec<_>>()
                 .await
                 .expect_err("HTTP failure");
@@ -337,7 +337,7 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
             crate::deadline::Bounded::new(script.clone(), crate::TimeoutSpec::DEFAULT);
         let (initial, dispatch) = request(&provider)?;
         let events = provider
-            .generate(initial.clone(), dispatch)
+            .generate(&initial, dispatch)
             .try_collect::<Vec<_>>()
             .await?;
         // Replay through the durable serde contract rather than an in-memory signature cache.
@@ -417,7 +417,7 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
             ..dispatch
         };
         let events = provider
-            .generate(next, next_dispatch)
+            .generate(&next, next_dispatch)
             .try_collect::<Vec<_>>()
             .await?;
         assert_eq!(

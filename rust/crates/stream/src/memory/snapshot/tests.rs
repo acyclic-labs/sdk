@@ -1,3 +1,4 @@
+use super::super::HistoryJump;
 use super::*;
 use crate::{AppendRequest, MemoryLimits, ReadRequest, StreamProvider, UnixMillisClock};
 use crate::{OwnedBytes as Bytes, StreamPath};
@@ -550,6 +551,7 @@ async fn retained_fork_cannot_capture_a_future_source_head() -> Result<(), Strea
         .get_mut(&destination)
         .ok_or(StreamError::Unavailable)?
         .history = Some(Arc::new(History::Prefix {
+        jump: HistoryJump::new(future.as_ref(), 1, || Ok(()))?,
         source: future,
         tail: 1,
         _allocation: Default::default(),

@@ -1,6 +1,61 @@
 use super::*;
 use crate::wire::ErrorCode::{Conflict, Invalid, Storage, Unauthorized, Unsupported};
 
+/// Select one authenticated step, falling back to replay for unindexed journals.
+pub(crate) async fn selected_step_records<'a>(
+    journal: &dyn ExecutionJournal,
+    query: ExecutionRecordQuery<'_>,
+    io: Option<&'a PreparationIo>,
+) -> Result<(
+    u64,
+    Vec<ExecutionRecord>,
+    Option<crate::conversation::ContentHold<'a>>,
+)> {
+    validate_journal(journal, io)?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let before = io
+        .filter(|io| io.original_native_work().is_some())
+        .map(PreparationIo::owned_bytes)
+        .transpose()?
+        .unwrap_or(0);
+    let operation = query.operation;
+    let step = query.step;
+    let include_started = query.include_started;
+    let maximum = query.maximum;
+    let select = query.select;
+    let indexed = match journal.indexed_records(query, io)? {
+        Some(future) => future.await?,
+        None => None,
+    };
+    if let Some((tail, records)) = indexed {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let hold = io
+            .filter(|io| io.original_native_work().is_some())
+            .map(|io| {
+                let retained = io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
+                    stock_boundary(Some(io), Storage, "indexed selection ownership underflows")
+                })?;
+                io.guard_owned(retained)
+            })
+            .transpose()?;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let hold = None;
+        Ok((tail, records, hold))
+    } else {
+        replay_execution(
+            journal,
+            operation,
+            maximum,
+            |event| {
+                (event.step() == Some(step) || (include_started && event.step().is_none()))
+                    && select(event)
+            },
+            io,
+        )
+        .await
+    }
+}
+
 /// Finds the canonical base published by this execution's first response step.
 pub async fn canonical_checkpoint_for_operation(
     journal: &dyn ExecutionJournal,
@@ -8,11 +63,16 @@ pub async fn canonical_checkpoint_for_operation(
     limits: Limits,
     io: Option<&PreparationIo>,
 ) -> Result<Option<FileRef>> {
-    let records = replay_execution(
+    let records = selected_step_records(
         journal,
-        operation_id,
-        1,
-        |event| matches!(event, ExecutionEvent::ContextCompacted { step: 0, .. }),
+        ExecutionRecordQuery {
+            operation: operation_id,
+            step: 0,
+            include_started: false,
+            maximum_step_records: ExecutionRecordQuery::step_bound(limits),
+            maximum: 1,
+            select: &|event| matches!(event, ExecutionEvent::ContextCompacted { step: 0, .. }),
+        },
         io,
     )
     .await?;
@@ -32,7 +92,7 @@ pub async fn canonical_checkpoint_for_operation(
         ));
     };
     validate_checkpoint_json_reference(projection, limits, io)?;
-    let projection = load_json::<ResponseProjection>(journal, projection, io).await?;
+    let projection = load_response_projection(journal, projection, limits, io).await?;
     crate::context::validate_projected_context(&projection.0.context, limits, io)?;
     let Some(reference) = projection.0.checkpoint.as_ref() else {
         if projection.0.canonical.is_some() {

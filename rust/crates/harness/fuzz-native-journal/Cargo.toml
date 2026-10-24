@@ -11,7 +11,7 @@ cargo-fuzz = true
 
 [dependencies]
 acyclic-harness = { path = "..", default-features = false, features = ["filesystem-local", "native-execution", "hooks", "mcp-http", "mcp-stdio", "mcp-oauth", "objects", "machines", "grpc", "terminal", "tui", "test-support", "model-checking"] }
-acyclic-fs = { path = "../../filesystem", default-features = false, features = ["memory", "local", "native-mount"] }
+acyclic-fs = { path = "../../filesystem", default-features = false, features = ["memory", "local", "native-mount", "test-support"] }
 acyclic-test-support = { path = "../../test-support" }
 libfuzzer-sys = "0.4"
 serde = "1"

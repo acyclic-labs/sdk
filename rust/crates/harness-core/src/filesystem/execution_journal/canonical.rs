@@ -1,6 +1,13 @@
 use super::*;
 
 mod output;
+#[cfg(all(
+    test,
+    feature = "test-support",
+    not(acyclic_harness_loom),
+    not(target_arch = "wasm32")
+))]
+mod tests;
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
@@ -29,8 +36,7 @@ where
         };
         crate::executor::with_history_io(io, |work| limits.validate_file(projection, work))?;
         let projection =
-            crate::executor::load_json::<crate::executor::ResponseProjection>(self, projection, io)
-                .await?;
+            crate::executor::load_response_projection(self, projection, limits, io).await?;
         crate::context::validate_projected_context(&projection.0.context, limits, io)?;
         let Some(reference) = &projection.0.checkpoint else {
             if projection.0.canonical.is_some() {
@@ -296,11 +302,16 @@ where
                         "canonical summary belongs to another step",
                     )
                 })?;
-            let (_, records, hold) = crate::executor::replay_execution(
+            let (_, records, hold) = crate::executor::selected_step_records(
                 self,
-                operation,
-                limits.model_events_per_step.saturating_add(2),
-                canonical_summary_event,
+                crate::executor::ExecutionRecordQuery {
+                    operation,
+                    step: 0,
+                    include_started: false,
+                    maximum_step_records: crate::executor::ExecutionRecordQuery::step_bound(limits),
+                    maximum: limits.model_events_per_step.saturating_add(2),
+                    select: &canonical_summary_event,
+                },
                 io,
             )
             .await?;
@@ -314,10 +325,8 @@ where
                 match &record.event {
                     ExecutionEvent::ContextPrepared { projection, .. } => {
                         prepared = Some(
-                            crate::executor::load_json::<crate::executor::ResponseProjection>(
-                                self, projection, io,
-                            )
-                            .await?,
+                            crate::executor::load_response_projection(self, projection, limits, io)
+                                .await?,
                         );
                     }
                     ExecutionEvent::ModelStarted {
@@ -328,9 +337,9 @@ where
                                 .await?,
                         );
                     }
-                    ExecutionEvent::Model { event, .. } => {
+                    ExecutionEvent::Model { .. } | ExecutionEvent::ModelInline { .. } => {
                         self.observe_summary_event(
-                            event,
+                            &record.event,
                             (&mut admission, &mut output),
                             limits,
                             io,
@@ -378,7 +387,7 @@ where
     }
     async fn observe_summary_event(
         &self,
-        reference: &FileRef,
+        reference: &ExecutionEvent,
         state: (
             &mut ModelEventAdmission,
             &mut output::CanonicalSummaryOutput,
@@ -387,11 +396,20 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         let (admission, output) = state;
-        let event = crate::executor::load_json::<ModelEvent>(self, reference, io).await?;
-        admission.observe(&event.0, limits, io)?;
-        match &event.0 {
+        let scratch = crate::filesystem::PreparationScope::new(io)?;
+        let event = crate::executor::load_model_event(self, reference, scratch.io())
+            .await?
+            .ok_or_else(|| {
+                canonical_boundary(
+                    io,
+                    crate::wire::ErrorCode::Storage,
+                    "canonical model event is missing",
+                )
+            })?;
+        admission.observe(&event, limits, io)?;
+        match &event {
             ModelEvent::Content { .. } | ModelEvent::MessageCompleted { .. } => {
-                output.observe(&event.0, limits.render_bytes, io)?;
+                output.observe(&event, limits.render_bytes, io)?;
             }
             ModelEvent::Completed { .. }
             | ModelEvent::Reasoning { .. }
@@ -664,6 +682,11 @@ fn canonical_summary_event(event: &ExecutionEvent) -> bool {
                 ..
             }
             | ExecutionEvent::Model {
+                step: 0,
+                purpose: crate::executor::ModelPurpose::Summary,
+                ..
+            }
+            | ExecutionEvent::ModelInline {
                 step: 0,
                 purpose: crate::executor::ModelPurpose::Summary,
                 ..

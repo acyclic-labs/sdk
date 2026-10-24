@@ -19,10 +19,10 @@ use sync::Mutex as CompletionMutex;
 
 #[cfg(target_vendor = "apple")]
 mod apple;
-#[cfg(target_os = "linux")]
-mod linux;
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 mod held_sync;
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 pub use held_sync::sync_descriptor_once;
 pub mod obs;
@@ -85,8 +85,9 @@ pub use service::{
 pub use shell::shell_command;
 mod meter;
 pub use meter::{
-    NativeByteReservation, NativeOperationKind, NativeOperationReservation, NativeReadMeter,
-    ReadAllocation, ReadAllocationReservation,
+    NativeByteReservation, NativeCodecReservation, NativeCodecWork, NativeOperationKind,
+    NativeOperationReservation, NativeReadMeter, ReadAllocation, ReadAllocationReservation,
+    arc_allocation_bytes,
 };
 mod blocking;
 mod task;

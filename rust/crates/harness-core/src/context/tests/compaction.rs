@@ -1,6 +1,67 @@
 use super::*;
 
 #[test]
+fn every_cut_of_the_only_protected_exchange_retains_all_input() -> Result<()> {
+    let payload = "old ".repeat(6_500);
+    let source = context(
+        vec![
+            text(ModelRole::User, "question"),
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Part(ModelContentPart::ToolCall(
+                    crate::model::ToolCall::new(
+                        "call".into(),
+                        "tool".into(),
+                        serde_json::json!({"value": payload}),
+                    ),
+                )),
+            },
+            ModelMessage {
+                role: ModelRole::Tool,
+                content: ModelContent::Part(ModelContentPart::ToolResult {
+                    call_id: "call".into(),
+                    name: "tool".into(),
+                    content: crate::model::ToolResultContent::Json {
+                        value: serde_json::json!({"value": payload}),
+                    },
+                }),
+            },
+        ],
+        Some(0),
+    );
+    let policy = ThresholdCompaction {
+        recent_tokens: 1,
+        ..Default::default()
+    };
+    let capacity = ModelContextCapacity {
+        context_tokens: 65_536,
+        output_tokens: Some(4_096),
+    };
+    let input_bytes = source.messages.iter().try_fold(100_u64, |total, message| {
+        Ok::<_, crate::Error>(total + crate::contract::canonical_json_bytes(message)?.len() as u64)
+    })?;
+    assert!(policy.needs_compaction(capacity, input_bytes)?);
+    // Exhaust all prefix cuts through the production selector: the current
+    // input and latest result pin the entire connected call/result exchange.
+    for covered in 0..=source.messages.len() {
+        let retained = mandatory_messages(&source, covered, &policy.retention, &mut None)?;
+        assert_eq!(
+            retained, source.messages,
+            "cut {covered} dropped protected input"
+        );
+    }
+    // Negative control: pinning only positions, without exchange closure,
+    // appears to free space but leaves the result without its call.
+    let unlinked = [source.messages[0].clone(), source.messages[2].clone()];
+    assert!(unlinked.len() < source.messages.len());
+    assert!(!unlinked.contains(&source.messages[1]));
+    for maximum in 1..=source.messages.len() {
+        assert!(compact(&source, maximum, source.messages.len()).is_err());
+    }
+    Ok(())
+}
+
+#[test]
 fn compaction_preserves_instructions_current_input_and_complete_exchanges() -> Result<()> {
     let call = ModelMessage {
         role: ModelRole::Assistant,

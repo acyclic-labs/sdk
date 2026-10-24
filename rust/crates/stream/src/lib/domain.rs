@@ -350,6 +350,15 @@ pub struct CommitRequest {
     pub idempotency_key: IdempotencyKey,
 }
 
+impl CommitRequest {
+    /// Protobuf command size, without allocating or copying the record payloads.
+    /// Returns `usize::MAX` if the size cannot be represented on this platform.
+    #[must_use]
+    pub fn wire_encoded_len(&self) -> usize {
+        crate::wire_codec::requests::commit_len(self)
+    }
+}
+
 /// Trusted clock used by providers to evaluate publication deadlines at the
 pub trait UnixMillisClock: Send + Sync + 'static {
     /// Current Unix time in milliseconds.

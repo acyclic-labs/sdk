@@ -13,7 +13,7 @@ async fn explicit_no_tools_and_serial_calls_survive_codex_dispatch() -> Result<(
         )?;
     let (request, dispatch) = crate::tests::request(&provider)?;
     provider
-        .generate(request, dispatch)
+        .generate(&request, dispatch)
         .try_collect::<Vec<_>>()
         .await?;
     let requests = server.requests.lock().unwrap();

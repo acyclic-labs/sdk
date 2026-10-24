@@ -140,7 +140,7 @@ async fn instruction_review_loopback_scope_budget_and_read_deduplication() {
                     input_schema: json!({}), output_schema: json!({}), projection_schema: json!({}),
                 }], max_output_tokens: Some(64) }, Limits::default(), None).unwrap();
             let dispatch = ModelDispatch { operation_id: OperationId::new(), step: 0, request_digest: request.request_digest() };
-            provider.generate(request, dispatch).try_collect::<Vec<_>>().await.unwrap();
+            provider.generate(&request, dispatch).try_collect::<Vec<_>>().await.unwrap();
             let body = received.lock().unwrap().last().unwrap().clone();
             assert_eq!(body["input"][0], json!({"type":"message","role":"user","content":[{
                 "type":"input_text","text":format!("# AGENTS.md instructions for nested\n\n<INSTRUCTIONS>\n{BODY}\n</INSTRUCTIONS>")
@@ -162,7 +162,7 @@ async fn instruction_review_loopback_scope_budget_and_read_deduplication() {
         let request = PreparedModelRequest::prepare(ModelRequest { model: provider.model().clone(),
             messages: context.messages, tools: vec![], max_output_tokens: Some(64) }, Limits::default(), None).unwrap();
         let dispatch = ModelDispatch { operation_id: OperationId::new(), step: 0, request_digest: request.request_digest() };
-        assert!(limited.generate(request, dispatch).try_collect::<Vec<_>>().await.is_err());
+        assert!(limited.generate(&request, dispatch).try_collect::<Vec<_>>().await.is_err());
         assert_eq!(reader.0.load(Ordering::SeqCst), before);
         assert_eq!(received.lock().unwrap().len(), 6);
         server.abort();

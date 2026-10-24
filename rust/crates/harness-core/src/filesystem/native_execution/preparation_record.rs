@@ -191,7 +191,7 @@ pub(super) fn invalid() -> Error {
 }
 
 /// Exercises bounded Intent decoding and its original allocation custody.
-#[cfg(any(test, fuzzing))]
+#[cfg(any(test, fuzzing, feature = "test-support"))]
 pub fn fuzz_native_preparation_intent(
     input: &[u8],
     work: &NativeMaterializationWork,
@@ -208,7 +208,7 @@ pub fn fuzz_native_preparation_intent(
 }
 
 /// Exercises bounded journal decoding and its original allocation custody.
-#[cfg(any(test, fuzzing))]
+#[cfg(any(test, fuzzing, feature = "test-support"))]
 pub fn fuzz_native_preparation_journal(
     input: &[u8],
     work: &NativeMaterializationWork,

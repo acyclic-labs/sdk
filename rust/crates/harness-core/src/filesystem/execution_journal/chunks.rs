@@ -37,11 +37,16 @@ where
         let (Some(files), Some((owner, operation))) = (&self.task_files, &self.owner) else {
             return Ok(());
         };
-        let ExecutionEvent::Model {
+        let (ExecutionEvent::Model {
             step,
             purpose: crate::executor::ModelPurpose::Response,
             ..
-        } = event
+        }
+        | ExecutionEvent::ModelInline {
+            step,
+            purpose: crate::executor::ModelPurpose::Response,
+            ..
+        }) = event
         else {
             return Ok(());
         };

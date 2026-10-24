@@ -11,7 +11,7 @@ use acyclic_harness::{
     context::{ContextPipeline, ModelContextCapacity, ModelTokenCount},
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry},
-    executor::{ExecutionEvent, ExecutionJournal, Executor, StockExecutor, TurnInput},
+    executor::{ExecutionJournal, Executor, StockExecutor, TurnInput},
     filesystem::{
         FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
         FilesystemJournalBinding,
@@ -209,18 +209,12 @@ async fn observed(
         }
         for record in records {
             after = record.sequence;
-            events.push(match &record.event {
-                ExecutionEvent::Model {
-                    step,
-                    purpose,
-                    event,
-                } => json!({
-                    "kind": "model",
-                    "step": step,
-                    "purpose": purpose,
-                    "event": serde_json::from_slice::<Value>(&journal.load(event, None)?.await?)?,
-                }),
-                event => json!({"kind": serde_json::to_value(event)?["kind"]}),
+            let value = super::execution::normalized_observation(journal, &record.event).await?;
+            let kind = value.get("kind").ok_or("missing observation kind")?;
+            events.push(if kind == "model" {
+                value
+            } else {
+                json!({"kind": kind})
             });
         }
     }
@@ -282,7 +276,7 @@ impl ModelProvider for PausedPrefix {
 
     fn generate<'a>(
         &'a self,
-        _: PreparedModelRequest,
+        _: &'a PreparedModelRequest,
         _: ModelDispatch,
     ) -> acyclic_stream::BoxProviderStream<'a, acyclic_harness::Result<ModelEvent>> {
         Box::pin(futures::stream::unfold(false, move |sent| async move {

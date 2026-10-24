@@ -44,7 +44,7 @@ impl NativeFile {
         if owner.is_some() {
             return Err((io::ErrorKind::Unsupported.into(), file));
         }
-        let bytes = std::mem::size_of::<NativeFilePayload>();
+        let bytes = arc_allocation_bytes::<NativeFilePayload>();
         let allocation = if let Some(owner) = &owner {
             match ReadAllocation::new(owner, bytes) {
                 Ok(allocation) => Some(allocation),
@@ -67,7 +67,7 @@ impl NativeFile {
         #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
         let health = meter
             .map_or(Ok(()), |meter| {
-                meter.allocate(std::mem::size_of::<FileHealth>() as u64)
+                meter.allocate(arc_allocation_bytes::<FileHealth>() as u64)
             })
             .map(|()| HealthOwner::unregistered());
         match health {
@@ -97,8 +97,8 @@ impl NativeFile {
         #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
         let health = 0;
         #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-        let health = std::mem::size_of::<FileHealth>();
-        (std::mem::size_of::<NativeFilePayload>() + health) as u64
+        let health = arc_allocation_bytes::<FileHealth>();
+        (arc_allocation_bytes::<NativeFilePayload>() + health) as u64
     }
 
     /// Imports a Windows handle for overlapped I/O.

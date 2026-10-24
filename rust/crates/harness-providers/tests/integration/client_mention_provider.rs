@@ -171,7 +171,7 @@ async fn scenario(
         request_digest: request.request_digest(),
     };
     let result = provider
-        .generate(request, dispatch)
+        .generate(&request, dispatch)
         .try_collect::<Vec<_>>()
         .await;
     check_dispatch(result, &received, body, text)

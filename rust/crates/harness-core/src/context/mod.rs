@@ -61,7 +61,7 @@ pub use durable::*;
 mod validation;
 pub(crate) use validation::{
     plan_compaction_budget, restrict_context_limits, validate_compaction,
-    validate_projected_context,
+    validate_projected_context, validate_projected_messages,
 };
 mod value;
 pub use value::*;

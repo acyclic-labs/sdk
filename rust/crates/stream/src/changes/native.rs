@@ -101,7 +101,10 @@ impl AppendRecord {
             name: String::from_utf8(name).map_err(|_| io::ErrorKind::InvalidData)?,
             value: crate::OwnedBytes::from_static(FORMAT),
         });
-        let headers = RecordHeaders::from_native_parts(keys, attributes, allocation, meter)?;
+        let headers = match RecordHeaders::from_native_parts(keys, attributes, allocation, meter)? {
+            Ok(headers) => headers,
+            Err(error) => return Ok(Err(error)),
+        };
         meter.check()?;
         Ok(validate(&value, &headers).map(|()| Self { value, headers }))
     }

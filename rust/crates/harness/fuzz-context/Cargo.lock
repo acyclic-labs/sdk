@@ -21,6 +21,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-contract-derive",
  "acyclic-grpc-observability",
+ "acyclic-native-runtime",
  "acyclic-proto-build",
  "acyclic-stream",
  "acyclic-tonic-web-wasm-client",
@@ -53,6 +54,7 @@ name = "acyclic-auth"
 version = "0.2.0"
 dependencies = [
  "acyclic-contract-derive",
+ "acyclic-differential",
  "acyclic-proto-build",
  "ed25519-dalek",
  "prost",

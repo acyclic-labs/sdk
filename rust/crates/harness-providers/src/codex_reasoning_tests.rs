@@ -102,7 +102,7 @@ async fn encrypted_reasoning_survives_login_refresh_and_durable_tool_followup() 
                         holds.push(hold);
                     }
                 } else {
-                    events = provider.generate(prepared, dispatch).try_collect().await?;
+                    events = provider.generate(&prepared, dispatch).try_collect().await?;
                 }
                 if step == 0 {
                     let events: Vec<ModelEvent> =

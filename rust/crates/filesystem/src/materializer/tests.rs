@@ -11,6 +11,99 @@ use std::fmt::Error;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
+fn prepared_codec_credit_excludes_competing_work_and_survives_cancellation()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_native_runtime::{NativeCodecReservation, NativeCodecWork, NativeReadMeter};
+    use std::sync::Arc;
+    for mode in 0..3 {
+        for cancel in [false, true] {
+            let cancellation = crate::CancellationToken::new();
+            let budget = crate::WorkBudget {
+                bytes_encoded: 8,
+                bytes_copied: 8,
+                bytes_hashed: 8,
+                ..crate::WorkBudget::UNBOUNDED
+            };
+            let original = NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(error, _)| error)?;
+            let mut invocation = None;
+            let meter: Arc<dyn NativeReadMeter> = match mode {
+                0 => original.runtime_meter(),
+                1 => {
+                    let (view, token) = original.invocation_view()?;
+                    invocation = Some(token);
+                    view.runtime_meter()
+                }
+                _ => Arc::new(original.reserve_work(crate::WorkCounters {
+                    bytes_encoded: 8,
+                    bytes_copied: 8,
+                    bytes_hashed: 8,
+                    ..crate::WorkCounters::UNCHARGED
+                })?),
+            };
+            let mut held = NativeCodecReservation::new(
+                Arc::clone(&meter),
+                NativeCodecWork {
+                    encoded: 6,
+                    copied: 6,
+                    hashed: 6,
+                },
+            )?;
+            assert_eq!(original.receipt().bytes_hashed, 0);
+            for request in [(3, 0, 0), (0, 3, 0), (0, 0, 3)] {
+                assert!(
+                    meter.admit_codec(request.0, request.1, request.2).is_err(),
+                    "prepared codec allowance was spendable by competing work"
+                );
+            }
+            meter.admit_codec(2, 2, 2)?;
+            meter.record_codec(2, 2, 2)?;
+            if cancel {
+                invocation.as_ref().unwrap_or(&cancellation).cancel();
+            }
+            held.record(NativeCodecWork {
+                encoded: 1,
+                copied: 2,
+                hashed: 3,
+            })?;
+            // The failed overrun does not consume or refund another token's credit.
+            assert!(
+                held.record(NativeCodecWork {
+                    encoded: 6,
+                    ..NativeCodecWork::default()
+                })
+                .is_err()
+            );
+            drop(held);
+            let receipt = original.receipt();
+            assert_eq!(
+                (
+                    receipt.bytes_encoded,
+                    receipt.bytes_copied,
+                    receipt.bytes_hashed
+                ),
+                (3, 4, 5)
+            );
+            if !cancel {
+                meter.admit_codec(5, 4, 3)?;
+                meter.record_codec(5, 4, 3)?;
+                let receipt = original.receipt();
+                assert_eq!(
+                    (
+                        receipt.bytes_encoded,
+                        receipt.bytes_copied,
+                        receipt.bytes_hashed
+                    ),
+                    (8, 8, 8)
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
 fn replay_probe_reservations_withhold_budget_and_survive_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     for cancel in [false, true] {

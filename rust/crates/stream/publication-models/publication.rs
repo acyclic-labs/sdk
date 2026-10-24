@@ -21,6 +21,16 @@ mod shared_models {
 use acyclic_stream::discovery_verification as discovery;
 
 #[test]
+fn discovery_snapshot_executor_handoff_wakes_the_consumer() {
+    discovery::executor_handoff(false);
+}
+#[test]
+#[should_panic(expected = "snapshot executor has not run")]
+fn discovery_snapshot_negative_control_checks_before_executor_progress() {
+    discovery::executor_handoff(true);
+}
+
+#[test]
 fn parent_creation_has_no_discovery_gap() {
     discovery::registration_race(false, true);
 }

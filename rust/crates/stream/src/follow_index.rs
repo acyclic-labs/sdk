@@ -90,7 +90,7 @@ impl FollowIndex {
             for attribute in record.headers.attributes() {
                 if let Some(ids) = self
                     .attributes
-                    .get(&attribute.name)
+                    .get(attribute.name)
                     .and_then(|values| values.get(attribute.value.as_ref()))
                 {
                     for &id in ids {
@@ -291,7 +291,7 @@ mod tests {
         let mut followed = FollowIndex::subscribe(
             &index,
             FollowFilter::new(wire::SessionFilter {
-                    all_of: vec![],
+                all_of: vec![],
                 keys: vec![wire::KeyRange {
                     start: b"a".as_slice().into(),
                     end: b"c".as_slice().into(),

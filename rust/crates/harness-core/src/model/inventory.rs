@@ -91,12 +91,12 @@ impl ToolResultContent {
         }
     }
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        add(size_of::<Self>() as u64, self.payload_bytes()?)
+        add(size_of::<Self>() as u64, self.retained_payload_bytes()?)
     }
 }
 #[cfg(feature = "filesystem")]
 impl ModelContent {
-    fn payload_bytes(&self) -> Result<u64> {
+    pub(super) fn payload_bytes(&self) -> Result<u64> {
         match self {
             Self::Text(text) => Ok(text.capacity() as u64),
             Self::Part(part) => part.payload_bytes(),
@@ -155,6 +155,9 @@ impl ModelRequest {
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl PreparedModelRequest {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        add(size_of::<Self>() as u64, self.request().payload_bytes()?)
+        add(
+            add(size_of::<Self>() as u64, self.resident_payload_bytes()?)?,
+            self.encoding_owned_bytes()?,
+        )
     }
 }

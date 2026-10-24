@@ -28,7 +28,7 @@ impl StockExecution<'_> {
         let prepared = retained
             .request
             .ok_or(Error::Indeterminate(input.operation_id))?;
-        let mut request = crate::model::clone_request(prepared.request(), self.io)?;
+        let mut request = prepared.into_continuation();
         if !retained.admission.completed
             || retained.admission.calls.is_empty()
             || through_call
@@ -42,7 +42,7 @@ impl StockExecution<'_> {
             let (invocation, metadata) = match event {
                 ModelEvent::ReasoningBlock { block } => {
                     self.append_assistant_part(
-                        &mut request.messages,
+                        request.messages(),
                         ModelContentPart::Reasoning { block },
                     )?;
                     continue;
@@ -124,7 +124,7 @@ impl StockExecution<'_> {
                             invocation: &invocation,
                             metadata: &metadata,
                         },
-                        &request.tools,
+                        request.tools(),
                         self.stock.limits,
                         self.io,
                     )
@@ -149,7 +149,7 @@ impl StockExecution<'_> {
                 invocation.arguments = original;
             }
             stock_vec_push(
-                &mut request.messages,
+                request.messages(),
                 ModelMessage {
                     role: ModelRole::Assistant,
                     content: ModelContent::Part(ModelContentPart::ToolCall(
@@ -187,13 +187,12 @@ impl StockExecution<'_> {
                 break;
             }
         }
-        for result in results {
-            stock_vec_push(&mut request.messages, result, self.io)?;
+        for result in stock_into_iter(results, self.io)? {
+            stock_vec_push(request.messages(), result, self.io)?;
         }
-        super::turn::append_step_context(&mut request.messages, &mut hook_context, self.io)?;
-        let prepared =
-            crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io)?;
-        self.verify_model_request_content(journal, &prepared)
+        super::turn::append_step_context(request.messages(), &mut hook_context, self.io)?;
+        let mut prepared = request.finish(self.stock.limits, self.io)?;
+        self.verify_model_request_content(journal, &mut prepared)
             .await?;
         Ok(prepared)
     }

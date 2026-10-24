@@ -146,18 +146,110 @@ fn preparation_content_slot_bytes() -> u64 {
     2 * 5 * content
 }
 
+/// Closed reference metadata has no model, tool or workflow collections.
+pub(crate) fn preparation_file_record_slot_bytes() -> u64 {
+    // decode_owned_allowance funds the root DTO separately. It is not an
+    // element of any collection in closed reference metadata; repeating it
+    // for digest arrays reserves a complete manifest for every container.
+    size_of::<FileRef>() as u64 + preparation_content_slot_bytes()
+}
+
 macro_rules! records {
     ($($record:ty => $schema:ident),* $(,)?) => {$(impl PreparationRecord for $record { fn json_value_schema() -> &'static Schema { Schema::$schema } })*};
 }
 records!(
     crate::Capabilities => None,
-    crate::context::Context => Context, crate::context::SummarySource => SummarySource, crate::context::CanonicalContextCheckpoint => None, crate::context::CompactionReference => None,
-    crate::executor::ResponseProjection => ResponseProjection, crate::model::ModelEvent => ModelEvent,
+    crate::context::SummarySource => SummarySource,
+    crate::executor::ResponseProjection => ResponseProjection,
     crate::model::ModelRequest => ModelRequest, crate::model::ModelContent => ModelContent, crate::model::ModelContentPart => ModelContentPart,
     crate::fork::InheritedConversationPrefix => None, crate::core::ExtensionConfiguration => None,
     FileRef => None, Vec<crate::conversation::Attachment> => None,
     crate::workflow::WorkflowAdmission => WorkflowAdmission, crate::workflow::MachineCheckpoint => MachineCheckpoint, crate::workflow::WorkflowCommand => None,
 );
+impl PreparationRecord for crate::model::ModelEvent {
+    fn json_value_schema() -> &'static Schema {
+        Schema::ModelEvent
+    }
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        self.retained_owned_bytes().map(Some)
+    }
+}
+impl PreparationRecord for crate::context::Context {
+    fn json_value_schema() -> &'static Schema {
+        Schema::Context
+    }
+
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        let bytes = crate::core::owned_sum([
+            size_of::<Self>() as u64,
+            crate::core::owned_buffer::<crate::model::ModelMessage>(self.messages.capacity())?,
+            file_map_owned_bytes(&self.metadata)?,
+        ])?;
+        self.messages
+            .iter()
+            .try_fold(bytes, |bytes, message| {
+                crate::core::owned_sum([bytes, message.content.retained_payload_bytes()?])
+            })
+            .map(Some)
+    }
+}
+
+pub(crate) fn file_map_owned_bytes(
+    map: &std::collections::BTreeMap<String, FileRef>,
+) -> Result<u64> {
+    let nodes = if map.is_empty() {
+        0
+    } else {
+        1 + (map.len() - 1) / 5
+    };
+    let node = 11 * size_of::<(String, FileRef)>() + 14 * size_of::<usize>();
+    let slots = nodes
+        .checked_mul(node)
+        .ok_or_else(|| decode_allowance_error("file metadata node inventory overflows", None))?
+        as u64;
+    map.iter().try_fold(slots, |bytes, (key, file)| {
+        crate::core::owned_sum([bytes, key.capacity() as u64, file.logical_owned_bytes()?])
+    })
+}
+
+impl PreparationRecord for crate::context::CompactionReference {
+    fn container_collection_slots() -> bool {
+        // The only large nested value is an object-shaped FileRef. Digests
+        // and retention roles fit the per-item Content buffering allowance.
+        true
+    }
+
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        crate::core::owned_sum([
+            size_of::<Self>() as u64,
+            crate::core::owned_buffer::<crate::model::ModelRole>(self.retention.roles.capacity())?,
+            self.summary
+                .as_ref()
+                .map_or(Ok(0), |summary| summary.output.logical_owned_bytes())?,
+        ])
+        .map(Some)
+    }
+}
+
+impl PreparationRecord for crate::context::CanonicalContextCheckpoint {
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        // The selection owns UUID slots and at most one earlier FileRef. All
+        // other variable storage belongs to the three immutable file identities.
+        // Release serde's decode scratch before authenticating the publication.
+        crate::core::owned_sum([
+            size_of::<Self>() as u64,
+            crate::core::owned_buffer::<uuid::Uuid>(self.selection.message_ids.capacity())?,
+            self.selection
+                .checkpoint
+                .as_ref()
+                .map_or(Ok(0), FileRef::logical_owned_bytes)?,
+            self.source.logical_owned_bytes()?,
+            self.retained.logical_owned_bytes()?,
+            self.compaction.logical_owned_bytes()?,
+        ])
+        .map(Some)
+    }
+}
 impl PreparationRecord for acyclic_fs::access::Policy {
     fn maximum_slot_bytes() -> u64 {
         preparation_slot_bytes::<acyclic_fs::access::Rule>()

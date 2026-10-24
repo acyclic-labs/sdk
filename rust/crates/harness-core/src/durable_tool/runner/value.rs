@@ -32,14 +32,52 @@ pub(super) fn tool_validate_projection(
         Ok(content) => content,
         Err(violation) => return Ok(Err(violation)),
     };
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io.filter(|io| native_work(Some(io)).is_some()) {
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
         let bytes = content.logical_owned_bytes()?;
+        let custody = io.guard_owned(bytes)?;
         drop(content);
-        return io.release(bytes).map(Ok).map_err(Into::into);
+        drop(custody);
+        return Ok(Ok(()));
     }
     drop(content);
     Ok(Ok(()))
+}
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+fn validation_only_projection_releases_finite_and_native_result_trees() -> Result<()> {
+    let definition = ToolDefinition {
+        name: "tool".into(),
+        revision: "1".into(),
+        description: "fixture".into(),
+        input_schema: Value::Bool(true),
+        output_schema: Value::Bool(true),
+        projection_schema: Value::Bool(true),
+    };
+    let source = serde_json::json!({"kind":"json", "value":{"outer":[{"inner":"value"}]}});
+    for native in [false, true] {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = work.live_allocation_bytes();
+        let io = if native {
+            PreparationIo::from_native_work(&work)?
+        } else {
+            PreparationIo::from_budget(budget, &cancellation)?
+        };
+        tool_validate_projection(&definition, &source, Limits::default(), Some(&io))??;
+        assert_eq!(io.owned_bytes()?, 0);
+        // A discarded decoded tree without a custody guard is the previous
+        // finite path: dropping its Rust value alone leaves its charge live.
+        let control = definition.validate_projection(&source, Limits::default(), Some(&io))?;
+        drop(control);
+        assert!(io.owned_bytes()? > 0);
+        drop(io);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+    }
+    Ok(())
 }
 pub(super) fn tool_text(
     value: std::fmt::Arguments<'_>,

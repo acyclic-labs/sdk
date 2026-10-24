@@ -112,7 +112,7 @@ async fn text_replay_records_exact_request_and_exhausts() -> Result<()> {
     assert_eq!(count.request_digest, request.request_digest());
     assert_eq!(count.message_tokens.len(), 2);
     let events = provider
-        .generate(request.clone(), dispatch)
+        .generate(&request, dispatch)
         .collect::<Vec<_>>()
         .await;
     assert_eq!(
@@ -130,7 +130,7 @@ async fn text_replay_records_exact_request_and_exhausts() -> Result<()> {
     assert_eq!(provider.dispatches(), vec![dispatch]);
     assert_eq!(provider.remaining(), 0);
     let events = provider
-        .generate(request, dispatch)
+        .generate(&request, dispatch)
         .collect::<Vec<_>>()
         .await;
     assert!(
@@ -154,7 +154,7 @@ async fn exact_events_preserve_tools_errors_and_missing_completion() -> Result<(
     let provider = ScriptedModelProvider::new(turns);
     let (request, dispatch) = request()?;
     let events = provider
-        .generate(request.clone(), dispatch)
+        .generate(&request, dispatch)
         .collect::<Vec<_>>()
         .await;
     let events = events.into_iter().collect::<Result<Vec<_>>>()?;
@@ -162,14 +162,14 @@ async fn exact_events_preserve_tools_errors_and_missing_completion() -> Result<(
         ModelEvent::ToolCall(crate::model::ToolCall { arguments, .. }), ModelEvent::Completed { metadata }]
         if arguments == &json!({"path":"a"}) && metadata == &json!({"tokens":3})));
     let events = provider
-        .generate(request.clone(), dispatch)
+        .generate(&request, dispatch)
         .collect::<Vec<_>>()
         .await;
     assert!(matches!(events.as_slice(), [Ok(ModelEvent::Content { .. }),
         Err(crate::Error::Storage(message))] if message == "offline"));
     assert!(
         provider
-            .generate(request, dispatch)
+            .generate(&request, dispatch)
             .collect::<Vec<_>>()
             .await
             .is_empty()
@@ -184,7 +184,7 @@ async fn mismatched_dispatch_does_not_consume_script() -> Result<()> {
     let (request, mut dispatch) = request()?;
     dispatch.request_digest = [0; 32];
     let events = provider
-        .generate(request, dispatch)
+        .generate(&request, dispatch)
         .collect::<Vec<_>>()
         .await;
     assert!(matches!(events.as_slice(), [Err(crate::Error::Invalid(_))]));
@@ -235,7 +235,7 @@ async fn pending_script_signals_recorded_dispatch_and_reconciles_after_drop() ->
             })
     });
     let (request, dispatch) = request()?;
-    let mut stream = provider.generate(request, dispatch);
+    let mut stream = provider.generate(&request, dispatch);
     assert_eq!(received.try_recv(), Ok(dispatch));
     assert_eq!(provider.requests().len(), 1);
     assert_eq!(provider.remaining(), 0);
@@ -267,7 +267,7 @@ async fn invalid_or_exhausted_dispatch_does_not_signal() -> Result<()> {
         ..dispatch
     };
     assert!(matches!(
-        provider.generate(request.clone(), invalid).next().await,
+        provider.generate(&request, invalid).next().await,
         Some(Err(_))
     ));
     assert!(matches!(
@@ -275,14 +275,14 @@ async fn invalid_or_exhausted_dispatch_does_not_signal() -> Result<()> {
         Err(tokio::sync::mpsc::error::TryRecvError::Empty)
     ));
     provider
-        .generate(request.clone(), dispatch)
+        .generate(&request, dispatch)
         .collect::<Vec<_>>()
         .await
         .into_iter()
         .collect::<Result<Vec<_>>>()?;
     assert_eq!(received.try_recv(), Ok(dispatch));
     assert!(matches!(
-        provider.generate(request, dispatch).next().await,
+        provider.generate(&request, dispatch).next().await,
         Some(Err(_))
     ));
     assert!(matches!(
@@ -345,7 +345,7 @@ async fn reconciliation_preserves_unrecoverable_and_incomplete_replies() -> Resu
         ]);
     let (request, dispatch) = request()?;
     provider
-        .generate(request, dispatch)
+        .generate(&request, dispatch)
         .collect::<Vec<_>>()
         .await
         .into_iter()
@@ -370,7 +370,7 @@ async fn reconciliation_rejects_unknown_operations_and_steps_without_consuming_r
         }]);
     let (request, dispatch) = request()?;
     provider
-        .generate(request, dispatch)
+        .generate(&request, dispatch)
         .collect::<Vec<_>>()
         .await
         .into_iter()
@@ -487,7 +487,7 @@ async fn reconciliation_keeps_the_original_request_binding() -> Result<()> {
         }]);
     let (request, dispatch) = request()?;
     provider
-        .generate(request, dispatch)
+        .generate(&request, dispatch)
         .collect::<Vec<_>>()
         .await
         .into_iter()
@@ -553,7 +553,7 @@ async fn unavailable_accounting_still_records_and_replays_generation() -> Result
     assert!(matches!(provider.count_tokens(&request).await,
         Err(crate::Error::Unsupported(message)) if message == "selected model token counting is unavailable"));
     let events = provider
-        .generate(request, dispatch)
+        .generate(&request, dispatch)
         .collect::<Vec<_>>()
         .await
         .into_iter()

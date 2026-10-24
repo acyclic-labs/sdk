@@ -36,7 +36,7 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
     let local = registry.resolve("local/m")?;
     let (request, dispatch) = request(&local)?;
     local
-        .generate(request, dispatch)
+        .generate(&request, dispatch)
         .try_collect::<Vec<_>>()
         .await?;
     assert!(

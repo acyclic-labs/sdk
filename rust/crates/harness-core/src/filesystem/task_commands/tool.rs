@@ -165,12 +165,20 @@ where
         }
     }
 }
-pub(super) async fn was_dispatched(
-    journal: &dyn ExecutionJournal,
+pub(super) async fn was_dispatched<P, A, O>(
+    journal: &super::super::FilesystemExecutionJournal<P, A, O>,
     operation: OperationId,
     kind: &str,
     io: Option<&crate::filesystem::PreparationIo>,
-) -> Result<bool> {
+) -> Result<bool>
+where
+    P: StreamProvider + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    if kind == MODEL_TASK_COMMAND_KIND {
+        return journal.model_was_dispatched(operation, io).await;
+    }
     let dispatched = std::sync::atomic::AtomicBool::new(false);
     crate::executor::replay_execution(
         journal,

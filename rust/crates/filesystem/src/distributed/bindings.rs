@@ -26,6 +26,32 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         self.provider.operation_claims()
     }
 
+    fn supports_deferred_durability(&self) -> bool {
+        self.provider.supports_deferred_durability()
+    }
+
+    async fn durability_barrier(
+        &self,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(), AuthorityStoreError> {
+        work.check()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if work.is_native() {
+            let meter = work.native_meter()?;
+            return work
+                .result(self.provider.native_durability_barrier(meter).await)
+                .map(|((), _allocation)| ());
+        }
+        work.charge(WorkCounters {
+            durability_operations: 1,
+            ..WorkCounters::UNCHARGED
+        })?;
+        self.provider
+            .durability_barrier()
+            .await
+            .map_err(map_stream_error)
+    }
+
     fn supports_generation_lineage_prefix(&self) -> bool {
         true
     }

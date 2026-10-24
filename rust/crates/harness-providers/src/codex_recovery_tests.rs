@@ -76,7 +76,7 @@ async fn ordinary_and_native_share_one_retry_budget_for_headers_and_preoutput_ss
                     }
                 }
             } else {
-                let mut events = provider.generate(request, dispatch);
+                let mut events = provider.generate(&request, dispatch);
                 while let Some(event) = events.next().await {
                     match event {
                         Ok(event) => completed |= matches!(event, ModelEvent::Completed { .. }),

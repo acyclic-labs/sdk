@@ -1,8 +1,12 @@
 use crate::*;
 
 mod allocation;
+mod arc;
+mod codec;
 mod reservation;
 pub use allocation::{ReadAllocation, ReadAllocationReservation};
+pub use arc::arc_allocation_bytes;
+pub use codec::{NativeCodecReservation, NativeCodecWork};
 pub use reservation::{NativeByteReservation, NativeOperationReservation};
 
 /// Filesystem-operation allowance owned by one accepted native request.
@@ -65,6 +69,16 @@ pub trait NativeReadMeter: Send + Sync {
     }
     /// Records actual completed codec bytes, including failure prefixes.
     fn record_codec(&self, _encoded: u64, _copied: u64, _hashed: u64) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+    /// Withholds codec allowance before accepting work that must settle later.
+    fn reserve_codec(&self, _maximum: NativeCodecWork) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+    /// Refunds only unused, previously withheld codec allowance.
+    fn cancel_reserved_codec(&self, _unused: NativeCodecWork) {}
+    /// Consumes withheld codec allowance without a cancellation check.
+    fn record_reserved_codec(&self, _actual: NativeCodecWork) -> io::Result<()> {
         Err(io::ErrorKind::Unsupported.into())
     }
     /// Admits and records examined items and actual owned-buffer copies.

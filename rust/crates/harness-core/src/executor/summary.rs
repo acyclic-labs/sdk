@@ -65,6 +65,11 @@ impl StockExecution<'_> {
                 summary_output,
             )),
             compaction: once_cell::sync::OnceCell::new(),
+            records: tokio::sync::Mutex::new(Default::default()),
+            working_context: tokio::sync::OnceCell::new(),
+            working_tail: tokio::sync::Mutex::new(Default::default()),
+            request_cache: tokio::sync::Mutex::new(Default::default()),
+            content_admission: Default::default(),
         };
         let input = TurnInput {
             operation_id,

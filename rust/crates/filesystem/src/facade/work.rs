@@ -80,6 +80,35 @@ impl FsWork for &NativeMaterializationWork {
 /// Receipt-bearing facade result.
 pub type FsResult<T> = MeasuredResult<OperationReceipt<T>, FsError>;
 
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
+    /// Whether authority publication can defer durability within a phase.
+    pub fn supports_deferred_durability(&self) -> bool {
+        self.inner.authority.supports_deferred_durability()
+    }
+
+    /// Seals the authority prefix before a dependent external effect is dispatched.
+    /// Object bytes are already durable before authority publication.
+    pub async fn durability_barrier<W: FsWork>(
+        &self,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<(), FsError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = async {
+            let mut authority = authority_work(&accounting, cancellation)?;
+            let result = self
+                .inner
+                .authority
+                .durability_barrier(&mut authority)
+                .await;
+            record_authority_work(&mut accounting, &authority)?;
+            result.map_err(FsError::from)
+        }
+        .await;
+        work.finish(result, &accounting)
+    }
+}
+
 #[inline]
 pub(super) fn add(
     prior: WorkCounters,

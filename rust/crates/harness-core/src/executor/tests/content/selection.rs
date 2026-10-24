@@ -11,6 +11,10 @@ struct Checks {
 }
 
 impl ExecutionJournal for Checks {
+    fn cache_identity(&self) -> Option<ExecutionJournalCacheId> {
+        self.files.cache_identity()
+    }
+
     fn claim_execution<'a>(
         &'a self,
         operation: OperationId,
@@ -112,6 +116,38 @@ impl ExecutionJournal for Checks {
                 .await
         })
     }
+}
+
+#[tokio::test]
+async fn custom_content_policy_is_called_for_every_retained_message() -> Result<()> {
+    let journal = Checks::default();
+    let request = super::continuation::request(10)?;
+    let stock = uncompacted_executor(
+        request.model.clone(),
+        Arc::new(ScriptedModelProvider::new([])),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    let execution = StockExecution::ordinary(&stock);
+    let mut prepared = crate::model::PreparedModelRequest::prepare(request, stock.limits, None)?;
+    execution
+        .verify_model_request_content(&journal, &mut prepared)
+        .await?;
+    let mut continuation = prepared.into_continuation();
+    continuation.messages().push(ModelMessage {
+        role: ModelRole::User,
+        content: ModelContent::Text("new text".into()),
+    });
+    let mut prepared = continuation.finish(stock.limits, None)?;
+    execution
+        .verify_model_request_content(&journal, &mut prepared)
+        .await?;
+    assert_eq!(
+        journal.contents.lock().unwrap().len(),
+        21,
+        "custom journal content policy skipped historical messages"
+    );
+    Ok(())
 }
 
 fn input(count: usize, text: &str) -> TurnInput {

@@ -343,11 +343,11 @@ impl ModelProvider for ScriptedModelProvider {
 
     fn generate<'a>(
         &'a self,
-        request: PreparedModelRequest,
+        request: &'a PreparedModelRequest,
         dispatch: ModelDispatch,
     ) -> BoxProviderStream<'a, Result<ModelEvent>> {
         if !self.reads_content {
-            return self.answer(request, dispatch);
+            return self.answer(request.clone(), dispatch);
         }
         Box::pin(
             futures::stream::once(async move {
@@ -355,8 +355,8 @@ impl ModelProvider for ScriptedModelProvider {
                     .content
                     .as_ref()
                     .map(|(reader, maximum)| (reader.as_ref(), *maximum));
-                read_request_files(reader, &request).await?;
-                Ok::<_, Error>(self.answer(request, dispatch))
+                read_request_files(reader, request).await?;
+                Ok::<_, Error>(self.answer(request.clone(), dispatch))
             })
             .try_flatten(),
         )

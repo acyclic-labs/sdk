@@ -117,7 +117,7 @@ impl ModelProvider for ModelEffects {
 
     fn generate<'a>(
         &'a self,
-        request: PreparedModelRequest,
+        request: &'a PreparedModelRequest,
         dispatch: ModelDispatch,
     ) -> BoxProviderStream<'a, Result<ModelEvent>> {
         Box::pin(

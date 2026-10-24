@@ -31,7 +31,10 @@ proptest! {
                         ToolFailureKind::PublicationRejected] {
                         let call_id = if empty { "" } else { &call };
                         let mut state = ExecutionSummary { tail: u64::from(initialized), ..ExecutionSummary::default() };
-                        if started { state.tools.insert((step, *blake3::hash(call_id.as_bytes()).as_bytes()), false); }
+                        if started {
+                            state.tools.insert((step, *blake3::hash(call_id.as_bytes()).as_bytes()), false, None)
+                                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                        }
                         let failure = ExecutionEvent::ToolFailed {
                             step, call_id: call_id.into(), reason,
                             cause: crate::executor::ToolFailureCause {
@@ -47,8 +50,8 @@ proptest! {
         }
     }
 
-    // Each newly retained map entry is funded once, whether it starts execution or settles a
-    // pre-admission refusal. Completion of a started call reuses its existing slot.
+    // Compare retained physical storage with ledger changes, including radix branches
+    // and spare vector capacity rather than only the logical key/value sizes.
     #[test]
     fn refused_tools_fund_their_summary_entries(count in 1..24usize, step in any::<u32>()) {
         let io = PreparationIo::from_budget(
@@ -58,6 +61,7 @@ proptest! {
         let mut state = ExecutionSummary::default();
         accept(&mut state, ExecutionEvent::Started { request_digest: [1; 32] }).unwrap();
         let before = io.owned_bytes().unwrap();
+        let mut retained = 0i64;
         for index in 0..count {
             let sequence = state.tail + 1;
             let record = ExecutionRecord {
@@ -70,11 +74,17 @@ proptest! {
                     },
                 },
             };
-            state.accept(&record, None, Limits::default(), Some(&io)).unwrap();
+            let mut result = None;
+            let allocation = acyclic_test_support::measure(|| {
+                result = Some(state.accept(&record, None, Limits::default(), Some(&io)));
+            });
+            result.ok_or_else(|| TestCaseError::fail("summary acceptance did not run"))?
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            retained += allocation.bytes_current;
         }
-        let expected = count * (std::mem::size_of::<([u8; 32], (u64, [u8; 32]))>()
-            + std::mem::size_of::<((u32, [u8; 32]), bool)>());
-        prop_assert_eq!(io.owned_bytes().unwrap() - before, expected as u64);
+        let retained = u64::try_from(retained)
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
+        prop_assert_eq!(io.owned_bytes().unwrap() - before, retained);
         prop_assert_eq!(state.tools.len(), count);
     }
 
@@ -108,3 +118,19 @@ proptest! {
         }
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "turn_cost.rs"]
+pub(in crate::filesystem::execution_journal) mod turn_cost;
+
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "recovery_cost.rs"]
+mod recovery_cost;
+
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "dispatch_admission.rs"]
+mod dispatch_admission;
+
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "cache_eviction.rs"]
+mod cache_eviction;

@@ -1,11 +1,20 @@
 use super::*;
 
+#[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
+mod tests;
+
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
     P: StreamProvider,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn invalidate_execution_caches(&mut self) {
+        self.cache_identity = Default::default();
+        *self.verified.get_mut() = SummaryCache::default();
+        *self.conversation_projection.get_mut() = None;
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn original_native_execution_work_matches(
         &self,
@@ -41,6 +50,7 @@ where
         files: Option<Arc<crate::task_volume::TaskFiles<P>>>,
     ) -> Self {
         self.task_files = files;
+        self.invalidate_execution_caches();
         self
     }
 
@@ -85,6 +95,7 @@ where
     #[doc(hidden)]
     pub fn with_turn(mut self, operation: OperationId, turn: OperationId) -> Self {
         self.execution = Some((operation, turn));
+        self.invalidate_execution_caches();
         self
     }
 
@@ -232,6 +243,7 @@ where
             .map(|io| io.take_native_custody(io.owned_since(before)?))
             .transpose()?;
         Ok(Self {
+            cache_identity: Default::default(),
             stream,
             host,
             volume,
@@ -243,7 +255,7 @@ where
             interactions,
             owner: None,
             execution: None,
-            verified: tokio::sync::Mutex::new(ExecutionSummary::default()),
+            verified: tokio::sync::Mutex::new(SummaryCache::default()),
             conversation_projection: tokio::sync::Mutex::new(None),
             history_read_limits: None,
             task_files: None,
@@ -304,6 +316,7 @@ where
                 io,
             },
         )?);
+        self.invalidate_execution_caches();
         Ok(self)
     }
 
@@ -318,6 +331,7 @@ where
             ));
         }
         self.history_read_limits = Some(limits);
+        self.invalidate_execution_caches();
         Ok(self)
     }
 
@@ -325,6 +339,7 @@ where
     #[must_use]
     pub fn with_input_verifier(mut self, verifier: Arc<dyn ContentResidencyVerifier>) -> Self {
         self.input_verifier = Some(verifier);
+        self.invalidate_execution_caches();
         self
     }
 
@@ -334,6 +349,7 @@ where
         })
     }
 
+    #[cfg(test)]
     pub(super) fn path(&self, operation_id: OperationId) -> Result<acyclic_stream::Stream<P>> {
         acyclic_stream::Stream::new(
             Arc::clone(&self.stream),

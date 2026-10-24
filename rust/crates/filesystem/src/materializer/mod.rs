@@ -82,5 +82,7 @@ native_modules! {
 ))]
 mod directory_preparation;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod byte_header_tests;
 #[cfg(test)]
 mod tests;

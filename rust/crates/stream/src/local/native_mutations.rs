@@ -69,6 +69,8 @@ impl LocalStream {
                         let result = provider.commit_inner(request, deadline).await?;
                         if let Some(frame) = frame {
                             stream.persist(frame).await?;
+                        } else {
+                            stream.require_accepted::<true>()?;
                         }
                         Ok(result)
                     }
@@ -96,10 +98,11 @@ impl LocalStream {
                 &original,
                 std::mem::size_of_val(&worker),
             )?;
-            let task = spawn(async move {
+            let deferred = deferred();
+            let task = spawn(DEFERRED.scope(deferred, async move {
                 let _allocation = allocation;
                 worker.await
-            });
+            }));
             task.await.map_err(std::io::Error::other)?
         })
     }
@@ -165,6 +168,8 @@ impl LocalStream {
                         && (matches!(result.0, AppendOutcome::Committed(_)) || retain_conflict)
                     {
                         stream.persist(frame).await?;
+                    } else if replay {
+                        stream.require_accepted::<true>()?;
                     }
                     Ok(result)
                 })

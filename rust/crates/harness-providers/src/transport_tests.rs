@@ -127,7 +127,7 @@ fn model(base_url: &str) -> Result<(ResolvedModel, Arc<Counted>)> {
 
 async fn generate(provider: &ResolvedModel) -> Result<Vec<ModelEvent>> {
     let (prepared, dispatch) = super::request(provider)?;
-    provider.generate(prepared, dispatch).try_collect().await
+    provider.generate(&prepared, dispatch).try_collect().await
 }
 
 fn failure(error: &Error) -> Option<ModelTransportFailure> {
@@ -205,7 +205,7 @@ async fn reset_before_output_is_redelivered_and_after_output_is_final() -> Resul
     let (port, accepted) = serve(vec![Reply::Cut(CHAT, first + 8), Reply::Full(200, CHAT)]).await?;
     let (provider, transport) = model(&format!("http://127.0.0.1:{port}/v1"))?;
     let (prepared, dispatch) = super::request(&provider)?;
-    let mut stream = provider.generate(prepared, dispatch);
+    let mut stream = provider.generate(&prepared, dispatch);
     let mut output = 0;
     let error = loop {
         match stream.next().await {

@@ -9,6 +9,15 @@ pub(in crate::executor) struct StockExecution<'a> {
     pub(in crate::executor) summary: Option<(ContextPipeline, Option<u32>)>,
     /// Resolved on first use, after `context` and `io` are fixed.
     pub(in crate::executor) compaction: once_cell::sync::OnceCell<ResolvedCompaction<'a>>,
+    pub(in crate::executor) records:
+        tokio::sync::Mutex<crate::executor::record_index::RecordIndex<'a>>,
+    pub(in crate::executor) working_context:
+        tokio::sync::OnceCell<Option<crate::executor::working_context::WorkingContext<'a>>>,
+    pub(in crate::executor) working_tail:
+        tokio::sync::Mutex<crate::executor::working_tail::TailCache<'a>>,
+    pub(in crate::executor) request_cache:
+        tokio::sync::Mutex<crate::executor::retained_request::RequestCache<'a>>,
+    pub(in crate::executor) content_admission: crate::executor::ExecutionJournalCacheId,
 }
 
 /// The turn's compaction policy, resolved once from the original IO, with the
@@ -31,6 +40,11 @@ impl<'a> StockExecution<'a> {
             io: None,
             summary: None,
             compaction: once_cell::sync::OnceCell::new(),
+            records: tokio::sync::Mutex::new(Default::default()),
+            working_context: tokio::sync::OnceCell::new(),
+            working_tail: tokio::sync::Mutex::new(Default::default()),
+            request_cache: tokio::sync::Mutex::new(Default::default()),
+            content_admission: Default::default(),
         }
     }
     pub(in crate::executor) fn native_work(&self) -> crate::NativeWork<'_> {

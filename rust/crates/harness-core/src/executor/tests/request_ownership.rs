@@ -1,6 +1,89 @@
 use super::*;
 use proptest::prelude::*;
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn funded_request_and_projection_share_one_owned_history() -> Result<()> {
+    let executor = uncompacted_executor(
+        Model::new("test".into(), "transfer".into(), "1".into(), Value::Null)?,
+        Arc::new(ScriptedModelProvider::new([])),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    for native in [false, true] {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024);
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = if native {
+            PreparationIo::from_native_work(&work)?
+        } else {
+            PreparationIo::from_budget(budget, &cancellation)?
+        };
+        let scope = crate::filesystem::PreparationScope::new(Some(&io))?;
+        let execution = StockExecution {
+            io: scope.io(),
+            ..StockExecution::ordinary(&executor)
+        };
+        let input = ContextInput {
+            input: ModelContent::Text("input".into()),
+            selected_context: None,
+            step: 0,
+            prior_messages: vec![],
+        };
+        let messages: Vec<_> = (0..32)
+            .map(|index| ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text(format!("{index}:{}", "payload".repeat(16))),
+            })
+            .collect();
+        let original = messages.as_ptr();
+        let expected = crate::model::PreparedModelRequest::prepare(
+            execution.request_from_messages(messages.clone())?,
+            executor.limits,
+            None,
+        )?;
+        let context = crate::context::Context {
+            messages,
+            current_input_index: Some(0),
+            ..Default::default()
+        };
+        let (projection, prepared) = execution
+            .prepare_transformed_request(&input, context)
+            .await?;
+        assert_eq!(
+            prepared.request().messages.as_ptr(),
+            original,
+            "native={native}: preparation copied history"
+        );
+        assert!(
+            projection.messages.is_empty(),
+            "projection retained a second transcript"
+        );
+        assert_eq!(prepared.bytes(), expected.bytes());
+        crate::context::validate_projected_messages(
+            &projection,
+            &prepared.request().messages,
+            executor.limits,
+            execution.io,
+        )?;
+        // The former funded path makes another vector and nested text buffers.
+        let copied = crate::model::clone_messages(&prepared.request().messages, execution.io)?;
+        assert_ne!(
+            copied.as_ptr(),
+            original,
+            "negative control reused the request vector"
+        );
+        drop(copied);
+        drop(prepared);
+        drop(projection);
+        drop(execution);
+        drop(scope);
+        assert_eq!(io.owned_bytes()?, 0);
+    }
+    Ok(())
+}
+
 fn buffers(messages: &[ModelMessage]) -> (usize, usize) {
     let ModelContent::Part(ModelContentPart::ToolResult {
         content: crate::model::ToolResultContent::Json { value },

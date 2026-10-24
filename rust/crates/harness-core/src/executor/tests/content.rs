@@ -1,5 +1,6 @@
 use super::*;
 
+mod continuation;
 mod selection;
 
 #[tokio::test]

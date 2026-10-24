@@ -98,20 +98,28 @@ impl futures::Stream for NativeModelStream<'_> {
         this.stream.as_mut().poll_next(cx)
     }
 }
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 impl ModelEvent {
-    /// Logical retained capacity transferred with a native provider event.
-    pub fn logical_owned_bytes(&self) -> Result<u64> {
+    pub(crate) fn retained_owned_bytes(&self) -> Result<u64> {
         let payload = match self {
             Self::Content { delta } | Self::Reasoning { delta } => delta.capacity() as u64,
             Self::MessageCompleted { text } => text.capacity() as u64,
             Self::ReasoningBlock { block } => block.payload_bytes()?,
-            Self::ToolCall(call) => call.payload_bytes()?,
+            Self::ToolCall(call) => call.retained_payload_bytes()?,
             Self::Completed { metadata } => {
-                crate::executor::json::json_value_logical_owned_bytes(metadata)?
+                crate::executor::json::json_value_retained_owned_bytes(metadata)?
             }
         };
         add(std::mem::size_of::<Self>() as u64, payload)
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl ModelEvent {
+    /// Resident capacity transferred with a native event, including unused
+    /// object-node slots retained until the event's JSON values are destroyed.
+    pub fn logical_owned_bytes(&self) -> Result<u64> {
+        self.retained_owned_bytes()
     }
     /// Decodes a paid SDK event from borrowed provider bytes.
     pub fn decode_with_native_work(
@@ -165,10 +173,12 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
             ))
         })
     }
-    /// Starts one request and emits ordered events.
+    /// Borrows one admitted request and emits ordered events. The stream cannot
+    /// outlive that admission; after dropping it the caller can continue the
+    /// original request without copying its history or encoded prefix.
     fn generate<'a>(
         &'a self,
-        request: PreparedModelRequest,
+        request: &'a PreparedModelRequest,
         dispatch: ModelDispatch,
     ) -> BoxStream<'a, Result<ModelEvent>>;
     /// Reconciles an interrupted run without starting another request.

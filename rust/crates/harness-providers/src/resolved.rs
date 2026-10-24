@@ -211,7 +211,7 @@ impl ModelProvider for ResolvedModel {
 
     fn generate<'a>(
         &'a self,
-        request: PreparedModelRequest,
+        request: &'a PreparedModelRequest,
         dispatch: ModelDispatch,
     ) -> BoxProviderStream<'a, Result<ModelEvent>> {
         crate::dispatch::generate(self, request, dispatch)

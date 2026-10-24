@@ -2,6 +2,67 @@
 use super::*;
 use proptest::prelude::*;
 
+#[test]
+fn continuing_an_admitted_request_transfers_every_history_buffer_at_one_to_one_thousand_messages()
+-> Result<()> {
+    for count in [1, 10, 100, 1_000] {
+        let request = ModelRequest {
+            model: Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)?,
+            messages: (0..count)
+                .map(|index| ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text(format!("retained message {index}")),
+                })
+                .collect(),
+            tools: Vec::new(),
+            max_output_tokens: Some(1),
+        };
+        let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
+        let slots = prepared.request().messages.as_ptr();
+        let strings: Vec<_> = prepared
+            .request()
+            .messages
+            .iter()
+            .map(|message| {
+                let ModelContent::Text(text) = &message.content else {
+                    unreachable!()
+                };
+                text.as_ptr()
+            })
+            .collect();
+        // The old path owns a new vector and duplicates every historical text.
+        // Keep it alive through the comparison so allocator reuse cannot mask it.
+        let copied = clone_request(prepared.request(), None)?;
+        assert_ne!(copied.messages.as_ptr(), slots);
+        let continued = prepared
+            .into_continuation()
+            .finish(Limits::default(), None)?;
+        let continued = continued.request();
+        assert_eq!(continued, &copied);
+        assert_eq!(
+            continued.messages.as_ptr(),
+            slots,
+            "history vector was copied at {count}"
+        );
+        for ((message, copied), original) in
+            continued.messages.iter().zip(&copied.messages).zip(strings)
+        {
+            let (ModelContent::Text(text), ModelContent::Text(copy)) =
+                (&message.content, &copied.content)
+            else {
+                unreachable!()
+            };
+            assert_eq!(
+                text.as_ptr(),
+                original,
+                "history text was copied at {count}"
+            );
+            assert_ne!(copy.as_ptr(), original);
+        }
+    }
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]

@@ -699,7 +699,7 @@ struct PendingModel {
 impl ModelProvider for PendingModel {
     fn generate<'a>(
         &'a self,
-        _: crate::model::PreparedModelRequest,
+        _: &'a crate::model::PreparedModelRequest,
         _: crate::model::ModelDispatch,
     ) -> acyclic_stream::BoxProviderStream<'a, Result<crate::model::ModelEvent>> {
         self.generated.fetch_add(1, Ordering::SeqCst);

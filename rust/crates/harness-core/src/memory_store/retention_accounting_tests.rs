@@ -24,8 +24,9 @@ fn seeded_io(
         .map_err(acyclic_fs::FsError::from)?;
     Ok(PreparationIo::Owned {
         budget,
-        work: Box::new(crate::sync::SyncMutex::new((spent, Ok(allocations)))),
+        work: std::sync::Arc::new(crate::sync::SyncMutex::new((spent, Ok(allocations)))),
         cancellation: cancellation.clone(),
+        custody: None,
     })
 }
 

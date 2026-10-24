@@ -60,7 +60,7 @@ pub use model::*;
 mod api;
 pub use api::*;
 mod selection;
-#[cfg(fuzzing)]
+#[cfg(any(fuzzing, feature = "test-support"))]
 pub use selection::verify_native_staging_selection;
 mod restore;
 use restore::*;

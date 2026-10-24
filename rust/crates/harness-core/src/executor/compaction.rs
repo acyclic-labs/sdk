@@ -12,13 +12,14 @@ impl StockExecution<'_> {
     pub(super) async fn compact_response(
         &self,
         journal: &dyn ExecutionJournal,
-        turn: (&TurnInput, u32),
+        turn: (&TurnInput, u32, usize),
         captured: (ResponseProjection, ContextAccounting),
-        context: crate::context::Context,
+        source: (crate::context::Context, bool),
         policy: &crate::context::ThresholdCompaction,
         phase: &mut DispatchPhase,
     ) -> Result<crate::model::PreparedModelRequest> {
-        let (input, step) = turn;
+        let (input, step, prior) = turn;
+        let (context, pre_stage) = source;
         let (projection, accounting) = captured;
         let (through, maximum) = self
             .summary_budget(
@@ -26,6 +27,7 @@ impl StockExecution<'_> {
                 accounting.count,
                 accounting.capacity,
                 &context,
+                pre_stage,
                 policy,
             )
             .await?;
@@ -80,15 +82,29 @@ impl StockExecution<'_> {
                 (&compaction, &reference),
             )
             .await?;
-        let (compacted, request) = if checkpoint.is_some() {
+        let working = if pre_stage && journal.working_checkpoint_authority().is_some() {
+            Some(
+                self.stage_working_cut(
+                    journal,
+                    working_tail::WorkingCompaction {
+                        input,
+                        step,
+                        prior,
+                        source: &context,
+                        retained: &compacted,
+                        compaction: &compaction,
+                    },
+                )
+                .await?,
+            )
+        } else {
+            projection.working
+        };
+        let (compacted, request) = if pre_stage {
             let context_input = ContextInput::copy_for_turn(input, step, &[], self.io)?;
-            let (mut compacted, request) = self
+            let (compacted, request) = self
                 .prepare_transformed_request(&context_input, compacted)
                 .await?;
-            if self.io.is_none() {
-                compacted.messages =
-                    crate::model::clone_messages(&request.request().messages, self.io)?;
-            }
             (compacted, request)
         } else {
             let request = crate::model::PreparedModelRequest::prepare(
@@ -102,6 +118,7 @@ impl StockExecution<'_> {
             context: compacted,
             canonical: projection.canonical,
             checkpoint,
+            working,
         };
         self.finish_compaction(
             journal,
@@ -120,6 +137,7 @@ impl StockExecution<'_> {
         count: crate::context::ModelTokenCount,
         capacity: crate::context::ModelContextCapacity,
         context: &crate::context::Context,
+        pre_stage: bool,
         policy: &crate::context::ThresholdCompaction,
     ) -> Result<(usize, usize)> {
         let canonical_request = crate::model::PreparedModelRequest::prepare(
@@ -127,7 +145,7 @@ impl StockExecution<'_> {
             self.stock.limits,
             self.io,
         )?;
-        let count = if projection.canonical.is_some() {
+        let count = if pre_stage {
             stock_count_tokens(self.stock.provider.as_ref(), &canonical_request, self.io).await?
         } else {
             count
@@ -231,18 +249,26 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
-        compacted: &ResponseProjection,
+        compacted: (&ResponseProjection, &crate::model::PreparedModelRequest),
         compaction: FileRef,
         accounting: &ContextAccounting,
     ) -> Result<()> {
+        let (compacted, request) = compacted;
         let projection_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}:compacted"), work)
         })?;
-        let projection = stage_json(
+        let request_key = with_history_io(self.io, |work| {
+            preparation_format(format_args!("model:{step}:compacted-request"), work)
+        })?;
+        let request = self
+            .stage_response_request(journal, input, step, &request_key, request)
+            .await?;
+        let projection = transcript::stage_projection(
             journal,
             input.operation_id,
             &projection_key,
             compacted,
+            &request,
             self.io,
         )
         .await?;
@@ -314,7 +340,7 @@ impl StockExecution<'_> {
             journal,
             input,
             step,
-            &compacted,
+            (&compacted, &request),
             compaction,
             &ContextAccounting { capacity, count },
         )

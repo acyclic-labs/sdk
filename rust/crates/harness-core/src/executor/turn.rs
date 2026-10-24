@@ -32,6 +32,8 @@ impl StockExecution<'_> {
             .await;
         }
         self.ensure_started(journal, input).await?;
+        self.begin_working_history().await;
+        self.begin_request_continuation().await;
         let mut prior_messages = Vec::new();
         let mut hook_context = Vec::new();
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
@@ -47,6 +49,7 @@ impl StockExecution<'_> {
                     phase,
                 )?
                 .await?;
+            self.retire_working_history(&mut prior_messages).await?;
             let (calls, text, metadata) =
                 self.collect_step_events(input, step, model_events, &mut prior_messages)?;
             if calls.is_empty() {
@@ -72,7 +75,7 @@ impl StockExecution<'_> {
                 }));
             }
             self.retire_step_text(text)?;
-            for (invocation, invocation_index) in calls {
+            for (invocation, invocation_index) in stock_into_iter(calls, self.io)? {
                 match self
                     .resolve_tool_call(
                         journal,
@@ -143,7 +146,7 @@ impl StockExecution<'_> {
         let mut calls = Vec::new();
         let mut text = String::new();
         let mut completed = Value::Null;
-        for event in model_events {
+        for event in stock_into_iter(model_events, self.io)? {
             match event {
                 ModelEvent::Content { delta } if !completed_message => {
                     stock_string_push(

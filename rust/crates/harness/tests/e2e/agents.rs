@@ -95,10 +95,10 @@ impl ModelProvider for Models {
     }
     fn generate<'a>(
         &'a self,
-        request: PreparedModelRequest,
+        request: &'a PreparedModelRequest,
         dispatch: ModelDispatch,
     ) -> BoxProviderStream<'a, Result<ModelEvent>> {
-        let (name, provider) = match self.route(&request) {
+        let (name, provider) = match self.route(request) {
             Ok(value) => value,
             Err(error) => return Box::pin(futures::stream::iter([Err(error)])),
         };
@@ -114,7 +114,7 @@ impl ModelProvider for Models {
                     .content
                     .as_ref()
                     .map(|(reader, maximum)| (reader.as_ref(), *maximum));
-                read_request_files(reader, &request)
+                read_request_files(reader, request)
                     .await
                     .inspect_err(|error| {
                         if matches!(

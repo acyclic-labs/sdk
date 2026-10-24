@@ -452,16 +452,15 @@ impl StockExecution<'_> {
     ) -> Result<ToolInvocationOutcome> {
         let (operation_id, step) = identity;
         let invocation = record.invocation;
-        let claimed = self
-            .claim_tool_invocation(
-                journal,
-                (operation_id, step),
-                &record,
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                context,
-                started,
-            )
-            .await?;
+        let claimed = super::phase::claim(self.claim_tool_invocation(
+            journal,
+            (operation_id, step),
+            &record,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            context,
+            started,
+        ))
+        .await?;
         let execution = self
             .observe_tool_cancellation(
                 journal,
@@ -471,6 +470,14 @@ impl StockExecution<'_> {
                 self.call_tool_executor(tool, context, invocation, claimed),
             )
             .await?;
+        #[cfg(feature = "test-support")]
+        tracing::trace!(
+            target: "acyclic_harness::tool_return",
+            step,
+            executed = claimed,
+            succeeded = execution.as_ref().is_ok_and(|result| result.is_some()),
+            "tool executor returned"
+        );
         let result = match execution {
             Ok(Some(result)) => result,
             Err(error) if error.is_native_failure() => return Err(error),
@@ -802,6 +809,22 @@ impl StockExecution<'_> {
     }
 
     async fn publish_tool_completion(
+        &self,
+        journal: &dyn ExecutionJournal,
+        identity: (OperationId, u32),
+        call_id: &str,
+        result: &ToolResult,
+        projection: &Value,
+    ) -> Result<ToolSettlement<()>> {
+        super::phase::run(
+            journal,
+            self.io,
+            self.publish_tool_completion_inner(journal, identity, call_id, result, projection),
+        )
+        .await
+    }
+
+    async fn publish_tool_completion_inner(
         &self,
         journal: &dyn ExecutionJournal,
         identity: (OperationId, u32),

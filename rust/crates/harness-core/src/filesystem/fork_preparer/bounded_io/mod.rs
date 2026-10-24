@@ -15,7 +15,9 @@ mod codec_properties;
 mod history;
 mod quota;
 mod records;
+mod scope;
 mod sdk;
+pub(crate) use scope::PreparationScope;
 #[cfg(test)]
 mod tests;
 pub(in crate::filesystem) use codec::decode_record;
@@ -26,8 +28,10 @@ pub(crate) use quota::native_decoded;
 pub(crate) use quota::{DecodeReservation, retain_decoded};
 pub use records::PreparationRecord;
 pub use records::UploadRecord;
-pub(crate) use records::preparation_slot_bytes;
 use records::{decode_allowance_error, decode_allowance_with_code};
+pub(crate) use records::{
+    file_map_owned_bytes, preparation_file_record_slot_bytes, preparation_slot_bytes,
+};
 pub(in crate::filesystem) use sdk::{
     content_workspace, create, generation_ref, operation_key, retain,
 };
@@ -40,7 +44,7 @@ pub enum PreparationIo {
         budget: WorkBudget,
         /// Spent work and live owned bytes. This ledger is acquired alone;
         /// callbacks must not acquire another preparation ledger or reenter it.
-        work: Box<
+        work: std::sync::Arc<
             SyncMutex<(
                 WorkCounters,
                 std::result::Result<AllocationLedger, acyclic_fs::WorkError>,
@@ -48,6 +52,8 @@ pub enum PreparationIo {
         >,
         /// Cancellation for this attempt.
         cancellation: CancellationToken,
+        /// An independently owned pool on the shared ledger, when retained by a cache.
+        custody: Option<SyncMutex<u64>>,
     },
     #[cfg(not(target_arch = "wasm32"))]
     /// The original invocation's accounting context.
@@ -113,22 +119,24 @@ impl PreparationIo {
         cancellation.check()?;
         Ok(Self::Owned {
             budget,
-            work: Box::new(SyncMutex::new((
+            work: std::sync::Arc::new(SyncMutex::new((
                 WorkCounters::default(),
                 Ok(AllocationLedger::default()),
             ))),
             cancellation: cancellation.clone(),
+            custody: None,
         })
     }
     pub(crate) fn for_unmeasured(cancellation: &CancellationToken) -> Result<Self> {
         cancellation.check()?;
         Ok(Self::Owned {
             budget: WorkBudget::UNBOUNDED,
-            work: Box::new(SyncMutex::new((
+            work: std::sync::Arc::new(SyncMutex::new((
                 WorkCounters::default(),
                 Ok(AllocationLedger::default()),
             ))),
             cancellation: cancellation.clone(),
+            custody: None,
         })
     }
     /// Uses the original native invocation's ledger and execution lease.
@@ -173,6 +181,83 @@ impl PreparationIo {
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { work, .. } => Some(work),
         }
+    }
+
+    /// Retains cache storage on the caller's ledger with a separate ownership pool.
+    pub(in crate::filesystem) fn retained_pool(&self) -> Result<Self> {
+        self.check_cancellation()?;
+        match self {
+            Self::Owned {
+                budget,
+                work,
+                cancellation,
+                ..
+            } => Ok(Self::Owned {
+                budget: *budget,
+                work: std::sync::Arc::clone(work),
+                cancellation: cancellation.clone(),
+                custody: Some(SyncMutex::new(0)),
+            }),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native { work, .. } => Self::from_native_work(work),
+        }
+    }
+
+    pub(in crate::filesystem) fn shares_ledger(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Owned { work: left, .. }, Self::Owned { work: right, .. }) => {
+                std::sync::Arc::ptr_eq(left, right)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            (Self::Native { work: left, .. }, Self::Native { work: right, .. }) => {
+                left.shares_allocation_context(right)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            _ => false,
+        }
+    }
+
+    /// Updates invocation work without moving retained allocation ownership.
+    pub(in crate::filesystem) fn use_current_context(&mut self, current: &Self) {
+        match (self, current) {
+            (
+                Self::Owned {
+                    budget,
+                    cancellation,
+                    ..
+                },
+                Self::Owned {
+                    budget: current_budget,
+                    cancellation: current_cancellation,
+                    ..
+                },
+            ) => {
+                *budget = *current_budget;
+                *cancellation = current_cancellation.clone();
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            (Self::Native { work, .. }, Self::Native { work: current, .. }) => {
+                *work = current.clone();
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            _ => unreachable!("retained pool was checked against the current ledger"),
+        }
+    }
+
+    pub(in crate::filesystem) fn release_retained_pool(self) {
+        // Native pools release intrinsically. Finite pools share counters but
+        // release only their own claims; unrelated caller storage remains live.
+        if let Self::Owned { work, .. } = &self
+            && self
+                .owned_bytes()
+                .and_then(|bytes| self.release(bytes).map_err(Into::into))
+                .is_err()
+        {
+            work.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .1 = Err(acyclic_fs::WorkError::Overflow);
+        }
+        drop(self);
     }
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn absorb_native_custody(
@@ -247,6 +332,13 @@ impl PreparationIo {
     }
     pub(crate) fn owned_bytes(&self) -> Result<u64> {
         match self {
+            Self::Owned {
+                custody: Some(custody),
+                ..
+            } => custody
+                .lock()
+                .map(|bytes| *bytes)
+                .map_err(|_| self.invalid("preparation custody is poisoned")),
             Self::Owned { work, .. } => work
                 .lock()
                 .map_err(|_| self.invalid("preparation accounting is poisoned"))?
@@ -271,6 +363,7 @@ impl PreparationIo {
                 budget,
                 work,
                 cancellation,
+                ..
             } => {
                 let mut state = work
                     .lock()
@@ -346,6 +439,7 @@ impl PreparationIo {
                 budget,
                 work,
                 cancellation,
+                ..
             } => {
                 let mut state = work
                     .lock()
@@ -395,7 +489,28 @@ impl PreparationIo {
         self.account(|accounting| accounting.remaining())
     }
     pub(crate) fn retain_owned(&self, bytes: u64) -> std::result::Result<(), acyclic_fs::FsError> {
+        let mut pool = match self {
+            Self::Owned {
+                custody: Some(custody),
+                ..
+            } => Some(
+                custody
+                    .lock()
+                    .map_err(|_| acyclic_fs::FsError::PendingMutationAllocationFailed)?,
+            ),
+            _ => None,
+        };
+        let retained = pool
+            .as_ref()
+            .map(|pool| {
+                pool.checked_add(bytes)
+                    .ok_or(acyclic_fs::WorkError::Overflow)
+            })
+            .transpose()?;
         let claim = self.account(|accounting| accounting.claim_owned(bytes, 0))?;
+        if let (Some(pool), Some(retained)) = (pool.as_deref_mut(), retained) {
+            *pool = retained;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let KernelOwnedAllocation::NativeOriginal(mut claim) = claim {
             let Self::Native { custody, .. } = self else {
@@ -416,7 +531,20 @@ impl PreparationIo {
                 budget,
                 work,
                 cancellation,
+                custody,
             } => {
+                let mut pool = custody.as_ref().map(|custody| {
+                    custody
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                });
+                let retained = pool
+                    .as_ref()
+                    .map(|pool| {
+                        pool.checked_sub(bytes)
+                            .ok_or(acyclic_fs::WorkError::Overflow)
+                    })
+                    .transpose()?;
                 let mut state = work
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -425,7 +553,11 @@ impl PreparationIo {
                     .as_mut()
                     .map_err(|error| acyclic_fs::FsError::from(*error))?;
                 KernelAccounting::borrowed_standalone(allocations, spent, *budget, cancellation)
-                    .release_owned(&mut KernelOwnedAllocation::Standalone, bytes)
+                    .release_owned(&mut KernelOwnedAllocation::Standalone, bytes)?;
+                if let (Some(pool), Some(retained)) = (pool.as_deref_mut(), retained) {
+                    *pool = retained;
+                }
+                Ok(())
             }
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { custody, .. } => custody

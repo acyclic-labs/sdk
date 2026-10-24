@@ -118,6 +118,51 @@ pub(crate) fn request_hasher(kind: &[u8]) -> Sha256 {
     hash
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn path_hash_bytes(path: &StreamPath) -> u64 {
+    8 + path.as_str().len() as u64
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn records_hash_bytes(records: &[AppendRecord]) -> u64 {
+    8 + records.iter().map(AppendRecord::hash_bytes).sum::<u64>()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn commit_hash_bytes(request: &CommitRequest) -> u64 {
+    b"acyclic.stream.request.v1\0".len() as u64
+        + b"commit".len() as u64
+        + request
+            .conditions
+            .iter()
+            .map(|condition| match condition {
+                CommitCondition::Head { path, .. } => 1 + path_hash_bytes(path) + 8 + 32,
+                CommitCondition::Tail { path, .. } => 1 + path_hash_bytes(path) + 8,
+                CommitCondition::Absent { path } => 1 + path_hash_bytes(path),
+            })
+            .sum::<u64>()
+        + request
+            .mutations
+            .iter()
+            .map(|mutation| match mutation {
+                CommitMutation::Append { path, records } => {
+                    1 + path_hash_bytes(path) + records_hash_bytes(records)
+                }
+                CommitMutation::Fork {
+                    source,
+                    destination,
+                    records,
+                    ..
+                } => {
+                    1 + path_hash_bytes(source)
+                        + path_hash_bytes(destination)
+                        + 8
+                        + records_hash_bytes(records)
+                }
+            })
+            .sum::<u64>()
+}
+
 pub(crate) fn hash_path(hash: &mut Sha256, path: &StreamPath) {
     hash.update((path.as_str().len() as u64).to_le_bytes());
     hash.update(path.as_str().as_bytes());
@@ -138,7 +183,7 @@ pub(crate) fn hash_records(hash: &mut Sha256, records: &[AppendRecord]) {
             hash.update((attribute.name.len() as u64).to_le_bytes());
             hash.update(attribute.name.as_bytes());
             hash.update((attribute.value.len() as u64).to_le_bytes());
-            hash.update(&attribute.value);
+            hash.update(attribute.value);
         }
     }
 }

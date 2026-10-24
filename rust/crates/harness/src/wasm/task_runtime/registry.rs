@@ -238,51 +238,45 @@ impl ModelProvider for HostModel {
 
     fn generate<'a>(
         &'a self,
-        request: PreparedModelRequest,
+        request: &'a PreparedModelRequest,
         dispatch: ModelDispatch,
     ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-        let request = Arc::new(request);
         // Pull exactly one event per poll. The stock executor owns admission,
         // event limits, cancellation, request identity and durable consumption.
         Box::pin(futures::stream::try_unfold(
             None,
-            move |iterator: Option<HostModelIterator>| {
-                let request = request.clone();
-                async move {
-                    let iterator = match iterator {
-                        Some(iterator) => iterator,
-                        None => self.start(&request, dispatch)?,
-                    };
-                    let next = js_sys::Reflect::get(&iterator.iterator, &JsValue::from_str("next"))
-                        .ok()
-                        .and_then(|value| value.dyn_into::<Function>().ok())
-                        .ok_or_else(|| {
-                            Error::Invalid("host model must return an async iterator".into())
-                        })?;
-                    let pending = next
-                        .call0(&iterator.iterator)
-                        .map_err(|_| Error::Storage("host model stream is uncertain".into()))?;
-                    let item = JsFuture::from(Promise::resolve(&pending))
-                        .await
-                        .map_err(|_| Error::Storage("host model stream is uncertain".into()))?;
-                    let done =
-                        js_sys::Reflect::get(&item, &JsValue::from_str("done")).map_err(|_| {
-                            Error::Invalid("host model iterator result is invalid".into())
-                        })?;
-                    if done.as_bool() == Some(true) {
-                        return Ok(None);
-                    }
-                    if done.as_bool() != Some(false) {
-                        return Err(Error::Invalid(
-                            "host model iterator completion flag is invalid".into(),
-                        ));
-                    }
-                    let value = js_sys::Reflect::get(&item, &JsValue::from_str("value"))
-                        .map_err(|_| Error::Invalid("host model event is missing".into()))?;
-                    let event = from_js(value)
-                        .map_err(|_| Error::Invalid("host model event is invalid".into()))?;
-                    Ok(Some((event, Some(iterator))))
+            move |iterator: Option<HostModelIterator>| async move {
+                let iterator = match iterator {
+                    Some(iterator) => iterator,
+                    None => self.start(request, dispatch)?,
+                };
+                let next = js_sys::Reflect::get(&iterator.iterator, &JsValue::from_str("next"))
+                    .ok()
+                    .and_then(|value| value.dyn_into::<Function>().ok())
+                    .ok_or_else(|| {
+                        Error::Invalid("host model must return an async iterator".into())
+                    })?;
+                let pending = next
+                    .call0(&iterator.iterator)
+                    .map_err(|_| Error::Storage("host model stream is uncertain".into()))?;
+                let item = JsFuture::from(Promise::resolve(&pending))
+                    .await
+                    .map_err(|_| Error::Storage("host model stream is uncertain".into()))?;
+                let done = js_sys::Reflect::get(&item, &JsValue::from_str("done"))
+                    .map_err(|_| Error::Invalid("host model iterator result is invalid".into()))?;
+                if done.as_bool() == Some(true) {
+                    return Ok(None);
                 }
+                if done.as_bool() != Some(false) {
+                    return Err(Error::Invalid(
+                        "host model iterator completion flag is invalid".into(),
+                    ));
+                }
+                let value = js_sys::Reflect::get(&item, &JsValue::from_str("value"))
+                    .map_err(|_| Error::Invalid("host model event is missing".into()))?;
+                let event = from_js(value)
+                    .map_err(|_| Error::Invalid("host model event is invalid".into()))?;
+                Ok(Some((event, Some(iterator))))
             },
         ))
     }

@@ -1,7 +1,7 @@
 use super::*;
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn preparation_output<'a>(
+pub(crate) fn preparation_output<'a>(
     io: Option<&'a PreparationIo>,
     before: u64,
     retained: u64,
@@ -49,6 +49,9 @@ pub(crate) async fn load_model_request(
     limits: Limits,
     io: Option<&PreparationIo>,
 ) -> Result<crate::model::PreparedModelRequest> {
+    if reference.descriptor().media_type() == super::transcript::REQUEST_MEDIA {
+        return super::transcript::load_request(journal, reference, limits, io).await;
+    }
     let bytes = load_json_bytes(journal, reference, io).await?;
     #[cfg(feature = "filesystem")]
     let _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
@@ -67,6 +70,8 @@ pub(crate) fn retain_preparation<T>(
 
 #[doc(hidden)]
 pub fn preparation_digest<T: Serialize>(value: &T, io: Option<&PreparationIo>) -> Result<[u8; 32]> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let _span = tracing::debug_span!("acyclic.harness.preparation.digest").entered();
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
     #[cfg(feature = "filesystem")]

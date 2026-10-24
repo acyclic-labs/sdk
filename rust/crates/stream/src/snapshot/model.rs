@@ -49,10 +49,18 @@ pub(super) fn discard_on_drop() -> bool {
 }
 
 pub(crate) fn take() -> Worker {
+    let mut workers = take_pending();
+    assert_eq!(workers.len(), 1);
+    workers.pop().unwrap()
+}
+
+/// Returns the executor tasks dispatched by the observed consumer poll.
+/// Wake assertions are meaningful only after these independently owned jobs
+/// have had a chance to finish, just as on a running production executor.
+pub(crate) fn take_pending() -> Vec<Worker> {
     EXECUTOR.with(|executor| {
-        let (_, mut workers) = executor.borrow_mut().take().unwrap();
-        assert_eq!(workers.len(), 1);
-        workers.pop().unwrap()
+        let (_, workers) = executor.borrow_mut().take().unwrap();
+        workers
     })
 }
 

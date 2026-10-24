@@ -9,6 +9,7 @@ use std::{
 #[cfg(any(test, not(target_arch = "wasm32")))]
 use crate::MAX_RECORD_BYTES;
 use crate::OwnedBytes as Bytes;
+use crate::preparation::commit_identity;
 use crate::query_sync::{RwLock, watch};
 #[cfg(test)]
 use crate::request::validate_append_size;
@@ -22,7 +23,6 @@ use async_trait::async_trait;
 use futures::{StreamExt as _, stream};
 #[cfg(test)]
 use prost::Message;
-use sha2::{Digest, Sha256};
 
 #[cfg(all(acyclic_loom, feature = "local"))]
 pub(crate) mod parking_model;
@@ -66,6 +66,8 @@ include!("children.rs");
 include!("retained.rs");
 
 include!("replay.rs");
+
+include!("commit_index.rs");
 
 include!("path_state.rs");
 
