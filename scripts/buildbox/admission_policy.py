@@ -6,8 +6,10 @@ from pathlib import Path
 import shutil
 import shlex
 import resource
+import ctypes
 
 LIMIT_ENV = 'BB_CALLER_RLIMITS_JSON'
+RLIM_MAX = (1 << (8 * ctypes.sizeof(ctypes.c_ulong))) - 1
 # Preserve every resource exposed by this kernel/Python, including the five
 # environment-parity limits. Collapse aliases such as OFILE/NOFILE by number.
 LIMIT_NAMES = {number: name for name, number in sorted(vars(resource).items(), reverse=True)
@@ -24,7 +26,7 @@ def parse_limits(raw):
         if not isinstance(value, dict) or value.keys() != capture_limits().keys(): raise ValueError('resource set')
         for pair in value.values():
             if not isinstance(pair, list) or len(pair) != 2: raise ValueError('pair')
-            if any(type(n) is not int or (n < 0 and n != resource.RLIM_INFINITY) for n in pair): raise ValueError('value')
+            if any(type(n) is not int or n > RLIM_MAX or (n < 0 and n != resource.RLIM_INFINITY) for n in pair): raise ValueError('value')
             soft, hard = pair
             if hard != resource.RLIM_INFINITY and (soft == resource.RLIM_INFINITY or soft > hard): raise ValueError('order')
         return value
@@ -38,7 +40,7 @@ def restore_limits(raw):
         for number, name in LIMIT_NAMES.items():
             resource.setrlimit(number, requested[name])
         if capture_limits() != requested: raise ValueError('resource limits changed')
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, OverflowError) as error:
         raise RuntimeError('RLIMIT_RESTORE admission-INFRA: '+str(error)) from error
     return requested
 

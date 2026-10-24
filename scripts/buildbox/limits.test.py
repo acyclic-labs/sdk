@@ -140,8 +140,16 @@ class LimitTests(unittest.TestCase):
         limits = capture_limits()
         self.assertEqual(parse_limits(json.dumps(limits)), limits)
         for bad in [{}, {**limits,'unknown':[0,0]}, {**limits,'RLIMIT_NOFILE':[True,8192]},
-                    {**limits,'RLIMIT_NOFILE':[8192,4096]}, {**limits,'RLIMIT_NOFILE':[-2,-1]}]:
+                    {**limits,'RLIMIT_NOFILE':[8192,4096]}, {**limits,'RLIMIT_NOFILE':[-2,-1]},
+                    {**limits,'RLIMIT_NOFILE':[2**100,2**100]}]:
             with self.assertRaisesRegex(RuntimeError, 'RLIMIT_INVALID admission-INFRA'): parse_limits(json.dumps(bad))
+        bad={**limits,'RLIMIT_NOFILE':[2**100,2**100]}
+        rejected=subprocess.run([sys.executable,str(HERE/'admission_policy.py'),'exec-user','var','--',
+                                 'echo','MUST_NOT_EXECUTE'],env={**os.environ,LIMIT_ENV:json.dumps(bad)},capture_output=True)
+        self.assertEqual(rejected.returncode,224,rejected.stderr.decode());self.assertEqual(rejected.stdout,b'')
+        self.assertIn(b'RLIMIT_INVALID admission-INFRA',rejected.stderr)
+        # The old unchecked conversion escaped as OverflowError / exit 1.
+        with self.assertRaises(OverflowError):resource.setrlimit(resource.RLIMIT_NOFILE,[2**100,2**100])
 
 
 if __name__ == '__main__': unittest.main()
