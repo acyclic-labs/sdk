@@ -387,6 +387,8 @@ where
         file: Option<&FileRef>,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
+        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+        acyclic_differential::record(("content creation verify", 0u64));
         if let Some(bound) = &self.exact_file
             && file != Some(bound)
         {
