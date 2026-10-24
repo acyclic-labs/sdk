@@ -77,8 +77,6 @@ async fn publish_lifecycle(
                     reason: None,
                 },
             },
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;

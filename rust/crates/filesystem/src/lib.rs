@@ -15,6 +15,17 @@ pub use acyclic_auth::addressing;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 acyclic_test_support::counting_allocator!();
 
+#[cfg(test)]
+extern crate self as acyclic_fs;
+
+// These API regressions own memory/local fixtures even when consumers select none.
+#[cfg(test)]
+#[path = "../tests/measured_native_source.rs"]
+mod measured_native_source;
+#[cfg(test)]
+#[path = "../tests/windows_ntfs_perf.rs"]
+mod windows_ntfs_perf;
+
 #[cfg(not(target_arch = "wasm32"))]
 mod wire_service;
 #[cfg(not(target_arch = "wasm32"))]
@@ -26,10 +37,11 @@ pub use wire_service::{
     HostedSourceState,
 };
 
-
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn descriptor_digest() -> String {
-    blake3::hash(acyclic_fs_wire::FILE_DESCRIPTOR_SET).to_hex().to_string()
+    blake3::hash(acyclic_fs_wire::FILE_DESCRIPTOR_SET)
+        .to_hex()
+        .to_string()
 }
 
 #[cfg(test)]
@@ -54,7 +66,6 @@ pub use acyclic_stream::{OperationClaim, OperationClaims};
 
 pub mod accounting;
 #[cfg(test)]
-#[cfg(all(feature = "memory", feature = "distributed"))]
 #[path = "tests/accounting/mod.rs"]
 mod accounting_tests;
 pub mod async_storage;
@@ -63,17 +74,19 @@ pub use collection::{Collection, PublicationHold};
 pub mod cache;
 pub mod cancellation;
 pub mod compat_wire;
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub mod core_state;
+// Unit fixtures use the production memory and local compositions directly.
+// cfg(test) supplies those implementations without a self dev-dependency.
 pub mod demand;
 /// Session filesystem payloads.
 pub mod session;
 pub use demand::DemandError;
-#[cfg(feature = "distributed")]
+#[cfg(any(test, feature = "distributed"))]
 pub mod distributed;
-#[cfg(feature = "distributed")]
+#[cfg(any(test, feature = "distributed"))]
 mod logical_objects;
-#[cfg(feature = "distributed")]
+#[cfg(any(test, feature = "distributed"))]
 pub use logical_objects::LogicalObjectStore;
 pub mod facade;
 #[macro_use]
@@ -94,6 +107,9 @@ pub mod lazy_workspace;
 pub mod lineage;
 mod lock_order;
 pub mod materializer;
+#[cfg(test)]
+#[path = "tests/measured_creation.rs"]
+mod measured_creation;
 #[cfg(test)]
 pub mod memory;
 pub mod merge_driver;
@@ -127,20 +143,19 @@ mod record_store;
 pub mod s3;
 #[cfg(all(feature = "s3-http", not(target_arch = "wasm32")))]
 pub mod s3_http;
-#[cfg(feature = "memory")]
+#[cfg(any(test, feature = "memory"))]
 pub mod simulation;
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod source;
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 mod source_watch;
 pub mod speculation;
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub mod staged_objects;
 pub mod storage;
 pub mod streams_record;
 #[cfg(test)]
-#[cfg(feature = "memory")]
 #[path = "tests/support.rs"]
 pub(crate) mod test_support;
 pub use acyclic_fs_base::text_merge;
@@ -152,28 +167,28 @@ pub mod workspace;
 pub mod workspace_context;
 pub mod workspace_context_wire;
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use acyclic_native_runtime::{RenameMode, durable_rename};
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use acyclic_objects::{LocalDurability as LocalObjectsDurability, LocalObjectsLimits};
 /// Scopes authority writes that survive a crash of this process but wait
 /// for [`LocalFs::flush_deferred_authority`] to survive a power loss.
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use acyclic_stream::deferring_durability as deferring_authority_durability;
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use acyclic_stream::{LocalDurability as LocalStreamDurability, LocalStreamLimits};
 #[cfg(not(target_arch = "wasm32"))]
 pub use async_storage::NativeAuthorityGuard;
 pub use async_storage::{
     AsyncAuthorityStore, AsyncObjectStore, AuthorityAllocation, AuthorityError, AuthorityGuard,
-    AuthorityWork, GenerationFork, GenerationForkSource, PolicyCut, PolicyOwner, PublicationScope, WorkspaceForkCommit,
-    WorkspaceForkOutcome,
+    AuthorityWork, GenerationFork, GenerationForkSource, PolicyCut, PolicyOwner, PublicationScope,
+    WorkspaceForkCommit, WorkspaceForkOutcome,
 };
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use core_state::{DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError};
-#[cfg(feature = "distributed")]
+#[cfg(any(test, feature = "distributed"))]
 pub use distributed::StreamAuthorityStore;
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
@@ -185,12 +200,12 @@ pub use facade::{
     ResolvedDirectoryPage, ResolvedFile, ResolvedFileRangeReadRequest, StagedContent, Volume,
     VolumeInitialization,
 };
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use facade::{
     LocalAuthorityBackend, LocalFs, LocalGarbageCollection, LocalObjectBackend,
     LocalOperationWindowStore, LocalOptions, LocalVolume,
 };
-#[cfg(all(feature = "memory", feature = "distributed"))]
+#[cfg(any(test, all(feature = "memory", feature = "distributed")))]
 pub use facade::{MemoryAuthorityBackend, MemoryFs, MemoryObjectBackend};
 pub use foundation::{
     AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES, AuthorityId, CheckoutId, Digest, DurableCommit, Epoch,
@@ -247,7 +262,7 @@ pub use materializer::{
     NativeWorkReservation, validate_native_preparation_location,
 };
 #[cfg(all(
-    feature = "local",
+    any(test, feature = "local"),
     feature = "native-mount",
     not(target_arch = "wasm32")
 ))]
@@ -329,7 +344,7 @@ pub use operation_window::{
     OperationWindowPhase, OperationWindowReconcile, OperationWindowSnapshot, OperationWindowStore,
     WorkspaceOperationFinish,
 };
-#[cfg(feature = "distributed")]
+#[cfg(any(test, feature = "distributed"))]
 pub use operation_window::{StreamOperationWindowStore, StreamOperationWindowStoreError};
 pub use performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
@@ -343,7 +358,7 @@ pub use s3_http::{
     FilesystemS3Adapter, FilesystemS3Authentication, FilesystemS3Limits, FilesystemS3Principal,
     FilesystemS3Resolver, S3MultipartRetentionLimits, active_s3_multipart_objects,
 };
-#[cfg(feature = "memory")]
+#[cfg(any(test, feature = "memory"))]
 pub use simulation::{
     ScheduledSimulationFault, SimulatedStore, Simulation, SimulationError, SimulationFault,
     SimulationOperation, SimulationOptions, SimulationTrace,

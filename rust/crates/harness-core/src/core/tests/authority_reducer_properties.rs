@@ -2,7 +2,7 @@
 // shared oracle: the fixtures only record observations, the invariants in
 // `oracle` judge them, and a targeted fault proves each invariant load bearing.
 use super::*;
-use acyclic_test_support::differential::oracle::{Observer, Oracle, Stop};
+use acyclic_test_support::differential::oracle::{Observer, Oracle, OracleGroup, Stop};
 use proptest::prelude::*;
 
 const KINDS: [AggregateKind; 5] = [
@@ -30,7 +30,6 @@ enum Case {
         index: u8,
         retries: usize,
         payload: Vec<u8>,
-        success: bool,
     },
 }
 
@@ -50,6 +49,8 @@ enum Fault {
     ReplayAgain,
     /// Rewrites a failure message before the attestation is signed.
     CorruptStatus,
+    /// Independently regenerates the supposedly shared signed prehistory.
+    RebuildPrefix,
 }
 
 /// Effect state as the independent history predicts it or as a reducer shows it.
@@ -118,12 +119,25 @@ fn ok<T, E>(
     }
 }
 
-fn oracle() -> Oracle<Case, Fault, Seen> {
+// Concurrent properties share one immutable declaration and its once-only
+// control qualification. A weak slot never keeps an unused oracle alive.
+fn oracle() -> OracleGroup<Case, Fault, Seen> {
+    use std::sync::{Arc, Mutex, Weak};
+    static SHARED: Mutex<Weak<Oracle<Case, Fault, Seen>>> = Mutex::new(Weak::new());
+    let mut slot = SHARED.lock().expect("oracle declaration slot");
+    let shared = slot.upgrade().unwrap_or_else(|| {
+        let shared = Arc::new(declare_oracle());
+        *slot = Arc::downgrade(&shared);
+        shared
+    });
+    shared.group()
+}
+
+fn declare_oracle() -> Oracle<Case, Fault, Seen> {
     let history = |index, retries| Case::History {
         index,
         retries,
         payload: b"{}".to_vec(),
-        success: false,
     };
     Oracle::declare(run)
         .invariant("history", |seen| match seen {
@@ -177,6 +191,7 @@ fn oracle() -> Oracle<Case, Fault, Seen> {
         })
         .control("history", history(0, 1), Fault::DuplicateAttempt)
         .control("history", history(0, 1), Fault::CorruptStatus)
+        .control("history", history(0, 1), Fault::RebuildPrefix)
         .control("inert", history(0, 1), Fault::ReplayAgain)
         .control("boundary", history(1, 1), Fault::WidenRetry)
         .control("rejection", history(0, 1), Fault::AcceptStale)
@@ -216,8 +231,7 @@ fn run(case: &Case, fault: Option<&Fault>, see: See<'_, '_>) -> std::result::Res
             index,
             retries,
             payload,
-            success,
-        } => effect_history(*index, *retries, payload, *success, fault, see),
+        } => effect_history(*index, *retries, payload, fault, see),
     }
 }
 
@@ -599,14 +613,13 @@ fn attestation_fields(
         .map(drop)
 }
 
-fn effect_history(
+fn effect_prefix(
     index: u8,
     retries: usize,
     payload: &[u8],
-    success: bool,
     fault: Option<Fault>,
     see: See<'_, '_>,
-) -> std::result::Result<(), Stop> {
+) -> std::result::Result<(Effects, EffectAttemptId), Stop> {
     let guarantee = guarantee(index);
     let retryable = guarantee == EffectGuarantee::IdempotentRetry;
     let mut effects = Effects::new(fault);
@@ -657,18 +670,54 @@ fn effect_history(
         effects.rejected(see, 200, resolve(stale))?;
         effects.rejected(see, 200, dispatch(attempt))?;
     }
-    let status = if success {
-        EffectStatus::Succeeded {
-            result: Box::new(request_file(br#"{"receipt":true}"#).unwrap()),
-        }
+    Ok((effects, attempt))
+}
+
+fn effect_history(
+    index: u8,
+    retries: usize,
+    payload: &[u8],
+    fault: Option<Fault>,
+    see: See<'_, '_>,
+) -> std::result::Result<(), Stop> {
+    let (effects, attempt) = effect_prefix(index, retries, payload, fault, see)?;
+    let failed = if fault == Some(Fault::RebuildPrefix) {
+        effect_prefix(index, retries, payload, None, see)?.0
     } else {
-        EffectStatus::Failed {
-            message: "definite failure".into(),
+        Effects {
+            reducer: ok(
+                see,
+                "branch live prehistory",
+                effects.reducer.copy(&mut None),
+            )?,
+            replay: ok(
+                see,
+                "branch replay prehistory",
+                effects.replay.copy(&mut None),
+            )?,
+            history: effects.history.clone(),
+            fault,
         }
     };
-    let resolved = effects.commit(see, Step::Resolve(attempt, status))?;
-    effects.rejected(see, 200, resolved)?;
-    effects.rejected(see, 200, dispatch(EffectAttemptId::from_bytes([99; 16])))
+    see.see(Seen::Agrees {
+        view: "terminal outcomes share the identical signed prehistory",
+        equal: failed.reducer == effects.reducer && failed.replay == effects.replay,
+    })?;
+    for (success, mut branch) in [(false, failed), (true, effects)] {
+        let status = if success {
+            EffectStatus::Succeeded {
+                result: Box::new(request_file(br#"{"receipt":true}"#).unwrap()),
+            }
+        } else {
+            EffectStatus::Failed {
+                message: "definite failure".into(),
+            }
+        };
+        let resolved = branch.commit(see, Step::Resolve(attempt, status))?;
+        branch.rejected(see, 200, resolved)?;
+        branch.rejected(see, 200, dispatch(EffectAttemptId::from_bytes([99; 16])))?;
+    }
+    Ok(())
 }
 
 #[test]
@@ -687,25 +736,26 @@ fn every_effect_attestation_field_is_authenticated() {
     )| oracle.check(&Case::Attestation { payload, key_byte, bit }));
 }
 
-// Each guarantee/outcome owns an independent property suite. This preserves
-// all 64 histories per combination without making one test replay six full
-// cryptographic histories serially for every generated input.
+// Each guarantee owns 64 generated prefixes: 32 below 64 bytes and 32 in
+// 64..128 bytes. These disjoint ranges cover the original payload domain.
+// Both outcomes branch from every prefix, preserving 64 complete histories
+// per guarantee/outcome without independently rebuilding the prehistory.
 macro_rules! effect_history_suite {
-    ($name:ident, $index:expr, $success:expr) => {
+    ($name:ident, $index:expr, $lengths:expr) => {
         #[test]
         fn $name() {
             let oracle = oracle();
-            proptest!(ProptestConfig::with_cases(64), |(
-                retries in 0..7_usize, payload in prop::collection::vec(any::<u8>(), 0..128)
+            proptest!(ProptestConfig::with_cases(32), |(
+                retries in 0..7_usize, payload in prop::collection::vec(any::<u8>(), $lengths)
             )| oracle.check(&Case::History {
-                index: $index, retries, payload, success: $success,
+                index: $index, retries, payload,
             }));
         }
     };
 }
-effect_history_suite!(effect_at_most_once_success_replays_and_restores, 0, true);
-effect_history_suite!(effect_at_most_once_failure_replays_and_restores, 0, false);
-effect_history_suite!(effect_idempotent_success_replays_and_restores, 1, true);
-effect_history_suite!(effect_idempotent_failure_replays_and_restores, 1, false);
-effect_history_suite!(effect_retryable_success_replays_and_restores, 2, true);
-effect_history_suite!(effect_retryable_failure_replays_and_restores, 2, false);
+effect_history_suite!(effect_idempotent_retry_short_payload_outcomes, 0, 0..64);
+effect_history_suite!(effect_idempotent_retry_long_payload_outcomes, 0, 64..128);
+effect_history_suite!(effect_at_most_once_short_payload_outcomes, 1, 0..64);
+effect_history_suite!(effect_at_most_once_long_payload_outcomes, 1, 64..128);
+effect_history_suite!(effect_exactly_once_short_payload_outcomes, 2, 0..64);
+effect_history_suite!(effect_exactly_once_long_payload_outcomes, 2, 64..128);

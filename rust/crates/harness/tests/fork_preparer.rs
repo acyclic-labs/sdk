@@ -185,8 +185,6 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
                     agent: parent_agent,
                 },
             },
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;
@@ -269,8 +267,6 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
                     }),
                 },
             },
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;
@@ -672,8 +668,6 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
                     message: Box::new(later_message),
                 },
             },
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;

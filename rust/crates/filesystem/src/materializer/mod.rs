@@ -52,7 +52,7 @@ native_modules! {
 mod directories;
 #[cfg(all(
     not(target_arch = "wasm32"),
-    any(windows, all(feature = "local", feature = "native-mount"))
+    any(windows, all(any(test, feature = "local"), feature = "native-mount"))
 ))]
 use directories::*;
 #[cfg(not(target_arch = "wasm32"))]
@@ -65,7 +65,7 @@ mod runtime_meter;
 mod stage_state;
 
 #[cfg(all(
-    feature = "local",
+    any(test, feature = "local"),
     feature = "native-mount",
     not(target_arch = "wasm32")
 ))]
@@ -76,7 +76,7 @@ native_modules! {
 }
 
 #[cfg(all(
-    feature = "local",
+    any(test, feature = "local"),
     feature = "native-mount",
     not(target_arch = "wasm32")
 ))]

@@ -13,7 +13,6 @@ use acyclic_harness_conformance::{
     substrate::{self, Actors, remote::Request},
 };
 use acyclic_stream::{BoxProviderFuture, LocalStream};
-use futures::{StreamExt, stream};
 use serde_json::Value;
 use std::{path::PathBuf, sync::Arc};
 
@@ -21,55 +20,89 @@ fn corpus() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../harness/tests/scenarios")
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn corpus_matches_original_driver_and_reports_every_case()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let root = corpus();
+async fn original_corpus(root: PathBuf) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
     let mut paths = vec![];
     scenario_data::discover(&root, &mut paths)?;
     let count = paths.len();
-    let results = stream::iter(paths.into_iter().map(|path| {
-        let root = &root;
-        async move {
-            let mut value = scenario_data::load_value(root, &path)?;
-            let requirements = runner::requirements(&value)?;
-            if requirements == ["executor"] || requirements == ["composer"] {
-                value
-                    .as_object_mut()
-                    .ok_or("missing recipe")?
-                    .remove("driver");
-                let result = if requirements == ["composer"] {
-                    check_local_composer(value).await
-                } else {
-                    check_local(value).await
-                };
-                result.map_err(|e| format!("{}: {e}", path.display()))?;
-            }
-            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    let root = Arc::new(root);
+    let mut tasks = tokio::task::JoinSet::new();
+    let mut paths = paths.into_iter();
+    let concurrency = std::thread::available_parallelism()?.get();
+    loop {
+        while tasks.len() < concurrency {
+            let Some(path) = paths.next() else { break };
+            let root = root.clone();
+            tasks.spawn(async move {
+                let mut value = scenario_data::load_value(&root, &path)?;
+                let requirements = runner::requirements(&value)?;
+                if requirements == ["executor"] || requirements == ["composer"] {
+                    value
+                        .as_object_mut()
+                        .ok_or("missing recipe")?
+                        .remove("driver");
+                    let result = if requirements == ["composer"] {
+                        check_local_composer(value).await
+                    } else {
+                        check_local(value).await
+                    };
+                    result.map_err(|e| format!("{}: {e}", path.display()))?;
+                }
+                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+            });
         }
-    }))
-    .buffer_unordered(std::thread::available_parallelism()?.get())
-    .collect::<Vec<_>>()
-    .await;
-    for result in results {
-        result?;
+        let Some(result) = tasks.join_next().await else {
+            break;
+        };
+        result??;
     }
-    let (report, local) = tokio::join!(
+    Ok(count)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn corpus_matches_original_driver_and_reports_every_case()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    enum Traversal {
+        Original(usize),
+        Hosted(runner::Report),
+        Local(runner::Report),
+    }
+    // These fixtures share no state or observations. Give each traversal its
+    // own runnable task instead of a serial original-driver phase followed by
+    // two CPU-heavy futures polled by one parent. JoinSet owns cancellation on
+    // every error path; all three results must arrive before parity is judged.
+    let mut traversals = tokio::task::JoinSet::new();
+    traversals.spawn(async { original_corpus(corpus()).await.map(Traversal::Original) });
+    traversals.spawn(async {
         runner::run(
-            &root,
-            &substrate::InProcess,
+            &corpus(),
+            Arc::new(substrate::InProcess),
             None,
             std::thread::available_parallelism()?.get(),
-        ),
-        runner::run(
-            &root,
-            &substrate::Local,
-            None,
-            std::thread::available_parallelism()?.get()
         )
-    );
-    let report = report?;
-    let local = local?;
+        .await
+        .map(Traversal::Hosted)
+    });
+    traversals.spawn(async {
+        runner::run(
+            &corpus(),
+            Arc::new(substrate::Local),
+            None,
+            std::thread::available_parallelism()?.get(),
+        )
+        .await
+        .map(Traversal::Local)
+    });
+    let (mut count, mut report, mut local) = (None, None, None);
+    while let Some(result) = traversals.join_next().await {
+        match result?? {
+            Traversal::Original(value) => count = Some(value),
+            Traversal::Hosted(value) => report = Some(value),
+            Traversal::Local(value) => local = Some(value),
+        }
+    }
+    let count = count.ok_or("original traversal did not return its case count")?;
+    let report = report.ok_or("hosted traversal did not return its report")?;
+    let local = local.ok_or("local traversal did not return its report")?;
     for record in &report.records {
         assert_ne!(
             record.status,
@@ -149,7 +182,7 @@ async fn lost_contract_observation_fails_and_filter_never_drops_cases()
         volume,
         bindings,
     };
-    let report = runner::run(&corpus(), &broken, Some("core/text.json"), 1).await?;
+    let report = runner::run(&corpus(), Arc::new(broken), Some("core/text.json"), 1).await?;
     assert_eq!(report.failed, 1);
     assert_eq!(report.passed, 0);
     assert!(!report.success());
@@ -221,7 +254,7 @@ async fn endpoint_bridge_uses_the_same_pinned_package_and_oracles()
             serde_json::to_vec(&value)?,
         )?;
     }
-    let result = runner::run(cases.path(), &host, None, 2).await;
+    let result = runner::run(cases.path(), Arc::new(host), None, 2).await;
     server.abort();
     let report = result?;
     assert_eq!(
@@ -289,7 +322,7 @@ async fn bad_fixture_and_wrong_expected_answer_each_fail_with_a_record()
         r#"{"driver":"typo"}"#,
     )?;
     std::fs::write(directory.path().join("malformed.json"), "{")?;
-    let report = runner::run(directory.path(), &substrate::InProcess, None, 1).await?;
+    let report = runner::run(directory.path(), Arc::new(substrate::InProcess), None, 1).await?;
     assert_eq!(report.records.len(), 3);
     assert_eq!(report.failed, 3);
     assert!(!report.success());
@@ -325,11 +358,11 @@ async fn malformed_known_drivers_fail_before_capability_and_filter_skips()
         include_bytes!("../../harness/tests/scenarios/core/text.json"),
     )?;
     for substrate in [
-        &substrate::Local as &dyn substrate::Substrate,
-        &substrate::InProcess,
+        Arc::new(substrate::Local) as Arc<dyn substrate::Substrate>,
+        Arc::new(substrate::InProcess),
     ] {
         for filter in [None, Some("good")] {
-            let report = runner::run(directory.path(), substrate, filter, 4).await?;
+            let report = runner::run(directory.path(), substrate.clone(), filter, 4).await?;
             assert_eq!(report.records.len(), drivers.len() + 1);
             assert_eq!(report.failed, drivers.len());
             assert_eq!(report.passed, 1);
@@ -390,8 +423,8 @@ async fn client_oracles_reject_mutations_on_both_substrates()
         )?;
     }
     for substrate in [
-        &substrate::Local as &dyn substrate::Substrate,
-        &substrate::InProcess,
+        Arc::new(substrate::Local) as Arc<dyn substrate::Substrate>,
+        Arc::new(substrate::InProcess),
     ] {
         let report = runner::run(directory.path(), substrate, None, 4).await?;
         assert_eq!(report.records.len(), count);
@@ -446,8 +479,8 @@ async fn composer_oracle_mutations_fail_on_both_substrates()
         )?;
     }
     for substrate in [
-        &substrate::Local as &dyn substrate::Substrate,
-        &substrate::InProcess,
+        Arc::new(substrate::Local) as Arc<dyn substrate::Substrate>,
+        Arc::new(substrate::InProcess),
     ] {
         let report = runner::run(directory.path(), substrate, None, 4).await?;
         assert_eq!(report.records.len(), count);

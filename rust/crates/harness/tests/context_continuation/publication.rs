@@ -294,8 +294,6 @@ pub(super) async fn append_private_checkpoint_metadata(
                         }),
                     },
                 },
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None,
             )
             .await?;

@@ -183,5 +183,7 @@ if [ "$windows_required" = 1 ]; then
   gate_windows_runtime_clippy; windows_rc=$?
   [ "$rc" != 0 ] || rc=$windows_rc
 fi
+bash scripts/gate-windows-features.sh "$mode"; windows_features_rc=$?
+[ "$rc" != 0 ] || rc=$windows_features_rc
 echo "GATE_DONE rc=$rc"
 exit "$rc"

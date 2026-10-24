@@ -142,7 +142,6 @@ async fn append(
                 causal_parent: None,
                 action,
             },
-            None,
             &mut None,
         )
         .await?;

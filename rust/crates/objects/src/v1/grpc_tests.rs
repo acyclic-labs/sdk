@@ -529,15 +529,24 @@ async fn exercise_transfer_deadlines(
     let ack = extended
         .put_stream(
             header("beyond-default-budget"),
-            stream::once(async {
-                tokio::time::sleep(Duration::from_secs(31)).await;
-                Ok(acyclic_stream::OwnedBytes::from_static(b"complete-source"))
-            })
-            .boxed()
-            .into(),
+            beyond_default_budget(b"complete-source"),
         )
         .await?;
     assert_eq!(ack.size, 15);
+    // The same source crosses the default deadline. This control ensures the
+    // clock jump exercises the transport's deadline, not just the producer.
+    assert_eq!(
+        client
+            .put_stream(
+                header("beyond-default-refused"),
+                beyond_default_budget(b"complete-source"),
+            )
+            .await
+            .err()
+            .ok_or("default transfer accepted a source beyond its deadline")?
+            .code,
+        wire::ErrorCode::Unavailable
+    );
     assert_eq!(
         short
             .put_stream(header("cancelled-upload"), delayed_upload())
@@ -586,15 +595,7 @@ async fn exercise_multipart_deadlines(
         mutation: None,
     };
     let part = extended
-        .upload_part_stream(
-            header(1),
-            stream::once(async {
-                tokio::time::sleep(Duration::from_secs(31)).await;
-                Ok(acyclic_stream::OwnedBytes::from_static(b"part"))
-            })
-            .boxed()
-            .into(),
-        )
+        .upload_part_stream(header(1), beyond_default_budget(b"part"))
         .await?;
     assert_eq!(part.size, 4);
     let incomplete = stream::iter([Ok(acyclic_stream::OwnedBytes::from_static(b"partial"))])
@@ -633,6 +634,47 @@ async fn exercise_multipart_deadlines(
         .await?;
     Ok(())
 }
+
+fn beyond_default_budget(bytes: &'static [u8]) -> super::UploadBody {
+    stream::once(async move {
+        elapse_transfer_time(std::time::Duration::from_secs(31)).await;
+        Ok(acyclic_stream::OwnedBytes::from_static(bytes))
+    })
+    .boxed()
+    .into()
+}
+
+/// Advance the real transport's Tokio timers while producing the body. Keep
+/// the clock running during socket I/O: an idle paused runtime can otherwise
+/// jump to a network deadline before the OS delivers a ready frame.
+async fn elapse_transfer_time(duration: std::time::Duration) {
+    struct Resume;
+    impl Drop for Resume {
+        fn drop(&mut self) {
+            tokio::time::resume();
+        }
+    }
+    tokio::time::pause();
+    let _resume = Resume;
+    tokio::time::advance(duration).await;
+}
+
+#[tokio::test]
+async fn simulated_transfer_time_advances_and_resumes_even_when_cancelled() {
+    let duration = std::time::Duration::from_secs(31);
+    let before = tokio::time::Instant::now();
+    elapse_transfer_time(duration).await;
+    assert!(tokio::time::Instant::now() - before >= duration);
+    {
+        let advancing = elapse_transfer_time(duration);
+        futures::pin_mut!(advancing);
+        assert!(futures::poll!(advancing).is_pending());
+    }
+    // A missing Drop release leaves the clock paused and this call panics.
+    tokio::time::pause();
+    tokio::time::resume();
+}
+
 async fn exercise_download_deadline(
     client: &GrpcObjects,
     long: &GrpcObjects,

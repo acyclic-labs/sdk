@@ -196,12 +196,7 @@ impl WasmBrowserAggregate {
         to_js(
             &self
                 .inner
-                .execute(
-                    command,
-                    #[cfg(feature = "filesystem")]
-                    None,
-                    &mut None,
-                )
+                .execute(command, &mut None)
                 .await
                 .map_err(js_error)?,
         )

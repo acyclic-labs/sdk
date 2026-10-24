@@ -191,14 +191,7 @@ async fn interaction_request_and_answer_commit_only_after_exact_content_validati
         next.expected_revision = revision as u64;
         next.scope = scope.clone();
         next.action = action;
-        aggregate
-            .execute(
-                next,
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None,
-            )
-            .await?;
+        aggregate.execute(next, &mut None).await?;
     }
     let records = acyclic_stream::Stream::new(client.clone(), authority().stream_path(&mut None)?)?
         .read(0, 4)
@@ -236,14 +229,7 @@ async fn interaction_request_and_answer_commit_only_after_exact_content_validati
         .into(),
     };
     assert!(matches!(
-        aggregate
-            .execute(
-                premature,
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None
-            )
-            .await,
+        aggregate.execute(premature, &mut None).await,
         Err(Error::Conflict(_))
     ));
     assert_eq!(aggregate.reducer().revision(), 4);

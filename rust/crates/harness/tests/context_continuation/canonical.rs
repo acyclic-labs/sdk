@@ -705,8 +705,6 @@ pub(super) async fn assert_checkpoint_tail_source(
                     }),
                 },
             },
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;

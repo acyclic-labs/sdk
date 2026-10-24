@@ -1,4 +1,5 @@
 //! Public named-creation work bounds and failure receipts.
+use crate as acyclic_fs;
 use acyclic_fs::model::{Lifecycle, VolumeConfig};
 use acyclic_fs::{
     CancellationToken, Fs, IdempotencyKey, OperationId, WorkBudget, WorkCounters, WorkspaceError,

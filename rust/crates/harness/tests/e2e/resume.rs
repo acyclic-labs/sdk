@@ -158,7 +158,6 @@ async fn journal<P: StreamProvider + 'static>(
                     agent: identity.agent,
                 },
             },
-            None,
             &mut None,
         )
         .await?;

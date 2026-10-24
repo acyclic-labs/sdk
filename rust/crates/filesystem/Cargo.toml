@@ -82,6 +82,7 @@ base64 = { version = "0.23.1", optional = true }
 crc-fast = { version = "1.10.0", optional = true }
 
 [dev-dependencies]
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["test-support"] }
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
 divan.workspace = true
@@ -169,8 +170,9 @@ typescript = ["dep:tsify", "dep:wasm-bindgen"]
 napi-types = ["dep:napi", "dep:napi-derive"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["local", "test-support"] }
 acyclic-test-support = { path = "../test-support" }
-acyclic-objects = { version = "=0.2.0", path = "../objects" }
+acyclic-objects = { version = "=0.2.0", path = "../objects", features = ["local"] }
 loom = "0.7.2"
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
 tracing-subscriber.workspace = true

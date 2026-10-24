@@ -40,7 +40,7 @@ use crate::foundation::usize_to_u64;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError};
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 use crate::kernel::decode_retention_created;
 
 use crate::kernel::{
@@ -71,7 +71,7 @@ use crate::kernel::{
 pub use crate::kernel::{LiveMutationOutcome, LivePublicationObservation, MergeConflict};
 
 #[cfg(all(
-    feature = "local",
+    any(test, feature = "local"),
     feature = "native-watch",
     not(target_arch = "wasm32")
 ))]
@@ -92,10 +92,10 @@ use crate::storage::{
     PublicationPermit, ReplayLimit, object_digest,
 };
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 use acyclic_native_runtime::OwnershipAnchor;
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 use acyclic_objects::v1::ObjectsProvider as _;
 
 use bytes::Bytes;
@@ -108,12 +108,12 @@ use std::collections::BTreeMap;
 
 use std::mem::size_of;
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 use std::path::{Path, PathBuf};
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 use std::sync::{OnceLock, Weak};
 
 use thiserror::Error;
@@ -122,14 +122,13 @@ mod fork_selection;
 
 #[cfg(all(
     test,
-    feature = "memory",
+    any(test, feature = "memory"),
     feature = "test-support",
     not(target_arch = "wasm32")
 ))]
 mod seeded_memory_tests;
 
 #[cfg(test)]
-#[cfg(feature = "memory")]
 #[path = "../tests/facade/mod.rs"]
 mod tests;
 
@@ -209,7 +208,7 @@ use candidates::PreparedCheckoutRoots;
 use candidates::root_parent_buffer;
 use candidates::root_parent_bytes;
 pub use checkout::Checkout;
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use collection::LocalGarbageCollection;
 pub use content_model::ContentChange;
 pub use content_model::ContentTimes;
@@ -234,26 +233,25 @@ use error::validate_volume_capabilities;
 use extents::regular_range_regions;
 pub use fs::EmbeddedCapabilities;
 pub use fs::Fs;
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 use fs::FsInner;
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use fs::LocalAuthorityBackend;
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use fs::LocalFs;
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use fs::LocalObjectBackend;
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use fs::LocalOperationWindowStore;
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use fs::LocalVolume;
-#[cfg(all(feature = "memory", feature = "distributed"))]
+#[cfg(any(test, all(feature = "memory", feature = "distributed")))]
 pub use fs::MemoryAuthorityBackend;
 #[cfg(test)]
-#[cfg(all(feature = "memory", feature = "distributed"))]
 pub(crate) use fs::MemoryCheckout;
-#[cfg(all(feature = "memory", feature = "distributed"))]
+#[cfg(any(test, all(feature = "memory", feature = "distributed")))]
 pub use fs::MemoryFs;
-#[cfg(all(feature = "memory", feature = "distributed"))]
+#[cfg(any(test, all(feature = "memory", feature = "distributed")))]
 pub use fs::MemoryObjectBackend;
 use generation::MAXIMUM_VOLUME_EVENT_BYTES;
 pub use generation::Volume;
@@ -274,9 +272,9 @@ use join_witness::hash_merge_resolution;
 use lineage::RebaseLineage;
 pub(crate) use lineage::WorkspaceCommonAncestor;
 pub(crate) use lineage::WorkspaceRebaseRequest;
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use local::LocalOptions;
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 #[cfg(test)]
 use local::run_local_initialization;
 use metadata::AuthoredMetadataCache;
@@ -326,5 +324,4 @@ pub(crate) mod test_authority;
 use crate::kernel::{decode_published_generation, decode_volume_created};
 
 #[cfg(test)]
-#[cfg(all(feature = "memory", feature = "distributed"))]
 pub(crate) mod test_fixtures;

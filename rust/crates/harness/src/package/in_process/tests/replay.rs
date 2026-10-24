@@ -24,11 +24,11 @@ async fn replay_seeks_to_a_revision_after_interleaved_non_workflow_publications(
         }
     }
     let future = journal.replay(130, 3, None).unwrap();
-    let (records, _) = match future {
-        crate::store::HistoryContentFuture::Ordinary { future, .. } => future.await.unwrap(),
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        crate::store::HistoryContentFuture::Native(_) => panic!("ordinary callback expected"),
-    };
+    assert!(matches!(
+        &future,
+        crate::store::HistoryContentFuture::Ordinary { .. }
+    ));
+    let (records, _) = future.await.unwrap();
     assert_eq!(records.len(), 3);
     for (record, expected) in records.iter().zip(130..133) {
         assert_eq!(record.prior.revision, expected);

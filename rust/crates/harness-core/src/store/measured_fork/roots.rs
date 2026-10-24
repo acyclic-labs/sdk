@@ -57,7 +57,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         let work = &native;
         let mut io = HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
         let result = aggregate
-            .execute(command.clone(), Some(&owner), &mut Some(&mut io))
+            .execute_with_owner(command.clone(), &owner, &mut Some(&mut io))
             .await?;
         io.return_staged_output()?;
         let custody = io.into_custody()?;
@@ -84,7 +84,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     )?);
     assert_eq!(
         aggregate
-            .execute(command.clone(), Some(&owner), &mut Some(&mut foreign_io))
+            .execute_with_owner(command.clone(), &owner, &mut Some(&mut foreign_io))
             .await
             .err()
             .unwrap()
@@ -97,7 +97,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     )?);
     let available = ordinary.remaining()?.peak_allocation_bytes;
     let replayed = aggregate
-        .execute(command.clone(), Some(&owner), &mut Some(&mut ordinary))
+        .execute_with_owner(command.clone(), &owner, &mut Some(&mut ordinary))
         .await?;
     let ApplyResult::Replayed { event } = &replayed else {
         panic!("existing binding");
@@ -122,7 +122,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     for invalid in [wrong_actor, missing_grant] {
         let mut io = HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?);
         let error = aggregate
-            .execute(invalid, Some(&owner), &mut Some(&mut io))
+            .execute_with_owner(invalid, &owner, &mut Some(&mut io))
             .await
             .err()
             .unwrap();
@@ -140,7 +140,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&denied)?);
     assert!(matches!(
         aggregate
-            .execute(command.clone(), Some(&owner), &mut Some(&mut denied_io))
+            .execute_with_owner(command.clone(), &owner, &mut Some(&mut denied_io))
             .await,
         Err(Error::NativeFilesystem { source, .. }) if matches!(*source,
             acyclic_fs::FsError::NativeKernel(NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
@@ -157,7 +157,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     cancelled_token.cancel();
     assert!(matches!(
         aggregate
-            .execute(command, Some(&owner), &mut Some(&mut cancelled_io))
+            .execute_with_owner(command, &owner, &mut Some(&mut cancelled_io))
             .await,
         Err(Error::NativeWork {
             cause: NativeTreeMaterializationError::Cancelled,

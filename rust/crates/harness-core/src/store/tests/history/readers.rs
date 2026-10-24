@@ -19,14 +19,7 @@ async fn empty_history_cursor_stays_terminal_after_first_publication() -> Result
             .is_empty()
     );
     assert!(matches!(reader.pin(1, None).await, Err(Error::Invalid(_))));
-    writer
-        .execute(
-            command(1)?,
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
-        .await?;
+    writer.execute(command(1)?, &mut None).await?;
     assert!(
         reader
             .read_page(&cursor, limits, None)
@@ -43,7 +36,8 @@ async fn empty_history_cursor_stays_terminal_after_first_publication() -> Result
 }
 
 #[tokio::test]
-async fn cold_history_reader_bounds_pages_across_checkpoints_without_reducer_restore() -> Result<()> {
+async fn cold_history_reader_bounds_pages_across_checkpoints_without_reducer_restore() -> Result<()>
+{
     const EVENTS: u64 = 2 * DEFAULT_PROJECTION_EVENTS as u64 + 2;
     let client = projection_fixture(EVENTS).await?;
     let mut writer = with_content(&client).await?;
@@ -54,8 +48,6 @@ async fn cold_history_reader_bounds_pages_across_checkpoints_without_reducer_res
     writer
         .execute(
             projection_command(u128::from(EVENTS + 1), EVENTS)?,
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;
@@ -194,21 +186,12 @@ async fn incremental_refresh_pins_tail_and_advances_only_bounded_pages() -> Resu
         writer
             .execute(
                 projection_command(u128::from(revision) + 1, revision)?,
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None,
             )
             .await?;
     }
     let through = reader.tail_revision().await?;
-    writer
-        .execute(
-            projection_command(6, 5)?,
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
-        .await?;
+    writer.execute(projection_command(6, 5)?, &mut None).await?;
     assert!(reader.refresh_through(through, 0).await.is_err());
     for revision in [2, 4, 5] {
         assert_eq!(reader.refresh_through(through, 2).await?, revision == 5);

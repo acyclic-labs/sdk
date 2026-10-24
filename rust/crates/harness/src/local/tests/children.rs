@@ -6,7 +6,7 @@ use crate::{
     scheduler::LeaseFence,
 };
 
-#[cfg(all(feature = "native-execution", unix))]
+#[cfg(all(any(test, feature = "native-execution"), unix))]
 #[tokio::test]
 async fn child_pre_tool_hook_uses_its_own_checkout_and_grants() -> Result<()> {
     use crate::task_volume::{ChildFile, Component, FileKey, FileValue, Query};
@@ -199,7 +199,7 @@ async fn child_pre_tool_hook_uses_its_own_checkout_and_grants() -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 #[tokio::test]
 async fn child_request_prepares_a_replayable_lazy_fork_and_runs_under_its_original_owner()
 -> Result<()> {
@@ -648,7 +648,7 @@ async fn child_agent_keeps_its_admission_and_waits_after_each_received_turn() ->
     Ok(())
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 #[tokio::test]
 async fn child_file_admission_replays_under_the_parent_lease_and_shared_depth_limit() -> Result<()>
 {

@@ -393,13 +393,23 @@ exit "$rc"
 )
 
 exec 2>&1
-gate_main_existing "$@" | sed -u '/^GATE_DONE rc=/d'
+gate_main_existing "$@" | sed -u '/^GATE_DONE rc=/d' | tee .gate-main-qualification.out
 main_status=("${PIPESTATUS[@]}")
 main_rc=${main_status[0]}
-if [ "${main_status[1]}" != 0 ]; then main_rc=2; fi
+if [ "${main_status[1]}" != 0 ] || [ "${main_status[2]}" != 0 ]; then main_rc=2; fi
+# The fallback runner predates the MSVC matrix. Require it here unless the
+# selected checked-in main runner already reported the phase's verdict.
+windows_features_rc=0
+if grep -aqE '^GATE_WINDOWS_FEATURES(_START | rc=)' .gate-main-qualification.out; then
+  # An interrupted owned phase remains a refusal, never a second attempt.
+  grep -aq '^GATE_WINDOWS_FEATURES rc=0$' .gate-main-qualification.out || windows_features_rc=1
+else
+  bash scripts/gate-windows-features.sh full; windows_features_rc=$?
+fi
 gate_windows_runtime_clippy; windows_rc=$?
 rc=$main_rc
+[ "$rc" != 0 ] || rc=$windows_features_rc
 [ "$rc" != 0 ] || rc=$windows_rc
-echo "GATE_MAIN_QUALIFICATION main_rc=$main_rc windows_runtime_rc=$windows_rc"
+echo "GATE_MAIN_QUALIFICATION main_rc=$main_rc windows_features_rc=$windows_features_rc windows_runtime_rc=$windows_rc"
 echo "GATE_DONE rc=$rc"
 exit "$rc"

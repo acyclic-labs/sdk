@@ -461,7 +461,7 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider>
         std::mem::size_of::<crate::core::ApplyResult>() as u64,
     )?;
     let applied = aggregate
-        .execute(command, Some(owner), &mut Some(&mut io))
+        .execute_with_owner(command, owner, &mut Some(&mut io))
         .await?;
     drop(applied);
     Ok(())

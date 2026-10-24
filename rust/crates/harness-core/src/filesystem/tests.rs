@@ -729,8 +729,6 @@ async fn conversation_stream_admission_requires_resident_files() -> Result<()> {
                 causal_parent: None,
                 action: Action::BindConversation { agent },
             },
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;
@@ -767,12 +765,7 @@ async fn conversation_stream_admission_requires_resident_files() -> Result<()> {
     };
     assert!(
         aggregate
-            .execute(
-                command(3, missing)?,
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None
-            )
+            .execute(command(3, missing)?, &mut None)
             .await
             .is_err()
     );
@@ -793,23 +786,13 @@ async fn conversation_stream_admission_requires_resident_files() -> Result<()> {
     };
     assert!(
         aggregate
-            .execute(
-                command(5, missing_attachment)?,
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None
-            )
+            .execute(command(5, missing_attachment)?, &mut None)
             .await
             .is_err()
     );
     assert_eq!(aggregate.reducer().revision(), 1);
     aggregate
-        .execute(
-            command(4, message.clone())?,
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
+        .execute(command(4, message.clone())?, &mut None)
         .await?;
     assert_eq!(
         aggregate
@@ -845,8 +828,6 @@ async fn conversation_stream_admission_requires_resident_files() -> Result<()> {
                         message: Box::new(bad_count)
                     },
                 },
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None
             )
             .await
@@ -865,8 +846,6 @@ async fn conversation_stream_admission_requires_resident_files() -> Result<()> {
                     message: Box::new(manifest_message),
                 },
             },
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;

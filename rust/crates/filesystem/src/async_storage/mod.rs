@@ -18,7 +18,7 @@ use std::sync::Arc;
 #[macro_use]
 mod contract;
 mod cache;
-#[cfg(all(feature = "distributed", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "distributed"), not(target_arch = "wasm32")))]
 pub(crate) use cache::owned_read;
 pub use cache::{DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue};
 mod fork;
@@ -27,7 +27,7 @@ pub(crate) use fork::{first_record, seal, workspace_fork};
 mod work;
 #[cfg(not(target_arch = "wasm32"))]
 pub use work::NativeAuthorityGuard;
-#[cfg(feature = "distributed")]
+#[cfg(any(test, feature = "distributed"))]
 pub(crate) use work::authority_error;
 pub use work::{AuthorityAllocation, AuthorityError, AuthorityGuard, AuthorityWork};
 mod authority;
@@ -41,6 +41,5 @@ pub(crate) use read_batch::object_error;
 pub use read_batch::read_many_sequential;
 
 #[cfg(test)]
-#[cfg(feature = "memory")]
 #[path = "../tests/async_storage.rs"]
 mod tests;

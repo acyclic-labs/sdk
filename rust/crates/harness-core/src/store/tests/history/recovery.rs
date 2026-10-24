@@ -6,25 +6,11 @@ async fn bounded_resident_suffix_preserves_cold_retries_and_recovery() -> Result
     let mut writer = with_content(&client).await?;
     writer.set_resident_event_limit(2)?;
     let original = command(1)?;
-    let first = writer
-        .execute(
-            original.clone(),
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
-        .await?;
+    let first = writer.execute(original.clone(), &mut None).await?;
     for identity in 2..=5 {
         let mut next = command(identity)?;
         next.expected_revision = writer.reducer().revision();
-        writer
-            .execute(
-                next,
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None,
-            )
-            .await?;
+        writer.execute(next, &mut None).await?;
     }
     assert_eq!(writer.reducer().archived_through_revision(), 3);
     assert!(matches!(
@@ -36,14 +22,7 @@ async fn bounded_resident_suffix_preserves_cold_retries_and_recovery() -> Result
     assert_eq!(snapshot.events.len(), 2);
     assert_eq!(writer.read_event_at(1, &mut None).await?.0.revision, 1);
     assert!(matches!(
-        writer
-            .execute(
-                original.clone(),
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None
-            )
-            .await?,
+        writer.execute(original.clone(), &mut None).await?,
         ApplyResult::Replayed { .. }
     ));
     let mut restored = StreamAggregate::open(
@@ -59,15 +38,7 @@ async fn bounded_resident_suffix_preserves_cold_retries_and_recovery() -> Result
     .with_content_verifier(Arc::new(TestContent));
     restored.set_resident_event_limit(2)?;
     assert_eq!(restored.reducer().archived_through_revision(), 3);
-    let ApplyResult::Replayed { event } = restored
-        .execute(
-            original,
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
-        .await?
-    else {
+    let ApplyResult::Replayed { event } = restored.execute(original, &mut None).await? else {
         return Err(Error::Invalid("cold retry was not replayed".into()));
     };
     let ApplyResult::Applied {
@@ -80,14 +51,7 @@ async fn bounded_resident_suffix_preserves_cold_retries_and_recovery() -> Result
     assert_eq!(restored.reducer().revision(), 5);
     let mut next = command(6)?;
     next.expected_revision = 5;
-    restored
-        .execute(
-            next,
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
-        .await?;
+    restored.execute(next, &mut None).await?;
     assert_eq!(restored.reducer().archived_through_revision(), 4);
     assert_eq!(
         restored

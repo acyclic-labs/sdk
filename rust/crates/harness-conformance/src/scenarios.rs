@@ -3,7 +3,7 @@ use acyclic_harness_conformance::{
     runner,
     substrate::{self, Substrate},
 };
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 fn main() {
     if let Err(error) = run() {
@@ -32,12 +32,12 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let report = report.ok_or(
         "usage: scenarios --substrate <in-process|local|URL> [--filter TEXT] --report FILE",
     )?;
-    let substrate: Box<dyn Substrate> = match selected.as_str() {
-        "in-process" => Box::new(substrate::InProcess),
-        "local" => Box::new(substrate::Local),
+    let substrate: Arc<dyn Substrate> = match selected.as_str() {
+        "in-process" => Arc::new(substrate::InProcess),
+        "local" => Arc::new(substrate::Local),
         _ => {
             let http = substrate::remote::Http::new(selected)?;
-            Box::new(substrate::Actors {
+            Arc::new(substrate::Actors {
                 runtime: http.clone(),
                 volume: http,
                 bindings: substrate::fixture_bindings(),
@@ -50,7 +50,7 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let concurrency = std::thread::available_parallelism()?.get();
     let result = runtime.block_on(runner::run(
         &root,
-        substrate.as_ref(),
+        substrate,
         filter.as_deref(),
         concurrency,
     ))?;

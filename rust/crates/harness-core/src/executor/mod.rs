@@ -384,7 +384,8 @@ impl ToolFailureKind {
 pub use crate::filesystem::PreparationIo;
 
 #[cfg(not(feature = "filesystem"))]
-pub(crate) type PreparationIo = ();
+#[doc(hidden)]
+pub type PreparationIo = ();
 
 #[doc(hidden)]
 pub fn with_history_io<T>(

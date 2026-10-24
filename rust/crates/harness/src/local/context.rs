@@ -6,9 +6,9 @@ use crate::{
 };
 
 pub(super) mod binding;
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 mod checkout;
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 mod environment;
 mod guidance;
 pub(super) mod skills;
@@ -104,10 +104,10 @@ impl LocalHarness {
                 "context manifest path exceeds path bound".into(),
             ));
         }
-        #[cfg(feature = "hooks")]
+        #[cfg(any(test, feature = "hooks"))]
         let hooks =
             crate::native_settings::NativeSettings::load_hooks(Arc::clone(&self.settings)).await?;
-        #[cfg(feature = "hooks")]
+        #[cfg(any(test, feature = "hooks"))]
         let hook_configuration = if hooks.is_empty() {
             None
         } else {
@@ -122,9 +122,9 @@ impl LocalHarness {
         let (goal, plans) = self.file_guidance(prompt.unwrap_or_default()).await?;
         let manifest =
             ContextManifest::for_files(discovery, Vec::new(), self.tools(), goal, plans)?;
-        #[cfg(any(feature = "native-execution", feature = "hooks"))]
+        #[cfg(any(any(test, feature = "native-execution"), feature = "hooks"))]
         let mut manifest = manifest;
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         if let Some(workspace) = &self.workspace {
             manifest
                 .conventions
@@ -167,7 +167,7 @@ impl LocalHarness {
                 );
             }
         }
-        #[cfg(feature = "hooks")]
+        #[cfg(any(test, feature = "hooks"))]
         manifest.sources.extend(hook_configuration);
         let bytes = manifest.encode(self.limits)?;
         Ok(publisher
@@ -189,7 +189,7 @@ impl LocalHarness {
         maximum: u64,
         publisher: &dyn ContentPublisher,
     ) -> Result<DiscoveredContext> {
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         if self.checkout_context
             && let Some(workspace) = &self.workspace
         {

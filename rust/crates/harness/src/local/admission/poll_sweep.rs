@@ -193,7 +193,7 @@ impl Fixture {
             &code,
             runtime::Configuration {
                 files: files.clone(),
-                #[cfg(feature = "native-execution")]
+                #[cfg(any(test, feature = "native-execution"))]
                 workspace: None,
                 stream: stream.clone(),
                 task_volume: &self.volumes[3],
@@ -249,7 +249,7 @@ impl Fixture {
             context_manifest: None,
             skill_cache: super::super::context::skills::cache(),
             context_read_observer: None,
-            #[cfg(feature = "hooks")]
+            #[cfg(any(test, feature = "hooks"))]
             settings: Arc::new(
                 crate::native_settings::SettingsConfig::new(
                     self.directory.path(),
@@ -277,18 +277,18 @@ impl Fixture {
             admission: StateArc::new(Mutex::new(())),
             publication: StateArc::new(Mutex::new(())),
             drivers: super::super::orphans::Drivers::new(),
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             workspace: None,
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             checkout_context: false,
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             clock: Arc::new(Clock),
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             environment_platform: crate::native_environment::PlatformPolicy::Fixture {
                 os: "fixture".into(),
                 shell: "bash".into(),
             },
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             environment_reads: std::sync::atomic::AtomicUsize::new(0),
         })
     }

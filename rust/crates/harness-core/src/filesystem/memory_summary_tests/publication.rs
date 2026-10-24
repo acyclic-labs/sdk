@@ -142,8 +142,6 @@ async fn summary_preparation(
                     selection: (selection).into(),
                 },
             },
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;
@@ -717,8 +715,6 @@ async fn assert_summary_child_import(
                     agent: seed.child_agent,
                 },
             },
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;
@@ -861,8 +857,6 @@ async fn publish_summary_seed(
                     seed: Box::new(seed.clone()),
                 },
             },
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;

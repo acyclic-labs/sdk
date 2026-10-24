@@ -1,14 +1,11 @@
 use super::*;
-#[cfg(feature = "filesystem")]
-use crate::filesystem::PreparationIo;
 use crate::{NativeCustody, store::HistoryContentFuture, workflow::WorkflowRecord};
+use acyclic_harness_core::executor::PreparationIo;
 use acyclic_stream::OwnedBytes as Bytes;
 use acyclic_stream::{
     CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest, ReadRequest,
     StreamError,
 };
-#[cfg(not(feature = "filesystem"))]
-type PreparationIo = ();
 use futures::TryStreamExt;
 
 const PAGE: u32 = 64;

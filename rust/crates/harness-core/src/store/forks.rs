@@ -198,13 +198,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .await
                 .map(|(result, _)| result);
         }
-        self.execute(
-            command,
-            #[cfg(feature = "filesystem")]
-            None,
-            custody.work(),
-        )
-        .await
+        self.execute(command, custody.work()).await
     }
 
     /// Admits a prepared child through the parent, then binds its fresh conversation to the published seed.

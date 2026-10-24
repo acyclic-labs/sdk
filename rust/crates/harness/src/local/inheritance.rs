@@ -297,7 +297,7 @@ impl LocalHarness {
     /// Resolves a not-yet-admitted task without walking runtime ancestry.
     /// Parented and continuation admissions prepare their inheritance first;
     /// an ordinary root has only its own retained settings and global default.
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     pub(super) async fn admission_model(&self, task: TaskId) -> Result<Model> {
         let mut model = self.command_model(None).await?;
         let selected = match self.own_value(task, "model").await? {
@@ -319,7 +319,7 @@ impl LocalHarness {
     }
     /// The parent already claimed by admission preparation, without requiring
     /// a runnable task or constructing its ephemeral physical tool mount.
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     pub(super) async fn admission_parent(&self, task: TaskId) -> Result<Option<TaskId>> {
         Ok(
             cached_parent(&self.task_files.inner, task, self.limits.file_bytes)

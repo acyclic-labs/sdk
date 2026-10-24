@@ -124,8 +124,6 @@ async fn open(
                     causal_parent: None,
                     action: Action::BindConversation { agent },
                 },
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None,
             )
             .await?;

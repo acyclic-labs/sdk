@@ -274,7 +274,6 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
                 causal_parent: None,
                 action: Action::BindConversation { agent },
             },
-            None,
             &mut None,
         )
         .await?;

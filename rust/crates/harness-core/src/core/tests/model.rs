@@ -186,7 +186,6 @@ async fn native_component_model_transition_work_grows_linearly_with_bounded_resi
                     content: (primed).into(),
                 },
             ),
-            None,
             &mut None,
         )
         .await?;
@@ -245,7 +244,6 @@ async fn native_component_model_transition_work_grows_linearly_with_bounded_resi
                     reference.reducer().revision(),
                     action,
                 ),
-                None,
                 &mut None,
             )
             .await?

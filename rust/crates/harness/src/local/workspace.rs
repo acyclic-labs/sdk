@@ -13,7 +13,7 @@ mod mounts;
 pub(super) mod projection;
 pub(super) mod volumes;
 #[cfg(test)]
-#[cfg(all(feature = "native-execution", unix))]
+#[cfg(all(any(test, feature = "native-execution"), unix))]
 pub(super) use crate::sync::owned::lock_owned;
 pub(super) use crate::sync::owned::{Arc as StateArc, Mutex as AsyncMutex};
 
@@ -228,7 +228,7 @@ impl LocalWorkspace {
     }
 
     #[cfg(test)]
-    #[cfg(all(feature = "native-execution", unix))]
+    #[cfg(all(any(test, feature = "native-execution"), unix))]
     pub(super) async fn current(
         &self,
     ) -> acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend> {

@@ -47,62 +47,29 @@ async fn operation_index_is_atomic_and_recovers_without_duplicate_publication() 
     let submitted = command(1)?;
     client.aggregate_commit_fault.store(3, Ordering::SeqCst);
     assert!(
-        matches!(aggregate.execute(submitted.clone(), #[cfg(feature = "filesystem")] None, &mut None).await,
+        matches!(aggregate.execute(submitted.clone(), &mut None).await,
         Err(Error::Indeterminate(id)) if id == submitted.operation_id)
     );
-    aggregate
-        .execute(
-            submitted.clone(),
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
-        .await?;
+    aggregate.execute(submitted.clone(), &mut None).await?;
     assert_eq!(aggregate.reducer().revision(), 1);
     let mut later = command(2)?;
     later.expected_revision = 1;
-    aggregate
-        .execute(
-            later,
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
-        .await?;
+    aggregate.execute(later, &mut None).await?;
     client.forbid_writes.store(true, Ordering::SeqCst);
     assert!(matches!(
-        aggregate
-            .execute(
-                submitted.clone(),
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None
-            )
-            .await?,
+        aggregate.execute(submitted.clone(), &mut None).await?,
         ApplyResult::Replayed { .. }
     ));
     let mut changed = submitted.clone();
     changed.idempotency_key = IdempotencyKey::new("changed-retry")?;
     assert!(matches!(
-        aggregate
-            .execute(
-                changed,
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None
-            )
-            .await,
+        aggregate.execute(changed, &mut None).await,
         Err(Error::Conflict(_))
     ));
     client.history_read_fault.store(3, Ordering::SeqCst);
     assert!(
         aggregate
-            .execute(
-                submitted.clone(),
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None
-            )
+            .execute(submitted.clone(), &mut None)
             .await
             .is_err()
     );
@@ -161,14 +128,7 @@ async fn reconciliation_observes_a_commit_without_redispatch() -> Result<()> {
     let mut writer = with_content(&client).await?;
     let mut uncertain = with_content(&client).await?;
     let submitted = command(1)?;
-    writer
-        .execute(
-            submitted.clone(),
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
-        .await?;
+    writer.execute(submitted.clone(), &mut None).await?;
     assert!(matches!(
         uncertain.reconcile(&submitted).await?,
         Some(ApplyResult::Applied { .. })

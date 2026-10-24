@@ -8,24 +8,10 @@ async fn stale_writer_does_not_advance_its_projection() -> Result<()> {
     let client = provider;
     let mut first = with_content(&client).await?;
     let mut stale = with_content(&client).await?;
-    first
-        .execute(
-            command(1)?,
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
-        .await?;
+    first.execute(command(1)?, &mut None).await?;
     let rejected = command(2)?;
     assert!(matches!(
-        stale
-            .execute(
-                rejected.clone(),
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None
-            )
-            .await,
+        stale.execute(rejected.clone(), &mut None).await,
         Err(Error::Conflict(_))
     ));
     assert_eq!(stale.reducer().revision(), 0);
@@ -54,8 +40,6 @@ pub(super) async fn projection_fixture(
         writer
             .execute(
                 projection_command(u128::from(revision + 1), revision)?,
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None,
             )
             .await?;
@@ -156,32 +140,13 @@ async fn projection_checkpoint_commit_loss_preserves_original_admission() -> Res
     let mut writer = with_content(&client).await?;
     let original = projection_command(64, 63)?;
     client.aggregate_commit_fault.store(1, Ordering::SeqCst);
-    let _uncertain = writer
-        .execute(
-            original.clone(),
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
-        .await;
+    let _uncertain = writer.execute(original.clone(), &mut None).await;
     drop(writer);
     let mut cold = with_content(&client).await?;
-    cold.execute(
-        original.clone(),
-        #[cfg(feature = "filesystem")]
-        None,
-        &mut None,
-    )
-    .await?;
+    cold.execute(original.clone(), &mut None).await?;
     assert_eq!(cold.reducer().revision(), 64);
     assert!(matches!(
-        cold.execute(
-            original,
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None
-        )
-        .await?,
+        cold.execute(original, &mut None).await?,
         ApplyResult::Replayed { .. }
     ));
     assert_eq!(
@@ -315,8 +280,6 @@ async fn supplied_projection_charges_snapshot_and_suffix_before_io() -> Result<(
         writer
             .execute(
                 projection_command(u128::from(revision + 1), revision)?,
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None,
             )
             .await?;

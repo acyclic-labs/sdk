@@ -88,7 +88,7 @@ async fn source(
     text: Option<&str>,
     checkout: bool,
 ) -> Result<()> {
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     if checkout {
         let path = harness.workspace().unwrap().path.join(name);
         match text {
@@ -211,7 +211,7 @@ async fn volume_recovery_covers_every_publication_and_lost_acknowledgement() -> 
     Ok(())
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 #[tokio::test]
 async fn checkout_recovery_covers_every_publication_and_lost_acknowledgement() -> Result<()> {
     futures::future::try_join_all((0..5).flat_map(|cut| {

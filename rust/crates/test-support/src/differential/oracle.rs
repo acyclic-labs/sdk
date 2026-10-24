@@ -57,11 +57,15 @@
 //! let oracle: Oracle<u8, (), u8> = Oracle { invariants: Vec::new() };
 //! ```
 use std::{
-    cell::{Cell, OnceCell},
+    cell::Cell,
     collections::BTreeSet,
     fmt::Debug,
     marker::PhantomData,
     panic::{AssertUnwindSafe, catch_unwind},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 /// Returned to the fixture once an event violates an invariant; the fixture
@@ -72,7 +76,8 @@ use std::{
 pub struct Stop;
 
 type Check<E> = fn(&E) -> Result<(), String>;
-type Fixture<I, F, E> = Box<dyn Fn(&I, Option<&F>, &mut Observer<'_, E>) -> Result<(), Stop>>;
+type Fixture<I, F, E> =
+    Box<dyn Fn(&I, Option<&F>, &mut Observer<'_, E>) -> Result<(), Stop> + Send + Sync>;
 
 /// Ordered event sink for one run.
 pub struct Observer<'a, E> {
@@ -157,15 +162,49 @@ pub struct Oracle<I, F, E> {
     invariants: Vec<(&'static str, Check<E>)>,
     controls: Vec<(&'static str, I, F)>,
     run: Fixture<I, F, E>,
-    verified: OnceCell<()>,
+    verified: OnceLock<()>,
+    healthy: AtomicUsize,
+}
+
+/// One caller's healthy-case ownership when an immutable oracle is shared.
+/// Dropping a group with no successful checks fails even if another group ran.
+pub struct OracleGroup<I, F, E> {
+    oracle: Arc<Oracle<I, F, E>>,
     healthy: Cell<usize>,
 }
 
+impl<I: Debug, F: Debug, E: Debug> OracleGroup<I, F, E> {
+    /// Checks a case against the shared controls and records this caller's work.
+    pub fn check(&self, input: &I) {
+        self.oracle.check(input);
+        self.healthy.set(self.healthy.get() + 1);
+    }
+}
+
+impl<I, F, E> Drop for OracleGroup<I, F, E> {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            assert!(
+                self.healthy.get() > 0,
+                "oracle group selected zero healthy cases"
+            );
+        }
+    }
+}
+
 impl<I: Debug, F: Debug, E: Debug> Oracle<I, F, E> {
+    /// Gives a caller its own nonempty-case guard while sharing qualification.
+    pub fn group(self: &Arc<Self>) -> OracleGroup<I, F, E> {
+        OracleGroup {
+            oracle: self.clone(),
+            healthy: Cell::new(0),
+        }
+    }
+
     /// `run` builds its own fixture from the input, applies the fault (if any)
     /// and records every observation in order.
     pub fn declare(
-        run: impl Fn(&I, Option<&F>, &mut Observer<'_, E>) -> Result<(), Stop> + 'static,
+        run: impl Fn(&I, Option<&F>, &mut Observer<'_, E>) -> Result<(), Stop> + Send + Sync + 'static,
     ) -> Builder<I, F, E, Uncontrolled> {
         Builder {
             invariants: Vec::new(),
@@ -189,7 +228,7 @@ impl<I: Debug, F: Debug, E: Debug> Oracle<I, F, E> {
             run.last
         );
         assert!(run.seen > 0, "healthy case {input:?} observed nothing");
-        self.healthy.set(self.healthy.get() + 1);
+        self.healthy.fetch_add(1, Ordering::Relaxed);
     }
 
     fn verify_controls(&self) {
@@ -259,7 +298,10 @@ impl<I: Debug, F: Debug, E: Debug> Oracle<I, F, E> {
 impl<I, F, E> Drop for Oracle<I, F, E> {
     fn drop(&mut self) {
         if !std::thread::panicking() {
-            assert!(self.healthy.get() > 0, "oracle selected zero healthy cases");
+            assert!(
+                self.healthy.load(Ordering::Relaxed) > 0,
+                "oracle selected zero healthy cases"
+            );
         }
     }
 }
@@ -309,8 +351,8 @@ impl<I, F, E> Builder<I, F, E, Controlled> {
             invariants: self.invariants,
             controls: self.controls,
             run: self.run,
-            verified: OnceCell::new(),
-            healthy: Cell::new(0),
+            verified: OnceLock::new(),
+            healthy: AtomicUsize::new(0),
         }
     }
 }

@@ -4,7 +4,6 @@
 //! object identity and may be discarded without changing filesystem results.
 
 #[cfg(test)]
-#[cfg(feature = "memory")]
 use crate::WorkBudget;
 use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue,
@@ -382,7 +381,7 @@ impl<S> CachedObjectStore<S> {
         }
     }
 
-    #[cfg(feature = "distributed")]
+    #[cfg(any(test, feature = "distributed"))]
     pub(crate) fn with_default_options(inner: S) -> Self {
         Self::with_options(inner, ObjectCacheOptions::default())
     }
@@ -747,7 +746,6 @@ mod reads;
 mod provider;
 
 #[cfg(test)]
-#[cfg(feature = "memory")]
 #[path = "tests/cache/mod.rs"]
 mod tests;
 

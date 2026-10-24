@@ -7,7 +7,7 @@ use crate::{
 mod continuations;
 pub(super) mod crash_cuts;
 mod generation;
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 mod skills;
 
 #[tokio::test]
@@ -251,7 +251,7 @@ async fn volume_instructions_are_pinned_before_input_and_refreshed_for_the_next_
     Ok(())
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 #[tokio::test]
 async fn checkout_instructions_survive_source_edits_and_reopen_without_authored_masks() -> Result<()>
 {
@@ -359,7 +359,7 @@ async fn checkout_instructions_survive_source_edits_and_reopen_without_authored_
     Ok(())
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 #[tokio::test]
 async fn invalid_instructions_reject_before_input_publication_or_model_dispatch() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;

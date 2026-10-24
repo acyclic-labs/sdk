@@ -116,7 +116,15 @@ where
             causal_parent: None,
             action,
         };
-        let result = aggregate.0.execute(command, owner, &mut work).await;
+        let result = match owner {
+            Some(owner) => {
+                aggregate
+                    .0
+                    .execute_with_owner(command, owner, &mut work)
+                    .await
+            }
+            None => aggregate.0.execute(command, &mut work).await,
+        };
         drop((aggregate, hold));
         result
     }

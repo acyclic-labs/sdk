@@ -1,8 +1,8 @@
 use super::*;
 
-#[cfg(feature = "local")]
+#[cfg(any(test, feature = "local"))]
 mod prepared;
-#[cfg(feature = "local")]
+#[cfg(any(test, feature = "local"))]
 pub(crate) use prepared::PreparedMaterializationRecord;
 
 #[cfg(windows)]

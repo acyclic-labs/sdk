@@ -1,7 +1,7 @@
 use super::*;
 use futures::stream;
 use tokio::net::TcpListener;
-use tokio_stream::wrappers::TcpListenerStream;
+use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use tonic::transport::Server;
 use tonic::{Code, Request, Response, Status};
 use wire::machines_service_server::{MachinesService, MachinesServiceServer};
@@ -248,8 +248,9 @@ async fn serve_operation_service(
     ),
     Box<dyn std::error::Error + Send + Sync>,
 > {
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let address = listener.local_addr()?;
+    // Contract fixtures keep real HTTP/2 framing and generated RPCs, while
+    // Tokio owns every wakeup. A paused clock cannot outrun kernel socket I/O.
+    let (incoming, connections) = tokio::sync::mpsc::channel(1);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         Server::builder()
@@ -268,13 +269,23 @@ async fn serve_operation_service(
                     Ok(request)
                 },
             ))
-            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+            .serve_with_incoming_shutdown(ReceiverStream::new(connections), async {
                 let _ = shutdown_rx.await;
             })
             .await
     });
-    let channel = TonicEndpoint::from_shared(format!("http://{address}"))?
-        .connect()
+    let channel = TonicEndpoint::from_static("http://contract.fixture")
+        .connect_with_connector(tower::service_fn(move |_| {
+            let incoming = incoming.clone();
+            async move {
+                let (client, server) = tokio::io::duplex(65536);
+                incoming
+                    .send(Ok::<_, std::io::Error>(server))
+                    .await
+                    .map_err(|_| std::io::Error::other("fixture server closed"))?;
+                Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client))
+            }
+        }))
         .await?;
     Ok((
         GrpcProvider::grpc_with_auth(channel, BearerAuth::new("opaque.account+/=")?),

@@ -102,9 +102,9 @@ fn cases() -> PathBuf {
 async fn durable_stream_policy_owner_runs_through_substrate_runner()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for host in [
-        &Streams as &dyn Substrate,
-        &substrate::InProcess,
-        &substrate::Local,
+        Arc::new(Streams) as Arc<dyn Substrate>,
+        Arc::new(substrate::InProcess),
+        Arc::new(substrate::Local),
     ] {
         let report = runner::run(&cases(), host, None, 1).await?;
         assert_eq!(report.skipped, 0);
@@ -120,7 +120,7 @@ async fn durable_stream_policy_owner_runs_through_substrate_runner()
         "expect":{"forked":false,"revoked":true,"policy_version":2}
     }"#,
     )?;
-    let report = runner::run(directory.path(), &Streams, None, 1).await?;
+    let report = runner::run(directory.path(), Arc::new(Streams), None, 1).await?;
     assert_eq!(report.failed, 1);
     assert!(!report.success());
     Ok(())

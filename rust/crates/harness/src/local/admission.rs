@@ -41,7 +41,7 @@ mod goal;
 #[cfg(acyclic_harness_loom)]
 mod model;
 #[cfg(test)]
-#[cfg(all(feature = "native-execution", not(acyclic_harness_loom)))]
+#[cfg(all(any(test, feature = "native-execution"), not(acyclic_harness_loom)))]
 mod poll_sweep;
 #[cfg(test)]
 pub(in crate::local) mod snapshot;
@@ -631,7 +631,7 @@ impl LocalHarness {
     /// including unfinished admission. Consuming the host excludes live borrows;
     /// callers must first join active execution and drop client observations.
     pub async fn disconnect(self) -> Result<()> {
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         if let Some(workspace) = &self.workspace {
             crate::local::workspace::volumes::retire(&workspace.mounts).await?;
         }

@@ -299,8 +299,6 @@ where
                     causal_parent: None,
                     action,
                 },
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None,
             )
             .await?;

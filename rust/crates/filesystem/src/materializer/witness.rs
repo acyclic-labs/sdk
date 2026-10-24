@@ -83,7 +83,7 @@ pub(super) fn decode_native_metadata(
 }
 
 #[cfg(all(
-    feature = "local",
+    any(test, feature = "local"),
     feature = "native-mount",
     not(target_arch = "wasm32")
 ))]

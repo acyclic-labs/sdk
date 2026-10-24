@@ -107,8 +107,6 @@ pub(super) async fn setup() -> Result<RecursiveState> {
                 &grant_scope,
                 Action::BindConversation { agent: root_agent },
             )?,
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;
@@ -190,8 +188,6 @@ pub(super) async fn setup() -> Result<RecursiveState> {
                     }),
                 },
             )?,
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;
@@ -273,8 +269,6 @@ pub(super) async fn setup() -> Result<RecursiveState> {
                     }),
                 },
             )?,
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;

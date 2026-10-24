@@ -1,8 +1,8 @@
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 use super::*;
 
 /// Bounded self-contained local backend options.
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalOptions {
     /// Durable root containing canonical Stream and Objects provider state.
@@ -15,7 +15,7 @@ pub struct LocalOptions {
     pub object_cache: crate::cache::ObjectCacheOptions,
 }
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 impl LocalOptions {
     /// Creates local options with the SDK's bounded backend defaults.
     #[must_use]
@@ -29,7 +29,7 @@ impl LocalOptions {
     }
 }
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub(super) struct LocalRootRegistration {
     pub(super) options: LocalOptions,
     pub(super) live: Weak<FsInner<LocalAuthorityBackend, LocalObjectBackend>>,
@@ -37,10 +37,10 @@ pub(super) struct LocalRootRegistration {
     pub(super) lifecycle: Arc<tokio::sync::Mutex<()>>,
 }
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub(super) type LocalRootRegistry = std::collections::BTreeMap<PathBuf, LocalRootRegistration>;
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 async fn canonical_local_root(
     requested: PathBuf,
     owner: Option<OwnershipAnchor>,
@@ -62,14 +62,14 @@ async fn canonical_local_root(
 
 #[cfg(all(
     test,
-    feature = "local",
+    any(test, feature = "local"),
     not(target_arch = "wasm32"),
     not(acyclic_fs_loom)
 ))]
 #[path = "local_root_tests.rs"]
 mod local_root_tests;
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub(super) fn prepare_local_root_open(
     registry: &mut LocalRootRegistry,
     root: &Path,
@@ -92,7 +92,7 @@ pub(super) fn prepare_local_root_open(
     opening
 }
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub(super) async fn run_local_initialization<T, F, I>(
     ownership: tokio::sync::OwnedMutexGuard<()>,
     initialize: I,
@@ -113,7 +113,7 @@ where
         .map_err(|_| FsError::LocalInitializationWorker)
 }
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 impl<O> Fs<LocalAuthorityBackend, O> {
     /// Flushes the authority frames written under
     pub fn flush_deferred_authority(&self) -> Result<(), acyclic_stream::StreamError> {
@@ -121,7 +121,7 @@ impl<O> Fs<LocalAuthorityBackend, O> {
     }
 }
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     /// Observes release of every provider derived from this local root.
     #[doc(hidden)]

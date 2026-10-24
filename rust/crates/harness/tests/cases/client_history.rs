@@ -69,27 +69,13 @@ async fn follows_later_owner_waiting_without_scheduler_changes() -> Result<()> {
     for (revision, state) in [(0, LifecycleState::Active), (1, LifecycleState::Waiting)] {
         let next = transition(&runtime, revision, state)?;
         if revision == 0 {
-            writer
-                .execute(
-                    next,
-                    #[cfg(feature = "filesystem")]
-                    None,
-                    &mut None,
-                )
-                .await?;
+            writer.execute(next, &mut None).await?;
             continue;
         }
         let mut history = writer.history_reader()?.follow(revision, 65_536).await?;
         assert!(history.next().now_or_never().is_none());
         // No coordinator/scheduler event is published by this owner transition.
-        writer
-            .execute(
-                next.clone(),
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None,
-            )
-            .await?;
+        writer.execute(next.clone(), &mut None).await?;
         let event = history
             .next()
             .now_or_never()
@@ -125,12 +111,7 @@ async fn follow_pushes_individual_ready_records_and_checks_byte_bounds() -> Resu
     .enumerate()
     {
         writer
-            .execute(
-                transition(&runtime, revision as u64, state)?,
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None,
-            )
+            .execute(transition(&runtime, revision as u64, state)?, &mut None)
             .await?;
     }
     let mut bytes = 0;
@@ -219,12 +200,7 @@ async fn client_replay_follows_owner_changes_without_a_scheduler() -> Result<()>
     );
     let mut writer = writer(&client, &runtime).await?;
     writer
-        .execute(
-            transition(&runtime, 0, LifecycleState::Active)?,
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
+        .execute(transition(&runtime, 0, LifecycleState::Active)?, &mut None)
         .await?;
     let mut replay =
         replay_history(&client, &verifier, cursor(0), 65_536, ReplayMode::Follow).await?;
@@ -240,12 +216,7 @@ async fn client_replay_follows_owner_changes_without_a_scheduler() -> Result<()>
         "replay stays live at its cut"
     );
     writer
-        .execute(
-            transition(&runtime, 1, LifecycleState::Waiting)?,
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
+        .execute(transition(&runtime, 1, LifecycleState::Waiting)?, &mut None)
         .await?;
     let waiting = replay
         .next()
@@ -296,12 +267,7 @@ async fn finite_inspection_stops_at_its_opening_cut_while_follow_remains_live() 
         assert!(matches!(absent.next().now_or_never(), Some(None)));
         let mut writer = writer(&client, &runtime).await?;
         writer
-            .execute(
-                transition(&runtime, 0, LifecycleState::Active)?,
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None,
-            )
+            .execute(transition(&runtime, 0, LifecycleState::Active)?, &mut None)
             .await?;
         let mut empty =
             replay_history(&client, &verifier, cursor(1), 65_536, ReplayMode::Snapshot).await?;
@@ -324,12 +290,7 @@ async fn finite_inspection_stops_at_its_opening_cut_while_follow_remains_live() 
             assert!(!first.live);
         }
         writer
-            .execute(
-                transition(&runtime, 1, LifecycleState::Waiting)?,
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None,
-            )
+            .execute(transition(&runtime, 1, LifecycleState::Waiting)?, &mut None)
             .await?;
         if append_before_read {
             let first = page

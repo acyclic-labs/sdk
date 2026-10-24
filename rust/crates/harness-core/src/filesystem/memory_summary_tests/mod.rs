@@ -453,8 +453,6 @@ async fn append_later_summary_parent_messages(
                         }),
                     },
                 },
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None,
             )
             .await?;

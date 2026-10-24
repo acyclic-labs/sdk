@@ -1,9 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { featureSets, featureWorker } from "./check-feature-matrix.mjs";
+import { featureSets, featureWorker, windowsCommands } from "./check-feature-matrix.mjs";
 
 const sets = features => featureSets({ manifest_path: "c/Cargo.toml", features })
   .map(args => args.slice(5).join(" ") || "(defaults)");
+
+test("MSVC checks isolated libraries and all targets for the identical feature matrix", () => {
+  for (const args of featureSets({manifest_path: "c/Cargo.toml", features: {default: ["a"], a: [], b: [], c: ["dep:d"]}})) {
+    const commands = windowsCommands(args);
+    assert.deepEqual(commands.map(command => command.slice(0, 7)), Array(2).fill([
+      "xwin", "check", "--locked", "--manifest-path", "c/Cargo.toml", "--target", "x86_64-pc-windows-msvc",
+    ]));
+    assert.deepEqual(commands.map(command => command[7]), ["--lib", "--all-targets"]);
+    for (const command of commands) assert.deepEqual(command.slice(8), args.slice(5));
+  }
+});
 
 test("checks every distinct feature selection once", () => {
   assert.deepEqual(sets({ default: ["a"], a: [], b: ["dep:x"] }), [

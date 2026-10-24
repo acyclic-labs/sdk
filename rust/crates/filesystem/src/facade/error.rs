@@ -23,35 +23,35 @@ pub enum FsError {
     #[error(transparent)]
     Config(#[from] VolumeConfigError),
     /// Durable local Stream initialization or recovery failed.
-    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
     #[error(transparent)]
     LocalStream(#[from] acyclic_stream::LocalStreamError),
     /// Durable local Objects initialization or recovery failed.
-    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
     #[error(transparent)]
     LocalObjects(#[from] acyclic_objects::v1::local::LocalOpenError),
     /// The canonical filesystem Objects bucket could not be opened.
-    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
     #[error("local filesystem Objects bucket initialization failed: {0}")]
     LocalObjectsBucket(acyclic_objects::v1::Error),
     /// Local provider root setup failed before either canonical provider opened.
-    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
     #[error("local filesystem root setup failed: {0}")]
     LocalRoot(std::io::Error),
     /// The private spill file for pre-publication staging could not be created.
-    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
     #[error("local staging spill file setup failed: {0}")]
     LocalStaging(std::io::Error),
     /// A live process-local engine already owns this root with different limits.
-    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
     #[error("local filesystem root is already open with different options")]
     LocalOptionsConflict,
     /// The bounded local root initialization worker could not complete.
-    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
     #[error("local filesystem initialization worker is unavailable")]
     LocalInitializationWorker,
     /// Immutable-object accelerator bounds are invalid.
-    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
     #[error(transparent)]
     ObjectCacheConfig(#[from] crate::cache::ObjectCacheConfigError),
     /// Checkout behavior is contradictory.

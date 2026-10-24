@@ -251,8 +251,6 @@ async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_resto
                 causal_parent: None,
                 action: Action::BindConversation { agent },
             },
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;
@@ -317,8 +315,6 @@ async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_resto
                         }),
                     },
                 },
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None,
             )
             .await?;
@@ -355,8 +351,6 @@ async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_resto
                         selection: (selection).into(),
                     },
                 },
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None,
             )
             .await?;

@@ -423,10 +423,10 @@ impl LocalHarness {
         let task = accepted(admission, operation)?;
         let handle = self.runtime.harness().attach(task, &definition).await?;
         let commands = self.commands()?;
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         self.advance_with_children(task, &commands, self.task_files.clone(), None)
             .await?;
-        #[cfg(not(feature = "native-execution"))]
+        #[cfg(not(any(test, feature = "native-execution")))]
         Box::pin(crate::package::harness::worker::advance(
             self, task, &commands,
         ))

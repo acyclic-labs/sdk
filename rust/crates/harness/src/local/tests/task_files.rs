@@ -3,7 +3,7 @@ use super::*;
 use crate::task_volume::{Component, FileKey, FileValue, Query, TaskFile};
 use futures::StreamExt as _;
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 #[tokio::test]
 async fn model_text_and_shell_output_share_the_same_turn_after_reopen() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
@@ -453,7 +453,7 @@ async fn agent_file_deadline_uses_the_admission_clock_at_commit() -> Result<()> 
     Ok(())
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 #[tokio::test]
 async fn delegate_dispatch_uses_spawn_and_publishes_a_child_result() -> Result<()> {
     use crate::client::{CommandResolution, CommandTool};

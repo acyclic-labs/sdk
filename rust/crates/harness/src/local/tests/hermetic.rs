@@ -3,7 +3,7 @@ mod feature_policy;
 use super::*;
 use std::path::PathBuf;
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 #[tokio::test]
 async fn default_state_overlap_is_refused_before_checkout_publication() -> Result<()> {
     struct Restore(Option<PathBuf>);
@@ -22,7 +22,7 @@ async fn default_state_overlap_is_refused_before_checkout_publication() -> Resul
     let config = LocalHarnessConfig::new(checkout.path(), (model()?, text()))
         .compaction(crate::context::CompactionPolicy::Disabled)
         .without_default_tools();
-    #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     let config = config.settings(crate::native_settings::SettingsConfig::for_test(
         checkout.path(),
     )?);
@@ -48,7 +48,7 @@ async fn default_state_overlap_is_refused_before_checkout_publication() -> Resul
     Ok(())
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 #[tokio::test]
 async fn explicit_state_overlap_is_refused_before_checkout_publication() -> Result<()> {
     let root = tempfile::tempdir().map_err(super::super::storage)?;
@@ -66,7 +66,7 @@ async fn explicit_state_overlap_is_refused_before_checkout_publication() -> Resu
             .state_directory(state)
             .compaction(crate::context::CompactionPolicy::Disabled)
             .without_default_tools();
-        #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+        #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
         let config = config.settings(crate::native_settings::SettingsConfig::for_test(&checkout)?);
         assert!(matches!(
             LocalHarness::open(config).await,
@@ -134,7 +134,7 @@ async fn opening_without_an_injected_root_owns_temporary_state() -> Result<()> {
         .without_default_tools();
     // Negative control: bypassing preparation cannot enter the per-user root.
     assert!(config.resolved_state_directory().is_err());
-    #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     let config = config.settings(crate::native_settings::SettingsConfig::for_test(
         checkout.path(),
     )?);
@@ -143,7 +143,7 @@ async fn opening_without_an_injected_root_owns_temporary_state() -> Result<()> {
     Ok(())
 }
 
-#[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+#[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
 #[test]
 fn unit_tests_cannot_resolve_the_user_home_or_codex_home() -> Result<()> {
     let checkout = tempfile::tempdir().map_err(super::super::storage)?;
@@ -156,7 +156,7 @@ fn unit_tests_cannot_resolve_the_user_home_or_codex_home() -> Result<()> {
 }
 
 #[test]
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 fn default_state_is_one_directory_per_project_under_the_root() -> Result<()> {
     let root = tempfile::tempdir().map_err(super::super::storage)?;
     let projects = tempfile::tempdir().map_err(super::super::storage)?;
@@ -188,7 +188,7 @@ fn default_state_is_one_directory_per_project_under_the_root() -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 async fn retained_store_lifetime(order: Vec<usize>, retain: bool) -> Result<bool> {
     let checkout = tempfile::tempdir().map_err(super::super::storage)?;
     let mut config =
@@ -233,7 +233,7 @@ async fn retained_store_lifetime(order: Vec<usize>, retain: bool) -> Result<bool
     Ok(valid && !root.exists())
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 mod state_lifetime_properties {
     use super::*;
     use proptest::prelude::*;
@@ -288,7 +288,7 @@ mod state_lifetime_properties {
     }
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 #[tokio::test]
 async fn binding_supplied_stores_without_a_checkout_never_resolves_user_state() -> Result<()> {
     let checkout = tempfile::tempdir().map_err(super::super::storage)?;
@@ -327,7 +327,7 @@ async fn binding_supplied_stores_without_a_checkout_never_resolves_user_state() 
     bound.close().await
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 #[tokio::test]
 async fn an_existing_volume_keeps_its_callers_store_ownership() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
@@ -363,7 +363,7 @@ async fn an_existing_volume_keeps_its_callers_store_ownership() -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 async fn checkout_binding_lifetime(retain: bool) -> Result<bool> {
     let checkout = tempfile::tempdir().map_err(super::super::storage)?;
     let harness = LocalHarness::open(
@@ -413,7 +413,7 @@ async fn checkout_binding_lifetime(retain: bool) -> Result<bool> {
     Ok(retained && !root.exists())
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 #[tokio::test]
 async fn binding_a_checkout_retains_its_state_until_the_shared_store_is_dropped() -> Result<()> {
     assert!(checkout_binding_lifetime(true).await?);
@@ -460,7 +460,7 @@ async fn open_rejects_control_state_inside_the_checkout() -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 #[tokio::test]
 async fn bind_rejects_control_state_inside_the_checkout() -> Result<()> {
     let checkout = tempfile::tempdir().map_err(super::super::storage)?;

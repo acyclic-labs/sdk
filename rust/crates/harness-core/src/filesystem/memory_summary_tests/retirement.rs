@@ -233,8 +233,6 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
                             seed: Box::new(changed)
                         },
                     },
-                    #[cfg(feature = "filesystem")]
-                    None,
                     &mut None
                 )
                 .await,
@@ -276,7 +274,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
             seed: Box::new(seed.clone()),
         },
     };
-    parent.execute(command.clone(), None, &mut None).await?;
+    parent.execute(command.clone(), &mut None).await?;
     drop(parent);
     let mut reopened = crate::store::StreamAggregate::open(
         &storage.stream,
@@ -296,14 +294,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
     .with_fork_verifier(fork_verifier);
     reopened.set_limits(limits)?;
     assert!(matches!(
-        reopened
-            .execute(
-                command,
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None
-            )
-            .await?,
+        reopened.execute(command, &mut None).await?,
         crate::core::ApplyResult::Replayed { .. }
     ));
     let mut count = 0;

@@ -422,7 +422,7 @@ impl CommandCatalog {
     /// Whether `input` selects a command no declared source file defines. Declared
     /// project and user sources can never change such a resolution, so capturing
     /// them would only let unrelated command files block it.
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     pub(crate) fn selects_sourceless(&self, input: &str, maximum_bytes: u64) -> Result<bool> {
         Ok(
             syntax::split(input, maximum_bytes)?.is_some_and(|(name, _)| {

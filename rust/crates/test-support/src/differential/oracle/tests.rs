@@ -112,6 +112,54 @@ fn targeted_controls_and_healthy_cases_pass() {
 }
 
 #[test]
+fn concurrent_checks_qualify_controls_once_and_keep_observations_private() {
+    use std::sync::{
+        Arc, Barrier,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let controls = Arc::new(AtomicUsize::new(0));
+    let healthy = Arc::new(AtomicUsize::new(0));
+    let calls = (controls.clone(), healthy.clone());
+    let oracle = Arc::new(
+        Oracle::declare(move |input: &u8, fault: Option<&()>, see| {
+            let calls = if *input == 1 { &calls.0 } else { &calls.1 };
+            calls.fetch_add(1, Ordering::Relaxed);
+            see.see(fault.is_some())
+        })
+        .invariant("uncorrupted", |corrupted| {
+            if *corrupted {
+                Err("corrupted".into())
+            } else {
+                Ok(())
+            }
+        })
+        .control("uncorrupted", 1, ())
+        .build(),
+    );
+    let ready = Barrier::new(4);
+    std::thread::scope(|scope| {
+        for input in 2..6 {
+            let oracle = &oracle;
+            let ready = &ready;
+            scope.spawn(move || {
+                ready.wait();
+                oracle.check(&input);
+            });
+        }
+    });
+    assert_eq!(
+        controls.load(Ordering::Relaxed),
+        3,
+        "healthy, faulted and assertion-deletion controls run once"
+    );
+    assert_eq!(
+        healthy.load(Ordering::Relaxed),
+        4,
+        "each caller executes its own healthy fixture"
+    );
+}
+
+#[test]
 fn a_control_also_caught_at_its_exposing_event_fails_deletion() {
     rejected(
         &[("total", Fault::Both), ("count", Fault::SkipCount)],
@@ -214,4 +262,18 @@ fn compare_fixes_the_reference_before_the_call_and_reports_the_exposing_event() 
     let panic = catch_unwind(AssertUnwindSafe(|| oracle.check(&9))).expect_err("9 passed");
     let message = panic.downcast_ref::<String>().expect("formatted message");
     assert!(message.contains("at Some((19, 18))"), "{message}");
+}
+
+#[test]
+fn a_group_cannot_borrow_another_groups_healthy_cases() {
+    let oracle = std::sync::Arc::new(doubling());
+    let checked = oracle.group();
+    let empty = oracle.group();
+    checked.check(&5);
+    let failure = catch_unwind(AssertUnwindSafe(|| drop(empty)))
+        .expect_err("an empty group borrowed another group's healthy case");
+    assert_eq!(
+        failure.downcast_ref::<&str>().copied(),
+        Some("oracle group selected zero healthy cases")
+    );
 }

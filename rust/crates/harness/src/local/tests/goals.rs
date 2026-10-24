@@ -54,7 +54,7 @@ async fn a_missing_goal_frame_fails_at_the_execution_tail() -> Result<()> {
 fn cases() -> Result<Vec<Case>> {
     let cases: Vec<Case> =
         serde_json::from_str(include_str!("goals.json")).map_err(super::super::storage)?;
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     let cases = {
         let mounted: Vec<Case> = serde_json::from_str(include_str!("goals/mounted.json"))
             .map_err(super::super::storage)?;
@@ -146,7 +146,7 @@ async fn run(case: Case) -> Result<()> {
         Ok::<_, Error>(admitted)
     };
     let (_, admitted) = futures::future::try_join(execution, frames).await?;
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     if case.tasks > 1 {
         let requests =
             serde_json::to_string(&provider.requests()).map_err(super::super::storage)?;

@@ -32,7 +32,7 @@ impl LocalHarness {
         &self,
         generation: Option<&crate::resources::GenerationRef>,
     ) -> Result<Vec<SkillMetadata>> {
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         if generation.is_none()
             && self.checkout_context
             && let Some(sources) = self.files.skill_sources(&self.journal)?
@@ -73,7 +73,7 @@ impl LocalHarness {
             limits: ContextDiscoveryLimits::default(),
         };
         let mut skills = Vec::new();
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         if let Some(sources) = self.files.skill_sources(&self.journal)? {
             (skills, work) = sources.user_discovery().await?;
         }

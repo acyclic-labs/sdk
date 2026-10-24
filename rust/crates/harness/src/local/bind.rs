@@ -12,13 +12,13 @@ impl LocalHarness {
         checkout: Option<&Path>,
     ) -> Result<Self> {
         config.limits.validate(&mut None)?;
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         if checkout.is_some() {
             config = config.prepare_state()?;
         }
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         let state_owner = config.test_state.clone();
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         let checkout_state = checkout
             .map(|checkout| {
                 owner::separated_directory(&config.resolved_state_directory()?, Some(checkout))
@@ -32,13 +32,13 @@ impl LocalHarness {
                 "existing runtime requires its bound volume".into(),
             ));
         };
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         let skill_directory = checkout_state.as_ref().map_or_else(
             || config.project.root().join("skill-sources"),
             |directory| directory.join("skill-sources"),
         );
         verify_bound_volume(volume, verifier, signed, config.limits.file_bytes)?;
-        #[cfg(feature = "hooks")]
+        #[cfg(any(test, feature = "hooks"))]
         let settings =
             settings::configuration(&config.project, config.settings.take(), config.hermetic)?;
         config.model.0.validate()?;
@@ -60,10 +60,10 @@ impl LocalHarness {
             config.limits.file_bytes,
         )
         .await?;
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         let workspace =
             bound_workspace(checkout, checkout_state, &filesystem, volume, state_owner).await?;
-        #[cfg(not(feature = "native-execution"))]
+        #[cfg(not(any(test, feature = "native-execution")))]
         {
             let _ = filesystem;
             if checkout.is_some() {
@@ -72,7 +72,7 @@ impl LocalHarness {
                 ));
             }
         }
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         let runtime = checkout_runtime(
             runtime,
             workspace.as_ref(),
@@ -82,7 +82,7 @@ impl LocalHarness {
             signed,
         )
         .await?;
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         let files = open::retain_skills(
             files,
             skill_directory,
@@ -100,11 +100,11 @@ impl LocalHarness {
             verifier: verifier.clone(),
             signed: signed.clone(),
             compaction,
-            #[cfg(feature = "hooks")]
+            #[cfg(any(test, feature = "hooks"))]
             settings,
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             workspace,
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             checkout_context: checkout.is_some(),
         }
         .finish())
@@ -116,12 +116,12 @@ impl LocalHarness {
     }
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 fn storage_error(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 async fn bound_workspace(
     checkout: Option<&Path>,
     directory: Option<PathBuf>,
@@ -179,11 +179,11 @@ struct BoundComposition {
     verifier: AuthorityVerifier,
     signed: Scope,
     compaction: crate::context::CompactionPolicy,
-    #[cfg(feature = "hooks")]
+    #[cfg(any(test, feature = "hooks"))]
     settings: Arc<crate::native_settings::SettingsConfig>,
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     workspace: Option<Arc<workspace::LocalWorkspace>>,
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     checkout_context: bool,
 }
 impl BoundComposition {
@@ -197,11 +197,11 @@ impl BoundComposition {
             verifier,
             signed,
             compaction,
-            #[cfg(feature = "hooks")]
+            #[cfg(any(test, feature = "hooks"))]
             settings,
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             workspace,
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             checkout_context,
         } = self;
         let (model, provider) = config.model;
@@ -218,7 +218,7 @@ impl BoundComposition {
             provider,
             context_manifest: config.context_manifest,
             skill_cache: context::skills::cache(),
-            #[cfg(feature = "hooks")]
+            #[cfg(any(test, feature = "hooks"))]
             settings,
             #[cfg(test)]
             context_read_observer: None,
@@ -230,15 +230,15 @@ impl BoundComposition {
             admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
             publication: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
             drivers: super::orphans::Drivers::new(),
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             workspace,
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             checkout_context,
-            #[cfg(all(test, feature = "native-execution"))]
+            #[cfg(test)]
             environment_reads: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             clock: config.clock,
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             environment_platform: config.environment_platform,
         }
     }
@@ -276,7 +276,7 @@ async fn bind_task_files(
     Ok((runtime, task_files))
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 async fn checkout_runtime(
     runtime: LocalTaskRuntime,
     workspace: Option<&Arc<workspace::LocalWorkspace>>,

@@ -212,8 +212,6 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                         result_schema: (invalid_schema).into(),
                     }
                 ),
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None
             )
             .await
@@ -222,7 +220,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
     assert_eq!(aggregate.reducer().revision(), 0);
     let owner = running_owner(stream.clone(), host.clone(), &volume, &issuer, &scope, task).await?;
     aggregate
-        .execute(
+        .execute_with_owner(
             command(
                 68,
                 0,
@@ -230,7 +228,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                     agent: AgentId::from_bytes([61; 16]),
                 },
             ),
-            Some(&owner),
+            &owner,
             &mut None,
         )
         .await?;
@@ -423,8 +421,6 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                             reason: None,
                         },
                     },
-                    #[cfg(feature = "filesystem")]
-                    None,
                     &mut None,
                 )
                 .await?;

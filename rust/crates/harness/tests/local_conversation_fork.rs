@@ -162,8 +162,6 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                         agent: parent_agent,
                     },
                 },
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None,
             )
             .await?;
@@ -229,8 +227,6 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                         }),
                     },
                 },
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None,
             )
             .await?;
@@ -423,8 +419,6 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                         receipt: Box::new(receipt),
                     },
                 },
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None,
             )
             .await?;

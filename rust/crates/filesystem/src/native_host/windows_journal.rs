@@ -349,7 +349,7 @@ pub(crate) fn stat_windows_leaf<W: NativeHostWork>(
     stat_windows_file(&file, volume, work)
 }
 
-#[cfg(any(test, feature = "native-watch"))]
+// Directory creation is available in every native host feature selection.
 pub(crate) fn open_windows_directory<W: NativeHostWork>(
     parent: &Dir,
     name: &[u16],

@@ -20,8 +20,6 @@ async fn exact_historical_open_keeps_admitted_origin_after_later_parent_appends(
         writer
             .execute(
                 projection_command(u128::from(revision + 1), revision)?,
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None,
             )
             .await?;

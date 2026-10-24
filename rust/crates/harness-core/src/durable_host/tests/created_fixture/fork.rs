@@ -102,7 +102,6 @@ impl CreationFixture {
                             agent: parent_agent,
                         },
                     },
-                    None,
                     &mut None,
                 )
                 .await?;

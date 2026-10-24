@@ -11,7 +11,7 @@ fn update_after_agents<'a>(
         if name == "AGENTS.md" {
             instruction(harness, "AGENTS.md", "new agents").await?;
             instruction(harness, "CLAUDE.md", "new claude").await?;
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             for (name, bytes) in [("AGENTS.md", "new agents"), ("CLAUDE.md", "new claude")] {
                 std::fs::write(harness.workspace().unwrap().path.join(name), bytes)
                     .map_err(super::super::super::storage)?;
@@ -27,7 +27,7 @@ async fn capture(restore_faulty_route: bool) -> Result<Vec<Vec<u8>>> {
     let mut harness = LocalHarness::open(volume_config(directory.path(), project, text())?).await?;
     instruction(&harness, "AGENTS.md", "old agents").await?;
     instruction(&harness, "CLAUDE.md", "old claude").await?;
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     {
         for (name, bytes) in [("AGENTS.md", "old agents"), ("CLAUDE.md", "old claude")] {
             std::fs::write(harness.workspace().unwrap().path.join(name), bytes)
@@ -39,7 +39,7 @@ async fn capture(restore_faulty_route: bool) -> Result<Vec<Vec<u8>>> {
             harness.checkout_context = true;
         }
     }
-    #[cfg(not(feature = "native-execution"))]
+    #[cfg(not(any(test, feature = "native-execution")))]
     assert!(!restore_faulty_route);
     harness.context_read_observer = Some(update_after_agents);
     let operation = OperationId::new();
@@ -59,7 +59,7 @@ async fn volume_generation_is_pinned_across_an_update_between_instruction_reads(
     let expected = vec![b"old agents".to_vec(), b"old claude".to_vec()];
     let actual = capture(false).await?;
     assert_eq!(actual, expected, "manifest mixed project generations");
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     {
         let broken = capture(true).await?;
         assert_eq!(broken, [b"old agents".to_vec(), b"new claude".to_vec()]);

@@ -1,0 +1,93 @@
+[
+  {
+    "package": "acyclic-harness-tui", "target": "lib",
+    "class": "incremental token cache resumes inside an earlier open token",
+    "fixed_by": "28d03ab1b",
+    "regression": "completion::incremental_tests::delta_requests_agree_with_full_parsing",
+    "controls": ["completion::incremental_tests::every_two_keystrokes_on_short_prompts_agree_with_full_parsing", "completion::incremental_tests::negative_control_resuming_inside_an_open_token_fails_the_property"]
+  },
+  {
+    "package": "acyclic-harness", "target": "lib",
+    "class": "nondeterministic physical completion indices in cancellation replay",
+    "fixed_by": "e9b3a0f92",
+    "regression": "local::admission::poll_sweep::invariants::broken_recovery_records_are_rejected_by_the_actual_sweep_checks",
+    "controls": ["local::admission::poll_sweep::coverage::broken_real_sweep_cannot_drop_or_repeat_a_cut"]
+  },
+  {
+    "package": "acyclic-harness", "target": "lib",
+    "class": "cross-task work observations and fixture state ownership",
+    "fixed_by": "4b9c84541,ab2737528",
+    "regression": "local::children::admission::work_tests::preparation_status_preserves_bytes_and_errors_without_loading_its_report",
+    "controls": ["local::children::admission::work_tests::preparation_status_preserves_bytes_and_errors_without_loading_its_report"]
+  },
+  {
+    "package": "acyclic-harness", "target": "lib",
+    "class": "cross-task work observations and fixture state ownership",
+    "fixed_by": "4b9c84541,ab2737528",
+    "regression": "local::children::admission::work_tests::replay_admission_preserves_results_and_errors_with_zero_workspace_work",
+    "controls": ["local::children::admission::work_tests::replay_admission_preserves_results_and_errors_with_zero_workspace_work"]
+  },
+  {
+    "package": "acyclic-harness", "target": "lib",
+    "class": "native mount ownership retained across harness reopen",
+    "fixed_by": "79719e433,ab2737528",
+    "regression": "local::tests::command_files::prompt_request_admits_once_and_reopens_its_file_outcome",
+    "controls": ["local::tests::command_files::retaining_a_mount_without_close_prevents_reopen_negative_control"]
+  },
+  {
+    "package": "acyclic-harness", "target": "lib",
+    "class": "fixture backing state dropped while child execution retains a store",
+    "fixed_by": "ab2737528",
+    "regression": "local::tests::task_files::delegate_dispatch_uses_spawn_and_publishes_a_child_result",
+    "controls": ["local::tests::hermetic::state_lifetime_properties::harness_only_owner_fails_the_same_lifetime_oracle"]
+  },
+  {
+    "package": "acyclic-harness", "target": "lib",
+    "class": "backing namespace lifetime follows all retained stores",
+    "fixed_by": "ab2737528,efa4f9023",
+    "regression": "local::workspace::performance_tests::standalone_core_owner_survives_clones_and_reopens_after_release",
+    "controls": ["local::tests::hermetic::state_lifetime_properties::all_store_drop_orders_detect_a_missing_owner"]
+  },
+  {
+    "package": "acyclic-harness", "target": "lib",
+    "class": "cached FUSE attributes and inherited open-file lock descriptions",
+    "fixed_by": "efa4f9023",
+    "regression": "local::workspace::volumes::recovery_tests::scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence",
+    "controls": ["local::workspace::volumes::recovery_tests::scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence"]
+  },
+  {
+    "package": "acyclic-harness", "target": "lib",
+    "class": "provisional UTF-8 rows invalidate the open Markdown block",
+    "fixed_by": "c1248e444,92ea64652,8dfdeea4b",
+    "regression": "tui::render::tests::byte_partitions_preserve_rows_and_linear_work",
+    "controls": ["tui::render::tests::every_partition_repairs_same_length_utf8", "tui::render::tests::provisional_list_continuation_is_invalidated", "tui::render::tests::empty_sibling_marker_preserves_list_indentation"]
+  },
+  {
+    "package": "acyclic-harness", "target": "lib",
+    "class": "ancestor stop lost at asynchronous completion handoff",
+    "fixed_by": "e9b3a0f92",
+    "regression": "local::children::controller::tests::active::active_controls_cancel_drains_descendants_and_preserves_siblings",
+    "controls": ["local::children::controller::tests::ancestor_stop_survives_every_completion_handoff", "local::children::controller::tests::ancestor_stop_handoff_negative_control_requires_its_property_assertion"]
+  },
+  {
+    "package": "acyclic-harness", "target": "main",
+    "class": "content reader bound to composition instead of current task",
+    "fixed_by": "ab2737528",
+    "regression": "agents::a_composition_wide_reader_cannot_read_a_childs_task",
+    "controls": ["agents::reader_control_rejects_unrelated_failures"]
+  },
+  {
+    "package": "acyclic-harness", "target": "lib",
+    "class": "speculative follow retains the read permit needed by its own publication",
+    "fixed_by": "f368ed24a,ab2737528",
+    "regression": "local::children::cuts::follow_probe::delegate_never_parks_a_follow_read_ahead_of_its_own_publication",
+    "controls": ["local::children::cuts::follow_probe::delegate_never_parks_a_follow_read_ahead_of_its_own_publication"]
+  },
+  {
+    "package": "acyclic-native-runtime", "target": "lib",
+    "class": "physical Pending poll counts mistaken for seeded task progress",
+    "fixed_by": "e9b3a0f92",
+    "regression": "testing::host::tests::original_native_io_in_a_worker_callback_retains_seeded_task_ownership",
+    "controls": ["testing::host::tests::progress_ignores_repeated_pending_polls_but_not_order_or_readiness"]
+  }
+]

@@ -647,7 +647,7 @@ async fn native_cleanup_preserves_preexisting_checkout_artifacts() -> Result<()>
 
 // Negative control: a projection that escapes the execution scope is exactly
 // the residue the clean-checkout detector above must see.
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 #[tokio::test]
 async fn a_projection_outside_the_execution_scope_is_visible_residue() -> Result<()> {
     let root = tempfile::tempdir().map_err(super::super::storage)?;

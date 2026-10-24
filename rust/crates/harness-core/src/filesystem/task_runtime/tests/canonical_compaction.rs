@@ -110,7 +110,6 @@ async fn task_bound_canonical_private_summary_recovers_without_journal_read_gran
                     causal_parent: None,
                     action,
                 },
-                None,
                 &mut None,
             )
             .await?;
@@ -422,7 +421,6 @@ async fn append_selection(
                     selection: (selection).into(),
                 },
             },
-            None,
             &mut None,
         )
         .await?;

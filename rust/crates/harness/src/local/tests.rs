@@ -21,19 +21,19 @@ mod bootstrap;
 mod compact;
 mod compaction;
 mod context;
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 mod environment;
 mod goals;
 mod hermetic;
-#[cfg(feature = "hooks")]
+#[cfg(any(test, feature = "hooks"))]
 mod hook_configuration;
-#[cfg(all(feature = "native-execution", unix))]
+#[cfg(all(any(test, feature = "native-execution"), unix))]
 mod hook_lifecycle;
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 mod input;
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 mod input_user;
-#[cfg(all(feature = "native-execution", unix))]
+#[cfg(all(any(test, feature = "native-execution"), unix))]
 mod tool_hooks;
 use std::{
     path::Path,
@@ -57,7 +57,7 @@ fn text() -> Arc<ScriptedModelProvider> {
     scripted([ScriptedTurn::Text("done".into())])
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 fn checkout_config(
     workspace: impl Into<std::path::PathBuf>,
     model: (Model, Arc<dyn ModelProvider>),
@@ -331,19 +331,19 @@ fn bounded_future<F: std::future::Future>(name: &str, future: F) -> F {
 async fn reopen_retains_owner_and_resumes_admitted_stock_turn_once() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::storage)?;
     let provider = text();
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     let selection = {
         let checkout = directory.path().join("checkout");
         std::fs::create_dir(&checkout).map_err(super::storage)?;
         checkout
     };
     // Reopen must find the same owner: every open shares one injected state directory outside the checkout.
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     let state = directory.path().join("state");
-    #[cfg(not(feature = "native-execution"))]
+    #[cfg(not(any(test, feature = "native-execution")))]
     let project = volume(directory.path()).await?;
     let config = || {
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         {
             Ok::<_, Error>(
                 crate::test_support::local_harness_config(
@@ -353,13 +353,13 @@ async fn reopen_retains_owner_and_resumes_admitted_stock_turn_once() -> Result<(
                 .state_directory(&state),
             )
         }
-        #[cfg(not(feature = "native-execution"))]
+        #[cfg(not(any(test, feature = "native-execution")))]
         {
             volume_config(directory.path(), project.clone(), provider.clone())
         }
     };
     let harness = bounded_future("open", LocalHarness::open(config()?)).await?;
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     assert_checkout(&harness, &state, directory.path()).await?;
     let operation = OperationId::new();
     let Admission::Accepted(acyclic_harness::runtime::RuntimeTask::Durable {
@@ -611,7 +611,7 @@ async fn root_output_requires_task_grants_and_exclusive_configuration() -> Resul
     Ok(())
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 async fn assert_checkout(harness: &LocalHarness, state: &Path, other: &Path) -> Result<()> {
     let checkout = harness
         .workspace_path()
@@ -681,7 +681,7 @@ async fn assert_checkout(harness: &LocalHarness, state: &Path, other: &Path) -> 
     Ok(())
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 #[test]
 fn checkout_attach_has_a_stable_distinct_operation_identity() {
     let task = crate::TaskId::from_bytes([7; 16]);
@@ -778,38 +778,38 @@ mod interrupted_turns;
 #[path = "tests/retained_failure.rs"]
 mod retained_failure;
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 mod checked_commands;
-#[cfg(all(feature = "native-execution", unix))]
+#[cfg(all(any(test, feature = "native-execution"), unix))]
 mod checkout;
-#[cfg(all(feature = "native-execution", windows))]
+#[cfg(all(any(test, feature = "native-execution"), windows))]
 mod powershell;
 
-#[cfg(all(feature = "native-execution", unix))]
+#[cfg(all(any(test, feature = "native-execution"), unix))]
 mod lazy_volumes;
-#[cfg(all(feature = "native-execution", unix))]
+#[cfg(all(any(test, feature = "native-execution"), unix))]
 mod volumes;
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 #[path = "tests/checkout_reopen.rs"]
 mod checkout_reopen;
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 #[path = "tests/checkout_incarnation.rs"]
 mod checkout_incarnation;
 
-#[cfg(all(feature = "native-execution", unix))]
+#[cfg(all(any(test, feature = "native-execution"), unix))]
 mod checkout_reconciliation;
 mod git_view;
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 mod merge_recovery;
 
-#[cfg(all(feature = "native-execution", unix))]
+#[cfg(all(any(test, feature = "native-execution"), unix))]
 mod volume_tools;
 
 mod children;
-#[cfg(all(feature = "native-execution", unix))]
+#[cfg(all(any(test, feature = "native-execution"), unix))]
 mod reconciliation_interruptions;
 mod scale;
 

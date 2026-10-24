@@ -92,7 +92,7 @@ impl Default for Meter {
 }
 
 impl Meter {
-    #[cfg(feature = "local")]
+    // Native memory-provider tests use the same metered request contract.
     pub(crate) fn local() -> Self {
         Self {
             check_on_record: true,

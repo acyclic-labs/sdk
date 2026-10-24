@@ -151,7 +151,7 @@ async fn native_read_failure_retains_bytes_spent_before_current_fence_denial() -
         let allowance = budget;
         let cancellation = &token;
         let mut accounting = allowance.accounting(cancellation);
-        let result = (&*file).read_range(0, 6, &mut accounting);
+        let result = (*file).read_range(0, 6, &mut accounting);
         allowance.finish(result, &accounting)
     }?;
     limited.backend_read_operations = baseline
@@ -163,7 +163,7 @@ async fn native_read_failure_retains_bytes_spent_before_current_fence_denial() -
         let allowance = limited;
         let cancellation = &token;
         let mut accounting = allowance.accounting(cancellation);
-        let result = (&*file).read_range(0, 6, &mut accounting);
+        let result = (*file).read_range(0, 6, &mut accounting);
         allowance.finish(result, &accounting)
     }
     .err()

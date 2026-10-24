@@ -23,9 +23,11 @@ use std::{
     sync::Arc,
 };
 
+// Unit fixtures exercise the native owner even for portable feature checks.
+// Its providers are ordinary dev-dependencies; the library never depends on itself.
 mod admission;
 mod bind;
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 mod checkout_tools;
 mod children;
 mod command_views;
@@ -43,18 +45,18 @@ mod owner;
 mod owner_record;
 mod routing;
 mod runtime;
-#[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+#[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
 mod settings;
 #[cfg(test)]
 mod tests;
 mod turn;
 #[cfg(feature = "search-http")]
 pub mod web;
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 mod workspace;
 pub use config::LocalHarnessConfig;
 use config::LocalProject;
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 pub use workspace::LocalWorkspace;
 
 /// Local durable filesystem host.
@@ -78,7 +80,7 @@ pub struct LocalHarness {
     provider: Arc<dyn ModelProvider>,
     context_manifest: Option<crate::conversation::FileRef>,
     skill_cache: context::skills::Cache,
-    #[cfg(feature = "hooks")]
+    #[cfg(any(test, feature = "hooks"))]
     settings: Arc<crate::native_settings::SettingsConfig>,
     #[cfg(test)]
     context_read_observer:
@@ -96,15 +98,15 @@ pub struct LocalHarness {
     publication: crate::sync::owned::Arc<crate::sync::owned::Mutex<()>>,
     // Leaf lock; claims and supersession hold `admission` first.
     drivers: orphans::Drivers,
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     workspace: Option<Arc<workspace::LocalWorkspace>>,
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     checkout_context: bool,
-    #[cfg(all(test, feature = "native-execution"))]
+    #[cfg(test)]
     environment_reads: std::sync::atomic::AtomicUsize,
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     environment_platform: crate::native_environment::PlatformPolicy,
 }
 
@@ -164,7 +166,7 @@ impl LocalHarness {
     }
 
     /// Canonical checkout path, absent for a configured volume.
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     #[must_use]
     pub fn workspace_path(&self) -> Option<&Path> {
         self.workspace
@@ -172,7 +174,7 @@ impl LocalHarness {
             .map(|workspace| workspace.path.as_path())
     }
     /// Source-backed checkout view, absent for configured volumes.
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     #[must_use]
     pub fn workspace(&self) -> Option<&Arc<LocalWorkspace>> {
         self.workspace.as_ref()

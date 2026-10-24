@@ -35,6 +35,31 @@ impl<P: StreamProvider> StreamAggregate<P> {
     pub async fn execute(
         &mut self,
         command: Command,
+        work: &mut Option<&mut dyn history::HistoryIo>,
+    ) -> Result<ApplyResult> {
+        self.execute_inner(
+            command,
+            #[cfg(feature = "filesystem")]
+            None,
+            work,
+        )
+        .await
+    }
+
+    /// Executes a command using its admitted task journal owner's grants.
+    #[cfg(feature = "filesystem")]
+    pub async fn execute_with_owner(
+        &mut self,
+        command: Command,
+        owner: &crate::durable_host::TaskJournalOwner<P>,
+        work: &mut Option<&mut dyn history::HistoryIo>,
+    ) -> Result<ApplyResult> {
+        self.execute_inner(command, Some(owner), work).await
+    }
+
+    async fn execute_inner(
+        &mut self,
+        command: Command,
         #[cfg(feature = "filesystem")] owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
         work: &mut Option<&mut dyn history::HistoryIo>,
     ) -> Result<ApplyResult> {

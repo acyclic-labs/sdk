@@ -91,8 +91,6 @@ pub(super) async fn inherited_context(
                     }),
                 },
             )?,
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;

@@ -54,16 +54,16 @@ pub struct LocalHarnessConfig {
     pub(super) session_limits: SessionLimits,
     pub(super) concurrency: usize,
     pub(super) compaction: Option<crate::context::CompactionPolicy>,
-    #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     pub(crate) settings: Option<crate::native_settings::SettingsConfig>,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     pub(super) mcp_limits: crate::mcp::McpClientLimits,
     pub(super) clock: Arc<dyn acyclic_stream::UnixMillisClock>,
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     pub(crate) environment_platform: crate::native_environment::PlatformPolicy,
 }
 
-#[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+#[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
 impl LocalProject {
     pub(super) fn root(&self) -> &Path {
         match self {
@@ -101,12 +101,12 @@ impl LocalHarnessConfig {
             },
             concurrency: 1,
             compaction: None,
-            #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+            #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
             settings: None,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             mcp_limits: crate::mcp::McpClientLimits::default(),
             clock: Arc::new(acyclic_stream::SystemUnixMillisClock),
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             environment_platform: crate::native_environment::PlatformPolicy::Native,
         }
     }
@@ -308,7 +308,7 @@ impl LocalHarnessConfig {
         self
     }
     /// Selects native settings locations and explicit project trust using the shared loader.
-    #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     #[must_use]
     pub fn settings(mut self, settings: crate::native_settings::SettingsConfig) -> Self {
         self.settings = Some(settings);

@@ -6,13 +6,13 @@ pub(crate) enum NativeOpenOptions {
     ReadWrite,
     #[cfg(any(test, feature = "native-mount"))]
     CreateNew,
-    #[cfg(feature = "local")]
+    #[cfg(any(test, feature = "local"))]
     ReadWriteCreateNew,
     #[cfg(any(test, feature = "local", feature = "native-mount"))]
     ReadWriteCreate,
 }
 
-#[cfg(feature = "local")]
+#[cfg(any(test, feature = "local"))]
 pub(crate) fn create_directories<W: NativeHostWork>(
     path: &Path,
     work: &mut W,
@@ -162,7 +162,7 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
             NativeOpenOptions::ReadWrite => libc::O_RDWR,
             #[cfg(any(test, feature = "native-mount"))]
             NativeOpenOptions::CreateNew => libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
-            #[cfg(feature = "local")]
+            #[cfg(any(test, feature = "local"))]
             NativeOpenOptions::ReadWriteCreateNew => libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
             #[cfg(any(test, feature = "local", feature = "native-mount"))]
             NativeOpenOptions::ReadWriteCreate => libc::O_RDWR | libc::O_CREAT,

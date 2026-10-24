@@ -297,8 +297,6 @@ pub(super) async fn worker_restart_with_options(
                                 causal_parent: None,
                                 action: Action::BindConversation { agent },
                             },
-                            #[cfg(feature = "filesystem")]
-                            None,
                             &mut None,
                         )
                         .await?;

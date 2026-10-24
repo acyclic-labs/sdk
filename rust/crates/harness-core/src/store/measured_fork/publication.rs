@@ -232,7 +232,6 @@ async fn guarded_child_rejects_original_event_one_with_wrong_binding_identity() 
                     agent: seed.child_agent,
                 },
             },
-            None,
             &mut None,
         )
         .await?;

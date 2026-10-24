@@ -73,8 +73,6 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 &grant_scope,
                 Action::BindConversation { agent: root_agent },
             )?,
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;
@@ -154,8 +152,6 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     }),
                 },
             )?,
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;
@@ -636,8 +632,6 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                         }),
                     },
                 )?,
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None,
             )
             .await?;
@@ -743,8 +737,6 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                             receipt: Box::new(receipt),
                         },
                     },
-                    #[cfg(feature = "filesystem")]
-                    None,
                     &mut None,
                 )
                 .await?;

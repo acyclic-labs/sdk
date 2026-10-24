@@ -477,7 +477,7 @@ impl HashedObject {
     }
 
     /// Admits `bytes` under `object_id` only if they hash to it.
-    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
     pub(crate) fn verify(object_id: ObjectId, bytes: acyclic_stream::OwnedBytes) -> Option<Self> {
         (object_digest(object_id.kind, &bytes) == object_id.digest)
             .then_some(Self { object_id, bytes })
@@ -632,11 +632,11 @@ pub enum ObjectStoreError {
     #[error(transparent)]
     Native(#[from] crate::materializer::NativeTreeMaterializationError),
     /// The original Objects failure, including every acknowledged prefix and intrinsically owned diagnostic or failed request packet.
-    #[cfg(all(feature = "distributed", not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, feature = "distributed"), not(target_arch = "wasm32")))]
     #[error(transparent)]
     NativeObjects(#[from] acyclic_objects::v1::NativeObjectsError),
     /// The logical Objects provider returned its canonical typed category.
-    #[cfg(feature = "distributed")]
+    #[cfg(any(test, feature = "distributed"))]
     #[error(transparent)]
     LogicalObjects(#[from] acyclic_objects::v1::Error),
 }

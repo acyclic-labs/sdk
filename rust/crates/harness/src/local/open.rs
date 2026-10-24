@@ -6,13 +6,13 @@ struct Opening {
     state_location: config::StateLocation,
     tools: ToolRegistry,
     compaction: crate::context::CompactionPolicy,
-    #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     settings: Arc<crate::native_settings::SettingsConfig>,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     capabilities: Capabilities,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     diagnostics: Vec<crate::mcp::McpServerFailure>,
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     native_mounts: bool,
 }
 
@@ -24,7 +24,7 @@ struct Storage {
     scratch: VolumeRef,
     journal: VolumeRef,
     task_volume: VolumeRef,
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     workspace: Option<Arc<workspace::LocalWorkspace>>,
 }
 
@@ -57,7 +57,7 @@ impl Opening {
                 &mut Vec::new(),
                 None,
                 true,
-                cfg!(feature = "native-execution"),
+                cfg!(any(test, feature = "native-execution")),
             )?;
         }
         for tool in std::mem::take(&mut config.tools) {
@@ -67,7 +67,7 @@ impl Opening {
         if config.web_tools {
             web::WebExecutor::bind(&mut tools, config.search_provider.take())?;
         }
-        #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+        #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
         let settings_configuration =
             settings::configuration(&config.project, config.settings.take(), config.hermetic)?;
         #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -91,11 +91,11 @@ impl Opening {
             config.limits,
         )
         .await?;
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         let native_mounts = tools
             .get(crate::tools::shell::PLATFORM.name, None, None)?
             .is_some();
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         if native_mounts {
             checkout_tools::shell::executable()?;
         }
@@ -105,13 +105,13 @@ impl Opening {
             state_location,
             tools,
             compaction,
-            #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+            #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
             settings: settings_configuration,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             capabilities: installation.capabilities,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             diagnostics: installation.diagnostics,
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             native_mounts,
         })
     }
@@ -148,14 +148,14 @@ impl Opening {
 
     async fn storage(&self) -> Result<Storage> {
         acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         if self.native_mounts {
             workspace::volumes::require_available(acyclic_fs::probe_native_mount())?;
             acyclic_fs::initialize_native_mount_services().map_err(storage)?;
         }
-        #[cfg(not(feature = "native-execution"))]
+        #[cfg(not(any(test, feature = "native-execution")))]
         if matches!(self.config.project, LocalProject::Workspace(_)) {
             return Err(Error::Unsupported(
                 "checkout workspaces require native-execution".into(),
@@ -200,11 +200,11 @@ impl Opening {
             journal,
             task_volume,
         } = PrivateVolumes::open(&files, &owner).await?;
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         let workspace = self
             .workspace(&filesystem, &directory, &owner, &scratch, checkout, &issuer)
             .await?;
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         let files = match &workspace {
             Some(workspace) => files
                 .with_project_family(workspace.view().workspace().id(), workspace.store.clone())?,
@@ -220,7 +220,7 @@ impl Opening {
                 None,
             )
             .await?;
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         let files = retain_skills(
             files,
             directory.join("skill-sources"),
@@ -236,12 +236,12 @@ impl Opening {
             scratch,
             journal,
             task_volume,
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             workspace,
         })
     }
 
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     async fn workspace(
         &self,
         filesystem: &acyclic_fs::LocalFs,
@@ -286,13 +286,13 @@ impl Opening {
         Ok(workspace.map(Arc::new))
     }
 
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     fn user_roots(&self) -> Vec<PathBuf> {
-        #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+        #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
         {
             self.settings.skill_roots().to_vec()
         }
-        #[cfg(not(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")))]
+        #[cfg(not(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")))]
         {
             Vec::new()
         }
@@ -307,7 +307,7 @@ impl Opening {
             scratch,
             journal,
             task_volume,
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             workspace,
         } = opened;
         let stream = Arc::new(
@@ -325,7 +325,7 @@ impl Opening {
             &self.code,
             runtime::Configuration {
                 files: files.clone(),
-                #[cfg(feature = "native-execution")]
+                #[cfg(any(test, feature = "native-execution"))]
                 workspace: workspace.as_ref().map(Arc::clone),
                 stream,
                 task_volume: &task_volume,
@@ -361,9 +361,9 @@ impl Opening {
             skill_cache: context::skills::cache(),
             #[cfg(test)]
             context_read_observer: None,
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             checkout_context: matches!(self.config.project, LocalProject::Workspace(_)),
-            #[cfg(feature = "hooks")]
+            #[cfg(any(test, feature = "hooks"))]
             settings: self.settings,
             limits: self.config.limits,
             compaction: self.compaction,
@@ -373,20 +373,20 @@ impl Opening {
             admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
             publication: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
             drivers: orphans::Drivers::new(),
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             workspace,
-            #[cfg(all(test, feature = "native-execution"))]
+            #[cfg(test)]
             environment_reads: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             clock: self.config.clock,
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             environment_platform: self.config.environment_platform,
         };
         Ok(local)
     }
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 pub(super) fn retain_skills(
     files: Arc<LocalFilesystem>,
     directory: PathBuf,
@@ -450,7 +450,7 @@ impl PrivateVolumes {
 /// This owner's process custody. The first owner of the directory in this
 /// process kills every tool tree a dead previous owner left, awaiting each
 /// tree's exit; a later owner in the same process shares the live custody.
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 async fn fence_stale_processes(
     path: std::path::PathBuf,
 ) -> Result<Arc<acyclic_native_runtime::ProcessCustody>> {

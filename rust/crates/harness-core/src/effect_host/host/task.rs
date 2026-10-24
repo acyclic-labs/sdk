@@ -113,7 +113,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             };
             match aggregate
                 .0
-                .execute(command, Some(owner), quota.work())
+                .execute_with_owner(command, owner, quota.work())
                 .await
             {
                 #[cfg(not(target_arch = "wasm32"))]
@@ -217,15 +217,18 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                     "observed settlement requires filesystem",
                 ));
             }
-            let result = aggregate
-                .0
-                .execute(
-                    command,
-                    #[cfg(feature = "filesystem")]
-                    owner,
-                    quota.work(),
-                )
-                .await;
+            #[cfg(feature = "filesystem")]
+            let result = match owner {
+                Some(owner) => {
+                    aggregate
+                        .0
+                        .execute_with_owner(command, owner, quota.work())
+                        .await
+                }
+                None => aggregate.0.execute(command, quota.work()).await,
+            };
+            #[cfg(not(feature = "filesystem"))]
+            let result = aggregate.0.execute(command, quota.work()).await;
             drop(quota);
             match result {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

@@ -181,7 +181,7 @@ async fn foreign_request(mut bytes: [u8; 16]) -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 #[tokio::test]
 async fn retaining_a_mount_without_close_prevents_reopen_negative_control() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;

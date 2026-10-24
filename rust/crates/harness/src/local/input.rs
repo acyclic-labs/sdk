@@ -7,18 +7,18 @@ use crate::{
     task_volume::{FileKey, Query},
 };
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 use crate::{
     client::{CommandRoot, CommandScope},
     context::ContextDiscoveryLimits,
 };
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 mod native_sources;
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 mod native_storage;
 
 // Storage must be destroyed before its accounting owner on every exit path.
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 struct Held<T, A> {
     value: T,
     _allocation: A,
@@ -188,14 +188,14 @@ impl LocalHarness {
             files: Arc::clone(&self.files),
             task_files: Arc::clone(&self.task_files),
             project: self.project.clone(),
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             journal: self.journal.clone(),
             maximum_bytes: self.limits.file_bytes,
             publisher: self.input_publisher()?,
             reader: self.client_reader()?,
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             workspace: self.workspace.clone(),
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             settings: Arc::clone(&self.settings),
         })
     }
@@ -206,14 +206,14 @@ struct ComposerInput {
     files: Arc<LocalFilesystem>,
     task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     project: VolumeRef,
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     journal: VolumeRef,
     maximum_bytes: u64,
     publisher: Arc<dyn ContentPublisher>,
     reader: Arc<dyn ContentResidencyVerifier>,
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     workspace: Option<Arc<LocalWorkspace>>,
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     settings: Arc<crate::native_settings::SettingsConfig>,
 }
 
@@ -313,7 +313,7 @@ impl ComposerInput {
             None => CommandCatalog::builtins()?,
         };
         let reader = Arc::clone(&self.reader);
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         if let Some(workspace) = &self.workspace {
             return self
                 .resolve_checkout_input(operation, text, catalog, workspace, reader.as_ref(), true)
@@ -331,7 +331,7 @@ impl ComposerInput {
         text: &str,
     ) -> Result<CommandResolution> {
         let reader = Arc::clone(&self.reader);
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         if let Some(workspace) = &self.workspace {
             return self
                 .resolve_checkout_input(
@@ -368,7 +368,7 @@ impl ComposerInput {
         })
     }
 
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     async fn resolve_checkout_input(
         &self,
         operation: OperationId,
@@ -597,7 +597,7 @@ impl ComposerInput {
     }
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 fn source_display_name(path: &str) -> Result<&str> {
     crate::conversation::validate_content_path(path, &mut None)?;
     path.rsplit('/')
@@ -605,7 +605,7 @@ fn source_display_name(path: &str) -> Result<&str> {
         .ok_or_else(|| Error::Invalid("composer source has no filename".into()))
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(test, feature = "native-execution"))]
 async fn copy_checkout_file(
     view: &workspace::View,
     cut: acyclic_fs::LazySnapshotRef,

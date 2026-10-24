@@ -16,14 +16,7 @@ async fn extension_bytes_are_validated_before_ref_only_publication() -> Result<(
     )
     .await?;
     assert!(matches!(
-        unbound
-            .execute(
-                command(1)?,
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None
-            )
-            .await,
+        unbound.execute(command(1)?, &mut None).await,
         Err(Error::Unsupported(_))
     ));
     let mut wrong_schemas = SchemaRegistry::new();
@@ -51,25 +44,11 @@ async fn extension_bytes_are_validated_before_ref_only_publication() -> Result<(
     .await?)
         .with_content_verifier(Arc::new(TestContent));
     assert!(matches!(
-        invalid
-            .execute(
-                command(1)?,
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None
-            )
-            .await,
+        invalid.execute(command(1)?, &mut None).await,
         Err(Error::Invalid(_))
     ));
     let mut valid = with_content(&client).await?;
-    valid
-        .execute(
-            command(1)?,
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
-        .await?;
+    valid.execute(command(1)?, &mut None).await?;
     let records = acyclic_stream::Stream::new(client.clone(), authority().stream_path(&mut None)?)?
         .read(0, 1)
         .await?
@@ -147,14 +126,7 @@ async fn configured_extension_cannot_publish_a_dangling_or_invalid_reference() -
     )
     .await?;
     assert!(matches!(
-        aggregate
-            .execute(
-                command.clone(),
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None
-            )
-            .await,
+        aggregate.execute(command.clone(), &mut None).await,
         Err(Error::Unsupported(_))
     ));
     let mut invalid = std::collections::BTreeMap::new();
@@ -165,31 +137,14 @@ async fn configured_extension_cannot_publish_a_dangling_or_invalid_reference() -
     let mut aggregate = aggregate.with_content_verifier(Arc::new(MigrationContentStore(Arc::new(
         std::sync::Mutex::new(invalid),
     ))));
-    assert!(
-        aggregate
-            .execute(
-                command.clone(),
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None
-            )
-            .await
-            .is_err()
-    );
+    assert!(aggregate.execute(command.clone(), &mut None).await.is_err());
     assert_eq!(aggregate.reducer().revision(), 0);
     let mut valid = std::collections::BTreeMap::new();
     valid.insert(MigrationContentStore::key(&reference)?, bytes.to_vec());
     let mut aggregate = aggregate.with_content_verifier(Arc::new(MigrationContentStore(Arc::new(
         std::sync::Mutex::new(valid),
     ))));
-    aggregate
-        .execute(
-            command,
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
-        .await?;
+    aggregate.execute(command, &mut None).await?;
     let reopened = StreamAggregate::open(
         &client,
         (

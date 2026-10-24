@@ -35,8 +35,6 @@ pub(super) async fn publication_rejections(
         aggregate
             .execute(
                 fork_command(217, seed.parent_revision, &grant_scope, missing_member,)?,
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None
             )
             .await
@@ -68,8 +66,6 @@ pub(super) async fn publication_rejections(
         over_budget
             .execute(
                 fork_command(216, seed.parent_revision, &grant_scope, seed.clone(),)?,
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None
             )
             .await
@@ -103,8 +99,6 @@ pub(super) async fn publication_rejections(
         incomplete
             .execute(
                 fork_command(219, seed.parent_revision, &grant_scope, seed.clone(),)?,
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None
             )
             .await
@@ -128,8 +122,6 @@ pub(super) async fn publication_rejections(
         aggregate
             .execute(
                 fork_command(218, seed.parent_revision, &grant_scope, foreign_history,)?,
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None
             )
             .await
@@ -154,8 +146,6 @@ pub(super) async fn publication_rejections(
         aggregate
             .execute(
                 fork_command(220, aggregate.reducer().revision(), &grant_scope, missing,)?,
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None
             )
             .await
@@ -228,8 +218,6 @@ pub(super) async fn publication_rejections(
                     &grant_scope,
                     rogue_seed,
                 )?,
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None
             )
             .await

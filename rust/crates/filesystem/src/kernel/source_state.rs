@@ -138,7 +138,7 @@ pub(crate) fn decode_source_fact(
     Ok(value)
 }
 
-#[cfg(feature = "local")]
+#[cfg(any(test, feature = "local"))]
 pub(crate) fn decode_source_volume(
     bytes: &[u8],
     maximum_payload_bytes: u64,

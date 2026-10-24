@@ -185,11 +185,11 @@ async fn ambiguous_watch_always_inspects_before_returning_original_recovery_key(
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn silent_accepted_mutation_reconciles_the_same_operation()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let operation = OperationId::parse("00000000-0000-0000-0000-000000000042")?;
-    let (service, _script, machine) = scripted_operation_service(
+    let (service, script, machine) = scripted_operation_service(
         vec![
             WatchReply::Silent,
             WatchReply::Items(vec![WatchItem::State(operation_state(
@@ -204,11 +204,17 @@ async fn silent_accepted_mutation_reconciles_the_same_operation()
     );
     let key = service.expected_key;
     let (machines, shutdown, server) = serve_operation_service(service).await?;
+    let before = tokio::time::Instant::now();
     let outcome =
         tokio::time::timeout(Duration::from_secs(75), machines.suspend(machine, key)).await?;
     let _ = shutdown.send(());
     server.await??;
     outcome?;
+    assert!(before.elapsed() >= WATCH_RECONCILE_INTERVAL + OBSERVATION_RETRY_DELAY);
+    let script = script.lock().expect("observation script");
+    assert_eq!(script.calls, ["watch", "watch"]);
+    assert!(script.inspections.is_empty());
+    assert!(script.watches.is_empty());
     Ok(())
 }
 

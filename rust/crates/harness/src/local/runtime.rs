@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) struct Configuration<'a> {
     pub files: Arc<LocalFilesystem>,
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     pub workspace: Option<Arc<workspace::LocalWorkspace>>,
     pub stream: Arc<LocalStream>,
     pub task_volume: &'a VolumeRef,
@@ -129,7 +129,7 @@ pub(super) async fn open(
     .with_output_volume(config.project, None)?
     .with_task_files(task_files.clone())?;
     runtime.bind_task_files(Some(projection_files.clone()));
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     let runtime = match config.workspace {
         Some(workspace) => {
             let tools = Arc::new(

@@ -106,11 +106,13 @@ grep -aE '^(feature matrix:|FAILED cargo)' .gate-features.out | sed -E 's|--mani
 grep -a '^feature check: ' .gate-features.out | sed 's/^/GATE_FEATURE_CHECK /'
 grep -aE '^GATE_FEATURES_(CACHE|WALL) ' .gate-features.out
 if [ "$(cat .gate-features.rc)" != 0 ]; then cat .gate-features.out; fi
+bash scripts/gate-windows-features.sh full; windows_features_rc=$?
 rc=$targets_rc; [ "$rc" != 0 ] || rc=$docs_rc
 [ "$rc" != 0 ] || rc=$browser_rc
 [ "$rc" != 0 ] || rc=$loom_rc
 # A partial auxiliary step must not leave the main baseline falsely green.
 if [ "$rc" = 0 ] && { [ "$(cat .gate-clippy.rc)" != 0 ] || [ "$(cat .gate-features.rc)" != 0 ]; }; then rc=1; fi
+[ "$rc" != 0 ] || rc=$windows_features_rc
 if [ "$targets_rc" = 0 ] && [ "$docs_rc" = 0 ]; then
   echo "GATE_TEST_COVERAGE all-targets+doc packages=$members"
 fi

@@ -23,7 +23,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use uuid::Uuid;
 
-#[cfg(feature = "distributed")]
+#[cfg(any(test, feature = "distributed"))]
 pub(crate) mod lease_path;
 
 const STATE_VERSION: u32 = 1;
@@ -249,12 +249,11 @@ pub trait OperationWindowStore: acyclic_stream::ProviderPlatform {
     ) -> impl Future<Output = Result<bool, Self::Error>> + acyclic_stream::ProviderTask;
 }
 
-#[cfg(feature = "distributed")]
+#[cfg(any(test, feature = "distributed"))]
 mod streams;
 #[cfg(test)]
-#[cfg(feature = "distributed")]
 pub(crate) use streams::stream_lease_path;
-#[cfg(feature = "distributed")]
+#[cfg(any(test, feature = "distributed"))]
 pub use streams::{StreamOperationWindowStore, StreamOperationWindowStoreError};
 
 /// Operation-window failure.

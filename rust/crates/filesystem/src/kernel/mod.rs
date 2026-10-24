@@ -26,7 +26,7 @@ mod generation_mutation;
 mod historical_evidence;
 mod list;
 mod live;
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 mod mark;
 mod merge;
 mod metadata;
@@ -73,25 +73,23 @@ pub(crate) use generation_mutation::{
 pub(crate) use list::list_tree_entries_async_with_accounting;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use merge::merge_generation_with_borrowed_resolutions_with_accounting;
-#[cfg(feature = "native-mount")]
-pub(crate) use merge::{MergeFileTableRequest, merge_file_tables_with_accounting, resolve_three};
 pub(crate) use merge::{
     ContentMerge, MergeGenerationBorrowedRequest, merge_generation_with_accounting,
     merge_generation_with_borrowed_map_resolutions_with_accounting,
 };
+#[cfg(feature = "native-mount")]
+pub(crate) use merge::{MergeFileTableRequest, merge_file_tables_with_accounting, resolve_three};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use persistent_batch::{IndexedKey, sort_indexed};
 pub(crate) use persistent_diff::{
     ValueChange, diff_file_records_with_accounting, diff_tree_entries_with_accounting,
 };
 pub(crate) use persistent_point::split_allocation;
+pub(crate) use probe::WorkingRebaseProbe;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use publication::publish_generation_async_guarded_with_native_work;
 pub(crate) use range::plan_extent_range_with_accounting;
-pub(crate) use probe::WorkingRebaseProbe;
-pub(crate) use rebase::{
-    ClassifyRebaseFailure, Settled, classify_rebase_settling_with_accounting,
-};
+pub(crate) use rebase::{ClassifyRebaseFailure, Settled, classify_rebase_settling_with_accounting};
 pub(crate) use regular_mutation::apply_regular_mutation_with_accounting;
 pub(crate) use search::binary_search_with_accounting;
 
@@ -159,12 +157,12 @@ pub(crate) use file_table_mutation::apply_file_table_mutations_with_accounting;
 pub use file_table_mutation::{
     FileTableMutation, FileTableMutationError, FileTableMutationFailure, apply_file_table_mutations,
 };
-pub(crate) use generation::{
-    read_generation_root_with_accounting, read_generation_root_with_limits_and_accounting,
-};
 pub use generation::{
     GenerationRoot, MAXIMUM_GENERATION_ROOT_BYTES, decode_generation_root, encode_generation_root,
     generation_root_id,
+};
+pub(crate) use generation::{
+    read_generation_root_with_accounting, read_generation_root_with_limits_and_accounting,
 };
 pub use generation_mutation::{
     GenerationMutationError, GenerationMutationFailure, GenerationMutationReceipt,
@@ -179,9 +177,9 @@ pub use live::{
     LiveMutationOutcome, LivePublicationObservation, LiveRetryAction, LiveRetryError,
     LiveRetryState,
 };
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use mark::MarkError;
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub(crate) use mark::Marker;
 pub use merge::{
     MergeConflict, MergeConflictResolution, MergeConflictSide, MergeGenerationError,
@@ -237,7 +235,7 @@ pub use retention::{
     decode_workspace_deleted, encode_workspace_deleted, retention_authority_id,
 };
 #[cfg(all(
-    feature = "local",
+    any(test, feature = "local"),
     feature = "native-watch",
     not(target_arch = "wasm32")
 ))]
@@ -265,12 +263,12 @@ pub use types::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use volume::encode_config;
-pub(crate) use volume::{CONFIG_ENCODED_BYTES, decode_config};
 #[cfg(not(acyclic_loom))]
 pub(crate) use volume::encode_volume_created;
 #[cfg(acyclic_loom)]
 #[doc(hidden)]
 pub use volume::encode_volume_created;
+pub(crate) use volume::{CONFIG_ENCODED_BYTES, decode_config};
 pub use volume::{VolumeCreated, VolumeCreatedError, decode_volume_created, volume_authority_id};
 
 #[cfg(any(test, feature = "fuzzing"))]

@@ -8,12 +8,12 @@ use futures::StreamExt as _;
 /// A generation publication conditioned on tail 1 therefore linearizes
 /// exactly against fencing.
 #[derive(Clone)]
-#[cfg(feature = "distributed")]
+#[cfg(any(test, feature = "distributed"))]
 pub struct StreamOperationWindowStore<P> {
     provider: Arc<P>,
 }
 
-#[cfg(feature = "distributed")]
+#[cfg(any(test, feature = "distributed"))]
 impl<P> StreamOperationWindowStore<P> {
     /// Binds operation windows to the exact provider used by filesystem
     /// authority publication.
@@ -24,7 +24,7 @@ impl<P> StreamOperationWindowStore<P> {
 }
 
 /// Stream-backed operation-window failure.
-#[cfg(feature = "distributed")]
+#[cfg(any(test, feature = "distributed"))]
 #[derive(Debug, Error)]
 pub enum StreamOperationWindowStoreError {
     /// The shared Stream provider rejected or could not durably resolve state.
@@ -35,7 +35,7 @@ pub enum StreamOperationWindowStoreError {
     Corrupt(String),
 }
 
-#[cfg(feature = "distributed")]
+#[cfg(any(test, feature = "distributed"))]
 impl<P: acyclic_stream::StreamProvider> OperationWindowStore for StreamOperationWindowStore<P> {
     type Error = StreamOperationWindowStoreError;
 
@@ -174,7 +174,7 @@ impl<P: acyclic_stream::StreamProvider> OperationWindowStore for StreamOperation
     }
 }
 
-#[cfg(feature = "distributed")]
+#[cfg(any(test, feature = "distributed"))]
 fn phase_leases(phase: &OperationWindowPhase) -> BTreeMap<OperationLeaseId, OperationLease> {
     match phase {
         OperationWindowPhase::Active { leases, .. } => leases.clone(),
@@ -182,7 +182,7 @@ fn phase_leases(phase: &OperationWindowPhase) -> BTreeMap<OperationLeaseId, Oper
     }
 }
 
-#[cfg(feature = "distributed")]
+#[cfg(any(test, feature = "distributed"))]
 fn stream_window_path(
     workspace_id: WorkspaceId,
 ) -> Result<acyclic_stream::StreamPath, acyclic_stream::StreamError> {
@@ -192,7 +192,7 @@ fn stream_window_path(
     ))
 }
 
-#[cfg(feature = "distributed")]
+#[cfg(any(test, feature = "distributed"))]
 pub(crate) fn stream_lease_path(
     workspace_id: WorkspaceId,
     lease_id: OperationLeaseId,

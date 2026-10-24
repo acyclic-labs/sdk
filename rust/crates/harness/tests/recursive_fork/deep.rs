@@ -561,8 +561,6 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                         &child_scope,
                         Action::BindConversation { agent: child_agent },
                     )?,
-                    #[cfg(feature = "filesystem")]
-                    None,
                     &mut None,
                 )
                 .await?;
@@ -810,8 +808,6 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                         }),
                     },
                 )?,
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None,
             )
             .await?;
@@ -898,8 +894,6 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     }),
                 },
             )?,
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;

@@ -1,8 +1,8 @@
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 use super::*;
 
 /// Bounded reclamation result for the canonical local Stream/Objects composition.
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct LocalGarbageCollection {
     /// Immutable filesystem object versions examined.
@@ -16,7 +16,7 @@ pub struct LocalGarbageCollection {
 }
 
 /// Limits that admit every page either admits.
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub(super) fn widest_limits(left: DecodeLimits, right: DecodeLimits) -> DecodeLimits {
     DecodeLimits {
         maximum_object_bytes: left.maximum_object_bytes.max(right.maximum_object_bytes),
@@ -28,7 +28,7 @@ pub(super) fn widest_limits(left: DecodeLimits, right: DecodeLimits) -> DecodeLi
     }
 }
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub(super) fn mark_error(error: crate::kernel::MarkError) -> FsError {
     match error {
         crate::kernel::MarkError::Storage(error) => FsError::Object(error),
@@ -38,7 +38,7 @@ pub(super) fn mark_error(error: crate::kernel::MarkError) -> FsError {
     }
 }
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     /// Reclaims every stored object nothing live reaches, while the root
     pub async fn collect_local_garbage(

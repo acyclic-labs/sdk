@@ -8,6 +8,7 @@
 // this script.
 //
 // Usage: check-feature-matrix.mjs [WORKERS] [--each-feature] [--list]
+//        [--windows-msvc] [--package=NAME ...]
 // The merge gate runs the three sets per crate on every PR and adds each
 // feature alone on main (gate-checks.sh --each-feature); the policy
 // qualification lane runs every set.
@@ -68,18 +69,28 @@ export function featureWorker(name, args, workers) {
   return createHash("sha256").update(key).digest().readUInt32LE(0) % workers;
 }
 
+// Check the consumer library before test dependencies can unify features into
+// it. Both invocations retain exactly the Linux matrix's feature selection.
+export function windowsCommands(args) {
+  const base = ["xwin", ...args.slice(0, 4), "--target", "x86_64-pc-windows-msvc"];
+  return ["--lib", "--all-targets"].map(target => [...base, target, ...args.slice(5)]);
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const list = args.includes("--list");
+  const windows = args.includes("--windows-msvc");
+  const selected = args.filter(arg => arg.startsWith("--package=")).map(arg => arg.slice(10));
   const workers = Number(args.find(arg => /^\d+$/u.test(arg)) ?? 1);
   if (!Number.isSafeInteger(workers) || workers < 1) throw new Error("WORKERS must be a positive integer");
   // Every publishable local crate, in publication order (the publish check
   // already proves the order lists each exactly once).
-  const eachFeature = args.includes("--each-feature");
-  const sets = [...metadata().values()].flatMap(item => featureSets(item, eachFeature)
+  const eachFeature = windows || args.includes("--each-feature");
+  const items = [...metadata().values()];
+  const sets = items.filter(item => !selected.length || selected.includes(item.name)).flatMap(item => featureSets(item, eachFeature)
     .map(args => ({ name: item.name, args })));
   if (list) {
-    for (const { args } of sets) console.log(`cargo ${args.join(" ")}`);
+    for (const { args } of sets) for (const command of windows ? windowsCommands(args) : [args]) console.log(`cargo ${command.join(" ")}`);
     return;
   }
   const failures = [];
@@ -87,22 +98,31 @@ async function main() {
   const queues = Array.from({ length: workers }, () => []);
   for (const { name, args } of sets) queues[featureWorker(name, args, workers)].push(args);
   async function worker(index) {
-    const env = index === 0 ? process.env
+    const env = index === 0 ? { ...process.env }
       : { ...process.env, CARGO_TARGET_DIR: `${process.env.CARGO_TARGET_DIR ?? join(root, "target")}-features-${index}` };
+    if (windows) {
+      if (!process.env.GATE_XWIN_CACHE_ROOT) throw new Error("Windows matrix requires with-xwin-cache.py");
+      env.XWIN_CACHE_DIR = join(process.env.GATE_XWIN_CACHE_ROOT, `worker-${index}`);
+    }
     for (const set of queues[index]) {
       const checkStarted = Date.now();
-      const child = spawn("cargo", set, { cwd: root, env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-      let output = "";
-      child.stdout.on("data", chunk => (output += chunk));
-      child.stderr.on("data", chunk => (output += chunk));
-      const status = await new Promise((done, reject) => child.on("error", reject).on("close", done));
-      const rebuilt = [...output.matchAll(/^\s+(?:Checking|Compiling) /gmu)].length;
-      console.log(`feature check: worker=${index} seconds=${((Date.now() - checkStarted) / 1000).toFixed(1)} rebuilt=${rebuilt} manifest=${set[3]} flags=${set.slice(5).join(" ") || "defaults"}`);
-      if (status === 0) passed += 1;
-      else {
-        failures.push(`cargo ${set.join(" ")}`);
-        process.stderr.write(`FAILED cargo ${set.join(" ")}\n${output}\n`);
+      let succeeded = true;
+      let rebuilt = 0;
+      for (const command of windows ? windowsCommands(set) : [set]) {
+        const child = spawn("cargo", command, { cwd: root, env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+        let output = "";
+        child.stdout.on("data", chunk => (output += chunk));
+        child.stderr.on("data", chunk => (output += chunk));
+        const status = await new Promise((done, reject) => child.on("error", reject).on("close", done));
+        rebuilt += [...output.matchAll(/^\s+(?:Checking|Compiling) /gmu)].length;
+        if (status !== 0) {
+          succeeded = false;
+          failures.push(`cargo ${command.join(" ")}`);
+          process.stderr.write(`FAILED cargo ${command.join(" ")}\n${output}\n`);
+        }
       }
+      console.log(`feature check: worker=${index} seconds=${((Date.now() - checkStarted) / 1000).toFixed(1)} rebuilt=${rebuilt} manifest=${set[3]} flags=${set.slice(5).join(" ") || "defaults"}`);
+      if (succeeded) passed += 1;
     }
   }
   const started = Date.now();

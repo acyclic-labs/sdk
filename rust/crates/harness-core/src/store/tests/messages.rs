@@ -51,8 +51,6 @@ async fn conversation_head_pins_racing_append_and_rejects_corrupt_atomic_proof()
                     agent: crate::AgentId::from_bytes([8; 16]),
                 },
             )?,
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;
@@ -119,8 +117,6 @@ async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction
                     agent: crate::AgentId::from_bytes([8; 16]),
                 },
             )?,
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;
@@ -157,14 +153,7 @@ async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction
                 },
             )?
         };
-        writer
-            .execute(
-                command,
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None,
-            )
-            .await?;
+        writer.execute(command, &mut None).await?;
         if [1, MIDDLE, MESSAGES].contains(&sequence) {
             let cold = writer.history_reader()?;
             client.forbid_writes.store(true, Ordering::SeqCst);
@@ -230,8 +219,6 @@ async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction
                     selection: (selection.clone()).into(),
                 },
             )?,
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;
@@ -246,20 +233,11 @@ async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction
                     message: Box::new(future.clone()),
                 },
             )?,
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;
     assert!(matches!(
-        writer
-            .execute(
-                original,
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None,
-            )
-            .await?,
+        writer.execute(original, &mut None,).await?,
         ApplyResult::Replayed { .. }
     ));
     client.forbid_writes.store(true, Ordering::SeqCst);

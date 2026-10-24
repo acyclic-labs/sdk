@@ -8,6 +8,21 @@ struct Received {
     last: Mutex<Option<(u64, u64, CommitId)>>,
     changed: tokio::sync::Notify,
 }
+impl Received {
+    fn observe(&self, generation: u64, next: u64, commit: CommitId) {
+        let mut last = self.last.lock().unwrap();
+        // A moved route can leave an old physical session readable. Its late
+        // frames must not erase evidence already observed from the successor.
+        if last
+            .as_ref()
+            .is_none_or(|(current, after, _)| (generation, next) > (*current, *after))
+        {
+            *last = Some((generation, next, commit));
+        }
+        drop(last);
+        self.changed.notify_one();
+    }
+}
 struct Observed {
     inner: transport::Endpoint,
     received: std::sync::Arc<Received>,
@@ -50,8 +65,7 @@ impl transport::Transport for Observed {
                 {
                     let commit =
                         CommitId::from_bytes(record.commit_id.as_ref().try_into().unwrap());
-                    *received.last.lock().unwrap() = Some((*generation, after.next, commit));
-                    received.changed.notify_one();
+                    received.observe(*generation, after.next, commit);
                 }
                 frame
             })) as Response)
@@ -99,7 +113,14 @@ async fn buffered(received: &Received, generation: u64, next: u64, tail: u64) ->
         {
             return Ok(());
         }
-        tokio::time::timeout(Duration::from_secs(1), changed).await?;
+        tokio::time::timeout(Duration::from_secs(1), changed)
+            .await
+            .map_err(|error| {
+                format!(
+                    "buffered generation={generation} next={next} expected={expected} last={:?}: {error}",
+                    *received.last.lock().unwrap()
+                )
+            })?;
     }
 }
 /// Wait for `target` to resume follow 1 at `generation`, from the last yielded commit.
@@ -204,14 +225,17 @@ async fn run(actions: &[bool], boundary: usize, moved: bool, broken: bool) -> Te
             // An unpolled cursor still owns its old-generation deliveries.
             // Recovery cannot refill their credit until next() discards them.
             can_buffer = false;
-            assert_resumed(if moved { &new } else { &old }, generation, next, &ledger).await?;
+            assert_resumed(if moved { &new } else { &old }, generation, next, &ledger)
+                .await
+                .map_err(|error| format!("resume generation={generation} next={next}: {error}"))?;
         }
         if let Some(append) = actions.get(index) {
             if *append {
                 append_one(&provider, &mut ledger).await?;
             } else if next < ledger.len() as u64 {
                 let frame = tokio::time::timeout(Duration::from_secs(1), data.next())
-                    .await?
+                    .await
+                    .map_err(|error| format!("yield generation={generation} next={next}: {error}"))?
                     .ok_or("ALL ended")??;
                 let Some(Item::Record(record)) = frame.item else {
                     return Err("ALL returned another item".into());
@@ -273,4 +297,78 @@ fn recovery_preserves_unpolled_credit_through_later_appends() {
             .block_on(run(&[true, false, true, false], 0, moved, false))
             .unwrap();
     }
+}
+
+#[test]
+fn recovery_after_consuming_the_original_tail() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime
+        .block_on(run(
+            &[false, false, false, false, false, true],
+            4,
+            true,
+            false,
+        ))
+        .unwrap();
+}
+
+fn check_observation_orders(observe: impl Fn(&Received, u64, u64, CommitId)) {
+    // All 24 permutations, including every ordering within each generation.
+    // This overapproximates the two ordered physical response streams.
+    // The first permutation is itself a legal pair of ordered streams: the
+    // successor's two frames arrive before the old endpoint's two late frames.
+    let frames = [(2, 2), (2, 3), (1, 2), (1, 3)];
+    for a in frames {
+        for b in frames {
+            for c in frames {
+                for d in frames {
+                    let order = [a, b, c, d];
+                    if order
+                        .into_iter()
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len()
+                        != order.len()
+                    {
+                        continue;
+                    }
+                    let received = Received::default();
+                    let mut observed = Vec::new();
+                    for (generation, next) in order {
+                        observed.push((generation, next));
+                        observe(&received, generation, next, CommitId::from_bytes([0; 32]));
+                        let last = received.last.lock().unwrap();
+                        assert!(
+                            last.as_ref().is_some_and(|(generation, next, _)| {
+                                observed.iter().all(|seen| seen <= &(*generation, *next))
+                            }),
+                            "received frontier must survive every arrival order: {order:?}"
+                        );
+                    }
+                    let last = received.last.lock().unwrap();
+                    assert_eq!(
+                        last.as_ref()
+                            .map(|(generation, next, _)| (*generation, *next)),
+                        Some((2, 3)),
+                        "received frontier must survive every arrival order: {order:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn received_frontier_survives_every_cross_generation_arrival_order() {
+    check_observation_orders(Received::observe);
+}
+
+#[test]
+#[should_panic(expected = "received frontier must survive every arrival order")]
+fn negative_control_last_arrival_erases_the_successor_frontier() {
+    check_observation_orders(|received, generation, next, commit| {
+        *received.last.lock().unwrap() = Some((generation, next, commit));
+    });
 }

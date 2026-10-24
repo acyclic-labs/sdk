@@ -62,8 +62,6 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
     aggregate
         .execute(
             command(1, 0, &grant_scope, Action::BindConversation { agent })?,
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;
@@ -127,8 +125,6 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
                     }),
                 },
             )?,
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;
@@ -415,8 +411,6 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
                         }),
                     },
                 )?,
-                #[cfg(feature = "filesystem")]
-                None,
                 &mut None,
             )
             .await?;

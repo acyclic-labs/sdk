@@ -79,7 +79,7 @@ async fn original_native_root_custody_and_current_reference_are_provider_owned()
         Some(reference),
         None,
         &work,
-        (&work).cancellation(),
+        work.cancellation(),
     )
     .await?;
     drop(caller_path);
@@ -131,7 +131,7 @@ async fn original_native_root_custody_and_current_reference_are_provider_owned()
         Some(advanced),
         None,
         &work,
-        (&work).cancellation(),
+        work.cancellation(),
     )
     .await?;
     let original = work.runtime_meter();

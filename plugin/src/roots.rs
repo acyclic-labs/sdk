@@ -532,7 +532,16 @@ mod unmount_tests {
                 .session_start(json!({"session_id":name,"cwd":root}))
                 .await
                 .unwrap();
-            sources.push((name.to_owned(), control.roots.pop_first().unwrap().1));
+            let workspace = control.roots.pop_first().unwrap().1;
+            let options = acyclic_harness::filesystem::local_owner_mount_options(
+                workspace.workspace(),
+                name,
+                true,
+            )
+            .await
+            .unwrap()
+            .publication(acyclic_fs::MountPublication::Manual);
+            sources.push((name.to_owned(), workspace, options));
             controls.push(control);
             fixtures.push(directory);
         }
@@ -594,7 +603,16 @@ mod unmount_tests {
                 .session_start(json!({"session_id":name,"cwd":root}))
                 .await
                 .unwrap();
-            sources.push((name.to_owned(), control.roots.pop_first().unwrap().1));
+            let workspace = control.roots.pop_first().unwrap().1;
+            let options = acyclic_harness::filesystem::local_owner_mount_options(
+                workspace.workspace(),
+                name,
+                true,
+            )
+            .await
+            .unwrap()
+            .publication(acyclic_fs::MountPublication::Manual);
+            sources.push((name.to_owned(), workspace, options));
             controls.push(control);
         }
         let destination = tempfile::tempdir().unwrap();

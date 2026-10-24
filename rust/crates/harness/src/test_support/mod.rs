@@ -20,11 +20,11 @@ pub fn local_harness_config(
     ),
 ) -> crate::Result<crate::LocalHarnessConfig> {
     let workspace = workspace.into();
-    #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     let settings = crate::native_settings::SettingsConfig::for_test(&workspace)?;
     // Store opening supplies temporary state only when no explicit root was selected.
     let config = crate::LocalHarnessConfig::new(workspace, model).hermetic();
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     let config = {
         let mut config = config;
         config.environment_platform = crate::native_environment::PlatformPolicy::Fixture {
@@ -36,7 +36,7 @@ pub fn local_harness_config(
         };
         config
     };
-    #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     let config = config.settings(settings);
     Ok(config)
 }
@@ -52,7 +52,7 @@ pub fn local_task_stream(
 #[cfg(all(
     test,
     feature = "filesystem-local",
-    any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
+    any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
 ))]
 mod tests {
     // The local test composition must select the isolated settings snapshot,
@@ -78,7 +78,7 @@ mod tests {
             config.settings.is_some(),
             "test configuration must select settings"
         );
-        #[cfg(feature = "native-execution")]
+        #[cfg(any(test, feature = "native-execution"))]
         assert!(matches!(
             config.environment_platform,
             crate::native_environment::PlatformPolicy::Fixture { shell, .. }

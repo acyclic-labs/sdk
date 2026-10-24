@@ -70,11 +70,11 @@ use io::*;
 mod native;
 use native::*;
 mod append;
-mod policy;
 mod authority;
 mod bindings;
 mod changes;
 mod head_payload;
+mod policy;
 #[cfg(test)]
 #[cfg(all(acyclic_fs_loom, not(acyclic_loom)))]
 compile_error!("head-payload models require RUSTFLAGS='--cfg acyclic_fs_loom --cfg acyclic_loom'");
@@ -87,7 +87,7 @@ mod replay;
 use append::seal;
 mod records;
 mod reservations;
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub(crate) use records::object_id_from_key;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "local")))]
 pub(crate) use records::object_key;

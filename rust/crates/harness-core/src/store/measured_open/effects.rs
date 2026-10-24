@@ -61,8 +61,6 @@ async fn measured_cold_retirement_preserves_original_atomic_indexes() -> Result<
                     result_schema: (schema).into(),
                 },
             ),
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;
@@ -76,8 +74,6 @@ async fn measured_cold_retirement_preserves_original_atomic_indexes() -> Result<
                     attempt_id,
                 },
             ),
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;
@@ -102,8 +98,6 @@ async fn measured_cold_retirement_preserves_original_atomic_indexes() -> Result<
                     observation: (observation).into(),
                 },
             ),
-            #[cfg(feature = "filesystem")]
-            None,
             &mut None,
         )
         .await?;

@@ -2,12 +2,13 @@ use crate::{
     CaseObservation, TestResult, composer::Composer, observation, scenario::Scenario,
     scenario_data, substrate::Substrate,
 };
-use futures::{FutureExt, StreamExt, stream};
+use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     panic::AssertUnwindSafe,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
@@ -89,7 +90,7 @@ pub fn requirements(value: &Value) -> TestResult<Vec<String>> {
 /// Runs every discovered case with bounded admission and client-side oracles.
 pub async fn run(
     root: &Path,
-    substrate: &dyn Substrate,
+    substrate: Arc<dyn Substrate>,
     filter: Option<&str>,
     concurrency: usize,
 ) -> TestResult<Report> {
@@ -103,14 +104,38 @@ pub async fn run(
     // One corpus deadline, including queued cases. A stalled host still produces
     // a failing record for every case instead of hanging or truncating JSON.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(55);
-    let mut records = stream::iter(
-        paths
-            .into_iter()
-            .map(|path| run_case(root, path, substrate, filter, &capabilities, deadline)),
-    )
-    .buffer_unordered(concurrency)
-    .collect::<Vec<_>>()
-    .await;
+    let root = Arc::new(root.to_path_buf());
+    let filter = filter.map(str::to_owned);
+    let capabilities = Arc::new(capabilities);
+    let mut paths = paths.into_iter();
+    // Admitted cases own runnable tasks instead of sharing one CPU-bound
+    // poller. The set owns cancellation; admission never exceeds concurrency.
+    let mut tasks = tokio::task::JoinSet::new();
+    let mut records = Vec::new();
+    loop {
+        while tasks.len() < concurrency {
+            let Some(path) = paths.next() else { break };
+            let root = root.clone();
+            let substrate = substrate.clone();
+            let filter = filter.clone();
+            let capabilities = capabilities.clone();
+            tasks.spawn(async move {
+                run_case(
+                    &root,
+                    path,
+                    substrate.as_ref(),
+                    filter.as_deref(),
+                    &capabilities,
+                    deadline,
+                )
+                .await
+            });
+        }
+        let Some(result) = tasks.join_next().await else {
+            break;
+        };
+        records.push(result?);
+    }
     records.sort_by(|a, b| a.case.cmp(&b.case));
     if records.is_empty() {
         return Err("no scenarios discovered".into());
