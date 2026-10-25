@@ -611,7 +611,7 @@ pub(crate) trait PreparationRecord: serde::de::DeserializeOwned + Serialize {}
 #[cfg(not(feature = "filesystem"))]
 impl<T: serde::de::DeserializeOwned + Serialize> PreparationRecord for T {}
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize, crate::HeapLayout)]
 #[doc(hidden)]
 pub struct ModelEventAdmission {
     #[doc(hidden)]

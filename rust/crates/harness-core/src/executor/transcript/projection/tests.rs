@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct RequestBackedProjectionControl {
     request: FileRef,

@@ -1,7 +1,7 @@
 //! Ownership bounds for closed harness DTOs.
 use super::*;
-use std::mem::size_of;
 use crate::executor::json::JsonValueSchema as Schema;
+use std::mem::size_of;
 
 /// A closed record a preparation decodes under its layout admission.
 #[doc(hidden)]
@@ -53,7 +53,6 @@ records!(
     crate::workflow::WorkflowAdmission => WorkflowAdmission, crate::workflow::MachineCheckpoint => MachineCheckpoint, crate::workflow::WorkflowCommand => None,
 );
 impl PreparationRecord for crate::executor::ResponseProjection {
-
     fn json_value_schema() -> &'static Schema {
         Schema::ResponseProjection
     }
@@ -94,7 +93,6 @@ impl PreparationRecord for crate::model::ModelEvent {
     }
 }
 impl PreparationRecord for crate::context::Context {
-
     fn json_value_schema() -> &'static Schema {
         Schema::Context
     }
@@ -133,7 +131,6 @@ pub(crate) fn file_map_owned_bytes(
 }
 
 impl PreparationRecord for crate::context::CompactionReference {
-
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
         crate::core::owned_sum([
             size_of::<Self>() as u64,
@@ -165,10 +162,8 @@ impl PreparationRecord for crate::context::CanonicalContextCheckpoint {
         .map(Some)
     }
 }
-impl PreparationRecord for acyclic_fs::access::Policy {
-}
-impl PreparationRecord for acyclic_fs::access::Capability {
-}
+impl PreparationRecord for acyclic_fs::access::Policy {}
+impl PreparationRecord for acyclic_fs::access::Capability {}
 impl PreparationRecord for crate::workflow::WorkflowRecord {
     /// The record keeps what its layout reserves for its decode, walked over
     /// the resident record, so the audit and the reservation share one model.

@@ -6,7 +6,7 @@ use summary_map::{SummaryKey, SummaryMap};
 
 mod model_cell;
 
-trait Entry: serde::de::DeserializeOwned + Serialize {
+trait Entry: serde::de::DeserializeOwned + Serialize + crate::HeapLayout {
     #[cfg(test)]
     fn heap_bytes(&self) -> Result<u64> {
         Ok(0)
@@ -90,8 +90,7 @@ struct Cell<V> {
 }
 
 #[cfg(test)]
-impl<V: Entry + crate::HeapLayout> PreparationRecord for Cell<V> {
-
+impl<V: Entry> PreparationRecord for Cell<V> {
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
         crate::core::owned_sum([std::mem::size_of::<Self>() as u64, self.value.heap_bytes()?])
             .map(Some)

@@ -175,8 +175,6 @@ impl PreparationRecord for RequestManifest {
         .len() as u64
     }
 
-
-
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
         crate::core::owned_sum([
             std::mem::size_of::<Self>() as u64,

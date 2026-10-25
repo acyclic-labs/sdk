@@ -2,7 +2,7 @@ use super::*;
 
 mod malformed;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(transparent)]
 struct CoarseMetadata<T>(T);
 
