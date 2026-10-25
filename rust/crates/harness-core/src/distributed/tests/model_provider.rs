@@ -119,6 +119,20 @@ pub(super) fn publish_until_cut<T>(mut future: Pending<T>, phase: Arc<AtomicU8>)
     future
 }
 
+// Sample the completed storage calls before acknowledgement can change their
+// local projections. Finish both owned futures before any oracle can panic:
+// unwinding suspended coordinator futures can overflow Loom's coroutine stack.
+pub(super) fn finish_publications<A, B, S>(
+    first: Pending<A>,
+    second: Pending<B>,
+    snapshot: impl FnOnce() -> S,
+) -> (S, A, B) {
+    let snapshot = snapshot();
+    let first = block_on(first);
+    let second = block_on(second);
+    (snapshot, first, second)
+}
+
 // Fixture transitions use the real encoder, append and replay without nesting
 // acknowledgement replay beneath command or worker-selection poll frames.
 pub(super) fn fixture_event<P: StreamProvider>(

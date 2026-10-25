@@ -1,6 +1,6 @@
 use super::model_provider::{
-    Pending, PublicationCut, block_on, declare_fixture, fixture_event, pause_before_publish,
-    publish_until_cut, start_fixture,
+    Pending, PublicationCut, block_on, declare_fixture, finish_publications, fixture_event,
+    pause_before_publish, publish_until_cut, start_fixture,
 };
 use super::*;
 use crate::{
@@ -183,14 +183,11 @@ fn settlement_model(join: bool, broken: bool) {
         let second = loom::thread::spawn(move || publish_until_cut(two, second_phase));
         let first = first.join().unwrap();
         let second = second.join().unwrap();
-        // Check durable publication before sequentially finishing acknowledgement
-        // and replay, which cannot influence either already-completed append.
-        assert_eq!(
-            block_on(client.tail(StreamPath::new(COORDINATOR_PATH).unwrap())).unwrap(),
-            tail + 1,
-            "settlement appended more than once"
-        );
-        let results = [block_on(first), block_on(second)];
+        let (published, first, second) = finish_publications(first, second, || {
+            block_on(client.tail(StreamPath::new(COORDINATOR_PATH).unwrap())).unwrap()
+        });
+        assert_eq!(published, tail + 1, "settlement appended more than once");
+        let results = [first, second];
         assert!(
             results
                 .iter()

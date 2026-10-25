@@ -1,6 +1,6 @@
 use super::model_provider::{
-    Pending, PublicationCut, declare_fixture, pause_before_publish, publish_until_cut,
-    start_fixture,
+    Pending, PublicationCut, block_on, declare_fixture, finish_publications, pause_before_publish,
+    publish_until_cut, start_fixture,
 };
 use super::*;
 use crate::distributed::JournalWrite;
@@ -8,10 +8,6 @@ use acyclic_stream::{CommitCondition, CommitOutcome, MemoryLimits, StreamPath};
 use futures::TryStreamExt;
 use loom::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use loom::thread;
-
-fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    loom::future::block_on(Box::pin(future))
-}
 
 fn journal_tail(client: &MemoryStream) -> u64 {
     match block_on(Box::pin(
@@ -224,18 +220,21 @@ fn fencing_model<const FENCE: bool>(release: bool, settlement: bool) {
         let revocation = thread::spawn(move || publish_until_cut(revocation, revoker_phase));
         let writer = writer.join().unwrap();
         let revocation = revocation.join().unwrap();
-        // Both real storage calls have finished. Acknowledgement/replay cannot
-        // change the linearization order recorded by their committed records.
-        let published = journal_tail(&client);
-        let revoked_at = committed_at(&client, COORDINATOR_PATH, revocation_sequence);
+        let ((published, revoked_at, published_at), committed, ()) =
+            finish_publications(writer, revocation, || {
+                let published = journal_tail(&client);
+                (
+                    published,
+                    committed_at(&client, COORDINATOR_PATH, revocation_sequence),
+                    (published != 0).then(|| committed_at(&client, "harness/test/journal", 0)),
+                )
+            });
         if published != 0 {
             assert!(
-                committed_at(&client, "harness/test/journal", 0) < revoked_at,
+                published_at.is_some_and(|time| time < revoked_at),
                 "revoked owner published a journal record"
             );
         }
-        let committed = block_on(writer);
-        block_on(revocation);
         assert_eq!(published, u64::from(committed));
         let mut reopened = Box::new(block_on(open(&client)).unwrap());
         let verifier = issuer.verifier(&mut None).unwrap();
