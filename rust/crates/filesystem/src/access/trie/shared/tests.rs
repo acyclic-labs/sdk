@@ -15,7 +15,7 @@ fn layer_work_oracle(repeated_scan: bool) {
                         .iter()
                         .filter(|index| {
                             examined += 1;
-                            layer.contains(index)
+                            layer.contains(*index)
                         })
                         .copied()
                         .collect()
