@@ -504,26 +504,44 @@ finally:a.close();b.close()
         root=self.d/'admit';root.mkdir()
         (root/'lease-stale.json').write_text(json.dumps({'pid':999999999,'identity':None}))
         env=self.worker_env({'BB_ADMIT_ROOT':str(root),'BB_ADMIT_WRAPPED_COMMAND':'1'})
-        first=subprocess.Popen([sys.executable,str(HERE/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c','import time;time.sleep(.3)'],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-        until=time.monotonic()+2
-        while not any(p.name!='lease-stale.json' for p in root.glob('lease-*')) and time.monotonic()<until:time.sleep(.01)
-        self.assertTrue(any(p.name!='lease-stale.json' for p in root.glob('lease-*')))
-        marker=self.d/'new-ticket'
-        with (root/'upgrade.lock').open('a') as lock:
-            fcntl.flock(lock,fcntl.LOCK_EX)
-            second=subprocess.Popen([sys.executable,str(HERE/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c',f'from pathlib import Path;Path({str(marker)!r}).touch()'],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-            first.communicate(timeout=2);self.assertEqual(first.returncode,0)
-            self.assertFalse(marker.exists())
-            # Without the upgrade flock, a new ticket incorrectly enters.
-            negative=self.d/'no-barrier.py';negative.write_text((HERE/'bb-admit.py').read_text().replace('fcntl.flock(upgrade,fcntl.LOCK_SH)','pass'))
-            bad=subprocess.run([sys.executable,str(negative),'lane','cloud','--','true'],env=env,capture_output=True,timeout=2)
-            self.assertEqual(bad.returncode,0)
-        second.communicate(timeout=2);self.assertEqual(second.returncode,0);self.assertTrue(marker.exists())
-        self.assertFalse((root/'lease-stale.json').exists())
-        daemon=json.loads((root/'daemon.json').read_text())
-        import hashlib
-        self.assertEqual(daemon['source_sha256'],hashlib.sha256((HERE/'bb-admit.py').read_bytes()).hexdigest())
-        os.kill(daemon['pid'],15)
+        def retire(process):
+            if process.stdin is not None:
+                process.stdin.close();process.stdin=None
+            if process.poll() is None:process.kill()
+            process.communicate(timeout=2)
+        def stop_daemon():
+            info=root/'daemon.json'
+            if not info.exists():return
+            owner=json.loads(info.read_text())
+            fd=admit.live_pidfd(owner['pid'],owner['identity'])
+            if fd is not None:
+                try:signal.pidfd_send_signal(fd,signal.SIGTERM)
+                except ProcessLookupError:pass
+                finally:os.close(fd)
+        with contextlib.ExitStack() as cleanup:
+            cleanup.callback(stop_daemon)
+            # A finite sleep can expire before the parent observes its lease.
+            # Readiness proves admission; stdin owns the command's lifetime.
+            command='import sys;print("RUNNING",flush=True);sys.stdin.buffer.read(1)'
+            first=subprocess.Popen([sys.executable,str(HERE/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c',command],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            cleanup.callback(retire,first)
+            self.assertEqual(first.stdout.readline(),b'RUNNING\n')
+            marker=self.d/'new-ticket'
+            with (root/'upgrade.lock').open('a') as lock:
+                fcntl.flock(lock,fcntl.LOCK_EX)
+                second=subprocess.Popen([sys.executable,str(HERE/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c',f'from pathlib import Path;Path({str(marker)!r}).touch()'],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+                cleanup.callback(retire,second)
+                first.communicate(input=b'R',timeout=2);self.assertEqual(first.returncode,0)
+                self.assertFalse(marker.exists())
+                # Without the upgrade flock, a new ticket incorrectly enters.
+                negative=self.d/'no-barrier.py';negative.write_text((HERE/'bb-admit.py').read_text().replace('fcntl.flock(upgrade,fcntl.LOCK_SH)','pass'))
+                bad=subprocess.run([sys.executable,str(negative),'lane','cloud','--','true'],env=env,capture_output=True,timeout=2)
+                self.assertEqual(bad.returncode,0)
+            second.communicate(timeout=2);self.assertEqual(second.returncode,0);self.assertTrue(marker.exists())
+            self.assertFalse((root/'lease-stale.json').exists())
+            daemon=json.loads((root/'daemon.json').read_text())
+            import hashlib
+            self.assertEqual(daemon['source_sha256'],hashlib.sha256((HERE/'bb-admit.py').read_bytes()).hexdigest())
 
     def test_recovered_leases_need_identity_and_survive_pidfd_exit_race(self):
         with patch.object(admit.os,'pidfd_open') as opened:
